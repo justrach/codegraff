@@ -1,7 +1,7 @@
 <h1 align="center">⚒️ CodeGraff: Fast, Lightweight Coding Agent</h1>
 <p align="center">A faster, lightweight coding agent for focused terminal development</p>
 
-<p align="center"><code>cargo run -p codegraff --bin codegraff</code></p>
+<p align="center"><code>curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh</code></p>
 
 > **CodeGraff note:** This repository is derived from [ForgeCode](https://github.com/tailcallhq/forgecode). CodeGraff is moving in a different direction: a faster, lightweight coding agent with a first-class TUI, CodeDB-backed code intelligence, Muonry-backed codebase operations, and sandbox/worktree experiments for safer runs. I am grateful to the original ForgeCode maintainers and contributors for building the foundation that made this possible.
 >
@@ -19,7 +19,7 @@
 <details>
 <summary><strong>Table&nbsp;of&nbsp;Contents</strong></summary>
 
-- [CodeGraff Direction](#codegraff-direction)
+- [Install CodeGraff](#install-codegraff)
 - [Quickstart](#quickstart)
 - [Usage Examples](#usage-examples)
 - [Why Forge?](#why-forge)
@@ -57,6 +57,41 @@
 
 ---
 
+## Install CodeGraff
+
+Install the latest CodeGraff release with:
+
+```bash
+curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
+```
+
+The installer adds these commands to `~/.local/bin` by default:
+
+- `codegraff` — the lightweight CodeGraff TUI
+- `forge` — the Forge-compatible CLI backend
+- `fzf` — installed if a compatible version is not already available
+- `codedb` — installed through the CodeDB installer if it is not already available
+
+It also updates `.zshrc` and `.bashrc` so `~/.local/bin` is on `PATH`. Open a new terminal after install, or run:
+
+```bash
+source ~/.zshrc
+```
+
+Then start the TUI with:
+
+```bash
+codegraff
+```
+
+To install the first release directly, use:
+
+```bash
+curl -fsSL https://github.com/justrach/codegraff/releases/download/0.0.01/install.sh | sh
+```
+
+---
+
 ## CodeGraff Direction
 
 CodeGraff is the direction of this standalone repository: a faster, lightweight coding agent for focused terminal development. It keeps the useful ForgeCode backend pieces while streamlining the experience around:
@@ -67,7 +102,13 @@ CodeGraff is the direction of this standalone repository: a faster, lightweight 
 - sandbox/worktree experiments for safer, lower-friction agent runs
 - clearer human control through tool cards, logs, cancellation, image attachments, markdown rendering, and on-demand usage stats
 
-Run the current TUI with:
+Run the TUI from an installed release with:
+
+```bash
+codegraff
+```
+
+Or run the current TUI from this checkout with:
 
 ```bash
 cargo run -p codegraff --bin codegraff
@@ -85,22 +126,31 @@ The new CodeGraff TUI folder is licensed separately under BSD-3-Clause in `crate
 
 ## Quickstart
 
-To get started with Forge, run the command below:
+To install CodeGraff and Forge, run:
 
 ```bash
-curl -fsSL https://forgecode.dev/cli | sh
+curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 ```
 
-On first run, Forge will guide you through setting up your AI provider credentials using the interactive login flow. Alternatively, you can configure providers beforehand:
+This installs `codegraff`, `forge`, `fzf`, and `codedb` into `~/.local/bin` by default. Restart your shell, then start CodeGraff:
 
 ```bash
-# Configure your provider credentials interactively
+codegraff
+```
+
+On first use, configure your AI provider credentials. From the TUI, you can use:
+
+```text
+/connect
+```
+
+Or configure providers through Forge:
+
+```bash
 forge provider login
-
-# Then start Forge
-forge
 ```
-That's it! Forge is now ready to assist you with your development tasks.
+
+That's it! CodeGraff is now ready to assist you with your development tasks.
 
 ## Usage Examples
 
@@ -1127,12 +1177,30 @@ For comprehensive documentation on all features and capabilities, please visit t
 
 ## Installation
 
-```bash
-# YOLO
-curl -fsSL https://forgecode.dev/cli | sh
+Install the latest CodeGraff release:
 
-# Package managers
-nix run github:tailcallhq/forgecode # for latest dev branch
+```bash
+curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
+```
+
+This installs `codegraff`, `forge`, `fzf`, and `codedb` into `~/.local/bin` by default.
+
+Install a specific release:
+
+```bash
+curl -fsSL https://github.com/justrach/codegraff/releases/download/0.0.01/install.sh | sh
+```
+
+Run after installing:
+
+```bash
+codegraff
+```
+
+From source:
+
+```bash
+cargo run -p codegraff --bin codegraff
 ```
 
 ---
