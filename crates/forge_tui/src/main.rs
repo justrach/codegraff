@@ -24,6 +24,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 const TOOL_OUTPUT_LINE_LIMIT: usize = 80;
 const TOOL_OUTPUT_BYTE_LIMIT: usize = 12_000;
@@ -53,6 +54,7 @@ struct Tui<A> {
     composer_scroll_from_bottom: usize,
     selected_tool: Option<usize>,
     is_streaming: bool,
+    chat_task: Option<JoinHandle<()>>,
     should_quit: bool,
 }
 
@@ -187,6 +189,12 @@ enum ComposerEditShortcut {
     None,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EscapeAction {
+    StopAgent,
+    ClearComposer,
+}
+
 impl ToolEntry {
     fn running(title: impl Into<String>) -> Self {
         Self {
@@ -260,6 +268,7 @@ impl<A: API + 'static> Tui<A> {
             composer_scroll_from_bottom: 0,
             selected_tool: None,
             is_streaming: false,
+            chat_task: None,
             should_quit: false,
         }
     }
@@ -336,7 +345,7 @@ impl<A: API + 'static> Tui<A> {
             KeyCode::Enter if is_multiline_input_key(key) => self.push_composer_char('\n'),
             KeyCode::Backspace => self.delete_composer_char(),
             KeyCode::Enter if !self.is_streaming => self.handle_enter(tx).await?,
-            KeyCode::Esc => self.clear_composer(),
+            KeyCode::Esc => self.handle_escape(),
             _ => {}
         }
 
@@ -357,6 +366,23 @@ impl<A: API + 'static> Tui<A> {
         self.composer.clear();
         self.image_attachments.clear();
         self.composer_scroll_from_bottom = 0;
+    }
+
+    fn handle_escape(&mut self) {
+        match escape_action(self.is_streaming) {
+            EscapeAction::StopAgent => self.stop_agent(),
+            EscapeAction::ClearComposer => self.clear_composer(),
+        }
+    }
+
+    fn stop_agent(&mut self) {
+        self.abort_chat_task();
+        self.is_streaming = false;
+        self.status = TuiStatus::Interrupted;
+        self.transcript.push(TranscriptEntry::Status(
+            "Stopped current agent run. Press Enter to send a new prompt.".to_string(),
+        ));
+        self.scroll_from_bottom = 0;
     }
 
     fn handle_paste(&mut self, text: String) {
@@ -432,6 +458,7 @@ impl<A: API + 'static> Tui<A> {
 
         let event = build_chat_event(&raw_prompt, &self.image_attachments);
         let display_prompt = build_display_prompt(&raw_prompt, &self.image_attachments);
+        self.abort_chat_task();
         self.composer.clear();
         self.composer_scroll_from_bottom = 0;
         let images = std::mem::take(&mut self.image_attachments);
@@ -447,19 +474,30 @@ impl<A: API + 'static> Tui<A> {
         Ok(())
     }
 
-    async fn spawn_chat(&self, event: Event, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+    async fn spawn_chat(
+        &mut self,
+        event: Event,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
         let chat = ChatRequest::new(event, self.conversation_id);
         let mut stream = self.api.chat(chat).await?;
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             while let Some(response) = stream.next().await {
                 if tx.send(AppEvent::Chat(response)).is_err() {
                     return;
                 }
             }
         });
+        self.chat_task = Some(task);
 
         Ok(())
+    }
+
+    fn abort_chat_task(&mut self) {
+        if let Some(task) = self.chat_task.take() {
+            task.abort();
+        }
     }
 
     async fn handle_chat_response(&mut self, response: Result<ChatResponse>) {
@@ -471,6 +509,7 @@ impl<A: API + 'static> Tui<A> {
                 }
             }
             Err(error) => {
+                self.abort_chat_task();
                 self.is_streaming = false;
                 self.status = TuiStatus::Error;
                 self.transcript
@@ -740,12 +779,14 @@ impl<A: API + 'static> Tui<A> {
                 )));
             }
             ChatResponse::Interrupt { reason } => {
+                self.abort_chat_task();
                 self.is_streaming = false;
                 self.status = TuiStatus::Interrupted;
                 self.transcript
                     .push(TranscriptEntry::Error(format!("Interrupted: {reason:?}")));
             }
             ChatResponse::TaskComplete => {
+                self.abort_chat_task();
                 self.is_streaming = false;
                 self.status = TuiStatus::Finished;
                 return true;
@@ -1612,6 +1653,14 @@ fn is_clipboard_paste_key(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Char('v' | 'V'))
         && (key.modifiers.contains(KeyModifiers::CONTROL)
             || key.modifiers.contains(KeyModifiers::SUPER))
+}
+
+fn escape_action(is_streaming: bool) -> EscapeAction {
+    if is_streaming {
+        EscapeAction::StopAgent
+    } else {
+        EscapeAction::ClearComposer
+    }
 }
 
 fn read_clipboard_text() -> Result<String> {
@@ -2584,15 +2633,20 @@ mod tests {
 
     #[test]
     fn clipboard_paste_key_accepts_control_or_super_v() {
-        let control_fixture = modified_key(KeyCode::Char('v'), KeyModifiers::CONTROL);
-        let super_fixture = modified_key(KeyCode::Char('v'), KeyModifiers::SUPER);
-        let plain_fixture = key(KeyCode::Char('v'));
-        let actual = (
-            is_clipboard_paste_key(control_fixture),
-            is_clipboard_paste_key(super_fixture),
-            is_clipboard_paste_key(plain_fixture),
-        );
-        let expected = (true, true, false);
+        let actual = vec![
+            is_clipboard_paste_key(modified_key(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+            is_clipboard_paste_key(modified_key(KeyCode::Char('V'), KeyModifiers::SUPER)),
+            is_clipboard_paste_key(key(KeyCode::Char('v'))),
+        ];
+        let expected = vec![true, true, false];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn escape_stops_streaming_agent_and_clears_idle_composer() {
+        let actual = vec![escape_action(true), escape_action(false)];
+        let expected = vec![EscapeAction::StopAgent, EscapeAction::ClearComposer];
 
         assert_eq!(actual, expected);
     }
