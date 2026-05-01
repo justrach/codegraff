@@ -384,3 +384,196 @@ impl<A: API + 'static> Tui<A> {
                 return Ok(());
             }
             ImageCommand::NotCommand => {}
+        }
+
+        if raw_prompt.is_empty() && self.image_attachments.is_empty() {
+            return Ok(());
+        }
+
+        let event = build_chat_event(&raw_prompt, &self.image_attachments);
+        let display_prompt = build_display_prompt(&raw_prompt, &self.image_attachments);
+        self.composer.clear();
+        self.composer_scroll_from_bottom = 0;
+        let images = std::mem::take(&mut self.image_attachments);
+        self.transcript.push(TranscriptEntry::User(UserMessage {
+            text: display_prompt,
+            images,
+        }));
+        self.scroll_from_bottom = 0;
+        self.status = TuiStatus::Thinking;
+        self.is_streaming = true;
+        self.spawn_chat(event, tx).await?;
+
+        Ok(())
+    }
+
+    async fn spawn_chat(&self, event: Event, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+        let chat = ChatRequest::new(event, self.conversation_id);
+        let mut stream = self.api.chat(chat).await?;
+
+        tokio::spawn(async move {
+            while let Some(response) = stream.next().await {
+                if tx.send(AppEvent::Chat(response)).is_err() {
+                    return;
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    fn handle_chat_response(&mut self, response: Result<ChatResponse>) {
+        match response {
+            Ok(response) => self.push_chat_response(response),
+            Err(error) => {
+                self.is_streaming = false;
+                self.status = TuiStatus::Error;
+                self.transcript
+                    .push(TranscriptEntry::Error(format!("{error:#}")));
+            }
+        }
+    }
+
+    fn handle_composer_scroll_key(&mut self, key: KeyEvent) -> bool {
+        match composer_scroll_shortcut(key) {
+            ComposerScrollShortcut::UpOne => {
+                self.composer_scroll_from_bottom =
+                    self.composer_scroll_from_bottom.saturating_add(1);
+                true
+            }
+            ComposerScrollShortcut::DownOne => {
+                self.composer_scroll_from_bottom =
+                    self.composer_scroll_from_bottom.saturating_sub(1);
+                true
+            }
+            ComposerScrollShortcut::UpPage => {
+                self.composer_scroll_from_bottom =
+                    self.composer_scroll_from_bottom.saturating_add(5);
+                true
+            }
+            ComposerScrollShortcut::DownPage | ComposerScrollShortcut::Bottom => {
+                self.composer_scroll_from_bottom = 0;
+                true
+            }
+            ComposerScrollShortcut::Top => {
+                self.composer_scroll_from_bottom = usize::MAX;
+                true
+            }
+            ComposerScrollShortcut::None => false,
+        }
+    }
+
+    fn handle_edit_key(&mut self, key: KeyEvent) -> bool {
+        match composer_edit_shortcut(key) {
+            ComposerEditShortcut::ClearLine => {
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                true
+            }
+            ComposerEditShortcut::DeletePreviousWord => {
+                delete_previous_word(&mut self.composer);
+                self.composer_scroll_from_bottom = 0;
+                true
+            }
+            ComposerEditShortcut::None => false,
+        }
+    }
+    fn handle_scroll_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Up => {
+                self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(1);
+                true
+            }
+            KeyCode::Down => {
+                self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(1);
+                true
+            }
+            KeyCode::PageUp => {
+                self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(10);
+                true
+            }
+            KeyCode::PageDown => {
+                self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(10);
+                true
+            }
+            KeyCode::Home => {
+                self.scroll_from_bottom = usize::MAX;
+                true
+            }
+            KeyCode::End => {
+                self.scroll_from_bottom = 0;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_tool_key(&mut self, key: KeyEvent) -> bool {
+        match tool_shortcut(key) {
+            ToolShortcut::Next => {
+                self.select_next_tool();
+                true
+            }
+            ToolShortcut::Previous => {
+                self.select_previous_tool();
+                true
+            }
+            ToolShortcut::Toggle => {
+                self.toggle_selected_tool();
+                true
+            }
+            ToolShortcut::None => false,
+        }
+    }
+
+    fn select_next_tool(&mut self) {
+        let tool_indexes = self.tool_indexes();
+        if tool_indexes.is_empty() {
+            self.selected_tool = None;
+            return;
+        }
+
+        self.selected_tool = match self.selected_tool {
+            Some(current) => tool_indexes
+                .iter()
+                .position(|index| *index == current)
+                .map(|position| tool_indexes[(position + 1) % tool_indexes.len()])
+                .or_else(|| tool_indexes.first().copied()),
+            None => tool_indexes.first().copied(),
+        };
+    }
+
+    fn select_previous_tool(&mut self) {
+        let tool_indexes = self.tool_indexes();
+        if tool_indexes.is_empty() {
+            self.selected_tool = None;
+            return;
+        }
+
+        self.selected_tool = match self.selected_tool {
+            Some(current) => tool_indexes
+                .iter()
+                .position(|index| *index == current)
+                .map(|position| {
+                    let previous = position
+                        .checked_sub(1)
+                        .unwrap_or_else(|| tool_indexes.len().saturating_sub(1));
+                    tool_indexes[previous]
+                })
+                .or_else(|| tool_indexes.first().copied()),
+            None => tool_indexes.first().copied(),
+        };
+    }
+
+    fn toggle_selected_tool(&mut self) {
+        let Some(index) = self.selected_tool else {
+            return;
+        };
+
+        if let Some(TranscriptEntry::Tool(tool)) = self.transcript.get_mut(index) {
+            tool.expanded = !tool.expanded;
+        }
+    }
+
+    fn tool_indexes(&self) -> Vec<usize> {
+        self.transcript
