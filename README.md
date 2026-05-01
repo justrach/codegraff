@@ -61,7 +61,7 @@
 
 Codegraff is the direction of this standalone repository. It keeps the ForgeCode agent backend and existing CLI functionality while adding an experimental harness layer focused on:
 
-- a dedicated TUI in `crates/forge_tui` with the `codegraff` binary
+- a dedicated TUI in `crates/codegraff-tui` with the `codegraff` binary
 - CodeDB-backed code intelligence for repository structure, symbols, and dependency context
 - Muonry-backed structured codebase operations
 - sandbox/worktree experiments for safer agent execution
@@ -79,7 +79,7 @@ The original Forge CLI is still present and can be run from this checkout with:
 cargo run -p forge_main --bin forge
 ```
 
-The new Codegraff TUI folder is licensed separately under BSD-3-Clause in `crates/forge_tui/LICENSE`; the rest of the project keeps its existing license terms.
+The new Codegraff TUI folder is licensed separately under BSD-3-Clause in `crates/codegraff-tui/LICENSE`; the rest of the project keeps its existing license terms.
 
 ---
 

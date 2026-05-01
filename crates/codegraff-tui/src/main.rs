@@ -664,6 +664,11 @@ impl<A: API + 'static> Tui<A> {
         handle_mouse_scroll_offset(&mut self.scroll_from_bottom, kind);
     }
 
+    fn reset_overlay_selection_state(&mut self) {
+        self.overlay_scroll_from_top = 0;
+        self.overlay_input.clear();
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         self.handle_mouse_scroll(mouse.kind);
     }
@@ -1028,6 +1033,7 @@ impl<A: API + 'static> Tui<A> {
                 self.overlay = None;
             }
             Ok(models) => {
+                self.reset_overlay_selection_state();
                 self.overlay = Some(Overlay::Model(ModelDialog { options: models }));
                 self.status = TuiStatus::Ready;
             }
@@ -1125,6 +1131,7 @@ impl<A: API + 'static> Tui<A> {
                     .to_string(),
             )),
             Ok(providers) => {
+                self.reset_overlay_selection_state();
                 self.overlay = Some(Overlay::Connect(ConnectDialog {
                     step: ConnectStep::ProviderSelection { providers },
                 }));
@@ -1196,6 +1203,7 @@ impl<A: API + 'static> Tui<A> {
             };
             self.begin_connect_auth(provider, method).await;
         } else {
+            self.reset_overlay_selection_state();
             self.overlay = Some(Overlay::Connect(ConnectDialog {
                 step: ConnectStep::AuthMethodSelection { provider, methods },
             }));
@@ -4445,6 +4453,26 @@ mod tests {
         handle_mouse_scroll_offset(&mut fixture, MouseEventKind::ScrollDown);
         let actual = fixture;
         let expected = 0;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn overlay_mouse_wheel_scrolls_from_top() {
+        let mut fixture = 0;
+        handle_overlay_mouse_scroll_offset(&mut fixture, MouseEventKind::ScrollDown);
+        handle_overlay_mouse_scroll_offset(&mut fixture, MouseEventKind::ScrollUp);
+        let actual = fixture;
+        let expected = 0;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn overlay_selection_dialogs_show_local_number_input() {
+        let fixture = ModelDialog { options: Vec::new() };
+        let actual = render_line(model_dialog_lines(&fixture, 80, "12")[2].clone());
+        let expected = "Selection: 12";
 
         assert_eq!(actual, expected);
     }
