@@ -2121,3 +2121,196 @@ mod tests {
         let mut fixture = vec![
             TranscriptEntry::Assistant("first".to_string()),
             TranscriptEntry::Tool(ToolEntry::finished("read", ToolStatus::Done)),
+        ];
+        append_assistant_entry(&mut fixture, "second".to_string());
+        let actual = transcript_texts(&fixture);
+        let expected = vec![
+            "assistant:first".to_string(),
+            "tool:read".to_string(),
+            "assistant:second".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sanitize_tool_output_removes_control_characters() {
+        let fixture = "ok\u{fffd}\u{0007}\nnext";
+        let actual = sanitize_tool_output(fixture);
+        let expected = "ok  \nnext";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn collapsed_tool_card_keeps_summary_to_one_line() {
+        let fixture = ToolEntry::info(
+            "outline",
+            "Large output: 92 lines, 3445 bytes. Showing first 80 lines. more and more and more",
+        );
+        let actual = rendered_tool_lines(fixture, false, 46);
+        let expected = vec![
+            "  ▸ Tool outline [info]".to_string(),
+            "    Large output: 92 lines, 3445 bytes. Showing first 80 lines. more and mo…"
+                .to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    fn rendered_composer_lines(
+        composer: &str,
+        images: &[ImageAttachment],
+        width: usize,
+    ) -> Vec<String> {
+        build_composer_lines(composer, images, width)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn modified_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    fn rendered_tool_lines(tool: ToolEntry, selected: bool, width: usize) -> Vec<String> {
+        let mut fixture = Vec::new();
+        push_tool_lines(&mut fixture, &tool, selected, width);
+
+        fixture.into_iter().map(render_line).collect()
+    }
+
+    fn transcript_texts(entries: &[TranscriptEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|entry| match entry {
+                TranscriptEntry::Assistant(text) => format!("assistant:{text}"),
+                TranscriptEntry::Tool(tool) => format!("tool:{}", tool.title),
+                TranscriptEntry::User(message) => format!("user:{}", message.text),
+                TranscriptEntry::Error(text) => format!("error:{text}"),
+                TranscriptEntry::Status(text) => format!("status:{text}"),
+            })
+            .collect()
+    }
+
+    fn render_line(line: Line<'static>) -> String {
+        line.spans
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn write_rgba_png_rejects_wrong_byte_count() {
+        let fixture = std::env::temp_dir().join("codegraff-test-invalid.png");
+        let actual = write_rgba_png(&fixture, 2, 2, &[0, 0, 0, 0])
+            .unwrap_err()
+            .to_string();
+        let expected = "clipboard image had 4 bytes, expected 16 for 2x2 RGBA";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn write_rgba_png_writes_supported_image_file() {
+        let fixture = std::env::temp_dir().join("codegraff-test-valid.png");
+        let _ = std::fs::remove_file(&fixture);
+        write_rgba_png(&fixture, 1, 1, &[255, 0, 0, 255]).unwrap();
+        let actual = is_supported_image_path(&fixture) && fixture.exists();
+        let expected = true;
+        let _ = std::fs::remove_file(&fixture);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn clipboard_image_path_uses_png_extension() {
+        let actual = clipboard_image_path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_string);
+        let expected = Some("png".to_string());
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn clipboard_paste_key_accepts_control_or_super_v() {
+        let control_fixture = modified_key(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        let super_fixture = modified_key(KeyCode::Char('v'), KeyModifiers::SUPER);
+        let plain_fixture = key(KeyCode::Char('v'));
+        let actual = (
+            is_clipboard_paste_key(control_fixture),
+            is_clipboard_paste_key(super_fixture),
+            is_clipboard_paste_key(plain_fixture),
+        );
+        let expected = (true, true, false);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn delete_previous_word_removes_trailing_word_and_spaces() {
+        let mut fixture = "hello world   ".to_string();
+        delete_previous_word(&mut fixture);
+        let actual = fixture;
+        let expected = "hello ";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn prompt_title_shows_input_shortcuts_on_wide_terminals() {
+        let actual = prompt_title(100);
+        let expected = "Prompt  Shift/Cmd+↑↓ scroll  Cmd+⌫ clear  Opt+⌫ word";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn composer_edit_shortcut_maps_mac_and_terminal_deletion_keys() {
+        let actual = vec![
+            composer_edit_shortcut(modified_key(KeyCode::Backspace, KeyModifiers::SUPER)),
+            composer_edit_shortcut(modified_key(KeyCode::Delete, KeyModifiers::CONTROL)),
+            composer_edit_shortcut(modified_key(KeyCode::Backspace, KeyModifiers::ALT)),
+            composer_edit_shortcut(modified_key(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+            composer_edit_shortcut(modified_key(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+        ];
+        let expected = vec![
+            ComposerEditShortcut::ClearLine,
+            ComposerEditShortcut::ClearLine,
+            ComposerEditShortcut::DeletePreviousWord,
+            ComposerEditShortcut::ClearLine,
+            ComposerEditShortcut::DeletePreviousWord,
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn composer_scroll_accepts_command_or_shift_arrows() {
+        let actual = vec![
+            composer_scroll_shortcut(modified_key(KeyCode::Up, KeyModifiers::SUPER)),
+            composer_scroll_shortcut(modified_key(KeyCode::Down, KeyModifiers::SHIFT)),
+            composer_scroll_shortcut(modified_key(KeyCode::PageUp, KeyModifiers::CONTROL)),
+            composer_scroll_shortcut(key(KeyCode::Up)),
+        ];
+        let expected = vec![
+            ComposerScrollShortcut::UpOne,
+            ComposerScrollShortcut::DownOne,
+            ComposerScrollShortcut::UpPage,
+            ComposerScrollShortcut::None,
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
