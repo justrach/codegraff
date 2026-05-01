@@ -1,9 +1,9 @@
-<h1 align="center">⚒️ Forge / Codegraff: AI-Enhanced Terminal Development Environment</h1>
-<p align="center">A ForgeCode-derived coding agent evolving into the Codegraff agentic harness</p>
+<h1 align="center">⚒️ CodeGraff: AI-Enhanced Terminal Development Environment</h1>
+<p align="center">A CodeGraff coding agent harness built on the ForgeCode foundation</p>
 
 <p align="center"><code>cargo run -p codegraff --bin codegraff</code></p>
 
-> **Codegraff note:** This repository is derived from [ForgeCode](https://github.com/tailcallhq/forgecode). ForgeCode was a strong, state-of-the-art terminal coding agent foundation: practical, fast, multi-provider, tool-oriented, and shaped around real development workflows. Codegraff keeps that base and will slowly evolve it into a more opinionated agentic harness around CodeDB, Muonry, sandbox experiments, and a first-class TUI. I am grateful to the original ForgeCode maintainers and contributors for building the foundation that made this possible.
+> **CodeGraff note:** This repository is derived from [ForgeCode](https://github.com/tailcallhq/forgecode). ForgeCode was a strong, state-of-the-art terminal coding agent foundation: practical, fast, multi-provider, tool-oriented, and shaped around real development workflows. CodeGraff keeps that base and will slowly evolve it into a more opinionated agentic harness around CodeDB, Muonry, sandbox experiments, and a first-class TUI. I am grateful to the original ForgeCode maintainers and contributors for building the foundation that made this possible.
 >
 > The original ForgeCode README content is preserved below because it still documents much of the functionality currently present in this codebase.
 
@@ -19,7 +19,7 @@
 <details>
 <summary><strong>Table&nbsp;of&nbsp;Contents</strong></summary>
 
-- [Codegraff Direction](#codegraff-direction)
+- [CodeGraff Direction](#codegraff-direction)
 - [Quickstart](#quickstart)
 - [Usage Examples](#usage-examples)
 - [Why Forge?](#why-forge)
@@ -57,9 +57,9 @@
 
 ---
 
-## Codegraff Direction
+## CodeGraff Direction
 
-Codegraff is the direction of this standalone repository. It keeps the ForgeCode agent backend and existing CLI functionality while adding an experimental harness layer focused on:
+CodeGraff is the direction of this standalone repository. It keeps the ForgeCode agent backend and existing CLI functionality while adding an experimental harness layer focused on:
 
 - a dedicated TUI in `crates/codegraff-tui` with the `codegraff` binary
 - CodeDB-backed code intelligence for repository structure, symbols, and dependency context
@@ -79,7 +79,7 @@ The original Forge CLI is still present and can be run from this checkout with:
 cargo run -p forge_main --bin forge
 ```
 
-The new Codegraff TUI folder is licensed separately under BSD-3-Clause in `crates/codegraff-tui/LICENSE`; the rest of the project keeps its existing license terms.
+The new CodeGraff TUI folder is licensed separately under BSD-3-Clause in `crates/codegraff-tui/LICENSE`; the rest of the project keeps its existing license terms.
 
 ---
 
