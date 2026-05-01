@@ -554,19 +554,27 @@ impl<A: API + 'static> Tui<A> {
                 Ok(true)
             }
             KeyCode::Up => {
-                self.overlay_scroll_from_top = self.overlay_scroll_from_top.saturating_sub(SCROLL_LINE_STEP);
+                self.overlay_scroll_from_top = self
+                    .overlay_scroll_from_top
+                    .saturating_sub(SCROLL_LINE_STEP);
                 Ok(true)
             }
             KeyCode::Down => {
-                self.overlay_scroll_from_top = self.overlay_scroll_from_top.saturating_add(SCROLL_LINE_STEP);
+                self.overlay_scroll_from_top = self
+                    .overlay_scroll_from_top
+                    .saturating_add(SCROLL_LINE_STEP);
                 Ok(true)
             }
             KeyCode::PageUp => {
-                self.overlay_scroll_from_top = self.overlay_scroll_from_top.saturating_sub(SCROLL_PAGE_STEP);
+                self.overlay_scroll_from_top = self
+                    .overlay_scroll_from_top
+                    .saturating_sub(SCROLL_PAGE_STEP);
                 Ok(true)
             }
             KeyCode::PageDown => {
-                self.overlay_scroll_from_top = self.overlay_scroll_from_top.saturating_add(SCROLL_PAGE_STEP);
+                self.overlay_scroll_from_top = self
+                    .overlay_scroll_from_top
+                    .saturating_add(SCROLL_PAGE_STEP);
                 Ok(true)
             }
             KeyCode::Home => {
@@ -618,7 +626,9 @@ impl<A: API + 'static> Tui<A> {
             Some(Overlay::Model(_)) => self.select_model(index).await,
             Some(Overlay::Connect(dialog)) => match dialog.step {
                 ConnectStep::ProviderSelection { .. } => self.select_connect_provider(index).await,
-                ConnectStep::AuthMethodSelection { .. } => self.select_connect_auth_method(index).await,
+                ConnectStep::AuthMethodSelection { .. } => {
+                    self.select_connect_auth_method(index).await
+                }
                 ConnectStep::ApiKeyInput { .. } => {}
             },
             None => {}
@@ -632,7 +642,8 @@ impl<A: API + 'static> Tui<A> {
             self.overlay,
             Some(Overlay::Model(_))
                 | Some(Overlay::Connect(ConnectDialog {
-                    step: ConnectStep::ProviderSelection { .. } | ConnectStep::AuthMethodSelection { .. }
+                    step: ConnectStep::ProviderSelection { .. }
+                        | ConnectStep::AuthMethodSelection { .. }
                 }))
         )
     }
@@ -1395,18 +1406,27 @@ impl<A: API + 'static> Tui<A> {
     fn handle_composer_scroll_key(&mut self, key: KeyEvent) -> bool {
         match composer_scroll_shortcut(key) {
             ComposerScrollShortcut::UpOne => {
-                self.composer_scroll_from_bottom =
-                    self.composer_scroll_from_bottom.saturating_add(1);
+                adjust_scroll_offset(
+                    &mut self.composer_scroll_from_bottom,
+                    ScrollDirection::Up,
+                    SCROLL_LINE_STEP,
+                );
                 true
             }
             ComposerScrollShortcut::DownOne => {
-                self.composer_scroll_from_bottom =
-                    self.composer_scroll_from_bottom.saturating_sub(1);
+                adjust_scroll_offset(
+                    &mut self.composer_scroll_from_bottom,
+                    ScrollDirection::Down,
+                    SCROLL_LINE_STEP,
+                );
                 true
             }
             ComposerScrollShortcut::UpPage => {
-                self.composer_scroll_from_bottom =
-                    self.composer_scroll_from_bottom.saturating_add(5);
+                adjust_scroll_offset(
+                    &mut self.composer_scroll_from_bottom,
+                    ScrollDirection::Up,
+                    SCROLL_PAGE_STEP,
+                );
                 true
             }
             ComposerScrollShortcut::DownPage | ComposerScrollShortcut::Bottom => {
@@ -1439,19 +1459,35 @@ impl<A: API + 'static> Tui<A> {
     fn handle_scroll_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Up => {
-                self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(1);
+                adjust_scroll_offset(
+                    &mut self.scroll_from_bottom,
+                    ScrollDirection::Up,
+                    SCROLL_LINE_STEP,
+                );
                 true
             }
             KeyCode::Down => {
-                self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(1);
+                adjust_scroll_offset(
+                    &mut self.scroll_from_bottom,
+                    ScrollDirection::Down,
+                    SCROLL_LINE_STEP,
+                );
                 true
             }
             KeyCode::PageUp => {
-                self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(10);
+                adjust_scroll_offset(
+                    &mut self.scroll_from_bottom,
+                    ScrollDirection::Up,
+                    SCROLL_PAGE_STEP,
+                );
                 true
             }
             KeyCode::PageDown => {
-                self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(10);
+                adjust_scroll_offset(
+                    &mut self.scroll_from_bottom,
+                    ScrollDirection::Down,
+                    SCROLL_PAGE_STEP,
+                );
                 true
             }
             KeyCode::Home => {
@@ -1689,25 +1725,42 @@ impl<A: API + 'static> Tui<A> {
         if let Some(overlay) = &self.overlay {
             let dialog_area = overlay_area(area);
             frame.render_widget(Clear, dialog_area);
+            let dialog_inner_height = dialog_area.height.saturating_sub(2) as usize;
             match overlay {
                 Overlay::Connect(dialog) => {
-                    let dialog = Paragraph::new(connect_dialog_lines(
+                    let lines = connect_dialog_lines(
                         dialog,
                         dialog_area.width.saturating_sub(2) as usize,
-                    ))
-                    .block(
-                        Block::default()
-                            .title("Connect provider")
-                            .borders(Borders::ALL),
+                        self.overlay_input.as_str(),
                     );
+                    let max_overlay_scroll = lines.len().saturating_sub(dialog_inner_height);
+                    let overlay_scroll = self
+                        .overlay_scroll_from_top
+                        .min(max_overlay_scroll)
+                        .min(u16::MAX as usize) as u16;
+                    let dialog = Paragraph::new(lines)
+                        .block(
+                            Block::default()
+                                .title("Connect provider")
+                                .borders(Borders::ALL),
+                        )
+                        .scroll((overlay_scroll, 0));
                     frame.render_widget(dialog, dialog_area);
                 }
                 Overlay::Model(dialog) => {
-                    let dialog = Paragraph::new(model_dialog_lines(
+                    let lines = model_dialog_lines(
                         dialog,
                         dialog_area.width.saturating_sub(2) as usize,
-                    ))
-                    .block(Block::default().title("Select model").borders(Borders::ALL));
+                        self.overlay_input.as_str(),
+                    );
+                    let max_overlay_scroll = lines.len().saturating_sub(dialog_inner_height);
+                    let overlay_scroll = self
+                        .overlay_scroll_from_top
+                        .min(max_overlay_scroll)
+                        .min(u16::MAX as usize) as u16;
+                    let dialog = Paragraph::new(lines)
+                        .block(Block::default().title("Select model").borders(Borders::ALL))
+                        .scroll((overlay_scroll, 0));
                     frame.render_widget(dialog, dialog_area);
                 }
             }
@@ -1960,14 +2013,15 @@ fn allows_local_api_key(provider_id: &ProviderId) -> bool {
     )
 }
 
-fn model_dialog_lines(dialog: &ModelDialog, width: usize) -> Vec<Line<'static>> {
+fn model_dialog_lines(dialog: &ModelDialog, width: usize, input: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     push_dialog_line(&mut lines, "Choose model", width);
     push_dialog_line(
         &mut lines,
-        "Type /models <number> to switch, Esc or /models cancel to close.",
+        "Type a number and press Enter. Esc or /models cancel closes.",
         width,
     );
+    push_dialog_line(&mut lines, &format!("Selection: {input}"), width);
     lines.push(Line::raw(""));
     for (index, option) in dialog.options.iter().enumerate() {
         push_dialog_line(&mut lines, &format_model_option(index + 1, option), width);
@@ -1975,12 +2029,17 @@ fn model_dialog_lines(dialog: &ModelDialog, width: usize) -> Vec<Line<'static>> 
     lines
 }
 
-fn connect_dialog_lines(dialog: &ConnectDialog, width: usize) -> Vec<Line<'static>> {
+fn connect_dialog_lines(dialog: &ConnectDialog, width: usize, input: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match &dialog.step {
         ConnectStep::ProviderSelection { providers } => {
             push_dialog_line(&mut lines, "Choose provider", width);
-            push_dialog_line(&mut lines, "Type /connect <number> to continue.", width);
+            push_dialog_line(
+                &mut lines,
+                "Type a number and press Enter. Esc or /connect cancel closes.",
+                width,
+            );
+            push_dialog_line(&mut lines, &format!("Selection: {input}"), width);
             lines.push(Line::raw(""));
             for (index, provider) in providers.iter().enumerate() {
                 push_dialog_line(
@@ -1994,9 +2053,10 @@ fn connect_dialog_lines(dialog: &ConnectDialog, width: usize) -> Vec<Line<'stati
             push_dialog_line(&mut lines, &format!("Provider: {}", provider.id()), width);
             push_dialog_line(
                 &mut lines,
-                "Choose auth method with /connect auth <number>.",
+                "Type a number and press Enter. Esc or /connect cancel closes.",
                 width,
             );
+            push_dialog_line(&mut lines, &format!("Selection: {input}"), width);
             lines.push(Line::raw(""));
             for (index, method) in methods.iter().enumerate() {
                 push_dialog_line(
@@ -3059,13 +3119,45 @@ fn shifted_ascii_char(ch: char) -> char {
     }
 }
 
+fn adjust_scroll_offset(offset: &mut usize, direction: ScrollDirection, amount: usize) {
+    match direction {
+        ScrollDirection::Up => *offset = offset.saturating_add(amount),
+        ScrollDirection::Down => *offset = offset.saturating_sub(amount),
+    }
+}
+
+fn adjust_top_scroll_offset(offset: &mut usize, direction: ScrollDirection, amount: usize) {
+    match direction {
+        ScrollDirection::Up => *offset = offset.saturating_sub(amount),
+        ScrollDirection::Down => *offset = offset.saturating_add(amount),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ScrollDirection {
+    Up,
+    Down,
+}
+
+fn handle_overlay_mouse_scroll_offset(offset: &mut usize, kind: MouseEventKind) {
+    match kind {
+        MouseEventKind::ScrollUp => {
+            adjust_top_scroll_offset(offset, ScrollDirection::Up, MOUSE_SCROLL_STEP)
+        }
+        MouseEventKind::ScrollDown => {
+            adjust_top_scroll_offset(offset, ScrollDirection::Down, MOUSE_SCROLL_STEP)
+        }
+        _ => {}
+    }
+}
+
 fn handle_mouse_scroll_offset(offset: &mut usize, kind: MouseEventKind) {
     match kind {
         MouseEventKind::ScrollUp => {
-            *offset = offset.saturating_add(3);
+            adjust_scroll_offset(offset, ScrollDirection::Up, MOUSE_SCROLL_STEP)
         }
         MouseEventKind::ScrollDown => {
-            *offset = offset.saturating_sub(3);
+            adjust_scroll_offset(offset, ScrollDirection::Down, MOUSE_SCROLL_STEP)
         }
         _ => {}
     }
