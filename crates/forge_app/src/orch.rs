@@ -8,7 +8,6 @@ use forge_domain::{Agent, *};
 use forge_template::Element;
 use futures::future::join_all;
 use tokio::sync::Notify;
-use tracing::warn;
 
 use crate::agent::AgentService;
 use crate::transformers::{DropReasoningOnlyMessages, ModelSpecificReasoning};
@@ -259,9 +258,6 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         let mut is_complete = false;
 
         let mut request_count = 0;
-
-        // Retrieve the number of requests allowed per tick.
-        let max_requests_per_turn = self.agent.max_requests_per_turn;
         let tool_context =
             ToolCallContext::new(self.conversation.metrics.clone()).sender(self.sender.clone());
 
@@ -386,29 +382,6 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             self.conversation.context = Some(context.clone());
             self.services.update(self.conversation.clone()).await?;
             request_count += 1;
-
-            if !should_yield && let Some(max_request_allowed) = max_requests_per_turn {
-                // Check if agent has reached the maximum request per turn limit
-                if request_count >= max_request_allowed {
-                    // Log warning - important for understanding conversation interruptions
-                    warn!(
-                        agent_id = %self.agent.id,
-                        model_id = %model_id,
-                        request_count,
-                        max_request_allowed,
-                        "Agent has reached the maximum request per turn limit"
-                    );
-                    // raise an interrupt event to notify the UI
-                    self.send(ChatResponse::Interrupt {
-                        reason: InterruptionReason::MaxRequestPerTurnLimitReached {
-                            limit: max_request_allowed as u64,
-                        },
-                    })
-                    .await?;
-                    // force completion
-                    should_yield = true;
-                }
-            }
 
             // Update metrics in conversation
             tool_context.with_metrics(|metrics| {
