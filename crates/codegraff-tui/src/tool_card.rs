@@ -153,7 +153,8 @@ pub(crate) fn push_tool_lines(
         return;
     }
 
-    let summary = truncate_single_line(detail.trim(), COLLAPSED_TOOL_DETAIL_LIMIT);
+    let summary_width = detail_width.min(COLLAPSED_TOOL_DETAIL_LIMIT);
+    let summary = truncate_single_line(detail.trim(), summary_width);
     lines.push(Line::from(vec![
         Span::raw("    "),
         Span::styled(summary, Style::default().fg(Color::DarkGray)),

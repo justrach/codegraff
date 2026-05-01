@@ -3926,6 +3926,24 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_tool_output_strips_osc_title_sequences() {
+        let fixture = "before\u{1b}]0;forge title\u{7}after";
+        let actual = tool_card::sanitize_tool_output(fixture);
+        let expected = "beforeafter";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sanitize_tool_output_strips_cursor_and_line_clear_sequences() {
+        let fixture = "alpha\u{1b}[2K\u{1b}[1G beta\u{1b}[?25l";
+        let actual = tool_card::sanitize_tool_output(fixture);
+        let expected = "alpha beta";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn collapsed_tool_card_keeps_summary_to_one_line() {
         let fixture = ToolEntry::info(
             "outline",
@@ -3934,8 +3952,7 @@ mod tests {
         let actual = rendered_tool_lines(fixture, false, 46);
         let expected = vec![
             "  ▸ Tool outline [info]".to_string(),
-            "    Large output: 92 lines, 3445 bytes. Showing first 80 lines. more and mo…"
-                .to_string(),
+            "    Large output: 92 lines, 3445 bytes. Showi…".to_string(),
         ];
 
         assert_eq!(actual, expected);
@@ -4127,6 +4144,34 @@ mod tests {
         let fixture = ToolEntry::info("a-very-long-tool-name-that-should-not-break-layout", "ok");
         let actual = rendered_tool_lines(fixture, false, 24);
         let expected = vec!["  ▸ Tool a-very-… [info]".to_string(), "    ok".to_string()];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn dirty_tool_title_renders_cleanly() {
+        let fixture = ToolEntry::info("\u{1b}[31msearch\u{1b}[0m\u{0007}\u{fffd}", "ok");
+        let actual = rendered_tool_lines(fixture, false, 30);
+        let expected = vec!["  ▸ Tool search [info]".to_string(), "    ok".to_string()];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn markdown_code_blocks_sanitize_terminal_artifacts() {
+        let mut fixture = Vec::new();
+        push_markdown_message_lines(
+            &mut fixture,
+            "CodeGraff",
+            "```bash\n\u{1b}[32mcargo test\u{1b}[0m\u{0007}\n```",
+            40,
+        );
+        let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
+        let expected = vec![
+            "CodeGraff: ╭─ bash".to_string(),
+            "  │ cargo test ".to_string(),
+            "  ╰─".to_string(),
+        ];
 
         assert_eq!(actual, expected);
     }
@@ -4444,7 +4489,7 @@ mod tests {
         let actual = rendered_tool_lines(fixture, true, 34);
         let expected = vec![
             "> ▸ Tool read [info]".to_string(),
-            "    alpha beta gamma delta epsilon zeta eta theta".to_string(),
+            "    alpha beta gamma delta epsilo…".to_string(),
         ];
 
         assert_eq!(actual, expected);
@@ -4533,6 +4578,40 @@ mod tests {
         let actual = rendered_tool_lines(fixture, false, width)
             .into_iter()
             .skip(1)
+            .all(|line| text::visible_width(&line) <= width);
+        let expected = true;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn collapsed_tool_card_keeps_no_line_over_width() {
+        let fixture = ToolEntry::info(
+            "mcp_codedb_tool_codedb_search_with_extremely_long_tool_name",
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda",
+        );
+        let width = 24;
+        let actual = rendered_tool_lines(fixture, false, width)
+            .into_iter()
+            .all(|line| text::visible_width(&line) <= width);
+        let expected = true;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn markdown_wrapped_lines_keep_no_line_over_width() {
+        let mut fixture = Vec::new();
+        let width = 28;
+        push_markdown_message_lines(
+            &mut fixture,
+            "CodeGraff",
+            "- **bold** ツツツツツツツツツツツツ longwordwithoutspaces",
+            width,
+        );
+        let actual = fixture
+            .into_iter()
+            .map(render_line)
             .all(|line| text::visible_width(&line) <= width);
         let expected = true;
 
