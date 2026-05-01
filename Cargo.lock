@@ -1039,6 +1039,7 @@ dependencies = [
  "pretty_assertions",
  "ratatui",
  "tokio",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]

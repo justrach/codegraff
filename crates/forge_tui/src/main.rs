@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::fmt;
 use std::fs::OpenOptions;
 use std::io::{self, Cursor, Write};
 use std::panic;
@@ -15,18 +17,20 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use forge_api::{
-    API, ChatRequest, ChatResponse, ChatResponseContent, Conversation, Event, ForgeAPI,
-    ForgeConfig, Model, ModelConfig, TokenCount, Usage,
+    API, AnyProvider, ApiKeyRequest, AuthContextRequest, AuthContextResponse, AuthMethod,
+    ChatRequest, ChatResponse, ChatResponseContent, ConfigOperation, Conversation, Event, ForgeAPI,
+    ForgeConfig, InputModality, Model, ModelConfig, ProviderId, TokenCount, URLParamSpec, Usage,
 };
 use futures::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use unicode_width::UnicodeWidthChar;
 
 const TOOL_OUTPUT_LINE_LIMIT: usize = 80;
 const TOOL_OUTPUT_BYTE_LIMIT: usize = 12_000;
@@ -36,6 +40,8 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 1_000;
 const IMAGE_THUMBNAIL_COLUMNS: usize = 10;
 const IMAGE_THUMBNAIL_ROWS: usize = 3;
 const CODEGRAFF_LOG_FILE: &str = "codegraff.log";
+const TUI_RENDER_HZ: u64 = 120;
+const TUI_FRAME_NANOS: u64 = 1_000_000_000 / TUI_RENDER_HZ;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -68,6 +74,8 @@ struct Tui<A> {
     large_paste_counter: usize,
     image_attachments: Vec<ImageAttachment>,
     usage: Option<UsageSummary>,
+    active_model: Option<String>,
+    connect_dialog: Option<ConnectDialog>,
     status: TuiStatus,
     scroll_from_bottom: usize,
     composer_scroll_from_bottom: usize,
@@ -134,6 +142,121 @@ struct ModelStats {
     supports_parallel_tool_calls: Option<bool>,
     supports_reasoning: Option<bool>,
     input_modalities: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ModelOption {
+    provider_id: ProviderId,
+    model: Model,
+}
+
+impl ModelOption {
+    fn new(provider_id: ProviderId, model: Model) -> Self {
+        Self { provider_id, model }
+    }
+}
+
+impl fmt::Display for ModelOption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} / {}", self.provider_id, self.model.id)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ModelCommand {
+    List,
+    Select(usize),
+    Invalid(String),
+    NotCommand,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ConnectCommand {
+    Open,
+    Provider(usize),
+    AuthMethod(usize),
+    Field(String),
+    Submit,
+    Cancel,
+    Invalid(String),
+    NotCommand,
+}
+
+#[derive(Clone, Debug)]
+struct ConnectDialog {
+    step: ConnectStep,
+}
+
+#[derive(Clone, Debug)]
+enum ConnectStep {
+    ProviderSelection {
+        providers: Vec<ProviderOption>,
+    },
+    AuthMethodSelection {
+        provider: ProviderOption,
+        methods: Vec<AuthMethod>,
+    },
+    ApiKeyInput {
+        provider: ProviderOption,
+        request: ApiKeyRequest,
+        form: ApiKeyForm,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct ProviderOption {
+    provider: AnyProvider,
+}
+
+impl ProviderOption {
+    fn new(provider: AnyProvider) -> Self {
+        Self { provider }
+    }
+
+    fn id(&self) -> ProviderId {
+        self.provider.id()
+    }
+
+    fn auth_methods(&self) -> &[AuthMethod] {
+        self.provider.auth_methods()
+    }
+
+    fn is_configured(&self) -> bool {
+        self.provider.is_configured()
+    }
+
+    fn host(&self) -> String {
+        self.provider
+            .url()
+            .and_then(|url| url.domain().map(str::to_string))
+            .unwrap_or_else(|| "template".to_string())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ApiKeyForm {
+    api_key: String,
+    url_params: Vec<ConnectField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConnectField {
+    name: String,
+    value: String,
+    options: Option<Vec<String>>,
+}
+
+impl ConnectField {
+    fn new(name: String, value: String, options: Option<Vec<String>>) -> Self {
+        Self { name, value, options }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ConnectFieldUpdate {
+    ApiKey(String),
+    UrlParam { name: String, value: String },
+    Invalid(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -274,6 +397,7 @@ enum AppEvent {
     Input(KeyEvent),
     Paste(String),
     Chat(Result<ChatResponse>),
+    Tick,
 }
 
 impl<A: API + 'static> Tui<A> {
@@ -294,6 +418,8 @@ impl<A: API + 'static> Tui<A> {
             large_paste_counter: 0,
             image_attachments: Vec::new(),
             usage: None,
+            active_model: None,
+            connect_dialog: None,
             status: TuiStatus::Ready,
             scroll_from_bottom: 0,
             composer_scroll_from_bottom: 0,
@@ -309,21 +435,14 @@ impl<A: API + 'static> Tui<A> {
         self.api
             .upsert_conversation(Conversation::new(self.conversation_id))
             .await?;
+        self.refresh_active_model().await;
 
         let mut terminal = TerminalGuard::enter()?;
         let (tx, mut rx) = mpsc::unbounded_channel();
         spawn_input_reader(tx.clone(), self.log_path.clone());
+        spawn_render_ticker(tx.clone(), self.log_path.clone());
 
         loop {
-            if let Err(error) = terminal.draw(|frame| self.render(frame)) {
-                self.log_error("terminal draw failed", &error);
-                return Err(error);
-            }
-
-            if self.should_quit {
-                break;
-            }
-
             if let Some(event) = rx.recv().await {
                 match event {
                     AppEvent::Input(key) => {
@@ -334,7 +453,17 @@ impl<A: API + 'static> Tui<A> {
                     }
                     AppEvent::Paste(text) => self.handle_paste(text),
                     AppEvent::Chat(response) => self.handle_chat_response(response).await,
+                    AppEvent::Tick => {}
                 }
+            }
+
+            if let Err(error) = terminal.draw(|frame| self.render(frame)) {
+                self.log_error("terminal draw failed", &error);
+                return Err(error);
+            }
+
+            if self.should_quit {
+                break;
             }
         }
 
@@ -512,6 +641,75 @@ impl<A: API + 'static> Tui<A> {
             return Ok(());
         }
 
+        match parse_model_command(&raw_prompt) {
+            ModelCommand::List => {
+                self.show_models().await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ModelCommand::Select(index) => {
+                self.select_model(index).await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ModelCommand::Invalid(message) => {
+                self.transcript.push(TranscriptEntry::Error(message));
+                self.scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ModelCommand::NotCommand => {}
+        }
+
+        match parse_connect_command(&raw_prompt) {
+            ConnectCommand::Open => {
+                self.open_connect_dialog().await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::Provider(index) => {
+                self.select_connect_provider(index).await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::AuthMethod(index) => {
+                self.select_connect_auth_method(index).await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::Field(update) => {
+                self.update_connect_field(update);
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::Submit => {
+                self.submit_connect_dialog().await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::Cancel => {
+                self.connect_dialog = None;
+                self.transcript
+                    .push(TranscriptEntry::Status("Connect cancelled.".to_string()));
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                self.scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::Invalid(message) => {
+                self.transcript.push(TranscriptEntry::Error(message));
+                self.scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::NotCommand => {}
+        }
+
         if raw_prompt == "/logs" {
             self.transcript.push(TranscriptEntry::Status(format!(
                 "Codegraff logs: {}",
@@ -646,6 +844,392 @@ impl<A: API + 'static> Tui<A> {
             None => self.transcript.push(TranscriptEntry::Status(
                 "Usage is not available yet. Send a message first.".to_string(),
             )),
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn show_models(&mut self) {
+        match self.model_options().await {
+            Ok(models) if models.is_empty() => self.transcript.push(TranscriptEntry::Status(
+                "No registered provider models found. Connect a provider in CodeGraff with /connect first."
+                    .to_string(),
+            )),
+            Ok(models) => {
+                self.transcript.push(TranscriptEntry::Status(
+                    "Available models. Type /models <number> to switch.".to_string(),
+                ));
+                for (index, option) in models.iter().enumerate() {
+                    self.transcript
+                        .push(TranscriptEntry::Status(format_model_option(
+                            index + 1,
+                            option,
+                        )));
+                }
+            }
+            Err(error) => {
+                self.log_error("model list failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Models unavailable: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn select_model(&mut self, index: usize) {
+        match self.model_options().await {
+            Ok(models) if models.is_empty() => self.transcript.push(TranscriptEntry::Status(
+                "No registered provider models found. Connect a provider in CodeGraff with /connect first."
+                    .to_string(),
+            )),
+            Ok(models) => {
+                let Some(option) = models.get(index.saturating_sub(1)) else {
+                    self.transcript.push(TranscriptEntry::Error(format!(
+                        "Model selection {index} is out of range. Type /models to list available models."
+                    )));
+                    self.scroll_from_bottom = 0;
+                    return;
+                };
+
+                let config = ModelConfig::new(option.provider_id.clone(), option.model.id.clone());
+                match self
+                    .api
+                    .update_config(vec![ConfigOperation::SetSessionConfig(config)])
+                    .await
+                {
+                    Ok(()) => {
+                        self.usage = None;
+                        self.active_model = Some(model_label(option));
+                        self.transcript.push(TranscriptEntry::Status(format!(
+                            "Switched to model: {} / {}",
+                            option.provider_id, option.model.id
+                        )));
+                    }
+                    Err(error) => {
+                        self.log_error("model selection failed", &error);
+                        self.transcript.push(TranscriptEntry::Error(format!(
+                            "Model selection failed: {error:#}"
+                        )));
+                    }
+                }
+            }
+            Err(error) => {
+                self.log_error("model list failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Models unavailable: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn model_options(&self) -> Result<Vec<ModelOption>> {
+        let mut provider_models = self.api.get_all_provider_models().await?;
+        provider_models.iter_mut().for_each(|provider| {
+            provider
+                .models
+                .sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()))
+        });
+        provider_models.sort_by(|a, b| a.provider_id.as_ref().cmp(b.provider_id.as_ref()));
+
+        Ok(provider_models
+            .into_iter()
+            .flat_map(|provider| {
+                let provider_id = provider.provider_id;
+                provider
+                    .models
+                    .into_iter()
+                    .map(move |model| ModelOption::new(provider_id.clone(), model))
+            })
+            .collect())
+    }
+
+    async fn refresh_active_model(&mut self) {
+        self.active_model = self
+            .api
+            .get_session_config()
+            .await
+            .map(|config| model_config_label(&config));
+    }
+
+    async fn open_connect_dialog(&mut self) {
+        match self.connect_provider_options().await {
+            Ok(providers) if providers.is_empty() => self.transcript.push(TranscriptEntry::Status(
+                "No providers found to connect. Check your CodeGraff provider configuration."
+                    .to_string(),
+            )),
+            Ok(providers) => {
+                self.connect_dialog = Some(ConnectDialog {
+                    step: ConnectStep::ProviderSelection { providers: providers.clone() },
+                });
+                self.transcript.push(TranscriptEntry::Status(
+                    "Connect opened. Pick a provider with /connect <number>.".to_string(),
+                ));
+            }
+            Err(error) => {
+                self.log_error("connect provider list failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Connect unavailable: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn connect_provider_options(&self) -> Result<Vec<ProviderOption>> {
+        let mut providers = self
+            .api
+            .get_providers()
+            .await?
+            .into_iter()
+            .map(ProviderOption::new)
+            .collect::<Vec<_>>();
+        providers.sort_by(|a, b| a.id().as_ref().cmp(b.id().as_ref()));
+        Ok(providers)
+    }
+
+    async fn select_connect_provider(&mut self, index: usize) {
+        let Some(dialog) = self.connect_dialog.as_ref() else {
+            self.transcript.push(TranscriptEntry::Error(
+                "No connect dialog is open. Type /connect first.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        let provider = match &dialog.step {
+            ConnectStep::ProviderSelection { providers } => {
+                providers.get(index.saturating_sub(1)).cloned()
+            }
+            _ => None,
+        };
+
+        let Some(provider) = provider else {
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Provider selection {index} is out of range. Type /connect to list providers."
+            )));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        let methods = provider.auth_methods().to_vec();
+        if methods.is_empty() {
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "{} does not expose any authentication methods.",
+                provider.id()
+            )));
+            self.scroll_from_bottom = 0;
+            return;
+        }
+
+        if methods.len() == 1 {
+            let Some(method) = methods.first().cloned() else {
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "{} does not expose any authentication methods.",
+                    provider.id()
+                )));
+                self.scroll_from_bottom = 0;
+                return;
+            };
+            self.begin_connect_auth(provider, method).await;
+        } else {
+            self.connect_dialog = Some(ConnectDialog {
+                step: ConnectStep::AuthMethodSelection { provider, methods },
+            });
+            self.transcript.push(TranscriptEntry::Status(
+                "Pick an auth method with /connect auth <number>.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+        }
+    }
+
+    async fn select_connect_auth_method(&mut self, index: usize) {
+        let Some(dialog) = self.connect_dialog.as_ref() else {
+            self.transcript.push(TranscriptEntry::Error(
+                "No connect dialog is open. Type /connect first.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        let selection = match &dialog.step {
+            ConnectStep::AuthMethodSelection { provider, methods } => methods
+                .get(index.saturating_sub(1))
+                .cloned()
+                .map(|method| (provider.clone(), method)),
+            _ => None,
+        };
+
+        let Some((provider, method)) = selection else {
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Auth method selection {index} is out of range."
+            )));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        self.begin_connect_auth(provider, method).await;
+    }
+
+    async fn begin_connect_auth(&mut self, provider: ProviderOption, method: AuthMethod) {
+        let provider_id = provider.id();
+        match self
+            .api
+            .init_provider_auth(provider_id.clone(), method)
+            .await
+        {
+            Ok(AuthContextRequest::ApiKey(request)) => {
+                let form = build_api_key_form(&provider_id, &request);
+                self.connect_dialog = Some(ConnectDialog {
+                    step: ConnectStep::ApiKeyInput { provider, request, form },
+                });
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Editing {provider_id}. Set fields with /connect set <field>=<value>, then /connect submit."
+                )));
+            }
+            Ok(AuthContextRequest::DeviceCode(request)) => {
+                let display_uri = request
+                    .verification_uri_complete
+                    .as_ref()
+                    .unwrap_or(&request.verification_uri);
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Open {display_uri} and enter code {}. Complete this CodeGraff OAuth flow with `forge provider login {provider_id}` for now.",
+                    request.user_code
+                )));
+                self.connect_dialog = None;
+            }
+            Ok(AuthContextRequest::Code(request)) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Open {}. Complete this CodeGraff OAuth code flow with `forge provider login {provider_id}` for now.",
+                    request.authorization_url
+                )));
+                self.connect_dialog = None;
+            }
+            Err(error) => {
+                self.log_error("connect auth init failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Connect failed to start: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    fn update_connect_field(&mut self, update: String) {
+        let parsed = parse_connect_field_update(&update);
+        let Some(dialog) = &mut self.connect_dialog else {
+            self.transcript.push(TranscriptEntry::Error(
+                "No connect dialog is open. Type /connect first.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        let ConnectStep::ApiKeyInput { form, .. } = &mut dialog.step else {
+            self.transcript.push(TranscriptEntry::Error(
+                "Pick a provider before setting connect fields.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        match parsed {
+            ConnectFieldUpdate::ApiKey(value) => {
+                form.api_key = value;
+                self.transcript.push(TranscriptEntry::Status(
+                    "Updated API key field.".to_string(),
+                ));
+            }
+            ConnectFieldUpdate::UrlParam { name, value } => {
+                let Some(field) = form.url_params.iter_mut().find(|field| field.name == name)
+                else {
+                    self.transcript.push(TranscriptEntry::Error(format!(
+                        "Unknown connect field `{name}`. Check the dialog for field names."
+                    )));
+                    self.scroll_from_bottom = 0;
+                    return;
+                };
+                if let Some(options) = &field.options
+                    && !options.iter().any(|option| option == &value)
+                {
+                    self.transcript.push(TranscriptEntry::Error(format!(
+                        "Invalid value `{value}` for {name}. Options: {}",
+                        options.join(", ")
+                    )));
+                    self.scroll_from_bottom = 0;
+                    return;
+                }
+                field.value = value;
+                self.transcript
+                    .push(TranscriptEntry::Status(format!("Updated {name}.")));
+            }
+            ConnectFieldUpdate::Invalid(message) => {
+                self.transcript.push(TranscriptEntry::Error(message))
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn submit_connect_dialog(&mut self) {
+        let Some(dialog) = self.connect_dialog.clone() else {
+            self.transcript.push(TranscriptEntry::Error(
+                "No connect dialog is open. Type /connect first.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        let ConnectStep::ApiKeyInput { provider, request, form } = dialog.step else {
+            self.transcript.push(TranscriptEntry::Error(
+                "Connect form is not ready yet. Pick a provider first.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        let provider_id = provider.id();
+        let api_key = form.api_key.trim().to_string();
+        if api_key.is_empty() {
+            self.transcript.push(TranscriptEntry::Error(
+                "API key cannot be empty. Use /connect set key=<value>.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        }
+
+        let mut url_params = HashMap::new();
+        for field in &form.url_params {
+            if field.value.trim().is_empty() {
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "{} cannot be empty. Use /connect set {}=<value>.",
+                    field.name, field.name
+                )));
+                self.scroll_from_bottom = 0;
+                return;
+            }
+            url_params.insert(
+                field.name.clone(),
+                field.value.trim_end_matches('/').to_string(),
+            );
+        }
+
+        let response = AuthContextResponse::api_key(request, api_key, url_params);
+        match self
+            .api
+            .complete_provider_auth(provider_id.clone(), response, Duration::from_secs(0))
+            .await
+        {
+            Ok(()) => {
+                self.connect_dialog = None;
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "{provider_id} connected successfully. Use /models to pick a model."
+                )));
+            }
+            Err(error) => {
+                self.log_error("connect submit failed", &error);
+                self.transcript
+                    .push(TranscriptEntry::Error(format!("Connect failed: {error:#}")));
+            }
         }
         self.scroll_from_bottom = 0;
     }
@@ -912,6 +1496,7 @@ impl<A: API + 'static> Tui<A> {
 
         let header = Paragraph::new(header_line(
             self.status,
+            self.active_model.as_deref(),
             chunks[0].width.saturating_sub(2) as usize,
         ))
         .block(Block::default().borders(Borders::ALL));
@@ -948,6 +1533,21 @@ impl<A: API + 'static> Tui<A> {
             .block(Block::default().title(prompt_title).borders(Borders::ALL))
             .scroll((composer_scroll, 0));
         frame.render_widget(composer, chunks[2]);
+
+        if let Some(dialog) = &self.connect_dialog {
+            let dialog_area = centered_rect(84, 70, area);
+            frame.render_widget(Clear, dialog_area);
+            let dialog = Paragraph::new(connect_dialog_lines(
+                dialog,
+                dialog_area.width.saturating_sub(2) as usize,
+            ))
+            .block(
+                Block::default()
+                    .title("Connect provider")
+                    .borders(Borders::ALL),
+            );
+            frame.render_widget(dialog, dialog_area);
+        }
     }
 
     fn composer_lines(&self, width: usize) -> Vec<Line<'static>> {
@@ -993,6 +1593,336 @@ impl<A: API + 'static> Tui<A> {
 
         lines
     }
+}
+
+fn model_label(option: &ModelOption) -> String {
+    short_model_label(option.provider_id.to_string(), option.model.id.as_str())
+}
+
+fn model_config_label(config: &ModelConfig) -> String {
+    short_model_label(config.provider.to_string(), config.model.as_str())
+}
+
+fn short_model_label(provider: impl AsRef<str>, model: &str) -> String {
+    let model = model
+        .rsplit('/')
+        .next()
+        .filter(|model| !model.is_empty())
+        .unwrap_or(model);
+    format!("{}:{}", provider.as_ref(), model)
+}
+
+fn format_model_option(index: usize, option: &ModelOption) -> String {
+    let mut details = Vec::new();
+    if let Some(name) = option.model.name.as_deref().filter(|name| !name.is_empty()) {
+        details.push(name.to_string());
+    }
+    if let Some(context) = option.model.context_length {
+        details.push(format!("context {}", format_context_length(context)));
+    }
+    if option.model.tools_supported == Some(true) {
+        details.push("tools".to_string());
+    }
+    if option.model.supports_reasoning == Some(true) {
+        details.push("reasoning".to_string());
+    }
+    if option
+        .model
+        .input_modalities
+        .contains(&InputModality::Image)
+    {
+        details.push("image".to_string());
+    }
+
+    let suffix = if details.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", details.join(" · "))
+    };
+
+    format!("{index}. {option}{suffix}")
+}
+
+fn format_context_length(limit: u64) -> String {
+    if limit >= 1_000_000 {
+        format!("{}M", limit / 1_000_000)
+    } else if limit >= 1_000 {
+        format!("{}k", limit / 1_000)
+    } else {
+        limit.to_string()
+    }
+}
+
+fn parse_model_command(input: &str) -> ModelCommand {
+    let Some(rest) = input.strip_prefix("/models") else {
+        return ModelCommand::NotCommand;
+    };
+
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return ModelCommand::NotCommand;
+    }
+
+    let selector = rest.trim();
+    if selector.is_empty() {
+        return ModelCommand::List;
+    }
+
+    match selector.parse::<usize>() {
+        Ok(index) if index > 0 => ModelCommand::Select(index),
+        _ => ModelCommand::Invalid(
+            "Usage: /models to list models, then /models <number> to switch.".to_string(),
+        ),
+    }
+}
+
+fn parse_connect_command(input: &str) -> ConnectCommand {
+    let Some(rest) = input.strip_prefix("/connect") else {
+        return ConnectCommand::NotCommand;
+    };
+
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return ConnectCommand::NotCommand;
+    }
+
+    let command = rest.trim();
+    if command.is_empty() {
+        return ConnectCommand::Open;
+    }
+
+    if command == "submit" {
+        return ConnectCommand::Submit;
+    }
+
+    if command == "cancel" {
+        return ConnectCommand::Cancel;
+    }
+
+    if let Some(selector) = command.strip_prefix("auth ") {
+        return match selector.trim().parse::<usize>() {
+            Ok(index) if index > 0 => ConnectCommand::AuthMethod(index),
+            _ => ConnectCommand::Invalid(
+                "Usage: /connect auth <number> to choose an auth method.".to_string(),
+            ),
+        };
+    }
+
+    if let Some(update) = command.strip_prefix("set ") {
+        let update = update.trim();
+        if update.is_empty() {
+            return ConnectCommand::Invalid(
+                "Usage: /connect set <field>=<value> to edit the connect form.".to_string(),
+            );
+        }
+        return ConnectCommand::Field(update.to_string());
+    }
+
+    match command.parse::<usize>() {
+        Ok(index) if index > 0 => ConnectCommand::Provider(index),
+        _ => ConnectCommand::Invalid(
+            "Usage: /connect, /connect <number>, /connect auth <number>, /connect set <field>=<value>, /connect submit, or /connect cancel.".to_string(),
+        ),
+    }
+}
+
+fn parse_connect_field_update(update: &str) -> ConnectFieldUpdate {
+    let Some((name, value)) = update.split_once('=') else {
+        return ConnectFieldUpdate::Invalid(
+            "Usage: /connect set <field>=<value>. Use `key` for the API key.".to_string(),
+        );
+    };
+
+    let name = name.trim();
+    let value = value.trim().to_string();
+    if name.is_empty() {
+        return ConnectFieldUpdate::Invalid("Connect field name cannot be empty.".to_string());
+    }
+
+    match name {
+        "key" | "api_key" | "apikey" => ConnectFieldUpdate::ApiKey(value),
+        name => ConnectFieldUpdate::UrlParam { name: name.to_string(), value },
+    }
+}
+
+fn build_api_key_form(provider_id: &ProviderId, request: &ApiKeyRequest) -> ApiKeyForm {
+    let api_key = request
+        .api_key
+        .as_ref()
+        .map(|key| key.as_ref().to_string())
+        .unwrap_or_else(|| {
+            if allows_local_api_key(provider_id) {
+                "local".to_string()
+            } else {
+                String::new()
+            }
+        });
+
+    let existing_params = request.existing_params.as_ref();
+    let url_params = request
+        .required_params
+        .iter()
+        .map(|param| connect_field_from_param(param, existing_params))
+        .collect();
+
+    ApiKeyForm { api_key, url_params }
+}
+
+fn connect_field_from_param(
+    param: &URLParamSpec,
+    existing_params: Option<&forge_api::URLParameters>,
+) -> ConnectField {
+    let existing = existing_params
+        .and_then(|params| params.get(&param.name))
+        .map(|value| value.as_str().to_string());
+    let value = existing
+        .or_else(|| {
+            param
+                .options
+                .as_ref()
+                .and_then(|options| options.first().cloned())
+        })
+        .unwrap_or_default();
+    ConnectField::new(param.name.to_string(), value, param.options.clone())
+}
+
+fn allows_local_api_key(provider_id: &ProviderId) -> bool {
+    matches!(
+        provider_id.as_ref().as_ref(),
+        "ollama" | "vllm" | "lm_studio" | "llama_cpp" | "jan_ai"
+    )
+}
+
+fn connect_dialog_lines(dialog: &ConnectDialog, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    match &dialog.step {
+        ConnectStep::ProviderSelection { providers } => {
+            push_dialog_line(&mut lines, "Choose provider", width);
+            push_dialog_line(&mut lines, "Type /connect <number> to continue.", width);
+            lines.push(Line::raw(""));
+            for (index, provider) in providers.iter().enumerate() {
+                push_dialog_line(
+                    &mut lines,
+                    &format_connect_provider_option(index + 1, provider),
+                    width,
+                );
+            }
+        }
+        ConnectStep::AuthMethodSelection { provider, methods } => {
+            push_dialog_line(&mut lines, &format!("Provider: {}", provider.id()), width);
+            push_dialog_line(
+                &mut lines,
+                "Choose auth method with /connect auth <number>.",
+                width,
+            );
+            lines.push(Line::raw(""));
+            for (index, method) in methods.iter().enumerate() {
+                push_dialog_line(
+                    &mut lines,
+                    &format!("{}. {}", index + 1, auth_method_label(method)),
+                    width,
+                );
+            }
+        }
+        ConnectStep::ApiKeyInput { provider, form, .. } => {
+            push_dialog_line(&mut lines, &format!("Provider: {}", provider.id()), width);
+            push_dialog_line(
+                &mut lines,
+                "Set fields, then submit. Values are saved through CodeGraff provider auth.",
+                width,
+            );
+            lines.push(Line::raw(""));
+            let key_state = if form.api_key.trim().is_empty() {
+                "<empty>"
+            } else {
+                "<set, hidden>"
+            };
+            push_dialog_line(&mut lines, &format!("key = {key_state}"), width);
+            push_dialog_line(&mut lines, "  /connect set key=<api-key>", width);
+
+            for field in &form.url_params {
+                let value = if field.value.is_empty() {
+                    "<empty>"
+                } else {
+                    &field.value
+                };
+                push_dialog_line(&mut lines, &format!("{} = {value}", field.name), width);
+                if let Some(options) = &field.options {
+                    push_dialog_line(
+                        &mut lines,
+                        &format!("  options: {}", options.join(", ")),
+                        width,
+                    );
+                }
+                push_dialog_line(
+                    &mut lines,
+                    &format!("  /connect set {}=<value>", field.name),
+                    width,
+                );
+            }
+
+            lines.push(Line::raw(""));
+            push_dialog_line(&mut lines, "/connect submit  ·  /connect cancel", width);
+        }
+    }
+    lines
+}
+
+fn push_dialog_line(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
+    for line in wrap_line(text, width.max(1)) {
+        lines.push(Line::raw(line));
+    }
+}
+
+fn format_connect_provider_option(index: usize, provider: &ProviderOption) -> String {
+    let state = if provider.is_configured() {
+        "connected"
+    } else {
+        "not connected"
+    };
+    let methods = provider
+        .auth_methods()
+        .iter()
+        .map(auth_method_label)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{index}. {} ({state}) · {} · {}",
+        provider.id(),
+        provider.host(),
+        methods
+    )
+}
+
+fn auth_method_label(method: &AuthMethod) -> &'static str {
+    match method {
+        AuthMethod::ApiKey => "API key",
+        AuthMethod::OAuthDevice(_) => "OAuth device",
+        AuthMethod::OAuthCode(_) => "OAuth code",
+        AuthMethod::GoogleAdc => "Google ADC",
+        AuthMethod::AwsProfile => "AWS profile",
+        AuthMethod::CodexDevice(_) => "Codex device",
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1]);
+
+    horizontal[1]
 }
 
 fn model_stats_from_config(config: &ModelConfig, models: Option<&[Model]>) -> ModelStats {
@@ -1346,57 +2276,57 @@ fn inline_markdown_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
             continue;
         }
 
-        if marker == "`" {
-            if let Some(end) = remaining[1..].find('`') {
-                let code = &remaining[1..1 + end];
-                spans.push(Span::styled(
-                    format!(" {code} "),
-                    Style::default().fg(Color::Yellow).bg(Color::Black),
-                ));
-                remaining = &remaining[end + 2..];
-                continue;
-            }
+        if marker == "`"
+            && let Some(end) = remaining[1..].find('`')
+        {
+            let code = &remaining[1..1 + end];
+            spans.push(Span::styled(
+                format!(" {code} "),
+                Style::default().fg(Color::Yellow).bg(Color::Black),
+            ));
+            remaining = &remaining[end + 2..];
+            continue;
         }
 
-        if marker == "[" {
-            if let Some((label, url, consumed)) = markdown_link(remaining) {
-                spans.push(Span::styled(
-                    label.to_string(),
-                    base_style
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::UNDERLINED),
-                ));
-                spans.push(Span::styled(
-                    format!(" ({url})"),
-                    Style::default().fg(Color::DarkGray),
-                ));
-                remaining = &remaining[consumed..];
-                continue;
-            }
+        if marker == "["
+            && let Some((label, url, consumed)) = markdown_link(remaining)
+        {
+            spans.push(Span::styled(
+                label.to_string(),
+                base_style
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            ));
+            spans.push(Span::styled(
+                format!(" ({url})"),
+                Style::default().fg(Color::DarkGray),
+            ));
+            remaining = &remaining[consumed..];
+            continue;
         }
 
-        if marker == "**" {
-            if let Some(end) = remaining[2..].find("**") {
-                let bold = &remaining[2..2 + end];
-                spans.push(Span::styled(
-                    strip_inline_markdown(bold),
-                    base_style.add_modifier(Modifier::BOLD),
-                ));
-                remaining = &remaining[end + 4..];
-                continue;
-            }
+        if marker == "**"
+            && let Some(end) = remaining[2..].find("**")
+        {
+            let bold = &remaining[2..2 + end];
+            spans.push(Span::styled(
+                strip_inline_markdown(bold),
+                base_style.add_modifier(Modifier::BOLD),
+            ));
+            remaining = &remaining[end + 4..];
+            continue;
         }
 
-        if marker == "*" || marker == "_" {
-            if let Some(end) = remaining[1..].find(marker) {
-                let italic = &remaining[1..1 + end];
-                spans.push(Span::styled(
-                    strip_inline_markdown(italic),
-                    base_style.add_modifier(Modifier::ITALIC),
-                ));
-                remaining = &remaining[end + 2..];
-                continue;
-            }
+        if (marker == "*" || marker == "_")
+            && let Some(end) = remaining[1..].find(marker)
+        {
+            let italic = &remaining[1..1 + end];
+            spans.push(Span::styled(
+                strip_inline_markdown(italic),
+                base_style.add_modifier(Modifier::ITALIC),
+            ));
+            remaining = &remaining[end + 2..];
+            continue;
         }
 
         push_inline_text(&mut spans, marker, base_style);
@@ -1440,7 +2370,7 @@ fn push_inline_text(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
 }
 
 fn strip_inline_markdown(text: &str) -> String {
-    text.replace("**", "").replace('`', "").replace('_', "")
+    text.replace("**", "").replace(['`', '_'], "")
 }
 
 fn push_markdown_wrapped_spans(
@@ -1666,7 +2596,7 @@ fn build_composer_lines(
         ]));
     } else {
         let summary = match images.len() {
-            1 => format!("1 image attached"),
+            1 => "1 image attached".to_string(),
             count => format!("{count} images attached"),
         };
         lines.push(Line::from(vec![
@@ -1722,10 +2652,24 @@ fn prompt_title(width: u16) -> &'static str {
     }
 }
 
+fn spawn_render_ticker(tx: mpsc::UnboundedSender<AppEvent>, log_path: PathBuf) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_nanos(TUI_FRAME_NANOS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if tx.send(AppEvent::Tick).is_err() {
+                log_info(&log_path, "render ticker receiver dropped");
+                return;
+            }
+        }
+    });
+}
+
 fn spawn_input_reader(tx: mpsc::UnboundedSender<AppEvent>, log_path: PathBuf) {
     tokio::spawn(async move {
         loop {
-            match event::poll(Duration::from_millis(50)) {
+            match event::poll(Duration::from_nanos(TUI_FRAME_NANOS)) {
                 Ok(true) => match event::read() {
                     Ok(TerminalEvent::Key(key)) => {
                         if tx.send(AppEvent::Input(key)).is_err() {
@@ -2064,9 +3008,10 @@ fn push_tool_lines(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, selected: b
         return;
     }
 
+    let detail_width = width.saturating_sub(4).max(1);
     if tool.expanded {
         for detail_line in tool.detail.lines() {
-            let wrapped = wrap_line(detail_line, width.saturating_sub(4).max(1));
+            let wrapped = wrap_line(detail_line, detail_width);
             for chunk in wrapped {
                 lines.push(Line::from(vec![Span::raw("    "), Span::raw(chunk)]));
             }
@@ -2074,24 +3019,35 @@ fn push_tool_lines(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, selected: b
         return;
     }
 
-    let summary = truncate_single_line(tool.detail.trim(), COLLAPSED_TOOL_DETAIL_LIMIT);
+    let summary_width = COLLAPSED_TOOL_DETAIL_LIMIT;
+    let summary = truncate_single_line(tool.detail.trim(), summary_width);
     lines.push(Line::from(vec![
         Span::raw("    "),
         Span::styled(summary, Style::default().fg(Color::DarkGray)),
     ]));
 }
 
+fn visible_width(text: &str) -> usize {
+    text.chars().filter_map(UnicodeWidthChar::width).sum()
+}
+
 fn truncate_single_line(text: &str, limit: usize) -> String {
     let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let limit = limit.max(1);
-    if compact.chars().count() <= limit {
+    if visible_width(&compact) <= limit {
         return compact;
     }
 
-    let mut output = compact
-        .chars()
-        .take(limit.saturating_sub(1))
-        .collect::<String>();
+    let mut output = String::new();
+    let mut width = 0;
+    for ch in compact.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width >= limit {
+            break;
+        }
+        output.push(ch);
+        width += ch_width;
+    }
     output.push('…');
     output
 }
@@ -2150,19 +3106,26 @@ fn push_wrapped(
 
 fn wrap_line(line: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
-    let chars = line.chars().collect::<Vec<_>>();
-
-    if chars.is_empty() {
+    if line.is_empty() {
         return vec![String::new()];
     }
 
     let mut wrapped = Vec::new();
-    let mut start = 0;
+    let mut chunk = String::new();
+    let mut chunk_width = 0;
 
-    while start < chars.len() {
-        let end = (start + width).min(chars.len());
-        wrapped.push(chars[start..end].iter().collect());
-        start = end;
+    for ch in line.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if !chunk.is_empty() && chunk_width + ch_width > width {
+            wrapped.push(std::mem::take(&mut chunk));
+            chunk_width = 0;
+        }
+        chunk.push(ch);
+        chunk_width += ch_width;
+    }
+
+    if !chunk.is_empty() {
+        wrapped.push(chunk);
     }
 
     wrapped
@@ -2205,12 +3168,18 @@ fn format_cost(cost: f64) -> String {
     }
 }
 
-fn header_line(status: TuiStatus, width: usize) -> Line<'static> {
+fn header_line(status: TuiStatus, active_model: Option<&str>, width: usize) -> Line<'static> {
     let status_text = compact_status(status);
-    let available_width = width.saturating_sub("Codegraff  ".chars().count());
+    let model_text = active_model.map(|model| format!("  [{model}]"));
+    let reserved_width = "Codegraff  ".chars().count()
+        + model_text
+            .as_deref()
+            .map(|model| model.chars().count())
+            .unwrap_or_default();
+    let available_width = width.saturating_sub(reserved_width);
     let status_text = truncate_single_line(status_text, available_width);
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             "Codegraff",
             Style::default()
@@ -2219,7 +3188,15 @@ fn header_line(status: TuiStatus, width: usize) -> Line<'static> {
         ),
         Span::raw("  "),
         Span::styled(status_text, Style::default().fg(status_color(status))),
-    ])
+    ];
+    if let Some(model_text) = model_text {
+        spans.push(Span::styled(
+            model_text,
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    Line::from(spans)
 }
 
 fn usage_detail_lines(usage: &UsageSummary) -> Vec<String> {
@@ -2353,8 +3330,59 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use forge_api::ModelId;
     use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn render_frame_duration_targets_120hz() {
+        let actual = Duration::from_nanos(TUI_FRAME_NANOS);
+        let expected = Duration::from_nanos(8_333_333);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn model_command_lists_or_selects_registered_provider_models() {
+        let fixture = "/models 2";
+        let actual = parse_model_command(fixture);
+        let expected = ModelCommand::Select(2);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn model_command_rejects_invalid_selection() {
+        let fixture = "/models abc";
+        let actual = parse_model_command(fixture);
+        let expected = ModelCommand::Invalid(
+            "Usage: /models to list models, then /models <number> to switch.".to_string(),
+        );
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn format_model_option_includes_provider_model_and_capabilities() {
+        let fixture = ModelOption::new(
+            ProviderId::OPEN_ROUTER,
+            Model {
+                id: ModelId::new("anthropic/claude-sonnet"),
+                name: Some("Claude Sonnet".to_string()),
+                description: None,
+                context_length: Some(200_000),
+                tools_supported: Some(true),
+                supports_parallel_tool_calls: Some(true),
+                supports_reasoning: Some(true),
+                input_modalities: vec![InputModality::Text, InputModality::Image],
+            },
+        );
+        let actual = format_model_option(1, &fixture);
+        let expected = "1. OpenRouter / anthropic/claude-sonnet (Claude Sonnet · context 200k · tools · reasoning · image)";
+
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn codegraff_log_path_respects_override() {
@@ -2422,7 +3450,7 @@ mod tests {
             context_tokens: None,
             model: None,
         };
-        let actual = render_line(header_line(TuiStatus::Finished, 80));
+        let actual = render_line(header_line(TuiStatus::Finished, None, 80));
         let expected = "Codegraff  Finished";
 
         assert_eq!(fixture.session.is_some(), true);
@@ -2888,8 +3916,24 @@ mod tests {
     }
 
     #[test]
+    fn header_line_shows_active_model_when_available() {
+        let actual = render_line(header_line(TuiStatus::Finished, Some("Codex:gpt-5.5"), 80));
+        let expected = "Codegraff  Finished  [Codex:gpt-5.5]";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn short_model_label_uses_provider_and_last_model_segment() {
+        let actual = short_model_label("OpenRouter", "anthropic/claude-sonnet-4");
+        let expected = "OpenRouter:claude-sonnet-4";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn header_line_truncates_status_to_available_width() {
-        let actual = render_line(header_line(TuiStatus::Interrupted, 16));
+        let actual = render_line(header_line(TuiStatus::Interrupted, None, 16));
         let expected = "Codegraff  Inte…";
 
         assert_eq!(actual, expected);
@@ -3052,7 +4096,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_stops_streaming_agent_and_clears_idle_composer() {
+    fn escape_stops_streaming__and_clears_idle_composer() {
         let actual = vec![escape_action(true), escape_action(false)];
         let expected = vec![EscapeAction::StopAgent, EscapeAction::ClearComposer];
 
@@ -3274,6 +4318,53 @@ mod tests {
         let fixture = "abcdefgh";
         let actual = wrap_line(fixture, 3);
         let expected = vec!["abc".to_string(), "def".to_string(), "gh".to_string()];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn wrap_line_uses_terminal_width_for_wide_glyphs() {
+        let fixture = "ツツツツ";
+        let actual = wrap_line(fixture, 5);
+        let expected = vec!["ツツ".to_string(), "ツツ".to_string()];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn expanded_tool_card_wraps_wide_glyph_lines_to_card_width() {
+        let mut fixture = ToolEntry::info("codedb", "ツツツツ");
+        fixture.expanded = true;
+        let actual = rendered_tool_lines(fixture, false, 9);
+        let expected = vec![
+            "  ▾ Tool codedb [info]".to_string(),
+            "    ツツ".to_string(),
+            "    ツツ".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn expanded_tool_card_keeps_long_mixed_width_output_within_card_width() {
+        let detail = "mcp_codedb_tool_codedb_searchツツツツツツツツツツツツツツツツ[done]";
+        let mut fixture = ToolEntry::info("codedb", detail);
+        fixture.expanded = true;
+        let width = 24;
+        let actual = rendered_tool_lines(fixture, false, width)
+            .into_iter()
+            .skip(1)
+            .all(|line| visible_width(&line) <= width);
+        let expected = true;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn truncate_single_line_uses_terminal_width_for_wide_glyphs() {
+        let fixture = "ツツツツ";
+        let actual = truncate_single_line(fixture, 5);
+        let expected = "ツツ…";
 
         assert_eq!(actual, expected);
     }
