@@ -770,3 +770,196 @@ impl<A: API + 'static> Tui<A> {
                     width,
                 ),
             }
+            lines.push(Line::raw(""));
+        }
+
+        lines
+    }
+}
+
+fn image_display_name(image: &ImageAttachment) -> String {
+    Path::new(&image.path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| image.path.clone())
+}
+
+fn image_compact_label(image: &ImageAttachment) -> String {
+    match &image.preview {
+        Some(preview) => format!(
+            "{} · {}x{}",
+            image_display_name(image),
+            preview.width,
+            preview.height
+        ),
+        None => image_display_name(image),
+    }
+}
+
+fn push_user_message_lines(lines: &mut Vec<Line<'static>>, message: &UserMessage, width: usize) {
+    push_wrapped(
+        lines,
+        "You",
+        &message.text,
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+        width,
+    );
+
+    for (index, image) in message.images.iter().enumerate() {
+        push_image_summary_lines(lines, image, index + 1, width);
+    }
+}
+
+fn push_image_chip_lines(
+    lines: &mut Vec<Line<'static>>,
+    image: &ImageAttachment,
+    index: usize,
+    width: usize,
+) {
+    let label = truncate_single_line(&image_compact_label(image), width.saturating_sub(12).max(8));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  ◼ Img {index} "),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(label, Style::default().fg(Color::DarkGray)),
+    ]));
+}
+
+fn push_image_summary_lines(
+    lines: &mut Vec<Line<'static>>,
+    image: &ImageAttachment,
+    index: usize,
+    width: usize,
+) {
+    let label = truncate_single_line(&image_compact_label(image), width.saturating_sub(14).max(8));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  ◼ Image {index} "),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(label, Style::default().fg(Color::DarkGray)),
+    ]));
+}
+
+fn load_image_preview(path: &Path) -> Result<ImagePreview> {
+    let image = image::open(path)
+        .with_context(|| format!("Failed to open image preview for {}", path.display()))?
+        .to_luma8();
+    let (width, height) = image.dimensions();
+    anyhow::ensure!(width > 0 && height > 0, "image has no pixels");
+
+    let resized = image::imageops::resize(
+        &image,
+        IMAGE_THUMBNAIL_COLUMNS as u32,
+        IMAGE_THUMBNAIL_ROWS as u32,
+        image::imageops::FilterType::Triangle,
+    );
+
+    let mut thumbnail = Vec::new();
+    for y in 0..IMAGE_THUMBNAIL_ROWS as u32 {
+        let mut row = String::new();
+        for x in 0..IMAGE_THUMBNAIL_COLUMNS as u32 {
+            let luminance = resized.get_pixel(x, y).0[0];
+            row.push(luminance_char(luminance));
+        }
+        thumbnail.push(row);
+    }
+
+    Ok(ImagePreview { width, height, thumbnail })
+}
+
+fn luminance_char(luminance: u8) -> char {
+    match luminance {
+        0..=31 => ' ',
+        32..=63 => '░',
+        64..=127 => '▒',
+        128..=191 => '▓',
+        _ => '█',
+    }
+}
+
+fn push_markdown_message_lines(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    text: &str,
+    width: usize,
+) {
+    let label_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let mut in_code_block = false;
+    let mut emitted_first_line = false;
+
+    for physical_line in text.lines() {
+        let trimmed = physical_line.trim_start();
+        if trimmed.starts_with("```") {
+            let language = trimmed.trim_start_matches('`').trim();
+            let fence_label = if in_code_block {
+                "╰─".to_string()
+            } else if language.is_empty() {
+                "╭─ code".to_string()
+            } else {
+                format!("╭─ {language}")
+            };
+            push_markdown_wrapped_spans(
+                lines,
+                label,
+                vec![Span::styled(
+                    fence_label,
+                    Style::default().fg(Color::DarkGray),
+                )],
+                0,
+                label_style,
+                width,
+                &mut emitted_first_line,
+            );
+            in_code_block = !in_code_block;
+            continue;
+        }
+
+        let rendered = markdown_line_spans(physical_line, in_code_block);
+        push_markdown_wrapped_spans(
+            lines,
+            label,
+            rendered.spans,
+            rendered.continuation_columns,
+            label_style,
+            width,
+            &mut emitted_first_line,
+        );
+    }
+
+    if !emitted_first_line {
+        push_wrapped(lines, label, "", label_style, width);
+    }
+}
+
+struct MarkdownLine {
+    spans: Vec<Span<'static>>,
+    continuation_columns: usize,
+}
+
+fn markdown_line_spans(line: &str, in_code_block: bool) -> MarkdownLine {
+    if in_code_block {
+        return MarkdownLine {
+            spans: vec![
+                Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+                Span::styled(line.to_string(), Style::default().fg(Color::LightBlue)),
+            ],
+            continuation_columns: 2,
+        };
+    }
+
+    let indent = line.len().saturating_sub(line.trim_start().len());
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return MarkdownLine { spans: vec![Span::raw("")], continuation_columns: 0 };
