@@ -150,6 +150,7 @@ forge_fs = { path = "crates/forge_fs" }
 forge_infra = { path = "crates/forge_infra" }
 forge_repo = { path = "crates/forge_repo" }
 forge_main = { path = "crates/forge_main" }
+codegraff = { path = "crates/forge_tui" }
 forge_services = { path = "crates/forge_services" }
 forge_snaps = { path = "crates/forge_snaps" }
 forge_spinner = { path = "crates/forge_spinner" }

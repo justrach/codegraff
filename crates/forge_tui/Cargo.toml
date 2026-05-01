@@ -1,0 +1,27 @@
+[package]
+name = "codegraff"
+version = "0.1.0"
+license = "BSD-3-Clause"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "codegraff"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+crossterm = "0.29.0"
+forge_api.workspace = true
+futures.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+ratatui = "0.28.1"
+# ratatui-image 10.x currently targets ratatui 0.30; keep native support deferred
+# until Codegraff moves to the same ratatui version.
+tokio.workspace = true
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+arboard = "3.4"
+
+[dev-dependencies]
+pretty_assertions.workspace = true
