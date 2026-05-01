@@ -1,21 +1,23 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::OpenOptions;
-use std::io::{self, Cursor, Write};
-use std::panic;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod logging;
+mod terminal;
+mod text;
+mod tool_card;
+
+use logging::{codegraff_log_path, install_panic_logger, log_error, log_info};
+use terminal::TerminalGuard;
+use text::{push_wrapped, truncate_single_line, word_boundary_take, wrap_line};
+use tool_card::{ToolEntry, ToolStatus, compact_tool_output, push_tool_lines};
+
 use anyhow::{Context, Result};
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    self, Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+    MouseEventKind,
 };
 use forge_api::{
     API, AnyProvider, ApiKeyRequest, AuthContextRequest, AuthContextResponse, AuthMethod,
@@ -23,24 +25,17 @@ use forge_api::{
     ForgeConfig, InputModality, Model, ModelConfig, ProviderId, TokenCount, URLParamSpec, Usage,
 };
 use futures::StreamExt;
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use unicode_width::UnicodeWidthChar;
 
-const TOOL_OUTPUT_LINE_LIMIT: usize = 80;
-const TOOL_OUTPUT_BYTE_LIMIT: usize = 12_000;
-const COLLAPSED_TOOL_DETAIL_LIMIT: usize = 72;
 const MAX_COMPOSER_INNER_HEIGHT: usize = 9;
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1_000;
 const IMAGE_THUMBNAIL_COLUMNS: usize = 10;
 const IMAGE_THUMBNAIL_ROWS: usize = 3;
-const CODEGRAFF_LOG_FILE: &str = "codegraff.log";
 const TUI_INPUT_POLL_MILLIS: u64 = 50;
 const SCROLL_LINE_STEP: usize = 3;
 const SCROLL_PAGE_STEP: usize = 12;
@@ -286,22 +281,6 @@ struct UsageLine {
     cost: Option<String>,
 }
 
-#[derive(Clone)]
-struct ToolEntry {
-    title: String,
-    detail: String,
-    status: ToolStatus,
-    expanded: bool,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum ToolStatus {
-    Running,
-    Done,
-    Failed,
-    Info,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ImageAttachment {
     path: String,
@@ -360,55 +339,6 @@ enum ComposerEditShortcut {
 enum EscapeAction {
     StopAgent,
     ClearComposer,
-}
-
-impl ToolEntry {
-    fn running(title: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            detail: String::new(),
-            status: ToolStatus::Running,
-            expanded: false,
-        }
-    }
-
-    fn finished(title: impl Into<String>, status: ToolStatus) -> Self {
-        Self {
-            title: title.into(),
-            detail: String::new(),
-            status,
-            expanded: false,
-        }
-    }
-
-    fn info(title: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            detail: detail.into(),
-            status: ToolStatus::Info,
-            expanded: false,
-        }
-    }
-}
-
-impl ToolStatus {
-    fn label(self) -> &'static str {
-        match self {
-            ToolStatus::Running => "running",
-            ToolStatus::Done => "done",
-            ToolStatus::Failed => "failed",
-            ToolStatus::Info => "info",
-        }
-    }
-
-    fn color(self) -> Color {
-        match self {
-            ToolStatus::Running => Color::Yellow,
-            ToolStatus::Done => Color::Green,
-            ToolStatus::Failed => Color::Red,
-            ToolStatus::Info => Color::Blue,
-        }
-    }
 }
 
 enum AppEvent {
@@ -2706,27 +2636,6 @@ fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>
     }
 }
 
-fn word_boundary_take(text: &str, width: usize) -> usize {
-    let width = width.max(1);
-    let hard_limit = text
-        .char_indices()
-        .nth(width)
-        .map(|(index, _)| index)
-        .unwrap_or(text.len());
-
-    if hard_limit == text.len() {
-        return hard_limit;
-    }
-
-    text[..hard_limit]
-        .char_indices()
-        .rev()
-        .find(|(_, ch)| ch.is_whitespace())
-        .map(|(index, ch)| index + ch.len_utf8())
-        .filter(|index| *index > 0)
-        .unwrap_or(hard_limit)
-}
-
 fn parse_image_command(input: &str) -> ImageCommand {
     let trimmed = input.trim();
     let Some(path) = trimmed
@@ -2937,65 +2846,6 @@ fn spawn_input_reader(tx: mpsc::UnboundedSender<AppEvent>, log_path: PathBuf) {
             }
         }
     });
-}
-
-fn codegraff_log_path() -> PathBuf {
-    codegraff_log_path_from(
-        std::env::var_os("CODEGRAFF_LOG")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from),
-        std::env::var_os("XDG_STATE_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from),
-        std::env::var_os("HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from),
-    )
-}
-
-fn codegraff_log_path_from(
-    override_path: Option<PathBuf>,
-    state_home: Option<PathBuf>,
-    home: Option<PathBuf>,
-) -> PathBuf {
-    override_path.unwrap_or_else(|| {
-        state_home
-            .or_else(|| home.map(|home| home.join(".local/state")))
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("codegraff")
-            .join(CODEGRAFF_LOG_FILE)
-    })
-}
-
-fn install_panic_logger(log_path: PathBuf) {
-    let previous_hook = panic::take_hook();
-    panic::set_hook(Box::new(move |info| {
-        append_log_line(&log_path, &format!("PANIC {info}"));
-        previous_hook(info);
-    }));
-}
-
-fn log_info(path: &Path, message: &str) {
-    append_log_line(path, &format!("INFO {message}"));
-}
-
-fn log_error(path: &Path, context: &str, error: &anyhow::Error) {
-    append_log_line(path, &format!("ERROR {context}: {error:#}"));
-}
-
-fn append_log_line(path: &Path, line: &str) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_string());
-
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{timestamp} {line}");
-    }
 }
 
 fn is_clipboard_paste_key(key: KeyEvent) -> bool {
@@ -3236,215 +3086,6 @@ fn append_assistant_entry(transcript: &mut Vec<TranscriptEntry>, text: String) {
     transcript.push(TranscriptEntry::Assistant(text));
 }
 
-fn compact_tool_output(text: &str) -> String {
-    let sanitized = sanitize_tool_output(text);
-    let total_lines = sanitized.lines().count();
-    if total_lines <= TOOL_OUTPUT_LINE_LIMIT && sanitized.len() <= TOOL_OUTPUT_BYTE_LIMIT {
-        return sanitized;
-    }
-
-    let shown_lines = total_lines.min(TOOL_OUTPUT_LINE_LIMIT);
-    let mut output = format!(
-        "Large output: {total_lines} lines, {} bytes. Showing first {shown_lines} lines.\n",
-        sanitized.len()
-    );
-
-    for line in sanitized.lines().take(TOOL_OUTPUT_LINE_LIMIT) {
-        output.push_str(line);
-        output.push('\n');
-    }
-
-    output.push_str("... output truncated in TUI ...");
-    output
-}
-
-fn sanitize_tool_output(text: &str) -> String {
-    let stripped = strip_ansi_escape_sequences(text);
-    stripped
-        .chars()
-        .map(|ch| match ch {
-            '\n' | '\t' => ch,
-            '\u{fffd}' => ' ',
-            ch if ch.is_control() => ' ',
-            ch => ch,
-        })
-        .collect::<String>()
-        .lines()
-        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn strip_ansi_escape_sequences(text: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' {
-            output.push(ch);
-            continue;
-        }
-
-        if chars.next_if_eq(&'[').is_none() {
-            continue;
-        }
-
-        for ch in chars.by_ref() {
-            if ch.is_whitespace() {
-                return output;
-            }
-
-            if ('@'..='~').contains(&ch) {
-                break;
-            }
-        }
-    }
-
-    output
-}
-
-fn push_tool_lines(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, selected: bool, width: usize) {
-    let selector = if selected { ">" } else { " " };
-    let toggle = if tool.expanded { "▾" } else { "▸" };
-    let title = truncate_single_line(&tool.title, width.saturating_sub(18).max(8));
-    let card_style = Style::default()
-        .fg(tool.status.color())
-        .add_modifier(Modifier::BOLD);
-
-    lines.push(Line::from(vec![
-        Span::styled(format!("{selector} {toggle} "), card_style),
-        Span::styled("Tool ", card_style),
-        Span::raw(title),
-        Span::styled(format!(" [{}]", tool.status.label()), tool.status.color()),
-    ]));
-
-    if tool.detail.trim().is_empty() {
-        return;
-    }
-
-    let detail_width = width.saturating_sub(4).max(1);
-    if tool.expanded {
-        for detail_line in tool.detail.lines() {
-            let wrapped = wrap_line(detail_line, detail_width);
-            for chunk in wrapped {
-                lines.push(Line::from(vec![Span::raw("    "), Span::raw(chunk)]));
-            }
-        }
-        return;
-    }
-
-    let summary_width = COLLAPSED_TOOL_DETAIL_LIMIT;
-    let summary = truncate_single_line(tool.detail.trim(), summary_width);
-    lines.push(Line::from(vec![
-        Span::raw("    "),
-        Span::styled(summary, Style::default().fg(Color::DarkGray)),
-    ]));
-}
-
-fn visible_width(text: &str) -> usize {
-    text.chars().filter_map(UnicodeWidthChar::width).sum()
-}
-
-fn truncate_single_line(text: &str, limit: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let limit = limit.max(1);
-    if visible_width(&compact) <= limit {
-        return compact;
-    }
-
-    let mut output = String::new();
-    let mut width = 0;
-    for ch in compact.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + ch_width >= limit {
-            break;
-        }
-        output.push(ch);
-        width += ch_width;
-    }
-    output.push('…');
-    output
-}
-
-fn push_wrapped(
-    lines: &mut Vec<Line<'static>>,
-    label: &str,
-    text: &str,
-    style: Style,
-    width: usize,
-) {
-    let width = width.max(1);
-    let label_prefix = format!("{label}: ");
-    let continuation_prefix = " ".repeat(label_prefix.chars().count());
-
-    let mut physical_lines = text.lines().peekable();
-    if physical_lines.peek().is_none() {
-        lines.push(Line::from(Span::styled(format!("{label}:"), style)));
-        return;
-    }
-
-    for (index, physical_line) in physical_lines.enumerate() {
-        let prefix = if index == 0 {
-            label_prefix.as_str()
-        } else {
-            "  "
-        };
-        let continuation = if index == 0 {
-            continuation_prefix.as_str()
-        } else {
-            "  "
-        };
-        let available_width = width.saturating_sub(prefix.chars().count()).max(1);
-        let wrapped = wrap_line(physical_line, available_width);
-
-        for (chunk_index, chunk) in wrapped.into_iter().enumerate() {
-            if index == 0 && chunk_index == 0 {
-                lines.push(Line::from(vec![
-                    Span::styled(prefix.to_string(), style),
-                    Span::raw(chunk),
-                ]));
-            } else if chunk_index == 0 {
-                lines.push(Line::from(vec![
-                    Span::raw(prefix.to_string()),
-                    Span::raw(chunk),
-                ]));
-            } else {
-                lines.push(Line::from(vec![
-                    Span::raw(continuation.to_string()),
-                    Span::raw(chunk),
-                ]));
-            }
-        }
-    }
-}
-
-fn wrap_line(line: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    if line.is_empty() {
-        return vec![String::new()];
-    }
-
-    let mut wrapped = Vec::new();
-    let mut chunk = String::new();
-    let mut chunk_width = 0;
-
-    for ch in line.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if !chunk.is_empty() && chunk_width + ch_width > width {
-            wrapped.push(std::mem::take(&mut chunk));
-            chunk_width = 0;
-        }
-        chunk.push(ch);
-        chunk_width += ch_width;
-    }
-
-    if !chunk.is_empty() {
-        wrapped.push(chunk);
-    }
-
-    wrapped
-}
-
 fn usage_summary_from_conversation(conversation: &Conversation) -> Option<UsageSummary> {
     let last = conversation.usage().map(usage_line);
     let session = conversation.accumulated_usage().map(|mut usage| {
@@ -3598,52 +3239,6 @@ fn compact_status(status: TuiStatus) -> &'static str {
     }
 }
 
-struct TerminalGuard {
-    terminal: Terminal<CrosstermBackend<io::Stdout>>,
-}
-
-impl TerminalGuard {
-    fn enter() -> Result<Self> {
-        enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            EnableMouseCapture,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
-            )
-        )?;
-        let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
-        Ok(Self { terminal })
-    }
-
-    fn draw<F>(&mut self, render_callback: F) -> Result<()>
-    where
-        F: FnOnce(&mut ratatui::Frame<'_>),
-    {
-        self.terminal.draw(render_callback)?;
-        Ok(())
-    }
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(
-            self.terminal.backend_mut(),
-            PopKeyboardEnhancementFlags,
-            DisableMouseCapture,
-            DisableBracketedPaste,
-            LeaveAlternateScreen
-        );
-        let _ = self.terminal.show_cursor();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use forge_api::ModelId;
@@ -3696,7 +3291,7 @@ mod tests {
     #[test]
     fn codegraff_log_path_respects_override() {
         let fixture = PathBuf::from("/tmp/codegraff-custom.log");
-        let actual = codegraff_log_path_from(Some(fixture.clone()), None, None);
+        let actual = logging::codegraff_log_path_from(Some(fixture.clone()), None, None);
         let expected = fixture;
 
         assert_eq!(actual, expected);
@@ -3704,7 +3299,8 @@ mod tests {
 
     #[test]
     fn default_log_path_uses_state_directory() {
-        let actual = codegraff_log_path_from(None, Some(PathBuf::from("/tmp/state")), None);
+        let actual =
+            logging::codegraff_log_path_from(None, Some(PathBuf::from("/tmp/state")), None);
         let expected = PathBuf::from("/tmp/state/codegraff/codegraff.log");
 
         assert_eq!(actual, expected);
@@ -3714,7 +3310,7 @@ mod tests {
     fn append_log_line_writes_debug_file() {
         let fixture = std::env::temp_dir().join("codegraff-test-log.log");
         let _ = std::fs::remove_file(&fixture);
-        append_log_line(&fixture, "ERROR terminal draw failed: boom");
+        logging::append_log_line(&fixture, "ERROR terminal draw failed: boom");
         let actual = std::fs::read_to_string(&fixture)
             .unwrap()
             .contains("ERROR terminal draw failed: boom");
@@ -4083,7 +3679,7 @@ mod tests {
     #[test]
     fn sanitize_tool_output_removes_control_characters() {
         let fixture = "ok\u{fffd}\u{0007}\nnext";
-        let actual = sanitize_tool_output(fixture);
+        let actual = tool_card::sanitize_tool_output(fixture);
         let expected = "ok\nnext";
 
         assert_eq!(actual, expected);
@@ -4092,7 +3688,7 @@ mod tests {
     #[test]
     fn sanitize_tool_output_collapses_tool_table_spacing() {
         let fixture = "src/main.zig                                                           src/execd/main.zig";
-        let actual = sanitize_tool_output(fixture);
+        let actual = tool_card::sanitize_tool_output(fixture);
         let expected = "src/main.zig src/execd/main.zig";
 
         assert_eq!(actual, expected);
@@ -4102,7 +3698,7 @@ mod tests {
     fn sanitize_tool_output_strips_ansi_escape_sequences() {
         let fixture =
             "\u{1b}[36m\u{1b}[2m\u{1b}[32m✓\u{1b}[0m \u{1b}[1msearch\u{1b}[0m 'permissions'";
-        let actual = sanitize_tool_output(fixture);
+        let actual = tool_card::sanitize_tool_output(fixture);
         let expected = "✓ search 'permissions'";
 
         assert_eq!(actual, expected);
@@ -4111,7 +3707,7 @@ mod tests {
     #[test]
     fn sanitize_tool_output_drops_incomplete_ansi_sequences() {
         let fixture = "before\u{1b}[36 after";
-        let actual = sanitize_tool_output(fixture);
+        let actual = tool_card::sanitize_tool_output(fixture);
         let expected = "before";
 
         assert_eq!(actual, expected);
@@ -4301,11 +3897,14 @@ mod tests {
 
     #[test]
     fn compact_tool_output_sanitizes_before_counting_limits() {
-        let fixture = format!("{}\u{0007}", "x".repeat(TOOL_OUTPUT_BYTE_LIMIT + 1));
+        let fixture = format!(
+            "{}\u{0007}",
+            "x".repeat(tool_card::TOOL_OUTPUT_BYTE_LIMIT + 1)
+        );
         let actual = compact_tool_output(&fixture);
         let expected_prefix = format!(
             "Large output: 1 lines, {} bytes. Showing first 1 lines.",
-            TOOL_OUTPUT_BYTE_LIMIT + 1
+            tool_card::TOOL_OUTPUT_BYTE_LIMIT + 1
         );
 
         assert!(actual.starts_with(&expected_prefix));
@@ -4722,7 +4321,7 @@ mod tests {
         let actual = rendered_tool_lines(fixture, false, width)
             .into_iter()
             .skip(1)
-            .all(|line| visible_width(&line) <= width);
+            .all(|line| text::visible_width(&line) <= width);
         let expected = true;
 
         assert_eq!(actual, expected);
