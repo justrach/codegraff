@@ -1,9 +1,9 @@
-<h1 align="center">⚒️ CodeGraff: AI-Enhanced Terminal Development Environment</h1>
-<p align="center">A CodeGraff coding agent harness built on the ForgeCode foundation</p>
+<h1 align="center">⚒️ CodeGraff: Fast, Lightweight Coding Agent</h1>
+<p align="center">A faster, lightweight coding agent for focused terminal development</p>
 
 <p align="center"><code>cargo run -p codegraff --bin codegraff</code></p>
 
-> **CodeGraff note:** This repository is derived from [ForgeCode](https://github.com/tailcallhq/forgecode). ForgeCode was a strong, state-of-the-art terminal coding agent foundation: practical, fast, multi-provider, tool-oriented, and shaped around real development workflows. CodeGraff keeps that base and will slowly evolve it into a more opinionated agentic harness around CodeDB, Muonry, sandbox experiments, and a first-class TUI. I am grateful to the original ForgeCode maintainers and contributors for building the foundation that made this possible.
+> **CodeGraff note:** This repository is derived from [ForgeCode](https://github.com/tailcallhq/forgecode). CodeGraff is moving in a different direction: a faster, lightweight coding agent with a first-class TUI, CodeDB-backed code intelligence, Muonry-backed codebase operations, and sandbox/worktree experiments for safer runs. I am grateful to the original ForgeCode maintainers and contributors for building the foundation that made this possible.
 >
 > The original ForgeCode README content is preserved below because it still documents much of the functionality currently present in this codebase.
 
@@ -59,13 +59,13 @@
 
 ## CodeGraff Direction
 
-CodeGraff is the direction of this standalone repository. It keeps the ForgeCode agent backend and existing CLI functionality while adding an experimental harness layer focused on:
+CodeGraff is the direction of this standalone repository: a faster, lightweight coding agent for focused terminal development. It keeps the useful ForgeCode backend pieces while streamlining the experience around:
 
-- a dedicated TUI in `crates/codegraff-tui` with the `codegraff` binary
-- CodeDB-backed code intelligence for repository structure, symbols, and dependency context
-- Muonry-backed structured codebase operations
-- sandbox/worktree experiments for safer agent execution
-- clearer human control over runs through tool cards, logs, cancellation, image attachments, markdown rendering, and on-demand usage stats
+- a dedicated, lightweight TUI in `crates/codegraff-tui` with the `codegraff` binary
+- faster codebase context through CodeDB-backed structure, symbol, and dependency intelligence
+- lightweight Muonry-backed structured codebase operations
+- sandbox/worktree experiments for safer, lower-friction agent runs
+- clearer human control through tool cards, logs, cancellation, image attachments, markdown rendering, and on-demand usage stats
 
 Run the current TUI with:
 
