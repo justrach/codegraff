@@ -2254,7 +2254,8 @@ fn push_markdown_message_lines(
     let mut in_code_block = false;
     let mut emitted_first_line = false;
 
-    for physical_line in text.lines() {
+    let sanitized_text = sanitize_render_text(text);
+    for physical_line in sanitized_text.lines() {
         let trimmed = physical_line.trim_start();
         if trimmed.starts_with("```") {
             let language = trimmed.trim_start_matches('`').trim();
@@ -2588,12 +2589,52 @@ fn push_markdown_wrapped_spans(
         } else {
             Style::default()
         };
+        let line_prefix_width = visible_width(&line_prefix);
+        let allowed_content_width = width.saturating_sub(line_prefix_width);
+        let bounded_chunk = bound_spans_to_width(chunk, allowed_content_width);
         let mut line_spans = vec![Span::styled(line_prefix, prefix_style)];
-        line_spans.extend(chunk);
+        line_spans.extend(bounded_chunk);
         lines.push(Line::from(line_spans));
     }
 
     *emitted_first_line = true;
+}
+
+fn bound_spans_to_width(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let mut bounded = Vec::new();
+    let mut remaining_width = width;
+
+    for span in spans {
+        if remaining_width == 0 {
+            break;
+        }
+
+        let text = truncate_to_width(&span.content, remaining_width);
+        remaining_width = remaining_width.saturating_sub(visible_width(&text));
+        bounded.push(Span::styled(text, span.style));
+    }
+
+    if bounded.is_empty() {
+        bounded.push(Span::raw(String::new()));
+    }
+
+    bounded
+}
+
+fn truncate_to_width(text: &str, width: usize) -> String {
+    let mut output = String::new();
+    let mut used_width = 0;
+
+    for ch in text.chars() {
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used_width + ch_width > width {
+            break;
+        }
+        output.push(ch);
+        used_width += ch_width;
+    }
+
+    output
 }
 
 fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>> {
@@ -3590,7 +3631,7 @@ mod tests {
         let expected = vec![
             "CodeGraff: • this is a ".to_string(),
             "             long item ".to_string(),
-            "             that should ".to_string(),
+            "             that should".to_string(),
             "             wrap nicely".to_string(),
         ];
 

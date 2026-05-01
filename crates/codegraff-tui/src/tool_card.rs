@@ -122,7 +122,11 @@ pub(crate) fn push_tool_lines(
 ) {
     let selector = if selected { ">" } else { " " };
     let toggle = if tool.expanded { "▾" } else { "▸" };
-    let title = truncate_single_line(&tool.title, width.saturating_sub(18).max(8));
+    let title = truncate_single_line(
+        &sanitize_render_text(&tool.title),
+        width.saturating_sub(18).max(8),
+    );
+    let detail = sanitize_tool_output(&tool.detail);
     let card_style = Style::default()
         .fg(tool.status.color())
         .add_modifier(Modifier::BOLD);
@@ -134,13 +138,13 @@ pub(crate) fn push_tool_lines(
         Span::styled(format!(" [{}]", tool.status.label()), tool.status.color()),
     ]));
 
-    if tool.detail.trim().is_empty() {
+    if detail.trim().is_empty() {
         return;
     }
 
     let detail_width = width.saturating_sub(4).max(1);
     if tool.expanded {
-        for detail_line in tool.detail.lines() {
+        for detail_line in detail.lines() {
             let wrapped = wrap_line(detail_line, detail_width);
             for chunk in wrapped {
                 lines.push(Line::from(vec![Span::raw("    "), Span::raw(chunk)]));
@@ -149,7 +153,7 @@ pub(crate) fn push_tool_lines(
         return;
     }
 
-    let summary = truncate_single_line(tool.detail.trim(), COLLAPSED_TOOL_DETAIL_LIMIT);
+    let summary = truncate_single_line(detail.trim(), COLLAPSED_TOOL_DETAIL_LIMIT);
     lines.push(Line::from(vec![
         Span::raw("    "),
         Span::styled(summary, Style::default().fg(Color::DarkGray)),
