@@ -2768,6 +2768,192 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[test]
+    fn composer_keeps_multiple_large_paste_placeholders_unique_and_expandable() {
+        let fixture = vec![
+            PendingPaste {
+                placeholder: "[Pasted Content 1200 chars]".to_string(),
+                text: "first payload".to_string(),
+            },
+            PendingPaste {
+                placeholder: "[Pasted Content 1400 chars #2]".to_string(),
+                text: "second payload".to_string(),
+            },
+        ];
+        let actual = expand_pending_pastes(
+            "check [Pasted Content 1200 chars] then [Pasted Content 1400 chars #2]",
+            &fixture,
+        );
+        let expected = "check first payload then second payload";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn large_paste_placeholder_can_repeat_without_losing_payload() {
+        let fixture = vec![PendingPaste {
+            placeholder: "[Pasted Content 1200 chars]".to_string(),
+            text: "same payload".to_string(),
+        }];
+        let actual = expand_pending_pastes(
+            "compare [Pasted Content 1200 chars] with [Pasted Content 1200 chars]",
+            &fixture,
+        );
+        let expected = "compare same payload with same payload";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn normalize_paste_text_handles_empty_and_mixed_newlines() {
+        let fixture = "\r\nfirst\rsecond\nthird\r";
+        let actual = normalize_paste_text(fixture);
+        let expected = "\nfirst\nsecond\nthird\n";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn pasted_image_path_accepts_quoted_file_urls() {
+        let fixture = "\"file:///tmp/screen shot.jpeg\"";
+        let actual = pasted_image_path(fixture);
+        let expected = Some("/tmp/screen shot.jpeg".to_string());
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn pasted_images_ignore_unsupported_or_non_path_lines() {
+        let fixture = "hello\n/tmp/a.gif\nfile:///tmp/ok.webp\nnot-an-image";
+        let actual = parse_pasted_images(fixture);
+        let expected = vec![ImageAttachment::new("/tmp/ok.webp")];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn build_chat_prompt_sends_image_only_prompt_when_text_is_blank() {
+        let fixture = vec![ImageAttachment::new("/tmp/a.png")];
+        let actual = build_chat_prompt("   ", &fixture);
+        let expected = "Please analyze the attached image(s).\n\n@[/tmp/a.png]";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn display_prompt_summarizes_multiple_images_without_paths() {
+        let fixture = vec![
+            ImageAttachment::new("/tmp/a.png"),
+            ImageAttachment::new("/tmp/nested/b.jpeg"),
+        ];
+        let actual = build_display_prompt("", &fixture);
+        let expected = "[2 images attached]";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn composer_height_keeps_prompt_area_visible_on_tiny_terminals() {
+        let actual = vec![
+            composer_height(4, 30),
+            composer_height(8, 30),
+            composer_height(80, 30),
+        ];
+        let expected = vec![3, 3, 11];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn chat_title_stays_short_on_narrow_terminals() {
+        let actual = vec![chat_title(30), chat_title(60), chat_title(90)];
+        let expected = vec![
+            "Chat",
+            "Chat  ↑↓ scroll  Tab tool",
+            "Chat  ↑↓ scroll  Tab tool  Ctrl+E expand",
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn prompt_title_stays_short_on_narrow_terminals() {
+        let actual = vec![prompt_title(40), prompt_title(100)];
+        let expected = vec![
+            "Prompt",
+            "Prompt  Shift/Cmd+↑↓ scroll  Cmd+⌫ clear  Opt+⌫ word",
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn header_line_truncates_status_to_available_width() {
+        let actual = render_line(header_line(TuiStatus::Interrupted, 16));
+        let expected = "Codegraff  Inte…";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn wrap_line_handles_single_column_without_looping() {
+        let fixture = "abc";
+        let actual = wrap_line(fixture, 0);
+        let expected = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn push_wrapped_preserves_explicit_blank_lines() {
+        let mut fixture = Vec::new();
+        push_wrapped(&mut fixture, "You", "first\n\nsecond", Style::default(), 20);
+        let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
+        let expected = vec![
+            "You: first".to_string(),
+            "  ".to_string(),
+            "  second".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn compact_tool_output_sanitizes_before_counting_limits() {
+        let fixture = format!("{}\u{0007}", "x".repeat(TOOL_OUTPUT_BYTE_LIMIT + 1));
+        let actual = compact_tool_output(&fixture);
+        let expected_prefix = format!(
+            "Large output: 1 lines, {} bytes. Showing first 1 lines.",
+            TOOL_OUTPUT_BYTE_LIMIT + 2
+        );
+
+        assert!(actual.starts_with(&expected_prefix));
+    }
+
+    #[test]
+    fn collapsed_tool_title_is_truncated_to_card_width() {
+        let fixture = ToolEntry::info("a-very-long-tool-name-that-should-not-break-layout", "ok");
+        let actual = rendered_tool_lines(fixture, false, 24);
+        let expected = vec!["  ▸ Tool a-very-… [info]".to_string(), "    ok".to_string()];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn markdown_inline_markup_is_removed_without_touching_attachment_tags() {
+        let mut fixture = Vec::new();
+        push_markdown_message_lines(
+            &mut fixture,
+            "CodeGraff",
+            "**bold** `code` [link](https://x.test) @[/tmp/a.png]",
+            80,
+        );
+        let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
+        let expected = vec!["CodeGraff: boldcode link(https://x.test)@[/tmp/a.png]".to_string()];
+
+        assert_eq!(actual, expected);
+    }
+
     fn rendered_composer_lines(
         composer: &str,
         images: &[ImageAttachment],
