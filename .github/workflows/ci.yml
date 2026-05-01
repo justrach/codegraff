@@ -122,58 +122,85 @@ jobs:
     strategy:
       matrix:
         include:
-        - binary_name: forge-x86_64-unknown-linux-musl
-          binary_path: target/x86_64-unknown-linux-musl/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-linux-x86_64
+          codegraff_binary_name: codegraff-x86_64-unknown-linux-musl
+          codegraff_binary_path: target/x86_64-unknown-linux-musl/release/codegraff
           cross: 'true'
+          forge_binary_name: forge-x86_64-unknown-linux-musl
+          forge_binary_path: target/x86_64-unknown-linux-musl/release/forge
           os: ubuntu-latest
           target: x86_64-unknown-linux-musl
-        - binary_name: forge-aarch64-unknown-linux-musl
-          binary_path: target/aarch64-unknown-linux-musl/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-linux-arm64
+          codegraff_binary_name: codegraff-aarch64-unknown-linux-musl
+          codegraff_binary_path: target/aarch64-unknown-linux-musl/release/codegraff
           cross: 'true'
+          forge_binary_name: forge-aarch64-unknown-linux-musl
+          forge_binary_path: target/aarch64-unknown-linux-musl/release/forge
           os: ubuntu-latest
           target: aarch64-unknown-linux-musl
-        - binary_name: forge-x86_64-unknown-linux-gnu
-          binary_path: target/x86_64-unknown-linux-gnu/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-linux-x86_64
+          codegraff_binary_name: codegraff-x86_64-unknown-linux-gnu
+          codegraff_binary_path: target/x86_64-unknown-linux-gnu/release/codegraff
           cross: 'false'
+          forge_binary_name: forge-x86_64-unknown-linux-gnu
+          forge_binary_path: target/x86_64-unknown-linux-gnu/release/forge
           os: ubuntu-latest
           target: x86_64-unknown-linux-gnu
-        - binary_name: forge-aarch64-unknown-linux-gnu
-          binary_path: target/aarch64-unknown-linux-gnu/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-linux-arm64
+          codegraff_binary_name: codegraff-aarch64-unknown-linux-gnu
+          codegraff_binary_path: target/aarch64-unknown-linux-gnu/release/codegraff
           cross: 'true'
+          forge_binary_name: forge-aarch64-unknown-linux-gnu
+          forge_binary_path: target/aarch64-unknown-linux-gnu/release/forge
           os: ubuntu-latest
           target: aarch64-unknown-linux-gnu
-        - binary_name: forge-x86_64-apple-darwin
-          binary_path: target/x86_64-apple-darwin/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-darwin-x86_64
+          codegraff_binary_name: codegraff-x86_64-apple-darwin
+          codegraff_binary_path: target/x86_64-apple-darwin/release/codegraff
           cross: 'false'
+          forge_binary_name: forge-x86_64-apple-darwin
+          forge_binary_path: target/x86_64-apple-darwin/release/forge
           os: macos-latest
           target: x86_64-apple-darwin
-        - binary_name: forge-aarch64-apple-darwin
-          binary_path: target/aarch64-apple-darwin/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-darwin-arm64
+          codegraff_binary_name: codegraff-aarch64-apple-darwin
+          codegraff_binary_path: target/aarch64-apple-darwin/release/codegraff
           cross: 'false'
+          forge_binary_name: forge-aarch64-apple-darwin
+          forge_binary_path: target/aarch64-apple-darwin/release/forge
           os: macos-latest
           target: aarch64-apple-darwin
-        - binary_name: forge-x86_64-pc-windows-msvc.exe
-          binary_path: target/x86_64-pc-windows-msvc/release/forge.exe
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: ''
+          codegraff_binary_name: codegraff-x86_64-pc-windows-msvc.exe
+          codegraff_binary_path: target/x86_64-pc-windows-msvc/release/codegraff.exe
           cross: 'false'
+          forge_binary_name: forge-x86_64-pc-windows-msvc.exe
+          forge_binary_path: target/x86_64-pc-windows-msvc/release/forge.exe
           os: windows-latest
           target: x86_64-pc-windows-msvc
-        - binary_name: forge-aarch64-pc-windows-msvc.exe
-          binary_path: target/aarch64-pc-windows-msvc/release/forge.exe
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: ''
+          codegraff_binary_name: codegraff-aarch64-pc-windows-msvc.exe
+          codegraff_binary_path: target/aarch64-pc-windows-msvc/release/codegraff.exe
           cross: 'false'
+          forge_binary_name: forge-aarch64-pc-windows-msvc.exe
+          forge_binary_path: target/aarch64-pc-windows-msvc/release/forge.exe
           os: windows-latest
           target: aarch64-pc-windows-msvc
-        - binary_name: forge-aarch64-linux-android
-          binary_path: target/aarch64-linux-android/release/forge
+        - build_bins: '--bin forge'
           codedb_asset: ''
+          codegraff_binary_name: ''
+          codegraff_binary_path: ''
           cross: 'true'
+          forge_binary_name: forge-aarch64-linux-android
+          forge_binary_path: target/aarch64-linux-android/release/forge
           os: ubuntu-latest
           target: aarch64-linux-android
     steps:
@@ -195,17 +222,37 @@ jobs:
     - name: Set Rust Flags
       if: '!(contains(matrix.target, ''-unknown-linux-'') || contains(matrix.target, ''-android''))'
       run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
-    - name: Build Binary
+    - name: Build Binaries
       uses: ClementTsang/cargo-action@v0.0.7
       with:
         command: build --release
-        args: '--target ${{ matrix.target }}'
+        args: ${{ matrix.build_bins }} --target ${{ matrix.target }}
         use-cross: ${{ matrix.cross }}
         cross-version: '0.2.5'
       env:
         RUSTFLAGS: ${{ env.RUSTFLAGS }}
-        POSTHOG_API_SECRET: ${{secrets.POSTHOG_API_SECRET}}
+        POSTHOG_API_SECRET: phc_kA4Y4YGVQoQBuNPc7VspKKS2g8twHUS4ahmbad2yhRFi
         APP_VERSION: ${{ needs.draft_release.outputs.crate_release_name }}
+    - name: Import macOS Signing Certificate
+      if: ${{ runner.os == 'macOS' }}
+      run: |-
+        if [ -n "$APPLE_CERTIFICATE_P12" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$APPLE_KEYCHAIN_PASSWORD" ]; then
+          KEYCHAIN_PATH="$RUNNER_TEMP/codegraff-signing.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/codegraff-signing.p12"
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        else
+          echo "CodeDB local Apple certificate secrets are not configured; skipping macOS signing."
+        fi
+      env:
+        APPLE_CERTIFICATE_P12: ${{ secrets.CODEDB_LOCAL_APPLE_CERTIFICATE_P12 }}
+        APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CODEDB_LOCAL_APPLE_CERTIFICATE_PASSWORD }}
+        APPLE_KEYCHAIN_PASSWORD: ${{ secrets.CODEDB_LOCAL_APPLE_KEYCHAIN_PASSWORD }}
     - name: Download CodeDB
       if: ${{ matrix.codedb_asset != '' }}
       run: |-
@@ -213,27 +260,79 @@ jobs:
           curl -fL "https://github.com/justrach/codedb/releases/latest/download/${{ matrix.codedb_asset }}" -o codedb
           chmod +x codedb
         fi
-    - name: Package Binary
+    - name: Sign macOS Binaries
+      if: ${{ runner.os == 'macOS' }}
+      run: |-
+        if [ -n "$APPLE_CERTIFICATE_P12" ] && [ -n "$APPLE_CODESIGN_IDENTITY" ]; then
+          codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" ${{ matrix.forge_binary_path }}
+          if [ -n "${{ matrix.codegraff_binary_path }}" ]; then
+            codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" ${{ matrix.codegraff_binary_path }}
+          fi
+        else
+          echo "CodeDB local Apple signing secrets are not configured; skipping macOS signing."
+        fi
+      env:
+        APPLE_CERTIFICATE_P12: ${{ secrets.CODEDB_LOCAL_APPLE_CERTIFICATE_P12 }}
+        APPLE_CODESIGN_IDENTITY: ${{ secrets.CODEDB_LOCAL_APPLE_CODESIGN_IDENTITY }}
+    - name: Package Binaries
       run: |-
         mkdir -p dist
-        cp ${{ matrix.binary_path }} dist/${{ matrix.binary_name }}
-        cp dist/${{ matrix.binary_name }} ${{ matrix.binary_name }}
+        cp ${{ matrix.forge_binary_path }} dist/${{ matrix.forge_binary_name }}
+        cp dist/${{ matrix.forge_binary_name }} ${{ matrix.forge_binary_name }}
+        if [ -n "${{ matrix.codegraff_binary_name }}" ]; then
+          cp ${{ matrix.codegraff_binary_path }} dist/${{ matrix.codegraff_binary_name }}
+          cp dist/${{ matrix.codegraff_binary_name }} ${{ matrix.codegraff_binary_name }}
+        fi
+        cp scripts/install.sh install.sh
         if [ -n "${{ matrix.codedb_asset }}" ]; then
           cp codedb dist/codedb
-          tar -C dist -czf ${{ matrix.binary_name }}-bundle.tar.gz ${{ matrix.binary_name }} codedb
+          tar -C dist -czf ${{ matrix.forge_binary_name }}-bundle.tar.gz ${{ matrix.forge_binary_name }} codedb
         fi
-    - name: Upload Binary to Release
+    - name: Notarize macOS Binaries
+      if: ${{ runner.os == 'macOS' }}
+      run: |-
+        if [ -n "$APPLE_CERTIFICATE_P12" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+          mkdir -p notarize
+          ditto -c -k --keepParent ${{ matrix.forge_binary_name }} "notarize/${{ matrix.forge_binary_name }}.zip"
+          xcrun notarytool submit "notarize/${{ matrix.forge_binary_name }}.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          if [ -n "${{ matrix.codegraff_binary_name }}" ]; then
+            ditto -c -k --keepParent ${{ matrix.codegraff_binary_name }} "notarize/${{ matrix.codegraff_binary_name }}.zip"
+            xcrun notarytool submit "notarize/${{ matrix.codegraff_binary_name }}.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          fi
+        else
+          echo "CodeDB local Apple notarization secrets are not configured; skipping macOS notarization."
+        fi
+      env:
+        APPLE_CERTIFICATE_P12: ${{ secrets.CODEDB_LOCAL_APPLE_CERTIFICATE_P12 }}
+        APPLE_ID: ${{ secrets.CODEDB_LOCAL_APPLE_ID }}
+        APPLE_TEAM_ID: ${{ secrets.CODEDB_LOCAL_APPLE_TEAM_ID }}
+        APPLE_APP_PASSWORD: ${{ secrets.CODEDB_LOCAL_APPLE_APP_PASSWORD }}
+    - name: Upload Forge Binary to Release
       uses: xresloader/upload-to-github-release@v1
       with:
         release_id: ${{ needs.draft_release.outputs.crate_release_id }}
-        file: ${{ matrix.binary_name }}
+        file: ${{ matrix.forge_binary_name }}
+        overwrite: 'true'
+    - name: Upload CodeGraff Binary to Release
+      if: ${{ matrix.codegraff_binary_name != '' }}
+      uses: xresloader/upload-to-github-release@v1
+      with:
+        release_id: ${{ needs.draft_release.outputs.crate_release_id }}
+        file: ${{ matrix.codegraff_binary_name }}
+        overwrite: 'true'
+    - name: Upload Installer to Release
+      if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+      uses: xresloader/upload-to-github-release@v1
+      with:
+        release_id: ${{ needs.draft_release.outputs.crate_release_id }}
+        file: install.sh
         overwrite: 'true'
     - name: Upload CodeDB Bundle to Release
       if: ${{ matrix.codedb_asset != '' }}
       uses: xresloader/upload-to-github-release@v1
       with:
         release_id: ${{ needs.draft_release.outputs.crate_release_id }}
-        file: ${{ matrix.binary_name }}-bundle.tar.gz
+        file: ${{ matrix.forge_binary_name }}-bundle.tar.gz
         overwrite: 'true'
   build_release_pr:
     needs:
@@ -247,58 +346,85 @@ jobs:
     strategy:
       matrix:
         include:
-        - binary_name: forge-x86_64-unknown-linux-musl
-          binary_path: target/x86_64-unknown-linux-musl/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-linux-x86_64
+          codegraff_binary_name: codegraff-x86_64-unknown-linux-musl
+          codegraff_binary_path: target/x86_64-unknown-linux-musl/release/codegraff
           cross: 'true'
+          forge_binary_name: forge-x86_64-unknown-linux-musl
+          forge_binary_path: target/x86_64-unknown-linux-musl/release/forge
           os: ubuntu-latest
           target: x86_64-unknown-linux-musl
-        - binary_name: forge-aarch64-unknown-linux-musl
-          binary_path: target/aarch64-unknown-linux-musl/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-linux-arm64
+          codegraff_binary_name: codegraff-aarch64-unknown-linux-musl
+          codegraff_binary_path: target/aarch64-unknown-linux-musl/release/codegraff
           cross: 'true'
+          forge_binary_name: forge-aarch64-unknown-linux-musl
+          forge_binary_path: target/aarch64-unknown-linux-musl/release/forge
           os: ubuntu-latest
           target: aarch64-unknown-linux-musl
-        - binary_name: forge-x86_64-unknown-linux-gnu
-          binary_path: target/x86_64-unknown-linux-gnu/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-linux-x86_64
+          codegraff_binary_name: codegraff-x86_64-unknown-linux-gnu
+          codegraff_binary_path: target/x86_64-unknown-linux-gnu/release/codegraff
           cross: 'false'
+          forge_binary_name: forge-x86_64-unknown-linux-gnu
+          forge_binary_path: target/x86_64-unknown-linux-gnu/release/forge
           os: ubuntu-latest
           target: x86_64-unknown-linux-gnu
-        - binary_name: forge-aarch64-unknown-linux-gnu
-          binary_path: target/aarch64-unknown-linux-gnu/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-linux-arm64
+          codegraff_binary_name: codegraff-aarch64-unknown-linux-gnu
+          codegraff_binary_path: target/aarch64-unknown-linux-gnu/release/codegraff
           cross: 'true'
+          forge_binary_name: forge-aarch64-unknown-linux-gnu
+          forge_binary_path: target/aarch64-unknown-linux-gnu/release/forge
           os: ubuntu-latest
           target: aarch64-unknown-linux-gnu
-        - binary_name: forge-x86_64-apple-darwin
-          binary_path: target/x86_64-apple-darwin/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-darwin-x86_64
+          codegraff_binary_name: codegraff-x86_64-apple-darwin
+          codegraff_binary_path: target/x86_64-apple-darwin/release/codegraff
           cross: 'false'
+          forge_binary_name: forge-x86_64-apple-darwin
+          forge_binary_path: target/x86_64-apple-darwin/release/forge
           os: macos-latest
           target: x86_64-apple-darwin
-        - binary_name: forge-aarch64-apple-darwin
-          binary_path: target/aarch64-apple-darwin/release/forge
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: codedb-darwin-arm64
+          codegraff_binary_name: codegraff-aarch64-apple-darwin
+          codegraff_binary_path: target/aarch64-apple-darwin/release/codegraff
           cross: 'false'
+          forge_binary_name: forge-aarch64-apple-darwin
+          forge_binary_path: target/aarch64-apple-darwin/release/forge
           os: macos-latest
           target: aarch64-apple-darwin
-        - binary_name: forge-x86_64-pc-windows-msvc.exe
-          binary_path: target/x86_64-pc-windows-msvc/release/forge.exe
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: ''
+          codegraff_binary_name: codegraff-x86_64-pc-windows-msvc.exe
+          codegraff_binary_path: target/x86_64-pc-windows-msvc/release/codegraff.exe
           cross: 'false'
+          forge_binary_name: forge-x86_64-pc-windows-msvc.exe
+          forge_binary_path: target/x86_64-pc-windows-msvc/release/forge.exe
           os: windows-latest
           target: x86_64-pc-windows-msvc
-        - binary_name: forge-aarch64-pc-windows-msvc.exe
-          binary_path: target/aarch64-pc-windows-msvc/release/forge.exe
+        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: ''
+          codegraff_binary_name: codegraff-aarch64-pc-windows-msvc.exe
+          codegraff_binary_path: target/aarch64-pc-windows-msvc/release/codegraff.exe
           cross: 'false'
+          forge_binary_name: forge-aarch64-pc-windows-msvc.exe
+          forge_binary_path: target/aarch64-pc-windows-msvc/release/forge.exe
           os: windows-latest
           target: aarch64-pc-windows-msvc
-        - binary_name: forge-aarch64-linux-android
-          binary_path: target/aarch64-linux-android/release/forge
+        - build_bins: '--bin forge'
           codedb_asset: ''
+          codegraff_binary_name: ''
+          codegraff_binary_path: ''
           cross: 'true'
+          forge_binary_name: forge-aarch64-linux-android
+          forge_binary_path: target/aarch64-linux-android/release/forge
           os: ubuntu-latest
           target: aarch64-linux-android
     steps:
@@ -320,16 +446,16 @@ jobs:
     - name: Set Rust Flags
       if: '!(contains(matrix.target, ''-unknown-linux-'') || contains(matrix.target, ''-android''))'
       run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
-    - name: Build Binary
+    - name: Build Binaries
       uses: ClementTsang/cargo-action@v0.0.7
       with:
         command: build --release
-        args: '--target ${{ matrix.target }}'
+        args: ${{ matrix.build_bins }} --target ${{ matrix.target }}
         use-cross: ${{ matrix.cross }}
         cross-version: '0.2.5'
       env:
         RUSTFLAGS: ${{ env.RUSTFLAGS }}
-        POSTHOG_API_SECRET: ${{secrets.POSTHOG_API_SECRET}}
+        POSTHOG_API_SECRET: phc_kA4Y4YGVQoQBuNPc7VspKKS2g8twHUS4ahmbad2yhRFi
         APP_VERSION: ${{ needs.draft_release_pr.outputs.crate_release_name }}
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
