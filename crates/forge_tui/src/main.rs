@@ -32,6 +32,7 @@ const TOOL_OUTPUT_LINE_LIMIT: usize = 80;
 const TOOL_OUTPUT_BYTE_LIMIT: usize = 12_000;
 const COLLAPSED_TOOL_DETAIL_LIMIT: usize = 72;
 const MAX_COMPOSER_INNER_HEIGHT: usize = 9;
+const LARGE_PASTE_CHAR_THRESHOLD: usize = 1_000;
 const IMAGE_THUMBNAIL_COLUMNS: usize = 10;
 const IMAGE_THUMBNAIL_ROWS: usize = 3;
 const CODEGRAFF_LOG_FILE: &str = "codegraff.log";
@@ -63,6 +64,8 @@ struct Tui<A> {
     conversation_id: forge_api::ConversationId,
     transcript: Vec<TranscriptEntry>,
     composer: String,
+    pending_pastes: Vec<PendingPaste>,
+    large_paste_counter: usize,
     image_attachments: Vec<ImageAttachment>,
     usage: Option<UsageSummary>,
     status: TuiStatus,
@@ -98,6 +101,12 @@ enum TranscriptEntry {
 struct UserMessage {
     text: String,
     images: Vec<ImageAttachment>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingPaste {
+    placeholder: String,
+    text: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -281,6 +290,8 @@ impl<A: API + 'static> Tui<A> {
                 TranscriptEntry::Status(format!("Logs: {}", log_path.display())),
             ],
             composer: String::new(),
+            pending_pastes: Vec::new(),
+            large_paste_counter: 0,
             image_attachments: Vec::new(),
             usage: None,
             status: TuiStatus::Ready,
@@ -393,6 +404,7 @@ impl<A: API + 'static> Tui<A> {
 
     fn clear_composer(&mut self) {
         self.composer.clear();
+        self.pending_pastes.clear();
         self.image_attachments.clear();
         self.composer_scroll_from_bottom = 0;
     }
@@ -443,9 +455,10 @@ impl<A: API + 'static> Tui<A> {
     }
 
     fn apply_paste_text(&mut self, text: String) {
-        let pasted = parse_pasted_images(&text);
+        let normalized = normalize_paste_text(&text);
+        let pasted = parse_pasted_images(&normalized);
         if pasted.is_empty() {
-            self.composer.push_str(&normalize_paste_text(&text));
+            self.insert_pasted_text(normalized);
             self.composer_scroll_from_bottom = 0;
             return;
         }
@@ -454,6 +467,34 @@ impl<A: API + 'static> Tui<A> {
             self.attach_image(image);
         }
         self.composer_scroll_from_bottom = 0;
+    }
+
+    fn insert_pasted_text(&mut self, text: String) {
+        let char_count = text.chars().count();
+        if char_count > LARGE_PASTE_CHAR_THRESHOLD {
+            let placeholder = self.next_large_paste_placeholder(char_count);
+            log_info(
+                &self.log_path,
+                &format!("large paste stored as {placeholder}: {char_count} chars"),
+            );
+            self.pending_pastes
+                .push(PendingPaste { placeholder: placeholder.clone(), text });
+            self.composer.push_str(&placeholder);
+        } else {
+            self.composer.push_str(&text);
+        }
+    }
+
+    fn next_large_paste_placeholder(&mut self, char_count: usize) -> String {
+        self.large_paste_counter = self.large_paste_counter.saturating_add(1);
+        if self.large_paste_counter == 1 {
+            format!("[Pasted Content {char_count} chars]")
+        } else {
+            format!(
+                "[Pasted Content {char_count} chars #{}]",
+                self.large_paste_counter
+            )
+        }
     }
 
     fn attach_image(&mut self, image: ImageAttachment) {
@@ -500,10 +541,12 @@ impl<A: API + 'static> Tui<A> {
             return Ok(());
         }
 
-        let event = build_chat_event(&raw_prompt, &self.image_attachments);
+        let expanded_prompt = expand_pending_pastes(&raw_prompt, &self.pending_pastes);
+        let event = build_chat_event(&expanded_prompt, &self.image_attachments);
         let display_prompt = build_display_prompt(&raw_prompt, &self.image_attachments);
         self.abort_chat_task();
         self.composer.clear();
+        self.pending_pastes.clear();
         self.composer_scroll_from_bottom = 0;
         let images = std::mem::take(&mut self.image_attachments);
         self.transcript.push(TranscriptEntry::User(UserMessage {
@@ -1585,6 +1628,16 @@ fn normalize_paste_text(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
+fn expand_pending_pastes(prompt: &str, pending_pastes: &[PendingPaste]) -> String {
+    let mut expanded = prompt.to_string();
+    for paste in pending_pastes {
+        if expanded.contains(&paste.placeholder) {
+            expanded = expanded.replace(&paste.placeholder, &paste.text);
+        }
+    }
+    expanded
+}
+
 fn build_display_prompt(prompt: &str, images: &[ImageAttachment]) -> String {
     let image_summary = match images.len() {
         0 => String::new(),
@@ -2633,6 +2686,28 @@ mod tests {
         let fixture = "first\r\nsecond\rthird";
         let actual = normalize_paste_text(fixture);
         let expected = "first\nsecond\nthird";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn expand_pending_pastes_restores_large_paste_for_backend() {
+        let fixture = vec![PendingPaste {
+            placeholder: "[Pasted Content 1200 chars]".to_string(),
+            text: "long pasted payload".to_string(),
+        }];
+        let actual =
+            expand_pending_pastes("summarize [Pasted Content 1200 chars] please", &fixture);
+        let expected = "summarize long pasted payload please";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn display_prompt_keeps_large_paste_placeholder_short() {
+        let fixture = "explain [Pasted Content 1200 chars]";
+        let actual = build_display_prompt(fixture, &[]);
+        let expected = "explain [Pasted Content 1200 chars]";
 
         assert_eq!(actual, expected);
     }
