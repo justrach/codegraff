@@ -300,6 +300,18 @@ else
     print_result warn "bat not found" "Enhanced preview. See installation: https://github.com/sharkdp/bat#installation"
 fi
 
+# Check for CodeDB - used for first-class code intelligence
+if command -v codedb &> /dev/null; then
+    local codedb_version=$(codedb --version 2>&1 | head -n1 | awk '{print $NF}')
+    if [[ -n "$codedb_version" ]]; then
+        print_result pass "codedb: ${codedb_version}"
+    else
+        print_result pass "codedb: installed"
+    fi
+else
+    print_result warn "codedb not found" "Install: curl -fsSL https://codedb.codegraff.com/install.sh | bash"
+fi
+
 # 6. Check required ZSH plugins
 print_section "Required Plugins"
 

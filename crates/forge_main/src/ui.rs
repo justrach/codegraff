@@ -1850,6 +1850,21 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         let result = crate::zsh::setup_zsh_integration(disable_nerd_font, forge_editor)?;
         self.spinner.stop(None)?;
 
+        let codedb_installed =
+            ForgeWidget::confirm("Install CodeDB code intelligence if it is missing?")
+                .with_default(true)
+                .prompt()?;
+        if codedb_installed.unwrap_or(true) {
+            self.spinner.start(Some("Installing CodeDB"))?;
+            let installed = crate::zsh::install_codedb_if_missing()?;
+            self.spinner.stop(None)?;
+            if installed {
+                self.writeln_title(TitleFormat::info("CodeDB installed"))?;
+            } else {
+                self.writeln_title(TitleFormat::info("CodeDB already installed"))?;
+            }
+        }
+
         // Log backup creation if one was made
         if let Some(backup_path) = result.backup_path {
             self.writeln_title(TitleFormat::debug(format!(

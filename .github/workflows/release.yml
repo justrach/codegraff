@@ -128,17 +128,23 @@ jobs:
       run: |-
         mkdir -p dist
         cp ${{ matrix.binary_path }} dist/${{ matrix.binary_name }}
+        cp dist/${{ matrix.binary_name }} ${{ matrix.binary_name }}
         if [ -n "${{ matrix.codedb_asset }}" ]; then
           cp codedb dist/codedb
-          tar -C dist -czf ${{ matrix.binary_name }}.tar.gz ${{ matrix.binary_name }} codedb
-        else
-          cp dist/${{ matrix.binary_name }} ${{ matrix.binary_name }}
+          tar -C dist -czf ${{ matrix.binary_name }}-bundle.tar.gz ${{ matrix.binary_name }} codedb
         fi
-    - name: Upload to Release
+    - name: Upload Binary to Release
       uses: xresloader/upload-to-github-release@v1
       with:
         release_id: ${{ github.event.release.id }}
-        file: ${{ matrix.codedb_asset != '' && format('{0}.tar.gz', matrix.binary_name) || matrix.binary_name }}
+        file: ${{ matrix.binary_name }}
+        overwrite: 'true'
+    - name: Upload CodeDB Bundle to Release
+      if: ${{ matrix.codedb_asset != '' }}
+      uses: xresloader/upload-to-github-release@v1
+      with:
+        release_id: ${{ github.event.release.id }}
+        file: ${{ matrix.binary_name }}-bundle.tar.gz
         overwrite: 'true'
   npm_release:
     needs:

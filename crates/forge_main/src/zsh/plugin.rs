@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use clap::CommandFactory;
@@ -172,6 +172,40 @@ fn execute_zsh_script_with_streaming(script_content: &str, script_name: &str) ->
     Ok(())
 }
 
+/// Installs CodeDB with the official installer when it is not already available.
+///
+/// Returns whether a new CodeDB installation was performed. Existing user
+/// installations are preserved and left in place.
+///
+/// # Errors
+///
+/// Returns an error when CodeDB is missing and the installer command cannot be
+/// executed successfully.
+pub fn install_codedb_if_missing() -> Result<bool> {
+    if Command::new("codedb")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        return Ok(false);
+    }
+
+    let status = Command::new("bash")
+        .arg("-c")
+        .arg("curl -fsSL https://codedb.codegraff.com/install.sh | bash")
+        .status()
+        .context("Failed to run CodeDB installer")?;
+
+    if !status.success() {
+        let exit_code = status
+            .code()
+            .map_or_else(|| "unknown".to_string(), |code| code.to_string());
+        anyhow::bail!("CodeDB installer failed with exit code: {exit_code}");
+    }
+
+    Ok(true)
+}
+
 /// Runs diagnostics on the ZSH shell environment with streaming output
 ///
 /// # Errors
@@ -182,7 +216,6 @@ pub fn run_zsh_doctor() -> Result<()> {
     execute_zsh_script_with_streaming(script_content, "doctor")
 }
 
-/// Shows ZSH keyboard shortcuts with streaming output
 ///
 /// # Errors
 ///

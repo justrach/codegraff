@@ -628,10 +628,21 @@ fn resolve_stdio_command_with_current_exe(command: &str, current_exe: Option<Pat
 }
 
 fn bundled_codedb_path(current_exe: Option<&Path>) -> Option<PathBuf> {
+    bundled_codedb_paths(current_exe)
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+fn bundled_codedb_paths(current_exe: Option<&Path>) -> Vec<PathBuf> {
     current_exe
         .and_then(Path::parent)
-        .map(|parent| parent.join(CODEDB_BUNDLED_BINARY))
-        .filter(|path| path.is_file())
+        .map(|parent| {
+            vec![
+                parent.join(CODEDB_BUNDLED_BINARY),
+                parent.join("bin").join(CODEDB_BUNDLED_BINARY),
+            ]
+        })
+        .unwrap_or_default()
 }
 
 /// Resolves mustache templates in McpHttpServer headers using Handlebars
@@ -929,6 +940,19 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let current_exe = fixture.path().join("forge");
         let expected = fixture.path().join(CODEDB_BUNDLED_BINARY);
+        std::fs::write(&expected, "").unwrap();
+        let actual = bundled_codedb_path(Some(&current_exe));
+
+        assert_eq!(actual, Some(expected));
+    }
+
+    #[test]
+    fn bundled_codedb_path_returns_bin_directory_binary() {
+        let fixture = tempfile::tempdir().unwrap();
+        let current_exe = fixture.path().join("forge");
+        let bin_dir = fixture.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        let expected = bin_dir.join(CODEDB_BUNDLED_BINARY);
         std::fs::write(&expected, "").unwrap();
         let actual = bundled_codedb_path(Some(&current_exe));
 

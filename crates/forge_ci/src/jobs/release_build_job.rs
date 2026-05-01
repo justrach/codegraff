@@ -93,30 +93,35 @@ fi"#,
                         )
                         .if_condition(Expression::new("${{ matrix.codedb_asset != '' }}")),
                 )
-                // Package the release binary with the matching CodeDB MCP server.
+                // Always keep the raw Forge binary asset for installers that download it directly.
                 .add_step(
                     Step::new("Package Binary")
                         .run(
                             r#"mkdir -p dist
 cp ${{ matrix.binary_path }} dist/${{ matrix.binary_name }}
+cp dist/${{ matrix.binary_name }} ${{ matrix.binary_name }}
 if [ -n "${{ matrix.codedb_asset }}" ]; then
   cp codedb dist/codedb
-  tar -C dist -czf ${{ matrix.binary_name }}.tar.gz ${{ matrix.binary_name }} codedb
-else
-  cp dist/${{ matrix.binary_name }} ${{ matrix.binary_name }}
+  tar -C dist -czf ${{ matrix.binary_name }}-bundle.tar.gz ${{ matrix.binary_name }} codedb
 fi"#,
                         ),
                 )
-                // Upload to the generated github release id
+                // Upload the raw Forge binary for backwards-compatible install scripts.
                 .add_step(
-                    Step::new("Upload to Release")
+                    Step::new("Upload Binary to Release")
+                        .uses("xresloader", "upload-to-github-release", "v1")
+                        .add_with(("release_id", release_id.clone()))
+                        .add_with(("file", "${{ matrix.binary_name }}"))
+                        .add_with(("overwrite", "true")),
+                )
+                // Upload a separate bundle for package managers/manual installs that want CodeDB side-by-side.
+                .add_step(
+                    Step::new("Upload CodeDB Bundle to Release")
                         .uses("xresloader", "upload-to-github-release", "v1")
                         .add_with(("release_id", release_id))
-                        .add_with((
-                            "file",
-                            "${{ matrix.codedb_asset != '' && format('{0}.tar.gz', matrix.binary_name) || matrix.binary_name }}",
-                        ))
-                        .add_with(("overwrite", "true")),
+                        .add_with(("file", "${{ matrix.binary_name }}-bundle.tar.gz"))
+                        .add_with(("overwrite", "true"))
+                        .if_condition(Expression::new("${{ matrix.codedb_asset != '' }}")),
                 );
         }
 
