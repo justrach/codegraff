@@ -13,7 +13,8 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use forge_api::{
-    API, ChatRequest, ChatResponse, ChatResponseContent, Conversation, Event, ForgeAPI, ForgeConfig,
+    API, ChatRequest, ChatResponse, ChatResponseContent, Conversation, Event, ForgeAPI,
+    ForgeConfig, TokenCount, Usage,
 };
 use futures::StreamExt;
 use ratatui::Terminal;
@@ -46,6 +47,7 @@ struct Tui<A> {
     transcript: Vec<TranscriptEntry>,
     composer: String,
     image_attachments: Vec<ImageAttachment>,
+    usage: Option<UsageSummary>,
     status: TuiStatus,
     scroll_from_bottom: usize,
     composer_scroll_from_bottom: usize,
@@ -84,6 +86,22 @@ struct ImagePreview {
     width: u32,
     height: u32,
     thumbnail: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UsageSummary {
+    last: Option<UsageLine>,
+    session: Option<UsageLine>,
+    context_tokens: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UsageLine {
+    prompt_tokens: String,
+    completion_tokens: String,
+    total_tokens: String,
+    cached_tokens: String,
+    cost: Option<String>,
 }
 
 #[derive(Clone)]
@@ -223,6 +241,7 @@ impl<A: API + 'static> Tui<A> {
             )],
             composer: String::new(),
             image_attachments: Vec::new(),
+            usage: None,
             status: TuiStatus::Ready,
             scroll_from_bottom: 0,
             composer_scroll_from_bottom: 0,
@@ -252,7 +271,7 @@ impl<A: API + 'static> Tui<A> {
                 match event {
                     AppEvent::Input(key) => self.handle_input(key, tx.clone()).await?,
                     AppEvent::Paste(text) => self.handle_paste(text),
-                    AppEvent::Chat(response) => self.handle_chat_response(response),
+                    AppEvent::Chat(response) => self.handle_chat_response(response).await,
                 }
             }
         }
@@ -422,14 +441,34 @@ impl<A: API + 'static> Tui<A> {
         Ok(())
     }
 
-    fn handle_chat_response(&mut self, response: Result<ChatResponse>) {
+    async fn handle_chat_response(&mut self, response: Result<ChatResponse>) {
         match response {
-            Ok(response) => self.push_chat_response(response),
+            Ok(response) => {
+                let should_refresh_usage = self.push_chat_response(response);
+                if should_refresh_usage {
+                    self.refresh_usage().await;
+                }
+            }
             Err(error) => {
                 self.is_streaming = false;
                 self.status = TuiStatus::Error;
                 self.transcript
                     .push(TranscriptEntry::Error(format!("{error:#}")));
+            }
+        }
+    }
+
+    async fn refresh_usage(&mut self) {
+        match self.api.conversation(&self.conversation_id).await {
+            Ok(Some(conversation)) => {
+                self.usage = usage_summary_from_conversation(&conversation);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Usage refresh failed: {error:#}"
+                )));
+                self.scroll_from_bottom = 0;
             }
         }
     }
@@ -605,9 +644,9 @@ impl<A: API + 'static> Tui<A> {
             .is_some()
     }
 
-    fn push_chat_response(&mut self, response: ChatResponse) {
+    fn push_chat_response(&mut self, response: ChatResponse) -> bool {
         if response.is_empty() {
-            return;
+            return false;
         }
 
         match response {
@@ -659,8 +698,11 @@ impl<A: API + 'static> Tui<A> {
             ChatResponse::TaskComplete => {
                 self.is_streaming = false;
                 self.status = TuiStatus::Finished;
+                return true;
             }
         }
+
+        false
     }
 
     fn append_assistant(&mut self, text: String) {
@@ -683,19 +725,11 @@ impl<A: API + 'static> Tui<A> {
             ])
             .split(area);
 
-        let header = Paragraph::new(Line::from(vec![
-            Span::styled(
-                "Codegraff",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                compact_status(self.status),
-                Style::default().fg(status_color(self.status)),
-            ),
-        ]))
+        let header = Paragraph::new(header_line(
+            self.status,
+            self.usage.as_ref(),
+            chunks[0].width.saturating_sub(2) as usize,
+        ))
         .block(Block::default().borders(Borders::ALL));
         frame.render_widget(header, chunks[0]);
 
@@ -745,7 +779,7 @@ impl<A: API + 'static> Tui<A> {
                     push_user_message_lines(&mut lines, message, width)
                 }
                 TranscriptEntry::Assistant(text) => {
-                    push_markdown_message_lines(&mut lines, "Forge", text, width)
+                    push_markdown_message_lines(&mut lines, "CodeGraff", text, width)
                 }
                 TranscriptEntry::Tool(tool) => push_tool_lines(
                     &mut lines,
@@ -769,6 +803,21 @@ impl<A: API + 'static> Tui<A> {
                         .add_modifier(Modifier::BOLD),
                     width,
                 ),
+            }
+            lines.push(Line::raw(""));
+        }
+
+        if let Some(usage) = &self.usage {
+            for detail in usage_detail_lines(usage) {
+                push_wrapped(
+                    &mut lines,
+                    "Usage",
+                    &detail,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                    width,
+                );
             }
             lines.push(Line::raw(""));
         }
@@ -1261,17 +1310,13 @@ fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>
 
         while !text.is_empty() {
             let remaining = width.saturating_sub(current_width).max(1);
-            let take = text
-                .char_indices()
-                .nth(remaining)
-                .map(|(index, _)| index)
-                .unwrap_or(text.len());
-            let chunk = text[..take].to_string();
+            let take = word_boundary_take(&text, remaining);
+            let chunk = text[..take].trim_start().to_string();
             lines
                 .last_mut()
                 .expect("line should exist")
                 .push(Span::styled(chunk, style));
-            current_width += text[..take].chars().count();
+            current_width += text[..take].trim_start().chars().count();
             text = text[take..].to_string();
 
             if !text.is_empty() {
@@ -1286,6 +1331,27 @@ fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>
     } else {
         lines
     }
+}
+
+fn word_boundary_take(text: &str, width: usize) -> usize {
+    let width = width.max(1);
+    let hard_limit = text
+        .char_indices()
+        .nth(width)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+
+    if hard_limit == text.len() {
+        return hard_limit;
+    }
+
+    text[..hard_limit]
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map(|(index, ch)| index + ch.len_utf8())
+        .filter(|index| *index > 0)
+        .unwrap_or(hard_limit)
 }
 
 fn parse_image_command(input: &str) -> ImageCommand {
@@ -1816,6 +1882,134 @@ fn wrap_line(line: &str, width: usize) -> Vec<String> {
     wrapped
 }
 
+fn usage_summary_from_conversation(conversation: &Conversation) -> Option<UsageSummary> {
+    let last = conversation.usage().map(usage_line);
+    let session = conversation.accumulated_usage().map(|mut usage| {
+        usage.cost = conversation.accumulated_cost();
+        usage_line(usage)
+    });
+    let context_tokens = conversation.token_count().map(format_token_count);
+
+    if last.is_none() && session.is_none() && context_tokens.is_none() {
+        None
+    } else {
+        Some(UsageSummary { last, session, context_tokens })
+    }
+}
+
+fn usage_line(usage: Usage) -> UsageLine {
+    UsageLine {
+        prompt_tokens: format_token_count(usage.prompt_tokens),
+        completion_tokens: format_token_count(usage.completion_tokens),
+        total_tokens: format_token_count(usage.total_tokens),
+        cached_tokens: format_token_count(usage.cached_tokens),
+        cost: usage.cost.map(format_cost),
+    }
+}
+
+fn format_token_count(count: TokenCount) -> String {
+    count.to_string()
+}
+
+fn format_cost(cost: f64) -> String {
+    if cost < 0.01 {
+        format!("${cost:.4}")
+    } else {
+        format!("${cost:.2}")
+    }
+}
+
+fn header_line(status: TuiStatus, usage: Option<&UsageSummary>, width: usize) -> Line<'static> {
+    let fixed_width = "Codegraff  ".chars().count() + compact_status(status).chars().count();
+    let usage_text = usage
+        .and_then(compact_usage_text)
+        .map(|text| {
+            let available_width = width.saturating_sub(fixed_width + 2);
+            if available_width == 0 {
+                String::new()
+            } else {
+                truncate_single_line(&text, available_width)
+            }
+        })
+        .unwrap_or_default();
+
+    let mut spans = vec![
+        Span::styled(
+            "Codegraff",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            compact_status(status),
+            Style::default().fg(status_color(status)),
+        ),
+    ];
+
+    if !usage_text.is_empty() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            usage_text,
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    Line::from(spans)
+}
+
+fn compact_usage_text(usage: &UsageSummary) -> Option<String> {
+    usage.session.as_ref().map(|line| {
+        let mut parts = vec![format!("tok {}", line.total_tokens)];
+        if line.cached_tokens != "0" {
+            parts.push(format!("cached {}", line.cached_tokens));
+        }
+        if let Some(cost) = &line.cost {
+            parts.push(cost.clone());
+        }
+        parts.join(" · ")
+    })
+}
+
+fn usage_detail_lines(usage: &UsageSummary) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if let Some(last) = &usage.last {
+        lines.push(format!(
+            "Last: prompt {} · completion {} · total {} · cached {}{}",
+            last.prompt_tokens,
+            last.completion_tokens,
+            last.total_tokens,
+            last.cached_tokens,
+            last.cost
+                .as_ref()
+                .map(|cost| format!(" · {cost}"))
+                .unwrap_or_default()
+        ));
+    }
+
+    if let Some(session) = &usage.session {
+        lines.push(format!(
+            "Session: prompt {} · completion {} · total {} · cached {}{}",
+            session.prompt_tokens,
+            session.completion_tokens,
+            session.total_tokens,
+            session.cached_tokens,
+            session
+                .cost
+                .as_ref()
+                .map(|cost| format!(" · {cost}"))
+                .unwrap_or_default()
+        ));
+    }
+
+    if let Some(context_tokens) = &usage.context_tokens {
+        lines.push(format!("Context: {context_tokens} tokens"));
+    }
+
+    lines
+}
+
 fn status_color(status: TuiStatus) -> Color {
     match status {
         TuiStatus::Ready => Color::Green,
@@ -1884,6 +2078,75 @@ impl Drop for TerminalGuard {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn usage_line_formats_token_usage_and_cost() {
+        let fixture = Usage {
+            prompt_tokens: TokenCount::Actual(120),
+            completion_tokens: TokenCount::Actual(30),
+            total_tokens: TokenCount::Actual(150),
+            cached_tokens: TokenCount::Actual(40),
+            cost: Some(0.0042),
+        };
+        let actual = usage_line(fixture);
+        let expected = UsageLine {
+            prompt_tokens: "120".to_string(),
+            completion_tokens: "30".to_string(),
+            total_tokens: "150".to_string(),
+            cached_tokens: "40".to_string(),
+            cost: Some("$0.0042".to_string()),
+        };
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn header_line_includes_compact_session_usage() {
+        let fixture = UsageSummary {
+            last: None,
+            session: Some(UsageLine {
+                prompt_tokens: "120".to_string(),
+                completion_tokens: "30".to_string(),
+                total_tokens: "150".to_string(),
+                cached_tokens: "40".to_string(),
+                cost: Some("$0.0042".to_string()),
+            }),
+            context_tokens: None,
+        };
+        let actual = render_line(header_line(TuiStatus::Finished, Some(&fixture), 80));
+        let expected = "Codegraff  Finished  tok 150 · cached 40 · $0.0042";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn usage_detail_lines_show_last_session_and_context() {
+        let fixture = UsageSummary {
+            last: Some(UsageLine {
+                prompt_tokens: "100".to_string(),
+                completion_tokens: "25".to_string(),
+                total_tokens: "125".to_string(),
+                cached_tokens: "10".to_string(),
+                cost: Some("$0.0030".to_string()),
+            }),
+            session: Some(UsageLine {
+                prompt_tokens: "300".to_string(),
+                completion_tokens: "75".to_string(),
+                total_tokens: "375".to_string(),
+                cached_tokens: "30".to_string(),
+                cost: Some("$0.0090".to_string()),
+            }),
+            context_tokens: Some("~500".to_string()),
+        };
+        let actual = usage_detail_lines(&fixture);
+        let expected = vec![
+            "Last: prompt 100 · completion 25 · total 125 · cached 10 · $0.0030".to_string(),
+            "Session: prompt 300 · completion 75 · total 375 · cached 30 · $0.0090".to_string(),
+            "Context: ~500 tokens".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn composer_wraps_long_input_and_adds_hint() {
@@ -2007,10 +2270,10 @@ mod tests {
     #[test]
     fn markdown_heading_and_bullets_are_rendered_with_symbols() {
         let mut fixture = Vec::new();
-        push_markdown_message_lines(&mut fixture, "Forge", "# Main\n## Title\n- item", 40);
+        push_markdown_message_lines(&mut fixture, "CodeGraff", "# Main\n## Title\n- item", 40);
         let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
         let expected = vec![
-            "Forge: ▰ Main".to_string(),
+            "CodeGraff: ▰ Main".to_string(),
             "  ◆ Title".to_string(),
             "  • item".to_string(),
         ];
@@ -2021,10 +2284,10 @@ mod tests {
     #[test]
     fn markdown_code_blocks_are_preserved() {
         let mut fixture = Vec::new();
-        push_markdown_message_lines(&mut fixture, "Forge", "```bash\ncargo test\n```", 40);
+        push_markdown_message_lines(&mut fixture, "CodeGraff", "```bash\ncargo test\n```", 40);
         let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
         let expected = vec![
-            "Forge: ╭─ bash".to_string(),
+            "CodeGraff: ╭─ bash".to_string(),
             "  │ cargo test".to_string(),
             "  ╰─".to_string(),
         ];
@@ -2037,17 +2300,17 @@ mod tests {
         let mut fixture = Vec::new();
         push_markdown_message_lines(
             &mut fixture,
-            "Forge",
+            "CodeGraff",
             "- [x] done\n- [ ] todo\n> quoted **text**\n---\n[docs](https://example.com)",
             60,
         );
         let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
         let expected = vec![
-            "Forge: ☑ done".to_string(),
+            "CodeGraff: ☑ done".to_string(),
             "  ☐ todo".to_string(),
             "  ▌ quoted text".to_string(),
             "  ────────────────────────".to_string(),
-            "  docs (https://example.com)".to_string(),
+            "  docs(https://example.com)".to_string(),
         ];
 
         assert_eq!(actual, expected);
@@ -2058,15 +2321,16 @@ mod tests {
         let mut fixture = Vec::new();
         push_markdown_message_lines(
             &mut fixture,
-            "Forge",
+            "CodeGraff",
             "- this is a long item that should wrap nicely",
             24,
         );
         let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
         let expected = vec![
-            "Forge: • this is a long ".to_string(),
-            "         item that should ".to_string(),
-            "         wrap nicely".to_string(),
+            "CodeGraff: • this is a ".to_string(),
+            "             long item ".to_string(),
+            "             that should ".to_string(),
+            "             wrap nicely".to_string(),
         ];
 
         assert_eq!(actual, expected);
