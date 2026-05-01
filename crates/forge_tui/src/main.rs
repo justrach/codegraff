@@ -42,6 +42,9 @@ const IMAGE_THUMBNAIL_COLUMNS: usize = 10;
 const IMAGE_THUMBNAIL_ROWS: usize = 3;
 const CODEGRAFF_LOG_FILE: &str = "codegraff.log";
 const TUI_INPUT_POLL_MILLIS: u64 = 50;
+const SCROLL_LINE_STEP: usize = 3;
+const SCROLL_PAGE_STEP: usize = 12;
+const MOUSE_SCROLL_STEP: usize = 5;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -75,10 +78,12 @@ struct Tui<A> {
     image_attachments: Vec<ImageAttachment>,
     usage: Option<UsageSummary>,
     active_model: Option<String>,
-    connect_dialog: Option<ConnectDialog>,
+    overlay: Option<Overlay>,
     status: TuiStatus,
     scroll_from_bottom: usize,
     composer_scroll_from_bottom: usize,
+    overlay_scroll_from_top: usize,
+    overlay_input: String,
     selected_tool: Option<usize>,
     is_streaming: bool,
     chat_task: Option<JoinHandle<()>>,
@@ -166,6 +171,7 @@ impl fmt::Display for ModelOption {
 enum ModelCommand {
     List,
     Select(usize),
+    Cancel,
     Invalid(String),
     NotCommand,
 }
@@ -185,6 +191,17 @@ enum ConnectCommand {
 #[derive(Clone, Debug)]
 struct ConnectDialog {
     step: ConnectStep,
+}
+
+#[derive(Clone, Debug)]
+struct ModelDialog {
+    options: Vec<ModelOption>,
+}
+
+#[derive(Clone, Debug)]
+enum Overlay {
+    Connect(ConnectDialog),
+    Model(ModelDialog),
 }
 
 #[derive(Clone, Debug)]
@@ -419,10 +436,12 @@ impl<A: API + 'static> Tui<A> {
             image_attachments: Vec::new(),
             usage: None,
             active_model: None,
-            connect_dialog: None,
+            overlay: None,
             status: TuiStatus::Ready,
             scroll_from_bottom: 0,
             composer_scroll_from_bottom: 0,
+            overlay_scroll_from_top: 0,
+            overlay_input: String::new(),
             selected_tool: None,
             is_streaming: false,
             chat_task: None,
@@ -483,6 +502,10 @@ impl<A: API + 'static> Tui<A> {
             return Ok(());
         }
 
+        if self.handle_selection_overlay_input(key).await? {
+            return Ok(());
+        }
+
         if is_clipboard_paste_key(key) {
             self.paste_from_clipboard();
             return Ok(());
@@ -520,7 +543,113 @@ impl<A: API + 'static> Tui<A> {
         Ok(())
     }
 
+    async fn handle_selection_overlay_input(&mut self, key: KeyEvent) -> Result<bool> {
+        if !self.selection_overlay_active() {
+            return Ok(false);
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.close_overlay();
+                Ok(true)
+            }
+            KeyCode::Up => {
+                self.overlay_scroll_from_top = self.overlay_scroll_from_top.saturating_sub(SCROLL_LINE_STEP);
+                Ok(true)
+            }
+            KeyCode::Down => {
+                self.overlay_scroll_from_top = self.overlay_scroll_from_top.saturating_add(SCROLL_LINE_STEP);
+                Ok(true)
+            }
+            KeyCode::PageUp => {
+                self.overlay_scroll_from_top = self.overlay_scroll_from_top.saturating_sub(SCROLL_PAGE_STEP);
+                Ok(true)
+            }
+            KeyCode::PageDown => {
+                self.overlay_scroll_from_top = self.overlay_scroll_from_top.saturating_add(SCROLL_PAGE_STEP);
+                Ok(true)
+            }
+            KeyCode::Home => {
+                self.overlay_scroll_from_top = 0;
+                Ok(true)
+            }
+            KeyCode::End => {
+                self.overlay_scroll_from_top = usize::MAX;
+                Ok(true)
+            }
+            KeyCode::Backspace => {
+                self.overlay_input.pop();
+                Ok(true)
+            }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                self.overlay_input.push(ch);
+                Ok(true)
+            }
+            KeyCode::Enter => {
+                self.submit_overlay_selection().await?;
+                Ok(true)
+            }
+            _ => Ok(true),
+        }
+    }
+
+    async fn submit_overlay_selection(&mut self) -> Result<()> {
+        let selection = self.overlay_input.trim().parse::<usize>();
+        let Ok(index) = selection else {
+            self.transcript.push(TranscriptEntry::Error(
+                "Type a number in the selection dialog, then press Enter.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return Ok(());
+        };
+
+        if index == 0 {
+            self.transcript.push(TranscriptEntry::Error(
+                "Selection must be greater than zero.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        self.overlay_input.clear();
+        self.overlay_scroll_from_top = 0;
+
+        match self.overlay.clone() {
+            Some(Overlay::Model(_)) => self.select_model(index).await,
+            Some(Overlay::Connect(dialog)) => match dialog.step {
+                ConnectStep::ProviderSelection { .. } => self.select_connect_provider(index).await,
+                ConnectStep::AuthMethodSelection { .. } => self.select_connect_auth_method(index).await,
+                ConnectStep::ApiKeyInput { .. } => {}
+            },
+            None => {}
+        }
+
+        Ok(())
+    }
+
+    fn selection_overlay_active(&self) -> bool {
+        matches!(
+            self.overlay,
+            Some(Overlay::Model(_))
+                | Some(Overlay::Connect(ConnectDialog {
+                    step: ConnectStep::ProviderSelection { .. } | ConnectStep::AuthMethodSelection { .. }
+                }))
+        )
+    }
+
+    fn close_overlay(&mut self) {
+        self.overlay = None;
+        self.overlay_scroll_from_top = 0;
+        self.overlay_input.clear();
+        self.status = TuiStatus::Ready;
+    }
+
     fn handle_mouse_scroll(&mut self, kind: MouseEventKind) {
+        if self.selection_overlay_active() {
+            handle_overlay_mouse_scroll_offset(&mut self.overlay_scroll_from_top, kind);
+            return;
+        }
+
         handle_mouse_scroll_offset(&mut self.scroll_from_bottom, kind);
     }
 
@@ -529,11 +658,17 @@ impl<A: API + 'static> Tui<A> {
     }
 
     fn push_composer_char(&mut self, ch: char) {
+        if self.overlay.is_some() {
+            return;
+        }
         self.composer.push(ch);
         self.composer_scroll_from_bottom = 0;
     }
 
     fn delete_composer_char(&mut self) {
+        if self.overlay.is_some() {
+            return;
+        }
         self.composer.pop();
         self.composer_scroll_from_bottom = 0;
     }
@@ -546,6 +681,11 @@ impl<A: API + 'static> Tui<A> {
     }
 
     fn handle_escape(&mut self) {
+        if self.overlay.is_some() {
+            self.close_overlay();
+            return;
+        }
+
         match escape_action(self.is_streaming) {
             EscapeAction::StopAgent => self.stop_agent(),
             EscapeAction::ClearComposer => self.clear_composer(),
@@ -567,10 +707,16 @@ impl<A: API + 'static> Tui<A> {
     }
 
     fn handle_paste(&mut self, text: String) {
-        self.apply_paste_text(text);
+        if self.overlay.is_none() {
+            self.apply_paste_text(text);
+        }
     }
 
     fn paste_from_clipboard(&mut self) {
+        if self.overlay.is_some() {
+            return;
+        }
+
         match read_clipboard_text() {
             Ok(text) if text.is_empty() => {
                 self.transcript
@@ -661,6 +807,12 @@ impl<A: API + 'static> Tui<A> {
                 self.composer_scroll_from_bottom = 0;
                 return Ok(());
             }
+            ModelCommand::Cancel => {
+                self.close_overlay();
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
             ModelCommand::Invalid(message) => {
                 self.transcript.push(TranscriptEntry::Error(message));
                 self.scroll_from_bottom = 0;
@@ -701,7 +853,7 @@ impl<A: API + 'static> Tui<A> {
                 return Ok(());
             }
             ConnectCommand::Cancel => {
-                self.connect_dialog = None;
+                self.close_overlay();
                 self.transcript
                     .push(TranscriptEntry::Status("Connect cancelled.".to_string()));
                 self.composer.clear();
@@ -857,21 +1009,16 @@ impl<A: API + 'static> Tui<A> {
 
     async fn show_models(&mut self) {
         match self.model_options().await {
-            Ok(models) if models.is_empty() => self.transcript.push(TranscriptEntry::Status(
-                "No registered provider models found. Connect a provider in CodeGraff with /connect first."
-                    .to_string(),
-            )),
-            Ok(models) => {
+            Ok(models) if models.is_empty() => {
                 self.transcript.push(TranscriptEntry::Status(
-                    "Available models. Type /models <number> to switch.".to_string(),
+                    "No registered provider models found. Connect a provider in CodeGraff with /connect first."
+                        .to_string(),
                 ));
-                for (index, option) in models.iter().enumerate() {
-                    self.transcript
-                        .push(TranscriptEntry::Status(format_model_option(
-                            index + 1,
-                            option,
-                        )));
-                }
+                self.overlay = None;
+            }
+            Ok(models) => {
+                self.overlay = Some(Overlay::Model(ModelDialog { options: models }));
+                self.status = TuiStatus::Ready;
             }
             Err(error) => {
                 self.log_error("model list failed", &error);
@@ -906,6 +1053,7 @@ impl<A: API + 'static> Tui<A> {
                 {
                     Ok(()) => {
                         self.usage = None;
+                        self.overlay = None;
                         self.active_model = Some(model_label(option));
                         self.transcript.push(TranscriptEntry::Status(format!(
                             "Switched to model: {} / {}",
@@ -966,12 +1114,9 @@ impl<A: API + 'static> Tui<A> {
                     .to_string(),
             )),
             Ok(providers) => {
-                self.connect_dialog = Some(ConnectDialog {
-                    step: ConnectStep::ProviderSelection { providers: providers.clone() },
-                });
-                self.transcript.push(TranscriptEntry::Status(
-                    "Connect opened. Pick a provider with /connect <number>.".to_string(),
-                ));
+                self.overlay = Some(Overlay::Connect(ConnectDialog {
+                    step: ConnectStep::ProviderSelection { providers },
+                }));
             }
             Err(error) => {
                 self.log_error("connect provider list failed", &error);
@@ -996,7 +1141,7 @@ impl<A: API + 'static> Tui<A> {
     }
 
     async fn select_connect_provider(&mut self, index: usize) {
-        let Some(dialog) = self.connect_dialog.as_ref() else {
+        let Some(Overlay::Connect(dialog)) = self.overlay.as_ref() else {
             self.transcript.push(TranscriptEntry::Error(
                 "No connect dialog is open. Type /connect first.".to_string(),
             ));
@@ -1040,9 +1185,9 @@ impl<A: API + 'static> Tui<A> {
             };
             self.begin_connect_auth(provider, method).await;
         } else {
-            self.connect_dialog = Some(ConnectDialog {
+            self.overlay = Some(Overlay::Connect(ConnectDialog {
                 step: ConnectStep::AuthMethodSelection { provider, methods },
-            });
+            }));
             self.transcript.push(TranscriptEntry::Status(
                 "Pick an auth method with /connect auth <number>.".to_string(),
             ));
@@ -1051,7 +1196,7 @@ impl<A: API + 'static> Tui<A> {
     }
 
     async fn select_connect_auth_method(&mut self, index: usize) {
-        let Some(dialog) = self.connect_dialog.as_ref() else {
+        let Some(Overlay::Connect(dialog)) = self.overlay.as_ref() else {
             self.transcript.push(TranscriptEntry::Error(
                 "No connect dialog is open. Type /connect first.".to_string(),
             ));
@@ -1087,9 +1232,9 @@ impl<A: API + 'static> Tui<A> {
         {
             Ok(AuthContextRequest::ApiKey(request)) => {
                 let form = build_api_key_form(&provider_id, &request);
-                self.connect_dialog = Some(ConnectDialog {
+                self.overlay = Some(Overlay::Connect(ConnectDialog {
                     step: ConnectStep::ApiKeyInput { provider, request, form },
-                });
+                }));
                 self.transcript.push(TranscriptEntry::Status(format!(
                     "Editing {provider_id}. Set fields with /connect set <field>=<value>, then /connect submit."
                 )));
@@ -1099,18 +1244,18 @@ impl<A: API + 'static> Tui<A> {
                     .verification_uri_complete
                     .as_ref()
                     .unwrap_or(&request.verification_uri);
+                self.overlay = None;
                 self.transcript.push(TranscriptEntry::Status(format!(
                     "Open {display_uri} and enter code {}. Complete this CodeGraff OAuth flow with `forge provider login {provider_id}` for now.",
                     request.user_code
                 )));
-                self.connect_dialog = None;
             }
             Ok(AuthContextRequest::Code(request)) => {
+                self.overlay = None;
                 self.transcript.push(TranscriptEntry::Status(format!(
                     "Open {}. Complete this CodeGraff OAuth code flow with `forge provider login {provider_id}` for now.",
                     request.authorization_url
                 )));
-                self.connect_dialog = None;
             }
             Err(error) => {
                 self.log_error("connect auth init failed", &error);
@@ -1124,7 +1269,7 @@ impl<A: API + 'static> Tui<A> {
 
     fn update_connect_field(&mut self, update: String) {
         let parsed = parse_connect_field_update(&update);
-        let Some(dialog) = &mut self.connect_dialog else {
+        let Some(Overlay::Connect(dialog)) = &mut self.overlay else {
             self.transcript.push(TranscriptEntry::Error(
                 "No connect dialog is open. Type /connect first.".to_string(),
             ));
@@ -1178,7 +1323,7 @@ impl<A: API + 'static> Tui<A> {
     }
 
     async fn submit_connect_dialog(&mut self) {
-        let Some(dialog) = self.connect_dialog.clone() else {
+        let Some(Overlay::Connect(dialog)) = self.overlay.clone() else {
             self.transcript.push(TranscriptEntry::Error(
                 "No connect dialog is open. Type /connect first.".to_string(),
             ));
@@ -1227,7 +1372,7 @@ impl<A: API + 'static> Tui<A> {
             .await
         {
             Ok(()) => {
-                self.connect_dialog = None;
+                self.overlay = None;
                 self.transcript.push(TranscriptEntry::Status(format!(
                     "{provider_id} connected successfully. Use /models to pick a model."
                 )));
@@ -1541,19 +1686,31 @@ impl<A: API + 'static> Tui<A> {
             .scroll((composer_scroll, 0));
         frame.render_widget(composer, chunks[2]);
 
-        if let Some(dialog) = &self.connect_dialog {
-            let dialog_area = connect_dialog_area(area);
+        if let Some(overlay) = &self.overlay {
+            let dialog_area = overlay_area(area);
             frame.render_widget(Clear, dialog_area);
-            let dialog = Paragraph::new(connect_dialog_lines(
-                dialog,
-                dialog_area.width.saturating_sub(2) as usize,
-            ))
-            .block(
-                Block::default()
-                    .title("Connect provider")
-                    .borders(Borders::ALL),
-            );
-            frame.render_widget(dialog, dialog_area);
+            match overlay {
+                Overlay::Connect(dialog) => {
+                    let dialog = Paragraph::new(connect_dialog_lines(
+                        dialog,
+                        dialog_area.width.saturating_sub(2) as usize,
+                    ))
+                    .block(
+                        Block::default()
+                            .title("Connect provider")
+                            .borders(Borders::ALL),
+                    );
+                    frame.render_widget(dialog, dialog_area);
+                }
+                Overlay::Model(dialog) => {
+                    let dialog = Paragraph::new(model_dialog_lines(
+                        dialog,
+                        dialog_area.width.saturating_sub(2) as usize,
+                    ))
+                    .block(Block::default().title("Select model").borders(Borders::ALL));
+                    frame.render_widget(dialog, dialog_area);
+                }
+            }
         }
     }
 
@@ -1674,10 +1831,15 @@ fn parse_model_command(input: &str) -> ModelCommand {
         return ModelCommand::List;
     }
 
+    if selector == "cancel" {
+        return ModelCommand::Cancel;
+    }
+
     match selector.parse::<usize>() {
         Ok(index) if index > 0 => ModelCommand::Select(index),
         _ => ModelCommand::Invalid(
-            "Usage: /models to list models, then /models <number> to switch.".to_string(),
+            "Usage: /models to choose models, /models <number> to switch, or /models cancel."
+                .to_string(),
         ),
     }
 }
@@ -1798,6 +1960,21 @@ fn allows_local_api_key(provider_id: &ProviderId) -> bool {
     )
 }
 
+fn model_dialog_lines(dialog: &ModelDialog, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    push_dialog_line(&mut lines, "Choose model", width);
+    push_dialog_line(
+        &mut lines,
+        "Type /models <number> to switch, Esc or /models cancel to close.",
+        width,
+    );
+    lines.push(Line::raw(""));
+    for (index, option) in dialog.options.iter().enumerate() {
+        push_dialog_line(&mut lines, &format_model_option(index + 1, option), width);
+    }
+    lines
+}
+
 fn connect_dialog_lines(dialog: &ConnectDialog, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match &dialog.step {
@@ -1910,7 +2087,7 @@ fn auth_method_label(method: &AuthMethod) -> &'static str {
     }
 }
 
-fn connect_dialog_area(area: Rect) -> Rect {
+fn overlay_area(area: Rect) -> Rect {
     let width = area.width.min(96).min(area.width.saturating_sub(4)).max(1);
     let height = area
         .height
@@ -3357,7 +3534,8 @@ mod tests {
         let fixture = "/models abc";
         let actual = parse_model_command(fixture);
         let expected = ModelCommand::Invalid(
-            "Usage: /models to list models, then /models <number> to switch.".to_string(),
+            "Usage: /models to choose models, /models <number> to switch, or /models cancel."
+                .to_string(),
         );
 
         assert_eq!(actual, expected);
@@ -3977,7 +4155,7 @@ mod tests {
         let actual = compact_tool_output(&fixture);
         let expected_prefix = format!(
             "Large output: 1 lines, {} bytes. Showing first 1 lines.",
-            TOOL_OUTPUT_BYTE_LIMIT + 2
+            TOOL_OUTPUT_BYTE_LIMIT + 1
         );
 
         assert!(actual.starts_with(&expected_prefix));
