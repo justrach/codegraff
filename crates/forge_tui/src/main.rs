@@ -1349,3 +1349,196 @@ fn parse_pasted_images(text: &str) -> Vec<ImageAttachment> {
         .filter_map(|line| pasted_image_path(line).map(ImageAttachment::new))
         .collect()
 }
+
+fn pasted_image_path(text: &str) -> Option<String> {
+    let path = text
+        .trim()
+        .trim_matches('"')
+        .trim_start_matches("file://")
+        .to_string();
+    is_supported_image_path(Path::new(&path)).then_some(path)
+}
+
+fn normalize_paste_text(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn build_display_prompt(prompt: &str, images: &[ImageAttachment]) -> String {
+    let image_summary = match images.len() {
+        0 => String::new(),
+        1 => format!("[1 image: {}]", image_display_name(&images[0])),
+        count => format!("[{count} images attached]"),
+    };
+
+    match (prompt.trim().is_empty(), image_summary.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => image_summary,
+        (false, true) => prompt.trim().to_string(),
+        (false, false) => format!("{}\n{}", prompt.trim(), image_summary),
+    }
+}
+
+fn build_composer_lines(
+    composer: &str,
+    images: &[ImageAttachment],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if images.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("Hint: ", Style::default().fg(Color::DarkGray)),
+            Span::raw("paste image path (Cmd+V/Ctrl+V) or /image <path>"),
+        ]));
+    } else {
+        let summary = match images.len() {
+            1 => format!("1 image attached"),
+            count => format!("{count} images attached"),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                summary,
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  Enter sends · Shift+↑↓ scroll",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        for (index, image) in images.iter().enumerate() {
+            push_image_chip_lines(&mut lines, image, index + 1, width);
+        }
+    }
+
+    push_wrapped(
+        &mut lines,
+        ">",
+        composer,
+        Style::default().fg(Color::Green),
+        width,
+    );
+    lines
+}
+
+fn composer_height(terminal_height: u16, composer_line_count: usize) -> u16 {
+    let desired = composer_line_count
+        .saturating_add(2)
+        .clamp(3, MAX_COMPOSER_INNER_HEIGHT.saturating_add(2));
+    let max_height = terminal_height.saturating_sub(6).max(3) as usize;
+    desired.min(max_height).max(3) as u16
+}
+
+fn chat_title(width: u16) -> &'static str {
+    if width < 48 {
+        "Chat"
+    } else if width < 72 {
+        "Chat  ↑↓ scroll  Tab tool"
+    } else {
+        "Chat  ↑↓ scroll  Tab tool  Ctrl+E expand"
+    }
+}
+
+fn prompt_title(width: u16) -> &'static str {
+    if width < 64 {
+        "Prompt"
+    } else {
+        "Prompt  Shift/Cmd+↑↓ scroll  Cmd+⌫ clear  Opt+⌫ word"
+    }
+}
+
+fn spawn_input_reader(tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        loop {
+            match event::poll(Duration::from_millis(50)) {
+                Ok(true) => match event::read() {
+                    Ok(TerminalEvent::Key(key)) => {
+                        if tx.send(AppEvent::Input(key)).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(TerminalEvent::Paste(text)) => {
+                        if tx.send(AppEvent::Paste(text)).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        let _ = tx.send(AppEvent::Chat(Err(error.into())));
+                        return;
+                    }
+                },
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = tx.send(AppEvent::Chat(Err(error.into())));
+                    return;
+                }
+            }
+        }
+    });
+}
+
+fn is_clipboard_paste_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('v' | 'V'))
+        && (key.modifiers.contains(KeyModifiers::CONTROL)
+            || key.modifiers.contains(KeyModifiers::SUPER))
+}
+
+fn read_clipboard_text() -> Result<String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let text = arboard::Clipboard::new()?.get_text()?;
+        Ok(text)
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        anyhow::bail!("clipboard access is not supported on Android")
+    }
+}
+
+fn read_clipboard_image() -> Result<ImageAttachment> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let image = arboard::Clipboard::new()?.get_image()?;
+        let path = clipboard_image_path();
+        write_rgba_png(
+            &path,
+            image.width as u32,
+            image.height as u32,
+            image.bytes.as_ref(),
+        )?;
+        Ok(ImageAttachment::new(path.to_string_lossy()))
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        anyhow::bail!("clipboard image access is not supported on Android")
+    }
+}
+
+fn clipboard_image_path() -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!("codegraff-clipboard-{timestamp}.png"))
+}
+
+fn write_rgba_png(path: &Path, width: u32, height: u32, bytes: &[u8]) -> Result<()> {
+    let expected_len = width as usize * height as usize * 4;
+    anyhow::ensure!(
+        bytes.len() == expected_len,
+        "clipboard image had {} bytes, expected {expected_len} for {width}x{height} RGBA",
+        bytes.len()
+    );
+
+    let image = image::RgbaImage::from_raw(width, height, bytes.to_vec())
+        .context("Failed to construct RGBA clipboard image")?;
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .context("Failed to encode clipboard image as PNG")?;
+    std::fs::write(path, encoded.into_inner())
+        .with_context(|| format!("Failed to write clipboard image to {}", path.display()))?;
+    Ok(())
