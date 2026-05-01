@@ -3258,7 +3258,9 @@ fn compact_tool_output(text: &str) -> String {
 }
 
 fn sanitize_tool_output(text: &str) -> String {
-    text.chars()
+    let stripped = strip_ansi_escape_sequences(text);
+    stripped
+        .chars()
         .map(|ch| match ch {
             '\n' | '\t' => ch,
             '\u{fffd}' => ' ',
@@ -3270,6 +3272,34 @@ fn sanitize_tool_output(text: &str) -> String {
         .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn strip_ansi_escape_sequences(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            output.push(ch);
+            continue;
+        }
+
+        if chars.next_if_eq(&'[').is_none() {
+            continue;
+        }
+
+        for ch in chars.by_ref() {
+            if ch.is_whitespace() {
+                return output;
+            }
+
+            if ('@'..='~').contains(&ch) {
+                break;
+            }
+        }
+    }
+
+    output
 }
 
 fn push_tool_lines(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, selected: bool, width: usize) {
@@ -4063,6 +4093,25 @@ mod tests {
         let fixture = "src/main.zig                                                           src/execd/main.zig";
         let actual = sanitize_tool_output(fixture);
         let expected = "src/main.zig src/execd/main.zig";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sanitize_tool_output_strips_ansi_escape_sequences() {
+        let fixture =
+            "\u{1b}[36m\u{1b}[2m\u{1b}[32m✓\u{1b}[0m \u{1b}[1msearch\u{1b}[0m 'permissions'";
+        let actual = sanitize_tool_output(fixture);
+        let expected = "✓ search 'permissions'";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sanitize_tool_output_drops_incomplete_ansi_sequences() {
+        let fixture = "before\u{1b}[36 after";
+        let actual = sanitize_tool_output(fixture);
+        let expected = "before";
 
         assert_eq!(actual, expected);
     }

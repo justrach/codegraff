@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -29,6 +30,13 @@ const VERSION: &str = match option_env!("APP_VERSION") {
     Some(val) => val,
     None => env!("CARGO_PKG_VERSION"),
 };
+const CODEDB_STDIO_COMMAND: &str = "codedb";
+
+#[cfg(windows)]
+const CODEDB_BUNDLED_BINARY: &str = "codedb.exe";
+
+#[cfg(not(windows))]
+const CODEDB_BUNDLED_BINARY: &str = "codedb";
 
 type RmcpClient = RunningService<RoleClient, InitializeRequestParam>;
 
@@ -146,7 +154,7 @@ impl ForgeMcpClient {
         let config = self.get_resolved_config()?;
         let client = match config {
             McpServerConfig::Stdio(stdio) => {
-                let mut cmd = Command::new(stdio.command.clone());
+                let mut cmd = Command::new(resolve_stdio_command(&stdio.command));
 
                 for (key, value) in &stdio.env {
                     cmd.env(key, value);
@@ -605,6 +613,27 @@ impl McpClientInfra for ForgeMcpClient {
     }
 }
 
+fn resolve_stdio_command(command: &str) -> String {
+    resolve_stdio_command_with_current_exe(command, std::env::current_exe().ok())
+}
+
+fn resolve_stdio_command_with_current_exe(command: &str, current_exe: Option<PathBuf>) -> String {
+    if command != CODEDB_STDIO_COMMAND {
+        return command.to_string();
+    }
+
+    bundled_codedb_path(current_exe.as_deref())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| command.to_string())
+}
+
+fn bundled_codedb_path(current_exe: Option<&Path>) -> Option<PathBuf> {
+    current_exe
+        .and_then(Path::parent)
+        .map(|parent| parent.join(CODEDB_BUNDLED_BINARY))
+        .filter(|path| path.is_file())
+}
+
 /// Resolves mustache templates in McpHttpServer headers using Handlebars
 /// and provided environment variables
 fn resolve_http_templates(
@@ -875,20 +904,57 @@ mod tests {
 
     #[test]
     fn test_resolve_http_templates_preserves_url_and_disable() {
-        let env_vars = BTreeMap::from([("TOKEN".to_string(), "test".to_string())]);
-
-        let http = McpHttpServer {
+        let fixture = McpHttpServer {
             url: "https://test.example.com".to_string(),
             headers: BTreeMap::from([("Auth".to_string(), "{{env.TOKEN}}".to_string())]),
             timeout: None,
             disable: true,
             oauth: Default::default(),
         };
+        let env_vars = BTreeMap::from([("TOKEN".to_string(), "test".to_string())]);
+        let actual = resolve_http_templates(fixture, &env_vars).unwrap();
+        let expected = McpHttpServer {
+            url: "https://test.example.com".to_string(),
+            headers: BTreeMap::from([("Auth".to_string(), "test".to_string())]),
+            timeout: None,
+            disable: true,
+            oauth: Default::default(),
+        };
 
-        let resolved = resolve_http_templates(http, &env_vars).unwrap();
+        assert_eq!(actual, expected);
+    }
 
-        assert_eq!(resolved.url, "https://test.example.com");
-        assert_eq!(resolved.disable, true);
-        assert_eq!(resolved.headers.get("Auth"), Some(&"test".to_string()));
+    #[test]
+    fn bundled_codedb_path_returns_sibling_binary() {
+        let fixture = tempfile::tempdir().unwrap();
+        let current_exe = fixture.path().join("forge");
+        let expected = fixture.path().join(CODEDB_BUNDLED_BINARY);
+        std::fs::write(&expected, "").unwrap();
+        let actual = bundled_codedb_path(Some(&current_exe));
+
+        assert_eq!(actual, Some(expected));
+    }
+
+    #[test]
+    fn bundled_codedb_command_resolves_next_to_current_binary() {
+        let fixture = tempfile::tempdir().unwrap();
+        let current_exe = fixture.path().join("forge");
+        let expected = fixture.path().join(CODEDB_BUNDLED_BINARY);
+        std::fs::write(&expected, "").unwrap();
+        let actual = PathBuf::from(resolve_stdio_command_with_current_exe(
+            CODEDB_STDIO_COMMAND,
+            Some(current_exe),
+        ));
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn non_codedb_command_is_not_rewritten() {
+        let fixture = Some(PathBuf::from("/opt/codegraff/forge"));
+        let actual = resolve_stdio_command_with_current_exe("node", fixture);
+        let expected = "node".to_string();
+
+        assert_eq!(actual, expected);
     }
 }

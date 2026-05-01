@@ -1,14 +1,31 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
 use bytes::Bytes;
-use forge_app::domain::{McpConfig, Scope};
+use forge_app::domain::{McpConfig, McpServerConfig, Scope, ServerName};
 use forge_app::{
     EnvironmentInfra, FileInfoInfra, FileReaderInfra, FileWriterInfra, KVStore, McpConfigManager,
     McpServerInfra,
 };
 use merge::Merge;
+
+const BUNDLED_CODEDB_SERVER_NAME: &str = "codedb";
+const BUNDLED_CODEDB_COMMAND: &str = "codedb";
+const BUNDLED_CODEDB_MCP_ARG: &str = "mcp";
+
+fn bundled_codedb_config() -> McpConfig {
+    BTreeMap::from([(
+        ServerName::from(BUNDLED_CODEDB_SERVER_NAME.to_string()),
+        McpServerConfig::new_stdio(
+            BUNDLED_CODEDB_COMMAND,
+            vec![BUNDLED_CODEDB_MCP_ARG.to_string()],
+            None,
+        ),
+    )])
+    .into()
+}
 
 pub struct ForgeMcpManager<I> {
     infra: Arc<I>,
@@ -65,7 +82,7 @@ where
                     env.mcp_user_config().as_path().to_path_buf(),
                     env.mcp_local_config().as_path().to_path_buf(),
                 ];
-                let mut config = McpConfig::default();
+                let mut config = bundled_codedb_config();
                 for path in paths {
                     if self.infra.is_file(&path).await.unwrap_or_default() {
                         let new_config = self.read_config(&path).await.context(format!(
@@ -94,5 +111,51 @@ where
         self.infra.cache_clear().await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn bundled_codedb_config_adds_stdio_mcp_server() {
+        let fixture = bundled_codedb_config();
+        let actual = fixture
+            .mcp_servers
+            .get(&ServerName::from(BUNDLED_CODEDB_SERVER_NAME.to_string()))
+            .cloned();
+        let expected = Some(McpServerConfig::new_stdio(
+            BUNDLED_CODEDB_COMMAND,
+            vec![BUNDLED_CODEDB_MCP_ARG.to_string()],
+            None,
+        ));
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn user_codedb_config_overrides_bundled_default() {
+        let mut fixture = bundled_codedb_config();
+        let user_config = BTreeMap::from([(
+            ServerName::from(BUNDLED_CODEDB_SERVER_NAME.to_string()),
+            McpServerConfig::new_stdio("custom-codedb", vec!["mcp".to_string()], None),
+        )])
+        .into();
+        fixture.merge(user_config);
+
+        let actual = fixture
+            .mcp_servers
+            .get(&ServerName::from(BUNDLED_CODEDB_SERVER_NAME.to_string()))
+            .cloned();
+        let expected = Some(McpServerConfig::new_stdio(
+            "custom-codedb",
+            vec!["mcp".to_string()],
+            None,
+        ));
+
+        assert_eq!(actual, expected);
     }
 }

@@ -83,17 +83,39 @@ impl From<ReleaseBuilderJob> for Job {
 
         if let Some(release_id) = value.release_id {
             job = job
-                // Rename binary to target name
                 .add_step(
-                    Step::new("Copy Binary")
-                        .run("cp ${{ matrix.binary_path }} ${{ matrix.binary_name }}"),
+                    Step::new("Download CodeDB")
+                        .run(
+                            r#"if [ -n "${{ matrix.codedb_asset }}" ]; then
+  curl -fL "https://github.com/justrach/codedb/releases/latest/download/${{ matrix.codedb_asset }}" -o codedb
+  chmod +x codedb
+fi"#,
+                        )
+                        .if_condition(Expression::new("${{ matrix.codedb_asset != '' }}")),
+                )
+                // Package the release binary with the matching CodeDB MCP server.
+                .add_step(
+                    Step::new("Package Binary")
+                        .run(
+                            r#"mkdir -p dist
+cp ${{ matrix.binary_path }} dist/${{ matrix.binary_name }}
+if [ -n "${{ matrix.codedb_asset }}" ]; then
+  cp codedb dist/codedb
+  tar -C dist -czf ${{ matrix.binary_name }}.tar.gz ${{ matrix.binary_name }} codedb
+else
+  cp dist/${{ matrix.binary_name }} ${{ matrix.binary_name }}
+fi"#,
+                        ),
                 )
                 // Upload to the generated github release id
                 .add_step(
                     Step::new("Upload to Release")
                         .uses("xresloader", "upload-to-github-release", "v1")
                         .add_with(("release_id", release_id))
-                        .add_with(("file", "${{ matrix.binary_name }}"))
+                        .add_with((
+                            "file",
+                            "${{ matrix.codedb_asset != '' && format('{0}.tar.gz', matrix.binary_name) || matrix.binary_name }}",
+                        ))
                         .add_with(("overwrite", "true")),
                 );
         }

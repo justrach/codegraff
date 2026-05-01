@@ -124,46 +124,55 @@ jobs:
         include:
         - binary_name: forge-x86_64-unknown-linux-musl
           binary_path: target/x86_64-unknown-linux-musl/release/forge
+          codedb_asset: codedb-linux-x86_64
           cross: 'true'
           os: ubuntu-latest
           target: x86_64-unknown-linux-musl
         - binary_name: forge-aarch64-unknown-linux-musl
           binary_path: target/aarch64-unknown-linux-musl/release/forge
+          codedb_asset: codedb-linux-arm64
           cross: 'true'
           os: ubuntu-latest
           target: aarch64-unknown-linux-musl
         - binary_name: forge-x86_64-unknown-linux-gnu
           binary_path: target/x86_64-unknown-linux-gnu/release/forge
+          codedb_asset: codedb-linux-x86_64
           cross: 'false'
           os: ubuntu-latest
           target: x86_64-unknown-linux-gnu
         - binary_name: forge-aarch64-unknown-linux-gnu
           binary_path: target/aarch64-unknown-linux-gnu/release/forge
+          codedb_asset: codedb-linux-arm64
           cross: 'true'
           os: ubuntu-latest
           target: aarch64-unknown-linux-gnu
         - binary_name: forge-x86_64-apple-darwin
           binary_path: target/x86_64-apple-darwin/release/forge
+          codedb_asset: codedb-darwin-x86_64
           cross: 'false'
           os: macos-latest
           target: x86_64-apple-darwin
         - binary_name: forge-aarch64-apple-darwin
           binary_path: target/aarch64-apple-darwin/release/forge
+          codedb_asset: codedb-darwin-arm64
           cross: 'false'
           os: macos-latest
           target: aarch64-apple-darwin
         - binary_name: forge-x86_64-pc-windows-msvc.exe
           binary_path: target/x86_64-pc-windows-msvc/release/forge.exe
+          codedb_asset: ''
           cross: 'false'
           os: windows-latest
           target: x86_64-pc-windows-msvc
         - binary_name: forge-aarch64-pc-windows-msvc.exe
           binary_path: target/aarch64-pc-windows-msvc/release/forge.exe
+          codedb_asset: ''
           cross: 'false'
           os: windows-latest
           target: aarch64-pc-windows-msvc
         - binary_name: forge-aarch64-linux-android
           binary_path: target/aarch64-linux-android/release/forge
+          codedb_asset: ''
           cross: 'true'
           os: ubuntu-latest
           target: aarch64-linux-android
@@ -197,13 +206,28 @@ jobs:
         RUSTFLAGS: ${{ env.RUSTFLAGS }}
         POSTHOG_API_SECRET: ${{secrets.POSTHOG_API_SECRET}}
         APP_VERSION: ${{ needs.draft_release.outputs.crate_release_name }}
-    - name: Copy Binary
-      run: cp ${{ matrix.binary_path }} ${{ matrix.binary_name }}
+    - name: Download CodeDB
+      if: ${{ matrix.codedb_asset != '' }}
+      run: |-
+        if [ -n "${{ matrix.codedb_asset }}" ]; then
+          curl -fL "https://github.com/justrach/codedb/releases/latest/download/${{ matrix.codedb_asset }}" -o codedb
+          chmod +x codedb
+        fi
+    - name: Package Binary
+      run: |-
+        mkdir -p dist
+        cp ${{ matrix.binary_path }} dist/${{ matrix.binary_name }}
+        if [ -n "${{ matrix.codedb_asset }}" ]; then
+          cp codedb dist/codedb
+          tar -C dist -czf ${{ matrix.binary_name }}.tar.gz ${{ matrix.binary_name }} codedb
+        else
+          cp dist/${{ matrix.binary_name }} ${{ matrix.binary_name }}
+        fi
     - name: Upload to Release
       uses: xresloader/upload-to-github-release@v1
       with:
         release_id: ${{ needs.draft_release.outputs.crate_release_id }}
-        file: ${{ matrix.binary_name }}
+        file: ${{ matrix.codedb_asset != '' && format('{0}.tar.gz', matrix.binary_name) || matrix.binary_name }}
         overwrite: 'true'
   build_release_pr:
     needs:
@@ -219,46 +243,55 @@ jobs:
         include:
         - binary_name: forge-x86_64-unknown-linux-musl
           binary_path: target/x86_64-unknown-linux-musl/release/forge
+          codedb_asset: codedb-linux-x86_64
           cross: 'true'
           os: ubuntu-latest
           target: x86_64-unknown-linux-musl
         - binary_name: forge-aarch64-unknown-linux-musl
           binary_path: target/aarch64-unknown-linux-musl/release/forge
+          codedb_asset: codedb-linux-arm64
           cross: 'true'
           os: ubuntu-latest
           target: aarch64-unknown-linux-musl
         - binary_name: forge-x86_64-unknown-linux-gnu
           binary_path: target/x86_64-unknown-linux-gnu/release/forge
+          codedb_asset: codedb-linux-x86_64
           cross: 'false'
           os: ubuntu-latest
           target: x86_64-unknown-linux-gnu
         - binary_name: forge-aarch64-unknown-linux-gnu
           binary_path: target/aarch64-unknown-linux-gnu/release/forge
+          codedb_asset: codedb-linux-arm64
           cross: 'true'
           os: ubuntu-latest
           target: aarch64-unknown-linux-gnu
         - binary_name: forge-x86_64-apple-darwin
           binary_path: target/x86_64-apple-darwin/release/forge
+          codedb_asset: codedb-darwin-x86_64
           cross: 'false'
           os: macos-latest
           target: x86_64-apple-darwin
         - binary_name: forge-aarch64-apple-darwin
           binary_path: target/aarch64-apple-darwin/release/forge
+          codedb_asset: codedb-darwin-arm64
           cross: 'false'
           os: macos-latest
           target: aarch64-apple-darwin
         - binary_name: forge-x86_64-pc-windows-msvc.exe
           binary_path: target/x86_64-pc-windows-msvc/release/forge.exe
+          codedb_asset: ''
           cross: 'false'
           os: windows-latest
           target: x86_64-pc-windows-msvc
         - binary_name: forge-aarch64-pc-windows-msvc.exe
           binary_path: target/aarch64-pc-windows-msvc/release/forge.exe
+          codedb_asset: ''
           cross: 'false'
           os: windows-latest
           target: aarch64-pc-windows-msvc
         - binary_name: forge-aarch64-linux-android
           binary_path: target/aarch64-linux-android/release/forge
+          codedb_asset: ''
           cross: 'true'
           os: ubuntu-latest
           target: aarch64-linux-android
