@@ -1928,3 +1928,196 @@ mod tests {
     fn image_command_rejects_unsupported_image_paths() {
         let fixture = "/image /tmp/archive.zip";
         let actual = parse_image_command(fixture);
+        let expected = ImageCommand::Invalid(
+            "Unsupported image type: /tmp/archive.zip. Supported: png, jpg, jpeg, webp".to_string(),
+        );
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn chat_prompt_includes_image_tags_for_backend_attachments() {
+        let fixture = vec![
+            ImageAttachment::new("/tmp/a.png"),
+            ImageAttachment::new("b.webp"),
+        ];
+        let actual = build_chat_prompt("describe these", &fixture);
+        let expected = "describe these\n\n@[/tmp/a.png] @[b.webp]";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn display_prompt_summarizes_attached_images() {
+        let fixture = vec![ImageAttachment::new("/tmp/a.png")];
+        let actual = build_display_prompt("describe this", &fixture);
+        let expected = "describe this\n[1 image: a.png]";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn composer_lists_attached_images_as_compact_chips() {
+        let fixture = vec![ImageAttachment {
+            path: "/tmp/a.png".to_string(),
+            preview: Some(ImagePreview {
+                width: 2,
+                height: 2,
+                thumbnail: vec!["█▓".to_string(), "▒░".to_string()],
+            }),
+        }];
+        let actual = rendered_composer_lines("describe", &fixture, 40);
+        let expected = vec![
+            "1 image attached  Enter sends · Shift+↑↓ scroll".to_string(),
+            "  ◼ Img 1 a.png · 2x2".to_string(),
+            ">: describe".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn image_compact_label_mentions_loaded_preview_dimensions() {
+        let fixture = ImageAttachment {
+            path: "/tmp/a.png".to_string(),
+            preview: Some(ImagePreview { width: 10, height: 20, thumbnail: Vec::new() }),
+        };
+        let actual = image_compact_label(&fixture);
+        let expected = "a.png · 10x20";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn image_summary_does_not_render_large_preview_blocks_in_chat() {
+        let fixture = ImageAttachment {
+            path: "/tmp/a.png".to_string(),
+            preview: Some(ImagePreview {
+                width: 2, height: 2, thumbnail: vec!["█▓".to_string()]
+            }),
+        };
+        let mut lines = Vec::new();
+        push_image_summary_lines(&mut lines, &fixture, 1, 40);
+        let actual = lines.into_iter().map(render_line).collect::<Vec<_>>();
+        let expected = vec!["  ◼ Image 1 a.png · 2x2".to_string()];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn markdown_heading_and_bullets_are_rendered_with_symbols() {
+        let mut fixture = Vec::new();
+        push_markdown_message_lines(&mut fixture, "Forge", "# Main\n## Title\n- item", 40);
+        let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
+        let expected = vec![
+            "Forge: ▰ Main".to_string(),
+            "  ◆ Title".to_string(),
+            "  • item".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn markdown_code_blocks_are_preserved() {
+        let mut fixture = Vec::new();
+        push_markdown_message_lines(&mut fixture, "Forge", "```bash\ncargo test\n```", 40);
+        let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
+        let expected = vec![
+            "Forge: ╭─ bash".to_string(),
+            "  │ cargo test".to_string(),
+            "  ╰─".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn markdown_task_lists_quotes_links_and_rules_render_cleanly() {
+        let mut fixture = Vec::new();
+        push_markdown_message_lines(
+            &mut fixture,
+            "Forge",
+            "- [x] done\n- [ ] todo\n> quoted **text**\n---\n[docs](https://example.com)",
+            60,
+        );
+        let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
+        let expected = vec![
+            "Forge: ☑ done".to_string(),
+            "  ☐ todo".to_string(),
+            "  ▌ quoted text".to_string(),
+            "  ────────────────────────".to_string(),
+            "  docs (https://example.com)".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn markdown_list_continuations_align_under_list_text() {
+        let mut fixture = Vec::new();
+        push_markdown_message_lines(
+            &mut fixture,
+            "Forge",
+            "- this is a long item that should wrap nicely",
+            24,
+        );
+        let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
+        let expected = vec![
+            "Forge: • this is a long ".to_string(),
+            "         item that should ".to_string(),
+            "         wrap nicely".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn pasted_image_path_attaches_supported_image() {
+        let fixture = "file:///tmp/screen shot.png";
+        let actual = pasted_image_path(fixture);
+        let expected = Some("/tmp/screen shot.png".to_string());
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn pasted_images_extracts_multiline_image_paths() {
+        let fixture = "/tmp/a.png\n/tmp/b.webp\nplain text";
+        let actual = parse_pasted_images(fixture);
+        let expected = vec![
+            ImageAttachment::new("/tmp/a.png"),
+            ImageAttachment::new("/tmp/b.webp"),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn normalize_paste_text_preserves_text_with_normalized_newlines() {
+        let fixture = "first\r\nsecond\rthird";
+        let actual = normalize_paste_text(fixture);
+        let expected = "first\nsecond\nthird";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn chat_event_includes_image_tags_for_backend_attachments() {
+        let fixture = vec![ImageAttachment::new("/tmp/a.png")];
+        let actual = build_chat_event("describe it", &fixture);
+
+        let actual_value = actual
+            .value
+            .and_then(|value| value.as_user_prompt().map(|prompt| prompt.to_string()))
+            .unwrap();
+        let expected = "describe it\n\n@[/tmp/a.png]";
+
+        assert_eq!(actual_value, expected);
+    }
+
+    #[test]
+    fn append_assistant_starts_new_reply_after_tool_card() {
+        let mut fixture = vec![
+            TranscriptEntry::Assistant("first".to_string()),
+            TranscriptEntry::Tool(ToolEntry::finished("read", ToolStatus::Done)),
