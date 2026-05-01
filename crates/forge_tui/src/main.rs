@@ -1156,3 +1156,196 @@ fn inline_markdown_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
     }
 
     if spans.is_empty() {
+        spans.push(Span::raw(String::new()));
+    }
+
+    spans
+}
+
+fn markdown_link(text: &str) -> Option<(&str, &str, usize)> {
+    let label_end = text.find("](")?;
+    let url_start = label_end + 2;
+    let url_end = text[url_start..].find(')')? + url_start;
+    Some((&text[1..label_end], &text[url_start..url_end], url_end + 1))
+}
+
+fn next_inline_marker(text: &str) -> Option<(usize, &'static str)> {
+    let mut best: Option<(usize, &'static str)> = None;
+    for marker in ["`", "**", "*", "_", "["] {
+        let Some(position) = text.find(marker) else {
+            continue;
+        };
+        match best {
+            Some((best_position, best_marker))
+                if position > best_position
+                    || (position == best_position && marker.len() <= best_marker.len()) => {}
+            _ => best = Some((position, marker)),
+        }
+    }
+    best
+}
+
+fn push_inline_text(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
+    if !text.is_empty() {
+        spans.push(Span::styled(text.to_string(), style));
+    }
+}
+
+fn strip_inline_markdown(text: &str) -> String {
+    text.replace("**", "").replace('`', "").replace('_', "")
+}
+
+fn push_markdown_wrapped_spans(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    spans: Vec<Span<'static>>,
+    continuation_columns: usize,
+    label_style: Style,
+    width: usize,
+    emitted_first_line: &mut bool,
+) {
+    let label_prefix = format!("{label}: ");
+    let first_prefix = if *emitted_first_line {
+        "  ".to_string()
+    } else {
+        label_prefix
+    };
+    let continuation_prefix = if *emitted_first_line {
+        format!("  {}", " ".repeat(continuation_columns))
+    } else {
+        format!(
+            "{}{}",
+            " ".repeat(format!("{label}: ").chars().count()),
+            " ".repeat(continuation_columns)
+        )
+    };
+    let available_width = width.saturating_sub(first_prefix.chars().count()).max(1);
+    let chunks = wrap_spans(spans, available_width);
+
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        let line_prefix = if index == 0 {
+            first_prefix.clone()
+        } else {
+            continuation_prefix.clone()
+        };
+        let prefix_style = if !*emitted_first_line && index == 0 {
+            label_style
+        } else {
+            Style::default()
+        };
+        let mut line_spans = vec![Span::styled(line_prefix, prefix_style)];
+        line_spans.extend(chunk);
+        lines.push(Line::from(line_spans));
+    }
+
+    *emitted_first_line = true;
+}
+
+fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>> {
+    let width = width.max(1);
+    let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+    let mut current_width = 0;
+
+    for span in spans {
+        let style = span.style;
+        let mut text = span.content.into_owned();
+        if text.is_empty() {
+            if current_width == 0 {
+                lines
+                    .last_mut()
+                    .expect("line should exist")
+                    .push(Span::styled(text, style));
+            }
+            continue;
+        }
+
+        while !text.is_empty() {
+            let remaining = width.saturating_sub(current_width).max(1);
+            let take = text
+                .char_indices()
+                .nth(remaining)
+                .map(|(index, _)| index)
+                .unwrap_or(text.len());
+            let chunk = text[..take].to_string();
+            lines
+                .last_mut()
+                .expect("line should exist")
+                .push(Span::styled(chunk, style));
+            current_width += text[..take].chars().count();
+            text = text[take..].to_string();
+
+            if !text.is_empty() {
+                lines.push(Vec::new());
+                current_width = 0;
+            }
+        }
+    }
+
+    if lines.is_empty() || lines.last().is_some_and(Vec::is_empty) {
+        vec![vec![Span::raw(String::new())]]
+    } else {
+        lines
+    }
+}
+
+fn parse_image_command(input: &str) -> ImageCommand {
+    let trimmed = input.trim();
+    let Some(path) = trimmed
+        .strip_prefix("/image ")
+        .or_else(|| trimmed.strip_prefix(":image "))
+    else {
+        return ImageCommand::NotCommand;
+    };
+
+    let path = path.trim().trim_matches('"');
+    if path.is_empty() {
+        return ImageCommand::Invalid("Usage: /image <path-to-png-jpg-webp>".to_string());
+    }
+
+    if !is_supported_image_path(Path::new(path)) {
+        return ImageCommand::Invalid(format!(
+            "Unsupported image type: {path}. Supported: png, jpg, jpeg, webp"
+        ));
+    }
+
+    ImageCommand::Attach(ImageAttachment::new(path))
+}
+
+fn is_supported_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn build_chat_event(prompt: &str, images: &[ImageAttachment]) -> Event {
+    Event::new(build_chat_prompt(prompt, images))
+}
+
+fn build_chat_prompt(prompt: &str, images: &[ImageAttachment]) -> String {
+    let tags = images
+        .iter()
+        .map(ImageAttachment::tag)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    match (prompt.trim().is_empty(), tags.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => format!("Please analyze the attached image(s).\n\n{tags}"),
+        (false, true) => prompt.trim().to_string(),
+        (false, false) => format!("{}\n\n{tags}", prompt.trim()),
+    }
+}
+
+fn parse_pasted_images(text: &str) -> Vec<ImageAttachment> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| pasted_image_path(line).map(ImageAttachment::new))
+        .collect()
+}
