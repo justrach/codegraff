@@ -50,6 +50,7 @@ const MOUSE_SCROLL_STEP: usize = 5;
 async fn main() -> Result<()> {
     let log_path = codegraff_log_path();
     install_panic_logger(log_path.clone());
+    let _ = rustls::crypto::ring::default_provider().install_default();
     log_info(&log_path, "starting Codegraff");
 
     let result = async {
@@ -200,7 +201,7 @@ struct ModelDialog {
 
 #[derive(Clone, Debug)]
 enum Overlay {
-    Connect(ConnectDialog),
+    Connect(Box<ConnectDialog>),
     Model(ModelDialog),
 }
 
@@ -638,14 +639,14 @@ impl<A: API + 'static> Tui<A> {
     }
 
     fn selection_overlay_active(&self) -> bool {
-        matches!(
-            self.overlay,
-            Some(Overlay::Model(_))
-                | Some(Overlay::Connect(ConnectDialog {
-                    step: ConnectStep::ProviderSelection { .. }
-                        | ConnectStep::AuthMethodSelection { .. }
-                }))
-        )
+        match self.overlay.as_ref() {
+            Some(Overlay::Model(_)) => true,
+            Some(Overlay::Connect(dialog)) => matches!(
+                dialog.step,
+                ConnectStep::ProviderSelection { .. } | ConnectStep::AuthMethodSelection { .. }
+            ),
+            None => false,
+        }
     }
 
     fn close_overlay(&mut self) {
@@ -1132,9 +1133,9 @@ impl<A: API + 'static> Tui<A> {
             )),
             Ok(providers) => {
                 self.reset_overlay_selection_state();
-                self.overlay = Some(Overlay::Connect(ConnectDialog {
+                self.overlay = Some(Overlay::Connect(Box::new(ConnectDialog {
                     step: ConnectStep::ProviderSelection { providers },
-                }));
+                })));
             }
             Err(error) => {
                 self.log_error("connect provider list failed", &error);
@@ -1204,9 +1205,9 @@ impl<A: API + 'static> Tui<A> {
             self.begin_connect_auth(provider, method).await;
         } else {
             self.reset_overlay_selection_state();
-            self.overlay = Some(Overlay::Connect(ConnectDialog {
+            self.overlay = Some(Overlay::Connect(Box::new(ConnectDialog {
                 step: ConnectStep::AuthMethodSelection { provider, methods },
-            }));
+            })));
             self.transcript.push(TranscriptEntry::Status(
                 "Pick an auth method with /connect auth <number>.".to_string(),
             ));
@@ -1251,9 +1252,9 @@ impl<A: API + 'static> Tui<A> {
         {
             Ok(AuthContextRequest::ApiKey(request)) => {
                 let form = build_api_key_form(&provider_id, &request);
-                self.overlay = Some(Overlay::Connect(ConnectDialog {
+                self.overlay = Some(Overlay::Connect(Box::new(ConnectDialog {
                     step: ConnectStep::ApiKeyInput { provider, request, form },
-                }));
+                })));
                 self.transcript.push(TranscriptEntry::Status(format!(
                     "Editing {provider_id}. Set fields with /connect set <field>=<value>, then /connect submit."
                 )));

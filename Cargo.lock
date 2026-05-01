@@ -1038,6 +1038,7 @@ dependencies = [
  "image",
  "pretty_assertions",
  "ratatui",
+ "rustls 0.23.40",
  "tokio",
  "unicode-width 0.2.2",
 ]

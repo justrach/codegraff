@@ -18,6 +18,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 ratatui = "0.28.1"
 # ratatui-image 10.x currently targets ratatui 0.30; keep native support deferred
 # until Codegraff moves to the same ratatui version.
+rustls.workspace = true
 tokio.workspace = true
 unicode-width.workspace = true
 
