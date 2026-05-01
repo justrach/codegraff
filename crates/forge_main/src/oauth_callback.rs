@@ -155,12 +155,12 @@ fn localhost_oauth_bind_addr(redirect_uri: &Url) -> anyhow::Result<SocketAddr> {
 }
 
 fn oauth_callback_success_page() -> String {
-    "<!doctype html><html><head><title>ForgeCode Authorization Successful</title><meta charset=\"utf-8\"></head><body style=\"font-family: -apple-system, BlinkMacSystemFont, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; background:#111827; color:#f9fafb;\"><div style=\"text-align:center; padding:2rem;\"><h1 style=\"margin-bottom:0.75rem;\">Authorization Successful</h1><p style=\"color:#d1d5db;\">You can close this window and return to ForgeCode.</p></div></body></html>".to_string()
+    "<!doctype html><html><head><title>CodeGraff Authorization Successful</title><meta charset=\"utf-8\"></head><body style=\"font-family: -apple-system, BlinkMacSystemFont, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; background:#111827; color:#f9fafb;\"><div style=\"text-align:center; padding:2rem;\"><h1 style=\"margin-bottom:0.75rem;\">Authorization Successful</h1><p style=\"color:#d1d5db;\">You can close this window and return to CodeGraff.</p></div></body></html>".to_string()
 }
 
 fn oauth_callback_error_page(message: &str) -> String {
     format!(
-        "<!doctype html><html><head><title>ForgeCode Authorization Failed</title><meta charset=\"utf-8\"></head><body style=\"font-family: -apple-system, BlinkMacSystemFont, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; background:#111827; color:#f9fafb;\"><div style=\"text-align:center; padding:2rem; max-width:42rem;\"><h1 style=\"margin-bottom:0.75rem; color:#fca5a5;\">Authorization Failed</h1><p style=\"color:#d1d5db;\">ForgeCode could not complete sign-in.</p><pre style=\"white-space:pre-wrap; word-break:break-word; margin-top:1rem; padding:1rem; border-radius:0.5rem; background:#1f2937; color:#fca5a5;\">{}</pre></div></body></html>",
+        "<!doctype html><html><head><title>CodeGraff Authorization Failed</title><meta charset=\"utf-8\"></head><body style=\"font-family: -apple-system, BlinkMacSystemFont, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; background:#111827; color:#f9fafb;\"><div style=\"text-align:center; padding:2rem; max-width:42rem;\"><h1 style=\"margin-bottom:0.75rem; color:#fca5a5;\">Authorization Failed</h1><p style=\"color:#d1d5db;\">CodeGraff could not complete sign-in.</p><pre style=\"white-space:pre-wrap; word-break:break-word; margin-top:1rem; padding:1rem; border-radius:0.5rem; background:#1f2937; color:#fca5a5;\">{}</pre></div></body></html>",
         escape_html(message)
     )
 }
