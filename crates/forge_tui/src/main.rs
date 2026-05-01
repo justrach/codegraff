@@ -2314,3 +2314,188 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[test]
+    fn luminance_thumbnail_uses_ascii_shading() {
+        let actual = vec![
+            luminance_char(0),
+            luminance_char(70),
+            luminance_char(150),
+            luminance_char(255),
+        ];
+        let expected = vec![' ', '▒', '▓', '█'];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn shifted_question_mark_types_normally() {
+        let fixture = modified_key(KeyCode::Char('?'), KeyModifiers::SHIFT);
+        let actual = (
+            composer_input_char(fixture),
+            composer_edit_shortcut(fixture),
+            composer_scroll_shortcut(fixture),
+            tool_shortcut(fixture),
+            is_clipboard_paste_key(fixture),
+        );
+        let expected = (
+            Some('?'),
+            ComposerEditShortcut::None,
+            ComposerScrollShortcut::None,
+            ToolShortcut::None,
+            false,
+        );
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn shifted_base_punctuation_is_normalized_for_enhanced_keyboards() {
+        let question = modified_key(KeyCode::Char('/'), KeyModifiers::SHIFT);
+        let bang = modified_key(KeyCode::Char('1'), KeyModifiers::SHIFT);
+        let upper = modified_key(KeyCode::Char('a'), KeyModifiers::SHIFT);
+        let actual = (
+            composer_input_char(question),
+            composer_input_char(bang),
+            composer_input_char(upper),
+        );
+        let expected = (Some('?'), Some('!'), Some('A'));
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn key_release_events_are_ignored() {
+        let fixture = KeyEvent::new_with_kind(
+            KeyCode::Char('?'),
+            KeyModifiers::SHIFT,
+            KeyEventKind::Release,
+        );
+        let actual = is_key_press(fixture);
+        let expected = false;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn key_repeat_events_are_accepted() {
+        let fixture =
+            KeyEvent::new_with_kind(KeyCode::Char('a'), KeyModifiers::NONE, KeyEventKind::Repeat);
+        let actual = is_key_press(fixture);
+        let expected = true;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn tool_shortcut_allows_plain_e_as_text_input() {
+        let fixture = key(KeyCode::Char('e'));
+        let actual = tool_shortcut(fixture);
+        let expected = ToolShortcut::None;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn tool_shortcut_uses_control_e_for_expansion() {
+        let fixture = modified_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        let actual = tool_shortcut(fixture);
+        let expected = ToolShortcut::Toggle;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn tool_shortcut_selects_next_and_previous_tool_cards() {
+        let next_fixture = key(KeyCode::Tab);
+        let previous_fixture = key(KeyCode::BackTab);
+        let actual = (tool_shortcut(next_fixture), tool_shortcut(previous_fixture));
+        let expected = (ToolShortcut::Next, ToolShortcut::Previous);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn collapsed_tool_card_hides_verbose_detail() {
+        let fixture = ToolEntry::info("read", "alpha beta gamma delta epsilon zeta eta theta");
+        let actual = rendered_tool_lines(fixture, true, 34);
+        let expected = vec![
+            "> ▸ Tool read [info]".to_string(),
+            "    alpha beta gamma delta epsilon zeta eta theta".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn expanded_tool_card_shows_full_detail_lines() {
+        let mut fixture = ToolEntry::info("read", "first line\nsecond line");
+        fixture.expanded = true;
+        let actual = rendered_tool_lines(fixture, false, 20);
+        let expected = vec![
+            "  ▾ Tool read [info]".to_string(),
+            "    first line".to_string(),
+            "    second line".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn compact_tool_output_keeps_small_output_unchanged() {
+        let fixture = "first\nsecond";
+        let actual = compact_tool_output(fixture);
+        let expected = "first\nsecond";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn compact_tool_output_truncates_large_output() {
+        let fixture = (0..85)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let actual = compact_tool_output(&fixture);
+        let expected = format!(
+            "Large output: 85 lines, {} bytes. Showing first 80 lines.\n{}\n... output truncated in TUI ...",
+            fixture.len(),
+            (0..80)
+                .map(|index| format!("line {index}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn wrap_line_splits_long_lines_by_width() {
+        let fixture = "abcdefgh";
+        let actual = wrap_line(fixture, 3);
+        let expected = vec!["abc".to_string(), "def".to_string(), "gh".to_string()];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn push_wrapped_aligns_continuation_lines() {
+        let mut fixture = Vec::new();
+        push_wrapped(&mut fixture, "You", "abcdefgh", Style::default(), 8);
+        let actual = fixture
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let expected = vec![
+            "You: abc".to_string(),
+            "     def".to_string(),
+            "     gh".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+}
