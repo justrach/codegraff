@@ -8,8 +8,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event as TerminalEvent, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -40,8 +41,7 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 1_000;
 const IMAGE_THUMBNAIL_COLUMNS: usize = 10;
 const IMAGE_THUMBNAIL_ROWS: usize = 3;
 const CODEGRAFF_LOG_FILE: &str = "codegraff.log";
-const TUI_RENDER_HZ: u64 = 120;
-const TUI_FRAME_NANOS: u64 = 1_000_000_000 / TUI_RENDER_HZ;
+const TUI_INPUT_POLL_MILLIS: u64 = 50;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -395,9 +395,9 @@ impl ToolStatus {
 
 enum AppEvent {
     Input(KeyEvent),
+    Mouse(MouseEvent),
     Paste(String),
     Chat(Result<ChatResponse>),
-    Tick,
 }
 
 impl<A: API + 'static> Tui<A> {
@@ -440,9 +440,17 @@ impl<A: API + 'static> Tui<A> {
         let mut terminal = TerminalGuard::enter()?;
         let (tx, mut rx) = mpsc::unbounded_channel();
         spawn_input_reader(tx.clone(), self.log_path.clone());
-        spawn_render_ticker(tx.clone(), self.log_path.clone());
 
         loop {
+            if let Err(error) = terminal.draw(|frame| self.render(frame)) {
+                self.log_error("terminal draw failed", &error);
+                return Err(error);
+            }
+
+            if self.should_quit {
+                break;
+            }
+
             if let Some(event) = rx.recv().await {
                 match event {
                     AppEvent::Input(key) => {
@@ -451,19 +459,10 @@ impl<A: API + 'static> Tui<A> {
                             return Err(error);
                         }
                     }
+                    AppEvent::Mouse(mouse) => self.handle_mouse(mouse),
                     AppEvent::Paste(text) => self.handle_paste(text),
                     AppEvent::Chat(response) => self.handle_chat_response(response).await,
-                    AppEvent::Tick => {}
                 }
-            }
-
-            if let Err(error) = terminal.draw(|frame| self.render(frame)) {
-                self.log_error("terminal draw failed", &error);
-                return Err(error);
-            }
-
-            if self.should_quit {
-                break;
             }
         }
 
@@ -519,6 +518,14 @@ impl<A: API + 'static> Tui<A> {
         }
 
         Ok(())
+    }
+
+    fn handle_mouse_scroll(&mut self, kind: MouseEventKind) {
+        handle_mouse_scroll_offset(&mut self.scroll_from_bottom, kind);
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        self.handle_mouse_scroll(mouse.kind);
     }
 
     fn push_composer_char(&mut self, ch: char) {
@@ -1535,7 +1542,7 @@ impl<A: API + 'static> Tui<A> {
         frame.render_widget(composer, chunks[2]);
 
         if let Some(dialog) = &self.connect_dialog {
-            let dialog_area = centered_rect(84, 70, area);
+            let dialog_area = connect_dialog_area(area);
             frame.render_widget(Clear, dialog_area);
             let dialog = Paragraph::new(connect_dialog_lines(
                 dialog,
@@ -1903,26 +1910,17 @@ fn auth_method_label(method: &AuthMethod) -> &'static str {
     }
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
+fn connect_dialog_area(area: Rect) -> Rect {
+    let width = area.width.min(96).min(area.width.saturating_sub(4)).max(1);
+    let height = area
+        .height
+        .min(18)
+        .min(area.height.saturating_sub(4))
+        .max(1);
+    let x = area.x + area.width.saturating_sub(width + 2);
+    let y = area.y + 2.min(area.height.saturating_sub(height));
 
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1]);
-
-    horizontal[1]
+    Rect::new(x, y, width, height)
 }
 
 fn model_stats_from_config(config: &ModelConfig, models: Option<&[Model]>) -> ModelStats {
@@ -2652,24 +2650,10 @@ fn prompt_title(width: u16) -> &'static str {
     }
 }
 
-fn spawn_render_ticker(tx: mpsc::UnboundedSender<AppEvent>, log_path: PathBuf) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_nanos(TUI_FRAME_NANOS));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            if tx.send(AppEvent::Tick).is_err() {
-                log_info(&log_path, "render ticker receiver dropped");
-                return;
-            }
-        }
-    });
-}
-
 fn spawn_input_reader(tx: mpsc::UnboundedSender<AppEvent>, log_path: PathBuf) {
     tokio::spawn(async move {
         loop {
-            match event::poll(Duration::from_nanos(TUI_FRAME_NANOS)) {
+            match event::poll(Duration::from_millis(TUI_INPUT_POLL_MILLIS)) {
                 Ok(true) => match event::read() {
                     Ok(TerminalEvent::Key(key)) => {
                         if tx.send(AppEvent::Input(key)).is_err() {
@@ -2680,6 +2664,12 @@ fn spawn_input_reader(tx: mpsc::UnboundedSender<AppEvent>, log_path: PathBuf) {
                     Ok(TerminalEvent::Paste(text)) => {
                         if tx.send(AppEvent::Paste(text)).is_err() {
                             log_info(&log_path, "paste receiver dropped");
+                            return;
+                        }
+                    }
+                    Ok(TerminalEvent::Mouse(mouse)) => {
+                        if tx.send(AppEvent::Mouse(mouse)).is_err() {
+                            log_info(&log_path, "mouse receiver dropped");
                             return;
                         }
                     }
@@ -2892,6 +2882,18 @@ fn shifted_ascii_char(ch: char) -> char {
     }
 }
 
+fn handle_mouse_scroll_offset(offset: &mut usize, kind: MouseEventKind) {
+    match kind {
+        MouseEventKind::ScrollUp => {
+            *offset = offset.saturating_add(3);
+        }
+        MouseEventKind::ScrollDown => {
+            *offset = offset.saturating_sub(3);
+        }
+        _ => {}
+    }
+}
+
 fn is_key_press(key: KeyEvent) -> bool {
     matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
 }
@@ -2986,7 +2988,11 @@ fn sanitize_tool_output(text: &str) -> String {
             ch if ch.is_control() => ' ',
             ch => ch,
         })
-        .collect()
+        .collect::<String>()
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn push_tool_lines(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, selected: bool, width: usize) {
@@ -3296,6 +3302,7 @@ impl TerminalGuard {
             stdout,
             EnterAlternateScreen,
             EnableBracketedPaste,
+            EnableMouseCapture,
             PushKeyboardEnhancementFlags(
                 KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                     | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
@@ -3321,6 +3328,7 @@ impl Drop for TerminalGuard {
         let _ = execute!(
             self.terminal.backend_mut(),
             PopKeyboardEnhancementFlags,
+            DisableMouseCapture,
             DisableBracketedPaste,
             LeaveAlternateScreen
         );
@@ -3334,14 +3342,6 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
-
-    #[test]
-    fn render_frame_duration_targets_120hz() {
-        let actual = Duration::from_nanos(TUI_FRAME_NANOS);
-        let expected = Duration::from_nanos(8_333_333);
-
-        assert_eq!(actual, expected);
-    }
 
     #[test]
     fn model_command_lists_or_selects_registered_provider_models() {
@@ -3775,7 +3775,16 @@ mod tests {
     fn sanitize_tool_output_removes_control_characters() {
         let fixture = "ok\u{fffd}\u{0007}\nnext";
         let actual = sanitize_tool_output(fixture);
-        let expected = "ok  \nnext";
+        let expected = "ok\nnext";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sanitize_tool_output_collapses_tool_table_spacing() {
+        let fixture = "src/main.zig                                                           src/execd/main.zig";
+        let actual = sanitize_tool_output(fixture);
+        let expected = "src/main.zig src/execd/main.zig";
 
         assert_eq!(actual, expected);
     }
@@ -4096,7 +4105,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_stops_streaming__and_clears_idle_composer() {
+    fn escape_stops_streaming_and_clears_idle_composer() {
         let actual = vec![escape_action(true), escape_action(false)];
         let expected = vec![EscapeAction::StopAgent, EscapeAction::ClearComposer];
 
@@ -4155,6 +4164,17 @@ mod tests {
             ComposerScrollShortcut::UpPage,
             ComposerScrollShortcut::None,
         ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_chat_transcript() {
+        let mut fixture = 0;
+        handle_mouse_scroll_offset(&mut fixture, MouseEventKind::ScrollUp);
+        handle_mouse_scroll_offset(&mut fixture, MouseEventKind::ScrollDown);
+        let actual = fixture;
+        let expected = 0;
 
         assert_eq!(actual, expected);
     }
