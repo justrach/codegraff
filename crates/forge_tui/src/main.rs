@@ -14,7 +14,7 @@ use crossterm::terminal::{
 };
 use forge_api::{
     API, ChatRequest, ChatResponse, ChatResponseContent, Conversation, Event, ForgeAPI,
-    ForgeConfig, TokenCount, Usage,
+    ForgeConfig, Model, ModelConfig, TokenCount, Usage,
 };
 use futures::StreamExt;
 use ratatui::Terminal;
@@ -93,6 +93,19 @@ struct UsageSummary {
     last: Option<UsageLine>,
     session: Option<UsageLine>,
     context_tokens: Option<String>,
+    model: Option<ModelStats>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ModelStats {
+    provider: String,
+    id: String,
+    name: Option<String>,
+    context_length: Option<String>,
+    tools_supported: Option<bool>,
+    supports_parallel_tool_calls: Option<bool>,
+    supports_reasoning: Option<bool>,
+    input_modalities: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -320,6 +333,7 @@ impl<A: API + 'static> Tui<A> {
                     self.push_composer_char(ch);
                 }
             }
+            KeyCode::Enter if is_multiline_input_key(key) => self.push_composer_char('\n'),
             KeyCode::Backspace => self.delete_composer_char(),
             KeyCode::Enter if !self.is_streaming => self.handle_enter(tx).await?,
             KeyCode::Esc => self.clear_composer(),
@@ -391,6 +405,13 @@ impl<A: API + 'static> Tui<A> {
 
     async fn handle_enter(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
         let raw_prompt = self.composer.trim().to_string();
+        if raw_prompt == "/usage" {
+            self.show_usage().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
         match parse_image_command(&raw_prompt) {
             ImageCommand::Attach(image) => {
                 self.attach_image(image.clone());
@@ -471,6 +492,35 @@ impl<A: API + 'static> Tui<A> {
                 self.scroll_from_bottom = 0;
             }
         }
+    }
+
+    async fn show_usage(&mut self) {
+        self.refresh_usage().await;
+        let model = self.model_stats().await;
+        if let Some(usage) = &mut self.usage {
+            usage.model = model;
+        } else if model.is_some() {
+            self.usage =
+                Some(UsageSummary { last: None, session: None, context_tokens: None, model });
+        }
+
+        match &self.usage {
+            Some(usage) => {
+                for detail in usage_detail_lines(usage) {
+                    self.transcript.push(TranscriptEntry::Status(detail));
+                }
+            }
+            None => self.transcript.push(TranscriptEntry::Status(
+                "Usage is not available yet. Send a message first.".to_string(),
+            )),
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn model_stats(&self) -> Option<ModelStats> {
+        let config = self.api.get_session_config().await?;
+        let models = self.api.get_models().await.ok();
+        Some(model_stats_from_config(&config, models.as_deref()))
     }
 
     fn handle_composer_scroll_key(&mut self, key: KeyEvent) -> bool {
@@ -727,7 +777,6 @@ impl<A: API + 'static> Tui<A> {
 
         let header = Paragraph::new(header_line(
             self.status,
-            self.usage.as_ref(),
             chunks[0].width.saturating_sub(2) as usize,
         ))
         .block(Block::default().borders(Borders::ALL));
@@ -807,22 +856,37 @@ impl<A: API + 'static> Tui<A> {
             lines.push(Line::raw(""));
         }
 
-        if let Some(usage) = &self.usage {
-            for detail in usage_detail_lines(usage) {
-                push_wrapped(
-                    &mut lines,
-                    "Usage",
-                    &detail,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                    width,
-                );
-            }
-            lines.push(Line::raw(""));
-        }
-
         lines
+    }
+}
+
+fn model_stats_from_config(config: &ModelConfig, models: Option<&[Model]>) -> ModelStats {
+    let matched_model = models.and_then(|models| {
+        models
+            .iter()
+            .find(|model| model.id.as_str() == config.model.as_str())
+    });
+
+    ModelStats {
+        provider: config.provider.to_string(),
+        id: config.model.as_str().to_string(),
+        name: matched_model.and_then(|model| model.name.clone()),
+        context_length: matched_model
+            .and_then(|model| model.context_length)
+            .map(|count| count.to_string()),
+        tools_supported: matched_model.and_then(|model| model.tools_supported),
+        supports_parallel_tool_calls: matched_model
+            .and_then(|model| model.supports_parallel_tool_calls),
+        supports_reasoning: matched_model.and_then(|model| model.supports_reasoning),
+        input_modalities: matched_model
+            .map(|model| {
+                model
+                    .input_modalities
+                    .iter()
+                    .map(|modality| format!("{modality:?}").to_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -1622,6 +1686,10 @@ fn delete_previous_word(text: &mut String) {
     }
 }
 
+fn is_multiline_input_key(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::SHIFT)
+}
+
 fn composer_input_char(key: KeyEvent) -> Option<char> {
     let KeyCode::Char(ch) = key.code else {
         return None;
@@ -1893,7 +1961,7 @@ fn usage_summary_from_conversation(conversation: &Conversation) -> Option<UsageS
     if last.is_none() && session.is_none() && context_tokens.is_none() {
         None
     } else {
-        Some(UsageSummary { last, session, context_tokens })
+        Some(UsageSummary { last, session, context_tokens, model: None })
     }
 }
 
@@ -1919,21 +1987,12 @@ fn format_cost(cost: f64) -> String {
     }
 }
 
-fn header_line(status: TuiStatus, usage: Option<&UsageSummary>, width: usize) -> Line<'static> {
-    let fixed_width = "Codegraff  ".chars().count() + compact_status(status).chars().count();
-    let usage_text = usage
-        .and_then(compact_usage_text)
-        .map(|text| {
-            let available_width = width.saturating_sub(fixed_width + 2);
-            if available_width == 0 {
-                String::new()
-            } else {
-                truncate_single_line(&text, available_width)
-            }
-        })
-        .unwrap_or_default();
+fn header_line(status: TuiStatus, width: usize) -> Line<'static> {
+    let status_text = compact_status(status);
+    let available_width = width.saturating_sub("Codegraff  ".chars().count());
+    let status_text = truncate_single_line(status_text, available_width);
 
-    let mut spans = vec![
+    Line::from(vec![
         Span::styled(
             "Codegraff",
             Style::default()
@@ -1941,34 +2000,8 @@ fn header_line(status: TuiStatus, usage: Option<&UsageSummary>, width: usize) ->
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(
-            compact_status(status),
-            Style::default().fg(status_color(status)),
-        ),
-    ];
-
-    if !usage_text.is_empty() {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            usage_text,
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    Line::from(spans)
-}
-
-fn compact_usage_text(usage: &UsageSummary) -> Option<String> {
-    usage.session.as_ref().map(|line| {
-        let mut parts = vec![format!("tok {}", line.total_tokens)];
-        if line.cached_tokens != "0" {
-            parts.push(format!("cached {}", line.cached_tokens));
-        }
-        if let Some(cost) = &line.cost {
-            parts.push(cost.clone());
-        }
-        parts.join(" · ")
-    })
+        Span::styled(status_text, Style::default().fg(status_color(status))),
+    ])
 }
 
 fn usage_detail_lines(usage: &UsageSummary) -> Vec<String> {
@@ -2005,6 +2038,32 @@ fn usage_detail_lines(usage: &UsageSummary) -> Vec<String> {
 
     if let Some(context_tokens) = &usage.context_tokens {
         lines.push(format!("Context: {context_tokens} tokens"));
+    }
+
+    if let Some(model) = &usage.model {
+        lines.push(format!("Model: {} / {}", model.provider, model.id));
+        if let Some(name) = &model.name {
+            lines.push(format!("Model name: {name}"));
+        }
+        let mut capabilities = Vec::new();
+        if let Some(context_length) = &model.context_length {
+            capabilities.push(format!("context {context_length}"));
+        }
+        if model.tools_supported == Some(true) {
+            capabilities.push("tools".to_string());
+        }
+        if model.supports_parallel_tool_calls == Some(true) {
+            capabilities.push("parallel tools".to_string());
+        }
+        if model.supports_reasoning == Some(true) {
+            capabilities.push("reasoning".to_string());
+        }
+        if !model.input_modalities.is_empty() {
+            capabilities.push(format!("input {}", model.input_modalities.join("+")));
+        }
+        if !capabilities.is_empty() {
+            lines.push(format!("Model stats: {}", capabilities.join(" · ")));
+        }
     }
 
     lines
@@ -2101,7 +2160,7 @@ mod tests {
     }
 
     #[test]
-    fn header_line_includes_compact_session_usage() {
+    fn header_line_hides_usage_noise() {
         let fixture = UsageSummary {
             last: None,
             session: Some(UsageLine {
@@ -2112,10 +2171,12 @@ mod tests {
                 cost: Some("$0.0042".to_string()),
             }),
             context_tokens: None,
+            model: None,
         };
-        let actual = render_line(header_line(TuiStatus::Finished, Some(&fixture), 80));
-        let expected = "Codegraff  Finished  tok 150 · cached 40 · $0.0042";
+        let actual = render_line(header_line(TuiStatus::Finished, 80));
+        let expected = "Codegraff  Finished";
 
+        assert_eq!(fixture.session.is_some(), true);
         assert_eq!(actual, expected);
     }
 
@@ -2137,12 +2198,26 @@ mod tests {
                 cost: Some("$0.0090".to_string()),
             }),
             context_tokens: Some("~500".to_string()),
+            model: Some(ModelStats {
+                provider: "OpenRouter".to_string(),
+                id: "anthropic/claude-sonnet".to_string(),
+                name: Some("Claude Sonnet".to_string()),
+                context_length: Some("200000".to_string()),
+                tools_supported: Some(true),
+                supports_parallel_tool_calls: Some(true),
+                supports_reasoning: Some(true),
+                input_modalities: vec!["text".to_string(), "image".to_string()],
+            }),
         };
         let actual = usage_detail_lines(&fixture);
         let expected = vec![
             "Last: prompt 100 · completion 25 · total 125 · cached 10 · $0.0030".to_string(),
             "Session: prompt 300 · completion 75 · total 375 · cached 30 · $0.0090".to_string(),
             "Context: ~500 tokens".to_string(),
+            "Model: OpenRouter / anthropic/claude-sonnet".to_string(),
+            "Model name: Claude Sonnet".to_string(),
+            "Model stats: context 200000 · tools · parallel tools · reasoning · input text+image"
+                .to_string(),
         ];
 
         assert_eq!(actual, expected);
