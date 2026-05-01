@@ -1,4 +1,6 @@
-use std::io::{self, Cursor};
+use std::fs::OpenOptions;
+use std::io::{self, Cursor, Write};
+use std::panic;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -32,14 +34,28 @@ const COLLAPSED_TOOL_DETAIL_LIMIT: usize = 72;
 const MAX_COMPOSER_INNER_HEIGHT: usize = 9;
 const IMAGE_THUMBNAIL_COLUMNS: usize = 10;
 const IMAGE_THUMBNAIL_ROWS: usize = 3;
+const CODEGRAFF_LOG_FILE: &str = "codegraff.log";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config =
-        ForgeConfig::read().context("Failed to read Forge configuration from .forge.toml")?;
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let api = ForgeAPI::init(cwd, config);
-    Tui::new(api).run().await
+    let log_path = codegraff_log_path();
+    install_panic_logger(log_path.clone());
+    log_info(&log_path, "starting Codegraff");
+
+    let result = async {
+        let config =
+            ForgeConfig::read().context("Failed to read Forge configuration from .forge.toml")?;
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let api = ForgeAPI::init(cwd, config);
+        Tui::new(api, log_path.clone()).run().await
+    }
+    .await;
+
+    if let Err(error) = &result {
+        log_error(&log_path, "fatal Codegraff error", error);
+    }
+
+    result
 }
 
 struct Tui<A> {
@@ -56,6 +72,7 @@ struct Tui<A> {
     is_streaming: bool,
     chat_task: Option<JoinHandle<()>>,
     should_quit: bool,
+    log_path: PathBuf,
 }
 
 #[derive(Clone, Copy)]
@@ -251,15 +268,18 @@ enum AppEvent {
 }
 
 impl<A: API + 'static> Tui<A> {
-    fn new(api: A) -> Self {
+    fn new(api: A, log_path: PathBuf) -> Self {
         let conversation = Conversation::generate();
         Self {
             api,
             conversation_id: conversation.id,
-            transcript: vec![TranscriptEntry::Status(
-                "Codegraff started. Paste image paths with Cmd+V/Ctrl+V or use /image <path>. Press Enter to send. Ctrl+C exits."
-                    .to_string(),
-            )],
+            transcript: vec![
+                TranscriptEntry::Status(
+                    "Codegraff started. Paste image paths with Cmd+V/Ctrl+V or use /image <path>. Press Enter to send. Ctrl+C exits."
+                        .to_string(),
+                ),
+                TranscriptEntry::Status(format!("Logs: {}", log_path.display())),
+            ],
             composer: String::new(),
             image_attachments: Vec::new(),
             usage: None,
@@ -270,6 +290,7 @@ impl<A: API + 'static> Tui<A> {
             is_streaming: false,
             chat_task: None,
             should_quit: false,
+            log_path,
         }
     }
 
@@ -280,10 +301,13 @@ impl<A: API + 'static> Tui<A> {
 
         let mut terminal = TerminalGuard::enter()?;
         let (tx, mut rx) = mpsc::unbounded_channel();
-        spawn_input_reader(tx.clone());
+        spawn_input_reader(tx.clone(), self.log_path.clone());
 
         loop {
-            terminal.draw(|frame| self.render(frame))?;
+            if let Err(error) = terminal.draw(|frame| self.render(frame)) {
+                self.log_error("terminal draw failed", &error);
+                return Err(error);
+            }
 
             if self.should_quit {
                 break;
@@ -291,7 +315,12 @@ impl<A: API + 'static> Tui<A> {
 
             if let Some(event) = rx.recv().await {
                 match event {
-                    AppEvent::Input(key) => self.handle_input(key, tx.clone()).await?,
+                    AppEvent::Input(key) => {
+                        if let Err(error) = self.handle_input(key, tx.clone()).await {
+                            self.log_error("input handling failed", &error);
+                            return Err(error);
+                        }
+                    }
                     AppEvent::Paste(text) => self.handle_paste(text),
                     AppEvent::Chat(response) => self.handle_chat_response(response).await,
                 }
@@ -385,6 +414,10 @@ impl<A: API + 'static> Tui<A> {
         self.scroll_from_bottom = 0;
     }
 
+    fn log_error(&self, context: &str, error: &anyhow::Error) {
+        log_error(&self.log_path, context, error);
+    }
+
     fn handle_paste(&mut self, text: String) {
         self.apply_paste_text(text);
     }
@@ -438,6 +471,17 @@ impl<A: API + 'static> Tui<A> {
             return Ok(());
         }
 
+        if raw_prompt == "/logs" {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Codegraff logs: {}",
+                self.log_path.display()
+            )));
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            self.scroll_from_bottom = 0;
+            return Ok(());
+        }
+
         match parse_image_command(&raw_prompt) {
             ImageCommand::Attach(image) => {
                 self.attach_image(image.clone());
@@ -481,10 +525,15 @@ impl<A: API + 'static> Tui<A> {
     ) -> Result<()> {
         let chat = ChatRequest::new(event, self.conversation_id);
         let mut stream = self.api.chat(chat).await?;
+        let log_path = self.log_path.clone();
 
         let task = tokio::spawn(async move {
             while let Some(response) = stream.next().await {
+                if let Err(error) = &response {
+                    log_error(&log_path, "chat stream emitted error", error);
+                }
                 if tx.send(AppEvent::Chat(response)).is_err() {
+                    log_info(&log_path, "chat stream receiver dropped");
                     return;
                 }
             }
@@ -509,6 +558,7 @@ impl<A: API + 'static> Tui<A> {
                 }
             }
             Err(error) => {
+                self.log_error("chat response handling failed", &error);
                 self.abort_chat_task();
                 self.is_streaming = false;
                 self.status = TuiStatus::Error;
@@ -525,6 +575,7 @@ impl<A: API + 'static> Tui<A> {
             }
             Ok(None) => {}
             Err(error) => {
+                self.log_error("usage refresh failed", &error);
                 self.transcript.push(TranscriptEntry::Status(format!(
                     "Usage refresh failed: {error:#}"
                 )));
@@ -1618,35 +1669,100 @@ fn prompt_title(width: u16) -> &'static str {
     }
 }
 
-fn spawn_input_reader(tx: mpsc::UnboundedSender<AppEvent>) {
+fn spawn_input_reader(tx: mpsc::UnboundedSender<AppEvent>, log_path: PathBuf) {
     tokio::spawn(async move {
         loop {
             match event::poll(Duration::from_millis(50)) {
                 Ok(true) => match event::read() {
                     Ok(TerminalEvent::Key(key)) => {
                         if tx.send(AppEvent::Input(key)).is_err() {
+                            log_info(&log_path, "input reader receiver dropped");
                             return;
                         }
                     }
                     Ok(TerminalEvent::Paste(text)) => {
                         if tx.send(AppEvent::Paste(text)).is_err() {
+                            log_info(&log_path, "paste receiver dropped");
                             return;
                         }
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        let _ = tx.send(AppEvent::Chat(Err(error.into())));
+                        let error = anyhow::Error::from(error);
+                        log_error(&log_path, "terminal event read failed", &error);
+                        let _ = tx.send(AppEvent::Chat(Err(error)));
                         return;
                     }
                 },
                 Ok(false) => {}
                 Err(error) => {
-                    let _ = tx.send(AppEvent::Chat(Err(error.into())));
+                    let error = anyhow::Error::from(error);
+                    log_error(&log_path, "terminal event poll failed", &error);
+                    let _ = tx.send(AppEvent::Chat(Err(error)));
                     return;
                 }
             }
         }
     });
+}
+
+fn codegraff_log_path() -> PathBuf {
+    codegraff_log_path_from(
+        std::env::var_os("CODEGRAFF_LOG")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from),
+        std::env::var_os("XDG_STATE_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from),
+        std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from),
+    )
+}
+
+fn codegraff_log_path_from(
+    override_path: Option<PathBuf>,
+    state_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> PathBuf {
+    override_path.unwrap_or_else(|| {
+        state_home
+            .or_else(|| home.map(|home| home.join(".local/state")))
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("codegraff")
+            .join(CODEGRAFF_LOG_FILE)
+    })
+}
+
+fn install_panic_logger(log_path: PathBuf) {
+    let previous_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        append_log_line(&log_path, &format!("PANIC {info}"));
+        previous_hook(info);
+    }));
+}
+
+fn log_info(path: &Path, message: &str) {
+    append_log_line(path, &format!("INFO {message}"));
+}
+
+fn log_error(path: &Path, context: &str, error: &anyhow::Error) {
+    append_log_line(path, &format!("ERROR {context}: {error:#}"));
+}
+
+fn append_log_line(path: &Path, line: &str) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{timestamp} {line}");
+    }
 }
 
 fn is_clipboard_paste_key(key: KeyEvent) -> bool {
@@ -2186,6 +2302,37 @@ impl Drop for TerminalGuard {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn codegraff_log_path_respects_override() {
+        let fixture = PathBuf::from("/tmp/codegraff-custom.log");
+        let actual = codegraff_log_path_from(Some(fixture.clone()), None, None);
+        let expected = fixture;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn default_log_path_uses_state_directory() {
+        let actual = codegraff_log_path_from(None, Some(PathBuf::from("/tmp/state")), None);
+        let expected = PathBuf::from("/tmp/state/codegraff/codegraff.log");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn append_log_line_writes_debug_file() {
+        let fixture = std::env::temp_dir().join("codegraff-test-log.log");
+        let _ = std::fs::remove_file(&fixture);
+        append_log_line(&fixture, "ERROR terminal draw failed: boom");
+        let actual = std::fs::read_to_string(&fixture)
+            .unwrap()
+            .contains("ERROR terminal draw failed: boom");
+        let expected = true;
+        let _ = std::fs::remove_file(&fixture);
+
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn usage_line_formats_token_usage_and_cost() {
