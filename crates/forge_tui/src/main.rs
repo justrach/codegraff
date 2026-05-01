@@ -1542,3 +1542,196 @@ fn write_rgba_png(path: &Path, width: u32, height: u32, bytes: &[u8]) -> Result<
     std::fs::write(path, encoded.into_inner())
         .with_context(|| format!("Failed to write clipboard image to {}", path.display()))?;
     Ok(())
+}
+
+fn delete_previous_word(text: &mut String) {
+    let trimmed_len = text.trim_end_matches(char::is_whitespace).len();
+    text.truncate(trimmed_len);
+
+    while let Some(ch) = text.chars().last() {
+        if ch.is_whitespace() {
+            break;
+        }
+        text.pop();
+    }
+}
+
+fn composer_input_char(key: KeyEvent) -> Option<char> {
+    let KeyCode::Char(ch) = key.code else {
+        return None;
+    };
+
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        return Some(shifted_ascii_char(ch));
+    }
+
+    Some(ch)
+}
+
+fn shifted_ascii_char(ch: char) -> char {
+    match ch {
+        'a'..='z' => ch.to_ascii_uppercase(),
+        '`' => '~',
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '=' => '+',
+        '[' => '{',
+        ']' => '}',
+        '\\' => '|',
+        ';' => ':',
+        '\'' => '"',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+        ch => ch,
+    }
+}
+
+fn is_key_press(key: KeyEvent) -> bool {
+    matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
+
+fn composer_scroll_shortcut(key: KeyEvent) -> ComposerScrollShortcut {
+    let shift_or_command = key.modifiers.contains(KeyModifiers::SHIFT)
+        || key.modifiers.contains(KeyModifiers::SUPER)
+        || key.modifiers.contains(KeyModifiers::CONTROL);
+
+    if !shift_or_command {
+        return ComposerScrollShortcut::None;
+    }
+
+    match key.code {
+        KeyCode::Up => ComposerScrollShortcut::UpOne,
+        KeyCode::Down => ComposerScrollShortcut::DownOne,
+        KeyCode::PageUp => ComposerScrollShortcut::UpPage,
+        KeyCode::PageDown => ComposerScrollShortcut::DownPage,
+        KeyCode::Home => ComposerScrollShortcut::Top,
+        KeyCode::End => ComposerScrollShortcut::Bottom,
+        _ => ComposerScrollShortcut::None,
+    }
+}
+
+fn composer_edit_shortcut(key: KeyEvent) -> ComposerEditShortcut {
+    let command_or_control = key.modifiers.contains(KeyModifiers::SUPER)
+        || key.modifiers.contains(KeyModifiers::CONTROL);
+    let option_or_alt = key.modifiers.contains(KeyModifiers::ALT);
+
+    match key.code {
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            ComposerEditShortcut::ClearLine
+        }
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            ComposerEditShortcut::DeletePreviousWord
+        }
+        KeyCode::Backspace | KeyCode::Delete if command_or_control => {
+            ComposerEditShortcut::ClearLine
+        }
+        KeyCode::Backspace | KeyCode::Delete if option_or_alt => {
+            ComposerEditShortcut::DeletePreviousWord
+        }
+        _ => ComposerEditShortcut::None,
+    }
+}
+
+fn tool_shortcut(key: KeyEvent) -> ToolShortcut {
+    match key.code {
+        KeyCode::Tab => ToolShortcut::Next,
+        KeyCode::BackTab => ToolShortcut::Previous,
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => ToolShortcut::Toggle,
+        _ => ToolShortcut::None,
+    }
+}
+
+fn append_assistant_entry(transcript: &mut Vec<TranscriptEntry>, text: String) {
+    if let Some(TranscriptEntry::Assistant(message)) = transcript.last_mut() {
+        message.push_str(&text);
+        return;
+    }
+
+    transcript.push(TranscriptEntry::Assistant(text));
+}
+
+fn compact_tool_output(text: &str) -> String {
+    let sanitized = sanitize_tool_output(text);
+    let total_lines = sanitized.lines().count();
+    if total_lines <= TOOL_OUTPUT_LINE_LIMIT && sanitized.len() <= TOOL_OUTPUT_BYTE_LIMIT {
+        return sanitized;
+    }
+
+    let shown_lines = total_lines.min(TOOL_OUTPUT_LINE_LIMIT);
+    let mut output = format!(
+        "Large output: {total_lines} lines, {} bytes. Showing first {shown_lines} lines.\n",
+        sanitized.len()
+    );
+
+    for line in sanitized.lines().take(TOOL_OUTPUT_LINE_LIMIT) {
+        output.push_str(line);
+        output.push('\n');
+    }
+
+    output.push_str("... output truncated in TUI ...");
+    output
+}
+
+fn sanitize_tool_output(text: &str) -> String {
+    text.chars()
+        .map(|ch| match ch {
+            '\n' | '\t' => ch,
+            '\u{fffd}' => ' ',
+            ch if ch.is_control() => ' ',
+            ch => ch,
+        })
+        .collect()
+}
+
+fn push_tool_lines(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, selected: bool, width: usize) {
+    let selector = if selected { ">" } else { " " };
+    let toggle = if tool.expanded { "▾" } else { "▸" };
+    let title = truncate_single_line(&tool.title, width.saturating_sub(18).max(8));
+    let card_style = Style::default()
+        .fg(tool.status.color())
+        .add_modifier(Modifier::BOLD);
+
+    lines.push(Line::from(vec![
+        Span::styled(format!("{selector} {toggle} "), card_style),
+        Span::styled("Tool ", card_style),
+        Span::raw(title),
+        Span::styled(format!(" [{}]", tool.status.label()), tool.status.color()),
+    ]));
+
+    if tool.detail.trim().is_empty() {
+        return;
+    }
+
+    if tool.expanded {
+        for detail_line in tool.detail.lines() {
+            let wrapped = wrap_line(detail_line, width.saturating_sub(4).max(1));
+            for chunk in wrapped {
+                lines.push(Line::from(vec![Span::raw("    "), Span::raw(chunk)]));
+            }
+        }
+        return;
+    }
+
+    let summary = truncate_single_line(tool.detail.trim(), COLLAPSED_TOOL_DETAIL_LIMIT);
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(summary, Style::default().fg(Color::DarkGray)),
+    ]));
+}
+
+fn truncate_single_line(text: &str, limit: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let limit = limit.max(1);
+    if compact.chars().count() <= limit {
+        return compact;
+    }
