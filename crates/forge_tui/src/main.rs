@@ -963,3 +963,196 @@ fn markdown_line_spans(line: &str, in_code_block: bool) -> MarkdownLine {
     let trimmed = line.trim_start();
     if trimmed.is_empty() {
         return MarkdownLine { spans: vec![Span::raw("")], continuation_columns: 0 };
+    }
+
+    if markdown_horizontal_rule(trimmed) {
+        return MarkdownLine {
+            spans: vec![Span::styled(
+                "─".repeat(24),
+                Style::default().fg(Color::DarkGray),
+            )],
+            continuation_columns: 0,
+        };
+    }
+
+    if let Some((level, heading)) = markdown_heading(trimmed) {
+        let style = match level {
+            1 => Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            2 => Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            _ => Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        };
+        return MarkdownLine {
+            spans: vec![
+                Span::styled(heading_marker(level), style),
+                Span::styled(strip_inline_markdown(heading), style),
+            ],
+            continuation_columns: 2,
+        };
+    }
+
+    if let Some(quote) = trimmed.strip_prefix("> ") {
+        let mut spans = vec![Span::styled("▌ ", Style::default().fg(Color::Blue))];
+        spans.extend(inline_markdown_spans(
+            quote,
+            Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::ITALIC),
+        ));
+        return MarkdownLine { spans, continuation_columns: 2 };
+    }
+
+    if let Some((marker, item)) = markdown_list_item(trimmed) {
+        let prefix = format!("{}{} ", " ".repeat(indent), marker);
+        let continuation_columns = prefix.chars().count();
+        let mut spans = vec![Span::styled(prefix, Style::default().fg(Color::LightGreen))];
+        spans.extend(inline_markdown_spans(
+            item,
+            Style::default().fg(Color::Reset),
+        ));
+        return MarkdownLine { spans, continuation_columns };
+    }
+
+    let mut spans = Vec::new();
+    if indent > 0 {
+        spans.push(Span::raw(" ".repeat(indent)));
+    }
+    spans.extend(inline_markdown_spans(trimmed, Style::default()));
+    MarkdownLine { spans, continuation_columns: indent }
+}
+
+fn heading_marker(level: usize) -> &'static str {
+    match level {
+        1 => "▰ ",
+        2 => "◆ ",
+        _ => "◇ ",
+    }
+}
+
+fn markdown_horizontal_rule(trimmed: &str) -> bool {
+    matches!(trimmed, "---" | "***" | "___")
+}
+
+fn markdown_heading(trimmed: &str) -> Option<(usize, &str)> {
+    let level = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if !(1..=6).contains(&level) {
+        return None;
+    }
+
+    trimmed
+        .chars()
+        .nth(level)
+        .filter(|ch| ch.is_whitespace())
+        .map(|_| (level, trimmed[level..].trim()))
+}
+
+fn markdown_list_item(trimmed: &str) -> Option<(String, &str)> {
+    if let Some(item) = trimmed
+        .strip_prefix("- [x] ")
+        .or_else(|| trimmed.strip_prefix("* [x] "))
+    {
+        return Some(("☑".to_string(), item));
+    }
+
+    if let Some(item) = trimmed
+        .strip_prefix("- [ ] ")
+        .or_else(|| trimmed.strip_prefix("* [ ] "))
+    {
+        return Some(("☐".to_string(), item));
+    }
+
+    if let Some(item) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
+        return Some(("•".to_string(), item));
+    }
+
+    let dot_index = trimmed.find(". ")?;
+    let marker = &trimmed[..dot_index];
+    if marker.is_empty() || !marker.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+
+    Some((format!("{marker}."), trimmed[dot_index + 2..].trim_start()))
+}
+
+fn inline_markdown_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        let Some((position, marker)) = next_inline_marker(remaining) else {
+            push_inline_text(&mut spans, remaining, base_style);
+            break;
+        };
+
+        if position > 0 {
+            push_inline_text(&mut spans, &remaining[..position], base_style);
+            remaining = &remaining[position..];
+            continue;
+        }
+
+        if marker == "`" {
+            if let Some(end) = remaining[1..].find('`') {
+                let code = &remaining[1..1 + end];
+                spans.push(Span::styled(
+                    format!(" {code} "),
+                    Style::default().fg(Color::Yellow).bg(Color::Black),
+                ));
+                remaining = &remaining[end + 2..];
+                continue;
+            }
+        }
+
+        if marker == "[" {
+            if let Some((label, url, consumed)) = markdown_link(remaining) {
+                spans.push(Span::styled(
+                    label.to_string(),
+                    base_style
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::UNDERLINED),
+                ));
+                spans.push(Span::styled(
+                    format!(" ({url})"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                remaining = &remaining[consumed..];
+                continue;
+            }
+        }
+
+        if marker == "**" {
+            if let Some(end) = remaining[2..].find("**") {
+                let bold = &remaining[2..2 + end];
+                spans.push(Span::styled(
+                    strip_inline_markdown(bold),
+                    base_style.add_modifier(Modifier::BOLD),
+                ));
+                remaining = &remaining[end + 4..];
+                continue;
+            }
+        }
+
+        if marker == "*" || marker == "_" {
+            if let Some(end) = remaining[1..].find(marker) {
+                let italic = &remaining[1..1 + end];
+                spans.push(Span::styled(
+                    strip_inline_markdown(italic),
+                    base_style.add_modifier(Modifier::ITALIC),
+                ));
+                remaining = &remaining[end + 2..];
+                continue;
+            }
+        }
+
+        push_inline_text(&mut spans, marker, base_style);
+        remaining = &remaining[marker.len()..];
+    }
+
+    if spans.is_empty() {
