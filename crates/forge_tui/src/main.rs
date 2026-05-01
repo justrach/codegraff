@@ -1735,3 +1735,196 @@ fn truncate_single_line(text: &str, limit: usize) -> String {
     if compact.chars().count() <= limit {
         return compact;
     }
+
+    let mut output = compact
+        .chars()
+        .take(limit.saturating_sub(1))
+        .collect::<String>();
+    output.push('…');
+    output
+}
+
+fn push_wrapped(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    text: &str,
+    style: Style,
+    width: usize,
+) {
+    let width = width.max(1);
+    let label_prefix = format!("{label}: ");
+    let continuation_prefix = " ".repeat(label_prefix.chars().count());
+
+    let mut physical_lines = text.lines().peekable();
+    if physical_lines.peek().is_none() {
+        lines.push(Line::from(Span::styled(format!("{label}:"), style)));
+        return;
+    }
+
+    for (index, physical_line) in physical_lines.enumerate() {
+        let prefix = if index == 0 {
+            label_prefix.as_str()
+        } else {
+            "  "
+        };
+        let continuation = if index == 0 {
+            continuation_prefix.as_str()
+        } else {
+            "  "
+        };
+        let available_width = width.saturating_sub(prefix.chars().count()).max(1);
+        let wrapped = wrap_line(physical_line, available_width);
+
+        for (chunk_index, chunk) in wrapped.into_iter().enumerate() {
+            if index == 0 && chunk_index == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix.to_string(), style),
+                    Span::raw(chunk),
+                ]));
+            } else if chunk_index == 0 {
+                lines.push(Line::from(vec![
+                    Span::raw(prefix.to_string()),
+                    Span::raw(chunk),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::raw(continuation.to_string()),
+                    Span::raw(chunk),
+                ]));
+            }
+        }
+    }
+}
+
+fn wrap_line(line: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let chars = line.chars().collect::<Vec<_>>();
+
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut wrapped = Vec::new();
+    let mut start = 0;
+
+    while start < chars.len() {
+        let end = (start + width).min(chars.len());
+        wrapped.push(chars[start..end].iter().collect());
+        start = end;
+    }
+
+    wrapped
+}
+
+fn status_color(status: TuiStatus) -> Color {
+    match status {
+        TuiStatus::Ready => Color::Green,
+        TuiStatus::Thinking | TuiStatus::Reasoning => Color::Yellow,
+        TuiStatus::Error | TuiStatus::Interrupted => Color::Red,
+        TuiStatus::Finished => Color::Blue,
+    }
+}
+
+fn compact_status(status: TuiStatus) -> &'static str {
+    match status {
+        TuiStatus::Ready => "Ready",
+        TuiStatus::Thinking => "Thinking...",
+        TuiStatus::Reasoning => "Reasoning...",
+        TuiStatus::Finished => "Finished",
+        TuiStatus::Error => "Error",
+        TuiStatus::Interrupted => "Interrupted",
+    }
+}
+
+struct TerminalGuard {
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+}
+
+impl TerminalGuard {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+            )
+        )?;
+        let backend = CrosstermBackend::new(stdout);
+        let terminal = Terminal::new(backend)?;
+        Ok(Self { terminal })
+    }
+
+    fn draw<F>(&mut self, render_callback: F) -> Result<()>
+    where
+        F: FnOnce(&mut ratatui::Frame<'_>),
+    {
+        self.terminal.draw(render_callback)?;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            PopKeyboardEnhancementFlags,
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        );
+        let _ = self.terminal.show_cursor();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn composer_wraps_long_input_and_adds_hint() {
+        let fixture = "can you go thru the entire repo real quick w codedb";
+        let actual = rendered_composer_lines(fixture, &[], 22);
+        let expected = vec![
+            "Hint: paste image path (Cmd+V/Ctrl+V) or /image <path>".to_string(),
+            ">: can you go thru the".to_string(),
+            "    entire repo real q".to_string(),
+            "   uick w codedb".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn composer_height_grows_with_wrapped_input() {
+        let actual = composer_height(40, 5);
+        let expected = 7;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn composer_height_stays_usable_on_small_terminals() {
+        let actual = composer_height(8, 20);
+        let expected = 3;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn image_command_accepts_supported_image_paths() {
+        let fixture = "/image /tmp/screen shot.png";
+        let actual = parse_image_command(fixture);
+        let expected = ImageCommand::Attach(ImageAttachment::new("/tmp/screen shot.png"));
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn image_command_rejects_unsupported_image_paths() {
+        let fixture = "/image /tmp/archive.zip";
+        let actual = parse_image_command(fixture);
