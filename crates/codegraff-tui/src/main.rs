@@ -175,6 +175,35 @@ enum ModelCommand {
     NotCommand,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConnectIntent {
+    Connect,
+    Login,
+}
+
+impl ConnectIntent {
+    fn command(self) -> &'static str {
+        match self {
+            Self::Connect => "/connect",
+            Self::Login => "/login",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Connect => "Connect provider",
+            Self::Login => "Log in to provider",
+        }
+    }
+
+    fn cancelled_message(self) -> &'static str {
+        match self {
+            Self::Connect => "Connect cancelled.",
+            Self::Login => "Login cancelled.",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ConnectCommand {
     Open,
@@ -189,6 +218,7 @@ enum ConnectCommand {
 
 #[derive(Clone, Debug)]
 struct ConnectDialog {
+    intent: ConnectIntent,
     step: ConnectStep,
 }
 
@@ -359,7 +389,7 @@ impl<A: API + 'static> Tui<A> {
             conversation_id: conversation.id,
             transcript: vec![
                 TranscriptEntry::Status(
-                    "Codegraff started. Paste image paths with Cmd+V/Ctrl+V or use /image <path>. Press Enter to send. Ctrl+C exits."
+                    "Codegraff started. Type /login to connect providers, /models to choose a model, paste image paths with Cmd+V/Ctrl+V, or use /image <path>. Press Enter to send. Ctrl+C exits."
                         .to_string(),
                 ),
                 TranscriptEntry::Status(format!("Logs: {}", log_path.display())),
@@ -484,7 +514,16 @@ impl<A: API + 'static> Tui<A> {
 
         match key.code {
             KeyCode::Esc => {
+                let message = self.overlay.as_ref().and_then(|overlay| match overlay {
+                    Overlay::Connect(dialog) => Some(dialog.intent.cancelled_message()),
+                    Overlay::Model(_) => None,
+                });
                 self.close_overlay();
+                if let Some(message) = message {
+                    self.transcript
+                        .push(TranscriptEntry::Status(message.to_string()));
+                    self.scroll_from_bottom = 0;
+                }
                 Ok(true)
             }
             KeyCode::Up => {
@@ -803,9 +842,59 @@ impl<A: API + 'static> Tui<A> {
                 return Ok(());
             }
             ConnectCommand::Cancel => {
+                let message = self.connect_intent().cancelled_message();
                 self.close_overlay();
                 self.transcript
-                    .push(TranscriptEntry::Status("Connect cancelled.".to_string()));
+                    .push(TranscriptEntry::Status(message.to_string()));
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                self.scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::Invalid(message) => {
+                self.transcript.push(TranscriptEntry::Error(message));
+                self.scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::NotCommand => {}
+        }
+
+        match parse_login_command(&raw_prompt) {
+            ConnectCommand::Open => {
+                self.open_login_dialog().await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::Provider(index) => {
+                self.select_connect_provider(index).await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::AuthMethod(index) => {
+                self.select_connect_auth_method(index).await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::Field(update) => {
+                self.update_connect_field(update);
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::Submit => {
+                self.submit_connect_dialog().await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            ConnectCommand::Cancel => {
+                let message = self.connect_intent().cancelled_message();
+                self.close_overlay();
+                self.transcript
+                    .push(TranscriptEntry::Status(message.to_string()));
                 self.composer.clear();
                 self.composer_scroll_from_bottom = 0;
                 self.scroll_from_bottom = 0;
@@ -961,7 +1050,7 @@ impl<A: API + 'static> Tui<A> {
         match self.model_options().await {
             Ok(models) if models.is_empty() => {
                 self.transcript.push(TranscriptEntry::Status(
-                    "No registered provider models found. Connect a provider in CodeGraff with /connect first."
+                    "No registered provider models found. Type /login to connect a provider in CodeGraff first."
                         .to_string(),
                 ));
                 self.overlay = None;
@@ -984,7 +1073,7 @@ impl<A: API + 'static> Tui<A> {
     async fn select_model(&mut self, index: usize) {
         match self.model_options().await {
             Ok(models) if models.is_empty() => self.transcript.push(TranscriptEntry::Status(
-                "No registered provider models found. Connect a provider in CodeGraff with /connect first."
+                "No registered provider models found. Type /login to connect a provider in CodeGraff first."
                     .to_string(),
             )),
             Ok(models) => {
@@ -1059,6 +1148,14 @@ impl<A: API + 'static> Tui<A> {
     }
 
     async fn open_connect_dialog(&mut self) {
+        self.open_provider_auth_dialog(ConnectIntent::Connect).await;
+    }
+
+    async fn open_login_dialog(&mut self) {
+        self.open_provider_auth_dialog(ConnectIntent::Login).await;
+    }
+
+    async fn open_provider_auth_dialog(&mut self, intent: ConnectIntent) {
         match self.connect_provider_options().await {
             Ok(providers) if providers.is_empty() => self.transcript.push(TranscriptEntry::Status(
                 "No providers found to connect. Check your CodeGraff provider configuration."
@@ -1067,6 +1164,7 @@ impl<A: API + 'static> Tui<A> {
             Ok(providers) => {
                 self.reset_overlay_selection_state();
                 self.overlay = Some(Overlay::Connect(Box::new(ConnectDialog {
+                    intent,
                     step: ConnectStep::ProviderSelection { providers },
                 })));
             }
@@ -1078,6 +1176,13 @@ impl<A: API + 'static> Tui<A> {
             }
         }
         self.scroll_from_bottom = 0;
+    }
+
+    fn connect_intent(&self) -> ConnectIntent {
+        match self.overlay.as_ref() {
+            Some(Overlay::Connect(dialog)) => dialog.intent,
+            _ => ConnectIntent::Connect,
+        }
     }
 
     async fn connect_provider_options(&self) -> Result<Vec<ProviderOption>> {
@@ -1095,22 +1200,25 @@ impl<A: API + 'static> Tui<A> {
     async fn select_connect_provider(&mut self, index: usize) {
         let Some(Overlay::Connect(dialog)) = self.overlay.as_ref() else {
             self.transcript.push(TranscriptEntry::Error(
-                "No connect dialog is open. Type /connect first.".to_string(),
+                "No connect dialog is open. Type /login or /connect first.".to_string(),
             ));
             self.scroll_from_bottom = 0;
             return;
         };
 
-        let provider = match &dialog.step {
-            ConnectStep::ProviderSelection { providers } => {
-                providers.get(index.saturating_sub(1)).cloned()
-            }
-            _ => None,
+        let (intent, provider) = match &dialog.step {
+            ConnectStep::ProviderSelection { providers } => (
+                dialog.intent,
+                providers.get(index.saturating_sub(1)).cloned(),
+            ),
+            _ => (dialog.intent, None),
         };
 
         let Some(provider) = provider else {
             self.transcript.push(TranscriptEntry::Error(format!(
-                "Provider selection {index} is out of range. Type /connect to list providers."
+                "{} selection {index} is out of range. Type {} to list providers.",
+                intent.title(),
+                intent.command()
             )));
             self.scroll_from_bottom = 0;
             return;
@@ -1139,11 +1247,13 @@ impl<A: API + 'static> Tui<A> {
         } else {
             self.reset_overlay_selection_state();
             self.overlay = Some(Overlay::Connect(Box::new(ConnectDialog {
+                intent,
                 step: ConnectStep::AuthMethodSelection { provider, methods },
             })));
-            self.transcript.push(TranscriptEntry::Status(
-                "Pick an auth method with /connect auth <number>.".to_string(),
-            ));
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Pick an auth method with {} auth <number>.",
+                intent.command()
+            )));
             self.scroll_from_bottom = 0;
         }
     }
@@ -1151,7 +1261,7 @@ impl<A: API + 'static> Tui<A> {
     async fn select_connect_auth_method(&mut self, index: usize) {
         let Some(Overlay::Connect(dialog)) = self.overlay.as_ref() else {
             self.transcript.push(TranscriptEntry::Error(
-                "No connect dialog is open. Type /connect first.".to_string(),
+                "No connect dialog is open. Type /login or /connect first.".to_string(),
             ));
             self.scroll_from_bottom = 0;
             return;
@@ -1186,10 +1296,12 @@ impl<A: API + 'static> Tui<A> {
             Ok(AuthContextRequest::ApiKey(request)) => {
                 let form = build_api_key_form(&provider_id, &request);
                 self.overlay = Some(Overlay::Connect(Box::new(ConnectDialog {
+                    intent: self.connect_intent(),
                     step: ConnectStep::ApiKeyInput { provider, request, form },
                 })));
+                let command = self.connect_intent().command();
                 self.transcript.push(TranscriptEntry::Status(format!(
-                    "Editing {provider_id}. Set fields with /connect set <field>=<value>, then /connect submit."
+                    "Editing {provider_id}. Set fields with {command} set <field>=<value>, then {command} submit."
                 )));
             }
             Ok(AuthContextRequest::DeviceCode(request)) => {
@@ -1224,7 +1336,7 @@ impl<A: API + 'static> Tui<A> {
         let parsed = parse_connect_field_update(&update);
         let Some(Overlay::Connect(dialog)) = &mut self.overlay else {
             self.transcript.push(TranscriptEntry::Error(
-                "No connect dialog is open. Type /connect first.".to_string(),
+                "No connect dialog is open. Type /login or /connect first.".to_string(),
             ));
             self.scroll_from_bottom = 0;
             return;
@@ -1278,7 +1390,7 @@ impl<A: API + 'static> Tui<A> {
     async fn submit_connect_dialog(&mut self) {
         let Some(Overlay::Connect(dialog)) = self.overlay.clone() else {
             self.transcript.push(TranscriptEntry::Error(
-                "No connect dialog is open. Type /connect first.".to_string(),
+                "No connect dialog is open. Type /login or /connect first.".to_string(),
             ));
             self.scroll_from_bottom = 0;
             return;
@@ -1296,7 +1408,7 @@ impl<A: API + 'static> Tui<A> {
         let api_key = form.api_key.trim().to_string();
         if api_key.is_empty() {
             self.transcript.push(TranscriptEntry::Error(
-                "API key cannot be empty. Use /connect set key=<value>.".to_string(),
+                "API key cannot be empty. Use /login set key=<value>.".to_string(),
             ));
             self.scroll_from_bottom = 0;
             return;
@@ -1306,7 +1418,7 @@ impl<A: API + 'static> Tui<A> {
         for field in &form.url_params {
             if field.value.trim().is_empty() {
                 self.transcript.push(TranscriptEntry::Error(format!(
-                    "{} cannot be empty. Use /connect set {}=<value>.",
+                    "{} cannot be empty. Use /login set {}=<value>.",
                     field.name, field.name
                 )));
                 self.scroll_from_bottom = 0;
@@ -1839,8 +1951,16 @@ fn parse_model_command(input: &str) -> ModelCommand {
     }
 }
 
+fn parse_login_command(input: &str) -> ConnectCommand {
+    parse_provider_auth_command(input, "/login")
+}
+
 fn parse_connect_command(input: &str) -> ConnectCommand {
-    let Some(rest) = input.strip_prefix("/connect") else {
+    parse_provider_auth_command(input, "/connect")
+}
+
+fn parse_provider_auth_command(input: &str, prefix: &str) -> ConnectCommand {
+    let Some(rest) = input.strip_prefix(prefix) else {
         return ConnectCommand::NotCommand;
     };
 
@@ -1864,34 +1984,34 @@ fn parse_connect_command(input: &str) -> ConnectCommand {
     if let Some(selector) = command.strip_prefix("auth ") {
         return match selector.trim().parse::<usize>() {
             Ok(index) if index > 0 => ConnectCommand::AuthMethod(index),
-            _ => ConnectCommand::Invalid(
-                "Usage: /connect auth <number> to choose an auth method.".to_string(),
-            ),
+            _ => ConnectCommand::Invalid(format!(
+                "Usage: {prefix} auth <number> to choose an auth method."
+            )),
         };
     }
 
     if let Some(update) = command.strip_prefix("set ") {
         let update = update.trim();
         if update.is_empty() {
-            return ConnectCommand::Invalid(
-                "Usage: /connect set <field>=<value> to edit the connect form.".to_string(),
-            );
+            return ConnectCommand::Invalid(format!(
+                "Usage: {prefix} set <field>=<value> to edit the provider login form."
+            ));
         }
         return ConnectCommand::Field(update.to_string());
     }
 
     match command.parse::<usize>() {
         Ok(index) if index > 0 => ConnectCommand::Provider(index),
-        _ => ConnectCommand::Invalid(
-            "Usage: /connect, /connect <number>, /connect auth <number>, /connect set <field>=<value>, /connect submit, or /connect cancel.".to_string(),
-        ),
+        _ => ConnectCommand::Invalid(format!(
+            "Usage: {prefix}, {prefix} <number>, {prefix} auth <number>, {prefix} set <field>=<value>, {prefix} submit, or {prefix} cancel."
+        )),
     }
 }
 
 fn parse_connect_field_update(update: &str) -> ConnectFieldUpdate {
     let Some((name, value)) = update.split_once('=') else {
         return ConnectFieldUpdate::Invalid(
-            "Usage: /connect set <field>=<value>. Use `key` for the API key.".to_string(),
+            "Usage: /login set <field>=<value>. Use `key` for the API key.".to_string(),
         );
     };
 
@@ -1973,12 +2093,13 @@ fn model_dialog_lines(dialog: &ModelDialog, width: usize, input: &str) -> Vec<Li
 
 fn connect_dialog_lines(dialog: &ConnectDialog, width: usize, input: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    let command = dialog.intent.command();
     match &dialog.step {
         ConnectStep::ProviderSelection { providers } => {
-            push_dialog_line(&mut lines, "Choose provider", width);
+            push_dialog_line(&mut lines, dialog.intent.title(), width);
             push_dialog_line(
                 &mut lines,
-                "Type a number and press Enter. Esc or /connect cancel closes.",
+                &format!("Type a number and press Enter. Esc or {command} cancel closes."),
                 width,
             );
             push_dialog_line(&mut lines, &format!("Selection: {input}"), width);
@@ -1995,7 +2116,7 @@ fn connect_dialog_lines(dialog: &ConnectDialog, width: usize, input: &str) -> Ve
             push_dialog_line(&mut lines, &format!("Provider: {}", provider.id()), width);
             push_dialog_line(
                 &mut lines,
-                "Type a number and press Enter. Esc or /connect cancel closes.",
+                &format!("Type a number and press Enter. Esc or {command} cancel closes."),
                 width,
             );
             push_dialog_line(&mut lines, &format!("Selection: {input}"), width);
@@ -2022,7 +2143,7 @@ fn connect_dialog_lines(dialog: &ConnectDialog, width: usize, input: &str) -> Ve
                 "<set, hidden>"
             };
             push_dialog_line(&mut lines, &format!("key = {key_state}"), width);
-            push_dialog_line(&mut lines, "  /connect set key=<api-key>", width);
+            push_dialog_line(&mut lines, &format!("  {command} set key=<api-key>"), width);
 
             for field in &form.url_params {
                 let value = if field.value.is_empty() {
@@ -2040,13 +2161,17 @@ fn connect_dialog_lines(dialog: &ConnectDialog, width: usize, input: &str) -> Ve
                 }
                 push_dialog_line(
                     &mut lines,
-                    &format!("  /connect set {}=<value>", field.name),
+                    &format!("  {command} set {}=<value>", field.name),
                     width,
                 );
             }
 
             lines.push(Line::raw(""));
-            push_dialog_line(&mut lines, "/connect submit  ·  /connect cancel", width);
+            push_dialog_line(
+                &mut lines,
+                &format!("{command} submit  ·  {command} cancel"),
+                width,
+            );
         }
     }
     lines
@@ -3290,6 +3415,48 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn login_command_opens_or_selects_provider_login() {
+        let fixture = "/login 2";
+        let actual = parse_login_command(fixture);
+        let expected = ConnectCommand::Provider(2);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn login_command_rejects_invalid_auth_method_selection() {
+        let fixture = "/login auth nope";
+        let actual = parse_login_command(fixture);
+        let expected = ConnectCommand::Invalid(
+            "Usage: /login auth <number> to choose an auth method.".to_string(),
+        );
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn connect_command_still_opens_existing_connect_flow() {
+        let fixture = "/connect";
+        let actual = parse_connect_command(fixture);
+        let expected = ConnectCommand::Open;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn connect_intent_uses_login_dialog_copy() {
+        let fixture = ConnectIntent::Login;
+        let actual = (
+            fixture.command(),
+            fixture.title(),
+            fixture.cancelled_message(),
+        );
+        let expected = ("/login", "Log in to provider", "Login cancelled.");
+
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn model_command_lists_or_selects_registered_provider_models() {
