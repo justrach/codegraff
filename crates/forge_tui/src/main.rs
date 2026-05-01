@@ -577,3 +577,196 @@ impl<A: API + 'static> Tui<A> {
 
     fn tool_indexes(&self) -> Vec<usize> {
         self.transcript
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| matches!(entry, TranscriptEntry::Tool(_)).then_some(index))
+            .collect()
+    }
+
+    fn push_tool(&mut self, tool: ToolEntry) {
+        self.transcript.push(TranscriptEntry::Tool(tool));
+        self.selected_tool = Some(self.transcript.len().saturating_sub(1));
+    }
+
+    fn update_latest_running_tool(&mut self, status: ToolStatus, detail: String) -> bool {
+        self.transcript
+            .iter_mut()
+            .rev()
+            .find_map(|entry| match entry {
+                TranscriptEntry::Tool(tool) if tool.status == ToolStatus::Running => Some(tool),
+                _ => None,
+            })
+            .map(|tool| {
+                tool.status = status;
+                if !detail.is_empty() {
+                    tool.detail = detail;
+                }
+            })
+            .is_some()
+    }
+
+    fn push_chat_response(&mut self, response: ChatResponse) {
+        if response.is_empty() {
+            return;
+        }
+
+        match response {
+            ChatResponse::TaskMessage { content } => match content {
+                ChatResponseContent::Markdown { text, .. } => self.append_assistant(text),
+                ChatResponseContent::ToolInput(title) => {
+                    let detail = title.sub_title.unwrap_or_default();
+                    if !detail.is_empty() {
+                        self.update_latest_running_tool(ToolStatus::Running, detail);
+                    }
+                }
+                ChatResponseContent::ToolOutput(text) => {
+                    let detail = compact_tool_output(&text);
+                    if !self.update_latest_running_tool(ToolStatus::Running, detail.clone()) {
+                        self.push_tool(ToolEntry::info("Tool output", detail));
+                    }
+                }
+            },
+            ChatResponse::TaskReasoning { content: _ } => {
+                self.status = TuiStatus::Reasoning;
+            }
+            ChatResponse::ToolCallStart { tool_call, notifier } => {
+                self.push_tool(ToolEntry::running(tool_call.name.to_string()));
+                notifier.notify_one();
+            }
+            ChatResponse::ToolCallEnd(result) => {
+                let status = if result.is_error() {
+                    ToolStatus::Failed
+                } else {
+                    ToolStatus::Done
+                };
+                if !self.update_latest_running_tool(status, String::new()) {
+                    self.push_tool(ToolEntry::finished(result.name.to_string(), status));
+                }
+            }
+            ChatResponse::RetryAttempt { cause, duration } => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Retrying in {}s: {}",
+                    duration.as_secs(),
+                    cause.as_str()
+                )));
+            }
+            ChatResponse::Interrupt { reason } => {
+                self.is_streaming = false;
+                self.status = TuiStatus::Interrupted;
+                self.transcript
+                    .push(TranscriptEntry::Error(format!("Interrupted: {reason:?}")));
+            }
+            ChatResponse::TaskComplete => {
+                self.is_streaming = false;
+                self.status = TuiStatus::Finished;
+            }
+        }
+    }
+
+    fn append_assistant(&mut self, text: String) {
+        append_assistant_entry(&mut self.transcript, text);
+    }
+
+    fn render(&self, frame: &mut ratatui::Frame<'_>) {
+        let area = frame.area();
+        frame.render_widget(Clear, area);
+        let composer_width = area.width.saturating_sub(2) as usize;
+        let composer_lines = self.composer_lines(composer_width);
+        let composer_height = composer_height(area.height, composer_lines.len());
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(composer_height),
+            ])
+            .split(area);
+
+        let header = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Codegraff",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                compact_status(self.status),
+                Style::default().fg(status_color(self.status)),
+            ),
+        ]))
+        .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(header, chunks[0]);
+
+        let transcript_lines = self.transcript_lines(chunks[1].width.saturating_sub(2) as usize);
+        let transcript_inner_height = chunks[1].height.saturating_sub(2) as usize;
+        let max_scroll = transcript_lines
+            .len()
+            .saturating_sub(transcript_inner_height);
+        let scroll_from_bottom = self.scroll_from_bottom.min(max_scroll);
+        let transcript_scroll = max_scroll
+            .saturating_sub(scroll_from_bottom)
+            .min(u16::MAX as usize) as u16;
+        let chat_title = chat_title(area.width);
+        let transcript = Paragraph::new(transcript_lines)
+            .block(Block::default().title(chat_title).borders(Borders::ALL))
+            .scroll((transcript_scroll, 0));
+        frame.render_widget(transcript, chunks[1]);
+
+        let composer_inner_height = chunks[2].height.saturating_sub(2) as usize;
+        let max_composer_scroll = composer_lines.len().saturating_sub(composer_inner_height);
+        let composer_scroll_from_bottom = self.composer_scroll_from_bottom.min(max_composer_scroll);
+        let composer_scroll = max_composer_scroll
+            .saturating_sub(composer_scroll_from_bottom)
+            .min(u16::MAX as usize) as u16;
+        let prompt_title = prompt_title(area.width);
+        let composer = Paragraph::new(composer_lines)
+            .style(if self.is_streaming {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+            })
+            .block(Block::default().title(prompt_title).borders(Borders::ALL))
+            .scroll((composer_scroll, 0));
+        frame.render_widget(composer, chunks[2]);
+    }
+
+    fn composer_lines(&self, width: usize) -> Vec<Line<'static>> {
+        build_composer_lines(&self.composer, &self.image_attachments, width)
+    }
+
+    fn transcript_lines(&self, width: usize) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+
+        for (entry_index, entry) in self.transcript.iter().enumerate() {
+            match entry {
+                TranscriptEntry::User(message) => {
+                    push_user_message_lines(&mut lines, message, width)
+                }
+                TranscriptEntry::Assistant(text) => {
+                    push_markdown_message_lines(&mut lines, "Forge", text, width)
+                }
+                TranscriptEntry::Tool(tool) => push_tool_lines(
+                    &mut lines,
+                    tool,
+                    self.selected_tool == Some(entry_index),
+                    width,
+                ),
+                TranscriptEntry::Error(text) => push_wrapped(
+                    &mut lines,
+                    "Error",
+                    text,
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    width,
+                ),
+                TranscriptEntry::Status(text) => push_wrapped(
+                    &mut lines,
+                    "Status",
+                    text,
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                    width,
+                ),
+            }
