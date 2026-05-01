@@ -11,7 +11,10 @@ mod tool_card;
 
 use logging::{codegraff_log_path, install_panic_logger, log_error, log_info};
 use terminal::TerminalGuard;
-use text::{push_wrapped, truncate_single_line, word_boundary_take, wrap_line};
+use text::{
+    push_wrapped, sanitize_render_text, truncate_single_line, visible_width, word_boundary_take,
+    wrap_line,
+};
 use tool_card::{ToolEntry, ToolStatus, compact_tool_output, push_tool_lines};
 
 use anyhow::{Context, Result};
@@ -2600,7 +2603,7 @@ fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>
 
     for span in spans {
         let style = span.style;
-        let mut text = span.content.into_owned();
+        let mut text = sanitize_render_text(&span.content);
         if text.is_empty() {
             if current_width == 0 {
                 lines
@@ -2615,11 +2618,12 @@ fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>
             let remaining = width.saturating_sub(current_width).max(1);
             let take = word_boundary_take(&text, remaining);
             let chunk = text[..take].trim_start().to_string();
+            let chunk_width = visible_width(&chunk);
             lines
                 .last_mut()
                 .expect("line should exist")
                 .push(Span::styled(chunk, style));
-            current_width += text[..take].trim_start().chars().count();
+            current_width += chunk_width;
             text = text[take..].to_string();
 
             if !text.is_empty() {

@@ -1,7 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::text::{truncate_single_line, wrap_line};
+use crate::text::{sanitize_render_text, truncate_single_line, wrap_line};
 
 /// Maximum number of tool output lines rendered before compacting.
 pub(crate) const TOOL_OUTPUT_LINE_LIMIT: usize = 80;
@@ -106,48 +106,11 @@ pub(crate) fn compact_tool_output(text: &str) -> String {
 
 /// Sanitizes terminal-oriented output for stable rendering in the chat pane.
 pub(crate) fn sanitize_tool_output(text: &str) -> String {
-    let stripped = strip_ansi_escape_sequences(text);
-    stripped
-        .chars()
-        .map(|ch| match ch {
-            '\n' | '\t' => ch,
-            '\u{fffd}' => ' ',
-            ch if ch.is_control() => ' ',
-            ch => ch,
-        })
-        .collect::<String>()
+    sanitize_render_text(text)
         .lines()
         .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn strip_ansi_escape_sequences(text: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' {
-            output.push(ch);
-            continue;
-        }
-
-        if chars.next_if_eq(&'[').is_none() {
-            continue;
-        }
-
-        for ch in chars.by_ref() {
-            if ch.is_whitespace() {
-                return output;
-            }
-
-            if ('@'..='~').contains(&ch) {
-                break;
-            }
-        }
-    }
-
-    output
 }
 
 /// Pushes renderable lines for a tool card.

@@ -1,10 +1,75 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Returns the display width of a string using terminal cell width semantics.
 pub(crate) fn visible_width(text: &str) -> usize {
-    text.chars().filter_map(UnicodeWidthChar::width).sum()
+    UnicodeWidthStr::width(text)
+}
+
+/// Sanitizes terminal-oriented text before it is rendered by ratatui.
+pub(crate) fn sanitize_render_text(text: &str) -> String {
+    strip_ansi_escape_sequences(text)
+        .chars()
+        .map(|ch| match ch {
+            '\n' => '\n',
+            '\r' => '\n',
+            '\t' => ' ',
+            '\u{fffd}' => ' ',
+            ch if ch.is_control() => ' ',
+            ch => ch,
+        })
+        .collect()
+}
+
+/// Strips ANSI escape sequences that can corrupt the alternate-screen buffer.
+pub(crate) fn strip_ansi_escape_sequences(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            output.push(ch);
+            continue;
+        }
+
+        match chars.peek().copied() {
+            Some('[') => {
+                chars.next();
+                let mut terminated = false;
+                let mut aborted = false;
+                for ch in chars.by_ref() {
+                    if ch.is_whitespace() {
+                        aborted = true;
+                        break;
+                    }
+                    if ('@'..='~').contains(&ch) {
+                        terminated = true;
+                        break;
+                    }
+                }
+                if aborted || !terminated {
+                    break;
+                }
+            }
+            Some(']') => {
+                chars.next();
+                let mut previous = '\0';
+                for ch in chars.by_ref() {
+                    if ch == '\u{7}' || (previous == '\u{1b}' && ch == '\\') {
+                        break;
+                    }
+                    previous = ch;
+                }
+            }
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
+
+    output
 }
 
 /// Truncates a string to a single terminal-width-limited line with an ellipsis.
@@ -38,10 +103,11 @@ pub(crate) fn push_wrapped(
     width: usize,
 ) {
     let width = width.max(1);
+    let sanitized = sanitize_render_text(text);
     let label_prefix = format!("{label}: ");
     let continuation_prefix = " ".repeat(label_prefix.chars().count());
 
-    let mut physical_lines = text.lines().peekable();
+    let mut physical_lines = sanitized.lines().peekable();
     if physical_lines.peek().is_none() {
         lines.push(Line::from(Span::styled(format!("{label}:"), style)));
         return;
@@ -113,11 +179,17 @@ pub(crate) fn wrap_line(line: &str, width: usize) -> Vec<String> {
 /// Returns the byte index for a word-boundary-aware line break.
 pub(crate) fn word_boundary_take(text: &str, width: usize) -> usize {
     let width = width.max(1);
-    let hard_limit = text
-        .char_indices()
-        .nth(width)
-        .map(|(index, _)| index)
-        .unwrap_or(text.len());
+    let mut hard_limit = text.len();
+    let mut display_width = 0;
+
+    for (index, ch) in text.char_indices() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if display_width + ch_width > width {
+            hard_limit = index;
+            break;
+        }
+        display_width += ch_width;
+    }
 
     if hard_limit == text.len() {
         return hard_limit;
