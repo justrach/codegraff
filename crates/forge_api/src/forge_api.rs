@@ -110,7 +110,7 @@ impl<
         let use_forge_committer = self
             .services
             .get_config()
-            .context("Failed to read forge config for commit settings")?
+            .context("Failed to read Graff config for commit settings")?
             .use_forge_committer;
 
         let git_app = GitApp::new(self.services.clone());

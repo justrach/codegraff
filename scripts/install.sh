@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX sh installer for CodeGraff and Forge.
+# POSIX sh installer for CodeGraff and Graff.
 # Usage:
 #   curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 # Optional:
@@ -22,7 +22,7 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 TMP_DIR=""
 DOWNLOADER=""
 
-printf "${BLUE}Installing CodeGraff, Forge, and dependencies...${NC}\n"
+printf "${BLUE}Installing CodeGraff, Graff, and dependencies...${NC}\n"
 
 if command -v curl >/dev/null 2>&1; then
   DOWNLOADER="curl"
@@ -348,19 +348,19 @@ case "$OS" in
       TARGET="$ARCH-unknown-linux-$LIBC_TYPE"
     fi
     TARGET_EXT=""
-    FORGE_BINARY="forge"
+    FORGE_BINARY="graff"
     CODEGRAFF_BINARY="codegraff"
     ;;
   darwin)
     TARGET="$ARCH-apple-darwin"
     TARGET_EXT=""
-    FORGE_BINARY="forge"
+    FORGE_BINARY="graff"
     CODEGRAFF_BINARY="codegraff"
     ;;
   msys*|mingw*|cygwin*|windows*)
     TARGET="$ARCH-pc-windows-msvc"
     TARGET_EXT=".exe"
-    FORGE_BINARY="forge.exe"
+    FORGE_BINARY="graff.exe"
     CODEGRAFF_BINARY="codegraff.exe"
     ;;
   *)
@@ -375,7 +375,7 @@ prepend_to_path "$INSTALL_DIR"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
-install_release_binary "Forge" "$FORGE_BINARY" "forge-$TARGET$TARGET_EXT"
+install_release_binary "Graff" "$FORGE_BINARY" "graff-$TARGET$TARGET_EXT"
 if [ "$TARGET" = "aarch64-linux-android" ]; then
   printf "${YELLOW}Warning: CodeGraff TUI release is not published for Android yet; skipping.${NC}\n"
 else
@@ -389,5 +389,5 @@ install_fzf || true
 install_codedb || true
 
 printf "\n${GREEN}Installation complete!${NC}\n"
-printf "${BLUE}Tools installed: forge, codegraff, fzf, codedb${NC}\n"
+printf "${BLUE}Tools installed: graff, codegraff, fzf, codedb${NC}\n"
 printf "${YELLOW}Open a new terminal or restart your shell if commands are not immediately visible.${NC}\n"

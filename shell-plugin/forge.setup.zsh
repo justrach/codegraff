@@ -1,4 +1,4 @@
-# !! Contents within this block are managed by 'forge zsh setup' !!
+# !! Contents within this block are managed by 'graff zsh setup' !!
 # !! Do not edit manually - changes will be overwritten !!
 
 # Add required zsh plugins if not already present
@@ -9,12 +9,12 @@ if [[ ! " ${plugins[@]} " =~ " zsh-syntax-highlighting " ]]; then
     plugins+=(zsh-syntax-highlighting)
 fi
 
-# Load forge shell plugin (commands, completions, keybindings) if not already loaded
+# Load graff shell plugin (commands, completions, keybindings) if not already loaded
 if [[ -z "$_FORGE_PLUGIN_LOADED" ]]; then
-    eval "$(forge zsh plugin)"
+    eval "$(graff zsh plugin)"
 fi
 
-# Load forge shell theme (prompt with AI context) if not already loaded
+# Load graff shell theme (prompt with AI context) if not already loaded
 if [[ -z "$_FORGE_THEME_LOADED" ]]; then
-    eval "$(forge zsh theme)"
+    eval "$(graff zsh theme)"
 fi

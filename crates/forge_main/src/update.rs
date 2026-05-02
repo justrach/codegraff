@@ -7,15 +7,16 @@ use forge_select::ForgeWidget;
 use forge_tracker::VERSION;
 use update_informer::{Check, Version, registry};
 
-/// Runs the official installation script to update Forge, failing silently.
+/// Runs the official CodeGraff installation script to update Graff, failing silently.
 /// When `auto_update` is true, exits immediately after a successful update
 /// without prompting the user.
 async fn execute_update_command(api: Arc<impl API>, auto_update: bool) {
     // Spawn a new task that won't block the main application
     let output = api
-        .execute_shell_command_raw("curl -fsSL https://forgecode.dev/cli | sh")
+        .execute_shell_command_raw(
+            "curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh",
+        )
         .await;
-
     match output {
         Err(err) => {
             // Send an event to the tracker on failure
@@ -28,7 +29,7 @@ async fn execute_update_command(api: Arc<impl API>, auto_update: bool) {
                     true
                 } else {
                     let answer = forge_select::ForgeWidget::confirm(
-                        "You need to close forge to complete update. Do you want to close it now?",
+                        "You need to close graff to complete update. Do you want to close it now?",
                     )
                     .with_default(true)
                     .prompt();
@@ -87,7 +88,7 @@ pub async fn on_update(api: Arc<impl API>, update: Option<&Update>) {
         return;
     }
 
-    let informer = update_informer::new(registry::GitHub, "tailcallhq/forgecode", VERSION)
+    let informer = update_informer::new(registry::GitHub, "justrach/codegraff", VERSION)
         .interval(frequency.into());
 
     if let Some(version) = informer.check_version().ok().flatten()

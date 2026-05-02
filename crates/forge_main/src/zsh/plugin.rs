@@ -36,7 +36,7 @@ pub fn generate_zsh_plugin() -> Result<String> {
     // Generate clap completions for the CLI
     let mut cmd = Cli::command();
     let mut completions = Vec::new();
-    generate(Zsh, &mut cmd, "forge", &mut completions);
+    generate(Zsh, &mut cmd, "graff", &mut completions);
 
     // Append completions to the output with clear separator
     let completions_str = String::from_utf8(completions)?;
@@ -65,7 +65,7 @@ fn create_temp_zsh_script(script_content: &str) -> Result<(tempfile::TempDir, Pa
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().context("Failed to create temp directory")?;
-    let script_path = temp_dir.path().join("forge_script.zsh");
+    let script_path = temp_dir.path().join("graff_script.zsh");
     let mut file = fs::File::create(&script_path).context("Failed to create temp script file")?;
     file.write_all(script_content.as_bytes())
         .context("Failed to write temp script")?;
@@ -277,14 +277,16 @@ pub struct ZshSetupResult {
 /// Returns error if:
 /// - The HOME environment variable is not set
 /// - The .zshrc file cannot be read or written
-/// - Invalid forge markers are found (incomplete or incorrectly ordered)
+/// - Invalid graff markers are found (incomplete or incorrectly ordered)
 /// - A backup of the existing .zshrc cannot be created
 pub fn setup_zsh_integration(
     disable_nerd_font: bool,
     forge_editor: Option<&str>,
 ) -> Result<ZshSetupResult> {
-    const START_MARKER: &str = "# >>> forge initialize >>>";
-    const END_MARKER: &str = "# <<< forge initialize <<<";
+    const START_MARKER: &str = "# >>> graff initialize >>>";
+    const END_MARKER: &str = "# <<< graff initialize <<<";
+    const LEGACY_START_MARKER: &str = "# >>> forge initialize >>>";
+    const LEGACY_END_MARKER: &str = "# <<< forge initialize <<<";
     const FORGE_INIT_CONFIG_RAW: &str = include_str!("../../../../shell-plugin/forge.setup.zsh");
     let forge_init_config = super::normalize_script(FORGE_INIT_CONFIG_RAW);
 
@@ -302,38 +304,43 @@ pub fn setup_zsh_integration(
 
     let mut lines: Vec<String> = content.lines().map(String::from).collect();
 
-    // Parse markers to determine their state
-    let marker_state = parse_markers(&lines, START_MARKER, END_MARKER);
+    // Parse markers to determine their state. Prefer the current graff markers,
+    // but continue to update older forge-managed blocks in-place so existing
+    // shells are migrated instead of receiving a duplicate setup block.
+    let marker_state = match parse_markers(&lines, START_MARKER, END_MARKER) {
+        MarkerState::NotFound => parse_markers(&lines, LEGACY_START_MARKER, LEGACY_END_MARKER),
+        state => state,
+    };
 
-    // Build the forge config block with markers
-    let mut forge_config: Vec<String> = vec![START_MARKER.to_string()];
-    forge_config.extend(forge_init_config.lines().map(String::from));
+    // Build the graff config block with markers
+    let mut graff_config: Vec<String> = vec![START_MARKER.to_string()];
+    graff_config.extend(forge_init_config.lines().map(String::from));
 
     // Add nerd font configuration if requested
     if disable_nerd_font {
-        forge_config.push(String::new()); // Add blank line before comment
-        forge_config.push(
+        graff_config.push(String::new()); // Add blank line before comment
+        graff_config.push(
             "# Disable Nerd Fonts (set during setup - icons not displaying correctly)".to_string(),
         );
-        forge_config.push("# To re-enable: remove this line and install a Nerd Font from https://www.nerdfonts.com/".to_string());
-        forge_config.push("export NERD_FONT=0".to_string());
+        graff_config.push("# To re-enable: remove this line and install a Nerd Font from https://www.nerdfonts.com/".to_string());
+        graff_config.push("export NERD_FONT=0".to_string());
     }
 
     // Add editor configuration if requested
     if let Some(editor) = forge_editor {
-        forge_config.push(String::new()); // Add blank line before comment
-        forge_config.push("# Editor for editing prompts (set during setup)".to_string());
-        forge_config.push("# To change: update FORGE_EDITOR or remove to use $EDITOR".to_string());
-        forge_config.push(format!("export FORGE_EDITOR=\"{}\"", editor));
+        graff_config.push(String::new()); // Add blank line before comment
+        graff_config.push("# Editor for editing prompts (set during setup)".to_string());
+        graff_config.push("# To change: update FORGE_EDITOR or remove to use $EDITOR".to_string());
+        graff_config.push(format!("export FORGE_EDITOR=\"{}\"", editor));
     }
 
-    forge_config.push(END_MARKER.to_string());
+    graff_config.push(END_MARKER.to_string());
 
-    // Add or update forge configuration block based on marker state
+    // Add or update graff configuration block based on marker state
     let (new_content, config_action) = match marker_state {
         MarkerState::Valid { start, end } => {
             // Markers exist - replace content between them
-            lines.splice(start..=end, forge_config.iter().cloned());
+            lines.splice(start..=end, graff_config.iter().cloned());
             (lines.join("\n") + "\n", "updated")
         }
         MarkerState::Invalid { start, end } => {
@@ -345,7 +352,7 @@ pub fn setup_zsh_integration(
             };
 
             let mut error =
-                anyhow::anyhow!("Invalid forge markers found in {}", zshrc_path.display());
+                anyhow::anyhow!("Invalid graff markers found in {}", zshrc_path.display());
             if let Some(loc) = location {
                 error = error.context(format!("Markers found at {}", loc));
             }
@@ -359,7 +366,7 @@ pub fn setup_zsh_integration(
                 lines.push(String::new());
             }
 
-            lines.extend(forge_config.iter().cloned());
+            lines.extend(graff_config.iter().cloned());
             (lines.join("\n") + "\n", "added")
         }
     };
@@ -393,7 +400,7 @@ pub fn setup_zsh_integration(
         .context(format!("Failed to write to {}", zshrc_path.display()))?;
 
     Ok(ZshSetupResult {
-        message: format!("forge plugins {}", config_action),
+        message: format!("graff plugins {}", config_action),
         backup_path,
     })
 }
@@ -512,8 +519,8 @@ mod tests {
         assert!(!content.contains("NERD_FONT=0"));
 
         // Should contain the markers
-        assert!(content.contains("# >>> forge initialize >>>"));
-        assert!(content.contains("# <<< forge initialize <<<"));
+        assert!(content.contains("# >>> graff initialize >>>"));
+        assert!(content.contains("# <<< graff initialize <<<"));
     }
 
     #[test]
@@ -560,8 +567,8 @@ mod tests {
         assert!(content.contains("# To re-enable: remove this line and install a Nerd Font from https://www.nerdfonts.com/"), "Should contain re-enable instructions");
 
         // Should contain the markers
-        assert!(content.contains("# >>> forge initialize >>>"));
-        assert!(content.contains("# <<< forge initialize <<<"));
+        assert!(content.contains("# >>> graff initialize >>>"));
+        assert!(content.contains("# <<< graff initialize <<<"));
 
         // Restore environment
         // SAFETY: We hold ENV_LOCK to prevent concurrent environment modifications
@@ -621,8 +628,8 @@ mod tests {
         );
 
         // Should contain the markers
-        assert!(content.contains("# >>> forge initialize >>>"));
-        assert!(content.contains("# <<< forge initialize <<<"));
+        assert!(content.contains("# >>> graff initialize >>>"));
+        assert!(content.contains("# <<< graff initialize <<<"));
 
         // Restore environment
         // SAFETY: We hold ENV_LOCK to prevent concurrent environment modifications
@@ -682,8 +689,8 @@ mod tests {
         );
 
         // Should contain the markers
-        assert!(content.contains("# >>> forge initialize >>>"));
-        assert!(content.contains("# <<< forge initialize <<<"));
+        assert!(content.contains("# >>> graff initialize >>>"));
+        assert!(content.contains("# <<< graff initialize <<<"));
 
         // Restore environment
         // SAFETY: We hold ENV_LOCK to prevent concurrent environment modifications
@@ -778,17 +785,17 @@ mod tests {
         );
 
         // Should still have markers
-        assert!(content.contains("# >>> forge initialize >>>"));
-        assert!(content.contains("# <<< forge initialize <<<"));
+        assert!(content.contains("# >>> graff initialize >>>"));
+        assert!(content.contains("# <<< graff initialize <<<"));
 
         // Should only have one set of markers
         assert_eq!(
-            content.matches("# >>> forge initialize >>>").count(),
+            content.matches("# >>> graff initialize >>>").count(),
             1,
             "Should have exactly one start marker"
         );
         assert_eq!(
-            content.matches("# <<< forge initialize <<<").count(),
+            content.matches("# <<< graff initialize <<<").count(),
             1,
             "Should have exactly one end marker"
         );

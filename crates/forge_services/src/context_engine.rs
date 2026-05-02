@@ -89,7 +89,7 @@ impl<
         .await
     }
 
-    /// Gets the ForgeCode services credential and extracts workspace auth
+    /// Gets the Graff services credential and extracts workspace auth
     /// components
     ///
     /// # Errors
@@ -109,13 +109,13 @@ impl<
                     .url_params
                     .get(&"user_id".to_string().into())
                     .ok_or_else(|| {
-                        anyhow::anyhow!("Missing user_id in ForgeServices credential")
+                        anyhow::anyhow!("Missing user_id in Graff Services credential")
                     })?;
                 let user_id = UserId::from_string(user_id_str.as_str())?;
 
                 Ok((token.clone(), user_id))
             }
-            _ => anyhow::bail!("ForgeServices credential must be an API key"),
+            _ => anyhow::bail!("Graff Services credential must be an API key"),
         }
     }
 
@@ -179,7 +179,7 @@ impl<
     ) -> Result<forge_domain::WorkspaceInfo> {
         self.find_workspace_by_path(path, token)
             .await?
-            .context("Workspace not indexed. Please run `forge workspace init` first.")
+            .context("Workspace not indexed. Please run `graff workspace init` first.")
     }
 
     async fn _init_workspace(&self, path: PathBuf) -> Result<(bool, WorkspaceId)> {

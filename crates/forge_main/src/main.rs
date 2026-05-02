@@ -17,7 +17,7 @@ use forge_main::{Cli, Sandbox, TitleDisplayExt, UI, tracker};
 /// configurations (e.g. older builds, cmd.exe launched in certain ways, or
 /// when handles have been duplicated).
 ///
-/// Without VT processing on stdout, ANSI escape codes from forge's markdown
+/// Without VT processing on stdout, ANSI escape codes from graff's markdown
 /// renderer (bold, colors, inline code styling) are displayed as raw text
 /// like `←[33m` instead of being interpreted as formatting.
 ///
@@ -103,7 +103,7 @@ async fn run() -> Result<()> {
     // Read and validate configuration at startup so any errors are surfaced
     // immediately rather than silently falling back to defaults at runtime.
     let config =
-        ForgeConfig::read().context("Failed to read Forge configuration from .forge.toml")?;
+        ForgeConfig::read().context("Failed to read Graff configuration from .forge.toml")?;
 
     // Handle worktree creation if specified
     let cwd: PathBuf = match (&cli.sandbox, &cli.directory) {
@@ -142,14 +142,14 @@ mod tests {
         // but we can verify the logic flow
 
         // Test that when prompt is provided, it remains independent of piped input
-        let cli_with_prompt = Cli::parse_from(["forge", "--prompt", "existing prompt"]);
+        let cli_with_prompt = Cli::parse_from(["graff", "--prompt", "existing prompt"]);
         let original_prompt = cli_with_prompt.prompt.clone();
 
         // The prompt should remain as provided
         assert_eq!(original_prompt, Some("existing prompt".to_string()));
 
         // Test that when no prompt is provided, piped_input field exists
-        let cli_no_prompt = Cli::parse_from(["forge"]);
+        let cli_no_prompt = Cli::parse_from(["graff"]);
         assert_eq!(cli_no_prompt.prompt, None);
         assert_eq!(cli_no_prompt.piped_input, None);
     }
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn test_cli_parsing_with_short_flag() {
         // Test that the short flag -p also works correctly
-        let cli_with_short_prompt = Cli::parse_from(["forge", "-p", "short flag prompt"]);
+        let cli_with_short_prompt = Cli::parse_from(["graff", "-p", "short flag prompt"]);
         assert_eq!(
             cli_with_short_prompt.prompt,
             Some("short flag prompt".to_string())
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn test_cli_parsing_other_flags_work_with_piping() {
         // Test that other CLI flags still work when expecting stdin input
-        let cli_with_flags = Cli::parse_from(["forge", "--verbose"]);
+        let cli_with_flags = Cli::parse_from(["graff", "--verbose"]);
         assert_eq!(cli_with_flags.prompt, None);
         assert_eq!(cli_with_flags.verbose, true);
     }
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn test_commit_command_diff_field_initially_none() {
         // Test that the diff field in CommitCommandGroup starts as None
-        let cli = Cli::parse_from(["forge", "commit", "--preview"]);
+        let cli = Cli::parse_from(["graff", "commit", "--preview"]);
         if let Some(TopLevelCommand::Commit(commit_group)) = cli.subcommands {
             assert_eq!(commit_group.preview, true);
             assert_eq!(commit_group.diff, None);

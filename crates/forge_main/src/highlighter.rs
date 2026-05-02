@@ -1,7 +1,7 @@
 use nu_ansi_term::{Color, Style};
 use reedline::{Highlighter, StyledText};
 
-/// Syntax highlighter for the forge readline prompt.
+/// Syntax highlighter for the graff readline prompt.
 ///
 /// Applies visual styles to recognised input patterns as the user types:
 /// - Commands (`:foo` or `/foo` for backward compatibility) are rendered in

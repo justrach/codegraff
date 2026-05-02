@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Percentage;
 
-/// Frequency at which forge checks for updates
+/// Frequency at which Graff checks for updates
 #[derive(Default, Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, fake::Dummy)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateFrequency {
@@ -29,13 +29,13 @@ impl From<UpdateFrequency> for Duration {
     }
 }
 
-/// Configuration for automatic forge updates
+/// Configuration for automatic Graff updates
 #[derive(
     Debug, Clone, Serialize, Deserialize, Default, JsonSchema, Setters, PartialEq, fake::Dummy,
 )]
 #[setters(strip_option, into)]
 pub struct Update {
-    /// How frequently forge checks for updates: daily, weekly, always, or never
+    /// How frequently Graff checks for updates: daily, weekly, always, or never
     pub frequency: Option<UpdateFrequency>,
     /// Whether to automatically install updates without prompting
     pub auto_update: Option<bool>,

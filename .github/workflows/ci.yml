@@ -122,87 +122,87 @@ jobs:
     strategy:
       matrix:
         include:
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-linux-x86_64
+        - os: ubuntu-latest
+          target: x86_64-unknown-linux-musl
+          graff_binary_name: graff-x86_64-unknown-linux-musl
+          graff_binary_path: target/x86_64-unknown-linux-musl/release/graff
           codegraff_binary_name: codegraff-x86_64-unknown-linux-musl
           codegraff_binary_path: target/x86_64-unknown-linux-musl/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'true'
-          forge_binary_name: forge-x86_64-unknown-linux-musl
-          forge_binary_path: target/x86_64-unknown-linux-musl/release/forge
-          os: ubuntu-latest
-          target: x86_64-unknown-linux-musl
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-linux-arm64
+          codedb_asset: codedb-linux-x86_64
+        - os: ubuntu-latest
+          target: aarch64-unknown-linux-musl
+          graff_binary_name: graff-aarch64-unknown-linux-musl
+          graff_binary_path: target/aarch64-unknown-linux-musl/release/graff
           codegraff_binary_name: codegraff-aarch64-unknown-linux-musl
           codegraff_binary_path: target/aarch64-unknown-linux-musl/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'true'
-          forge_binary_name: forge-aarch64-unknown-linux-musl
-          forge_binary_path: target/aarch64-unknown-linux-musl/release/forge
-          os: ubuntu-latest
-          target: aarch64-unknown-linux-musl
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-linux-x86_64
+          codedb_asset: codedb-linux-arm64
+        - os: ubuntu-latest
+          target: x86_64-unknown-linux-gnu
+          graff_binary_name: graff-x86_64-unknown-linux-gnu
+          graff_binary_path: target/x86_64-unknown-linux-gnu/release/graff
           codegraff_binary_name: codegraff-x86_64-unknown-linux-gnu
           codegraff_binary_path: target/x86_64-unknown-linux-gnu/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'false'
-          forge_binary_name: forge-x86_64-unknown-linux-gnu
-          forge_binary_path: target/x86_64-unknown-linux-gnu/release/forge
-          os: ubuntu-latest
-          target: x86_64-unknown-linux-gnu
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-linux-arm64
+          codedb_asset: codedb-linux-x86_64
+        - os: ubuntu-latest
+          target: aarch64-unknown-linux-gnu
+          graff_binary_name: graff-aarch64-unknown-linux-gnu
+          graff_binary_path: target/aarch64-unknown-linux-gnu/release/graff
           codegraff_binary_name: codegraff-aarch64-unknown-linux-gnu
           codegraff_binary_path: target/aarch64-unknown-linux-gnu/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'true'
-          forge_binary_name: forge-aarch64-unknown-linux-gnu
-          forge_binary_path: target/aarch64-unknown-linux-gnu/release/forge
-          os: ubuntu-latest
-          target: aarch64-unknown-linux-gnu
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-darwin-x86_64
+          codedb_asset: codedb-linux-arm64
+        - os: macos-latest
+          target: x86_64-apple-darwin
+          graff_binary_name: graff-x86_64-apple-darwin
+          graff_binary_path: target/x86_64-apple-darwin/release/graff
           codegraff_binary_name: codegraff-x86_64-apple-darwin
           codegraff_binary_path: target/x86_64-apple-darwin/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'false'
-          forge_binary_name: forge-x86_64-apple-darwin
-          forge_binary_path: target/x86_64-apple-darwin/release/forge
-          os: macos-latest
-          target: x86_64-apple-darwin
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-darwin-arm64
+          codedb_asset: codedb-darwin-x86_64
+        - os: macos-latest
+          target: aarch64-apple-darwin
+          graff_binary_name: graff-aarch64-apple-darwin
+          graff_binary_path: target/aarch64-apple-darwin/release/graff
           codegraff_binary_name: codegraff-aarch64-apple-darwin
           codegraff_binary_path: target/aarch64-apple-darwin/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'false'
-          forge_binary_name: forge-aarch64-apple-darwin
-          forge_binary_path: target/aarch64-apple-darwin/release/forge
-          os: macos-latest
-          target: aarch64-apple-darwin
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: ''
+          codedb_asset: codedb-darwin-arm64
+        - os: windows-latest
+          target: x86_64-pc-windows-msvc
+          graff_binary_name: graff-x86_64-pc-windows-msvc.exe
+          graff_binary_path: target/x86_64-pc-windows-msvc/release/graff.exe
           codegraff_binary_name: codegraff-x86_64-pc-windows-msvc.exe
           codegraff_binary_path: target/x86_64-pc-windows-msvc/release/codegraff.exe
+          build_bins: '--bin graff --bin codegraff'
           cross: 'false'
-          forge_binary_name: forge-x86_64-pc-windows-msvc.exe
-          forge_binary_path: target/x86_64-pc-windows-msvc/release/forge.exe
-          os: windows-latest
-          target: x86_64-pc-windows-msvc
-        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: ''
+        - os: windows-latest
+          target: aarch64-pc-windows-msvc
+          graff_binary_name: graff-aarch64-pc-windows-msvc.exe
+          graff_binary_path: target/aarch64-pc-windows-msvc/release/graff.exe
           codegraff_binary_name: codegraff-aarch64-pc-windows-msvc.exe
           codegraff_binary_path: target/aarch64-pc-windows-msvc/release/codegraff.exe
+          build_bins: '--bin graff --bin codegraff'
           cross: 'false'
-          forge_binary_name: forge-aarch64-pc-windows-msvc.exe
-          forge_binary_path: target/aarch64-pc-windows-msvc/release/forge.exe
-          os: windows-latest
-          target: aarch64-pc-windows-msvc
-        - build_bins: '--bin forge'
           codedb_asset: ''
+        - os: ubuntu-latest
+          target: aarch64-linux-android
+          graff_binary_name: graff-aarch64-linux-android
+          graff_binary_path: target/aarch64-linux-android/release/graff
           codegraff_binary_name: ''
           codegraff_binary_path: ''
+          build_bins: '--bin graff'
           cross: 'true'
-          forge_binary_name: forge-aarch64-linux-android
-          forge_binary_path: target/aarch64-linux-android/release/forge
-          os: ubuntu-latest
-          target: aarch64-linux-android
+          codedb_asset: ''
     steps:
     - name: Checkout Code
       uses: actions/checkout@v6
@@ -264,7 +264,7 @@ jobs:
       if: ${{ runner.os == 'macOS' }}
       run: |-
         if [ -n "$APPLE_CERTIFICATE_P12" ] && [ -n "$APPLE_CODESIGN_IDENTITY" ]; then
-          codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" ${{ matrix.forge_binary_path }}
+          codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" ${{ matrix.graff_binary_path }}
           if [ -n "${{ matrix.codegraff_binary_path }}" ]; then
             codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" ${{ matrix.codegraff_binary_path }}
           fi
@@ -277,8 +277,8 @@ jobs:
     - name: Package Binaries
       run: |-
         mkdir -p dist
-        cp ${{ matrix.forge_binary_path }} dist/${{ matrix.forge_binary_name }}
-        cp dist/${{ matrix.forge_binary_name }} ${{ matrix.forge_binary_name }}
+        cp ${{ matrix.graff_binary_path }} dist/${{ matrix.graff_binary_name }}
+        cp dist/${{ matrix.graff_binary_name }} ${{ matrix.graff_binary_name }}
         if [ -n "${{ matrix.codegraff_binary_name }}" ]; then
           cp ${{ matrix.codegraff_binary_path }} dist/${{ matrix.codegraff_binary_name }}
           cp dist/${{ matrix.codegraff_binary_name }} ${{ matrix.codegraff_binary_name }}
@@ -286,15 +286,15 @@ jobs:
         cp scripts/install.sh install.sh
         if [ -n "${{ matrix.codedb_asset }}" ]; then
           cp codedb dist/codedb
-          tar -C dist -czf ${{ matrix.forge_binary_name }}-bundle.tar.gz ${{ matrix.forge_binary_name }} codedb
+          tar -C dist -czf ${{ matrix.graff_binary_name }}-bundle.tar.gz ${{ matrix.graff_binary_name }} codedb
         fi
     - name: Notarize macOS Binaries
       if: ${{ runner.os == 'macOS' }}
       run: |-
         if [ -n "$APPLE_CERTIFICATE_P12" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
           mkdir -p notarize
-          ditto -c -k --keepParent ${{ matrix.forge_binary_name }} "notarize/${{ matrix.forge_binary_name }}.zip"
-          xcrun notarytool submit "notarize/${{ matrix.forge_binary_name }}.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          ditto -c -k --keepParent ${{ matrix.graff_binary_name }} "notarize/${{ matrix.graff_binary_name }}.zip"
+          xcrun notarytool submit "notarize/${{ matrix.graff_binary_name }}.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
           if [ -n "${{ matrix.codegraff_binary_name }}" ]; then
             ditto -c -k --keepParent ${{ matrix.codegraff_binary_name }} "notarize/${{ matrix.codegraff_binary_name }}.zip"
             xcrun notarytool submit "notarize/${{ matrix.codegraff_binary_name }}.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
@@ -307,11 +307,11 @@ jobs:
         APPLE_ID: ${{ secrets.CODEDB_LOCAL_APPLE_ID }}
         APPLE_TEAM_ID: ${{ secrets.CODEDB_LOCAL_APPLE_TEAM_ID }}
         APPLE_APP_PASSWORD: ${{ secrets.CODEDB_LOCAL_APPLE_APP_PASSWORD }}
-    - name: Upload Forge Binary to Release
+    - name: Upload Graff Binary to Release
       uses: xresloader/upload-to-github-release@v1
       with:
         release_id: ${{ needs.draft_release.outputs.crate_release_id }}
-        file: ${{ matrix.forge_binary_name }}
+        file: ${{ matrix.graff_binary_name }}
         overwrite: 'true'
     - name: Upload CodeGraff Binary to Release
       if: ${{ matrix.codegraff_binary_name != '' }}
@@ -332,7 +332,7 @@ jobs:
       uses: xresloader/upload-to-github-release@v1
       with:
         release_id: ${{ needs.draft_release.outputs.crate_release_id }}
-        file: ${{ matrix.forge_binary_name }}-bundle.tar.gz
+        file: ${{ matrix.graff_binary_name }}-bundle.tar.gz
         overwrite: 'true'
   build_release_pr:
     needs:
@@ -346,87 +346,87 @@ jobs:
     strategy:
       matrix:
         include:
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-linux-x86_64
+        - os: ubuntu-latest
+          target: x86_64-unknown-linux-musl
+          graff_binary_name: graff-x86_64-unknown-linux-musl
+          graff_binary_path: target/x86_64-unknown-linux-musl/release/graff
           codegraff_binary_name: codegraff-x86_64-unknown-linux-musl
           codegraff_binary_path: target/x86_64-unknown-linux-musl/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'true'
-          forge_binary_name: forge-x86_64-unknown-linux-musl
-          forge_binary_path: target/x86_64-unknown-linux-musl/release/forge
-          os: ubuntu-latest
-          target: x86_64-unknown-linux-musl
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-linux-arm64
+          codedb_asset: codedb-linux-x86_64
+        - os: ubuntu-latest
+          target: aarch64-unknown-linux-musl
+          graff_binary_name: graff-aarch64-unknown-linux-musl
+          graff_binary_path: target/aarch64-unknown-linux-musl/release/graff
           codegraff_binary_name: codegraff-aarch64-unknown-linux-musl
           codegraff_binary_path: target/aarch64-unknown-linux-musl/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'true'
-          forge_binary_name: forge-aarch64-unknown-linux-musl
-          forge_binary_path: target/aarch64-unknown-linux-musl/release/forge
-          os: ubuntu-latest
-          target: aarch64-unknown-linux-musl
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-linux-x86_64
+          codedb_asset: codedb-linux-arm64
+        - os: ubuntu-latest
+          target: x86_64-unknown-linux-gnu
+          graff_binary_name: graff-x86_64-unknown-linux-gnu
+          graff_binary_path: target/x86_64-unknown-linux-gnu/release/graff
           codegraff_binary_name: codegraff-x86_64-unknown-linux-gnu
           codegraff_binary_path: target/x86_64-unknown-linux-gnu/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'false'
-          forge_binary_name: forge-x86_64-unknown-linux-gnu
-          forge_binary_path: target/x86_64-unknown-linux-gnu/release/forge
-          os: ubuntu-latest
-          target: x86_64-unknown-linux-gnu
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-linux-arm64
+          codedb_asset: codedb-linux-x86_64
+        - os: ubuntu-latest
+          target: aarch64-unknown-linux-gnu
+          graff_binary_name: graff-aarch64-unknown-linux-gnu
+          graff_binary_path: target/aarch64-unknown-linux-gnu/release/graff
           codegraff_binary_name: codegraff-aarch64-unknown-linux-gnu
           codegraff_binary_path: target/aarch64-unknown-linux-gnu/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'true'
-          forge_binary_name: forge-aarch64-unknown-linux-gnu
-          forge_binary_path: target/aarch64-unknown-linux-gnu/release/forge
-          os: ubuntu-latest
-          target: aarch64-unknown-linux-gnu
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-darwin-x86_64
+          codedb_asset: codedb-linux-arm64
+        - os: macos-latest
+          target: x86_64-apple-darwin
+          graff_binary_name: graff-x86_64-apple-darwin
+          graff_binary_path: target/x86_64-apple-darwin/release/graff
           codegraff_binary_name: codegraff-x86_64-apple-darwin
           codegraff_binary_path: target/x86_64-apple-darwin/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'false'
-          forge_binary_name: forge-x86_64-apple-darwin
-          forge_binary_path: target/x86_64-apple-darwin/release/forge
-          os: macos-latest
-          target: x86_64-apple-darwin
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: codedb-darwin-arm64
+          codedb_asset: codedb-darwin-x86_64
+        - os: macos-latest
+          target: aarch64-apple-darwin
+          graff_binary_name: graff-aarch64-apple-darwin
+          graff_binary_path: target/aarch64-apple-darwin/release/graff
           codegraff_binary_name: codegraff-aarch64-apple-darwin
           codegraff_binary_path: target/aarch64-apple-darwin/release/codegraff
+          build_bins: '--bin graff --bin codegraff'
           cross: 'false'
-          forge_binary_name: forge-aarch64-apple-darwin
-          forge_binary_path: target/aarch64-apple-darwin/release/forge
-          os: macos-latest
-          target: aarch64-apple-darwin
-        - build_bins: '--bin forge --bin codegraff'
-          codedb_asset: ''
+          codedb_asset: codedb-darwin-arm64
+        - os: windows-latest
+          target: x86_64-pc-windows-msvc
+          graff_binary_name: graff-x86_64-pc-windows-msvc.exe
+          graff_binary_path: target/x86_64-pc-windows-msvc/release/graff.exe
           codegraff_binary_name: codegraff-x86_64-pc-windows-msvc.exe
           codegraff_binary_path: target/x86_64-pc-windows-msvc/release/codegraff.exe
+          build_bins: '--bin graff --bin codegraff'
           cross: 'false'
-          forge_binary_name: forge-x86_64-pc-windows-msvc.exe
-          forge_binary_path: target/x86_64-pc-windows-msvc/release/forge.exe
-          os: windows-latest
-          target: x86_64-pc-windows-msvc
-        - build_bins: '--bin forge --bin codegraff'
           codedb_asset: ''
+        - os: windows-latest
+          target: aarch64-pc-windows-msvc
+          graff_binary_name: graff-aarch64-pc-windows-msvc.exe
+          graff_binary_path: target/aarch64-pc-windows-msvc/release/graff.exe
           codegraff_binary_name: codegraff-aarch64-pc-windows-msvc.exe
           codegraff_binary_path: target/aarch64-pc-windows-msvc/release/codegraff.exe
+          build_bins: '--bin graff --bin codegraff'
           cross: 'false'
-          forge_binary_name: forge-aarch64-pc-windows-msvc.exe
-          forge_binary_path: target/aarch64-pc-windows-msvc/release/forge.exe
-          os: windows-latest
-          target: aarch64-pc-windows-msvc
-        - build_bins: '--bin forge'
           codedb_asset: ''
+        - os: ubuntu-latest
+          target: aarch64-linux-android
+          graff_binary_name: graff-aarch64-linux-android
+          graff_binary_path: target/aarch64-linux-android/release/graff
           codegraff_binary_name: ''
           codegraff_binary_path: ''
+          build_bins: '--bin graff'
           cross: 'true'
-          forge_binary_name: forge-aarch64-linux-android
-          forge_binary_path: target/aarch64-linux-android/release/forge
-          os: ubuntu-latest
-          target: aarch64-linux-android
+          codedb_asset: ''
     steps:
     - name: Checkout Code
       uses: actions/checkout@v6

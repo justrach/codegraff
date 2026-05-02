@@ -1028,12 +1028,13 @@ checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
 
 [[package]]
 name = "codegraff"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arboard",
  "crossterm 0.29.0",
  "forge_api",
+ "forge_domain",
  "futures",
  "image",
  "pretty_assertions",
@@ -1389,6 +1390,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix 1.1.4",
@@ -2265,7 +2267,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "forge_api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2284,7 +2286,7 @@ dependencies = [
 
 [[package]]
 name = "forge_app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-recursion",
@@ -2336,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "forge_ci"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "derive_setters",
  "gh-workflow",
@@ -2347,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "forge_config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "config",
@@ -2370,7 +2372,7 @@ dependencies = [
 
 [[package]]
 name = "forge_display"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "console",
  "derive_setters",
@@ -2387,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "forge_domain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2429,7 +2431,7 @@ dependencies = [
 
 [[package]]
 name = "forge_embed"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "handlebars",
@@ -2438,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "forge_eventsource"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "forge_eventsource_stream",
  "futures",
@@ -2457,7 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "forge_eventsource_stream"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "futures-core",
@@ -2471,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "forge_fs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bstr",
@@ -2487,7 +2489,7 @@ dependencies = [
 
 [[package]]
 name = "forge_infra"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2538,7 +2540,7 @@ dependencies = [
 
 [[package]]
 name = "forge_json_repair"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pretty_assertions",
  "regex",
@@ -2551,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "forge_main"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2615,7 +2617,7 @@ dependencies = [
 
 [[package]]
 name = "forge_markdown_stream"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "colored",
  "insta",
@@ -2633,7 +2635,7 @@ dependencies = [
 
 [[package]]
 name = "forge_repo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -2670,6 +2672,7 @@ dependencies = [
  "google-cloud-auth",
  "gray_matter",
  "handlebars",
+ "http 1.4.0",
  "insta",
  "lazy_static",
  "merge",
@@ -2688,6 +2691,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
+ "tokio-tungstenite",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -2697,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "forge_select"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "colored",
@@ -2710,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "forge_services"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-recursion",
@@ -2769,7 +2773,7 @@ dependencies = [
 
 [[package]]
 name = "forge_snaps"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2784,7 +2788,7 @@ dependencies = [
 
 [[package]]
 name = "forge_spinner"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "colored",
@@ -2800,7 +2804,7 @@ dependencies = [
 
 [[package]]
 name = "forge_stream"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "tokio",
@@ -2808,7 +2812,7 @@ dependencies = [
 
 [[package]]
 name = "forge_template"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "html-escape",
  "pretty_assertions",
@@ -2816,7 +2820,7 @@ dependencies = [
 
 [[package]]
 name = "forge_test_kit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2825,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "forge_tool_macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2834,7 +2838,7 @@ dependencies = [
 
 [[package]]
 name = "forge_tracker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2865,7 +2869,7 @@ dependencies = [
 
 [[package]]
 name = "forge_walker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "derive_setters",
@@ -4618,7 +4622,7 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "tower-service",
- "webpki-roots",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -6930,7 +6934,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
- "webpki-roots",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -7522,6 +7526,7 @@ version = "1.0.149"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
 dependencies = [
+ "indexmap 2.14.0",
  "itoa",
  "memchr",
  "serde",
@@ -8525,6 +8530,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
+dependencies = [
+ "futures-util",
+ "log",
+ "rustls 0.23.40",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tungstenite",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8680,7 +8701,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
- "webpki-roots",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -8870,6 +8891,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8628dcc84e5a09eb3d8423d6cb682965dea9133204e8fb3efee74c2a0c259442"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http 1.4.0",
+ "httparse",
+ "log",
+ "rand 0.9.4",
+ "rustls 0.23.40",
+ "rustls-pki-types",
+ "sha1",
+ "thiserror 2.0.18",
+ "utf-8",
+]
+
+[[package]]
 name = "two-face"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9037,7 +9077,7 @@ dependencies = [
  "serde_json",
  "ureq-proto",
  "utf8-zero",
- "webpki-roots",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -9343,6 +9383,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]

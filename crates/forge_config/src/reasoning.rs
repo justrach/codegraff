@@ -12,23 +12,23 @@ use strum_macros::Display as StrumDisplay;
 #[setters(strip_option)]
 pub struct ReasoningConfig {
     /// Controls the effort level of the model's reasoning.
-    /// Supported by openrouter and forge provider.
+    /// Supported by openrouter and the Graff provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
 
     /// Controls how many tokens the model can spend thinking.
     /// Should be greater than 1024 but less than the overall max_tokens.
-    /// Supported by openrouter, anthropic, and forge provider.
+    /// Supported by openrouter, anthropic, and the Graff provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<usize>,
 
     /// When true, the model thinks deeply but the reasoning is hidden from the
-    /// caller. Supported by openrouter and forge provider.
+    /// caller. Supported by openrouter and the Graff provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude: Option<bool>,
 
     /// Enables reasoning at the "medium" effort level with no exclusions.
-    /// Supported by openrouter, anthropic, and forge provider.
+    /// Supported by openrouter, anthropic, and the Graff provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
 }

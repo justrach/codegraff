@@ -187,9 +187,9 @@ impl<F: forge_app::FileWriterInfra + 'static> ForgeHttpInfra<F> {
         let mut headers = headers.unwrap_or_default();
         // Only set User-Agent if the provider hasn't already set one
         if !headers.contains_key("User-Agent") {
-            headers.insert("User-Agent", HeaderValue::from_static("Forge"));
+            headers.insert("User-Agent", HeaderValue::from_static("Graff"));
         }
-        headers.insert("X-Title", HeaderValue::from_static("forge"));
+        headers.insert("X-Title", HeaderValue::from_static("graff"));
         headers.insert(
             "x-app-version",
             HeaderValue::from_str(format!("v{VERSION}").as_str())
@@ -197,7 +197,7 @@ impl<F: forge_app::FileWriterInfra + 'static> ForgeHttpInfra<F> {
         );
         headers.insert(
             "HTTP-Referer",
-            HeaderValue::from_static("https://forgecode.dev"),
+            HeaderValue::from_static("https://codegraff.com"),
         );
         headers.insert(
             reqwest::header::CONNECTION,
@@ -519,7 +519,7 @@ mod tests {
         headers.insert("x-api-key", HeaderValue::from_static("another-secret"));
         headers.insert("x-goog-api-key", HeaderValue::from_static("google-secret"));
         headers.insert("api-key", HeaderValue::from_static("generic-secret"));
-        headers.insert("x-title", HeaderValue::from_static("forge"));
+        headers.insert("x-title", HeaderValue::from_static("graff"));
         headers.insert("content-type", HeaderValue::from_static("application/json"));
 
         let sanitized = sanitize_headers(&headers);
@@ -542,7 +542,7 @@ mod tests {
         );
         assert_eq!(
             sanitized.get("x-title"),
-            Some(&HeaderValue::from_static("forge"))
+            Some(&HeaderValue::from_static("graff"))
         );
         assert_eq!(
             sanitized.get("content-type"),

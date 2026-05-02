@@ -7,9 +7,9 @@ setopt PROMPT_SUBST
 # Fully formatted output directly from Rust
 # Returns ZSH-formatted string ready for use in RPROMPT
 function _forge_prompt_info() {
-    local forge_bin="${_FORGE_BIN:-${FORGE_BIN:-forge}}"
+    local forge_bin="${_FORGE_BIN:-${FORGE_BIN:-graff}}"
     
-    # Get fully formatted prompt from forge (single command).
+    # Get fully formatted prompt from graff (single command).
     # Pass session model/provider as CLI flags when set so the rprompt
     # reflects the active session override rather than global config.
     local -a forge_cmd

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Script to run all 'forge list' commands with --porcelain flag
+# Script to run all 'graff list' commands with --porcelain flag
 # This helps visualize which list types contain $ID columns
 
 set -e
 
-FORGE_BIN="${1:-./target/debug/forge}"
+FORGE_BIN="${1:-./target/debug/graff}"
 
 if [ ! -f "$FORGE_BIN" ]; then
-    echo "Error: forge binary not found at $FORGE_BIN"
-    echo "Usage: $0 [path-to-forge-binary]"
+    echo "Error: graff binary not found at $FORGE_BIN"
+    echo "Usage: $0 [path-to-graff-binary]"
     exit 1
 fi
 

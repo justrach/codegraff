@@ -1,10 +1,7 @@
 use std::io;
 
 use anyhow::Result;
-use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -22,16 +19,7 @@ impl TerminalGuard {
     pub(crate) fn enter() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            EnableMouseCapture,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
-            )
-        )?;
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste,)?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
@@ -52,8 +40,6 @@ impl Drop for TerminalGuard {
         let _ = disable_raw_mode();
         let _ = execute!(
             self.terminal.backend_mut(),
-            PopKeyboardEnhancementFlags,
-            DisableMouseCapture,
             DisableBracketedPaste,
             LeaveAlternateScreen
         );

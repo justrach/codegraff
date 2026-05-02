@@ -225,7 +225,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
     ///   instance
     /// * `f` - Factory closure invoked once at startup and again on each `/new`
     ///   command; receives the latest [`ForgeConfig`] so that config changes
-    ///   from `forge config set` are reflected in new conversations
+    ///   from `graff config set` are reflected in new conversations
     pub fn init(cli: Cli, config: ForgeConfig, f: F) -> Result<Self> {
         // Parse CLI arguments first to get flags
         let api = Arc::new(f(config.clone()));
@@ -1423,7 +1423,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         Ok(())
     }
 
-    /// Lists only custom commands (used by `forge run`)
+    /// Lists only custom commands (used by `graff run`)
     async fn on_show_custom_commands(&mut self, porcelain: bool) -> anyhow::Result<()> {
         let custom_commands = self.api.get_commands().await?;
         let mut info = Info::new();
@@ -1741,28 +1741,28 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         Ok(())
     }
 
-    /// Install the Forge VS Code extension
+    /// Install the Graff VS Code extension
     async fn on_vscode_extension_install(&mut self) -> anyhow::Result<()> {
         self.spinner
-            .start(Some("Installing Forge VS Code extension"))?;
+            .start(Some("Installing Graff VS Code extension"))?;
 
         match crate::vscode::install_extension() {
             Ok(true) => {
                 self.spinner.stop(None)?;
                 self.writeln_title(TitleFormat::info(
-                    "Forge VS Code extension installed successfully",
+                    "Graff VS Code extension installed successfully",
                 ))?;
             }
             Ok(false) => {
                 self.spinner.stop(None)?;
                 self.writeln_title(TitleFormat::error(
-                    "Failed to install Forge VS Code extension.",
+                    "Failed to install Graff VS Code extension.",
                 ))?;
             }
             Err(e) => {
                 self.spinner.stop(None)?;
                 self.writeln_title(TitleFormat::error(format!(
-                    "Failed to install Forge VS Code extension: {e}"
+                    "Failed to install Graff VS Code extension: {e}"
                 )))?;
             }
         }
@@ -1875,7 +1875,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
 
         self.writeln_title(TitleFormat::info(result.message))?;
 
-        self.writeln_title(TitleFormat::debug("running forge zsh doctor"))?;
+        self.writeln_title(TitleFormat::debug("running graff zsh doctor"))?;
         println!();
         let doctor_result = self.on_zsh_doctor().await;
 
@@ -2775,7 +2775,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         }
 
         // Fetch models from ALL configured providers (matches shell plugin's
-        // `forge list models --porcelain`), then optionally filter by provider.
+        // `graff list models --porcelain`), then optionally filter by provider.
         self.spinner.start(Some("Loading"))?;
         let mut all_provider_models = self.api.get_all_provider_models().await?;
         self.spinner.stop(None)?;
@@ -3277,14 +3277,14 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         }
     }
 
-    /// Creates ForgeCode Services credentials if not already authenticated and
+    /// Creates Graff Services credentials if not already authenticated and
     /// displays the credentials file location to the user.
     async fn init_forge_services(&mut self) -> Result<()> {
         self.api.create_auth_credentials().await?;
         let env = self.api.environment();
         let credentials_path = crate::info::format_path_for_display(&env, &env.credentials_path());
         self.writeln_title(
-            TitleFormat::info("ForgeCode Services enabled").sub_title(&credentials_path),
+            TitleFormat::info("Graff Services enabled").sub_title(&credentials_path),
         )?;
         Ok(())
     }
@@ -3807,7 +3807,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         };
 
         // Only use CLI piped_input as additional context when BOTH --prompt and piped
-        // input are provided. This handles the case: `echo "context" | forge -p
+        // input are provided. This handles the case: `echo "context" | graff -p
         // "question"` where piped input provides context and --prompt provides
         // the actual question.
         //
@@ -4943,14 +4943,14 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         yes: bool,
     ) -> anyhow::Result<()> {
         // Ask for user consent before syncing and sharing directory contents
-        // with the ForgeCode Service.
+        // with Graff Services.
         let display_path = path.display().to_string();
 
         let confirmed = if yes {
             Some(true)
         } else {
             ForgeWidget::confirm(format!(
-                "This will sync and share the contents of '{}' with ForgeCode Services. Do you wish to continue?",
+                "This will sync and share the contents of '{}' with Graff Services. Do you wish to continue?",
                 display_path
             ))
             .with_default(true)
@@ -4991,7 +4991,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         // Display results based on whether migration occurred
         if let Some(result) = result {
             self.writeln_title(
-                TitleFormat::warning("Forge no longer reads API keys from environment variables.")
+                TitleFormat::warning("Graff no longer reads API keys from environment variables.")
                     .sub_title("Learn more: https://forgecode.dev/docs/custom-providers/"),
             )?;
 

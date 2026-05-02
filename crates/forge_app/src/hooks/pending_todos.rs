@@ -1,8 +1,8 @@
-use std::collections::HashSet;
+use sha2::{Digest, Sha256};
 
 use async_trait::async_trait;
 use forge_domain::{
-    ContextMessage, Conversation, EndPayload, EventData, EventHandle, Template, TodoStatus,
+    ContextMessage, Conversation, EndPayload, EventData, EventHandle, Template, Todo, TodoStatus,
 };
 use forge_template::Element;
 use serde::Serialize;
@@ -36,6 +36,29 @@ impl PendingTodosHandler {
     pub fn new() -> Self {
         Self
     }
+
+    fn pending_todo_fingerprint(todos: &[Todo]) -> String {
+        let mut entries: Vec<String> = todos
+            .iter()
+            .filter_map(|todo| {
+                let status = match todo.status {
+                    TodoStatus::Pending => "pending",
+                    TodoStatus::InProgress => "in_progress",
+                    _ => return None,
+                };
+                Some(format!("{status}\0{}", todo.content))
+            })
+            .collect();
+        entries.sort();
+
+        let mut hasher = Sha256::new();
+        for entry in entries {
+            hasher.update(entry.as_bytes());
+            hasher.update([0]);
+        }
+
+        hex::encode(hasher.finalize())
+    }
 }
 
 #[async_trait]
@@ -50,52 +73,27 @@ impl EventHandle<EventData<EndPayload>> for PendingTodosHandler {
             return Ok(());
         }
 
-        // Build a set of current pending todo contents for comparison
-        let current_todo_set: HashSet<String> = pending_todos
-            .iter()
-            .map(|todo| todo.content.clone())
-            .collect();
+        let current_fingerprint = Self::pending_todo_fingerprint(&pending_todos);
 
-        // Check if we already have a reminder with the exact same set of todos
-        // This prevents duplicate reminders while still allowing new reminders
-        // when todos change (e.g., some completed but others still pending)
         let should_add_reminder = if let Some(context) = &conversation.context {
-            // Find the most recent reminder message by looking for the template content
-            // pattern
-            let last_reminder_todos: Option<HashSet<String>> = context
-                .messages
-                .iter()
-                .rev()
-                .filter_map(|entry| {
-                    let content = entry.message.content()?;
-                    // Check if this is a pending todos reminder
-                    if content.contains("You have pending todo items") {
-                        // Extract todo items from the reminder message
-                        // Format: "- [STATUS] Content"
-                        let todos: HashSet<String> = content
-                            .lines()
-                            .filter(|line| line.starts_with("- ["))
-                            .map(|line| {
-                                // Extract content after "- [STATUS] "
-                                line.split_once("] ")
-                                    .map(|x| x.1)
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_default()
-                            })
-                            .collect();
-                        Some(todos)
-                    } else {
-                        None
-                    }
-                })
-                .next();
+            let last_reminder_fingerprint = context.messages.iter().rev().find_map(|entry| {
+                let content = entry.message.content()?;
+                let fingerprint = content
+                    .lines()
+                    .find(|line| line.trim_start().starts_with("todo_fingerprint=\""))?
+                    .split_once("\"")?
+                    .1
+                    .split_once("\"")?
+                    .0;
+                Some(fingerprint.to_string())
+            });
 
-            match last_reminder_todos {
-                Some(last_todos) => last_todos != current_todo_set,
-                None => true, // No previous reminder found, should add
+            match last_reminder_fingerprint {
+                Some(last_fingerprint) => last_fingerprint != current_fingerprint,
+                None => true,
             }
         } else {
-            true // No context, should add reminder
+            true
         };
 
         if !should_add_reminder {
@@ -121,7 +119,9 @@ impl EventHandle<EventData<EndPayload>> for PendingTodosHandler {
         )?;
 
         if let Some(context) = conversation.context.as_mut() {
-            let content = Element::new("system_reminder").text(reminder);
+            let content = Element::new("system_reminder")
+                .attr("todo_fingerprint", current_fingerprint)
+                .text(reminder);
             context
                 .messages
                 .push(ContextMessage::user(content, None).into());
@@ -203,6 +203,7 @@ mod tests {
 
         let entry = &conversation.context.as_ref().unwrap().messages[0];
         let actual = entry.message.content().unwrap();
+        assert!(actual.contains("todo_fingerprint=\""));
         assert!(actual.contains("- [PENDING] Fix the build"));
         assert!(actual.contains("- [IN_PROGRESS] Write tests"));
     }
@@ -240,6 +241,29 @@ mod tests {
         handler.handle(&event, &mut conversation).await.unwrap();
         let after_second = conversation.context.as_ref().unwrap().messages.len();
         assert_eq!(after_second, 1); // Still 1, no duplicate
+    }
+
+    #[tokio::test]
+    async fn test_reminder_not_duplicated_for_reordered_same_todos() {
+        let handler = PendingTodosHandler::new();
+        let event = fixture_event();
+        let mut conversation = fixture_conversation(vec![
+            Todo::new("Fix the build").status(TodoStatus::Pending),
+            Todo::new("Write tests").status(TodoStatus::InProgress),
+        ]);
+
+        handler.handle(&event, &mut conversation).await.unwrap();
+        let after_first = conversation.context.as_ref().unwrap().messages.len();
+        assert_eq!(after_first, 1);
+
+        conversation.metrics = conversation.metrics.clone().todos(vec![
+            Todo::new("Write tests").status(TodoStatus::InProgress),
+            Todo::new("Fix the build").status(TodoStatus::Pending),
+        ]);
+
+        handler.handle(&event, &mut conversation).await.unwrap();
+        let after_second = conversation.context.as_ref().unwrap().messages.len();
+        assert_eq!(after_second, 1);
     }
 
     #[tokio::test]

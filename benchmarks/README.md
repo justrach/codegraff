@@ -10,13 +10,13 @@ Before running evaluations, create a `forgee` symlink to the debug binary:
 
 ```bash
 # Create symlink in your PATH (e.g., ~/bin or /usr/local/bin)
-ln -sf /path/to/code-forge/target/debug/forge ~/forgee
+ln -sf /path/to/code-forge/target/debug/graff ~/forgee
 
 # Or if ~/bin is in your PATH
-ln -sf $(pwd)/target/debug/forge ~/bin/forgee
+ln -sf $(pwd)/target/debug/graff ~/bin/forgee
 ```
 
-**Why is this needed?** Tasks execute in temporary directories, so relative paths like `../../target/debug/forge` won't work. The `forgee` symlink provides a stable absolute path that works from any directory.
+**Why is this needed?** Tasks execute in temporary directories, so relative paths like `../../target/debug/graff` won't work. The `forgee` symlink provides a stable absolute path that works from any directory.
 
 ### Running Evaluations
 
@@ -289,7 +289,7 @@ sources:
 
 1. **Use quotes in commands**: When passing CSV values with spaces, wrap them in quotes:
    ```yaml
-   command: forge -p '{{prompt}}'
+   command: graff -p '{{prompt}}'
    ```
 
 2. **Build before running**: Use `before_run` to ensure binaries are up-to-date:

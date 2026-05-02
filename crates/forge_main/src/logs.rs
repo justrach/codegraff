@@ -1,4 +1,4 @@
-//! `forge logs` — stream or list forge log files.
+//! `graff logs` — stream or list graff log files.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -27,7 +27,7 @@ pub async fn run(args: LogsArgs, log_dir: PathBuf) -> Result<()> {
 async fn collect_files(log_dir: &Path) -> Result<Vec<(SystemTime, PathBuf)>> {
     let mut entries = tokio::fs::read_dir(log_dir).await.with_context(|| {
         format!(
-            "Log directory not found: {}. Run forge at least once to generate logs.",
+            "Log directory not found: {}. Run graff at least once to generate logs.",
             log_dir.display()
         )
     })?;

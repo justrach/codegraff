@@ -1,9 +1,9 @@
 run:
   # Clone into `tmp/task` dir
   - git clone --depth=1 --branch main https://github.com/tailcallhq/forgecode .
-  - forge workspace init --yes
-  - forge workspace sync
-  - FORGE_DEBUG_REQUESTS='{{dir}}/context.jsonl' FORGE_SESSION__PROVIDER_ID=open_router FORGE_SESSION__MODEL_ID={{model}} forge -p '{{task}}'
+  - graff workspace init --yes
+  - graff workspace sync
+  - FORGE_DEBUG_REQUESTS='{{dir}}/context.jsonl' FORGE_SESSION__PROVIDER_ID=open_router FORGE_SESSION__MODEL_ID={{model}} graff -p '{{task}}'
 parallelism: 8
 timeout: 60
 early_exit: true

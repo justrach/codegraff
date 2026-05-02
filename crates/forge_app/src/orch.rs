@@ -13,6 +13,8 @@ use crate::agent::AgentService;
 use crate::transformers::{DropReasoningOnlyMessages, ModelSpecificReasoning};
 use crate::{EnvironmentInfra, TemplateEngine};
 
+const DEFAULT_MAX_REQUESTS_PER_TURN: usize = 100;
+
 #[derive(Clone, Setters)]
 #[setters(into)]
 pub struct Orchestrator<S> {
@@ -262,6 +264,20 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             ToolCallContext::new(self.conversation.metrics.clone()).sender(self.sender.clone());
 
         while !should_yield {
+            let limit = self
+                .agent
+                .max_requests_per_turn
+                .unwrap_or(DEFAULT_MAX_REQUESTS_PER_TURN);
+            if request_count >= limit {
+                self.send(ChatResponse::Interrupt {
+                    reason: InterruptionReason::MaxRequestPerTurnLimitReached {
+                        limit: limit as u64,
+                    },
+                })
+                .await?;
+                break;
+            }
+
             // Set context for the current loop iteration
             self.conversation.context = Some(context.clone());
             self.services.update(self.conversation.clone()).await?;

@@ -144,6 +144,7 @@ impl ProviderId {
             "opencode_zen" => "OpenCode Zen".to_string(),
             "opencode_go" => "OpenCode Go".to_string(),
             "fireworks-ai" => "FireworksAI".to_string(),
+            "forge" => "Graff".to_string(),
             "novita" => "Novita".to_string(),
             "vivgrid" => "Vivgrid".to_string(),
             "google_ai_studio" => "GoogleAIStudio".to_string(),

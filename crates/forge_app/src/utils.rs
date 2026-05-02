@@ -122,6 +122,14 @@ fn flatten_all_of_schema(map: &mut serde_json::Map<String, serde_json::Value>) {
     }
 }
 
+fn prioritize_schema_keywords(map: &mut serde_json::Map<String, serde_json::Value>) {
+    for key in ["required", "properties"] {
+        if let Some(value) = map.shift_remove(key) {
+            map.insert(key.to_string(), value);
+        }
+    }
+}
+
 fn merge_schema_object(
     target: &mut serde_json::Map<String, serde_json::Value>,
     mut source: serde_json::Map<String, serde_json::Value>,
@@ -251,6 +259,8 @@ fn normalize_schema_keywords(
     for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
         normalize_schema_keyword(map, key, strict_mode);
     }
+
+    prioritize_schema_keywords(map);
 }
 
 fn is_supported_openai_string_format(format: &str) -> bool {
@@ -400,6 +410,8 @@ pub fn enforce_strict_schema(schema: &mut serde_json::Value, strict_mode: bool) 
                         "required".to_string(),
                         serde_json::Value::Array(required_values),
                     );
+
+                    prioritize_schema_keywords(map);
                 }
             } else if strict_mode
                 && !map.contains_key("type")
@@ -443,6 +455,7 @@ pub fn enforce_strict_schema(schema: &mut serde_json::Value, strict_mode: bool) 
             }
 
             normalize_schema_keywords(map, strict_mode);
+            prioritize_schema_keywords(map);
         }
         serde_json::Value::Array(items) => {
             for value in items {
@@ -809,6 +822,34 @@ mod tests {
 
         assert_eq!(schema["additionalProperties"], json!(false));
         assert_eq!(schema["required"], json!(["age", "name"]));
+    }
+
+    #[test]
+    fn test_normalize_json_schema_orders_required_before_properties() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "age": { "type": "number" }
+            }
+        });
+
+        enforce_strict_schema(&mut schema, true);
+
+        let actual = schema
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let expected = vec![
+            "type".to_string(),
+            "additionalProperties".to_string(),
+            "required".to_string(),
+            "properties".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
