@@ -781,7 +781,7 @@ mod tests {
                 "id": "123",
                 "type": "function",
                 "function": {
-                    "arguments": "{\"file_path\":\"/tmp/file.txt\",\"new_string\":\"new text\",\"old_string\":\"old text\",\"replace_all\":false}",
+                    "arguments": "{\"file_path\":\"/tmp/file.txt\",\"old_string\":\"old text\",\"new_string\":\"new text\",\"replace_all\":false}",
                     "name": "patch"
                 }
             }

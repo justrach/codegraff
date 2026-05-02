@@ -285,7 +285,7 @@ mod tests {
 
         let expected = Extension::new(
             vec![
-                ExtensionStat::new("rs", 415, "50"),
+                ExtensionStat::new("rs", 414, "50"),
                 ExtensionStat::new("snap", 159, "19"),
                 ExtensionStat::new("md", 91, "11"),
                 ExtensionStat::new("yml", 29, "4"),
@@ -295,7 +295,7 @@ mod tests {
                 ExtensionStat::new("sql", 14, "2"),
                 ExtensionStat::new("sh", 11, "1"),
                 ExtensionStat::new("ts", 9, "1"),
-                ExtensionStat::new("(no ext)", 7, "1"),
+                ExtensionStat::new("(no ext)", 8, "1"),
                 ExtensionStat::new("txt", 5, "1"),
                 ExtensionStat::new("csv", 4, "0"),
                 ExtensionStat::new("yaml", 3, "0"),
