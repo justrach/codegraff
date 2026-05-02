@@ -19,11 +19,7 @@ impl TerminalGuard {
     pub(crate) fn enter() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-        )?;
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste,)?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })

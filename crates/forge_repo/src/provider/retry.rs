@@ -263,7 +263,7 @@ mod tests {
         let retry_config = fixture_retry_config(vec![]);
 
         // Empty error is retryable
-        let error = anyhow::Error::from(Error::Response(Box::new(ErrorResponse::default())));
+        let error = anyhow::Error::from(Error::Response(Box::default()));
         assert!(is_retryable(into_retry(error, &retry_config)));
 
         // Generic error is not retryable
@@ -299,7 +299,7 @@ mod tests {
         assert!(has_error_code(&error, RetryableApiErrorCode::Transport));
 
         // is_empty_error
-        let error = anyhow::Error::from(Error::Response(Box::new(ErrorResponse::default())));
+        let error = anyhow::Error::from(Error::Response(Box::default()));
         assert!(is_empty_error(&error));
 
         let error = anyhow::Error::from(Error::Response(Box::new(

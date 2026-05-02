@@ -33,11 +33,7 @@ impl<S> TitleGenerationHandler<S> {
     /// generation actually runs. A disabled handler is registered just like
     /// an enabled one but short-circuits the LLM call.
     pub fn with_enabled(services: Arc<S>, enabled: bool) -> Self {
-        Self {
-            services,
-            title_tasks: Arc::new(DashMap::new()),
-            enabled,
-        }
+        Self { services, title_tasks: Arc::new(DashMap::new()), enabled }
     }
 }
 

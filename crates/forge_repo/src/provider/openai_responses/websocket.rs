@@ -265,8 +265,7 @@ async fn run_websocket(
                 // the user.
                 active.session.clear().await;
                 return Err(forge_domain::Error::Retryable(
-                    anyhow::Error::from(error)
-                        .context("OpenAI Responses WebSocket receive failed"),
+                    anyhow::Error::from(error).context("OpenAI Responses WebSocket receive failed"),
                 )
                 .into());
             }
@@ -275,9 +274,8 @@ async fn run_websocket(
         let parsed = match message {
             Message::Text(text) => parse_text_message(text.as_ref(), &mut active)?,
             Message::Binary(bytes) => {
-                let text = std::str::from_utf8(bytes.as_ref()).with_context(|| {
-                    "OpenAI Responses WebSocket sent invalid UTF-8 binary data"
-                })?;
+                let text = std::str::from_utf8(bytes.as_ref())
+                    .with_context(|| "OpenAI Responses WebSocket sent invalid UTF-8 binary data")?;
                 parse_text_message(text, &mut active)?
             }
             Message::Ping(payload) => {
@@ -375,7 +373,12 @@ fn parse_text_message(
                     oai::ResponseStreamEvent::ResponseFailed(_)
                         | oai::ResponseStreamEvent::ResponseError(_)
                 );
-            (super::response::StreamItem::Event(event), terminal, success, response_id)
+            (
+                super::response::StreamItem::Event(event),
+                terminal,
+                success,
+                response_id,
+            )
         }
     };
 
@@ -457,10 +460,7 @@ fn map_connect_error(error: WsError, websocket_url: &Url) -> anyhow::Error {
     ConnectError::with_source(websocket_url, source).into()
 }
 
-fn websocket_request(
-    websocket_url: &Url,
-    headers: HeaderMap,
-) -> anyhow::Result<http::Request<()>> {
+fn websocket_request(websocket_url: &Url, headers: HeaderMap) -> anyhow::Result<http::Request<()>> {
     let mut request = websocket_url
         .as_str()
         .into_client_request()
@@ -487,10 +487,7 @@ fn websocket_request(
 /// Computes a stable signature for the leading `len` items of the request
 /// input. The signature is used to detect whether the conversation prefix
 /// the cache observed is still intact.
-pub(super) fn input_signature(
-    request: &oai::CreateResponse,
-    len: usize,
-) -> anyhow::Result<u64> {
+pub(super) fn input_signature(request: &oai::CreateResponse, len: usize) -> anyhow::Result<u64> {
     let oai::InputParam::Items(items) = &request.input else {
         return Err(anyhow::anyhow!(
             "OpenAI Responses WebSocket requires Items input, found Text"
@@ -535,17 +532,17 @@ fn input_prefix_signature(
 /// server's perspective: function-call outputs and user messages. Assistant
 /// text, function-call requests, and reasoning items in the suffix are
 /// dropped.
-fn continuation_delta(
-    request: &oai::CreateResponse,
-    skip: usize,
-) -> Option<Vec<oai::InputItem>> {
+fn continuation_delta(request: &oai::CreateResponse, skip: usize) -> Option<Vec<oai::InputItem>> {
     let oai::InputParam::Items(items) = &request.input else {
         return None;
     };
     let suffix = items.get(skip..)?;
 
-    let delta: Vec<oai::InputItem> =
-        suffix.iter().filter(|item| is_continuation_item(item)).cloned().collect();
+    let delta: Vec<oai::InputItem> = suffix
+        .iter()
+        .filter(|item| is_continuation_item(item))
+        .cloned()
+        .collect();
     if delta.is_empty() { None } else { Some(delta) }
 }
 
@@ -587,12 +584,14 @@ mod tests {
     }
 
     fn function_output(call_id: &str, output: &str) -> oai::InputItem {
-        oai::InputItem::Item(oai::Item::FunctionCallOutput(oai::FunctionCallOutputItemParam {
-            call_id: call_id.to_string(),
-            output: oai::FunctionCallOutput::Text(output.to_string()),
-            id: None,
-            status: None,
-        }))
+        oai::InputItem::Item(oai::Item::FunctionCallOutput(
+            oai::FunctionCallOutputItemParam {
+                call_id: call_id.to_string(),
+                output: oai::FunctionCallOutput::Text(output.to_string()),
+                id: None,
+                status: None,
+            },
+        ))
     }
 
     fn create_response(items: Vec<oai::InputItem>) -> oai::CreateResponse {
@@ -681,8 +680,10 @@ mod tests {
         ]);
 
         let actual = continuation_delta(&fixture, 1).unwrap();
-        let actual: Vec<serde_json::Value> =
-            actual.iter().map(|item| serde_json::to_value(item).unwrap()).collect();
+        let actual: Vec<serde_json::Value> = actual
+            .iter()
+            .map(|item| serde_json::to_value(item).unwrap())
+            .collect();
 
         let expected = vec![
             json!({
@@ -721,7 +722,9 @@ mod tests {
             let request = create_response(prefix.clone());
             input_signature(&request, 1).unwrap()
         };
-        session.seed_for_test("resp_prev".to_string(), 1, prefix_sig).await;
+        session
+            .seed_for_test("resp_prev".to_string(), 1, prefix_sig)
+            .await;
 
         let mut request = create_response(vec![
             message(oai::Role::User, "u1"),
@@ -750,7 +753,9 @@ mod tests {
     #[tokio::test]
     async fn test_prepare_request_clears_session_when_prefix_signature_differs() {
         let session = Session::default();
-        session.seed_for_test("resp_prev".to_string(), 1, 0xdeadbeef).await;
+        session
+            .seed_for_test("resp_prev".to_string(), 1, 0xdeadbeef)
+            .await;
 
         let mut request = create_response(vec![
             message(oai::Role::User, "u1"),
@@ -768,7 +773,9 @@ mod tests {
         let session = Session::default();
         let prefix = vec![message(oai::Role::User, "u1")];
         let prefix_sig = input_signature(&create_response(prefix.clone()), 1).unwrap();
-        session.seed_for_test("resp_prev".to_string(), 1, prefix_sig).await;
+        session
+            .seed_for_test("resp_prev".to_string(), 1, prefix_sig)
+            .await;
 
         // Same prefix, but the only suffix is an assistant message — nothing
         // to continue with.

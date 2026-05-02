@@ -283,7 +283,8 @@ fn into_response_failed_error(failed: oai::ResponseFailedEvent) -> anyhow::Error
         response_error = response_error.message(error.message);
     }
 
-    anyhow::Error::from(OpenAIError::Response(Box::new(response_error))).context("Upstream response failed")
+    anyhow::Error::from(OpenAIError::Response(Box::new(response_error)))
+        .context("Upstream response failed")
 }
 
 impl IntoDomain for BoxStream<StreamItem, anyhow::Error> {

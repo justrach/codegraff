@@ -245,7 +245,6 @@ impl<T: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig>>
             }
         }
 
-
         // The Codex backend at chatgpt.com does not return
         // `Content-Type: text/event-stream`, which causes the
         // reqwest-eventsource library to reject the response with
@@ -403,7 +402,10 @@ impl<T: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig>>
             .websocket_sessions
             .lock()
             .expect("OpenAI Responses WebSocket session cache lock poisoned");
-        sessions.entry(conversation_id.to_string()).or_default().clone()
+        sessions
+            .entry(conversation_id.to_string())
+            .or_default()
+            .clone()
     }
 
     /// Decides whether the WebSocket transport should be used for this turn.
@@ -440,9 +442,10 @@ fn is_truthy(value: &str) -> bool {
 }
 
 fn should_fallback_to_http(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .any(|err| err.downcast_ref::<super::websocket::ConnectError>().is_some())
+    error.chain().any(|err| {
+        err.downcast_ref::<super::websocket::ConnectError>()
+            .is_some()
+    })
 }
 
 fn status_code_error(status: StatusCode, body: String) -> anyhow::Error {

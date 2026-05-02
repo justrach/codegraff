@@ -2244,8 +2244,14 @@ impl<A: API + 'static> Tui<A> {
 
         if let Some(TranscriptEntry::Tool(tool)) = self.transcript.get_mut(index) {
             tool.expanded = !tool.expanded;
-            let action = if tool.expanded { "Expanded" } else { "Collapsed" };
-            self.show_shortcut_hint(format!("{action} selected tool. Tab/Shift+Tab selects another tool."));
+            let action = if tool.expanded {
+                "Expanded"
+            } else {
+                "Collapsed"
+            };
+            self.show_shortcut_hint(format!(
+                "{action} selected tool. Tab/Shift+Tab selects another tool."
+            ));
         }
     }
 
@@ -3752,8 +3758,7 @@ fn markdown_table_separator(cells: &[String]) -> bool {
     !cells.is_empty()
         && cells.iter().all(|cell| {
             let cell = cell.trim();
-            cell.chars()
-                .all(|ch| matches!(ch, '-' | ':' | ' ' | '\t'))
+            cell.chars().all(|ch| matches!(ch, '-' | ':' | ' ' | '\t'))
                 && cell.chars().filter(|ch| *ch == '-').count() >= 3
         })
 }
@@ -3827,17 +3832,16 @@ fn table_width(widths: &[usize]) -> usize {
     widths.iter().sum::<usize>() + widths.len().saturating_mul(3) + 1
 }
 
-fn table_border(
-    left: char,
-    join: char,
-    right: char,
-    widths: &[usize],
-) -> Vec<Span<'static>> {
+fn table_border(left: char, join: char, right: char, widths: &[usize]) -> Vec<Span<'static>> {
     let mut text = String::new();
     text.push(left);
     for (index, width) in widths.iter().enumerate() {
         text.push_str(&"─".repeat(width.saturating_add(2)));
-        text.push(if index + 1 == widths.len() { right } else { join });
+        text.push(if index + 1 == widths.len() {
+            right
+        } else {
+            join
+        });
     }
     vec![Span::styled(text, Style::default().fg(Color::DarkGray))]
 }
@@ -5671,7 +5675,8 @@ mod tests {
             80,
         );
         let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
-        let expected = vec!["CodeGraff: bold  code  link (https://x.test) @[/tmp/a.png]".to_string()];
+        let expected =
+            vec!["CodeGraff: bold  code  link (https://x.test) @[/tmp/a.png]".to_string()];
 
         assert_eq!(actual, expected);
     }

@@ -4,7 +4,8 @@ use ratatui::text::{Line, Span};
 use crate::text::{sanitize_render_text, truncate_single_line, wrap_line};
 
 /// Frames used to animate running tool cards between stream updates.
-pub(crate) const RUNNING_TOOL_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+pub(crate) const RUNNING_TOOL_FRAMES: [&str; 10] =
+    ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// Maximum number of tool output lines rendered before compacting.
 pub(crate) const TOOL_OUTPUT_LINE_LIMIT: usize = 80;
 /// Maximum number of tool output bytes rendered before compacting.
