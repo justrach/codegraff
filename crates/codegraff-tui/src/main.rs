@@ -23,9 +23,10 @@ use crossterm::event::{
     MouseEventKind,
 };
 use forge_api::{
-    API, AnyProvider, ApiKeyRequest, AuthContextRequest, AuthContextResponse, AuthMethod,
-    ChatRequest, ChatResponse, ChatResponseContent, ConfigOperation, Conversation, Event, ForgeAPI,
-    ForgeConfig, InputModality, Model, ModelConfig, ProviderId, TokenCount, URLParamSpec, Usage,
+    API, AgentInfo, AnyProvider, ApiKeyRequest, AuthContextRequest, AuthContextResponse,
+    AuthMethod, ChatRequest, ChatResponse, ChatResponseContent, ConfigOperation, Conversation,
+    Event, ForgeAPI, ForgeConfig, InputModality, Model, ModelConfig, ProviderId, TokenCount,
+    URLParamSpec, Usage,
 };
 use futures::StreamExt;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -85,12 +86,14 @@ struct Tui<A> {
     overlay_input: String,
     selected_tool: Option<usize>,
     is_streaming: bool,
+    workflow_run: Option<WorkflowRun>,
+    workflow_task: Option<JoinHandle<()>>,
     chat_task: Option<JoinHandle<()>>,
     should_quit: bool,
     log_path: PathBuf,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TuiStatus {
     Ready,
     Thinking,
@@ -227,10 +230,72 @@ struct ModelDialog {
     options: Vec<ModelOption>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum WorkflowCommand {
+    Open(String),
+    Approve,
+    Cancel,
+    Export,
+    Edit(usize, String),
+    Invalid(String),
+    NotCommand,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum WorkflowOverlayAction {
+    Approve,
+    Edit,
+    Export,
+    Cancel,
+    Select(usize),
+    Invalid(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkflowDialogMode {
+    Review,
+    EditTask,
+}
+
+#[derive(Clone, Debug)]
+struct WorkflowDialog {
+    goal: String,
+    nodes: Vec<WorkflowNode>,
+    selected_node: usize,
+    mode: WorkflowDialogMode,
+}
+
+#[derive(Clone, Debug)]
+struct WorkflowRun {
+    dialog: WorkflowDialog,
+    status: WorkflowRunStatus,
+    trace: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkflowRunStatus {
+    Running,
+    Finished,
+    Error,
+    Interrupted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkflowNode {
+    name: String,
+    worker: String,
+    task: String,
+    dependencies: Vec<String>,
+    access: Vec<String>,
+    artifact: String,
+    stop_condition: String,
+}
+
 #[derive(Clone, Debug)]
 enum Overlay {
     Connect(Box<ConnectDialog>),
     Model(ModelDialog),
+    Workflow(WorkflowDialog),
 }
 
 #[derive(Clone, Debug)]
@@ -379,6 +444,14 @@ enum AppEvent {
     Mouse(MouseEvent),
     Paste(String),
     Chat(Result<ChatResponse>),
+    WorkflowChat(Result<ChatResponse>),
+}
+
+impl<A> Tui<A> {
+    fn finish_streaming(&mut self, status: TuiStatus) {
+        self.is_streaming = false;
+        self.status = status;
+    }
 }
 
 impl<A: API + 'static> Tui<A> {
@@ -389,7 +462,7 @@ impl<A: API + 'static> Tui<A> {
             conversation_id: conversation.id,
             transcript: vec![
                 TranscriptEntry::Status(
-                    "Codegraff started. Type /login to connect providers, /models to choose a model, paste image paths with Cmd+V/Ctrl+V, or use /image <path>. Press Enter to send. Ctrl+C exits."
+                    "Codegraff started. Type /login to connect providers, /models to choose a model, /workflow <goal> to review an agent topology, paste image paths with Cmd+V/Ctrl+V, or use /image <path>. Press Enter to send. Ctrl+C exits."
                         .to_string(),
                 ),
                 TranscriptEntry::Status(format!("Logs: {}", log_path.display())),
@@ -408,6 +481,8 @@ impl<A: API + 'static> Tui<A> {
             overlay_input: String::new(),
             selected_tool: None,
             is_streaming: false,
+            workflow_run: None,
+            workflow_task: None,
             chat_task: None,
             should_quit: false,
             log_path,
@@ -445,6 +520,9 @@ impl<A: API + 'static> Tui<A> {
                     AppEvent::Mouse(mouse) => self.handle_mouse(mouse),
                     AppEvent::Paste(text) => self.handle_paste(text),
                     AppEvent::Chat(response) => self.handle_chat_response(response).await,
+                    AppEvent::WorkflowChat(response) => {
+                        self.handle_workflow_chat_response(response).await
+                    }
                 }
             }
         }
@@ -466,7 +544,7 @@ impl<A: API + 'static> Tui<A> {
             return Ok(());
         }
 
-        if self.handle_selection_overlay_input(key).await? {
+        if self.handle_overlay_input(key, tx.clone()).await? {
             return Ok(());
         }
 
@@ -507,16 +585,24 @@ impl<A: API + 'static> Tui<A> {
         Ok(())
     }
 
-    async fn handle_selection_overlay_input(&mut self, key: KeyEvent) -> Result<bool> {
-        if !self.selection_overlay_active() {
+    async fn handle_overlay_input(
+        &mut self,
+        key: KeyEvent,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<bool> {
+        let Some(overlay) = self.overlay.as_ref() else {
             return Ok(false);
-        }
+        };
 
         match key.code {
             KeyCode::Esc => {
+                if self.cancel_workflow_edit_mode() {
+                    return Ok(true);
+                }
                 let message = self.overlay.as_ref().and_then(|overlay| match overlay {
                     Overlay::Connect(dialog) => Some(dialog.intent.cancelled_message()),
                     Overlay::Model(_) => None,
+                    Overlay::Workflow(_) => Some("Workflow cancelled."),
                 });
                 self.close_overlay();
                 if let Some(message) = message {
@@ -524,6 +610,33 @@ impl<A: API + 'static> Tui<A> {
                         .push(TranscriptEntry::Status(message.to_string()));
                     self.scroll_from_bottom = 0;
                 }
+                Ok(true)
+            }
+            KeyCode::Char('a') if self.workflow_review_shortcut_ready() => {
+                self.approve_workflow(tx).await?;
+                Ok(true)
+            }
+            KeyCode::Char('e') if self.workflow_review_shortcut_ready() => {
+                self.enter_workflow_edit_mode();
+                Ok(true)
+            }
+            KeyCode::Char('x') if self.workflow_review_shortcut_ready() => {
+                self.export_workflow();
+                Ok(true)
+            }
+            KeyCode::Char('c') if self.workflow_review_shortcut_ready() => {
+                self.close_overlay();
+                self.transcript
+                    .push(TranscriptEntry::Status("Workflow cancelled.".to_string()));
+                self.scroll_from_bottom = 0;
+                Ok(true)
+            }
+            KeyCode::Up if matches!(overlay, Overlay::Workflow(_)) => {
+                self.select_previous_workflow_node();
+                Ok(true)
+            }
+            KeyCode::Down if matches!(overlay, Overlay::Workflow(_)) => {
+                self.select_next_workflow_node();
                 Ok(true)
             }
             KeyCode::Up => {
@@ -562,23 +675,39 @@ impl<A: API + 'static> Tui<A> {
                 self.overlay_input.pop();
                 Ok(true)
             }
-            KeyCode::Char(ch) if ch.is_ascii_digit() => {
-                self.overlay_input.push(ch);
+            KeyCode::Enter => {
+                self.submit_overlay_input(tx).await?;
                 Ok(true)
             }
-            KeyCode::Enter => {
-                self.submit_overlay_selection().await?;
+            KeyCode::Char(_) => {
+                if let Some(ch) = composer_input_char(key) {
+                    self.overlay_input.push(ch);
+                }
                 Ok(true)
             }
             _ => Ok(true),
         }
     }
 
-    async fn submit_overlay_selection(&mut self) -> Result<()> {
+    async fn submit_overlay_input(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+        match self.overlay.clone() {
+            Some(Overlay::Model(_)) => self.submit_numbered_overlay_selection().await,
+            Some(Overlay::Connect(dialog)) => match dialog.step {
+                ConnectStep::ProviderSelection { .. } | ConnectStep::AuthMethodSelection { .. } => {
+                    self.submit_numbered_overlay_selection().await
+                }
+                ConnectStep::ApiKeyInput { .. } => self.submit_connect_overlay_input().await,
+            },
+            Some(Overlay::Workflow(_)) => self.submit_workflow_overlay_input(tx).await,
+            None => Ok(()),
+        }
+    }
+
+    async fn submit_numbered_overlay_selection(&mut self) -> Result<()> {
         let selection = self.overlay_input.trim().parse::<usize>();
         let Ok(index) = selection else {
             self.transcript.push(TranscriptEntry::Error(
-                "Type a number in the selection dialog, then press Enter.".to_string(),
+                "Type a number in the dialog, then press Enter.".to_string(),
             ));
             self.scroll_from_bottom = 0;
             return Ok(());
@@ -604,21 +733,40 @@ impl<A: API + 'static> Tui<A> {
                 }
                 ConnectStep::ApiKeyInput { .. } => {}
             },
-            None => {}
+            Some(Overlay::Workflow(_)) | None => {}
         }
 
         Ok(())
     }
 
-    fn selection_overlay_active(&self) -> bool {
-        match self.overlay.as_ref() {
-            Some(Overlay::Model(_)) => true,
-            Some(Overlay::Connect(dialog)) => matches!(
-                dialog.step,
-                ConnectStep::ProviderSelection { .. } | ConnectStep::AuthMethodSelection { .. }
-            ),
-            None => false,
+    async fn submit_connect_overlay_input(&mut self) -> Result<()> {
+        let input = self.overlay_input.trim().to_string();
+        self.overlay_input.clear();
+        self.overlay_scroll_from_top = 0;
+
+        match input.as_str() {
+            "" => Ok(()),
+            "submit" => {
+                self.submit_connect_dialog().await;
+                Ok(())
+            }
+            "cancel" => {
+                let message = self.connect_intent().cancelled_message();
+                self.close_overlay();
+                self.transcript
+                    .push(TranscriptEntry::Status(message.to_string()));
+                self.scroll_from_bottom = 0;
+                Ok(())
+            }
+            update => {
+                self.update_connect_field(update.to_string());
+                Ok(())
+            }
         }
+    }
+
+    fn selection_overlay_active(&self) -> bool {
+        self.overlay.is_some()
     }
 
     fn close_overlay(&mut self) {
@@ -908,6 +1056,62 @@ impl<A: API + 'static> Tui<A> {
             ConnectCommand::NotCommand => {}
         }
 
+        if raw_prompt == "/workflow status" {
+            self.show_workflow_status();
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        if raw_prompt == "/workflow trace" {
+            self.show_workflow_trace();
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        match parse_workflow_command(&raw_prompt) {
+            WorkflowCommand::Open(goal) => {
+                self.show_workflow_preview(goal).await;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            WorkflowCommand::Approve => {
+                self.approve_workflow(tx).await?;
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            WorkflowCommand::Cancel => {
+                self.close_overlay();
+                self.transcript
+                    .push(TranscriptEntry::Status("Workflow cancelled.".to_string()));
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                self.scroll_from_bottom = 0;
+                return Ok(());
+            }
+            WorkflowCommand::Export => {
+                self.export_workflow();
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            WorkflowCommand::Edit(index, task) => {
+                self.edit_workflow_node(index, task);
+                self.composer.clear();
+                self.composer_scroll_from_bottom = 0;
+                return Ok(());
+            }
+            WorkflowCommand::Invalid(message) => {
+                self.transcript.push(TranscriptEntry::Error(message));
+                self.scroll_from_bottom = 0;
+                return Ok(());
+            }
+            WorkflowCommand::NotCommand => {}
+        }
+
         if raw_prompt == "/logs" {
             self.transcript.push(TranscriptEntry::Status(format!(
                 "Codegraff logs: {}",
@@ -982,6 +1186,31 @@ impl<A: API + 'static> Tui<A> {
         Ok(())
     }
 
+    async fn spawn_workflow(
+        &mut self,
+        event: Event,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let chat = ChatRequest::new(event, self.conversation_id);
+        let mut stream = self.api.chat(chat).await?;
+        let log_path = self.log_path.clone();
+
+        let task = tokio::spawn(async move {
+            while let Some(response) = stream.next().await {
+                if let Err(error) = &response {
+                    log_error(&log_path, "workflow stream emitted error", error);
+                }
+                if tx.send(AppEvent::WorkflowChat(response)).is_err() {
+                    log_info(&log_path, "workflow stream receiver dropped");
+                    return;
+                }
+            }
+        });
+        self.workflow_task = Some(task);
+
+        Ok(())
+    }
+
     fn abort_chat_task(&mut self) {
         if let Some(task) = self.chat_task.take() {
             task.abort();
@@ -991,7 +1220,7 @@ impl<A: API + 'static> Tui<A> {
     async fn handle_chat_response(&mut self, response: Result<ChatResponse>) {
         match response {
             Ok(response) => {
-                let should_refresh_usage = self.push_chat_response(response);
+                let should_refresh_usage = self.push_chat_response(response).await;
                 if should_refresh_usage {
                     self.refresh_usage().await;
                 }
@@ -999,11 +1228,48 @@ impl<A: API + 'static> Tui<A> {
             Err(error) => {
                 self.log_error("chat response handling failed", &error);
                 self.abort_chat_task();
-                self.is_streaming = false;
-                self.status = TuiStatus::Error;
+                self.finish_streaming(TuiStatus::Error);
                 self.transcript
                     .push(TranscriptEntry::Error(format!("{error:#}")));
             }
+        }
+    }
+
+    async fn handle_workflow_chat_response(&mut self, response: Result<ChatResponse>) {
+        match response {
+            Ok(response) => {
+                let finished = self.push_workflow_response(response);
+                if finished {
+                    self.abort_workflow_task();
+                    if let Some(run) = &mut self.workflow_run {
+                        run.status = WorkflowRunStatus::Finished;
+                    }
+                    self.transcript.push(TranscriptEntry::Status(
+                        "Workflow finished in the background. Use /workflow trace to inspect it."
+                            .to_string(),
+                    ));
+                    self.scroll_from_bottom = 0;
+                    self.refresh_usage().await;
+                }
+            }
+            Err(error) => {
+                self.log_error("workflow response handling failed", &error);
+                self.abort_workflow_task();
+                if let Some(run) = &mut self.workflow_run {
+                    run.status = WorkflowRunStatus::Error;
+                    run.trace.push(format!("error: {error:#}"));
+                }
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Background workflow failed: {error:#}. Use /workflow trace for details."
+                )));
+                self.scroll_from_bottom = 0;
+            }
+        }
+    }
+
+    fn abort_workflow_task(&mut self) {
+        if let Some(task) = self.workflow_task.take() {
+            task.abort();
         }
     }
 
@@ -1408,7 +1674,7 @@ impl<A: API + 'static> Tui<A> {
         let api_key = form.api_key.trim().to_string();
         if api_key.is_empty() {
             self.transcript.push(TranscriptEntry::Error(
-                "API key cannot be empty. Use /login set key=<value>.".to_string(),
+                "API key cannot be empty. Type key=<value> in the connect dialog.".to_string(),
             ));
             self.scroll_from_bottom = 0;
             return;
@@ -1418,7 +1684,7 @@ impl<A: API + 'static> Tui<A> {
         for field in &form.url_params {
             if field.value.trim().is_empty() {
                 self.transcript.push(TranscriptEntry::Error(format!(
-                    "{} cannot be empty. Use /login set {}=<value>.",
+                    "{} cannot be empty. Type {}=<value> in the connect dialog.",
                     field.name, field.name
                 )));
                 self.scroll_from_bottom = 0;
@@ -1449,6 +1715,252 @@ impl<A: API + 'static> Tui<A> {
             }
         }
         self.scroll_from_bottom = 0;
+    }
+
+    async fn show_workflow_preview(&mut self, goal: String) {
+        let agents = self.api.get_agent_infos().await.unwrap_or_default();
+        let nodes = build_workflow(&goal, &agents);
+        let summary = workflow_summary(&nodes);
+        self.reset_overlay_selection_state();
+        self.overlay = Some(Overlay::Workflow(WorkflowDialog {
+            goal,
+            nodes,
+            selected_node: 0,
+            mode: WorkflowDialogMode::Review,
+        }));
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "Workflow review ready: {summary}. Use ↑↓ to inspect nodes, Enter to approve, e to edit, x to export, Esc to cancel."
+        )));
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn approve_workflow(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
+        let Some(Overlay::Workflow(dialog)) = self.overlay.clone() else {
+            self.transcript.push(TranscriptEntry::Error(
+                "No workflow dialog is open. Type /workflow <goal> first.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return Ok(());
+        };
+
+        self.close_overlay();
+        let summary = workflow_summary(&dialog.nodes);
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "Workflow running in background: {summary}. You can keep chatting; use /workflow status or /workflow trace when you want details."
+        )));
+        self.scroll_from_bottom = 0;
+        self.workflow_run = Some(WorkflowRun {
+            dialog: dialog.clone(),
+            status: WorkflowRunStatus::Running,
+            trace: workflow_start_trace(&dialog),
+        });
+
+        let prompt = approved_workflow_prompt(&dialog);
+        self.abort_workflow_task();
+        self.spawn_workflow(Event::new(prompt), tx).await
+    }
+
+    fn export_workflow(&mut self) {
+        let output = match self.overlay.as_ref() {
+            Some(Overlay::Workflow(dialog)) => export_workflow(dialog),
+            _ => match self.workflow_run.as_ref() {
+                Some(run) => export_workflow(&run.dialog),
+                None => {
+                    self.transcript.push(TranscriptEntry::Error(
+                        "No workflow is available. Type /workflow <goal> first.".to_string(),
+                    ));
+                    self.scroll_from_bottom = 0;
+                    return;
+                }
+            },
+        };
+
+        self.transcript.push(TranscriptEntry::Status(output));
+        self.scroll_from_bottom = 0;
+    }
+
+    fn show_workflow_status(&mut self) {
+        let Some(run) = self.workflow_run.as_ref() else {
+            self.transcript.push(TranscriptEntry::Status(
+                "No workflow has run yet. Type /workflow <goal> to start one.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "Workflow {}: {}. Use /workflow trace for details.",
+            workflow_status_label(run.status),
+            workflow_summary(&run.dialog.nodes)
+        )));
+        self.scroll_from_bottom = 0;
+    }
+
+    fn show_workflow_trace(&mut self) {
+        let Some(run) = self.workflow_run.as_ref() else {
+            self.transcript.push(TranscriptEntry::Status(
+                "No workflow trace is available yet.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "workflow trace ({})\n{}",
+            workflow_status_label(run.status),
+            run.trace.join("\n")
+        )));
+        self.scroll_from_bottom = 0;
+    }
+
+    fn edit_workflow_node(&mut self, index: usize, task: String) {
+        let Some(Overlay::Workflow(dialog)) = &mut self.overlay else {
+            self.transcript.push(TranscriptEntry::Error(
+                "No workflow dialog is open. Type /workflow <goal> first.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        let Some(node) = dialog.nodes.get_mut(index.saturating_sub(1)) else {
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Workflow node {index} is out of range."
+            )));
+            self.scroll_from_bottom = 0;
+            return;
+        };
+
+        node.task = task;
+        dialog.selected_node = index.saturating_sub(1);
+        dialog.mode = WorkflowDialogMode::Review;
+        self.overlay_input.clear();
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "Updated workflow node {index}: {}.",
+            node.name
+        )));
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn submit_workflow_overlay_input(
+        &mut self,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let Some(Overlay::Workflow(dialog)) = self.overlay.as_ref() else {
+            return Ok(());
+        };
+
+        match dialog.mode {
+            WorkflowDialogMode::EditTask => {
+                let task = self.overlay_input.trim().to_string();
+                if task.is_empty() {
+                    self.transcript.push(TranscriptEntry::Error(
+                        "Type a replacement task, then press Enter.".to_string(),
+                    ));
+                    self.scroll_from_bottom = 0;
+                    return Ok(());
+                }
+                let index = dialog.selected_node + 1;
+                self.edit_workflow_node(index, task);
+                Ok(())
+            }
+            WorkflowDialogMode::Review => {
+                match workflow_overlay_action(self.overlay_input.trim()) {
+                    WorkflowOverlayAction::Approve => self.approve_workflow(tx).await,
+                    WorkflowOverlayAction::Edit => {
+                        self.enter_workflow_edit_mode();
+                        Ok(())
+                    }
+                    WorkflowOverlayAction::Export => {
+                        self.export_workflow();
+                        self.overlay_input.clear();
+                        Ok(())
+                    }
+                    WorkflowOverlayAction::Cancel => {
+                        self.close_overlay();
+                        self.transcript
+                            .push(TranscriptEntry::Status("Workflow cancelled.".to_string()));
+                        self.scroll_from_bottom = 0;
+                        Ok(())
+                    }
+                    WorkflowOverlayAction::Select(index) => {
+                        self.select_workflow_node(index);
+                        self.overlay_input.clear();
+                        Ok(())
+                    }
+                    WorkflowOverlayAction::Invalid(message) => {
+                        self.transcript.push(TranscriptEntry::Error(message));
+                        self.scroll_from_bottom = 0;
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
+
+    fn enter_workflow_edit_mode(&mut self) {
+        let Some(Overlay::Workflow(dialog)) = &mut self.overlay else {
+            return;
+        };
+        dialog.mode = WorkflowDialogMode::EditTask;
+        self.overlay_input.clear();
+        self.overlay_scroll_from_top = 0;
+    }
+
+    fn cancel_workflow_edit_mode(&mut self) -> bool {
+        let Some(Overlay::Workflow(dialog)) = &mut self.overlay else {
+            return false;
+        };
+        if dialog.mode != WorkflowDialogMode::EditTask {
+            return false;
+        }
+        dialog.mode = WorkflowDialogMode::Review;
+        self.overlay_input.clear();
+        true
+    }
+
+    fn workflow_review_shortcut_ready(&self) -> bool {
+        matches!(
+            self.overlay.as_ref(),
+            Some(Overlay::Workflow(WorkflowDialog {
+                mode: WorkflowDialogMode::Review,
+                ..
+            }))
+        ) && self.overlay_input.is_empty()
+    }
+
+    fn select_workflow_node(&mut self, index: usize) {
+        let Some(Overlay::Workflow(dialog)) = &mut self.overlay else {
+            return;
+        };
+        if index == 0 || index > dialog.nodes.len() {
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Workflow node {index} is out of range."
+            )));
+            self.scroll_from_bottom = 0;
+            return;
+        }
+        dialog.selected_node = index - 1;
+        dialog.mode = WorkflowDialogMode::Review;
+        self.overlay_scroll_from_top = 0;
+    }
+
+    fn select_next_workflow_node(&mut self) {
+        let Some(Overlay::Workflow(dialog)) = &mut self.overlay else {
+            return;
+        };
+        if dialog.nodes.is_empty() {
+            return;
+        }
+        dialog.selected_node = (dialog.selected_node + 1).min(dialog.nodes.len() - 1);
+        self.overlay_scroll_from_top = 0;
+    }
+
+    fn select_previous_workflow_node(&mut self) {
+        let Some(Overlay::Workflow(dialog)) = &mut self.overlay else {
+            return;
+        };
+        dialog.selected_node = dialog.selected_node.saturating_sub(1);
+        self.overlay_scroll_from_top = 0;
     }
 
     async fn model_stats(&self) -> Option<ModelStats> {
@@ -1653,7 +2165,73 @@ impl<A: API + 'static> Tui<A> {
             .is_some()
     }
 
-    fn push_chat_response(&mut self, response: ChatResponse) -> bool {
+    fn push_workflow_response(&mut self, response: ChatResponse) -> bool {
+        let Some(run) = &mut self.workflow_run else {
+            return matches!(response, ChatResponse::TaskComplete);
+        };
+
+        if response.is_empty() {
+            return false;
+        }
+
+        match response {
+            ChatResponse::TaskMessage { content } => match content {
+                ChatResponseContent::Markdown { text, .. } => {
+                    append_trace_chunk(&mut run.trace, text);
+                }
+                ChatResponseContent::ToolInput(title) => {
+                    let detail = title.sub_title.unwrap_or_default();
+                    if detail.is_empty() {
+                        run.trace.push("tool input".to_string());
+                    } else {
+                        run.trace.push(format!("tool input: {detail}"));
+                    }
+                }
+                ChatResponseContent::ToolOutput(text) => {
+                    let detail = compact_tool_output(&text);
+                    if !detail.is_empty() {
+                        run.trace.push(format!("tool output: {detail}"));
+                    }
+                }
+            },
+            ChatResponse::TaskReasoning { content } => {
+                if !content.trim().is_empty() {
+                    append_trace_chunk(&mut run.trace, format!("reasoning: {content}"));
+                }
+            }
+            ChatResponse::ToolCallStart { tool_call, notifier } => {
+                run.trace.push(format!("tool started: {}", tool_call.name));
+                notifier.notify_one();
+            }
+            ChatResponse::ToolCallEnd(result) => {
+                let status = if result.is_error() { "failed" } else { "done" };
+                run.trace
+                    .push(format!("tool finished: {} [{status}]", result.name));
+            }
+            ChatResponse::RetryAttempt { cause, duration } => {
+                run.trace.push(format!(
+                    "retrying in {}s: {}",
+                    duration.as_secs(),
+                    cause.as_str()
+                ));
+            }
+            ChatResponse::Interrupt { reason } => {
+                run.status = WorkflowRunStatus::Interrupted;
+                run.trace.push(format!("interrupted: {reason:?}"));
+                self.transcript.push(TranscriptEntry::Error(
+                    "Background workflow was interrupted. Use /workflow trace for details."
+                        .to_string(),
+                ));
+                self.scroll_from_bottom = 0;
+                return true;
+            }
+            ChatResponse::TaskComplete => return true,
+        }
+
+        false
+    }
+
+    async fn push_chat_response(&mut self, response: ChatResponse) -> bool {
         if response.is_empty() {
             return false;
         }
@@ -1700,15 +2278,13 @@ impl<A: API + 'static> Tui<A> {
             }
             ChatResponse::Interrupt { reason } => {
                 self.abort_chat_task();
-                self.is_streaming = false;
-                self.status = TuiStatus::Interrupted;
+                self.finish_streaming(TuiStatus::Interrupted);
                 self.transcript
                     .push(TranscriptEntry::Error(format!("Interrupted: {reason:?}")));
             }
             ChatResponse::TaskComplete => {
                 self.abort_chat_task();
-                self.is_streaming = false;
-                self.status = TuiStatus::Finished;
+                self.finish_streaming(TuiStatus::Finished);
                 return true;
             }
         }
@@ -1736,11 +2312,23 @@ impl<A: API + 'static> Tui<A> {
             ])
             .split(area);
 
+        let background_style = if self.overlay.is_some() {
+            Style::default().fg(Color::DarkGray).bg(Color::Black)
+        } else {
+            Style::default()
+        };
+        let composer_style = if self.overlay.is_some() || self.is_streaming {
+            Style::default().fg(Color::DarkGray).bg(Color::Black)
+        } else {
+            Style::default()
+        };
+
         let header = Paragraph::new(header_line(
             self.status,
             self.active_model.as_deref(),
             chunks[0].width.saturating_sub(2) as usize,
         ))
+        .style(background_style)
         .block(Block::default().borders(Borders::ALL));
         frame.render_widget(header, chunks[0]);
 
@@ -1755,6 +2343,7 @@ impl<A: API + 'static> Tui<A> {
             .min(u16::MAX as usize) as u16;
         let chat_title = chat_title(area.width);
         let transcript = Paragraph::new(transcript_lines)
+            .style(background_style)
             .block(Block::default().title(chat_title).borders(Borders::ALL))
             .scroll((transcript_scroll, 0));
         frame.render_widget(transcript, chunks[1]);
@@ -1767,11 +2356,7 @@ impl<A: API + 'static> Tui<A> {
             .min(u16::MAX as usize) as u16;
         let prompt_title = prompt_title(area.width);
         let composer = Paragraph::new(composer_lines)
-            .style(if self.is_streaming {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default()
-            })
+            .style(composer_style)
             .block(Block::default().title(prompt_title).borders(Borders::ALL))
             .scroll((composer_scroll, 0));
         frame.render_widget(composer, chunks[2]);
@@ -1814,6 +2399,26 @@ impl<A: API + 'static> Tui<A> {
                         .min(u16::MAX as usize) as u16;
                     let dialog = Paragraph::new(lines)
                         .block(Block::default().title("Select model").borders(Borders::ALL))
+                        .scroll((overlay_scroll, 0));
+                    frame.render_widget(dialog, dialog_area);
+                }
+                Overlay::Workflow(dialog) => {
+                    let lines = workflow_dialog_lines(
+                        dialog,
+                        dialog_area.width.saturating_sub(2) as usize,
+                        self.overlay_input.as_str(),
+                    );
+                    let max_overlay_scroll = lines.len().saturating_sub(dialog_inner_height);
+                    let overlay_scroll = self
+                        .overlay_scroll_from_top
+                        .min(max_overlay_scroll)
+                        .min(u16::MAX as usize) as u16;
+                    let dialog = Paragraph::new(lines)
+                        .block(
+                            Block::default()
+                                .title("Review workflow topology")
+                                .borders(Borders::ALL),
+                        )
                         .scroll((overlay_scroll, 0));
                     frame.render_widget(dialog, dialog_area);
                 }
@@ -2027,6 +2632,285 @@ fn parse_connect_field_update(update: &str) -> ConnectFieldUpdate {
     }
 }
 
+fn parse_workflow_command(input: &str) -> WorkflowCommand {
+    let Some(rest) = input
+        .strip_prefix("/workflow")
+        .or_else(|| input.strip_prefix(":workflow"))
+    else {
+        return WorkflowCommand::NotCommand;
+    };
+
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return WorkflowCommand::NotCommand;
+    }
+
+    let command = rest.trim();
+    if command.is_empty() {
+        return WorkflowCommand::Invalid(
+            "Usage: /workflow <goal> to open a workflow review dialog.".to_string(),
+        );
+    }
+
+    match command {
+        "approve" | "run" => return WorkflowCommand::Approve,
+        "cancel" => return WorkflowCommand::Cancel,
+        "export" | "dump" => return WorkflowCommand::Export,
+        _ => {}
+    }
+
+    if let Some(edit) = command.strip_prefix("edit ") {
+        let Some((index, task)) = edit.trim().split_once(char::is_whitespace) else {
+            return WorkflowCommand::Invalid(
+                "Usage: /workflow edit <number> <replacement task>.".to_string(),
+            );
+        };
+        return match (index.trim().parse::<usize>(), task.trim()) {
+            (Ok(index), task) if index > 0 && !task.is_empty() => {
+                WorkflowCommand::Edit(index, task.to_string())
+            }
+            _ => WorkflowCommand::Invalid(
+                "Usage: /workflow edit <number> <replacement task>.".to_string(),
+            ),
+        };
+    }
+
+    WorkflowCommand::Open(unquote_workflow_goal(command))
+}
+
+fn unquote_workflow_goal(goal: &str) -> String {
+    let goal = goal.trim();
+    if goal.len() >= 2
+        && ((goal.starts_with('"') && goal.ends_with('"'))
+            || (goal.starts_with('\'') && goal.ends_with('\'')))
+    {
+        goal[1..goal.len() - 1].trim().to_string()
+    } else {
+        goal.to_string()
+    }
+}
+
+fn workflow_overlay_action(input: &str) -> WorkflowOverlayAction {
+    let action = input.trim();
+    if action.is_empty() || matches!(action, "a" | "approve" | "run") {
+        return WorkflowOverlayAction::Approve;
+    }
+
+    match action {
+        "e" | "edit" => WorkflowOverlayAction::Edit,
+        "x" | "export" | "dump" => WorkflowOverlayAction::Export,
+        "c" | "cancel" => WorkflowOverlayAction::Cancel,
+        _ => match action.parse::<usize>() {
+            Ok(index) if index > 0 => WorkflowOverlayAction::Select(index),
+            _ => WorkflowOverlayAction::Invalid(
+                "Workflow dialog actions: Enter/a approve, e edit, x export, c cancel, or a node number."
+                    .to_string(),
+            ),
+        },
+    }
+}
+
+fn build_workflow(goal: &str, agents: &[AgentInfo]) -> Vec<WorkflowNode> {
+    let lower = goal.to_ascii_lowercase();
+    let include_research = contains_any(
+        &lower,
+        &["investigate", "debug", "failing", "find", "research"],
+    );
+    let include_plan = contains_any(&lower, &["plan", "design", "strategy", "roadmap"]);
+    let include_test = contains_any(&lower, &["test", "verify", "check", "failing", "parser"]);
+    let include_review = contains_any(&lower, &["review", "diff", "pr", "risk"]);
+
+    let mut specs = Vec::new();
+    if include_research {
+        specs.push((
+            "research",
+            "sage",
+            format!(
+                "Investigate the codebase and relevant context for: {goal}. Identify constraints, files, and risks before changes."
+            ),
+            "findings and candidate files",
+            "key constraints and evidence are documented",
+        ));
+    }
+    if include_plan || include_research {
+        specs.push((
+            "plan",
+            "muse",
+            format!(
+                "Turn the findings and goal into an implementation plan for: {goal}. Include dependencies, risks, and verification commands."
+            ),
+            "implementation plan",
+            "plan lists dependencies, risks, and verification commands",
+        ));
+    }
+    specs.push((
+        "implement",
+        "forge",
+        format!(
+            "Apply the approved code changes for: {goal}. Keep edits scoped and explain blockers."
+        ),
+        "code changes",
+        "changes are applied with no known incomplete edits",
+    ));
+    if include_test {
+        specs.push((
+            "test",
+            "forge",
+            format!("Run targeted verification for: {goal}. Capture failures and next steps if checks fail."),
+            "verification log",
+            "targeted checks pass or blockers are explicitly reported",
+        ));
+    }
+    if include_review {
+        specs.push((
+            "review",
+            "sage",
+            format!("Review the resulting diff and execution trace for: {goal}. Call out risks and follow-ups."),
+            "review summary",
+            "diff risks and follow-ups are called out",
+        ));
+    }
+
+    let mut prior_names: Vec<String> = Vec::new();
+    specs
+        .into_iter()
+        .map(|(name, preferred_worker, task, artifact, stop_condition)| {
+            let dependencies = prior_names.last().cloned().into_iter().collect::<Vec<_>>();
+            let access = prior_names.clone();
+            prior_names.push(name.to_string());
+            WorkflowNode {
+                name: name.to_string(),
+                worker: workflow_worker(preferred_worker, agents),
+                task,
+                dependencies,
+                access,
+                artifact: artifact.to_string(),
+                stop_condition: stop_condition.to_string(),
+            }
+        })
+        .collect()
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn workflow_worker(preferred: &str, agents: &[AgentInfo]) -> String {
+    if agents.iter().any(|agent| agent.id.as_str() == preferred) {
+        return preferred.to_string();
+    }
+
+    let fallback: &[&str] = match preferred {
+        "sage" => &["review", "research", "analyze", "sage"],
+        "muse" => &["plan", "design", "muse", "strategy"],
+        _ => &["forge", "implement", "code", "dev"],
+    };
+
+    agents
+        .iter()
+        .find(|agent| {
+            let id = agent.id.as_str().to_ascii_lowercase();
+            let title = agent
+                .title
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let description = agent
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            fallback.iter().any(|needle| {
+                id.contains(needle) || title.contains(needle) || description.contains(needle)
+            })
+        })
+        .map(|agent| agent.id.as_str().to_string())
+        .unwrap_or_else(|| preferred.to_string())
+}
+
+fn workflow_summary(nodes: &[WorkflowNode]) -> String {
+    nodes
+        .iter()
+        .map(|node| format!("{}({})", node.name, node.worker))
+        .collect::<Vec<_>>()
+        .join(" -> ")
+}
+
+fn export_workflow(dialog: &WorkflowDialog) -> String {
+    let mut output = format!(
+        "workflow:\n  goal: {}\n  topology: {}",
+        dialog.goal,
+        workflow_summary(&dialog.nodes)
+    );
+    for (index, node) in dialog.nodes.iter().enumerate() {
+        output.push_str(&format!(
+            "\n  - node: {}\n    name: {}\n    worker: {}\n    task: {}\n    dependencies: {}\n    access: {}\n    artifact: {}\n    stop: {}",
+            index + 1,
+            node.name,
+            node.worker,
+            node.task,
+            list_or_none(&node.dependencies),
+            list_or_none(&node.access),
+            node.artifact,
+            node.stop_condition
+        ));
+    }
+    output
+}
+
+fn workflow_start_trace(dialog: &WorkflowDialog) -> Vec<String> {
+    let mut trace = vec![
+        format!("goal: {}", dialog.goal),
+        format!("topology: {}", workflow_summary(&dialog.nodes)),
+    ];
+    trace.extend(dialog.nodes.iter().enumerate().map(|(index, node)| {
+        format!(
+            "node {}: {}({}) · artifact: {} · stop: {}",
+            index + 1,
+            node.name,
+            node.worker,
+            node.artifact,
+            node.stop_condition
+        )
+    }));
+    trace
+}
+
+fn workflow_status_label(status: WorkflowRunStatus) -> &'static str {
+    match status {
+        WorkflowRunStatus::Running => "running",
+        WorkflowRunStatus::Finished => "finished",
+        WorkflowRunStatus::Error => "failed",
+        WorkflowRunStatus::Interrupted => "interrupted",
+    }
+}
+
+fn append_trace_chunk(trace: &mut Vec<String>, text: String) {
+    if text.trim().is_empty() {
+        return;
+    }
+
+    if let Some(last) = trace.last_mut()
+        && !last.starts_with("tool ")
+        && !last.starts_with("retrying ")
+        && !last.starts_with("node ")
+        && !last.starts_with("goal:")
+        && !last.starts_with("topology:")
+        && last.len().saturating_add(text.len()) <= 2_000
+    {
+        last.push_str(&text);
+        return;
+    }
+
+    trace.push(text);
+}
+
+fn approved_workflow_prompt(dialog: &WorkflowDialog) -> String {
+    format!(
+        "Run this approved CodeGraff workflow topology. Execute the nodes in dependency order, respect each node's access list, and log each produced artifact.\n\n{}",
+        export_workflow(dialog)
+    )
+}
+
 fn build_api_key_form(provider_id: &ProviderId, request: &ApiKeyRequest) -> ApiKeyForm {
     let api_key = request
         .api_key
@@ -2080,10 +2964,10 @@ fn model_dialog_lines(dialog: &ModelDialog, width: usize, input: &str) -> Vec<Li
     push_dialog_line(&mut lines, "Choose model", width);
     push_dialog_line(
         &mut lines,
-        "Type a number and press Enter. Esc or /models cancel closes.",
+        "Type a number here and press Enter. Esc closes this dialog.",
         width,
     );
-    push_dialog_line(&mut lines, &format!("Selection: {input}"), width);
+    push_dialog_line(&mut lines, &dialog_input_line("Selection", input), width);
     lines.push(Line::raw(""));
     for (index, option) in dialog.options.iter().enumerate() {
         push_dialog_line(&mut lines, &format_model_option(index + 1, option), width);
@@ -2093,16 +2977,15 @@ fn model_dialog_lines(dialog: &ModelDialog, width: usize, input: &str) -> Vec<Li
 
 fn connect_dialog_lines(dialog: &ConnectDialog, width: usize, input: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let command = dialog.intent.command();
     match &dialog.step {
         ConnectStep::ProviderSelection { providers } => {
             push_dialog_line(&mut lines, dialog.intent.title(), width);
             push_dialog_line(
                 &mut lines,
-                &format!("Type a number and press Enter. Esc or {command} cancel closes."),
+                "Type a number here and press Enter. Esc closes this dialog.",
                 width,
             );
-            push_dialog_line(&mut lines, &format!("Selection: {input}"), width);
+            push_dialog_line(&mut lines, &dialog_input_line("Selection", input), width);
             lines.push(Line::raw(""));
             for (index, provider) in providers.iter().enumerate() {
                 push_dialog_line(
@@ -2116,10 +2999,10 @@ fn connect_dialog_lines(dialog: &ConnectDialog, width: usize, input: &str) -> Ve
             push_dialog_line(&mut lines, &format!("Provider: {}", provider.id()), width);
             push_dialog_line(
                 &mut lines,
-                &format!("Type a number and press Enter. Esc or {command} cancel closes."),
+                "Type a number here and press Enter. Esc closes this dialog.",
                 width,
             );
-            push_dialog_line(&mut lines, &format!("Selection: {input}"), width);
+            push_dialog_line(&mut lines, &dialog_input_line("Selection", input), width);
             lines.push(Line::raw(""));
             for (index, method) in methods.iter().enumerate() {
                 push_dialog_line(
@@ -2133,9 +3016,10 @@ fn connect_dialog_lines(dialog: &ConnectDialog, width: usize, input: &str) -> Ve
             push_dialog_line(&mut lines, &format!("Provider: {}", provider.id()), width);
             push_dialog_line(
                 &mut lines,
-                "Set fields, then submit. Values are saved through CodeGraff provider auth.",
+                "Type key=<api-key>, field=<value>, submit, or cancel directly in this dialog.",
                 width,
             );
+            push_dialog_line(&mut lines, &dialog_input_line("Input", input), width);
             lines.push(Line::raw(""));
             let key_state = if form.api_key.trim().is_empty() {
                 "<empty>"
@@ -2143,7 +3027,7 @@ fn connect_dialog_lines(dialog: &ConnectDialog, width: usize, input: &str) -> Ve
                 "<set, hidden>"
             };
             push_dialog_line(&mut lines, &format!("key = {key_state}"), width);
-            push_dialog_line(&mut lines, &format!("  {command} set key=<api-key>"), width);
+            push_dialog_line(&mut lines, "  type key=<api-key>", width);
 
             for field in &form.url_params {
                 let value = if field.value.is_empty() {
@@ -2159,22 +3043,99 @@ fn connect_dialog_lines(dialog: &ConnectDialog, width: usize, input: &str) -> Ve
                         width,
                     );
                 }
-                push_dialog_line(
-                    &mut lines,
-                    &format!("  {command} set {}=<value>", field.name),
-                    width,
-                );
+                push_dialog_line(&mut lines, &format!("  type {}=<value>", field.name), width);
             }
 
             lines.push(Line::raw(""));
-            push_dialog_line(
-                &mut lines,
-                &format!("{command} submit  ·  {command} cancel"),
-                width,
-            );
+            push_dialog_line(&mut lines, "submit  ·  cancel", width);
         }
     }
     lines
+}
+
+fn workflow_dialog_lines(dialog: &WorkflowDialog, width: usize, input: &str) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    push_dialog_line(&mut lines, &format!("Goal: {}", dialog.goal), width);
+    push_dialog_line(
+        &mut lines,
+        &format!("Topology: {}", workflow_summary(&dialog.nodes)),
+        width,
+    );
+    lines.push(Line::raw(""));
+    match dialog.mode {
+        WorkflowDialogMode::Review => {
+            push_dialog_line(
+                &mut lines,
+                "Use ↑↓ or type a node number to inspect. Enter/a approves, e edits selected task, x exports, c/Esc cancels.",
+                width,
+            );
+            push_dialog_line(&mut lines, &dialog_input_line("Action", input), width);
+        }
+        WorkflowDialogMode::EditTask => {
+            push_dialog_line(
+                &mut lines,
+                "Editing selected node task. Type the replacement task and press Enter. Esc returns to review.",
+                width,
+            );
+            push_dialog_line(&mut lines, &dialog_input_line("Task", input), width);
+        }
+    }
+    lines.push(Line::raw(""));
+
+    for (index, node) in dialog.nodes.iter().enumerate() {
+        let marker = if index == dialog.selected_node {
+            "▶"
+        } else {
+            " "
+        };
+        push_dialog_line(
+            &mut lines,
+            &format!("{marker} {}. {} ({})", index + 1, node.name, node.worker),
+            width,
+        );
+        if index == dialog.selected_node {
+            push_dialog_line(&mut lines, &format!("   task: {}", node.task), width);
+            push_dialog_line(
+                &mut lines,
+                &format!("   dependencies: {}", list_or_none(&node.dependencies)),
+                width,
+            );
+            push_dialog_line(
+                &mut lines,
+                &format!("   access: {}", list_or_none(&node.access)),
+                width,
+            );
+            push_dialog_line(
+                &mut lines,
+                &format!("   artifact: {}", node.artifact),
+                width,
+            );
+            push_dialog_line(
+                &mut lines,
+                &format!("   stop: {}", node.stop_condition),
+                width,
+            );
+            lines.push(Line::raw(""));
+        }
+    }
+
+    lines
+}
+
+fn dialog_input_line(label: &str, input: &str) -> String {
+    if input.is_empty() {
+        format!("{label}: ▌")
+    } else {
+        format!("{label}: {input}▌")
+    }
+}
+
+fn list_or_none(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values.join(", ")
+    }
 }
 
 fn push_dialog_line(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
@@ -4378,7 +5339,165 @@ mod tests {
     fn overlay_selection_dialogs_show_local_number_input() {
         let fixture = ModelDialog { options: Vec::new() };
         let actual = render_line(model_dialog_lines(&fixture, 80, "12")[2].clone());
-        let expected = "Selection: 12";
+        let expected = "Selection: 12▌";
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn workflow_command_opens_quoted_goal_and_keeps_actions_available() {
+        let fixture = vec![
+            parse_workflow_command(":workflow \"fix parser test\""),
+            parse_workflow_command("/workflow approve"),
+            parse_workflow_command("/workflow edit 2 add exact cargo commands"),
+        ];
+        let expected = vec![
+            WorkflowCommand::Open("fix parser test".to_string()),
+            WorkflowCommand::Approve,
+            WorkflowCommand::Edit(2, "add exact cargo commands".to_string()),
+        ];
+
+        assert_eq!(fixture, expected);
+    }
+
+    #[test]
+    fn workflow_overlay_action_maps_local_dialog_controls() {
+        let actual = vec![
+            workflow_overlay_action(""),
+            workflow_overlay_action("a"),
+            workflow_overlay_action("e"),
+            workflow_overlay_action("x"),
+            workflow_overlay_action("c"),
+            workflow_overlay_action("3"),
+        ];
+        let expected = vec![
+            WorkflowOverlayAction::Approve,
+            WorkflowOverlayAction::Approve,
+            WorkflowOverlayAction::Edit,
+            WorkflowOverlayAction::Export,
+            WorkflowOverlayAction::Cancel,
+            WorkflowOverlayAction::Select(3),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn workflow_builder_creates_reviewable_topology_with_access_lists() {
+        let fixture = "Investigate this failing parser test, patch it, run targeted tests, then review the diff";
+        let actual = build_workflow(fixture, &[]);
+        let expected_names = vec!["research", "plan", "implement", "test", "review"];
+        let expected_summary =
+            "research(sage) -> plan(muse) -> implement(forge) -> test(forge) -> review(sage)";
+
+        assert_eq!(
+            actual
+                .iter()
+                .map(|node| node.name.as_str())
+                .collect::<Vec<_>>(),
+            expected_names
+        );
+        assert_eq!(workflow_summary(&actual), expected_summary);
+        assert_eq!(actual[2].dependencies, vec!["plan".to_string()]);
+        assert_eq!(
+            actual[4].access,
+            vec!["research", "plan", "implement", "test"]
+        );
+        assert_eq!(actual[3].artifact, "verification log");
+    }
+
+    #[test]
+    fn workflow_dialog_lines_keep_input_inside_review_modal() {
+        let fixture = WorkflowDialog {
+            goal: "fix parser".to_string(),
+            nodes: build_workflow("fix parser test", &[]),
+            selected_node: 1,
+            mode: WorkflowDialogMode::Review,
+        };
+        let actual = workflow_dialog_lines(&fixture, 120, "x")
+            .into_iter()
+            .map(render_line)
+            .collect::<Vec<_>>();
+
+        assert!(actual.contains(&"Action: x▌".to_string()));
+        assert!(
+            actual
+                .iter()
+                .any(|line| line.starts_with("▶ 2. test (forge)"))
+        );
+        assert!(
+            actual
+                .iter()
+                .any(|line| line.contains("dependencies: implement"))
+        );
+    }
+
+    #[test]
+    fn workflow_export_contains_replayable_node_details() {
+        let fixture = WorkflowDialog {
+            goal: "fix parser".to_string(),
+            nodes: build_workflow("fix parser test", &[]),
+            selected_node: 0,
+            mode: WorkflowDialogMode::Review,
+        };
+        let actual = export_workflow(&fixture);
+
+        assert!(actual.contains("workflow:\n  goal: fix parser"));
+        assert!(actual.contains("topology: implement(forge) -> test(forge)"));
+        assert!(actual.contains("artifact: verification log"));
+        assert!(actual.contains("access: implement"));
+    }
+
+    #[test]
+    fn workflow_trace_starts_with_topology_without_chat_noise() {
+        let fixture = WorkflowDialog {
+            goal: "fix parser".to_string(),
+            nodes: build_workflow("fix parser test", &[]),
+            selected_node: 0,
+            mode: WorkflowDialogMode::Review,
+        };
+        let actual = workflow_start_trace(&fixture);
+
+        assert_eq!(actual[0], "goal: fix parser");
+        assert_eq!(actual[1], "topology: implement(forge) -> test(forge)");
+        assert!(
+            actual
+                .iter()
+                .any(|line| line.contains("node 1: implement(forge)"))
+        );
+        assert!(
+            actual
+                .iter()
+                .any(|line| line.contains("artifact: verification log"))
+        );
+    }
+
+    #[test]
+    fn workflow_status_labels_support_background_run_states() {
+        let actual = vec![
+            workflow_status_label(WorkflowRunStatus::Running),
+            workflow_status_label(WorkflowRunStatus::Finished),
+            workflow_status_label(WorkflowRunStatus::Error),
+            workflow_status_label(WorkflowRunStatus::Interrupted),
+        ];
+        let expected = vec!["running", "finished", "failed", "interrupted"];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn workflow_trace_chunks_merge_markdown_without_tool_spam() {
+        let mut fixture = Vec::new();
+        append_trace_chunk(&mut fixture, "first".to_string());
+        append_trace_chunk(&mut fixture, " chunk".to_string());
+        fixture.push("tool started: read".to_string());
+        append_trace_chunk(&mut fixture, "summary".to_string());
+        let actual = fixture;
+        let expected = vec![
+            "first chunk".to_string(),
+            "tool started: read".to_string(),
+            "summary".to_string(),
+        ];
 
         assert_eq!(actual, expected);
     }
