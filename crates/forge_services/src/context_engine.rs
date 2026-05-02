@@ -179,7 +179,7 @@ impl<
     ) -> Result<forge_domain::WorkspaceInfo> {
         self.find_workspace_by_path(path, token)
             .await?
-            .context("Workspace not indexed. Please run `forge workspace init` first.")
+            .context("Workspace not indexed. Please run `graff workspace init` first.")
     }
 
     async fn _init_workspace(&self, path: PathBuf) -> Result<(bool, WorkspaceId)> {

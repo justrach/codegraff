@@ -688,6 +688,57 @@ async fn test_complete_when_no_pending_todos() {
 }
 
 #[tokio::test]
+async fn test_max_requests_per_turn_interrupts_before_extra_request() {
+    let mut ctx = TestContext::default().mock_assistant_responses(vec![
+        ChatCompletionMessage::assistant("First turn without stop"),
+        ChatCompletionMessage::assistant("Second turn should reach the limit"),
+    ]);
+    ctx.agent = ctx.agent.max_requests_per_turn(2usize);
+
+    ctx.run("Keep going until capped").await.unwrap();
+
+    let actual = ctx
+        .output
+        .chat_responses
+        .iter()
+        .filter_map(|response| response.as_ref().ok())
+        .find_map(|response| match response {
+            ChatResponse::Interrupt {
+                reason: forge_domain::InterruptionReason::MaxRequestPerTurnLimitReached { limit },
+            } => Some(*limit),
+            _ => None,
+        });
+    let expected = Some(2);
+    assert_eq!(actual, expected);
+}
+
+#[tokio::test]
+async fn test_default_max_requests_per_turn_interrupts_when_agent_has_no_limit() {
+    let responses = (0..100)
+        .map(|index| ChatCompletionMessage::assistant(format!("Turn {index}")))
+        .collect::<Vec<_>>();
+    let mut ctx = TestContext::default().mock_assistant_responses(responses);
+
+    ctx.run("Keep going until the default cap is reached")
+        .await
+        .unwrap();
+
+    let actual = ctx
+        .output
+        .chat_responses
+        .iter()
+        .filter_map(|response| response.as_ref().ok())
+        .find_map(|response| match response {
+            ChatResponse::Interrupt {
+                reason: forge_domain::InterruptionReason::MaxRequestPerTurnLimitReached { limit },
+            } => Some(*limit),
+            _ => None,
+        });
+    let expected = Some(100);
+    assert_eq!(actual, expected);
+}
+
+#[tokio::test]
 async fn test_complete_when_empty_todos() {
     // Test: is_complete = true when there are no todos at all
     use forge_domain::Metrics;

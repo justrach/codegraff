@@ -743,7 +743,7 @@ crates/forge_tracker/src/client_id/android.rs
 crates/forge_tracker/src/client_id/generic.rs
 crates/forge_tracker/src/client_id/mod.rs
 crates/forge_tracker/src/collect/mod.rs
-crates/forge_tracker/src/collect/posthog.rs
+crates/forge_tracker/src/collect/.rs
 crates/forge_tracker/src/dispatch.rs
 crates/forge_tracker/src/error.rs
 crates/forge_tracker/src/event.rs
