@@ -1,5 +1,5 @@
 //! NOTE: Always use singular names for commands and subcommands.
-//! For example: `forge provider login` instead of `forge providers login`.
+//! For example: `graff provider login` instead of `graff providers login`.
 //!
 //! NOTE: With every change to this CLI structure, verify that the ZSH plugin
 //! remains compatible. The plugin at `shell-plugin/forge.plugin.zsh` implements
@@ -11,19 +11,19 @@ use clap::{Parser, Subcommand, ValueEnum};
 use forge_domain::{AgentId, ConversationId, Effort, ModelId, ProviderId};
 
 #[derive(Parser)]
-#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(name = "graff", version = env!("CARGO_PKG_VERSION"))]
 pub struct Cli {
     /// Direct prompt to process without entering interactive mode.
     ///
     /// When provided, executes a single command and exits instead of starting
     /// an interactive session. Content can also be piped: `cat prompt.txt |
-    /// forge`.
+    /// graff`.
     #[arg(long, short = 'p', allow_hyphen_values = true)]
     pub prompt: Option<String>,
 
     /// Piped input from stdin (populated internally)
     ///
-    /// This field is automatically populated when content is piped to forge
+    /// This field is automatically populated when content is piped to graff
     /// via stdin. It's kept separate from the prompt to allow proper handling
     /// as a droppable message.
     #[arg(skip)]
@@ -42,7 +42,7 @@ pub struct Cli {
 
     /// Working directory to use before starting the session.
     ///
-    /// When provided, changes to this directory before starting forge.
+    /// When provided, changes to this directory before starting graff.
     #[arg(long, short = 'C')]
     pub directory: Option<PathBuf>,
 
@@ -759,7 +759,7 @@ pub struct CommitCommandGroup {
     ///
     /// This field is populated when diff content is piped to the commit
     /// command. Users typically don't set this directly; instead, they pipe
-    /// diff content: `git diff | forge commit --preview`
+    /// diff content: `git diff | graff commit --preview`
     #[arg(skip)]
     pub diff: Option<String>,
 
@@ -767,7 +767,7 @@ pub struct CommitCommandGroup {
     ///
     /// Provide additional context or instructions for the AI to use when
     /// generating the commit message. Multiple words can be provided without
-    /// quotes: `forge commit fix typo in readme`
+    /// quotes: `graff commit fix typo in readme`
     pub text: Vec<String>,
 }
 

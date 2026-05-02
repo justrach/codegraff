@@ -121,7 +121,7 @@ fi"#,
                     Step::new("Sign macOS Binaries")
                         .run(
                             r#"if [ -n "$APPLE_CERTIFICATE_P12" ] && [ -n "$APPLE_CODESIGN_IDENTITY" ]; then
-  codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" ${{ matrix.forge_binary_path }}
+  codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" ${{ matrix.graff_binary_path }}
   if [ -n "${{ matrix.codegraff_binary_path }}" ]; then
     codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" ${{ matrix.codegraff_binary_path }}
   fi
@@ -138,8 +138,8 @@ fi"#,
                     Step::new("Package Binaries")
                         .run(
                             r#"mkdir -p dist
-cp ${{ matrix.forge_binary_path }} dist/${{ matrix.forge_binary_name }}
-cp dist/${{ matrix.forge_binary_name }} ${{ matrix.forge_binary_name }}
+cp ${{ matrix.graff_binary_path }} dist/${{ matrix.graff_binary_name }}
+cp dist/${{ matrix.graff_binary_name }} ${{ matrix.graff_binary_name }}
 if [ -n "${{ matrix.codegraff_binary_name }}" ]; then
   cp ${{ matrix.codegraff_binary_path }} dist/${{ matrix.codegraff_binary_name }}
   cp dist/${{ matrix.codegraff_binary_name }} ${{ matrix.codegraff_binary_name }}
@@ -147,7 +147,7 @@ fi
 cp scripts/install.sh install.sh
 if [ -n "${{ matrix.codedb_asset }}" ]; then
   cp codedb dist/codedb
-  tar -C dist -czf ${{ matrix.forge_binary_name }}-bundle.tar.gz ${{ matrix.forge_binary_name }} codedb
+  tar -C dist -czf ${{ matrix.graff_binary_name }}-bundle.tar.gz ${{ matrix.graff_binary_name }} codedb
 fi"#,
                         ),
                 )
@@ -156,8 +156,8 @@ fi"#,
                         .run(
                             r#"if [ -n "$APPLE_CERTIFICATE_P12" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
   mkdir -p notarize
-  ditto -c -k --keepParent ${{ matrix.forge_binary_name }} "notarize/${{ matrix.forge_binary_name }}.zip"
-  xcrun notarytool submit "notarize/${{ matrix.forge_binary_name }}.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+  ditto -c -k --keepParent ${{ matrix.graff_binary_name }} "notarize/${{ matrix.graff_binary_name }}.zip"
+  xcrun notarytool submit "notarize/${{ matrix.graff_binary_name }}.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
   if [ -n "${{ matrix.codegraff_binary_name }}" ]; then
     ditto -c -k --keepParent ${{ matrix.codegraff_binary_name }} "notarize/${{ matrix.codegraff_binary_name }}.zip"
     xcrun notarytool submit "notarize/${{ matrix.codegraff_binary_name }}.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
@@ -172,12 +172,12 @@ fi"#,
                         .add_env(("APPLE_APP_PASSWORD", "${{ secrets.CODEDB_LOCAL_APPLE_APP_PASSWORD }}"))
                         .if_condition(Expression::new("${{ runner.os == 'macOS' }}")),
                 )
-                // Upload the raw Forge binary for backwards-compatible install scripts.
+                // Upload the raw Graff binary for backwards-compatible install scripts.
                 .add_step(
-                    Step::new("Upload Forge Binary to Release")
+                    Step::new("Upload Graff Binary to Release")
                         .uses("xresloader", "upload-to-github-release", "v1")
                         .add_with(("release_id", release_id.clone()))
-                        .add_with(("file", "${{ matrix.forge_binary_name }}"))
+                        .add_with(("file", "${{ matrix.graff_binary_name }}"))
                         .add_with(("overwrite", "true")),
                 )
                 // Upload the raw CodeGraff binary for the shared installer.
@@ -203,7 +203,7 @@ fi"#,
                     Step::new("Upload CodeDB Bundle to Release")
                         .uses("xresloader", "upload-to-github-release", "v1")
                         .add_with(("release_id", release_id))
-                        .add_with(("file", "${{ matrix.forge_binary_name }}-bundle.tar.gz"))
+                        .add_with(("file", "${{ matrix.graff_binary_name }}-bundle.tar.gz"))
                         .add_with(("overwrite", "true"))
                         .if_condition(Expression::new("${{ matrix.codedb_asset != '' }}")),
                 );

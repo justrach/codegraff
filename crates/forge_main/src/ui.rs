@@ -1875,7 +1875,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
 
         self.writeln_title(TitleFormat::info(result.message))?;
 
-        self.writeln_title(TitleFormat::debug("running forge zsh doctor"))?;
+        self.writeln_title(TitleFormat::debug("running graff zsh doctor"))?;
         println!();
         let doctor_result = self.on_zsh_doctor().await;
 
@@ -3807,7 +3807,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         };
 
         // Only use CLI piped_input as additional context when BOTH --prompt and piped
-        // input are provided. This handles the case: `echo "context" | forge -p
+        // input are provided. This handles the case: `echo "context" | graff -p
         // "question"` where piped input provides context and --prompt provides
         // the actual question.
         //

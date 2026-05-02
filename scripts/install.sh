@@ -348,19 +348,19 @@ case "$OS" in
       TARGET="$ARCH-unknown-linux-$LIBC_TYPE"
     fi
     TARGET_EXT=""
-    FORGE_BINARY="forge"
+    FORGE_BINARY="graff"
     CODEGRAFF_BINARY="codegraff"
     ;;
   darwin)
     TARGET="$ARCH-apple-darwin"
     TARGET_EXT=""
-    FORGE_BINARY="forge"
+    FORGE_BINARY="graff"
     CODEGRAFF_BINARY="codegraff"
     ;;
   msys*|mingw*|cygwin*|windows*)
     TARGET="$ARCH-pc-windows-msvc"
     TARGET_EXT=".exe"
-    FORGE_BINARY="forge.exe"
+    FORGE_BINARY="graff.exe"
     CODEGRAFF_BINARY="codegraff.exe"
     ;;
   *)
@@ -375,7 +375,7 @@ prepend_to_path "$INSTALL_DIR"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
-install_release_binary "Forge" "$FORGE_BINARY" "forge-$TARGET$TARGET_EXT"
+install_release_binary "Graff" "$FORGE_BINARY" "graff-$TARGET$TARGET_EXT"
 if [ "$TARGET" = "aarch64-linux-android" ]; then
   printf "${YELLOW}Warning: CodeGraff TUI release is not published for Android yet; skipping.${NC}\n"
 else
