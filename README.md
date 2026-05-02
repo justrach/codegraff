@@ -1,29 +1,35 @@
 # CodeGraff
 
-CodeGraff is a fast, lightweight coding agent setup for focused terminal development. The working local flow is:
+CodeGraff is the terminal-first coding agent stack. The public CLI is **Graff** and the command you run is `graff`.
 
-- `graff` — the agent CLI and zsh `:` backend
-- `codegraff` — the lightweight terminal UI
-- `codedb` — local code intelligence with Codex/MCP integration
-- zsh `:` commands — the fastest way to send prompts from your shell
+The local workflow is built around:
+
+| Tool | Purpose |
+|---|---|
+| `graff` | Agent CLI for prompts, shell integration, conversations, providers, logs, commits, and MCP |
+| `codegraff` | Lightweight terminal UI for persistent agent sessions |
+| `codedb` | Local code intelligence and MCP server integration |
+| zsh `:` commands | Fast shell-native prompt routing to Graff |
 
 ```bash
 curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 ```
 
-## Table of Contents
+## Contents
 
 - [Install](#install)
 - [Quickstart](#quickstart)
-- [Shell `:` Workflow](#shell--workflow)
+- [What changed in the Graff rename](#what-changed-in-the-graff-rename)
+- [Shell `:` workflow](#shell--workflow)
 - [Graff CLI](#graff-cli)
 - [CodeGraff TUI](#codegraff-tui)
-- [CodeDB and Codex Integration](#codedb-and-codex-integration)
+- [CodeDB and Codex integration](#codedb-and-codex-integration)
 - [Agents](#agents)
-- [Conversation Management](#conversation-management)
-- [Git Helpers](#git-helpers)
+- [Conversation management](#conversation-management)
+- [Git helpers](#git-helpers)
 - [Configuration](#configuration)
 - [MCP](#mcp)
+- [Legacy Forge compatibility](#legacy-forge-compatibility)
 - [Development](#development)
 
 ## Install
@@ -34,13 +40,13 @@ Install the latest release:
 curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 ```
 
-The installer adds the tools to `~/.local/bin` by default:
+The installer places the tools in `~/.local/bin` by default:
 
 | Tool | Purpose |
 |---|---|
-| `graff` | Agent CLI, one-shot prompts, shell plugin, conversations, commits, providers |
-| `codegraff` | Lightweight terminal UI |
-| `codedb` | Local code intelligence server and MCP integration |
+| `graff` | Main agent CLI |
+| `codegraff` | Terminal UI |
+| `codedb` | Code intelligence CLI, daemon, and MCP server |
 | `fzf` | Picker used by shell workflows |
 
 Make sure `~/.local/bin` is on your `PATH`:
@@ -49,11 +55,15 @@ Make sure `~/.local/bin` is on your `PATH`:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Or restart your shell after installation.
+Then restart your shell or run:
+
+```bash
+exec zsh
+```
 
 ## Quickstart
 
-### 1. Verify the CLI
+### 1. Check the CLI
 
 ```bash
 graff --help
@@ -72,7 +82,7 @@ graff zsh setup
 exec zsh
 ```
 
-`graff setup` is also available as a shorter alias for `graff zsh setup`.
+`graff setup` is also available as a short alias for `graff zsh setup`.
 
 ### 4. Send a prompt from your shell
 
@@ -80,31 +90,38 @@ exec zsh
 : explain this repository
 ```
 
-If `:` does nothing, the shell plugin has not been loaded in that terminal yet. Run:
+If the `:` shortcut does not respond, reload the shell and retry:
 
 ```zsh
 exec zsh
-```
-
-Then retry:
-
-```zsh
 : hey there
 ```
 
-## Shell `:` Workflow
+## What changed in the Graff rename
+
+The user-facing product is now consistently called **Graff**:
+
+- CLI help, examples, logs, diagnostics, and installer output now use Graff/graff.
+- Runtime-visible service identity, MCP client names, commit identity text, and provider display copy were updated to Graff where safe.
+- The built-in provider id remains compatible, but provider lists now present it as Graff.
+- Shell diagnostics and docs now describe the Graff workflow while preserving legacy setup detection.
+- `architecture.md` documents the naming rules, compatibility boundaries, and attribution to the original ForgeCode foundation.
+
+Compatibility names that users may already depend on still work. See [Legacy Forge compatibility](#legacy-forge-compatibility).
+
+## Shell `:` workflow
 
 The zsh plugin intercepts lines that start with `:` and routes them to `graff`. Normal shell commands still run normally.
 
 ```zsh
-: summarize this repo                 # Send a prompt to the active agent
-:new                                  # Start a fresh conversation
+: summarize this repo                  # Send a prompt to the active agent
+:new                                   # Start a fresh conversation
 :new inspect the current git changes   # Start fresh and send a prompt
-:agent forge                         # Switch to the implementation agent
-:agent muse                          # Switch to the planning agent
-:agent                               # Pick an agent with fzf
-:info                                 # Show current session details
-:doctor                               # Diagnose shell/plugin setup
+:agent forge                           # Switch to the implementation agent
+:agent muse                            # Switch to the planning agent
+:agent                                 # Pick an agent with fzf
+:info                                  # Show current session details
+:doctor                                # Diagnose shell/plugin setup
 ```
 
 Useful checks:
@@ -120,7 +137,7 @@ Expected binding:
 "^M" forge-accept-line
 ```
 
-The shell integration still exposes some legacy-compatible names internally, but the command that runs is `graff`.
+Some shell internals intentionally keep legacy Forge-compatible names, but the command that runs is `graff`.
 
 ## Graff CLI
 
@@ -188,7 +205,7 @@ cargo run -p codegraff-tui --bin codegraff
 
 Use the TUI when you want a persistent terminal interface with tool cards, logs, cancellation, markdown rendering, attachments, and usage visibility.
 
-## CodeDB and Codex Integration
+## CodeDB and Codex integration
 
 `codedb` provides local code intelligence. The CodeDB installer registers it with supported tools, including Codex, as an MCP-backed code intelligence source.
 
@@ -220,7 +237,7 @@ codedb mcp                          # Run MCP server over stdio
 codedb update                       # Self-update CodeDB
 ```
 
-If Codex does not see CodeDB, rerun the CodeDB installer via the CodeGraff installer or add the `mcp_servers.codedb` block above to your Codex config.
+If Codex does not see CodeDB, rerun the CodeDB installer through the CodeGraff installer or add the `mcp_servers.codedb` block above to the Codex config.
 
 ## Agents
 
@@ -242,7 +259,7 @@ Examples:
 :agent
 ```
 
-Project-local agent definitions live in `.forge/agents/`. The directory name is kept for compatibility with existing agent configuration.
+Project-local agent definitions live in `.forge/agents/`. The directory name is retained for compatibility with existing agent configuration.
 
 Project-local instructions can be placed in:
 
@@ -250,7 +267,7 @@ Project-local instructions can be placed in:
 AGENTS.md
 ```
 
-## Conversation Management
+## Conversation management
 
 ```bash
 graff conversation list
@@ -278,7 +295,7 @@ Shell shortcuts:
 :compact
 ```
 
-## Git Helpers
+## Git helpers
 
 Generate a commit message and commit:
 
@@ -314,7 +331,7 @@ graff list provider
 graff list model
 ```
 
-Provider, model, and MCP configuration should be managed with `graff` commands where possible. Some internal configuration names are still legacy-compatible; keep them only when an existing command or config file requires them.
+Provider, model, and MCP configuration should be managed with `graff` commands where possible.
 
 Common environment variables:
 
@@ -353,6 +370,22 @@ CodeDB can also run as an MCP server:
 codedb mcp
 ```
 
+## Legacy Forge compatibility
+
+This repository descends from ForgeCode. Graff is the public product name going forward, while selected Forge names remain to preserve compatibility and to acknowledge the original foundation built by the main ForgeCode team.
+
+Keep these legacy surfaces unless a backwards-compatible migration is planned:
+
+- `FORGE_*` environment variables, including `FORGE_BIN`
+- `.forge`, `.forge.toml`, and `~/.forge`
+- internal crate, module, package, and type names such as `forge_main`, `ForgeConfig`, and `ForgeAPI`
+- the built-in implementation agent id `forge`
+- the VS Code marketplace extension id `ForgeCode.forge-vscode`
+- legacy zsh setup markers used for migration
+- generated, distribution, and untracked release artifacts
+
+More detail lives in `architecture.md`.
+
 ## Development
 
 Build the CLI:
@@ -385,7 +418,3 @@ Run crate checks:
 cargo check -p forge_main
 cargo clippy -p forge_main --all-targets -- -D warnings
 ```
-
-## Notes
-
-This repository descends from ForgeCode, but the installed CLI is now `graff`, not `forge`. Use `graff zsh setup` followed by `exec zsh` to activate the working shell `:` workflow.
