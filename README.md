@@ -19,6 +19,12 @@ curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/instal
 - [Graff CLI](#graff-cli)
 - [CodeGraff TUI](#codegraff-tui)
 - [CodeDB and Codex Integration](#codedb-and-codex-integration)
+- [Agents](#agents)
+- [Conversation Management](#conversation-management)
+- [Git Helpers](#git-helpers)
+- [Configuration](#configuration)
+- [MCP](#mcp)
+- [Development](#development)
 
 ## Install
 
@@ -215,3 +221,171 @@ codedb update                       # Self-update CodeDB
 ```
 
 If Codex does not see CodeDB, rerun the CodeDB installer via the CodeGraff installer or add the `mcp_servers.codedb` block above to your Codex config.
+
+## Agents
+
+Built-in agents available through `graff` and the `:` workflow:
+
+| Agent | Alias | Purpose | Modifies files? |
+|---|---|---|---|
+| `forge` | default implementation agent | Builds features, fixes bugs, edits files, runs tests | Yes |
+| `muse` | planning agent | Analyzes structure and writes implementation plans | No |
+
+Examples:
+
+```zsh
+: fix the failing tests
+:agent forge
+: update the zsh setup code
+:agent muse
+: plan a README cleanup
+:agent
+```
+
+Project-local agent definitions live in `.forge/agents/`. The directory name is kept for compatibility with existing agent configuration.
+
+Project-local instructions can be placed in:
+
+```text
+AGENTS.md
+```
+
+## Conversation Management
+
+```bash
+graff conversation list
+graff conversation new
+graff conversation resume <id>
+graff conversation clone <id>
+graff conversation dump <id>
+graff conversation compact <id>
+graff conversation retry <id>
+graff conversation rename <id> <name>
+graff conversation delete <id>
+graff conversation stats <id>
+```
+
+Shell shortcuts:
+
+```zsh
+:new
+:conversation
+:conversation <id>
+:conversation -
+:clone
+:retry
+:dump
+:compact
+```
+
+## Git Helpers
+
+Generate a commit message and commit:
+
+```bash
+graff commit
+```
+
+Preview the commit message first:
+
+```bash
+graff commit --preview
+```
+
+Shell shortcuts:
+
+```zsh
+:commit
+:commit-preview
+```
+
+## Configuration
+
+Provider credentials should be configured interactively:
+
+```bash
+graff provider login
+```
+
+List providers and models:
+
+```bash
+graff list provider
+graff list model
+```
+
+Provider, model, and MCP configuration should be managed with `graff` commands where possible. Some internal configuration names are still legacy-compatible; keep them only when an existing command or config file requires them.
+
+Common environment variables:
+
+```bash
+FORGE_BIN=graff                    # zsh plugin backend command
+NERD_FONT=1                        # enable Nerd Font prompt icons
+```
+
+## MCP
+
+Manage MCP servers with `graff`:
+
+```bash
+graff mcp list
+graff mcp import
+graff mcp show
+graff mcp remove
+graff mcp reload
+```
+
+Project-local MCP config:
+
+```text
+.mcp.json
+```
+
+Global MCP config still uses the legacy-compatible config directory:
+
+```text
+~/.forge/.mcp.json
+```
+
+CodeDB can also run as an MCP server:
+
+```bash
+codedb mcp
+```
+
+## Development
+
+Build the CLI:
+
+```bash
+cargo build -p forge_main
+```
+
+Run the CLI from source:
+
+```bash
+cargo run -p forge_main --bin graff
+```
+
+Run the TUI from source:
+
+```bash
+cargo run -p codegraff-tui --bin codegraff
+```
+
+Run focused zsh plugin tests:
+
+```bash
+cargo test -p forge_main zsh::plugin
+```
+
+Run crate checks:
+
+```bash
+cargo check -p forge_main
+cargo clippy -p forge_main --all-targets -- -D warnings
+```
+
+## Notes
+
+This repository descends from ForgeCode, but the installed CLI is now `graff`, not `forge`. Use `graff zsh setup` followed by `exec zsh` to activate the working shell `:` workflow.
