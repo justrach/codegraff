@@ -301,17 +301,16 @@ pub struct ForgeConfig {
     #[serde(default)]
     pub subagents: bool,
 
-    /// When true, OpenAI Responses API requests for the `openai` and
-    /// `openai-responses-compatible` providers are sent over a persistent
-    /// WebSocket connection instead of HTTP. WebSocket mode keeps a
-    /// connection-local response cache so subsequent turns send only delta
-    /// inputs plus `previous_response_id`, reducing per-turn latency on
-    /// long, tool-heavy workflows.
+    /// Sends OpenAI Responses API requests over a persistent WebSocket
+    /// connection (with `previous_response_id` continuation + warm-socket
+    /// reuse) for the `openai`, `openai-responses-compatible`, and `codex`
+    /// providers. Reduces per-turn latency on tool-heavy workflows. Defaults
+    /// to `true`; set to `false` to force the legacy HTTP path.
     ///
     /// The `GRAFF_OPENAI_RESPONSES_WEBSOCKET` env var (or the legacy
-    /// `FORGE_OPENAI_RESPONSES_WEBSOCKET`) overrides this setting at
-    /// runtime when set to `1`/`true`/`yes`/`on`.
-    #[serde(default)]
+    /// `FORGE_OPENAI_RESPONSES_WEBSOCKET`) can opt in at runtime even when
+    /// the config is `false` — useful for one-off testing.
+    #[serde(default = "default_true")]
     pub openai_responses_websocket: bool,
 
     /// When false, the asynchronous conversation-title generator is disabled.
@@ -325,6 +324,10 @@ pub struct ForgeConfig {
 }
 
 fn default_generate_titles() -> bool {
+    true
+}
+
+fn default_true() -> bool {
     true
 }
 

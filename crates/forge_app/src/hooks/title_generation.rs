@@ -29,11 +29,6 @@ pub struct TitleGenerationHandler<S> {
 }
 
 impl<S> TitleGenerationHandler<S> {
-    /// Creates a new title generation handler with title generation enabled.
-    pub fn new(services: Arc<S>) -> Self {
-        Self::with_enabled(services, true)
-    }
-
     /// Creates a handler whose `enabled` flag controls whether title
     /// generation actually runs. A disabled handler is registered just like
     /// an enabled one but short-circuits the LLM call.
@@ -178,7 +173,7 @@ mod tests {
     }
 
     fn setup(message: &str) -> (TitleGenerationHandler<MockAgentService>, Conversation) {
-        let handler = TitleGenerationHandler::new(Arc::new(MockAgentService));
+        let handler = TitleGenerationHandler::with_enabled(Arc::new(MockAgentService), true);
         let context = Context::default().add_message(ContextMessage::Text(
             TextMessage::new(Role::User, message).raw_content(EventValue::text(message)),
         ));
