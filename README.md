@@ -17,6 +17,8 @@ curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/instal
 - [Quickstart](#quickstart)
 - [Shell `:` Workflow](#shell--workflow)
 - [Graff CLI](#graff-cli)
+- [CodeGraff TUI](#codegraff-tui)
+- [CodeDB and Codex Integration](#codedb-and-codex-integration)
 
 ## Install
 
@@ -163,3 +165,53 @@ graff conversation resume <id>
 graff commit --preview
 graff suggest "find large log files"
 ```
+
+## CodeGraff TUI
+
+Start the lightweight terminal UI:
+
+```bash
+codegraff
+```
+
+From source:
+
+```bash
+cargo run -p codegraff-tui --bin codegraff
+```
+
+Use the TUI when you want a persistent terminal interface with tool cards, logs, cancellation, markdown rendering, attachments, and usage visibility.
+
+## CodeDB and Codex Integration
+
+`codedb` provides local code intelligence. The CodeDB installer registers it with supported tools, including Codex, as an MCP-backed code intelligence source.
+
+A working Codex registration looks like this in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.codedb]
+command = "/Users/rachpradhan/bin/codedb"
+args = ["mcp"]
+```
+
+Verify CodeDB:
+
+```bash
+codedb --help
+```
+
+Useful CodeDB commands:
+
+```bash
+codedb tree                         # Show file tree with language and symbol counts
+codedb outline README.md            # List symbols in a file
+codedb find <symbol>                # Find where a symbol is defined
+codedb search "query text"          # Full-text search
+codedb word <identifier>            # Exact word lookup
+codedb hot                          # Recently modified files
+codedb serve                        # Run HTTP daemon on :7719
+codedb mcp                          # Run MCP server over stdio
+codedb update                       # Self-update CodeDB
+```
+
+If Codex does not see CodeDB, rerun the CodeDB installer via the CodeGraff installer or add the `mcp_servers.codedb` block above to your Codex config.
