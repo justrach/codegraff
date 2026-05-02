@@ -19,7 +19,7 @@ CYAN='\033[36m'
 GRAY='\033[90m'
 
 # Configuration
-BASE_COMMAND="target/debug/forge"
+BASE_COMMAND="target/debug/graff"
 THRESHOLD=""
 
 # Parse arguments

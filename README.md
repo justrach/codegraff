@@ -117,7 +117,7 @@ cargo run -p codegraff --bin codegraff
 The original Forge CLI is still present and can be run from this checkout with:
 
 ```bash
-cargo run -p forge_main --bin forge
+cargo run -p forge_main --bin graff
 ```
 
 The new CodeGraff TUI folder is licensed separately under BSD-3-Clause in `crates/codegraff-tui/LICENSE`; the rest of the project keeps its existing license terms.
@@ -147,7 +147,7 @@ On first use, configure your AI provider credentials. From the TUI, you can use:
 Or configure providers through Forge:
 
 ```bash
-forge provider login
+graff provider login
 ```
 
 That's it! CodeGraff is now ready to assist you with your development tasks.
@@ -264,15 +264,15 @@ Forge has three distinct ways to use it. Understanding this distinction upfront 
 
 ### Interactive Mode (TUI)
 
-Running `forge` with no arguments starts the interactive terminal UI, a persistent session where you type prompts and the AI responds in a conversational loop. This is the primary way to do multi-step work.
+Running `graff` with no arguments starts the interactive terminal UI, a persistent session where you type prompts and the AI responds in a conversational loop. This is the primary way to do multi-step work.
 
 ```bash
-forge                              # Start a new interactive session
-forge conversation resume <id>     # Resume a specific saved conversation in interactive mode
-forge --conversation-id <id>       # Same: resume conversation by ID
-forge --agent <agent-id>           # Start interactive session with a specific agent
-forge -C /path/to/project          # Start in a specific directory
-forge --sandbox experiment-name    # Create an isolated git worktree + branch, then start there
+graff                              # Start a new interactive session
+graff conversation resume <id>     # Resume a specific saved conversation in interactive mode
+graff --conversation-id <id>       # Same: resume conversation by ID
+graff --agent <agent-id>           # Start interactive session with a specific agent
+graff -C /path/to/project          # Start in a specific directory
+graff --sandbox experiment-name    # Create an isolated git worktree + branch, then start there
 ```
 
 Once inside interactive mode, type your prompt and press Enter. Forge reads files, writes patches, runs commands, and maintains context across the whole session.
@@ -282,19 +282,19 @@ Once inside interactive mode, type your prompt and press Enter. Forge reads file
 Pass `-p` (or `--prompt`) to run a single prompt and exit. Forge does the work and returns to your shell. Useful for scripts, piping output, or quick tasks.
 
 ```bash
-forge -p "Explain the purpose of src/main.rs"
-forge -p "Add error handling to the parse() function in lib.rs"
-echo "What does this do?" | forge    # Pipe input as the prompt
-forge commit                         # Generate an AI commit message and commit (exits when done)
-forge commit --preview               # Generate commit message, print it, then exit
-forge suggest "find large log files" # Translate natural language to a shell command, then exit
+graff -p "Explain the purpose of src/main.rs"
+graff -p "Add error handling to the parse() function in lib.rs"
+echo "What does this do?" | graff    # Pipe input as the prompt
+graff commit                         # Generate an AI commit message and commit (exits when done)
+graff commit --preview               # Generate commit message, print it, then exit
+graff suggest "find large log files" # Translate natural language to a shell command, then exit
 ```
 
-> **Note:** `forge conversation resume <id>` opens the interactive TUI. It does **not** just print a message and exit. If you run it and see the cursor waiting, you are inside the interactive session. Type your prompt or press `Ctrl+C` to exit.
+> **Note:** `graff conversation resume <id>` opens the interactive TUI. It does **not** just print a message and exit. If you run it and see the cursor waiting, you are inside the interactive session. Type your prompt or press `Ctrl+C` to exit.
 
 ### ZSH Plugin Mode (`:` prefix)
 
-Install the ZSH plugin once with `forge setup`, then use `:` commands directly at your shell prompt without ever typing `forge`. This is the fastest mode for day-to-day development: send prompts, switch conversations, commit, and suggest commands without leaving your shell.
+Install the ZSH plugin once with `graff setup`, then use `:` commands directly at your shell prompt without ever typing `graff`. This is the fastest mode for day-to-day development: send prompts, switch conversations, commit, and suggest commands without leaving your shell.
 
 ```zsh
 : refactor the auth module      # Send a prompt to the active agent
@@ -309,7 +309,7 @@ See the full [ZSH Plugin reference below](#zsh-plugin-the--prefix-system) for al
 
 ## ZSH Plugin: The `:` Prefix System
 
-When you install the ZSH plugin (`forge setup`), you get a `:` prefix command system at your shell prompt. This is the fastest way to use Forge during normal development; you never leave your shell.
+When you install the ZSH plugin (`graff setup`), you get a `:` prefix command system at your shell prompt. This is the fastest way to use Forge during normal development; you never leave your shell.
 
 **How it works:** Lines starting with `:` are intercepted before the shell sees them and routed to Forge. Everything else runs normally.
 
@@ -510,55 +510,55 @@ Here's a quick reference of Forge's command-line options:
 
 ```bash
 # Conversations
-forge conversation list                  # List all saved conversations
-forge conversation resume <id>           # Resume a conversation in interactive mode
-forge conversation new                   # Create a new conversation ID (prints it)
-forge conversation dump <id>             # Export conversation as JSON
-forge conversation compact <id>          # Compact conversation context
-forge conversation retry <id>            # Retry last message
-forge conversation clone <id>            # Clone a conversation
-forge conversation rename <id> <name>    # Rename a conversation
-forge conversation delete <id>           # Delete a conversation permanently
-forge conversation info <id>             # Show conversation details
-forge conversation stats <id>            # Show token usage statistics
-forge conversation show <id>             # Show last assistant message
+graff conversation list                  # List all saved conversations
+graff conversation resume <id>           # Resume a conversation in interactive mode
+graff conversation new                   # Create a new conversation ID (prints it)
+graff conversation dump <id>             # Export conversation as JSON
+graff conversation compact <id>          # Compact conversation context
+graff conversation retry <id>            # Retry last message
+graff conversation clone <id>            # Clone a conversation
+graff conversation rename <id> <name>    # Rename a conversation
+graff conversation delete <id>           # Delete a conversation permanently
+graff conversation info <id>             # Show conversation details
+graff conversation stats <id>            # Show token usage statistics
+graff conversation show <id>             # Show last assistant message
 
 # Commits
-forge commit                             # Generate AI commit message and commit
-forge commit --preview                   # Generate commit message only (prints it)
-forge commit fix the auth bug            # Pass extra context for the commit message
+graff commit                             # Generate AI commit message and commit
+graff commit --preview                   # Generate commit message only (prints it)
+graff commit fix the auth bug            # Pass extra context for the commit message
 
 # Shell command suggestion
-forge suggest "list files by size"       # Translate description to a shell command
+graff suggest "list files by size"       # Translate description to a shell command
 
 # Providers
-forge provider login                     # Add or update provider credentials (interactive)
-forge provider logout                    # Remove provider credentials
-forge list provider                      # List supported providers
+graff provider login                     # Add or update provider credentials (interactive)
+graff provider logout                    # Remove provider credentials
+graff list provider                      # List supported providers
 
 # Models & agents
-forge list model                         # List available models
-forge list agent                         # List available agents
+graff list model                         # List available models
+graff list agent                         # List available agents
 
 # Workspace / semantic search
-forge workspace sync                     # Index current directory for semantic search
-forge workspace init                     # Initialize workspace
-forge workspace status                   # Show indexing status
-forge workspace query <text>             # Query the semantic index
+graff workspace sync                     # Index current directory for semantic search
+graff workspace init                     # Initialize workspace
+graff workspace status                   # Show indexing status
+graff workspace query <text>             # Query the semantic index
 
 # MCP servers
-forge mcp list                           # List configured MCP servers
-forge mcp import                         # Add a server from JSON
-forge mcp show                           # Show server configuration
-forge mcp remove                         # Remove a server
-forge mcp reload                         # Reload all servers and rebuild caches
+graff mcp list                           # List configured MCP servers
+graff mcp import                         # Add a server from JSON
+graff mcp show                           # Show server configuration
+graff mcp remove                         # Remove a server
+graff mcp reload                         # Reload all servers and rebuild caches
 
 # Other
-forge info                               # Show config, active model, environment
-forge list tool --agent <id>             # List tools for a specific agent
-forge doctor                             # Run shell environment diagnostics
-forge update                             # Update forge to the latest version
-forge setup                              # Install ZSH plugin (updates .zshrc)
+graff info                               # Show config, active model, environment
+graff list tool --agent <id>             # List tools for a specific agent
+graff doctor                             # Run shell environment diagnostics
+graff update                             # Update forge to the latest version
+graff setup                              # Install ZSH plugin (updates .zshrc)
 ```
 
 ## Advanced Configuration
@@ -568,7 +568,7 @@ forge setup                              # Install ZSH plugin (updates .zshrc)
 Forge supports multiple AI providers. The recommended way to configure providers is using the interactive login command:
 
 ```bash
-forge provider login
+graff provider login
 ```
 
 This will:
@@ -580,18 +580,18 @@ This will:
 
 ```bash
 # Login to a provider (add or update credentials)
-forge provider login
+graff provider login
 
 # Remove provider credentials
-forge provider logout
+graff provider logout
 
 # List supported providers
-forge provider list
+graff provider list
 ```
 
 #### Deprecated: Environment Variables
 
-> **⚠️ DEPRECATED**: Using `.env` files for provider configuration is deprecated and will be removed in a future version. Please use `forge provider login` instead.
+> **⚠️ DEPRECATED**: Using `.env` files for provider configuration is deprecated and will be removed in a future version. Please use `graff provider login` instead.
 
 For backward compatibility, Forge still supports environment variables. On first run, any credentials found in environment variables will be automatically migrated to file-based storage.
 
@@ -717,7 +717,7 @@ model: claude-3.7-sonnet
 3. **Use the token when logging in via Forge**:
 
    ```bash
-   forge provider login
+   graff provider login
    # Select Google Vertex AI and enter your credentials
    ```
 
@@ -739,7 +739,7 @@ model: google/gemini-2.5-pro
 - Claude models: `claude-sonnet-4@20250514`
 - Gemini models: `gemini-2.5-pro`, `gemini-2.0-flash`
 
-Use the `/model` command in Forge CLI to see all available models.
+Use the `/model` command in Graff CLI to see all available models.
 
 </details>
 
@@ -790,7 +790,7 @@ To use Amazon Bedrock models with Forge, you'll need to first set up the [Bedroc
 2. **Configure in Forge**:
 
    ```bash
-   forge provider login
+   graff provider login
    # Select OpenAI-compatible provider and enter your Bedrock Gateway details
    ```
 
@@ -913,10 +913,10 @@ Configure the ZSH plugin behavior:
 
 ```bash
 # .env
-FORGE_BIN=forge                    # Command to use for forge operations (default: "forge")
+FORGE_BIN=graff                    # Command to use for forge operations (default: "graff")
 ```
 
-The `FORGE_BIN` environment variable allows you to customize the command used by the ZSH plugin when transforming `:` prefixed commands. If not set, it defaults to `"forge"`.
+The `FORGE_BIN` environment variable allows you to customize the command used by the ZSH plugin when transforming `:` prefixed commands. If not set, it defaults to `"graff"`.
 
 </details>
 

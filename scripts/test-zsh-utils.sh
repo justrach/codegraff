@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 
-# Correctness and performance tests for `forge zsh format` which wraps bare
+# Correctness and performance tests for `graff zsh format` which wraps bare
 # file paths in @[...] syntax.  All parsing logic now lives in Rust; these
 # tests exercise the CLI subcommand end-to-end.
 #
@@ -20,12 +20,12 @@ CYAN='\033[36m'
 PASS=0
 FAIL=0
 
-# Resolve the forge binary (prefer local debug build)
+# Resolve the graff binary (prefer local debug build)
 SCRIPT_DIR="${0:A:h}"
-FORGE_BIN="${FORGE_BIN:-${SCRIPT_DIR}/../target/debug/forge}"
+FORGE_BIN="${FORGE_BIN:-${SCRIPT_DIR}/../target/debug/graff}"
 
 if [[ ! -x "$FORGE_BIN" ]]; then
-    echo "${RED}forge binary not found at ${FORGE_BIN}${RESET}"
+    echo "${RED}graff binary not found at ${FORGE_BIN}${RESET}"
     echo "Run: cargo build -p forge_main"
     exit 1
 fi
@@ -62,7 +62,7 @@ function assert_eq() {
 # --- Correctness tests ------------------------------------------------------
 
 echo ""
-echo -e "${BOLD}Correctness Tests${RESET} ${DIM}— forge zsh format${RESET}"
+echo -e "${BOLD}Correctness Tests${RESET} ${DIM}— graff zsh format${RESET}"
 echo ""
 
 # Basic wrapping
@@ -148,7 +148,7 @@ assert_eq "backslash-escaped nonexistent path untouched" \
 # --- Performance tests -------------------------------------------------------
 
 echo ""
-echo -e "${BOLD}Performance Tests${RESET} ${DIM}— forge zsh format${RESET}"
+echo -e "${BOLD}Performance Tests${RESET} ${DIM}— graff zsh format${RESET}"
 echo ""
 
 ITERATIONS=20

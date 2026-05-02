@@ -9,7 +9,7 @@ zle -N forge-completion
 # Custom bracketed-paste handler that wraps dropped file paths in @[] syntax
 # and fixes syntax highlighting after paste.
 #
-# Path detection and wrapping is delegated to `forge zsh format` (Rust) so
+# Path detection and wrapping is delegated to `graff zsh format` (Rust) so
 # that all parsing logic lives in one well-tested place.
 function forge-bracketed-paste() {
     # Call the built-in bracketed-paste widget first

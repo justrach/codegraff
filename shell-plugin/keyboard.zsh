@@ -150,9 +150,9 @@ else
     
     echo ""
     if [[ "$platform" == "macOS" ]]; then
-        echo "  $(dim "If Option key shortcuts don't work, run: forge zsh doctor")"
+        echo "  $(dim "If Option key shortcuts don't work, run: graff zsh doctor")"
     elif [[ "$platform" == "Linux" ]]; then
-        echo "  $(dim "If Alt key shortcuts don't work, run: forge zsh doctor")"
+        echo "  $(dim "If Alt key shortcuts don't work, run: graff zsh doctor")"
     fi
     echo "  $(dim "To enable Vi mode, add to ~/.zshrc: bindkey -v")"
 fi

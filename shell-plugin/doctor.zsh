@@ -123,24 +123,24 @@ else
     print_result warn "Oh My Zsh not found" "Install: sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\""
 fi
 
-# 2. Check if forge is installed and in PATH
-print_section "Forge Installation"
+# 2. Check if graff is installed and in PATH
+print_section "Graff Installation"
 
-# Check if forge is in PATH
-if command -v forge &> /dev/null; then
-    local forge_path=$(command -v forge)
+# Check if graff is in PATH
+if command -v graff &> /dev/null; then
+    local forge_path=$(command -v graff)
     
-    # Get forge version and extract just the version number
-    local forge_version=$(forge --version 2>&1 | head -n1 | awk '{print $2}')
+    # Get graff version and extract just the version number
+    local forge_version=$(graff --version 2>&1 | head -n1 | awk '{print $2}')
     if [[ -n "$forge_version" ]]; then
-        print_result pass "forge: ${forge_version}"
+        print_result pass "graff: ${forge_version}"
         print_result info "${forge_path}"
     else
-        print_result pass "forge: installed"
+        print_result pass "graff: installed"
         print_result info "${forge_path}"
     fi
 else
-    print_result fail "Forge binary not found in PATH" "Installation: curl -fsSL https://forgecode.dev/cli | sh"
+    print_result fail "Graff binary not found in PATH" "Installation: curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh"
 fi
 
 # 3. Check shell plugin
@@ -152,23 +152,23 @@ if [[ -n "$_FORGE_PLUGIN_LOADED" ]]; then
 else
     print_result fail "Forge plugin not loaded"
     print_result instruction "Add to your ~/.zshrc:"
-    print_result code "eval \"\$(forge zsh plugin)\""
-    print_result instruction "Or run: forge zsh setup"
+    print_result code "eval \"\$(graff zsh plugin)\""
+    print_result instruction "Or run: graff zsh setup"
 fi
 
 
 # Check plugin loading order in .zshrc
 local zshrc_file="${ZDOTDIR:-$HOME}/.zshrc"
 if [[ -f "$zshrc_file" ]] && [[ -n "$_FORGE_PLUGIN_LOADED" ]]; then
-    # Extract line numbers for plugin declarations and forge plugin eval
+    # Extract line numbers for plugin declarations and graff plugin eval
     local plugins_line=$(grep -n "^[[:space:]]*plugins=(" "$zshrc_file" 2>/dev/null | head -n1 | cut -d: -f1)
-    local forge_plugin_line=$(grep -n "eval.*forge.*zsh plugin" "$zshrc_file" 2>/dev/null | head -n1 | cut -d: -f1)
+    local forge_plugin_line=$(grep -n "eval.*graff.*zsh plugin" "$zshrc_file" 2>/dev/null | head -n1 | cut -d: -f1)
 
     if [[ -n "$plugins_line" ]] && [[ -n "$forge_plugin_line" ]]; then
         if [[ $forge_plugin_line -lt $plugins_line ]]; then
             print_result fail "Plugin loading order incorrect"
-            print_result instruction "Forge plugin (line ${forge_plugin_line}) should be loaded AFTER plugins=() (line ${plugins_line})"
-            print_result instruction "Move the forge plugin eval statement after the plugins=() array in ~/.zshrc"
+            print_result instruction "Graff plugin (line ${forge_plugin_line}) should be loaded AFTER plugins=() (line ${plugins_line})"
+            print_result instruction "Move the graff plugin eval statement after the plugins=() array in ~/.zshrc"
         else
             print_result pass "Plugin loading order correct"
         fi
@@ -182,7 +182,7 @@ if [[ -f "$zshrc_file" ]] && [[ -n "$_FORGE_PLUGIN_LOADED" ]]; then
         
         if [[ "$has_other_plugins" == "true" ]]; then
             print_result warn "Manual plugin loading detected"
-            print_result info "Ensure forge plugin is sourced AFTER zsh-autosuggestions and zsh-syntax-highlighting"
+            print_result info "Ensure graff plugin is sourced AFTER zsh-autosuggestions and zsh-syntax-highlighting"
         fi
     fi
 fi
@@ -198,11 +198,11 @@ elif (( $+functions[p10k] )); then
 elif [[ -n "$ZSH_THEME" ]]; then
     print_result warn "Using theme: ${ZSH_THEME}"
     print_result instruction "To use Forge theme, add to ~/.zshrc:"
-    print_result code "eval \"\$(forge zsh theme)\""
+    print_result code "eval \"\$(graff zsh theme)\""
 else
     print_result warn "No theme loaded"
     print_result instruction "To use Forge theme, add to ~/.zshrc:"
-    print_result code "eval \"\$(forge zsh theme)\""
+    print_result code "eval \"\$(graff zsh theme)\""
 fi
 
 # Helper function to compare versions
@@ -436,7 +436,7 @@ if [[ "$platform" == "Darwin" ]]; then
         print_result info "• VS Code: Settings → terminal.integrated.macOptionIsMeta → true"
         print_result info "• iTerm2: Preferences → Profiles → Keys → Option Key → Esc+"
         print_result info "• Terminal.app: Preferences → Profiles → Keyboard → Use Option as Meta"
-        print_result info "Run 'forge zsh keyboard' for detailed keyboard shortcuts"
+        print_result info "Run 'graff zsh keyboard' for detailed keyboard shortcuts"
     fi
     
 elif [[ "$platform" == "Linux" ]]; then
@@ -526,7 +526,7 @@ elif [[ "$platform" == "Linux" ]]; then
         print_result info "• GNOME Terminal: Usually works by default"
         print_result info "• Konsole: Usually works by default"
         print_result info "• xterm: Add 'XTerm*metaSendsEscape: true' to ~/.Xresources"
-        print_result info "Run 'forge zsh keyboard' for detailed keyboard shortcuts"
+        print_result info "Run 'graff zsh keyboard' for detailed keyboard shortcuts"
     fi
 else
     # Other platforms (BSD, etc.)
