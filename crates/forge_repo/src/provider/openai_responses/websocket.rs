@@ -222,18 +222,53 @@ pub(super) async fn chat(
     stream.into_domain()
 }
 
+/// Per-frame idle timeout while a response is in flight.
+///
+/// If the server stops sending events for this long, treat the socket as
+/// stale, drop it, and surface a retryable error so the orchestrator can
+/// open a fresh connection on the next turn. Without this guard, a silently
+/// half-closed connection (e.g. server dropped us but the FIN was lost)
+/// makes `socket.next().await` block forever.
+///
+/// 60 seconds is generous given that even a slow `effort=high` reasoning
+/// turn streams reasoning_summary_text deltas every few seconds — true idle
+/// of a full minute means something is genuinely wrong on the server side.
+const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 async fn run_websocket(
     mut socket: WebSocket,
     tx: mpsc::Sender<anyhow::Result<super::response::StreamItem>>,
     mut active: ActiveResponse,
 ) -> anyhow::Result<()> {
-    while let Some(message) = socket.next().await {
+    loop {
+        let next = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, socket.next()).await {
+            Ok(next) => next,
+            Err(_elapsed) => {
+                active.session.clear().await;
+                return Err(forge_domain::Error::Retryable(anyhow::anyhow!(
+                    "OpenAI Responses WebSocket idle for {}s with no events; treating as stale",
+                    STREAM_IDLE_TIMEOUT.as_secs()
+                ))
+                .into());
+            }
+        };
+        let Some(message) = next else {
+            break;
+        };
         let message = match message {
             Ok(message) => message,
             Err(error) => {
+                // Mid-stream WS errors (e.g. "Connection reset without closing
+                // handshake" when the server / proxy drops the TCP connection)
+                // are surfaced as `Retryable` so the orchestrator opens a
+                // fresh socket on the next attempt instead of bubbling up to
+                // the user.
                 active.session.clear().await;
-                return Err(anyhow::Error::from(error)
-                    .context("OpenAI Responses WebSocket receive failed"));
+                return Err(forge_domain::Error::Retryable(
+                    anyhow::Error::from(error)
+                        .context("OpenAI Responses WebSocket receive failed"),
+                )
+                .into());
             }
         };
 
