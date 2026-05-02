@@ -461,14 +461,14 @@ pub(super) fn input_signature(
             "OpenAI Responses WebSocket requires Items input, found Text"
         ));
     };
-    if len > items.len() {
-        return Err(anyhow::anyhow!(
+    let prefix = items.get(..len).ok_or_else(|| {
+        anyhow::anyhow!(
             "input prefix length {} exceeds total items {}",
             len,
             items.len()
-        ));
-    }
-    let bytes = serde_json::to_vec(&items[..len])
+        )
+    })?;
+    let bytes = serde_json::to_vec(prefix)
         .with_context(|| "Failed to serialize OpenAI Responses input prefix")?;
     let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
@@ -482,10 +482,10 @@ fn input_prefix_signature(
     let oai::InputParam::Items(items) = &request.input else {
         return Ok(None);
     };
-    if len > items.len() {
+    let Some(prefix) = items.get(..len) else {
         return Ok(None);
-    }
-    let bytes = serde_json::to_vec(&items[..len])
+    };
+    let bytes = serde_json::to_vec(prefix)
         .with_context(|| "Failed to serialize OpenAI Responses input prefix")?;
     let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
@@ -507,12 +507,10 @@ fn continuation_delta(
     let oai::InputParam::Items(items) = &request.input else {
         return None;
     };
-    if skip > items.len() {
-        return None;
-    }
+    let suffix = items.get(skip..)?;
 
     let delta: Vec<oai::InputItem> =
-        items[skip..].iter().filter(|item| is_continuation_item(item)).cloned().collect();
+        suffix.iter().filter(|item| is_continuation_item(item)).cloned().collect();
     if delta.is_empty() { None } else { Some(delta) }
 }
 
