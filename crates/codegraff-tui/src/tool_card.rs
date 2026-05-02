@@ -3,6 +3,8 @@ use ratatui::text::{Line, Span};
 
 use crate::text::{sanitize_render_text, truncate_single_line, wrap_line};
 
+/// Frames used to animate running tool cards between stream updates.
+pub(crate) const RUNNING_TOOL_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// Maximum number of tool output lines rendered before compacting.
 pub(crate) const TOOL_OUTPUT_LINE_LIMIT: usize = 80;
 /// Maximum number of tool output bytes rendered before compacting.
@@ -119,6 +121,7 @@ pub(crate) fn push_tool_lines(
     tool: &ToolEntry,
     selected: bool,
     width: usize,
+    animation_tick: u64,
 ) {
     let selector = if selected { ">" } else { " " };
     let toggle = if tool.expanded { "▾" } else { "▸" };
@@ -131,8 +134,20 @@ pub(crate) fn push_tool_lines(
         .fg(tool.status.color())
         .add_modifier(Modifier::BOLD);
 
+    let indicator = tool_status_indicator(tool.status, animation_tick);
+    let indicator_prefix = if tool.status == ToolStatus::Running {
+        format!("{indicator} ")
+    } else {
+        String::new()
+    };
     lines.push(Line::from(vec![
         Span::styled(format!("{selector} {toggle} "), card_style),
+        Span::styled(
+            indicator_prefix,
+            Style::default()
+                .fg(tool.status.color())
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("Tool ", card_style),
         Span::raw(title),
         Span::styled(format!(" [{}]", tool.status.label()), tool.status.color()),
@@ -159,4 +174,16 @@ pub(crate) fn push_tool_lines(
         Span::raw("    "),
         Span::styled(summary, Style::default().fg(Color::DarkGray)),
     ]));
+}
+
+fn tool_status_indicator(status: ToolStatus, animation_tick: u64) -> &'static str {
+    match status {
+        ToolStatus::Running => {
+            let frame = (animation_tick as usize) % RUNNING_TOOL_FRAMES.len();
+            RUNNING_TOOL_FRAMES[frame]
+        }
+        ToolStatus::Done => "✓",
+        ToolStatus::Failed => "✗",
+        ToolStatus::Info => "•",
+    }
 }

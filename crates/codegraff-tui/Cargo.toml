@@ -1,6 +1,6 @@
 [package]
 name = "codegraff"
-version = "0.1.0"
+version = "0.1.1"
 license = "BSD-3-Clause"
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-crossterm = "0.29.0"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 forge_api.workspace = true
+forge_domain.workspace = true
 futures.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 ratatui = "0.28.1"

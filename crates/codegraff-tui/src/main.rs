@@ -41,9 +41,14 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 1_000;
 const IMAGE_THUMBNAIL_COLUMNS: usize = 10;
 const IMAGE_THUMBNAIL_ROWS: usize = 3;
 const TUI_INPUT_POLL_MILLIS: u64 = 50;
+const MAX_READY_EVENTS_PER_FRAME: usize = 64;
 const SCROLL_LINE_STEP: usize = 3;
 const SCROLL_PAGE_STEP: usize = 12;
 const MOUSE_SCROLL_STEP: usize = 5;
+const WORKFLOW_DIALOG_HEADER_ROWS: usize = 6;
+const WORKFLOW_DIALOG_NODE_HEADER_ROWS: usize = 1;
+const WORKFLOW_DIALOG_SELECTED_NODE_DETAIL_ROWS: usize = 6;
+const SHORTCUT_HINT_MILLIS: u64 = 2_500;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -83,8 +88,12 @@ struct Tui<A> {
     scroll_from_bottom: usize,
     composer_scroll_from_bottom: usize,
     overlay_scroll_from_top: usize,
+    overlay_view_rows: usize,
+    overlay_content_width: usize,
     overlay_input: String,
     selected_tool: Option<usize>,
+    shortcut_hint: Option<ShortcutHint>,
+    animation_tick: u64,
     is_streaming: bool,
     workflow_run: Option<WorkflowRun>,
     workflow_task: Option<JoinHandle<()>>,
@@ -380,6 +389,24 @@ struct UsageLine {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct ShortcutHint {
+    text: String,
+    ticks_remaining: u64,
+}
+
+impl ShortcutHint {
+    fn new(text: impl Into<String>) -> Self {
+        let ticks_remaining = SHORTCUT_HINT_MILLIS / TUI_INPUT_POLL_MILLIS;
+        Self { text: text.into(), ticks_remaining }
+    }
+
+    fn tick(&mut self) -> bool {
+        self.ticks_remaining = self.ticks_remaining.saturating_sub(1);
+        self.ticks_remaining > 0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ImageAttachment {
     path: String,
     preview: Option<ImagePreview>,
@@ -412,6 +439,8 @@ enum ToolShortcut {
     Next,
     Previous,
     Toggle,
+    Expand,
+    Collapse,
     None,
 }
 
@@ -445,6 +474,7 @@ enum AppEvent {
     Paste(String),
     Chat(Result<ChatResponse>),
     WorkflowChat(Result<ChatResponse>),
+    Tick,
 }
 
 impl<A> Tui<A> {
@@ -478,8 +508,12 @@ impl<A: API + 'static> Tui<A> {
             scroll_from_bottom: 0,
             composer_scroll_from_bottom: 0,
             overlay_scroll_from_top: 0,
+            overlay_view_rows: 0,
+            overlay_content_width: 0,
             overlay_input: String::new(),
             selected_tool: None,
+            shortcut_hint: None,
+            animation_tick: 0,
             is_streaming: false,
             workflow_run: None,
             workflow_task: None,
@@ -498,6 +532,7 @@ impl<A: API + 'static> Tui<A> {
         let mut terminal = TerminalGuard::enter()?;
         let (tx, mut rx) = mpsc::unbounded_channel();
         spawn_input_reader(tx.clone(), self.log_path.clone());
+        spawn_redraw_ticker(tx.clone());
 
         loop {
             if let Err(error) = terminal.draw(|frame| self.render(frame)) {
@@ -509,22 +544,47 @@ impl<A: API + 'static> Tui<A> {
                 break;
             }
 
-            if let Some(event) = rx.recv().await {
-                match event {
-                    AppEvent::Input(key) => {
-                        if let Err(error) = self.handle_input(key, tx.clone()).await {
-                            self.log_error("input handling failed", &error);
-                            return Err(error);
-                        }
-                    }
-                    AppEvent::Mouse(mouse) => self.handle_mouse(mouse),
-                    AppEvent::Paste(text) => self.handle_paste(text),
-                    AppEvent::Chat(response) => self.handle_chat_response(response).await,
-                    AppEvent::WorkflowChat(response) => {
-                        self.handle_workflow_chat_response(response).await
+            let Some(event) = rx.recv().await else {
+                break;
+            };
+            self.handle_app_event(event, tx.clone()).await?;
+
+            for _ in 1..MAX_READY_EVENTS_PER_FRAME {
+                match rx.try_recv() {
+                    Ok(event) => self.handle_app_event(event, tx.clone()).await?,
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        self.should_quit = true;
+                        break;
                     }
                 }
+
+                if self.should_quit {
+                    break;
+                }
             }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_app_event(
+        &mut self,
+        event: AppEvent,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        match event {
+            AppEvent::Input(key) => {
+                if let Err(error) = self.handle_input(key, tx).await {
+                    self.log_error("input handling failed", &error);
+                    return Err(error);
+                }
+            }
+            AppEvent::Mouse(mouse) => self.handle_mouse(mouse),
+            AppEvent::Paste(text) => self.handle_paste(text),
+            AppEvent::Chat(response) => self.handle_chat_response(response).await,
+            AppEvent::WorkflowChat(response) => self.handle_workflow_chat_response(response).await,
+            AppEvent::Tick => self.advance_animation(),
         }
 
         Ok(())
@@ -639,28 +699,26 @@ impl<A: API + 'static> Tui<A> {
                 self.select_next_workflow_node();
                 Ok(true)
             }
-            KeyCode::Up => {
-                self.overlay_scroll_from_top = self
-                    .overlay_scroll_from_top
-                    .saturating_sub(SCROLL_LINE_STEP);
-                Ok(true)
-            }
-            KeyCode::Down => {
-                self.overlay_scroll_from_top = self
-                    .overlay_scroll_from_top
-                    .saturating_add(SCROLL_LINE_STEP);
-                Ok(true)
-            }
             KeyCode::PageUp => {
-                self.overlay_scroll_from_top = self
-                    .overlay_scroll_from_top
-                    .saturating_sub(SCROLL_PAGE_STEP);
+                self.adjust_overlay_scroll(
+                    ScrollDirection::Up,
+                    overlay_page_step(self.overlay_view_rows),
+                );
                 Ok(true)
             }
             KeyCode::PageDown => {
-                self.overlay_scroll_from_top = self
-                    .overlay_scroll_from_top
-                    .saturating_add(SCROLL_PAGE_STEP);
+                self.adjust_overlay_scroll(
+                    ScrollDirection::Down,
+                    overlay_page_step(self.overlay_view_rows),
+                );
+                Ok(true)
+            }
+            KeyCode::Up => {
+                self.adjust_overlay_scroll(ScrollDirection::Up, 1);
+                Ok(true)
+            }
+            KeyCode::Down => {
+                self.adjust_overlay_scroll(ScrollDirection::Down, 1);
                 Ok(true)
             }
             KeyCode::Home => {
@@ -1175,6 +1233,7 @@ impl<A: API + 'static> Tui<A> {
                 if let Err(error) = &response {
                     log_error(&log_path, "chat stream emitted error", error);
                 }
+                acknowledge_tool_call_start(&response);
                 if tx.send(AppEvent::Chat(response)).is_err() {
                     log_info(&log_path, "chat stream receiver dropped");
                     return;
@@ -1200,6 +1259,7 @@ impl<A: API + 'static> Tui<A> {
                 if let Err(error) = &response {
                     log_error(&log_path, "workflow stream emitted error", error);
                 }
+                acknowledge_tool_call_start(&response);
                 if tx.send(AppEvent::WorkflowChat(response)).is_err() {
                     log_info(&log_path, "workflow stream receiver dropped");
                     return;
@@ -1248,7 +1308,6 @@ impl<A: API + 'static> Tui<A> {
                         "Workflow finished in the background. Use /workflow trace to inspect it."
                             .to_string(),
                     ));
-                    self.scroll_from_bottom = 0;
                     self.refresh_usage().await;
                 }
             }
@@ -1262,7 +1321,6 @@ impl<A: API + 'static> Tui<A> {
                 self.transcript.push(TranscriptEntry::Error(format!(
                     "Background workflow failed: {error:#}. Use /workflow trace for details."
                 )));
-                self.scroll_from_bottom = 0;
             }
         }
     }
@@ -1577,14 +1635,14 @@ impl<A: API + 'static> Tui<A> {
                     .unwrap_or(&request.verification_uri);
                 self.overlay = None;
                 self.transcript.push(TranscriptEntry::Status(format!(
-                    "Open {display_uri} and enter code {}. Complete this CodeGraff OAuth flow with `forge provider login {provider_id}` for now.",
+                    "Open {display_uri} and enter code {}. Complete this CodeGraff OAuth flow with `graff provider login {provider_id}` for now.",
                     request.user_code
                 )));
             }
             Ok(AuthContextRequest::Code(request)) => {
                 self.overlay = None;
                 self.transcript.push(TranscriptEntry::Status(format!(
-                    "Open {}. Complete this CodeGraff OAuth code flow with `forge provider login {provider_id}` for now.",
+                    "Open {}. Complete this CodeGraff OAuth code flow with `graff provider login {provider_id}` for now.",
                     request.authorization_url
                 )));
             }
@@ -1831,12 +1889,19 @@ impl<A: API + 'static> Tui<A> {
         };
 
         node.task = task;
+        let node_name = node.name.clone();
         dialog.selected_node = index.saturating_sub(1);
         dialog.mode = WorkflowDialogMode::Review;
+        let selected_node = dialog.selected_node;
         self.overlay_input.clear();
+        self.overlay_scroll_from_top = workflow_scroll_top_for_selected_node(
+            selected_node,
+            self.overlay_content_width,
+            self.overlay_view_rows,
+            self.overlay_scroll_from_top,
+        );
         self.transcript.push(TranscriptEntry::Status(format!(
-            "Updated workflow node {index}: {}.",
-            node.name
+            "Updated workflow node {index}: {node_name}."
         )));
         self.scroll_from_bottom = 0;
     }
@@ -1902,8 +1967,14 @@ impl<A: API + 'static> Tui<A> {
             return;
         };
         dialog.mode = WorkflowDialogMode::EditTask;
+        let selected_node = dialog.selected_node;
         self.overlay_input.clear();
-        self.overlay_scroll_from_top = 0;
+        self.overlay_scroll_from_top = workflow_scroll_top_for_selected_node(
+            selected_node,
+            self.overlay_content_width,
+            self.overlay_view_rows,
+            self.overlay_scroll_from_top,
+        );
     }
 
     fn cancel_workflow_edit_mode(&mut self) -> bool {
@@ -1941,7 +2012,13 @@ impl<A: API + 'static> Tui<A> {
         }
         dialog.selected_node = index - 1;
         dialog.mode = WorkflowDialogMode::Review;
-        self.overlay_scroll_from_top = 0;
+        let selected_node = dialog.selected_node;
+        self.overlay_scroll_from_top = workflow_scroll_top_for_selected_node(
+            selected_node,
+            self.overlay_content_width,
+            self.overlay_view_rows,
+            self.overlay_scroll_from_top,
+        );
     }
 
     fn select_next_workflow_node(&mut self) {
@@ -1952,7 +2029,13 @@ impl<A: API + 'static> Tui<A> {
             return;
         }
         dialog.selected_node = (dialog.selected_node + 1).min(dialog.nodes.len() - 1);
-        self.overlay_scroll_from_top = 0;
+        let selected_node = dialog.selected_node;
+        self.overlay_scroll_from_top = workflow_scroll_top_for_selected_node(
+            selected_node,
+            self.overlay_content_width,
+            self.overlay_view_rows,
+            self.overlay_scroll_from_top,
+        );
     }
 
     fn select_previous_workflow_node(&mut self) {
@@ -1960,7 +2043,17 @@ impl<A: API + 'static> Tui<A> {
             return;
         };
         dialog.selected_node = dialog.selected_node.saturating_sub(1);
-        self.overlay_scroll_from_top = 0;
+        let selected_node = dialog.selected_node;
+        self.overlay_scroll_from_top = workflow_scroll_top_for_selected_node(
+            selected_node,
+            self.overlay_content_width,
+            self.overlay_view_rows,
+            self.overlay_scroll_from_top,
+        );
+    }
+
+    fn adjust_overlay_scroll(&mut self, direction: ScrollDirection, amount: usize) {
+        adjust_scroll_offset(&mut self.overlay_scroll_from_top, direction, amount);
     }
 
     async fn model_stats(&self) -> Option<ModelStats> {
@@ -2082,6 +2175,14 @@ impl<A: API + 'static> Tui<A> {
                 self.toggle_selected_tool();
                 true
             }
+            ToolShortcut::Expand => {
+                self.expand_selected_tool();
+                true
+            }
+            ToolShortcut::Collapse => {
+                self.collapse_selected_tool();
+                true
+            }
             ToolShortcut::None => false,
         }
     }
@@ -2101,6 +2202,7 @@ impl<A: API + 'static> Tui<A> {
                 .or_else(|| tool_indexes.first().copied()),
             None => tool_indexes.first().copied(),
         };
+        self.show_shortcut_hint("Selected tool. Ctrl+E toggles, ← collapses, → expands.");
     }
 
     fn select_previous_tool(&mut self) {
@@ -2123,6 +2225,7 @@ impl<A: API + 'static> Tui<A> {
                 .or_else(|| tool_indexes.first().copied()),
             None => tool_indexes.first().copied(),
         };
+        self.show_shortcut_hint("Selected tool. Ctrl+E toggles, ← collapses, → expands.");
     }
 
     fn toggle_selected_tool(&mut self) {
@@ -2132,7 +2235,35 @@ impl<A: API + 'static> Tui<A> {
 
         if let Some(TranscriptEntry::Tool(tool)) = self.transcript.get_mut(index) {
             tool.expanded = !tool.expanded;
+            let action = if tool.expanded { "Expanded" } else { "Collapsed" };
+            self.show_shortcut_hint(format!("{action} selected tool. Tab/Shift+Tab selects another tool."));
         }
+    }
+
+    fn expand_selected_tool(&mut self) {
+        let Some(index) = self.selected_tool else {
+            return;
+        };
+
+        if let Some(TranscriptEntry::Tool(tool)) = self.transcript.get_mut(index) {
+            tool.expanded = true;
+            self.show_shortcut_hint("Expanded selected tool. Tab/Shift+Tab selects another tool.");
+        }
+    }
+
+    fn collapse_selected_tool(&mut self) {
+        let Some(index) = self.selected_tool else {
+            return;
+        };
+
+        if let Some(TranscriptEntry::Tool(tool)) = self.transcript.get_mut(index) {
+            tool.expanded = false;
+            self.show_shortcut_hint("Collapsed selected tool. Tab/Shift+Tab selects another tool.");
+        }
+    }
+
+    fn show_shortcut_hint(&mut self, text: impl Into<String>) {
+        self.shortcut_hint = Some(ShortcutHint::new(text));
     }
 
     fn tool_indexes(&self) -> Vec<usize> {
@@ -2163,6 +2294,26 @@ impl<A: API + 'static> Tui<A> {
                 }
             })
             .is_some()
+    }
+
+    fn advance_animation(&mut self) {
+        if self.is_streaming || self.has_running_tool() {
+            self.animation_tick = self.animation_tick.wrapping_add(1);
+        }
+        if let Some(hint) = &mut self.shortcut_hint
+            && !hint.tick()
+        {
+            self.shortcut_hint = None;
+        }
+    }
+
+    fn has_running_tool(&self) -> bool {
+        self.transcript.iter().any(|entry| {
+            matches!(
+                entry,
+                TranscriptEntry::Tool(tool) if tool.status == ToolStatus::Running
+            )
+        })
     }
 
     fn push_workflow_response(&mut self, response: ChatResponse) -> bool {
@@ -2199,9 +2350,8 @@ impl<A: API + 'static> Tui<A> {
                     append_trace_chunk(&mut run.trace, format!("reasoning: {content}"));
                 }
             }
-            ChatResponse::ToolCallStart { tool_call, notifier } => {
+            ChatResponse::ToolCallStart { tool_call, notifier: _ } => {
                 run.trace.push(format!("tool started: {}", tool_call.name));
-                notifier.notify_one();
             }
             ChatResponse::ToolCallEnd(result) => {
                 let status = if result.is_error() { "failed" } else { "done" };
@@ -2222,7 +2372,6 @@ impl<A: API + 'static> Tui<A> {
                     "Background workflow was interrupted. Use /workflow trace for details."
                         .to_string(),
                 ));
-                self.scroll_from_bottom = 0;
                 return true;
             }
             ChatResponse::TaskComplete => return true,
@@ -2255,9 +2404,8 @@ impl<A: API + 'static> Tui<A> {
             ChatResponse::TaskReasoning { content: _ } => {
                 self.status = TuiStatus::Reasoning;
             }
-            ChatResponse::ToolCallStart { tool_call, notifier } => {
+            ChatResponse::ToolCallStart { tool_call, notifier: _ } => {
                 self.push_tool(ToolEntry::running(tool_call.name.to_string()));
-                notifier.notify_one();
             }
             ChatResponse::ToolCallEnd(result) => {
                 let status = if result.is_error() {
@@ -2296,7 +2444,7 @@ impl<A: API + 'static> Tui<A> {
         append_assistant_entry(&mut self.transcript, text);
     }
 
-    fn render(&self, frame: &mut ratatui::Frame<'_>) {
+    fn render(&mut self, frame: &mut ratatui::Frame<'_>) {
         let area = frame.area();
         frame.render_widget(Clear, area);
         let composer_width = area.width.saturating_sub(2) as usize;
@@ -2341,7 +2489,11 @@ impl<A: API + 'static> Tui<A> {
         let transcript_scroll = max_scroll
             .saturating_sub(scroll_from_bottom)
             .min(u16::MAX as usize) as u16;
-        let chat_title = chat_title(area.width);
+        let chat_title = chat_title(
+            area.width,
+            self.selected_tool.is_some(),
+            self.shortcut_hint.as_ref().map(|hint| hint.text.as_str()),
+        );
         let transcript = Paragraph::new(transcript_lines)
             .style(background_style)
             .block(Block::default().title(chat_title).borders(Borders::ALL))
@@ -2365,18 +2517,21 @@ impl<A: API + 'static> Tui<A> {
             let dialog_area = overlay_area(area);
             frame.render_widget(Clear, dialog_area);
             let dialog_inner_height = dialog_area.height.saturating_sub(2) as usize;
+            let dialog_content_width = dialog_area.width.saturating_sub(2) as usize;
+            self.overlay_view_rows = dialog_inner_height;
+            self.overlay_content_width = dialog_content_width;
             match overlay {
                 Overlay::Connect(dialog) => {
                     let lines = connect_dialog_lines(
                         dialog,
-                        dialog_area.width.saturating_sub(2) as usize,
+                        dialog_content_width,
                         self.overlay_input.as_str(),
                     );
-                    let max_overlay_scroll = lines.len().saturating_sub(dialog_inner_height);
-                    let overlay_scroll = self
-                        .overlay_scroll_from_top
-                        .min(max_overlay_scroll)
-                        .min(u16::MAX as usize) as u16;
+                    let overlay_scroll = overlay_scroll_top(
+                        self.overlay_scroll_from_top,
+                        lines.len(),
+                        dialog_inner_height,
+                    );
                     let dialog = Paragraph::new(lines)
                         .block(
                             Block::default()
@@ -2389,14 +2544,14 @@ impl<A: API + 'static> Tui<A> {
                 Overlay::Model(dialog) => {
                     let lines = model_dialog_lines(
                         dialog,
-                        dialog_area.width.saturating_sub(2) as usize,
+                        dialog_content_width,
                         self.overlay_input.as_str(),
                     );
-                    let max_overlay_scroll = lines.len().saturating_sub(dialog_inner_height);
-                    let overlay_scroll = self
-                        .overlay_scroll_from_top
-                        .min(max_overlay_scroll)
-                        .min(u16::MAX as usize) as u16;
+                    let overlay_scroll = overlay_scroll_top(
+                        self.overlay_scroll_from_top,
+                        lines.len(),
+                        dialog_inner_height,
+                    );
                     let dialog = Paragraph::new(lines)
                         .block(Block::default().title("Select model").borders(Borders::ALL))
                         .scroll((overlay_scroll, 0));
@@ -2405,14 +2560,16 @@ impl<A: API + 'static> Tui<A> {
                 Overlay::Workflow(dialog) => {
                     let lines = workflow_dialog_lines(
                         dialog,
-                        dialog_area.width.saturating_sub(2) as usize,
+                        dialog_content_width,
                         self.overlay_input.as_str(),
                     );
-                    let max_overlay_scroll = lines.len().saturating_sub(dialog_inner_height);
-                    let overlay_scroll = self
-                        .overlay_scroll_from_top
-                        .min(max_overlay_scroll)
-                        .min(u16::MAX as usize) as u16;
+                    let overlay_scroll = workflow_dialog_scroll_top(
+                        dialog,
+                        dialog_content_width,
+                        dialog_inner_height,
+                        self.overlay_scroll_from_top,
+                    )
+                    .min(u16::MAX as usize) as u16;
                     let dialog = Paragraph::new(lines)
                         .block(
                             Block::default()
@@ -2446,6 +2603,7 @@ impl<A: API + 'static> Tui<A> {
                     tool,
                     self.selected_tool == Some(entry_index),
                     width,
+                    self.animation_tick,
                 ),
                 TranscriptEntry::Error(text) => push_wrapped(
                     &mut lines,
@@ -3122,6 +3280,104 @@ fn workflow_dialog_lines(dialog: &WorkflowDialog, width: usize, input: &str) -> 
     lines
 }
 
+#[cfg(test)]
+fn workflow_selected_node_scroll_top(dialog: &WorkflowDialog) -> usize {
+    workflow_node_header_row(dialog.selected_node)
+}
+
+fn workflow_dialog_scroll_top(
+    dialog: &WorkflowDialog,
+    width: usize,
+    visible_rows: usize,
+    scroll_top: usize,
+) -> usize {
+    let selected_top = workflow_node_header_row(dialog.selected_node);
+    let selected_height = workflow_selected_node_height(dialog, width);
+    ensure_row_range_visible(scroll_top, visible_rows, selected_top, selected_height)
+}
+
+fn workflow_scroll_top_for_selected_node(
+    selected_node: usize,
+    _width: usize,
+    visible_rows: usize,
+    scroll_top: usize,
+) -> usize {
+    let selected_top = workflow_node_header_row(selected_node);
+    let selected_height =
+        WORKFLOW_DIALOG_NODE_HEADER_ROWS.saturating_add(WORKFLOW_DIALOG_SELECTED_NODE_DETAIL_ROWS);
+    ensure_row_range_visible(scroll_top, visible_rows, selected_top, selected_height)
+}
+
+fn workflow_node_header_row(selected_node: usize) -> usize {
+    WORKFLOW_DIALOG_HEADER_ROWS.saturating_add(selected_node)
+}
+
+fn workflow_selected_node_height(dialog: &WorkflowDialog, width: usize) -> usize {
+    let Some(node) = dialog.nodes.get(dialog.selected_node) else {
+        return WORKFLOW_DIALOG_NODE_HEADER_ROWS;
+    };
+
+    WORKFLOW_DIALOG_NODE_HEADER_ROWS
+        .saturating_add(wrapped_line_count(
+            &format!("   task: {}", node.task),
+            width,
+        ))
+        .saturating_add(wrapped_line_count(
+            &format!("   dependencies: {}", list_or_none(&node.dependencies)),
+            width,
+        ))
+        .saturating_add(wrapped_line_count(
+            &format!("   access: {}", list_or_none(&node.access)),
+            width,
+        ))
+        .saturating_add(wrapped_line_count(
+            &format!("   artifact: {}", node.artifact),
+            width,
+        ))
+        .saturating_add(wrapped_line_count(
+            &format!("   stop: {}", node.stop_condition),
+            width,
+        ))
+        .saturating_add(1)
+}
+
+fn wrapped_line_count(text: &str, width: usize) -> usize {
+    wrap_line(text, width.max(1)).len().max(1)
+}
+
+fn ensure_row_range_visible(
+    scroll_top: usize,
+    visible_rows: usize,
+    row_top: usize,
+    row_height: usize,
+) -> usize {
+    if visible_rows == 0 {
+        return row_top;
+    }
+
+    let row_bottom = row_top.saturating_add(row_height.saturating_sub(1));
+    let viewport_bottom = scroll_top.saturating_add(visible_rows.saturating_sub(1));
+
+    if row_top < scroll_top {
+        row_top
+    } else if row_bottom > viewport_bottom {
+        row_bottom.saturating_add(1).saturating_sub(visible_rows)
+    } else {
+        scroll_top
+    }
+}
+
+fn overlay_scroll_top(scroll_top: usize, line_count: usize, visible_rows: usize) -> u16 {
+    line_count
+        .saturating_sub(visible_rows)
+        .min(scroll_top)
+        .min(u16::MAX as usize) as u16
+}
+
+fn overlay_page_step(visible_rows: usize) -> usize {
+    visible_rows.saturating_sub(1).max(1)
+}
+
 fn dialog_input_line(label: &str, input: &str) -> String {
     if input.is_empty() {
         format!("{label}: ▌")
@@ -3341,7 +3597,10 @@ fn push_markdown_message_lines(
     let mut emitted_first_line = false;
 
     let sanitized_text = sanitize_render_text(text);
-    for physical_line in sanitized_text.lines() {
+    let physical_lines = sanitized_text.lines().collect::<Vec<_>>();
+    let mut line_index = 0;
+    while line_index < physical_lines.len() {
+        let physical_line = physical_lines[line_index];
         let trimmed = physical_line.trim_start();
         if trimmed.starts_with("```") {
             let language = trimmed.trim_start_matches('`').trim();
@@ -3365,6 +3624,30 @@ fn push_markdown_message_lines(
                 &mut emitted_first_line,
             );
             in_code_block = !in_code_block;
+            line_index += 1;
+            continue;
+        }
+
+        if !in_code_block
+            && let Some((table_lines, consumed)) = markdown_table_spans(
+                &physical_lines,
+                line_index,
+                markdown_available_width(label, width, emitted_first_line),
+            )
+        {
+            for table_line in table_lines {
+                let table_line = align_markdown_table_line(table_line, label, emitted_first_line);
+                push_markdown_wrapped_spans(
+                    lines,
+                    label,
+                    table_line,
+                    0,
+                    label_style,
+                    width,
+                    &mut emitted_first_line,
+                );
+            }
+            line_index += consumed;
             continue;
         }
 
@@ -3378,11 +3661,201 @@ fn push_markdown_message_lines(
             width,
             &mut emitted_first_line,
         );
+        line_index += 1;
     }
 
     if !emitted_first_line {
         push_wrapped(lines, label, "", label_style, width);
     }
+}
+
+fn align_markdown_table_line(
+    mut spans: Vec<Span<'static>>,
+    label: &str,
+    emitted_first_line: bool,
+) -> Vec<Span<'static>> {
+    if emitted_first_line {
+        let alignment = format!("{label}: ").chars().count().saturating_sub(2);
+        spans.insert(0, Span::raw(" ".repeat(alignment)));
+    }
+    spans
+}
+
+fn markdown_available_width(label: &str, width: usize, emitted_first_line: bool) -> usize {
+    let prefix_width = if emitted_first_line {
+        2
+    } else {
+        format!("{label}: ").chars().count()
+    };
+    width.saturating_sub(prefix_width).max(1)
+}
+
+fn markdown_table_spans(
+    lines: &[&str],
+    start: usize,
+    width: usize,
+) -> Option<(Vec<Vec<Span<'static>>>, usize)> {
+    let header = markdown_table_row(lines.get(start)?.trim())?;
+    let separator = markdown_table_row(lines.get(start + 1)?.trim())?;
+    if header.is_empty() || !markdown_table_separator(&separator) {
+        return None;
+    }
+
+    let column_count = header.len();
+    let mut rows = vec![header];
+    let mut consumed = 2;
+    while let Some(line) = lines.get(start + consumed) {
+        let trimmed = line.trim();
+        let Some(row) = markdown_table_row(trimmed) else {
+            break;
+        };
+        if markdown_table_separator(&row) {
+            break;
+        }
+        rows.push(row);
+        consumed += 1;
+    }
+
+    Some((render_markdown_table(&rows, column_count, width), consumed))
+}
+
+fn markdown_table_row(line: &str) -> Option<Vec<String>> {
+    if !line.contains('|') {
+        return None;
+    }
+
+    let mut row = line.trim();
+    if row.starts_with('|') {
+        row = &row[1..];
+    }
+    if row.ends_with('|') {
+        row = &row[..row.len().saturating_sub(1)];
+    }
+
+    let cells = row
+        .split('|')
+        .map(|cell| strip_inline_markdown(cell.trim()))
+        .collect::<Vec<_>>();
+    (cells.len() > 1).then_some(cells)
+}
+
+fn markdown_table_separator(cells: &[String]) -> bool {
+    !cells.is_empty()
+        && cells.iter().all(|cell| {
+            let cell = cell.trim();
+            cell.chars()
+                .all(|ch| matches!(ch, '-' | ':' | ' ' | '\t'))
+                && cell.chars().filter(|ch| *ch == '-').count() >= 3
+        })
+}
+
+fn render_markdown_table(
+    rows: &[Vec<String>],
+    column_count: usize,
+    width: usize,
+) -> Vec<Vec<Span<'static>>> {
+    let column_count = table_column_count(column_count, width);
+    let rows = normalize_table_rows(rows, column_count);
+    let mut widths = table_column_widths(&rows, column_count);
+    shrink_table_widths(&mut widths, width);
+
+    let mut output = Vec::new();
+    output.push(table_border('┌', '┬', '┐', &widths));
+    if let Some(header) = rows.first() {
+        output.push(table_row(header, &widths, true));
+        output.push(table_border('├', '┼', '┤', &widths));
+    }
+    for row in rows.iter().skip(1) {
+        output.push(table_row(row, &widths, false));
+    }
+    output.push(table_border('└', '┴', '┘', &widths));
+    output
+}
+
+fn table_column_count(column_count: usize, width: usize) -> usize {
+    let max_columns = width.saturating_sub(1).checked_div(4).unwrap_or(1).max(1);
+    column_count.min(max_columns).max(1)
+}
+
+fn normalize_table_rows(rows: &[Vec<String>], column_count: usize) -> Vec<Vec<String>> {
+    rows.iter()
+        .map(|row| {
+            let mut normalized = row.iter().take(column_count).cloned().collect::<Vec<_>>();
+            normalized.resize(column_count, String::new());
+            normalized
+        })
+        .collect()
+}
+
+fn table_column_widths(rows: &[Vec<String>], column_count: usize) -> Vec<usize> {
+    (0..column_count)
+        .map(|column| {
+            rows.iter()
+                .filter_map(|row| row.get(column))
+                .map(|cell| visible_width(cell))
+                .max()
+                .unwrap_or(1)
+                .clamp(1, 32)
+        })
+        .collect()
+}
+
+fn shrink_table_widths(widths: &mut [usize], width: usize) {
+    while table_width(widths) > width {
+        let Some((index, _)) = widths
+            .iter()
+            .enumerate()
+            .filter(|(_, width)| **width > 1)
+            .max_by_key(|(_, width)| **width)
+        else {
+            break;
+        };
+        widths[index] = widths[index].saturating_sub(1);
+    }
+}
+
+fn table_width(widths: &[usize]) -> usize {
+    widths.iter().sum::<usize>() + widths.len().saturating_mul(3) + 1
+}
+
+fn table_border(
+    left: char,
+    join: char,
+    right: char,
+    widths: &[usize],
+) -> Vec<Span<'static>> {
+    let mut text = String::new();
+    text.push(left);
+    for (index, width) in widths.iter().enumerate() {
+        text.push_str(&"─".repeat(width.saturating_add(2)));
+        text.push(if index + 1 == widths.len() { right } else { join });
+    }
+    vec![Span::styled(text, Style::default().fg(Color::DarkGray))]
+}
+
+fn table_row(cells: &[String], widths: &[usize], header: bool) -> Vec<Span<'static>> {
+    let border_style = Style::default().fg(Color::DarkGray);
+    let cell_style = if header {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let mut spans = vec![Span::styled("│", border_style)];
+    for (cell, width) in cells.iter().zip(widths.iter()) {
+        let cell = pad_table_cell(&truncate_single_line(cell, *width), *width);
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(cell, cell_style));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled("│", border_style));
+    }
+    spans
+}
+
+fn pad_table_cell(cell: &str, width: usize) -> String {
+    let padding = width.saturating_sub(visible_width(cell));
+    format!("{cell}{}", " ".repeat(padding))
 }
 
 struct MarkdownLine {
@@ -3744,7 +4217,12 @@ fn wrap_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>
         while !text.is_empty() {
             let remaining = width.saturating_sub(current_width).max(1);
             let take = word_boundary_take(&text, remaining);
-            let chunk = text[..take].trim_start().to_string();
+            let at_line_start = current_width == 0;
+            let chunk = if at_line_start {
+                text[..take].trim_start().to_string()
+            } else {
+                text[..take].to_string()
+            };
             let chunk_width = visible_width(&chunk);
             lines
                 .last_mut()
@@ -3918,14 +4396,32 @@ fn composer_height(terminal_height: u16, composer_line_count: usize) -> u16 {
     desired.min(max_height).max(3) as u16
 }
 
-fn chat_title(width: u16) -> &'static str {
+fn chat_title(width: u16, tool_selected: bool, hint: Option<&str>) -> String {
+    if let Some(hint) = hint
+        && width >= 72
+    {
+        return format!("Chat  {hint}");
+    }
+
+    if tool_selected {
+        return (if width < 48 {
+            "Chat"
+        } else if width < 72 {
+            "Chat  Ctrl+E toggle"
+        } else {
+            "Chat  Ctrl+E toggle  ←/→ collapse/expand  Tab moves"
+        })
+        .to_string();
+    }
+
     if width < 48 {
         "Chat"
     } else if width < 72 {
         "Chat  ↑↓ scroll  Tab tool"
     } else {
-        "Chat  ↑↓ scroll  Tab tool  Ctrl+E expand"
+        "Chat  ↑↓ scroll  Tab select tool  Ctrl+E expand"
     }
+    .to_string()
 }
 
 fn prompt_title(width: u16) -> &'static str {
@@ -3938,42 +4434,53 @@ fn prompt_title(width: u16) -> &'static str {
 
 fn spawn_input_reader(tx: mpsc::UnboundedSender<AppEvent>, log_path: PathBuf) {
     tokio::spawn(async move {
-        loop {
-            match event::poll(Duration::from_millis(TUI_INPUT_POLL_MILLIS)) {
-                Ok(true) => match event::read() {
-                    Ok(TerminalEvent::Key(key)) => {
-                        if tx.send(AppEvent::Input(key)).is_err() {
-                            log_info(&log_path, "input reader receiver dropped");
-                            return;
-                        }
-                    }
-                    Ok(TerminalEvent::Paste(text)) => {
-                        if tx.send(AppEvent::Paste(text)).is_err() {
-                            log_info(&log_path, "paste receiver dropped");
-                            return;
-                        }
-                    }
-                    Ok(TerminalEvent::Mouse(mouse)) => {
-                        if tx.send(AppEvent::Mouse(mouse)).is_err() {
-                            log_info(&log_path, "mouse receiver dropped");
-                            return;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        let error = anyhow::Error::from(error);
-                        log_error(&log_path, "terminal event read failed", &error);
-                        let _ = tx.send(AppEvent::Chat(Err(error)));
+        let mut events = event::EventStream::new();
+
+        while let Some(event) = events.next().await {
+            match event {
+                Ok(event) => {
+                    let Some(app_event) = terminal_event_to_app_event(event) else {
+                        continue;
+                    };
+                    if tx.send(app_event).is_err() {
+                        log_info(&log_path, "terminal event receiver dropped");
                         return;
                     }
-                },
-                Ok(false) => {}
+                }
                 Err(error) => {
                     let error = anyhow::Error::from(error);
-                    log_error(&log_path, "terminal event poll failed", &error);
+                    log_error(&log_path, "terminal event read failed", &error);
                     let _ = tx.send(AppEvent::Chat(Err(error)));
                     return;
                 }
+            }
+        }
+    });
+}
+
+fn acknowledge_tool_call_start(response: &Result<ChatResponse>) {
+    if let Ok(ChatResponse::ToolCallStart { notifier, .. }) = response {
+        notifier.notify_one();
+    }
+}
+
+fn terminal_event_to_app_event(event: TerminalEvent) -> Option<AppEvent> {
+    match event {
+        TerminalEvent::Key(key) => Some(AppEvent::Input(key)),
+        TerminalEvent::Paste(text) => Some(AppEvent::Paste(text)),
+        TerminalEvent::Mouse(mouse) => Some(AppEvent::Mouse(mouse)),
+        TerminalEvent::Resize(_, _) | TerminalEvent::FocusGained => Some(AppEvent::Tick),
+        _ => None,
+    }
+}
+
+fn spawn_redraw_ticker(tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(TUI_INPUT_POLL_MILLIS));
+        loop {
+            interval.tick().await;
+            if tx.send(AppEvent::Tick).is_err() {
+                return;
             }
         }
     });
@@ -4203,6 +4710,8 @@ fn tool_shortcut(key: KeyEvent) -> ToolShortcut {
     match key.code {
         KeyCode::Tab => ToolShortcut::Next,
         KeyCode::BackTab => ToolShortcut::Previous,
+        KeyCode::Right => ToolShortcut::Expand,
+        KeyCode::Left => ToolShortcut::Collapse,
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => ToolShortcut::Toggle,
         _ => ToolShortcut::None,
     }
@@ -4373,6 +4882,8 @@ fn compact_status(status: TuiStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use forge_api::ModelId;
+    use forge_domain::ToolCallFull;
+    use futures::FutureExt;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -4740,7 +5251,7 @@ mod tests {
             "  ☐ todo".to_string(),
             "  ▌ quoted text".to_string(),
             "  ────────────────────────".to_string(),
-            "  docs(https://example.com)".to_string(),
+            "  docs (https://example.com)".to_string(),
         ];
 
         assert_eq!(actual, expected);
@@ -5017,11 +5528,15 @@ mod tests {
 
     #[test]
     fn chat_title_stays_short_on_narrow_terminals() {
-        let actual = vec![chat_title(30), chat_title(60), chat_title(90)];
+        let actual = vec![
+            chat_title(30, false, None),
+            chat_title(60, false, None),
+            chat_title(90, false, None),
+        ];
         let expected = vec![
             "Chat",
             "Chat  ↑↓ scroll  Tab tool",
-            "Chat  ↑↓ scroll  Tab tool  Ctrl+E expand",
+            "Chat  ↑↓ scroll  Tab select tool  Ctrl+E expand",
         ];
 
         assert_eq!(actual, expected);
@@ -5147,7 +5662,7 @@ mod tests {
             80,
         );
         let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
-        let expected = vec!["CodeGraff: boldcode link(https://x.test)@[/tmp/a.png]".to_string()];
+        let expected = vec!["CodeGraff: bold  code  link (https://x.test) @[/tmp/a.png]".to_string()];
 
         assert_eq!(actual, expected);
     }
@@ -5178,7 +5693,7 @@ mod tests {
 
     fn rendered_tool_lines(tool: ToolEntry, selected: bool, width: usize) -> Vec<String> {
         let mut fixture = Vec::new();
-        push_tool_lines(&mut fixture, &tool, selected, width);
+        push_tool_lines(&mut fixture, &tool, selected, width, 0);
 
         fixture.into_iter().map(render_line).collect()
     }
@@ -5245,6 +5760,71 @@ mod tests {
             is_clipboard_paste_key(key(KeyCode::Char('v'))),
         ];
         let expected = vec![true, true, false];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn terminal_events_request_redraw_on_resize_and_focus() {
+        let actual = vec![
+            terminal_event_to_app_event(TerminalEvent::Resize(120, 40)),
+            terminal_event_to_app_event(TerminalEvent::FocusGained),
+            terminal_event_to_app_event(TerminalEvent::FocusLost),
+        ]
+        .into_iter()
+        .map(|event| matches!(event, Some(AppEvent::Tick)))
+        .collect::<Vec<_>>();
+        let expected = vec![true, true, false];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn tool_call_start_is_acknowledged_before_ui_rendering() {
+        let notifier = std::sync::Arc::new(tokio::sync::Notify::new());
+        let fixture = Ok(ChatResponse::ToolCallStart {
+            tool_call: ToolCallFull::new("read"),
+            notifier: notifier.clone(),
+        });
+        acknowledge_tool_call_start(&fixture);
+        let actual = notifier.notified().now_or_never().is_some();
+        let expected = true;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn tool_call_start_acknowledgement_ignores_non_tool_events() {
+        let fixture = Ok(ChatResponse::TaskReasoning { content: "thinking".to_string() });
+        acknowledge_tool_call_start(&fixture);
+        let actual = true;
+        let expected = true;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn terminal_events_forward_input_paste_and_mouse() {
+        let mouse = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 2,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        let actual = vec![
+            terminal_event_to_app_event(TerminalEvent::Key(key(KeyCode::Char('x')))),
+            terminal_event_to_app_event(TerminalEvent::Paste("hello".to_string())),
+            terminal_event_to_app_event(TerminalEvent::Mouse(mouse)),
+        ]
+        .into_iter()
+        .map(|event| match event {
+            Some(AppEvent::Input(_)) => "input",
+            Some(AppEvent::Paste(_)) => "paste",
+            Some(AppEvent::Mouse(_)) => "mouse",
+            _ => "other",
+        })
+        .collect::<Vec<_>>();
+        let expected = vec!["input", "paste", "mouse"];
 
         assert_eq!(actual, expected);
     }
@@ -5446,6 +6026,60 @@ mod tests {
         assert!(actual.contains("topology: implement(forge) -> test(forge)"));
         assert!(actual.contains("artifact: verification log"));
         assert!(actual.contains("access: implement"));
+    }
+
+    #[test]
+    fn workflow_selected_node_scroll_tracks_selected_node() {
+        let fixture = WorkflowDialog {
+            goal: "fix parser".to_string(),
+            nodes: build_workflow("Investigate failing parser test and review diff", &[]),
+            selected_node: 4,
+            mode: WorkflowDialogMode::Review,
+        };
+        let actual = workflow_selected_node_scroll_top(&fixture);
+        let expected = WORKFLOW_DIALOG_HEADER_ROWS + 4;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn workflow_scroll_keeps_selected_node_visible_without_jumping_when_visible() {
+        let fixture = WorkflowDialog {
+            goal: "fix parser".to_string(),
+            nodes: build_workflow("Investigate failing parser test and review diff", &[]),
+            selected_node: 2,
+            mode: WorkflowDialogMode::Review,
+        };
+        let actual = workflow_dialog_scroll_top(&fixture, 80, 12, 4);
+        let expected = 4;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn workflow_scroll_moves_only_enough_to_reveal_selected_node() {
+        let fixture = WorkflowDialog {
+            goal: "fix parser".to_string(),
+            nodes: build_workflow("Investigate failing parser test and review diff", &[]),
+            selected_node: 4,
+            mode: WorkflowDialogMode::Review,
+        };
+        let actual = workflow_dialog_scroll_top(&fixture, 80, 8, 0);
+        let expected = 10;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn overlay_page_step_uses_viewport_height() {
+        let actual = vec![
+            overlay_page_step(0),
+            overlay_page_step(1),
+            overlay_page_step(8),
+        ];
+        let expected = vec![1, 1, 7];
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -5726,6 +6360,47 @@ mod tests {
             &mut fixture,
             "CodeGraff",
             "- **bold** ツツツツツツツツツツツツ longwordwithoutspaces",
+            width,
+        );
+        let actual = fixture
+            .into_iter()
+            .map(render_line)
+            .all(|line| text::visible_width(&line) <= width);
+        let expected = true;
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn markdown_table_renders_boxed_rows() {
+        let mut fixture = Vec::new();
+        push_markdown_message_lines(
+            &mut fixture,
+            "CodeGraff",
+            "| Name | Status |\n| --- | --- |\n| codedb | connected |\n| shell | running |",
+            80,
+        );
+        let actual = fixture.into_iter().map(render_line).collect::<Vec<_>>();
+        let expected = vec![
+            "CodeGraff: ┌────────┬───────────┐".to_string(),
+            "  │ Name   │ Status    │".to_string(),
+            "  ├────────┼───────────┤".to_string(),
+            "  │ codedb │ connected │".to_string(),
+            "  │ shell  │ running   │".to_string(),
+            "  └────────┴───────────┘".to_string(),
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn markdown_table_keeps_no_line_over_width() {
+        let mut fixture = Vec::new();
+        let width = 34;
+        push_markdown_message_lines(
+            &mut fixture,
+            "CodeGraff",
+            "| Extremely long heading | Another long heading |\n| --- | --- |\n| long value that should trim | another value |",
             width,
         );
         let actual = fixture
