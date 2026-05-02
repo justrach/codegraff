@@ -1,10 +1,10 @@
-# Forge ZSH Plugin
+# Graff ZSH Plugin
 
-A powerful ZSH plugin that provides intelligent command transformation, file tagging, and conversation management for the Forge AI assistant.
+A powerful ZSH plugin that provides intelligent command transformation, file tagging, and conversation management for the Graff AI assistant.
 
 ## Features
 
-- **Smart Command Transformation**: Convert `:command` syntax into forge executions
+- **Smart Command Transformation**: Convert `:command` syntax into graff executions
 - **Agent Selection**: Tab completion for available agents using `:agent_name`
 - **File Tagging**: Interactive file selection with `@[filename]` syntax
 - **Syntax Highlighting**: Visual feedback for commands and tagged files
@@ -17,7 +17,7 @@ Before using this plugin, ensure you have the following tools installed:
 
 - **fzf** - Command-line fuzzy finder
 - **fd** - Fast file finder (alternative to find)
-- **forge** - The Forge CLI tool
+- **graff** - The Graff CLI tool
 
 ### Installation of Prerequisites
 
@@ -42,7 +42,7 @@ Begin any command with `:` followed by your prompt:
 : Get the current time
 ```
 
-This automatically starts a new conversation with the default Forge agent.
+This automatically starts a new conversation with the default Graff agent.
 
 ### Using Specific Agents
 
@@ -239,7 +239,7 @@ This will index the current directory for semantic code search.
 
 ### Environment Diagnostics
 
-Run comprehensive environment diagnostics to check your Forge setup:
+Run comprehensive environment diagnostics to check your Graff setup:
 
 ```bash
 :doctor
@@ -247,7 +247,7 @@ Run comprehensive environment diagnostics to check your Forge setup:
 
 This will check:
 - ZSH version and terminal information
-- Forge installation and version
+- Graff installation and version
 - Plugin and theme loading status
 - Completions availability
 - Dependencies (fzf, fd, bat)
@@ -267,14 +267,14 @@ The plugin creates a `.forge` directory in your current working directory (simil
 
 All transformed commands are properly saved to ZSH history, allowing you to:
 - Navigate command history with arrow keys
-- Search previous forge commands with `Ctrl+R`
+- Search previous graff commands with `Ctrl+R`
 - Reuse complex commands with file tags
 
 ### Keyboard Shortcuts
 
 - **Tab**: Interactive completion for files (`@`) and agents (`:`)
 - **Enter**: Transform and execute `:commands`
-- **Ctrl+C**: Interrupt running forge commands
+- **Ctrl+C**: Interrupt running graff commands
 
 ## Examples
 

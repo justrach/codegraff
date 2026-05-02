@@ -59,7 +59,7 @@ pub struct ProviderUrlParam {
     pub options: Vec<String>,
 }
 
-/// A single provider entry defined inline in `forge.toml`.
+/// A single provider entry defined inline in the Graff config file.
 ///
 /// Inline providers are merged with the built-in provider list; entries with
 /// the same `id` override the corresponding built-in entry field-by-field,
@@ -98,7 +98,7 @@ pub struct ProviderEntry {
     pub auth_methods: Vec<ProviderAuthMethod>,
 }
 
-/// Top-level Forge configuration merged from all sources (defaults, file,
+/// Top-level Graff configuration merged from all sources (defaults, file,
 /// environment).
 #[derive(Default, Debug, Setters, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Dummy)]
 #[serde(rename_all = "snake_case")]
@@ -170,10 +170,10 @@ pub struct ForgeConfig {
     /// Number of top results retained after re-ranking in semantic search.
     #[serde(default)]
     pub sem_search_top_k: usize,
-    /// Base URL of the Forge services API used for semantic search and
+    /// Base URL of the Graff services API used for semantic search and
     /// indexing.
     #[serde(default)]
-    #[dummy(expr = "\"https://api.forgecode.dev/api\".to_string()")]
+    #[dummy(expr = "\"https://api.codegraff.com/api\".to_string()")]
     pub services_url: String,
     /// Maximum number of file extensions included in the agent system prompt.
     #[serde(default)]
@@ -196,7 +196,7 @@ pub struct ForgeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<ModelConfig>,
     /// Whether `graff commit` should override `GIT_COMMITTER_NAME` and
-    /// `GIT_COMMITTER_EMAIL` with the Forge identity. Defaults to `true` via
+    /// `GIT_COMMITTER_EMAIL` with the Graff identity. Defaults to `true` via
     /// the embedded `.forge.toml` defaults.
     #[serde(default)]
     pub use_forge_committer: bool,
@@ -210,7 +210,7 @@ pub struct ForgeConfig {
     pub suggest: Option<ModelConfig>,
 
     // --- Workflow fields ---
-    /// Configuration for automatic Forge updates.
+    /// Configuration for automatic Graff updates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updates: Option<Update>,
 
@@ -294,8 +294,8 @@ pub struct ForgeConfig {
     #[serde(default)]
     pub research_subagent: bool,
 
-    /// Enables subagent support via the task tool; when true the forge agent
-    /// gains access to the `task` tool for delegating work to specialised
+    /// Enables subagent support via the task tool; when true the implementation
+    /// agent gains access to the `task` tool for delegating work to specialised
     /// sub-agents, and the `sage` research-only agent tool is removed.
     /// When false the `task` tool is disabled and `sage` is available instead.
     #[serde(default)]

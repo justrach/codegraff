@@ -1,5 +1,5 @@
 #!/bin/sh
-# POSIX sh installer for CodeGraff and Forge.
+# POSIX sh installer for CodeGraff and Graff.
 # Usage:
 #   curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 # Optional:
@@ -22,7 +22,7 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 TMP_DIR=""
 DOWNLOADER=""
 
-printf "${BLUE}Installing CodeGraff, Forge, and dependencies...${NC}\n"
+printf "${BLUE}Installing CodeGraff, Graff, and dependencies...${NC}\n"
 
 if command -v curl >/dev/null 2>&1; then
   DOWNLOADER="curl"
@@ -389,5 +389,5 @@ install_fzf || true
 install_codedb || true
 
 printf "\n${GREEN}Installation complete!${NC}\n"
-printf "${BLUE}Tools installed: forge, codegraff, fzf, codedb${NC}\n"
+printf "${BLUE}Tools installed: graff, codegraff, fzf, codedb${NC}\n"
 printf "${YELLOW}Open a new terminal or restart your shell if commands are not immediately visible.${NC}\n"

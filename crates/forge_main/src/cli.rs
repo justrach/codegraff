@@ -140,7 +140,7 @@ pub enum TopLevelCommand {
     #[command(subcommand)]
     Vscode(VscodeCommand),
 
-    /// Update forge to the latest version.
+    /// Update graff to the latest version.
     Update(UpdateArgs),
 
     /// Setup zsh integration by updating .zshrc with plugin and theme (alias
@@ -150,7 +150,7 @@ pub enum TopLevelCommand {
     /// Run diagnostics on shell environment (alias for `zsh doctor`).
     Doctor,
 
-    /// Stream forge log output (defaults to the most recent log file).
+    /// Stream graff log output (defaults to the most recent log file).
     Logs(LogsArgs),
 }
 
@@ -543,21 +543,21 @@ pub enum ConfigCommand {
     Migrate,
 }
 
-/// Arguments for `forge config set`.
+/// Arguments for `graff config set`.
 #[derive(Parser, Debug, Clone)]
 pub struct ConfigSetArgs {
     #[command(subcommand)]
     pub field: ConfigSetField,
 }
 
-/// Arguments for `forge config get`.
+/// Arguments for `graff config get`.
 #[derive(Parser, Debug, Clone)]
 pub struct ConfigGetArgs {
     #[command(subcommand)]
     pub field: ConfigGetField,
 }
 
-/// Type-safe subcommands for `forge config set`.
+/// Type-safe subcommands for `graff config set`.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ConfigSetField {
     /// Set the active model and provider atomically.
@@ -588,7 +588,7 @@ pub enum ConfigSetField {
     },
 }
 
-/// Type-safe subcommands for `forge config get`.
+/// Type-safe subcommands for `graff config get`.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ConfigGetField {
     /// Get the active model.
@@ -810,7 +810,7 @@ impl From<DataCommandGroup> for forge_domain::DataGenerationParameters {
 /// VS Code integration commands.
 #[derive(Subcommand, Debug, Clone)]
 pub enum VscodeCommand {
-    /// Install the Forge VS Code extension.
+    /// Install the Graff VS Code extension.
     InstallExtension,
 }
 
@@ -822,7 +822,7 @@ pub struct UpdateArgs {
     pub no_confirm: bool,
 }
 
-/// Arguments for the `forge logs` command.
+/// Arguments for the `graff logs` command.
 #[derive(Parser, Debug, Clone)]
 pub struct LogsArgs {
     /// Number of lines to show from the end of the log file.
@@ -838,7 +838,7 @@ pub struct LogsArgs {
     pub list: bool,
 
     /// Path to a specific log file to tail. Defaults to the most recent log
-    /// file in the forge logs directory.
+    /// file in the graff logs directory.
     #[arg(long, short = 'f')]
     pub file: Option<PathBuf>,
 }
@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn test_commit_default_max_diff_size() {
-        let fixture = Cli::parse_from(["forge", "commit", "--preview"]);
+        let fixture = Cli::parse_from(["graff", "commit", "--preview"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Commit(commit)) => commit.max_diff_size,
             _ => panic!("Expected Commit command"),
@@ -885,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_commit_custom_max_diff_size() {
-        let fixture = Cli::parse_from(["forge", "commit", "--preview", "--max-diff", "50000"]);
+        let fixture = Cli::parse_from(["graff", "commit", "--preview", "--max-diff", "50000"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Commit(commit)) => commit.max_diff_size,
             _ => panic!("Expected Commit command"),
@@ -897,7 +897,7 @@ mod tests {
     #[test]
     fn test_config_set_with_provider_and_model() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "config",
             "set",
             "model",
@@ -925,7 +925,7 @@ mod tests {
 
     #[test]
     fn test_config_list() {
-        let fixture = Cli::parse_from(["forge", "config", "list"]);
+        let fixture = Cli::parse_from(["graff", "config", "list"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Config(config)) => matches!(config.command, ConfigCommand::List),
             _ => false,
@@ -936,7 +936,7 @@ mod tests {
 
     #[test]
     fn test_config_get_specific_field() {
-        let fixture = Cli::parse_from(["forge", "config", "get", "model"]);
+        let fixture = Cli::parse_from(["graff", "config", "get", "model"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Config(config)) => match config.command {
                 ConfigCommand::Get(args) => matches!(args.field, ConfigGetField::Model),
@@ -950,7 +950,7 @@ mod tests {
     #[test]
     fn test_config_set_commit_with_provider_and_model() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "config",
             "set",
             "commit",
@@ -978,7 +978,7 @@ mod tests {
 
     #[test]
     fn test_conversation_list() {
-        let fixture = Cli::parse_from(["forge", "conversation", "list"]);
+        let fixture = Cli::parse_from(["graff", "conversation", "list"]);
         let is_list = match fixture.subcommands {
             Some(TopLevelCommand::Conversation(conversation)) => {
                 matches!(conversation.command, ConversationCommand::List { .. })
@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn test_session_alias_list() {
-        let fixture = Cli::parse_from(["forge", "session", "list"]);
+        let fixture = Cli::parse_from(["graff", "session", "list"]);
         let is_list = match fixture.subcommands {
             Some(TopLevelCommand::Conversation(conversation)) => {
                 matches!(conversation.command, ConversationCommand::List { .. })
@@ -1002,33 +1002,33 @@ mod tests {
 
     #[test]
     fn test_agent_id_long_flag() {
-        let fixture = Cli::parse_from(["forge", "--agent", "sage"]);
+        let fixture = Cli::parse_from(["graff", "--agent", "sage"]);
         assert_eq!(fixture.agent, Some(AgentId::new("sage")));
     }
 
     #[test]
     fn test_agent_id_short_alias() {
-        let fixture = Cli::parse_from(["forge", "--aid", "muse"]);
+        let fixture = Cli::parse_from(["graff", "--aid", "muse"]);
         assert_eq!(fixture.agent, Some(AgentId::new("muse")));
     }
 
     #[test]
     fn test_agent_id_with_prompt() {
-        let fixture = Cli::parse_from(["forge", "--agent", "forge", "-p", "test prompt"]);
+        let fixture = Cli::parse_from(["graff", "--agent", "forge", "-p", "test prompt"]);
         assert_eq!(fixture.agent, Some(AgentId::new("forge")));
         assert_eq!(fixture.prompt, Some("test prompt".to_string()));
     }
 
     #[test]
     fn test_agent_id_not_provided() {
-        let fixture = Cli::parse_from(["forge"]);
+        let fixture = Cli::parse_from(["graff"]);
         assert_eq!(fixture.agent, None);
     }
 
     #[test]
     fn test_conversation_dump_json_with_id() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "dump",
             "550e8400-e29b-41d4-a716-446655440000",
@@ -1050,7 +1050,7 @@ mod tests {
     #[test]
     fn test_conversation_dump_html_with_id() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "dump",
             "550e8400-e29b-41d4-a716-446655440001",
@@ -1073,7 +1073,7 @@ mod tests {
     #[test]
     fn test_conversation_retry_with_id() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "retry",
             "550e8400-e29b-41d4-a716-446655440002",
@@ -1094,7 +1094,7 @@ mod tests {
     #[test]
     fn test_conversation_compact_with_id() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "compact",
             "550e8400-e29b-41d4-a716-446655440003",
@@ -1115,7 +1115,7 @@ mod tests {
     #[test]
     fn test_conversation_last_with_id() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "show",
             "550e8400-e29b-41d4-a716-446655440004",
@@ -1137,7 +1137,7 @@ mod tests {
     #[test]
     fn test_conversation_show_with_md_flag() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "show",
             "550e8400-e29b-41d4-a716-446655440004",
@@ -1160,7 +1160,7 @@ mod tests {
     #[test]
     fn test_conversation_resume() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "resume",
             "550e8400-e29b-41d4-a716-446655440005",
@@ -1180,7 +1180,7 @@ mod tests {
 
     #[test]
     fn test_list_tools_command_with_agent() {
-        let fixture = Cli::parse_from(["forge", "list", "tool", "sage"]);
+        let fixture = Cli::parse_from(["graff", "list", "tool", "sage"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => match list.command {
                 ListCommand::Tool { agent } => agent,
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn test_list_conversation_command() {
-        let fixture = Cli::parse_from(["forge", "list", "conversation"]);
+        let fixture = Cli::parse_from(["graff", "list", "conversation"]);
         let is_conversation_list = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => matches!(list.command, ListCommand::Conversation),
             _ => false,
@@ -1204,7 +1204,7 @@ mod tests {
 
     #[test]
     fn test_list_session_alias_command() {
-        let fixture = Cli::parse_from(["forge", "list", "session"]);
+        let fixture = Cli::parse_from(["graff", "list", "session"]);
         let is_conversation_list = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => matches!(list.command, ListCommand::Conversation),
             _ => false,
@@ -1214,7 +1214,7 @@ mod tests {
 
     #[test]
     fn test_list_command_without_custom_flag() {
-        let fixture = Cli::parse_from(["forge", "list", "command"]);
+        let fixture = Cli::parse_from(["graff", "list", "command"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => match list.command {
                 ListCommand::Command { custom } => custom,
@@ -1228,7 +1228,7 @@ mod tests {
 
     #[test]
     fn test_list_command_with_custom_flag() {
-        let fixture = Cli::parse_from(["forge", "list", "command", "--custom"]);
+        let fixture = Cli::parse_from(["graff", "list", "command", "--custom"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => match list.command {
                 ListCommand::Command { custom } => custom,
@@ -1242,7 +1242,7 @@ mod tests {
 
     #[test]
     fn test_cmd_list_with_custom_flag() {
-        let fixture = Cli::parse_from(["forge", "cmd", "list", "--custom"]);
+        let fixture = Cli::parse_from(["graff", "cmd", "list", "--custom"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Cmd(cmd_group)) => match cmd_group.command {
                 CmdCommand::List { custom } => custom,
@@ -1256,7 +1256,7 @@ mod tests {
 
     #[test]
     fn test_command_list_with_custom_flag() {
-        let fixture = Cli::parse_from(["forge", "command", "list", "--custom"]);
+        let fixture = Cli::parse_from(["graff", "command", "list", "--custom"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Cmd(cmd_group)) => match cmd_group.command {
                 CmdCommand::List { custom } => custom,
@@ -1270,7 +1270,7 @@ mod tests {
 
     #[test]
     fn test_info_command_without_porcelain() {
-        let fixture = Cli::parse_from(["forge", "info"]);
+        let fixture = Cli::parse_from(["graff", "info"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Info { porcelain, .. }) => porcelain,
             _ => true,
@@ -1281,7 +1281,7 @@ mod tests {
 
     #[test]
     fn test_info_command_with_porcelain() {
-        let fixture = Cli::parse_from(["forge", "info", "--porcelain"]);
+        let fixture = Cli::parse_from(["graff", "info", "--porcelain"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Info { porcelain, .. }) => porcelain,
             _ => false,
@@ -1293,7 +1293,7 @@ mod tests {
     #[test]
     fn test_info_command_with_conversation_id() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "info",
             "--conversation-id",
             "550e8400-e29b-41d4-a716-446655440006",
@@ -1309,7 +1309,7 @@ mod tests {
     #[test]
     fn test_info_command_with_cid_alias() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "info",
             "--cid",
             "550e8400-e29b-41d4-a716-446655440007",
@@ -1325,7 +1325,7 @@ mod tests {
     #[test]
     fn test_info_command_with_conversation_id_and_porcelain() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "info",
             "--cid",
             "550e8400-e29b-41d4-a716-446655440008",
@@ -1346,7 +1346,7 @@ mod tests {
 
     #[test]
     fn test_list_agents_without_porcelain() {
-        let fixture = Cli::parse_from(["forge", "list", "agents"]);
+        let fixture = Cli::parse_from(["graff", "list", "agents"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => list.porcelain,
             _ => true,
@@ -1357,7 +1357,7 @@ mod tests {
 
     #[test]
     fn test_list_agents_with_porcelain() {
-        let fixture = Cli::parse_from(["forge", "list", "agents", "--porcelain"]);
+        let fixture = Cli::parse_from(["graff", "list", "agents", "--porcelain"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => list.porcelain,
             _ => false,
@@ -1368,7 +1368,7 @@ mod tests {
 
     #[test]
     fn test_mcp_list_with_porcelain() {
-        let fixture = Cli::parse_from(["forge", "mcp", "list", "--porcelain"]);
+        let fixture = Cli::parse_from(["graff", "mcp", "list", "--porcelain"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Mcp(mcp)) => mcp.porcelain,
             _ => false,
@@ -1379,7 +1379,7 @@ mod tests {
 
     #[test]
     fn test_conversation_list_with_porcelain() {
-        let fixture = Cli::parse_from(["forge", "conversation", "list", "--porcelain"]);
+        let fixture = Cli::parse_from(["graff", "conversation", "list", "--porcelain"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Conversation(conversation)) => match conversation.command {
                 ConversationCommand::List { porcelain } => porcelain,
@@ -1393,7 +1393,7 @@ mod tests {
 
     #[test]
     fn test_list_models_with_porcelain() {
-        let fixture = Cli::parse_from(["forge", "list", "models", "--porcelain"]);
+        let fixture = Cli::parse_from(["graff", "list", "models", "--porcelain"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => list.porcelain,
             _ => false,
@@ -1404,7 +1404,7 @@ mod tests {
 
     #[test]
     fn test_config_list_with_porcelain() {
-        let fixture = Cli::parse_from(["forge", "config", "list", "--porcelain"]);
+        let fixture = Cli::parse_from(["graff", "config", "list", "--porcelain"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Config(config)) => config.porcelain,
             _ => false,
@@ -1416,7 +1416,7 @@ mod tests {
     #[test]
     fn test_conversation_info_with_id() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "info",
             "550e8400-e29b-41d4-a716-446655440009",
@@ -1437,7 +1437,7 @@ mod tests {
     #[test]
     fn test_conversation_stats_with_porcelain() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "stats",
             "550e8400-e29b-41d4-a716-446655440010",
@@ -1459,7 +1459,7 @@ mod tests {
 
     #[test]
     fn test_prompt_command() {
-        let fixture = Cli::parse_from(["forge", "zsh", "rprompt"]);
+        let fixture = Cli::parse_from(["graff", "zsh", "rprompt"]);
         let r_prompt = matches!(
             fixture.subcommands,
             Some(TopLevelCommand::Zsh(ZshCommandGroup::Rprompt))
@@ -1470,7 +1470,7 @@ mod tests {
     #[test]
     fn test_session_alias_dump() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "session",
             "dump",
             "550e8400-e29b-41d4-a716-446655440011",
@@ -1492,7 +1492,7 @@ mod tests {
     #[test]
     fn test_session_alias_retry() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "session",
             "retry",
             "550e8400-e29b-41d4-a716-446655440012",
@@ -1513,7 +1513,7 @@ mod tests {
     #[test]
     fn test_prompt_with_conversation_id() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "-p",
             "hello",
             "--conversation-id",
@@ -1527,7 +1527,7 @@ mod tests {
     #[test]
     fn test_conversation_id_without_prompt() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "--conversation-id",
             "550e8400-e29b-41d4-a716-446655440000",
         ]);
@@ -1539,7 +1539,7 @@ mod tests {
     #[test]
     fn test_conversation_clone_with_id() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "clone",
             "550e8400-e29b-41d4-a716-446655440013",
@@ -1560,7 +1560,7 @@ mod tests {
     #[test]
     fn test_conversation_clone_with_porcelain() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "clone",
             "550e8400-e29b-41d4-a716-446655440014",
@@ -1583,7 +1583,7 @@ mod tests {
     #[test]
     fn test_cmd_command_with_args() {
         let fixture =
-            Cli::parse_from(["forge", "cmd", "execute", "custom-command", "arg1", "arg2"]);
+            Cli::parse_from(["graff", "cmd", "execute", "custom-command", "arg1", "arg2"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Cmd(run_group)) => match run_group.command {
                 CmdCommand::Execute { commands } => commands.join(" "),
@@ -1597,7 +1597,7 @@ mod tests {
 
     #[test]
     fn test_is_interactive_without_flags() {
-        let fixture = Cli::parse_from(["forge"]);
+        let fixture = Cli::parse_from(["graff"]);
         let actual = fixture.is_interactive();
         let expected = true;
         assert_eq!(actual, expected);
@@ -1605,7 +1605,7 @@ mod tests {
 
     #[test]
     fn test_commit_with_custom_text() {
-        let fixture = Cli::parse_from(["forge", "commit", "fix", "typo", "in", "readme"]);
+        let fixture = Cli::parse_from(["graff", "commit", "fix", "typo", "in", "readme"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Commit(commit)) => commit.text,
             _ => panic!("Expected Commit command"),
@@ -1619,7 +1619,7 @@ mod tests {
 
     #[test]
     fn test_commit_without_custom_text() {
-        let fixture = Cli::parse_from(["forge", "commit", "--preview"]);
+        let fixture = Cli::parse_from(["graff", "commit", "--preview"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Commit(commit)) => commit.text,
             _ => panic!("Expected Commit command"),
@@ -1631,7 +1631,7 @@ mod tests {
     #[test]
     fn test_commit_with_text_and_flags() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "commit",
             "--preview",
             "--max-diff",
@@ -1658,7 +1658,7 @@ mod tests {
 
     #[test]
     fn test_list_skill_command() {
-        let fixture = Cli::parse_from(["forge", "list", "skill"]);
+        let fixture = Cli::parse_from(["graff", "list", "skill"]);
         let is_skill_list = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => matches!(list.command, ListCommand::Skill { .. }),
             _ => false,
@@ -1668,7 +1668,7 @@ mod tests {
 
     #[test]
     fn test_list_skills_alias_command() {
-        let fixture = Cli::parse_from(["forge", "list", "skills"]);
+        let fixture = Cli::parse_from(["graff", "list", "skills"]);
         let is_skill_list = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => matches!(list.command, ListCommand::Skill { .. }),
             _ => false,
@@ -1679,7 +1679,7 @@ mod tests {
     #[test]
     fn test_conversation_delete_with_id() {
         let fixture = Cli::parse_from([
-            "forge",
+            "graff",
             "conversation",
             "delete",
             "550e8400-e29b-41d4-a716-446655440000",
@@ -1695,7 +1695,7 @@ mod tests {
 
     #[test]
     fn test_list_skill_with_porcelain() {
-        let fixture = Cli::parse_from(["forge", "list", "skill", "--porcelain"]);
+        let fixture = Cli::parse_from(["graff", "list", "skill", "--porcelain"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => list.porcelain,
             _ => false,
@@ -1706,25 +1706,25 @@ mod tests {
 
     #[test]
     fn test_prompt_with_leading_hyphen() {
-        let fixture = Cli::parse_from(["forge", "-p", "- hi"]);
+        let fixture = Cli::parse_from(["graff", "-p", "- hi"]);
         assert_eq!(fixture.prompt, Some("- hi".to_string()));
     }
 
     #[test]
     fn test_prompt_with_hyphen_flag_like_value() {
-        let fixture = Cli::parse_from(["forge", "-p", "-test"]);
+        let fixture = Cli::parse_from(["graff", "-p", "-test"]);
         assert_eq!(fixture.prompt, Some("-test".to_string()));
     }
 
     #[test]
     fn test_prompt_with_double_hyphen() {
-        let fixture = Cli::parse_from(["forge", "-p", "--something"]);
+        let fixture = Cli::parse_from(["graff", "-p", "--something"]);
         assert_eq!(fixture.prompt, Some("--something".to_string()));
     }
 
     #[test]
     fn test_suggest_with_dash_prefixed_prompt() {
-        let fixture = Cli::parse_from(["forge", "suggest", "--- date"]);
+        let fixture = Cli::parse_from(["graff", "suggest", "--- date"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Suggest { prompt }) => prompt,
             _ => panic!("Expected suggest subcommand"),
@@ -1735,7 +1735,7 @@ mod tests {
 
     #[test]
     fn test_suggest_with_double_dash_prompt() {
-        let fixture = Cli::parse_from(["forge", "suggest", "--date tomorrow"]);
+        let fixture = Cli::parse_from(["graff", "suggest", "--date tomorrow"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Suggest { prompt }) => prompt,
             _ => panic!("Expected suggest subcommand"),
@@ -1746,7 +1746,7 @@ mod tests {
 
     #[test]
     fn test_suggest_with_single_dash_prompt() {
-        let fixture = Cli::parse_from(["forge", "suggest", "-v file.txt"]);
+        let fixture = Cli::parse_from(["graff", "suggest", "-v file.txt"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Suggest { prompt }) => prompt,
             _ => panic!("Expected suggest subcommand"),
@@ -1757,7 +1757,7 @@ mod tests {
 
     #[test]
     fn test_terminal_theme_zsh() {
-        let fixture = Cli::parse_from(["forge", "zsh", "theme"]);
+        let fixture = Cli::parse_from(["graff", "zsh", "theme"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Zsh(terminal)) => {
                 matches!(terminal, ZshCommandGroup::Theme)
@@ -1769,7 +1769,7 @@ mod tests {
 
     #[test]
     fn test_terminal_plugin_zsh() {
-        let fixture = Cli::parse_from(["forge", "zsh", "plugin"]);
+        let fixture = Cli::parse_from(["graff", "zsh", "plugin"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Zsh(terminal)) => {
                 matches!(terminal, ZshCommandGroup::Plugin)
@@ -1781,7 +1781,7 @@ mod tests {
 
     #[test]
     fn test_zsh_doctor() {
-        let fixture = Cli::parse_from(["forge", "zsh", "doctor"]);
+        let fixture = Cli::parse_from(["graff", "zsh", "doctor"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Zsh(terminal)) => {
                 matches!(terminal, ZshCommandGroup::Doctor)
@@ -1793,7 +1793,7 @@ mod tests {
 
     #[test]
     fn test_zsh_setup() {
-        let fixture = Cli::parse_from(["forge", "zsh", "setup"]);
+        let fixture = Cli::parse_from(["graff", "zsh", "setup"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Zsh(terminal)) => {
                 matches!(terminal, ZshCommandGroup::Setup)
@@ -1805,7 +1805,7 @@ mod tests {
 
     #[test]
     fn test_zsh_keyboard() {
-        let fixture = Cli::parse_from(["forge", "zsh", "keyboard"]);
+        let fixture = Cli::parse_from(["graff", "zsh", "keyboard"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Zsh(terminal)) => {
                 matches!(terminal, ZshCommandGroup::Keyboard)
@@ -1817,7 +1817,7 @@ mod tests {
 
     #[test]
     fn test_zsh_format() {
-        let fixture = Cli::parse_from(["forge", "zsh", "format", "--buffer", "hello world"]);
+        let fixture = Cli::parse_from(["graff", "zsh", "format", "--buffer", "hello world"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Zsh(ZshCommandGroup::Format { buffer })) => {
                 buffer == "hello world"
@@ -1829,21 +1829,21 @@ mod tests {
 
     #[test]
     fn test_setup_alias() {
-        let fixture = Cli::parse_from(["forge", "setup"]);
+        let fixture = Cli::parse_from(["graff", "setup"]);
         let actual = matches!(fixture.subcommands, Some(TopLevelCommand::Setup));
         assert_eq!(actual, true);
     }
 
     #[test]
     fn test_doctor_alias() {
-        let fixture = Cli::parse_from(["forge", "doctor"]);
+        let fixture = Cli::parse_from(["graff", "doctor"]);
         let actual = matches!(fixture.subcommands, Some(TopLevelCommand::Doctor));
         assert_eq!(actual, true);
     }
 
     #[test]
     fn test_install_vscode_extension() {
-        let fixture = Cli::parse_from(["forge", "vscode", "install-extension"]);
+        let fixture = Cli::parse_from(["graff", "vscode", "install-extension"]);
         let actual = matches!(
             fixture.subcommands,
             Some(TopLevelCommand::Vscode(VscodeCommand::InstallExtension))
@@ -1853,7 +1853,7 @@ mod tests {
 
     #[test]
     fn test_list_agent_with_custom_flag() {
-        let fixture = Cli::parse_from(["forge", "list", "agent", "--custom"]);
+        let fixture = Cli::parse_from(["graff", "list", "agent", "--custom"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => match list.command {
                 ListCommand::Agent { custom } => custom,
@@ -1867,7 +1867,7 @@ mod tests {
 
     #[test]
     fn test_list_agent_without_custom_flag() {
-        let fixture = Cli::parse_from(["forge", "list", "agent"]);
+        let fixture = Cli::parse_from(["graff", "list", "agent"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => match list.command {
                 ListCommand::Agent { custom } => custom,
@@ -1881,7 +1881,7 @@ mod tests {
 
     #[test]
     fn test_list_skill_with_custom_flag() {
-        let fixture = Cli::parse_from(["forge", "list", "skill", "--custom"]);
+        let fixture = Cli::parse_from(["graff", "list", "skill", "--custom"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => match list.command {
                 ListCommand::Skill { custom } => custom,
@@ -1895,7 +1895,7 @@ mod tests {
 
     #[test]
     fn test_list_skill_without_custom_flag() {
-        let fixture = Cli::parse_from(["forge", "list", "skill"]);
+        let fixture = Cli::parse_from(["graff", "list", "skill"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::List(list)) => match list.command {
                 ListCommand::Skill { custom } => custom,
@@ -1909,7 +1909,7 @@ mod tests {
 
     #[test]
     fn test_update_with_no_confirm() {
-        let fixture = Cli::parse_from(["forge", "update", "--no-confirm"]);
+        let fixture = Cli::parse_from(["graff", "update", "--no-confirm"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Update(args)) => args.no_confirm,
             _ => panic!("Expected Update command"),
@@ -1919,7 +1919,7 @@ mod tests {
 
     #[test]
     fn test_update_without_no_confirm() {
-        let fixture = Cli::parse_from(["forge", "update"]);
+        let fixture = Cli::parse_from(["graff", "update"]);
         let actual = match fixture.subcommands {
             Some(TopLevelCommand::Update(args)) => args.no_confirm,
             _ => panic!("Expected Update command"),

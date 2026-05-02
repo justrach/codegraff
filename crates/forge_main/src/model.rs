@@ -563,8 +563,8 @@ pub enum AppCommand {
     #[strum(props(usage = "Exit the application"))]
     Exit,
 
-    /// Updates the forge version
-    #[strum(props(usage = "Updates to the latest compatible version of forge"))]
+    /// Updates the graff version
+    #[strum(props(usage = "Updates to the latest compatible version of graff"))]
     Update,
 
     /// Switch to "forge" agent.
@@ -1374,7 +1374,7 @@ mod tests {
         });
         let formatted = format!("{}", CliProvider(fixture));
         let actual = strip_ansi_codes(&formatted);
-        let expected = "✓ Forge                     [localhost]";
+        let expected = "✓ Graff                     [localhost]";
         assert_eq!(actual, expected);
     }
 
@@ -1416,7 +1416,7 @@ mod tests {
         });
         let formatted = format!("{}", CliProvider(fixture));
         let actual = strip_ansi_codes(&formatted);
-        let expected = format!("✓ Forge                     {}", markers::EMPTY);
+        let expected = format!("✓ Graff                     {}", markers::EMPTY);
         assert_eq!(actual, expected);
     }
 

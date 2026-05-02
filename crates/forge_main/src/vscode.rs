@@ -15,7 +15,7 @@ pub fn is_vscode_terminal() -> bool {
         || std::env::var("VSCODE_GIT_IPC_HANDLE").is_ok()
 }
 
-/// Checks if the Forge VS Code extension is installed
+/// Checks if the Graff VS Code extension is installed
 ///
 /// Checks VS Code's extension list to see if ForgeCode.forge-vscode is
 /// installed.
@@ -32,7 +32,7 @@ pub fn is_extension_installed() -> bool {
     false
 }
 
-/// Attempts to install the Forge VS Code extension silently
+/// Attempts to install the Graff VS Code extension silently
 ///
 /// Returns Ok(true) if installation was successful, Ok(false) if it failed,
 /// or Err if the command couldn't be executed.

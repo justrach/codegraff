@@ -119,7 +119,7 @@ impl ForgeMcpClient {
             protocol_version: Default::default(),
             capabilities: Default::default(),
             client_info: Implementation {
-                name: "Forge".to_string(),
+                name: "Graff".to_string(),
                 version: VERSION.to_string(),
                 icons: None,
                 title: None,
@@ -333,7 +333,7 @@ impl ForgeMcpClient {
         // start_authorization discovers metadata, registers client, generates PKCE +
         // CSRF state
         oauth_state
-            .start_authorization(&scopes, &redirect_uri, Some("Forge"))
+            .start_authorization(&scopes, &redirect_uri, Some("Graff"))
             .await
             .map_err(|e| anyhow::anyhow!("OAuth authorization flow failed: {}", e))?;
 
@@ -492,7 +492,7 @@ impl ForgeMcpClient {
             .clone();
 
         // Send styled success response with auto-close
-        let response_body = r#"<!doctype html><html><head><title>Forge - Authorization Successful</title><meta charset="utf-8"></head><body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#111827;color:#f9fafb;"><div style="text-align:center;padding:2rem;"><h1 style="margin-bottom:0.75rem;">Authorization Successful</h1><p style="color:#d1d5db;">You can close this window and return to Forge.</p></div><script>setTimeout(()=>window.close(),2000)</script></body></html>"#;
+        let response_body = r#"<!doctype html><html><head><title>Graff - Authorization Successful</title><meta charset="utf-8"></head><body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#111827;color:#f9fafb;"><div style="text-align:center;padding:2rem;"><h1 style="margin-bottom:0.75rem;">Authorization Successful</h1><p style="color:#d1d5db;">You can close this window and return to Graff.</p></div><script>setTimeout(()=>window.close(),2000)</script></body></html>"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             response_body.len(),
@@ -688,7 +688,7 @@ pub async fn mcp_auth(server_url: &str, env: &Environment) -> anyhow::Result<()>
     let redirect_uri = "http://127.0.0.1:8765/callback";
 
     oauth_state
-        .start_authorization(&[], redirect_uri, Some("Forge"))
+        .start_authorization(&[], redirect_uri, Some("Graff"))
         .await
         .map_err(|e| anyhow::anyhow!("OAuth authorization flow failed: {}", e))?;
 
@@ -753,7 +753,7 @@ pub async fn mcp_auth(server_url: &str, env: &Environment) -> anyhow::Result<()>
         .clone();
 
     // Send styled response
-    let body = r#"<!doctype html><html><head><title>Forge - Authorization Successful</title></head><body style="font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#111827;color:#f9fafb;"><div style="text-align:center;"><h1>Authorization Successful</h1><p style="color:#d1d5db;">You can close this window and return to Forge.</p></div><script>setTimeout(()=>window.close(),2000)</script></body></html>"#;
+    let body = r#"<!doctype html><html><head><title>Graff - Authorization Successful</title></head><body style="font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#111827;color:#f9fafb;"><div style="text-align:center;"><h1>Authorization Successful</h1><p style="color:#d1d5db;">You can close this window and return to Graff.</p></div><script>setTimeout(()=>window.close(),2000)</script></body></html>"#;
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),

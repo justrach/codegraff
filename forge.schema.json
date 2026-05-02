@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ForgeConfig",
-  "description": "Top-level Forge configuration merged from all sources (defaults, file,\nenvironment).",
+  "title": "GraffConfig",
+  "description": "Top-level Graff configuration merged from all sources (defaults, file,\nenvironment).",
   "type": "object",
   "properties": {
     "auto_dump": {
@@ -270,7 +270,7 @@
       "minimum": 0
     },
     "services_url": {
-      "description": "Base URL of the Forge services API used for semantic search and\nindexing.",
+      "description": "Base URL of the Graff services API used for semantic search and\nindexing.",
       "type": "string",
       "default": ""
     },
@@ -345,7 +345,7 @@
       ]
     },
     "updates": {
-      "description": "Configuration for automatic Forge updates.",
+      "description": "Configuration for automatic Graff updates.",
       "anyOf": [
         {
           "$ref": "#/$defs/Update"
@@ -356,7 +356,7 @@
       ]
     },
     "use_forge_committer": {
-      "description": "Whether `graff commit` should override `GIT_COMMITTER_NAME` and\n`GIT_COMMITTER_EMAIL` with the Forge identity. Defaults to `true` via\nthe embedded `.forge.toml` defaults.",
+      "description": "Whether `graff commit` should override `GIT_COMMITTER_NAME` and\n`GIT_COMMITTER_EMAIL` with the Graff identity. Defaults to `true` via\nthe embedded `.forge.toml` defaults.",
       "type": "boolean",
       "default": false
     },
@@ -766,7 +766,7 @@
       "type": "object",
       "properties": {
         "effort": {
-          "description": "Controls the effort level of the model's reasoning.\nSupported by openrouter and forge provider.",
+          "description": "Controls the effort level of the model's reasoning.\nSupported by openrouter and the Graff provider.",
           "anyOf": [
             {
               "$ref": "#/$defs/Effort"
@@ -777,21 +777,21 @@
           ]
         },
         "enabled": {
-          "description": "Enables reasoning at the \"medium\" effort level with no exclusions.\nSupported by openrouter, anthropic, and forge provider.",
+          "description": "Enables reasoning at the \"medium\" effort level with no exclusions.\nSupported by openrouter, anthropic, and the Graff provider.",
           "type": [
             "boolean",
             "null"
           ]
         },
         "exclude": {
-          "description": "When true, the model thinks deeply but the reasoning is hidden from the\ncaller. Supported by openrouter and forge provider.",
+          "description": "When true, the model thinks deeply but the reasoning is hidden from the\ncaller. Supported by openrouter and the Graff provider.",
           "type": [
             "boolean",
             "null"
           ]
         },
         "max_tokens": {
-          "description": "Controls how many tokens the model can spend thinking.\nShould be greater than 1024 but less than the overall max_tokens.\nSupported by openrouter, anthropic, and forge provider.",
+          "description": "Controls how many tokens the model can spend thinking.\nShould be greater than 1024 but less than the overall max_tokens.\nSupported by openrouter, anthropic, and the Graff provider.",
           "type": [
             "integer",
             "null"
@@ -881,7 +881,7 @@
       ]
     },
     "Update": {
-      "description": "Configuration for automatic forge updates",
+      "description": "Configuration for automatic Graff updates",
       "type": "object",
       "properties": {
         "auto_update": {
@@ -892,7 +892,7 @@
           ]
         },
         "frequency": {
-          "description": "How frequently forge checks for updates: daily, weekly, always, or never",
+          "description": "How frequently Graff checks for updates: daily, weekly, always, or never",
           "anyOf": [
             {
               "$ref": "#/$defs/UpdateFrequency"
@@ -905,7 +905,7 @@
       }
     },
     "UpdateFrequency": {
-      "description": "Frequency at which forge checks for updates",
+      "description": "Frequency at which Graff checks for updates",
       "type": "string",
       "enum": [
         "daily",

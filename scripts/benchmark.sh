@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Performance test script for forge commands
+# Performance test script for graff commands
 # Runs the command 10 times and collects timing statistics
 # Usage: ./benchmark.sh [--threshold MS] [command args...]
 # Example: ./benchmark.sh info

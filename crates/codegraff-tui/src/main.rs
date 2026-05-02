@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
 
     let result = async {
         let config =
-            ForgeConfig::read().context("Failed to read Forge configuration from .forge.toml")?;
+            ForgeConfig::read().context("Failed to read Graff configuration from .forge.toml")?;
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let api = ForgeAPI::init(cwd, config);
         Tui::new(api, log_path.clone()).run().await

@@ -128,16 +128,16 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> GitApp<
 
     /// Commits changes with the provided commit message.
     ///
-    /// When `use_forge_committer` is true, sets ForgeCode as the Git committer
-    /// via `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` environment
-    /// variables while preserving the user as the author.
+    /// When `use_forge_committer` is true, sets Graff as the Git committer via
+    /// `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` environment variables
+    /// while preserving the user as the author.
     ///
     /// # Arguments
     ///
     /// * `message` - The commit message to use
     /// * `has_staged_files` - Whether there are staged files
     /// * `use_forge_committer` - Whether to override the Git committer with
-    ///   ForgeCode identity
+    ///   Graff identity
     ///
     /// # Errors
     ///
@@ -392,13 +392,13 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> GitApp<
 ///
 /// When `use_forge_committer` is true, prefixes the command with
 /// `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` environment variables
-/// to set ForgeCode as the committer.
+/// to set Graff as the committer.
 fn build_commit_command(message: &str, flags: &str, use_forge_committer: bool) -> String {
     // Escape single quotes in the message by replacing ' with '\''
     let escaped_message = message.replace('\'', r"'\''");
     if use_forge_committer {
         format!(
-            "GIT_COMMITTER_NAME='ForgeCode' GIT_COMMITTER_EMAIL='noreply@forgecode.dev' git commit {flags} -m '{escaped_message}'"
+            "GIT_COMMITTER_NAME='Graff' GIT_COMMITTER_EMAIL='noreply@codegraff.com' git commit {flags} -m '{escaped_message}'"
         )
     } else {
         format!("git commit {flags} -m '{escaped_message}'")
@@ -414,14 +414,14 @@ mod tests {
     #[test]
     fn test_build_commit_command_with_forge_committer_staged() {
         let actual = build_commit_command("feat: add feature", "", true);
-        let expected = "GIT_COMMITTER_NAME='ForgeCode' GIT_COMMITTER_EMAIL='noreply@forgecode.dev' git commit  -m 'feat: add feature'";
+        let expected = "GIT_COMMITTER_NAME='Graff' GIT_COMMITTER_EMAIL='noreply@codegraff.com' git commit  -m 'feat: add feature'";
         assert_eq!(actual, expected);
     }
 
     #[test]
     fn test_build_commit_command_with_forge_committer_unstaged() {
         let actual = build_commit_command("fix: bug", " -a", true);
-        let expected = "GIT_COMMITTER_NAME='ForgeCode' GIT_COMMITTER_EMAIL='noreply@forgecode.dev' git commit  -a -m 'fix: bug'";
+        let expected = "GIT_COMMITTER_NAME='Graff' GIT_COMMITTER_EMAIL='noreply@codegraff.com' git commit  -a -m 'fix: bug'";
         assert_eq!(actual, expected);
     }
 
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn test_build_commit_command_escapes_single_quotes() {
         let actual = build_commit_command("feat: it's done", "", true);
-        let expected = "GIT_COMMITTER_NAME='ForgeCode' GIT_COMMITTER_EMAIL='noreply@forgecode.dev' git commit  -m 'feat: it'\\''s done'";
+        let expected = "GIT_COMMITTER_NAME='Graff' GIT_COMMITTER_EMAIL='noreply@codegraff.com' git commit  -m 'feat: it'\\''s done'";
         assert_eq!(actual, expected);
     }
 }

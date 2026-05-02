@@ -16,7 +16,7 @@ impl ConfigWriter {
     /// Serializes and writes the configuration to `path`, creating all parent
     /// directories recursively if they do not already exist.
     ///
-    /// The output includes a leading `$schema` key pointing to the Forge
+    /// The output includes a leading `$schema` key pointing to the Graff
     /// configuration JSON schema, which enables editor validation and
     /// auto-complete.
     ///
@@ -31,7 +31,7 @@ impl ConfigWriter {
 
         let config_toml = toml_edit::ser::to_string_pretty(&self.config)?;
         let contents =
-            format!("\"$schema\" = \"https://forgecode.dev/schema.json\"\n\n{config_toml}");
+            format!("\"$schema\" = \"https://codegraff.com/schema.json\"\n\n{config_toml}");
 
         std::fs::write(path, contents)?;
 
