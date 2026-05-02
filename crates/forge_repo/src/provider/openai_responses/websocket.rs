@@ -177,8 +177,11 @@ impl ConnectError {
 /// Streams a Responses API request over a WebSocket connection.
 ///
 /// On success returns a stream of domain `ChatCompletionMessage`s emitted via
-/// the same converter as the HTTP path. On a connect-time failure returns a
-/// `ConnectError` so the caller can fall back to HTTP.
+/// the same converter as the HTTP path. On any failure — connect-time *or*
+/// mid-stream — flips `ws_disabled` so the caller (and every subsequent
+/// turn in this process) routes through HTTP. Mirrors codex-rs's
+/// `disable_websockets` AtomicBool, which is sticky for the rest of the
+/// session once tripped.
 pub(super) async fn chat(
     responses_url: Url,
     headers: HeaderMap,
@@ -186,14 +189,22 @@ pub(super) async fn chat(
     session: Session,
     full_input_len: usize,
     input_signature: u64,
+    ws_disabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> ResultStream<ChatCompletionMessage, anyhow::Error> {
     let websocket_url = websocket_url_from_responses_url(&responses_url)?;
     let create_event = response_create_event(&request)?;
-    let (mut socket, reused) = session.take_socket(&websocket_url, headers).await?;
+    let (mut socket, reused) = match session.take_socket(&websocket_url, headers).await {
+        Ok(pair) => pair,
+        Err(error) => {
+            ws_disabled.store(true, std::sync::atomic::Ordering::Release);
+            return Err(error);
+        }
+    };
     debug!(reused, "Using OpenAI Responses WebSocket connection");
 
     if let Err(error) = socket.send(Message::Text(create_event.into())).await {
         session.clear().await;
+        ws_disabled.store(true, std::sync::atomic::Ordering::Release);
         return Err(ConnectError::with_source(
             &websocket_url,
             anyhow::Error::from(error)
@@ -211,8 +222,14 @@ pub(super) async fn chat(
         terminal_success: false,
         terminated: false,
     };
+    let ws_disabled_for_task = ws_disabled.clone();
     tokio::spawn(async move {
         if let Err(error) = run_websocket(socket, tx.clone(), active).await {
+            // Mid-stream failure (idle timeout, connection reset, parse
+            // error, …). Disable WebSocket transport for the rest of the
+            // process so the orchestrator's next attempt — whether retry or
+            // a fresh user turn — uses HTTP.
+            ws_disabled_for_task.store(true, std::sync::atomic::Ordering::Release);
             let _ = tx.send(Err(error)).await;
         }
     });

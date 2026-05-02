@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
@@ -23,6 +24,13 @@ use crate::provider::utils::{create_headers, format_http_context, read_http_erro
 /// repository and its short-lived provider clients.
 type WebSocketSessions = Arc<Mutex<HashMap<String, super::websocket::Session>>>;
 
+/// Sticky kill-switch for the WebSocket transport. Once any WS attempt fails
+/// (handshake or mid-stream), this flag flips to `true` for the rest of the
+/// process and every subsequent turn falls back to HTTP/SSE — mirroring
+/// codex-rs's `disable_websockets` AtomicBool in
+/// `codex-rs/core/src/client.rs`.
+type WsDisabledFlag = Arc<AtomicBool>;
+
 #[derive(Clone)]
 pub(super) struct OpenAIResponsesProvider<H> {
     provider: Provider<Url>,
@@ -30,6 +38,7 @@ pub(super) struct OpenAIResponsesProvider<H> {
     api_base: Url,
     responses_url: Url,
     websocket_sessions: WebSocketSessions,
+    ws_disabled: WsDisabledFlag,
 }
 
 impl<H: HttpInfra> OpenAIResponsesProvider<H> {
@@ -44,17 +53,22 @@ impl<H: HttpInfra> OpenAIResponsesProvider<H> {
     ///
     /// Panics if the provider URL cannot be converted to an API base URL
     pub fn new(provider: Provider<Url>, http: Arc<H>) -> Self {
-        Self::with_websocket_sessions(provider, http, WebSocketSessions::default())
+        Self::with_websocket_state(
+            provider,
+            http,
+            WebSocketSessions::default(),
+            WsDisabledFlag::default(),
+        )
     }
-
-    /// Like [`OpenAIResponsesProvider::new`] but reuses an existing
-    /// per-conversation WebSocket session cache. Used by the repository so
-    /// successive `chat()` calls within the same process can share a warm
-    /// socket and continuation state.
-    pub fn with_websocket_sessions(
+    /// Like [`OpenAIResponsesProvider::with_websocket_sessions`] but also
+    /// reuses a sticky `ws_disabled` flag so a single mid-stream WebSocket
+    /// failure can disable the WebSocket transport for the rest of the
+    /// process — matching codex-rs's `disable_websockets` behaviour.
+    pub fn with_websocket_state(
         provider: Provider<Url>,
         http: Arc<H>,
         websocket_sessions: WebSocketSessions,
+        ws_disabled: WsDisabledFlag,
     ) -> Self {
         use forge_domain::ProviderId;
 
@@ -74,13 +88,27 @@ impl<H: HttpInfra> OpenAIResponsesProvider<H> {
                 base.set_fragment(None);
                 base
             };
-            Self { provider, http, api_base, responses_url, websocket_sessions }
+            Self {
+                provider,
+                http,
+                api_base,
+                responses_url,
+                websocket_sessions,
+                ws_disabled,
+            }
         } else {
             // Standard OpenAI pattern: rewrite to /v1/responses
             let api_base = api_base_from_endpoint_url(&provider.url)
                 .expect("Failed to derive API base URL from provider endpoint");
             let responses_url = responses_endpoint_from_api_base(&api_base);
-            Self { provider, http, api_base, responses_url, websocket_sessions }
+            Self {
+                provider,
+                http,
+                api_base,
+                responses_url,
+                websocket_sessions,
+                ws_disabled,
+            }
         }
     }
 
@@ -230,18 +258,30 @@ impl<T: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig>>
                 session.clone(),
                 total_items,
                 signature,
+                self.ws_disabled.clone(),
             )
             .await
             {
                 Ok(stream) => return Ok(stream),
-                Err(error) if should_fallback_to_http(&error) => {
+                Err(error) => {
+                    // Codex-style fallback: any WebSocket error — handshake
+                    // failure, mid-stream reset, idle timeout, you name it —
+                    // permanently disables WS for this process and falls
+                    // through to the HTTP/SSE path below for the same turn.
+                    // The next turn will skip WS entirely.
                     session.clear().await;
-                    warn!(
-                        error = %error,
-                        "OpenAI Responses WebSocket unavailable; falling back to HTTP /responses"
-                    );
+                    if self.mark_ws_disabled() {
+                        warn!(
+                            error = %error,
+                            "OpenAI Responses WebSocket failed; falling back to HTTP /responses for the rest of this session"
+                        );
+                    } else {
+                        warn!(
+                            error = %error,
+                            "OpenAI Responses WebSocket failed (already disabled); using HTTP /responses"
+                        );
+                    }
                 }
-                Err(error) => return Err(error),
             }
         }
 
@@ -421,6 +461,11 @@ impl<T: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig>>
     ///    accept the WebSocket upgrade; if it doesn't, the connect-time
     ///    error is mapped to `ConnectError` and `chat()` falls back to HTTP.
     fn should_use_websocket(&self) -> anyhow::Result<bool> {
+        // A previous WS attempt failed in this process — never try again.
+        // Mirrors codex-rs's `disable_websockets` short-circuit.
+        if self.ws_disabled.load(Ordering::Acquire) {
+            return Ok(false);
+        }
         let env_enabled = self
             .http
             .get_env_var("GRAFF_OPENAI_RESPONSES_WEBSOCKET")
@@ -432,6 +477,15 @@ impl<T: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig>>
             || self.provider.id == forge_domain::ProviderId::CODEX;
         Ok(provider_supported && (env_enabled || config_enabled))
     }
+
+    /// Marks the WebSocket transport as permanently disabled for the rest of
+    /// the process. Subsequent `should_use_websocket()` calls will return
+    /// `false` and `chat()` will go straight to HTTP/SSE. Returns `true` if
+    /// this call was the one that flipped the switch — useful for emitting
+    /// the warning exactly once.
+    fn mark_ws_disabled(&self) -> bool {
+        !self.ws_disabled.swap(true, Ordering::AcqRel)
+    }
 }
 
 fn is_truthy(value: &str) -> bool {
@@ -441,12 +495,6 @@ fn is_truthy(value: &str) -> bool {
     )
 }
 
-fn should_fallback_to_http(error: &anyhow::Error) -> bool {
-    error.chain().any(|err| {
-        err.downcast_ref::<super::websocket::ConnectError>()
-            .is_some()
-    })
-}
 
 fn status_code_error(status: StatusCode, body: String) -> anyhow::Error {
     anyhow::Error::from(forge_app::dto::openai::Error::InvalidStatusCode(
@@ -512,11 +560,20 @@ fn request_message_count(request: &oai::CreateResponse) -> usize {
 pub struct OpenAIResponsesResponseRepository<F> {
     infra: Arc<F>,
     websocket_sessions: WebSocketSessions,
+    /// Process-lifetime kill switch for the WebSocket transport. Shared
+    /// across every per-call `OpenAIResponsesProvider` so a single failure
+    /// (handshake or mid-stream) sticks for the whole session — exactly like
+    /// codex-rs's `disable_websockets` AtomicBool.
+    ws_disabled: WsDisabledFlag,
 }
 
 impl<F> OpenAIResponsesResponseRepository<F> {
     pub fn new(infra: Arc<F>) -> Self {
-        Self { infra, websocket_sessions: WebSocketSessions::default() }
+        Self {
+            infra,
+            websocket_sessions: WebSocketSessions::default(),
+            ws_disabled: WsDisabledFlag::default(),
+        }
     }
 }
 
@@ -532,10 +589,11 @@ impl<F: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig> + 'stat
     ) -> ResultStream<ChatCompletionMessage, anyhow::Error> {
         let retry_config = self.infra.get_config()?.retry.unwrap_or_default();
         let provider_client: OpenAIResponsesProvider<F> =
-            OpenAIResponsesProvider::with_websocket_sessions(
+            OpenAIResponsesProvider::with_websocket_state(
                 provider,
                 self.infra.clone(),
                 self.websocket_sessions.clone(),
+                self.ws_disabled.clone(),
             );
         let stream = provider_client
             .chat(model_id, context)
