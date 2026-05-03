@@ -3,7 +3,6 @@ use std::ops::Deref;
 use bstr::ByteSlice;
 use chrono::{DateTime, Utc};
 use convert_case::{Case, Casing};
-use forge_domain::Conversation;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -21,7 +20,6 @@ pub struct Event {
     pub args: Vec<String>,
     pub version: String,
     pub model: Option<String>,
-    pub conversation: Option<Conversation>,
     pub identity: Option<Identity>,
 }
 

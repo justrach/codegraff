@@ -363,10 +363,6 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                             match result {
                                 Ok(exit) => if exit {return Ok(())},
                                 Err(error) => {
-                                    if let Some(conversation_id) = self.state.conversation_id.as_ref()
-                                        && let Some(conversation) = self.api.conversation(conversation_id).await.ok().flatten() {
-                                            TRACKER.set_conversation(conversation).await;
-                                        }
                                     tracker::error(&error);
                                     tracing::error!(error = ?error);
                                     self.spinner.stop(None)?;
