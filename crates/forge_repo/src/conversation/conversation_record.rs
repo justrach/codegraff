@@ -587,6 +587,8 @@ pub(super) struct ToolDefinitionRecord {
     name: ToolNameRecord,
     description: String,
     input_schema: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grammar: Option<forge_domain::ToolGrammar>,
 }
 
 impl From<&forge_domain::ToolDefinition> for ToolDefinitionRecord {
@@ -595,6 +597,7 @@ impl From<&forge_domain::ToolDefinition> for ToolDefinitionRecord {
             name: ToolNameRecord::from(&def.name),
             description: def.description.clone(),
             input_schema: serde_json::to_value(&def.input_schema).unwrap_or_default(),
+            grammar: def.grammar.clone(),
         }
     }
 }
@@ -607,6 +610,7 @@ impl TryFrom<ToolDefinitionRecord> for forge_domain::ToolDefinition {
             name: record.name.into(),
             description: record.description,
             input_schema: serde_json::from_value(record.input_schema)?,
+            grammar: record.grammar,
         })
     }
 }

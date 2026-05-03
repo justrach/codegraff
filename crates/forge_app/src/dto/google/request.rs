@@ -820,6 +820,7 @@ mod tests {
             name: ToolName::new("test_tool"),
             description: "A test tool".to_string(),
             input_schema: schema_for!(Args),
+            grammar: None,
         };
 
         let decl = FunctionDeclaration::from(tool_def);

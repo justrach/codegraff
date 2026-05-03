@@ -4,7 +4,7 @@ use anyhow::Context as _;
 use async_openai::types::responses as oai;
 use forge_app::domain::{Context as ChatContext, ContextMessage, MessagePhase, Role, ToolChoice};
 use forge_app::utils::enforce_strict_schema;
-use forge_domain::{Effort, ReasoningConfig, ReasoningFull};
+use forge_domain::{Effort, ReasoningConfig, ReasoningFull, ToolDefinition, ToolGrammarSyntax};
 
 use crate::provider::FromDomain;
 
@@ -190,6 +190,42 @@ fn codex_tool_parameters(schema: &schemars::Schema) -> anyhow::Result<(serde_jso
     Ok((params, is_strict))
 }
 
+/// Converts a domain tool definition into an OpenAI Responses API tool.
+///
+/// Function tools use JSON schema parameters. Custom grammar tools use the
+/// Responses custom tool format and ignore the JSON schema parameters.
+///
+/// # Errors
+/// Returns an error if function tool schema serialization fails.
+fn openai_response_tool(tool: ToolDefinition) -> anyhow::Result<oai::Tool> {
+    if let Some(grammar) = tool.grammar {
+        let syntax = match grammar.syntax {
+            ToolGrammarSyntax::Lark => oai::GrammarSyntax::Lark,
+            ToolGrammarSyntax::Regex => oai::GrammarSyntax::Regex,
+        };
+
+        return Ok(oai::Tool::Custom(oai::CustomToolParam {
+            name: tool.name.to_string(),
+            description: Some(tool.description),
+            format: oai::CustomToolParamFormat::Grammar(oai::CustomGrammarFormatParam {
+                definition: grammar.definition,
+                syntax,
+            }),
+            defer_loading: None,
+        }));
+    }
+
+    let (parameters, is_strict) = codex_tool_parameters(&tool.input_schema)?;
+
+    Ok(oai::Tool::Function(oai::FunctionTool {
+        name: tool.name.to_string(),
+        parameters: Some(parameters),
+        strict: Some(is_strict),
+        description: Some(tool.description),
+        defer_loading: None,
+    }))
+}
+
 /// Converts Forge's domain-level Context into an async-openai Responses API
 /// request.
 ///
@@ -321,17 +357,7 @@ impl FromDomain<ChatContext> for oai::CreateResponse {
                 context
                     .tools
                     .into_iter()
-                    .map(|tool| {
-                        let (parameters, is_strict) = codex_tool_parameters(&tool.input_schema)?;
-
-                        Ok(oai::Tool::Function(oai::FunctionTool {
-                            name: tool.name.to_string(),
-                            parameters: Some(parameters),
-                            strict: Some(is_strict),
-                            description: Some(tool.description),
-                            defer_loading: None,
-                        }))
-                    })
+                    .map(openai_response_tool)
                     .collect::<anyhow::Result<Vec<oai::Tool>>>()
             })
             .transpose()?;
@@ -407,7 +433,7 @@ mod tests {
 
     use crate::provider::FromDomain;
     use crate::provider::openai_responses::request::{
-        codex_tool_parameters, has_open_additional_properties,
+        codex_tool_parameters, has_open_additional_properties, openai_response_tool,
     };
 
     #[test]
@@ -768,6 +794,58 @@ mod tests {
         let actual = oai::CreateResponse::from_domain(context)?;
 
         insta::assert_json_snapshot!("openai_responses_tools", actual.tools);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_openai_response_tool_uses_custom_regex_grammar() -> anyhow::Result<()> {
+        let fixture = forge_app::domain::ToolDefinition::new("timestamp")
+            .description("Parse a timestamp string")
+            .grammar(forge_domain::ToolGrammar::new(
+                r#"August [0-9]{1,2}(st|nd|rd|th) 2025 at [0-9]{1,2}(AM|PM)"#,
+                forge_domain::ToolGrammarSyntax::Regex,
+            ));
+
+        let actual = openai_response_tool(fixture)?;
+
+        let oai::Tool::Custom(actual) = actual else {
+            anyhow::bail!("Expected custom tool");
+        };
+        let expected = oai::CustomToolParam {
+            name: "timestamp".to_string(),
+            description: Some("Parse a timestamp string".to_string()),
+            format: oai::CustomToolParamFormat::Grammar(oai::CustomGrammarFormatParam {
+                definition: r#"August [0-9]{1,2}(st|nd|rd|th) 2025 at [0-9]{1,2}(AM|PM)"#
+                    .to_string(),
+                syntax: oai::GrammarSyntax::Regex,
+            }),
+            defer_loading: None,
+        };
+        assert_eq!(actual, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_openai_response_tool_uses_custom_lark_grammar() -> anyhow::Result<()> {
+        let fixture = forge_app::domain::ToolDefinition::new("math_exp")
+            .description("Evaluate a constrained math expression")
+            .grammar(forge_domain::ToolGrammar::new(
+                "start: NUMBER PLUS NUMBER\nNUMBER: /[0-9]+/\nPLUS: \"+\"",
+                forge_domain::ToolGrammarSyntax::Lark,
+            ));
+
+        let actual = openai_response_tool(fixture)?;
+
+        let oai::Tool::Custom(actual) = actual else {
+            anyhow::bail!("Expected custom tool");
+        };
+        let expected = oai::CustomToolParamFormat::Grammar(oai::CustomGrammarFormatParam {
+            definition: "start: NUMBER PLUS NUMBER\nNUMBER: /[0-9]+/\nPLUS: \"+\"".to_string(),
+            syntax: oai::GrammarSyntax::Lark,
+        });
+        assert_eq!(actual.format, expected);
 
         Ok(())
     }

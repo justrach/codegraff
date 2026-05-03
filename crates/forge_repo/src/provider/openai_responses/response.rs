@@ -143,6 +143,15 @@ impl IntoDomain for oai::Response {
                         thought_signature: None,
                     }));
                 }
+                oai::OutputItem::CustomToolCall(call) => {
+                    saw_tool_call = true;
+                    message = message.add_tool_call(ToolCall::Full(ToolCallFull {
+                        call_id: Some(ToolCallId::new(call.call_id.clone())),
+                        name: ToolName::new(call.name.clone()),
+                        arguments: ToolCallArguments::from_json(&call.input),
+                        thought_signature: None,
+                    }));
+                }
                 oai::OutputItem::Reasoning(reasoning) => {
                     let mut all_reasoning_text = String::new();
 
@@ -349,6 +358,29 @@ impl IntoDomain for BoxStream<StreamItem, anyhow::Error> {
                                             None
                                         }
                                     }
+                                    oai::OutputItem::CustomToolCall(call) => {
+                                        let tool_call_id = ToolCallId::new(call.call_id.clone());
+                                        let tool_name = ToolName::new(call.name.clone());
+
+                                        state.output_index_to_tool_call.insert(
+                                            added.output_index.into(),
+                                            (tool_call_id.clone(), tool_name.clone()),
+                                        );
+
+                                        // Only emit if we have non-empty initial input.
+                                        // Otherwise, wait for deltas or done event.
+                                        if !call.input.is_empty() {
+                                            Some(Ok(ChatCompletionMessage::default()
+                                                .add_tool_call(ToolCall::Part(ToolCallPart {
+                                                    call_id: Some(tool_call_id),
+                                                    name: Some(tool_name),
+                                                    arguments_part: call.input.clone(),
+                                                    thought_signature: None,
+                                                }))))
+                                        } else {
+                                            None
+                                        }
+                                    }
                                     oai::OutputItem::Reasoning(_reasoning) => {
                                         // Reasoning items don't emit content in real-time, only at
                                         // completion
@@ -358,6 +390,35 @@ impl IntoDomain for BoxStream<StreamItem, anyhow::Error> {
                                 }
                             }
                             oai::ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(delta) => {
+                                state
+                                    .received_toolcall_deltas
+                                    .insert(delta.output_index.into());
+                                let (call_id, name) = state
+                                    .output_index_to_tool_call
+                                    .get(&(delta.output_index.into()))
+                                    .cloned()
+                                    .unwrap_or_else(|| {
+                                        (
+                                            ToolCallId::new(format!(
+                                                "output_{}",
+                                                delta.output_index
+                                            )),
+                                            ToolName::new(""),
+                                        )
+                                    });
+
+                                let name = (!name.as_str().is_empty()).then_some(name);
+
+                                Some(Ok(ChatCompletionMessage::default().add_tool_call(
+                                    ToolCall::Part(ToolCallPart {
+                                        call_id: Some(call_id),
+                                        name,
+                                        arguments_part: delta.delta,
+                                        thought_signature: None,
+                                    }),
+                                )))
+                            }
+                            oai::ResponseStreamEvent::ResponseCustomToolCallInputDelta(delta) => {
                                 state
                                     .received_toolcall_deltas
                                     .insert(delta.output_index.into());
@@ -421,6 +482,41 @@ impl IntoDomain for BoxStream<StreamItem, anyhow::Error> {
                                             call_id: Some(call_id),
                                             name,
                                             arguments_part: done.arguments,
+                                            thought_signature: None,
+                                        }),
+                                    )))
+                                }
+                            }
+                            oai::ResponseStreamEvent::ResponseCustomToolCallInputDone(done) => {
+                                // If deltas were already streamed for this output index,
+                                // the input has already been emitted incrementally.
+                                if state
+                                    .received_toolcall_deltas
+                                    .contains(&(done.output_index.into()))
+                                {
+                                    None
+                                } else {
+                                    let (call_id, name) = state
+                                        .output_index_to_tool_call
+                                        .get(&(done.output_index.into()))
+                                        .cloned()
+                                        .unwrap_or_else(|| {
+                                            (
+                                                ToolCallId::new(format!(
+                                                    "output_{}",
+                                                    done.output_index
+                                                )),
+                                                ToolName::new(""),
+                                            )
+                                        });
+
+                                    let name = (!name.as_str().is_empty()).then_some(name);
+
+                                    Some(Ok(ChatCompletionMessage::default().add_tool_call(
+                                        ToolCall::Part(ToolCallPart {
+                                            call_id: Some(call_id),
+                                            name,
+                                            arguments_part: done.input,
                                             thought_signature: None,
                                         }),
                                     )))
