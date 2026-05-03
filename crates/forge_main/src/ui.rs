@@ -331,7 +331,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         // Handle direct prompt or piped input if provided (raw text messages)
         let input = self.cli.prompt.clone().or(self.cli.piped_input.clone());
         if let Some(input) = input {
-            tracker::prompt(input.clone());
+            tracker::prompt();
             self.spinner.start(None)?;
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
