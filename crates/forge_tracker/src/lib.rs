@@ -6,6 +6,9 @@ mod error;
 mod event;
 mod log;
 mod rate_limit;
+
+#[cfg(test)]
+mod otel_poc;
 pub use can_track::VERSION;
 pub use dispatch::Tracker;
 use error::Result;

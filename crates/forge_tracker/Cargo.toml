@@ -39,3 +39,12 @@ uuid.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }
 lazy_static.workspace = true
 pretty_assertions.workspace = true
+
+# OTel POC — for the `otel_shape` test that demonstrates what an OTel
+# replacement for the current PostHog event flow would look like. These
+# are dev-only for now; if we commit to the migration they move to
+# `[dependencies]`.
+opentelemetry = "0.27"
+opentelemetry_sdk = "0.27"
+opentelemetry-stdout = "0.27"
+opentelemetry-semantic-conventions = { version = "0.27", features = ["semconv_experimental"] }
