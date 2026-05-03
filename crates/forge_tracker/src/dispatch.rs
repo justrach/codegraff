@@ -241,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn test_tracker() {
         if let Err(e) = TRACKER
-            .dispatch(EventKind::Prompt("ping".to_string()))
+            .dispatch(EventKind::Prompt)
             .await
         {
             panic!("Tracker dispatch error: {e:?}");

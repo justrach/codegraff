@@ -38,8 +38,8 @@ pub fn tool_call(payload: ToolCallPayload) {
 }
 
 /// For prompt events
-pub fn prompt(text: String) {
-    dispatch(EventKind::Prompt(text));
+pub fn prompt() {
+    dispatch(EventKind::Prompt);
 }
 
 /// For model setting

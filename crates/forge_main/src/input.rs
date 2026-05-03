@@ -38,7 +38,7 @@ impl Console {
                 ReadResult::Exit => return Ok(AppCommand::Exit),
                 ReadResult::Empty => continue,
                 ReadResult::Success(text) => {
-                    tracker::prompt(text.clone());
+                    tracker::prompt();
                     return self.command.parse(&text);
                 }
             }
