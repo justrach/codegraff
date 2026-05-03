@@ -4,7 +4,7 @@ use anyhow::Context as _;
 use async_openai::types::responses as oai;
 use forge_app::domain::{Context as ChatContext, ContextMessage, MessagePhase, Role, ToolChoice};
 use forge_app::utils::enforce_strict_schema;
-use forge_domain::{Effort, ReasoningConfig, ReasoningFull, ToolDefinition, ToolGrammarSyntax};
+use forge_domain::{Effort, ModelId, ReasoningConfig, ReasoningFull, ToolDefinition, ToolGrammarSyntax};
 
 use crate::provider::FromDomain;
 
@@ -226,6 +226,43 @@ fn openai_response_tool(tool: ToolDefinition) -> anyhow::Result<oai::Tool> {
     }))
 }
 
+/// Returns whether the given OpenAI Responses model supports custom grammar tools.
+///
+/// OpenAI custom-grammar tools are only enabled on `gpt-N.M` models at version
+/// `5.5` or higher. Anything else (older OpenAI models, Codex models,
+/// third-party model names) returns `false` so the caller strips the grammar
+/// field and the request falls back to plain function tools.
+pub(super) fn model_supports_grammar(model: &ModelId) -> bool {
+    let Some(rest) = model.as_str().strip_prefix("gpt-") else {
+        return false;
+    };
+    let version: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mut parts = version.split('.');
+    let Some(major) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
+        return false;
+    };
+    let minor: u32 = parts
+        .next()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+    (major, minor) >= (5, 5)
+}
+
+/// Drops the grammar field from every tool when the target model does not
+/// support custom grammar tools, so the request falls back to plain function
+/// tools without erroring.
+pub(super) fn enforce_grammar_support(context: &mut ChatContext, model: &ModelId) {
+    if model_supports_grammar(model) {
+        return;
+    }
+    for tool in &mut context.tools {
+        tool.grammar = None;
+    }
+}
+
 /// Converts Forge's domain-level Context into an async-openai Responses API
 /// request.
 ///
@@ -433,7 +470,8 @@ mod tests {
 
     use crate::provider::FromDomain;
     use crate::provider::openai_responses::request::{
-        codex_tool_parameters, has_open_additional_properties, openai_response_tool,
+        codex_tool_parameters, enforce_grammar_support, has_open_additional_properties,
+        model_supports_grammar, openai_response_tool,
     };
 
     #[test]
@@ -848,6 +886,72 @@ mod tests {
         assert_eq!(actual.format, expected);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_model_supports_grammar_gates_at_5_5() {
+        for raw in ["gpt-5.5", "gpt-5.5-mini", "gpt-5.5-codex", "gpt-6", "gpt-6.0", "gpt-12.3"] {
+            let model = ModelId::from(raw);
+            assert!(
+                model_supports_grammar(&model),
+                "expected {raw} to support grammar tools"
+            );
+        }
+
+        for raw in [
+            "gpt-5",
+            "gpt-5.0",
+            "gpt-5.4",
+            "gpt-5.4-turbo",
+            "gpt-4o",
+            "gpt-4.1",
+            "codex-mini-latest",
+            "o1",
+            "claude-opus-4-7",
+            "",
+        ] {
+            let model = ModelId::from(raw);
+            assert!(
+                !model_supports_grammar(&model),
+                "expected {raw} to NOT support grammar tools"
+            );
+        }
+    }
+
+    #[test]
+    fn test_enforce_grammar_support_strips_grammar_for_unsupported_model() {
+        let mut context = ChatContext::default().tools(vec![
+            forge_app::domain::ToolDefinition::new("timestamp")
+                .description("Parse timestamp")
+                .grammar(forge_domain::ToolGrammar::new(
+                    "[0-9]+",
+                    forge_domain::ToolGrammarSyntax::Regex,
+                )),
+            forge_app::domain::ToolDefinition::new("read")
+                .description("Read a file"),
+        ]);
+
+        enforce_grammar_support(&mut context, &ModelId::from("gpt-5.4"));
+
+        assert!(context.tools[0].grammar.is_none());
+        assert!(context.tools[1].grammar.is_none());
+    }
+
+    #[test]
+    fn test_enforce_grammar_support_keeps_grammar_for_supported_model() {
+        let original_grammar = forge_domain::ToolGrammar::new(
+            "[0-9]+",
+            forge_domain::ToolGrammarSyntax::Regex,
+        );
+        let mut context = ChatContext::default().tools(vec![
+            forge_app::domain::ToolDefinition::new("timestamp")
+                .description("Parse timestamp")
+                .grammar(original_grammar.clone()),
+        ]);
+
+        enforce_grammar_support(&mut context, &ModelId::from("gpt-5.5"));
+
+        assert_eq!(context.tools[0].grammar.as_ref(), Some(&original_grammar));
     }
 
     #[test]
