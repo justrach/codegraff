@@ -20,7 +20,6 @@ pub struct Event {
     pub user: String,
     pub args: Vec<String>,
     pub version: String,
-    pub email: Vec<String>,
     pub model: Option<String>,
     pub conversation: Option<Conversation>,
     pub identity: Option<Identity>,
