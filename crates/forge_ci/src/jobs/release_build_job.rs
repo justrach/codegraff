@@ -149,7 +149,8 @@ if [ -n "${{ matrix.codedb_asset }}" ]; then
   cp codedb dist/codedb
   tar -C dist -czf ${{ matrix.graff_binary_name }}-bundle.tar.gz ${{ matrix.graff_binary_name }} codedb
 fi"#,
-                        ),
+                        )
+                        .shell("bash"),
                 )
                 .add_step(
                     Step::new("Notarize macOS Binaries")
