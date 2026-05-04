@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyEvent, KeyEventKind};
 use forge_api::Environment;
 use nu_ansi_term::{Color, Style};
 use reedline::{
@@ -150,6 +150,35 @@ impl EditMode for ForgeEditMode {
         if let Event::Paste(ref body) = raw {
             let wrapped = wrap_pasted_text(body);
             return ReedlineEvent::Edit(vec![EditCommand::InsertString(wrapped)]);
+        }
+
+        // Ctrl+V: capture clipboard image when present, otherwise fall back
+        // to plain-text paste. On macOS users typically use Cmd+V, which the
+        // terminal intercepts before the app sees it — Ctrl+V is the only
+        // reliable in-process binding for clipboard access. Image capture
+        // produces an `@[<temp.png>]` reference that the existing attachment
+        // pipeline (`forge_domain::Attachment`) resolves into a multimodal
+        // content block at message-send time.
+        if let Event::Key(KeyEvent {
+            code: KeyCode::Char('v'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            ..
+        }) = raw
+        {
+            match crate::clipboard::capture_clipboard_image_to_temp() {
+                Ok(Some(path)) => {
+                    let inserted = format!("@[{}]", path.display());
+                    return ReedlineEvent::Edit(vec![EditCommand::InsertString(inserted)]);
+                }
+                Ok(None) | Err(_) => {
+                    // No image (or capture/encoding failed); fall back to text.
+                }
+            }
+            if let Some(text) = crate::clipboard::capture_clipboard_text() {
+                return ReedlineEvent::Edit(vec![EditCommand::InsertString(text)]);
+            }
+            return ReedlineEvent::None;
         }
 
         // For every other event, delegate to the inner Emacs mode.

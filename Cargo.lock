@@ -2585,6 +2585,7 @@ dependencies = [
  "futures",
  "gix",
  "humantime",
+ "image",
  "include_dir",
  "indexmap 2.14.0",
  "insta",
@@ -2612,6 +2613,7 @@ dependencies = [
  "tracing",
  "update-informer",
  "url",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 
