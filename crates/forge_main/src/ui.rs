@@ -1780,9 +1780,9 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         println!();
         println!(
             "{} {} {}",
-            "󱙺".bold(),
-            "FORGE 33.0k".bold(),
-            " tonic-1.0".cyan()
+            "".bold(),
+            "GRAFF 33.0k".bold(),
+            " tonic-1.0".cyan()
         );
 
         let can_see_nerd_fonts =
