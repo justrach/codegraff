@@ -172,6 +172,9 @@ pub trait API: Sync + Send {
     /// Gets the current reasoning effort setting.
     async fn get_reasoning_effort(&self) -> anyhow::Result<Option<Effort>>;
 
+    /// Gets the current fast-mode flag (`/fast` Priority Processing toggle).
+    async fn get_fast_mode(&self) -> anyhow::Result<Option<bool>>;
+
     /// Refresh MCP caches by fetching fresh data
     async fn reload_mcp(&self) -> Result<()>;
 

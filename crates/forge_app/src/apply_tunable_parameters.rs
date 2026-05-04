@@ -30,6 +30,9 @@ impl ApplyTunableParameters {
         if let Some(ref reasoning) = self.agent.reasoning {
             ctx = ctx.reasoning(reasoning.clone());
         }
+        if let Some(fast_mode) = self.agent.fast_mode {
+            ctx = ctx.fast_mode(fast_mode);
+        }
 
         conversation.context(ctx.tools(self.tool_definitions))
     }

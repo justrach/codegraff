@@ -277,6 +277,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             .get_agent_model(self.api.get_active_agent().await)
             .await;
         let reasoning_effort = self.api.get_reasoning_effort().await.ok().flatten();
+        let fast_mode = self.api.get_fast_mode().await.ok().flatten();
         let mut forge_prompt = ForgePrompt::new(self.state.cwd.clone(), agent_id);
         if let Some(u) = usage {
             forge_prompt.usage(u);
@@ -286,6 +287,9 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         }
         if let Some(e) = reasoning_effort {
             forge_prompt.reasoning_effort(e);
+        }
+        if let Some(f) = fast_mode {
+            forge_prompt.fast_mode(f);
         }
         self.console.prompt(&mut forge_prompt).await
     }
@@ -2209,6 +2213,9 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             AppCommand::ReasoningEffort => {
                 self.on_reasoning_effort_selection(false).await?;
             }
+            AppCommand::Fast => {
+                self.on_fast_toggle().await?;
+            }
             AppCommand::ConfigReasoningEffort => {
                 self.on_reasoning_effort_selection(true).await?;
             }
@@ -2367,6 +2374,21 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         Ok(())
     }
 
+    /// Toggles OpenAI Priority Processing (`service_tier: priority`) for the
+    /// session. When enabled, eligible OpenAI-series requests (Chat Completions
+    /// and Responses APIs) are sent with `service_tier=priority`.
+    async fn on_fast_toggle(&mut self) -> anyhow::Result<()> {
+        let current = self.api.get_fast_mode().await.ok().flatten().unwrap_or(false);
+        let next = !current;
+        self.api
+            .update_config(vec![ConfigOperation::SetFastMode(next)])
+            .await?;
+        let label = if next { "ON" } else { "OFF" };
+        self.writeln_title(
+            TitleFormat::action(label).sub_title("Priority Processing (service_tier=priority)"),
+        )?;
+        Ok(())
+    }
     /// Selects and sets the commit model via interactive model picker.
     async fn on_config_commit_model(&mut self) -> anyhow::Result<()> {
         let selection = self.select_model(None).await?;
@@ -4435,7 +4457,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             .map(AgentId::new);
 
         // Make IO calls in parallel
-        let (model_id, conversation, reasoning_effort) = tokio::join!(
+        let (model_id, conversation, reasoning_effort, fast_mode) = tokio::join!(
             self.get_agent_model(agent_id.clone()),
             async {
                 if let Some(cid) = cid {
@@ -4444,7 +4466,8 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                     None
                 }
             },
-            async { self.api.get_reasoning_effort().await.ok().flatten() }
+            async { self.api.get_reasoning_effort().await.ok().flatten() },
+            async { self.api.get_fast_mode().await.ok().flatten() }
         );
 
         // Calculate total cost including related conversations
@@ -4479,6 +4502,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             .token_count(conversation.and_then(|conversation| conversation.token_count()))
             .cost(cost)
             .reasoning_effort(reasoning_effort)
+            .fast_mode(fast_mode)
             .terminal_width(terminal_width)
             .use_nerd_font(use_nerd_font);
 

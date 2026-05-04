@@ -265,6 +265,10 @@ impl<
         self.services.get_reasoning_effort().await
     }
 
+    async fn get_fast_mode(&self) -> anyhow::Result<Option<bool>> {
+        self.services.get_fast_mode().await
+    }
+
     async fn user_info(&self) -> Result<Option<User>> {
         let provider = self.get_default_provider().await?;
         if let Some(api_key) = provider.api_key() {

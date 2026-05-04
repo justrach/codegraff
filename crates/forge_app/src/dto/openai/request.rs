@@ -280,6 +280,11 @@ pub struct Request {
     pub max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
+    /// OpenAI Priority Processing tier. When set to `"priority"`, the request
+    /// is served via the Priority Processing tier. Only sent to providers that
+    /// support the OpenAI `service_tier` parameter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -409,6 +414,9 @@ impl From<Context> for Request {
             reasoning_effort: Default::default(),
             max_completion_tokens: Default::default(),
             thinking: Default::default(),
+            service_tier: context
+                .fast_mode
+                .and_then(|enabled| enabled.then(|| "priority".to_string())),
         }
     }
 }
@@ -933,5 +941,55 @@ mod tests {
         // Should contain type and json_schema fields
         assert!(json.contains("\"type\":\"json_schema\""));
         assert!(json.contains("\"json_schema\""));
+    }
+
+    #[test]
+    fn test_fast_mode_sets_service_tier_priority() {
+        let fixture = forge_domain::Context::default().fast_mode(true);
+        let actual = Request::from(fixture);
+
+        assert_eq!(actual.service_tier, Some("priority".to_string()));
+    }
+
+    #[test]
+    fn test_fast_mode_false_omits_service_tier() {
+        let fixture = forge_domain::Context::default().fast_mode(false);
+        let actual = Request::from(fixture);
+
+        assert_eq!(actual.service_tier, None);
+    }
+
+    #[test]
+    fn test_fast_mode_unset_omits_service_tier() {
+        let fixture = forge_domain::Context::default();
+        let actual = Request::from(fixture);
+
+        assert_eq!(actual.service_tier, None);
+    }
+
+    #[test]
+    fn test_fast_mode_serializes_to_priority_in_wire_format() {
+        let fixture = forge_domain::Context::default().fast_mode(true);
+        let request = Request::from(fixture);
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert!(
+            json.contains("\"service_tier\":\"priority\""),
+            "expected service_tier=priority in wire format, got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_fast_mode_unset_omits_service_tier_in_wire_format() {
+        let fixture = forge_domain::Context::default();
+        let request = Request::from(fixture);
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert!(
+            !json.contains("service_tier"),
+            "expected no service_tier key in wire format, got: {json}"
+        );
     }
 }

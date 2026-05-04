@@ -333,6 +333,13 @@
         }
       ]
     },
+    "fast_mode": {
+      "description": "When `true`, requests sent to OpenAI-series models (gpt-* / codex-*)\ninclude `service_tier: \"priority\"` for the OpenAI Priority Processing\nlane (Codex-style fast mode). Other providers/models silently ignore\nthis flag. Toggled at runtime via the `/fast` slash command.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "providers": {
       "description": "Additional provider definitions merged with the built-in provider list.\n\nEntries with an `id` matching a built-in provider override its fields;\nentries with a new `id` are appended and become available for model\nselection.",
       "type": "array",

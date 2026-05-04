@@ -38,6 +38,9 @@ pub struct ZshRPrompt {
     /// Currently configured reasoning effort level for the active model.
     /// Rendered to the right of the model when set.
     reasoning_effort: Option<Effort>,
+    /// When `Some(true)`, OpenAI Priority Processing is active for the session
+    /// and a `FAST` chip is appended after the reasoning effort.
+    fast_mode: Option<bool>,
     /// Terminal width in columns, used to pick between the compact
     /// three-letter label and the full-length uppercase label for
     /// reasoning effort. When `None`, the prompt falls back to the
@@ -72,6 +75,7 @@ impl Default for ZshRPrompt {
             token_count: None,
             cost: None,
             reasoning_effort: None,
+            fast_mode: None,
             terminal_width: None,
             use_nerd_font: true,
             currency_symbol: "\u{f155}".to_string(),
@@ -182,6 +186,16 @@ impl Display for ZshRPrompt {
                 effort_label.zsh().fg(ZshColor::YELLOW)
             } else {
                 effort_label.zsh().fg(ZshColor::DIMMED)
+            };
+            write!(f, " {}", styled)?;
+        }
+
+        // FAST chip — rendered when OpenAI Priority Processing is active.
+        if self.fast_mode == Some(true) {
+            let styled = if active {
+                "FAST".zsh().bold().fg(ZshColor::RED)
+            } else {
+                "FAST".zsh().bold().fg(ZshColor::DIMMED)
             };
             write!(f, " {}", styled)?;
         }
@@ -436,5 +450,67 @@ mod tests {
         let expected =
             " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}MIN%f";
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_rprompt_with_fast_mode_active_renders_fast_chip() {
+        let actual = ZshRPrompt::default()
+            .agent(Some(AgentId::new("forge")))
+            .model(Some(ModelId::new("gpt-5.1")))
+            .token_count(Some(TokenCount::Actual(1500)))
+            .fast_mode(Some(true))
+            .to_string();
+
+        // Bold + bright red (color 9) FAST chip after the model.
+        assert!(actual.contains("FAST"), "expected FAST chip, got: {actual}");
+        assert!(
+            actual.contains("%F{9}"),
+            "expected red color escape for active FAST chip, got: {actual}"
+        );
+    }
+
+    #[test]
+    fn test_rprompt_with_fast_mode_inactive_renders_dimmed_fast_chip() {
+        // Without tokens the prompt is in the inactive state; the FAST chip
+        // should still render but in the dimmed colour.
+        let actual = ZshRPrompt::default()
+            .agent(Some(AgentId::new("forge")))
+            .model(Some(ModelId::new("gpt-5.1")))
+            .fast_mode(Some(true))
+            .to_string();
+
+        assert!(actual.contains("FAST"), "expected FAST chip, got: {actual}");
+        assert!(
+            actual.contains("%F{240}"),
+            "expected dimmed colour for inactive FAST chip, got: {actual}"
+        );
+    }
+
+    #[test]
+    fn test_rprompt_without_fast_mode_hides_fast_chip() {
+        let actual = ZshRPrompt::default()
+            .agent(Some(AgentId::new("forge")))
+            .model(Some(ModelId::new("gpt-5.1")))
+            .token_count(Some(TokenCount::Actual(1500)))
+            .to_string();
+
+        assert!(
+            !actual.contains("FAST"),
+            "expected no FAST chip when fast_mode is unset, got: {actual}"
+        );
+    }
+
+    #[test]
+    fn test_rprompt_with_fast_mode_false_hides_fast_chip() {
+        let actual = ZshRPrompt::default()
+            .agent(Some(AgentId::new("forge")))
+            .model(Some(ModelId::new("gpt-5.1")))
+            .fast_mode(Some(false))
+            .to_string();
+
+        assert!(
+            !actual.contains("FAST"),
+            "expected no FAST chip when fast_mode=Some(false), got: {actual}"
+        );
     }
 }

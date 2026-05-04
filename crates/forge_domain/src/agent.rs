@@ -166,6 +166,12 @@ pub struct Agent {
 
     /// Maximum number of requests that can be made in a single turn
     pub max_requests_per_turn: Option<usize>,
+
+    /// When `Some(true)`, request OpenAI Priority Processing tier for this
+    /// agent's chat requests (Chat Completions and Responses APIs). Mirrors
+    /// `ForgeConfig::fast_mode`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode: Option<bool>,
 }
 
 /// Lightweight metadata about an agent, used for listing without requiring a
@@ -206,6 +212,7 @@ impl Agent {
             reasoning: Default::default(),
             max_tool_failure_per_turn: Default::default(),
             max_requests_per_turn: Default::default(),
+            fast_mode: Default::default(),
             path: Default::default(),
         }
     }

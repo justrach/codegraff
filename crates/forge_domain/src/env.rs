@@ -29,6 +29,8 @@ pub enum ConfigOperation {
     SetSuggestConfig(ModelConfig),
     /// Set the reasoning effort level for all agents.
     SetReasoningEffort(Effort),
+    /// Toggle fast mode (`service_tier: priority`) for OpenAI-series requests.
+    SetFastMode(bool),
 }
 
 const VERSION: &str = match option_env!("APP_VERSION") {

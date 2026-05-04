@@ -318,6 +318,10 @@ mod tests {
             Ok(None)
         }
 
+        async fn get_fast_mode(&self) -> Result<Option<bool>> {
+            Ok(None)
+        }
+
         async fn update_config(&self, _ops: Vec<forge_domain::ConfigOperation>) -> Result<()> {
             Ok(())
         }

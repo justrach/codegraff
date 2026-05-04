@@ -263,6 +263,13 @@ pub struct ForgeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningConfig>,
 
+    /// When `true`, requests sent to OpenAI-series models (gpt-* / codex-*)
+    /// include `service_tier: "priority"` for the OpenAI Priority Processing
+    /// lane (Codex-style fast mode). Other providers/models silently ignore
+    /// this flag. Toggled at runtime via the `/fast` slash command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode: Option<bool>,
+
     /// Additional provider definitions merged with the built-in provider list.
     ///
     /// Entries with an `id` matching a built-in provider override its fields;
