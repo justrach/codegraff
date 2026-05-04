@@ -36,7 +36,7 @@
           };
           graff = pkgs.rustPlatform.buildRustPackage {
             pname = "graff";
-            version = "0.1.01";
+            version = "0.1.2";
             inherit src;
 
             cargoLock = {
