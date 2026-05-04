@@ -20,7 +20,7 @@ const BRANCH_SYMBOL: &str = "\u{f418}"; //   branch icon
 const SUCCESS_SYMBOL: &str = "\u{f013e}"; // 󰄾  chevron
 
 // Nerd font symbols — right prompt (ZSH rprompt)
-const AGENT_SYMBOL: &str = "\u{f167a}";
+const AGENT_SYMBOL: &str = "\u{f013}";
 const MODEL_SYMBOL: &str = "\u{ec19}";
 
 /// Terminal width at which the reasoning effort label switches from the
@@ -138,11 +138,15 @@ impl Prompt for ForgePrompt {
         };
         let mut result = String::with_capacity(64);
 
-        // Agent name with nerd font symbol
-        let agent_str = format!(
-            "{AGENT_SYMBOL} {}",
+        // Agent name with nerd font symbol. The internal agent ID stays
+        // `forge` for backwards compatibility with `:forge` slash commands;
+        // the brand-facing label is `GRAFF`.
+        let label = if self.agent_id.as_str() == "forge" {
+            "GRAFF".to_string()
+        } else {
             self.agent_id.as_str().to_case(Case::UpperSnake)
-        );
+        };
+        let agent_str = format!("{AGENT_SYMBOL} {}", label);
         write!(
             result,
             " {}",
@@ -330,11 +334,10 @@ mod tests {
         // No tokens → dimmed agent + model, no token/cost segments
         let mut prompt = ForgePrompt::default();
         let _ = prompt.model(ModelId::new("gpt-4"));
-
         let actual = prompt.render_prompt_right();
         // Agent symbol and name present
         assert!(actual.contains(AGENT_SYMBOL));
-        assert!(actual.contains("FORGE"));
+        assert!(actual.contains("GRAFF"));
         // Model symbol and name present
         assert!(actual.contains(MODEL_SYMBOL));
         assert!(actual.contains("gpt-4"));
