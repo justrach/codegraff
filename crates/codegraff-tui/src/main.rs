@@ -38,6 +38,8 @@ use forge_api::{
     URLParamSpec, Usage,
 };
 use futures::StreamExt;
+use nucleo::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo::{Config, Matcher, Utf32String};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -59,6 +61,60 @@ const WORKFLOW_DIALOG_NODE_HEADER_ROWS: usize = 1;
 const WORKFLOW_DIALOG_SELECTED_NODE_DETAIL_ROWS: usize = 6;
 const SHORTCUT_HINT_MILLIS: u64 = 2_500;
 
+/// Static catalogue of slash commands surfaced in the command palette.
+///
+/// The list mirrors the AppCommand enum in `crates/forge_main/src/model.rs`
+/// (the REPL parser that also accepts `/`), plus codegraff-specific commands
+/// already dispatched in this TUI (`/workflow`, `/image`, `/logs`, `/login`,
+/// `/connect`, `/models`, `/usage`). Excluded REPL-only entries:
+/// - `:exit`   — the TUI quits via Ctrl+C; users do not expect a slash form.
+/// - `:edit`   — opens an external editor, which is REPL-only behaviour.
+/// - `:retry`  — depends on REPL conversation state not surfaced here.
+const PALETTE_COMMANDS: &[(&str, &str)] = &[
+    ("act", "Switch to the forge agent (implementation mode)"),
+    ("agent", "Switch the active agent interactively"),
+    ("commit", "Generate AI commit message and commit changes"),
+    ("commit-preview", "Preview the AI-generated commit message"),
+    ("compact", "Compact the conversation context"),
+    ("config", "Display the effective resolved configuration"),
+    ("config-commit-model", "Set the model used for commit message generation"),
+    ("config-edit", "Open the global config file in an editor"),
+    ("config-model", "Set the global model via interactive selection"),
+    ("config-reasoning-effort", "Set reasoning effort in the global config"),
+    ("config-reload", "Reset session overrides to global config"),
+    ("config-suggest-model", "Set the model used for suggest generation"),
+    ("connect", "Connect or configure a provider"),
+    ("conversation", "List conversations for the active workspace"),
+    ("conversation-rename", "Rename a conversation interactively"),
+    ("clone", "Clone the current or a selected conversation"),
+    ("copy", "Copy the last AI response to the clipboard"),
+    ("dump", "Save the conversation as JSON or HTML"),
+    ("fast", "Toggle Priority Processing for OpenAI-series requests"),
+    ("help", "Switch to help mode for tool questions"),
+    ("image", "Attach an image from the filesystem (path)"),
+    ("index", "Index the current workspace for semantic code search"),
+    ("info", "Display system environment information"),
+    ("login", "Log in to a provider"),
+    ("logout", "Log out from the configured provider"),
+    ("logs", "Show the path to the codegraff log file"),
+    ("model", "Switch or select the active model"),
+    ("models", "List or pick from registered provider models"),
+    ("new", "Start a new conversation while preserving history"),
+    ("plan", "Switch to the muse agent (planning mode)"),
+    ("provider", "Configure a provider (alias of /login)"),
+    ("rename", "Rename the current conversation"),
+    ("sage", "Switch to research mode (sage agent)"),
+    ("skill", "List all available skills"),
+    ("suggest", "Generate a shell command from natural language"),
+    ("tools", "List all available tools with descriptions"),
+    ("update", "Update graff to the latest compatible version"),
+    ("usage", "Show token usage and request information"),
+    ("workflow", "Open a workflow review dialog for a goal"),
+    ("workspace-info", "Show workspace information with sync details"),
+    ("workspace-init", "Initialize a workspace without syncing files"),
+    ("workspace-status", "Show sync status of workspace files"),
+    ("workspace-sync", "Sync the current workspace for semantic search"),
+];
 #[tokio::main]
 async fn main() -> Result<()> {
     let log_path = codegraff_log_path();
@@ -314,6 +370,13 @@ enum Overlay {
     Connect(Box<ConnectDialog>),
     Model(ModelDialog),
     Workflow(WorkflowDialog),
+    CommandPalette(CommandPaletteState),
+}
+
+#[derive(Clone, Debug, Default)]
+struct CommandPaletteState {
+    query: String,
+    selected_index: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -641,6 +704,10 @@ impl<A: API + 'static> Tui<A> {
         match key.code {
             KeyCode::Char(_) => {
                 if let Some(ch) = composer_input_char(key) {
+                    if ch == '/' && self.composer.is_empty() && self.overlay.is_none() {
+                        self.open_command_palette();
+                        return Ok(());
+                    }
                     self.push_composer_char(ch);
                 }
             }
@@ -663,6 +730,9 @@ impl<A: API + 'static> Tui<A> {
             return Ok(false);
         };
 
+        if matches!(overlay, Overlay::CommandPalette(_)) {
+            return self.handle_command_palette_key(key, tx).await;
+        }
         match key.code {
             KeyCode::Esc => {
                 if self.cancel_workflow_edit_mode() {
@@ -672,6 +742,7 @@ impl<A: API + 'static> Tui<A> {
                     Overlay::Connect(dialog) => Some(dialog.intent.cancelled_message()),
                     Overlay::Model(_) => None,
                     Overlay::Workflow(_) => Some("Workflow cancelled."),
+                    Overlay::CommandPalette(_) => None,
                 });
                 self.close_overlay();
                 if let Some(message) = message {
@@ -756,6 +827,114 @@ impl<A: API + 'static> Tui<A> {
         }
     }
 
+    fn open_command_palette(&mut self) {
+        self.overlay = Some(Overlay::CommandPalette(CommandPaletteState::default()));
+        self.overlay_scroll_from_top = 0;
+        self.overlay_input.clear();
+    }
+
+    fn palette_state(&self) -> Option<CommandPaletteState> {
+        match self.overlay.as_ref() {
+            Some(Overlay::CommandPalette(state)) => Some(state.clone()),
+            _ => None,
+        }
+    }
+
+    fn set_palette_state(&mut self, new_state: CommandPaletteState) {
+        if let Some(Overlay::CommandPalette(state)) = self.overlay.as_mut() {
+            *state = new_state;
+        }
+    }
+
+    async fn handle_command_palette_key(
+        &mut self,
+        key: KeyEvent,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<bool> {
+        let Some(mut state) = self.palette_state() else {
+            return Ok(false);
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.close_overlay();
+            }
+            KeyCode::Up => {
+                let matches = filter_palette_commands(&state.query);
+                if !matches.is_empty() {
+                    if state.selected_index == 0 {
+                        state.selected_index = matches.len() - 1;
+                    } else {
+                        state.selected_index -= 1;
+                    }
+                }
+                self.set_palette_state(state);
+            }
+            KeyCode::Down => {
+                let matches = filter_palette_commands(&state.query);
+                if !matches.is_empty() {
+                    state.selected_index = (state.selected_index + 1) % matches.len();
+                }
+                self.set_palette_state(state);
+            }
+            KeyCode::Tab => {
+                let matches = filter_palette_commands(&state.query);
+                if let Some(idx) = matches
+                    .get(state.selected_index)
+                    .and_then(|i| PALETTE_COMMANDS.get(*i))
+                {
+                    state.query = idx.0.to_string();
+                    state.selected_index = 0;
+                }
+                self.set_palette_state(state);
+            }
+            KeyCode::Backspace => {
+                if state.query.is_empty() {
+                    self.close_overlay();
+                } else {
+                    state.query.pop();
+                    state.selected_index = 0;
+                    self.set_palette_state(state);
+                }
+            }
+            KeyCode::Enter => {
+                let matches = filter_palette_commands(&state.query);
+                if let Some(name) = matches
+                    .get(state.selected_index)
+                    .and_then(|i| PALETTE_COMMANDS.get(*i))
+                    .map(|(name, _)| (*name).to_string())
+                {
+                    self.dispatch_command_palette(&name, tx).await?;
+                }
+            }
+            KeyCode::Char(_) => {
+                if let Some(ch) = composer_input_char(key) {
+                    state.query.push(ch);
+                    state.selected_index = 0;
+                    self.set_palette_state(state);
+                }
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    async fn dispatch_command_palette(
+        &mut self,
+        name: &str,
+        tx: mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        // Build the slash form so the existing parsers in `handle_enter`
+        // (parse_model_command, parse_workflow_command, parse_image_command,
+        // parse_connect_command, etc.) can dispatch the command unchanged.
+        let composer = format!("/{}", name);
+        self.close_overlay();
+        self.composer = composer;
+        self.composer_scroll_from_bottom = 0;
+        self.handle_enter(tx).await?;
+        Ok(())
+    }
+
     async fn submit_overlay_input(&mut self, tx: mpsc::UnboundedSender<AppEvent>) -> Result<()> {
         match self.overlay.clone() {
             Some(Overlay::Model(_)) => self.submit_numbered_overlay_selection().await,
@@ -766,6 +945,9 @@ impl<A: API + 'static> Tui<A> {
                 ConnectStep::ApiKeyInput { .. } => self.submit_connect_overlay_input().await,
             },
             Some(Overlay::Workflow(_)) => self.submit_workflow_overlay_input(tx).await,
+            // Command palette has its own handler in `handle_command_palette_key`
+            // so the legacy overlay submit path never reaches here.
+            Some(Overlay::CommandPalette(_)) => Ok(()),
             None => Ok(()),
         }
     }
@@ -800,7 +982,7 @@ impl<A: API + 'static> Tui<A> {
                 }
                 ConnectStep::ApiKeyInput { .. } => {}
             },
-            Some(Overlay::Workflow(_)) | None => {}
+            Some(Overlay::Workflow(_)) | Some(Overlay::CommandPalette(_)) | None => {}
         }
 
         Ok(())
@@ -2594,6 +2776,23 @@ impl<A: API + 'static> Tui<A> {
                         .scroll((overlay_scroll, 0));
                     frame.render_widget(dialog, dialog_area);
                 }
+                Overlay::CommandPalette(state) => {
+                    let matches = filter_palette_commands(&state.query);
+                    let lines = command_palette_lines(state, &matches, dialog_content_width);
+                    let overlay_scroll = overlay_scroll_top(
+                        self.overlay_scroll_from_top,
+                        lines.len(),
+                        dialog_inner_height,
+                    );
+                    let dialog = Paragraph::new(lines)
+                        .block(
+                            Block::default()
+                                .title("Slash commands")
+                                .borders(Borders::ALL),
+                        )
+                        .scroll((overlay_scroll, 0));
+                    frame.render_widget(dialog, dialog_area);
+                }
             }
         }
     }
@@ -2860,6 +3059,128 @@ fn unquote_workflow_goal(goal: &str) -> String {
     } else {
         goal.to_string()
     }
+}
+
+/// Score and rank slash commands against `query` using nucleo's fuzzy matcher.
+///
+/// Returns indices into [`PALETTE_COMMANDS`] sorted by descending score
+/// (best match first). When `query` is empty we keep the original catalogue
+/// order so the palette shows everything alphabetically.
+fn filter_palette_commands(query: &str) -> Vec<usize> {
+    let query = query.trim();
+    if query.is_empty() {
+        return (0..PALETTE_COMMANDS.len()).collect();
+    }
+
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+
+    let mut scored: Vec<(usize, u32)> = PALETTE_COMMANDS
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, (name, _))| {
+            let haystack = Utf32String::from(*name);
+            pattern
+                .score(haystack.slice(..), &mut matcher)
+                .filter(|score| *score > 0)
+                .map(|score| (idx, score))
+        })
+        .collect();
+    // Highest score first; on tie, preserve catalogue order via the index.
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    scored.into_iter().map(|(idx, _)| idx).collect()
+}
+
+/// Build the rendered lines for the slash command palette.
+fn command_palette_lines(
+    state: &CommandPaletteState,
+    matches: &[usize],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let prompt_label = "/";
+    let cursor = "_";
+    let prompt_spans = vec![
+        Span::styled(
+            prompt_label.to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(state.query.clone(), Style::default().fg(Color::White)),
+        Span::styled(
+            cursor.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    lines.push(Line::from(prompt_spans));
+    lines.push(Line::raw(""));
+
+    if matches.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No matching commands. Press Esc to close.",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        )));
+        return lines;
+    }
+
+    let max_name_len = matches
+        .iter()
+        .filter_map(|idx| PALETTE_COMMANDS.get(*idx))
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let name_col = max_name_len.saturating_add(2);
+
+    for (row, command_index) in matches.iter().enumerate() {
+        let Some((name, description)) = PALETTE_COMMANDS.get(*command_index) else {
+            continue;
+        };
+        let selected = row == state.selected_index;
+        let marker = if selected { ">" } else { " " };
+        let base_style = if selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let description_style = if selected {
+            base_style
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let raw = format!(
+            "{marker} /{name:<name_col$}{description}",
+            marker = marker,
+            name = name,
+            name_col = name_col,
+            description = description
+        );
+        let truncated = if width > 0 {
+            truncate_single_line(&raw, width)
+        } else {
+            raw
+        };
+        // Split truncated back into command + description for nicer styling.
+        let prefix_len = marker.len() + 1 + 1 + name_col; // marker + space + '/' + name padded
+        if truncated.len() >= prefix_len {
+            let (prefix, rest) = truncated.split_at(prefix_len);
+            lines.push(Line::from(vec![
+                Span::styled(prefix.to_string(), base_style),
+                Span::styled(rest.to_string(), description_style),
+            ]));
+        } else {
+            lines.push(Line::from(Span::styled(truncated, base_style)));
+        }
+    }
+
+    lines
 }
 
 fn workflow_overlay_action(input: &str) -> WorkflowOverlayAction {
@@ -4930,6 +5251,114 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[test]
+    fn palette_filter_empty_query_returns_all_commands_in_order() {
+        let actual = filter_palette_commands("");
+        let expected: Vec<usize> = (0..PALETTE_COMMANDS.len()).collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn palette_filter_fuzzy_matches_command_name() {
+        let actual = filter_palette_commands("mod");
+        let names: Vec<&str> = actual
+            .iter()
+            .filter_map(|i| PALETTE_COMMANDS.get(*i))
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(
+            names.contains(&"model"),
+            "fuzzy 'mod' should match /model, got {names:?}"
+        );
+        assert!(
+            names.contains(&"models"),
+            "fuzzy 'mod' should match /models, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"image"),
+            "fuzzy 'mod' must not match unrelated /image, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn palette_filter_filters_zero_score_items_out() {
+        // A query that no command name contains should produce zero results.
+        let actual = filter_palette_commands("zzzzzzzqqqq");
+        assert!(
+            actual.is_empty(),
+            "garbage query must yield no matches, got {actual:?}"
+        );
+    }
+
+    #[test]
+    fn palette_command_names_are_unique_and_lowercase() {
+        let mut seen = std::collections::HashSet::new();
+        for (name, description) in PALETTE_COMMANDS {
+            assert!(
+                seen.insert(*name),
+                "duplicate command in palette table: {name}"
+            );
+            assert!(
+                !name.is_empty() && name.chars().all(|c| !c.is_whitespace()),
+                "command names must be a single token: {name}"
+            );
+            assert!(
+                !description.is_empty(),
+                "every palette command needs a description: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_excludes_repl_only_commands() {
+        for name in &["exit", "edit", "retry"] {
+            assert!(
+                !PALETTE_COMMANDS.iter().any(|(n, _)| n == name),
+                "REPL-only command '{name}' must be excluded from the palette"
+            );
+        }
+    }
+    #[test]
+    fn palette_lines_render_query_and_selected_marker() {
+        let state = CommandPaletteState {
+            query: "mod".to_string(),
+            selected_index: 0,
+        };
+        let matches = filter_palette_commands(&state.query);
+        let lines = command_palette_lines(&state, &matches, 80);
+        assert!(!lines.is_empty(), "palette should render at least one line");
+
+        let rendered: Vec<String> = lines.iter().cloned().map(render_line).collect();
+
+        // First line shows the query prompt with leading slash.
+        assert!(
+            rendered[0].starts_with("/mod"),
+            "palette prompt should echo /mod, got {:?}",
+            rendered[0]
+        );
+
+        // Some line should contain the selected marker '>' followed by /<name>.
+        let has_marker = rendered
+            .iter()
+            .any(|line| line.trim_start().starts_with('>'));
+        assert!(has_marker, "expected a selected '>' marker in palette");
+    }
+
+    #[test]
+    fn palette_lines_show_no_match_hint_for_zero_results() {
+        let state = CommandPaletteState {
+            query: "zzzzqqqqzz".to_string(),
+            selected_index: 0,
+        };
+        let matches = filter_palette_commands(&state.query);
+        assert!(matches.is_empty());
+        let lines = command_palette_lines(&state, &matches, 80);
+        let rendered: Vec<String> = lines.iter().cloned().map(render_line).collect();
+        assert!(
+            rendered.iter().any(|line| line.contains("No matching")),
+            "missing no-match hint, got {rendered:?}"
+        );
+    }
     #[test]
     fn connect_intent_uses_login_dialog_copy() {
         let fixture = ConnectIntent::Login;
