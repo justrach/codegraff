@@ -63,57 +63,27 @@ const SHORTCUT_HINT_MILLIS: u64 = 2_500;
 
 /// Static catalogue of slash commands surfaced in the command palette.
 ///
-/// The list mirrors the AppCommand enum in `crates/forge_main/src/model.rs`
-/// (the REPL parser that also accepts `/`), plus codegraff-specific commands
-/// already dispatched in this TUI (`/workflow`, `/image`, `/logs`, `/login`,
-/// `/connect`, `/models`, `/usage`). Excluded REPL-only entries:
-/// - `:exit`   — the TUI quits via Ctrl+C; users do not expect a slash form.
-/// - `:edit`   — opens an external editor, which is REPL-only behaviour.
-/// - `:retry`  — depends on REPL conversation state not surfaced here.
+/// Slash commands surfaced by the codegraff TUI command palette.
+///
+/// **Restricted to the subset that codegraff's `handle_enter` actually
+/// routes locally.** Commands like `/new`, `/info`, `/agent`, `/commit`,
+/// `/dump`, etc. exist in the graff REPL's `AppCommand` enum but are not
+/// yet wired into the codegraff TUI dispatcher — selecting them from the
+/// palette would silently send them to the LLM as chat messages, which is
+/// strictly worse UX than not exposing them. Wiring those commands into
+/// the TUI dispatcher is tracked as a sub-task of the codegraff parity
+/// effort (see GitHub tracking issue).
+///
+/// Excluded for the same reason as the brief: `:exit`, `:edit`, `:retry`.
 const PALETTE_COMMANDS: &[(&str, &str)] = &[
-    ("act", "Switch to the forge agent (implementation mode)"),
-    ("agent", "Switch the active agent interactively"),
-    ("commit", "Generate AI commit message and commit changes"),
-    ("commit-preview", "Preview the AI-generated commit message"),
-    ("compact", "Compact the conversation context"),
-    ("config", "Display the effective resolved configuration"),
-    ("config-commit-model", "Set the model used for commit message generation"),
-    ("config-edit", "Open the global config file in an editor"),
-    ("config-model", "Set the global model via interactive selection"),
-    ("config-reasoning-effort", "Set reasoning effort in the global config"),
-    ("config-reload", "Reset session overrides to global config"),
-    ("config-suggest-model", "Set the model used for suggest generation"),
     ("connect", "Connect or configure a provider"),
-    ("conversation", "List conversations for the active workspace"),
-    ("conversation-rename", "Rename a conversation interactively"),
-    ("clone", "Clone the current or a selected conversation"),
-    ("copy", "Copy the last AI response to the clipboard"),
-    ("dump", "Save the conversation as JSON or HTML"),
-    ("fast", "Toggle Priority Processing for OpenAI-series requests"),
-    ("help", "Switch to help mode for tool questions"),
     ("image", "Attach an image from the filesystem (path)"),
-    ("index", "Index the current workspace for semantic code search"),
-    ("info", "Display system environment information"),
     ("login", "Log in to a provider"),
-    ("logout", "Log out from the configured provider"),
     ("logs", "Show the path to the codegraff log file"),
     ("model", "Switch or select the active model"),
     ("models", "List or pick from registered provider models"),
-    ("new", "Start a new conversation while preserving history"),
-    ("plan", "Switch to the muse agent (planning mode)"),
-    ("provider", "Configure a provider (alias of /login)"),
-    ("rename", "Rename the current conversation"),
-    ("sage", "Switch to research mode (sage agent)"),
-    ("skill", "List all available skills"),
-    ("suggest", "Generate a shell command from natural language"),
-    ("tools", "List all available tools with descriptions"),
-    ("update", "Update graff to the latest compatible version"),
     ("usage", "Show token usage and request information"),
     ("workflow", "Open a workflow review dialog for a goal"),
-    ("workspace-info", "Show workspace information with sync details"),
-    ("workspace-init", "Initialize a workspace without syncing files"),
-    ("workspace-status", "Show sync status of workspace files"),
-    ("workspace-sync", "Sync the current workspace for semantic search"),
 ];
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -5303,8 +5273,28 @@ mod tests {
                 "command names must be a single token: {name}"
             );
             assert!(
+                name.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "command name must be lowercase ASCII (with optional dashes): {name}"
+            );
+            assert!(
                 !description.is_empty(),
                 "every palette command needs a description: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_includes_locally_handled_commands() {
+        // Sanity check: every command exposed in the palette must be one
+        // the codegraff dispatcher (`handle_enter`) actually routes
+        // locally. If you add a command here, also wire it in
+        // `handle_enter`, otherwise selecting it from the palette will
+        // silently dispatch to the LLM as a chat message.
+        let must_be_present = ["usage", "model", "models", "login", "connect", "workflow", "logs", "image"];
+        for name in &must_be_present {
+            assert!(
+                PALETTE_COMMANDS.iter().any(|(n, _)| n == name),
+                "expected palette to include `/{name}` (it is handled by handle_enter)"
             );
         }
     }
