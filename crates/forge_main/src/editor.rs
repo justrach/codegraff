@@ -156,9 +156,10 @@ impl EditMode for ForgeEditMode {
         // to plain-text paste. On macOS users typically use Cmd+V, which the
         // terminal intercepts before the app sees it — Ctrl+V is the only
         // reliable in-process binding for clipboard access. Image capture
-        // produces an `@[<temp.png>]` reference that the existing attachment
-        // pipeline (`forge_domain::Attachment`) resolves into a multimodal
-        // content block at message-send time.
+        // saves the PNG to `~/forge/clipboard/`, registers a 1-indexed slot,
+        // and inserts a `[Image N]` chip into the buffer. The chip is
+        // rewritten to the canonical `@[<path>]` attachment syntax by
+        // [`crate::clipboard::expand_image_chips`] at message-submit time.
         if let Event::Key(KeyEvent {
             code: KeyCode::Char('v'),
             modifiers: KeyModifiers::CONTROL,
@@ -166,10 +167,10 @@ impl EditMode for ForgeEditMode {
             ..
         }) = raw
         {
-            match crate::clipboard::capture_clipboard_image_to_temp() {
-                Ok(Some(path)) => {
-                    let inserted = format!("@[{}]", path.display());
-                    return ReedlineEvent::Edit(vec![EditCommand::InsertString(inserted)]);
+            match crate::clipboard::capture_clipboard_image() {
+                Ok(Some(captured)) => {
+                    let chip = format!("[Image {}]", captured.slot);
+                    return ReedlineEvent::Edit(vec![EditCommand::InsertString(chip)]);
                 }
                 Ok(None) | Err(_) => {
                     // No image (or capture/encoding failed); fall back to text.
@@ -198,25 +199,25 @@ impl EditMode for ForgeEditMode {
 impl From<Signal> for ReadResult {
     fn from(signal: Signal) -> Self {
         match signal {
-            Signal::Success(buffer) => {
-                let trimmed = buffer.trim();
-                if trimmed.is_empty() {
-                    ReadResult::Empty
-                } else {
-                    ReadResult::Success(trimmed.to_string())
-                }
-            }
-            Signal::ExternalBreak(buffer) => {
-                let trimmed = buffer.trim();
-                if trimmed.is_empty() {
-                    ReadResult::Empty
-                } else {
-                    ReadResult::Success(trimmed.to_string())
-                }
-            }
+            Signal::Success(buffer) => buffer_to_result(&buffer),
+            Signal::ExternalBreak(buffer) => buffer_to_result(&buffer),
             Signal::CtrlC => ReadResult::Continue,
             Signal::CtrlD => ReadResult::Exit,
             _ => ReadResult::Continue,
         }
+    }
+}
+
+/// Trims the user's submitted buffer and rewrites any `[Image N]` chips
+/// captured via Ctrl+V into the canonical `@[<path>]` attachment syntax
+/// before the line reaches the agent pipeline. Returns `Empty` for a
+/// blank submission.
+fn buffer_to_result(buffer: &str) -> ReadResult {
+    let trimmed = buffer.trim();
+    if trimmed.is_empty() {
+        ReadResult::Empty
+    } else {
+        let expanded = crate::clipboard::expand_image_chips(trimmed);
+        ReadResult::Success(expanded)
     }
 }
