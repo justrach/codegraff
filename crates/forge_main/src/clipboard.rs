@@ -3,23 +3,23 @@
 //! Provides clipboard image and text capture used by the Ctrl+V keybinding
 //! in [`crate::editor::ForgeEditMode`]. Clipboard images are captured as
 //! RGBA pixel buffers via `arboard`, encoded as PNG via the `image` crate,
-//! and written to a unique file under the system temp directory. The
-//! caller receives the path so it can be inserted into the input buffer
-//! using the existing `@[<path>]` attachment syntax.
+//! and written to a short-named file under `~/forge/clipboard/` so the
+//! resulting `@[<path>]` reference stays readable in the input buffer.
+//! The caller receives the path so it can be inserted into the input
+//! using the existing attachment syntax.
 
 use std::path::PathBuf;
 
 use anyhow::Context;
 
 /// Attempts to capture an image from the system clipboard and write it as a
-/// PNG to a unique file in the system temp directory.
+/// PNG file under `~/forge/clipboard/<8hex>.png`.
 ///
 /// Returns `Ok(Some(path))` if an image was captured and successfully
 /// written, `Ok(None)` if the clipboard does not currently hold an image
 /// (or contains an empty image), and `Err` only for unexpected failures
-/// (PNG encoding error, temp-dir permission error, etc.). Callers should
-/// treat `Ok(None)` as the normal "no image, fall back to text paste"
-/// path.
+/// (PNG encoding error, IO error). Callers should treat `Ok(None)` as the
+/// normal "no image, fall back to text paste" path.
 pub fn capture_clipboard_image_to_temp() -> anyhow::Result<Option<PathBuf>> {
     let mut clipboard = match arboard::Clipboard::new() {
         Ok(c) => c,
@@ -44,14 +44,35 @@ pub fn capture_clipboard_image_to_temp() -> anyhow::Result<Option<PathBuf>> {
     let img = image::RgbaImage::from_raw(width, height, bytes)
         .context("clipboard image bytes did not match width*height*4")?;
 
-    let path = std::env::temp_dir().join(format!(
-        "graff-clipboard-{}.png",
-        uuid::Uuid::new_v4()
-    ));
+    // Save to ~/forge/clipboard/<8-hex>.png so the resulting `@[...]`
+    // reference stays short and human-readable rather than the ~100-char
+    // `/var/folders/...` system temp path. Falls back to system temp if
+    // the home directory is unavailable (sandboxed environments, CI, etc.).
+    let dir = clipboard_dir().unwrap_or_else(std::env::temp_dir);
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        // Permission or IO error creating the directory; fall back rather
+        // than fail Ctrl+V entirely.
+        tracing::debug!(
+            error = %err,
+            path = %dir.display(),
+            "could not create clipboard dir; falling back to system temp"
+        );
+    }
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let short = id.get(..8).unwrap_or(&id);
+    let path = dir.join(format!("{short}.png"));
     img.save_with_format(&path, image::ImageFormat::Png)
-        .context("failed to write clipboard PNG to temp file")?;
+        .context("failed to write clipboard PNG to disk")?;
 
     Ok(Some(path))
+}
+
+/// Returns `~/forge/clipboard/`. Matches the existing `~/forge/` config
+/// directory used elsewhere in graff (see
+/// `forge_config::ConfigReader::base_path`). Returns `None` when no home
+/// directory can be resolved.
+fn clipboard_dir() -> Option<PathBuf> {
+    Some(dirs::home_dir()?.join("forge").join("clipboard"))
 }
 
 /// Attempts to read text from the system clipboard.
