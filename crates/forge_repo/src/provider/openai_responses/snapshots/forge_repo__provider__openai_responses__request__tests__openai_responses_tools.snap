@@ -7,12 +7,22 @@ expression: actual.tools
     "type": "function",
     "name": "shell",
     "parameters": {
+      "type": "object",
       "additionalProperties": false,
+      "required": [
+        "alpha",
+        "output_mode",
+        "zebra"
+      ],
       "properties": {
+        "zebra": {
+          "type": "string"
+        },
         "alpha": {
           "type": "string"
         },
         "output_mode": {
+          "description": "Output mode",
           "anyOf": [
             {
               "enum": [
@@ -24,19 +34,9 @@ expression: actual.tools
             {
               "type": "null"
             }
-          ],
-          "description": "Output mode"
-        },
-        "zebra": {
-          "type": "string"
+          ]
         }
-      },
-      "required": [
-        "alpha",
-        "output_mode",
-        "zebra"
-      ],
-      "type": "object"
+      }
     },
     "strict": true,
     "description": "Run a shell command"
