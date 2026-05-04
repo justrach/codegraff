@@ -64,6 +64,9 @@ fn apply_config_op(fc: &mut ForgeConfig, op: ConfigOperation) {
                 .get_or_insert_with(forge_config::ReasoningConfig::default);
             reasoning.effort = Some(config_effort);
         }
+        ConfigOperation::SetFastMode(enabled) => {
+            fc.fast_mode = Some(enabled);
+        }
     }
 }
 

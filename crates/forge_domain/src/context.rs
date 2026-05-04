@@ -430,6 +430,10 @@ pub struct Context {
     /// Response format for structured output (JSON schema)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
+    /// When `true`, request OpenAI Priority Processing lane (`/fast` mode) on
+    /// `gpt-*` / `codex-*` models. Ignored by other providers/models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode: Option<bool>,
 }
 
 impl Context {

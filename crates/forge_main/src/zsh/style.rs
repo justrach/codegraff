@@ -24,6 +24,8 @@ impl ZshColor {
     pub const YELLOW: Self = Self(3);
     /// Dimmed gray (color 240)
     pub const DIMMED: Self = Self(240);
+    /// Bright red (color 9)
+    pub const RED: Self = Self(9);
 
     /// Creates a color from a 256-color palette value.
     #[cfg(test)]

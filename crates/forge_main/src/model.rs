@@ -427,6 +427,13 @@ pub enum AppCommand {
     #[command(name = "reasoning-effort", alias = "re")]
     ReasoningEffort,
 
+    /// Toggle Priority Processing (`service_tier: priority`) for OpenAI-series
+    /// requests in the current session.
+    /// This can be triggered with the '/fast' command.
+    #[strum(props(usage = "Toggle Priority Processing for OpenAI-series requests"))]
+    #[command(name = "fast")]
+    Fast,
+
     /// Set the reasoning effort level in global config.
     /// This can be triggered with the '/config-reasoning-effort' command
     /// (alias: cre).
@@ -724,6 +731,7 @@ impl AppCommand {
             AppCommand::ConfigModel => "config-model",
             AppCommand::ConfigReload => "config-reload",
             AppCommand::ReasoningEffort => "reasoning-effort",
+            AppCommand::Fast => "fast",
             AppCommand::ConfigReasoningEffort => "config-reasoning-effort",
             AppCommand::ConfigCommitModel => "config-commit-model",
             AppCommand::ConfigSuggestModel => "config-suggest-model",
@@ -772,7 +780,6 @@ impl AppCommand {
         )
     }
 }
-
 #[cfg(test)]
 mod tests {
     use std::fmt::Display;
@@ -1669,5 +1676,17 @@ mod tests {
             result,
             AppCommand::Suggest { description: vec!["-v".to_string(), "file.txt".to_string()] }
         );
+    }
+
+    #[test]
+    fn test_parse_fast_command() {
+        let fixture = ForgeCommandManager::default();
+        let actual = fixture.parse("/fast").unwrap();
+        assert_eq!(actual, AppCommand::Fast);
+    }
+
+    #[test]
+    fn test_fast_command_name() {
+        assert_eq!(AppCommand::Fast.name(), "fast");
     }
 }

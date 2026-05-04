@@ -197,6 +197,9 @@ pub trait AppConfigService: Send + Sync {
     /// Gets the current reasoning effort setting.
     async fn get_reasoning_effort(&self) -> anyhow::Result<Option<forge_domain::Effort>>;
 
+    /// Gets the current fast-mode flag (OpenAI Priority Processing toggle).
+    async fn get_fast_mode(&self) -> anyhow::Result<Option<bool>>;
+
     /// Applies one or more configuration mutations atomically.
     ///
     /// Each operation in `ops` is applied in order, and the result is
@@ -960,6 +963,10 @@ impl<I: Services> AppConfigService for I {
 
     async fn get_reasoning_effort(&self) -> anyhow::Result<Option<forge_domain::Effort>> {
         self.config_service().get_reasoning_effort().await
+    }
+
+    async fn get_fast_mode(&self) -> anyhow::Result<Option<bool>> {
+        self.config_service().get_fast_mode().await
     }
 
     async fn update_config(&self, ops: Vec<forge_domain::ConfigOperation>) -> anyhow::Result<()> {

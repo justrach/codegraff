@@ -378,6 +378,10 @@ impl FromDomain<ChatContext> for oai::CreateResponse {
             builder.prompt_cache_key(prompt_cache_key);
         }
 
+        if context.fast_mode == Some(true) {
+            builder.service_tier(oai::ServiceTier::Priority);
+        }
+
         let mut response = builder.build().map_err(anyhow::Error::from)?;
 
         response.stream = Some(true);
@@ -1555,6 +1559,43 @@ mod tests {
         };
 
         assert_eq!(msg.phase, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_request_with_fast_mode_sets_service_tier_priority() -> anyhow::Result<()> {
+        let context = ChatContext::default()
+            .add_message(ContextMessage::user("Hello", None))
+            .fast_mode(true);
+
+        let actual = oai::CreateResponse::from_domain(context)?;
+
+        assert_eq!(actual.service_tier, Some(oai::ServiceTier::Priority));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_request_without_fast_mode_omits_service_tier() -> anyhow::Result<()> {
+        let context = ChatContext::default().add_message(ContextMessage::user("Hello", None));
+
+        let actual = oai::CreateResponse::from_domain(context)?;
+
+        assert_eq!(actual.service_tier, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_request_fast_mode_false_omits_service_tier() -> anyhow::Result<()> {
+        let context = ChatContext::default()
+            .add_message(ContextMessage::user("Hello", None))
+            .fast_mode(false);
+
+        let actual = oai::CreateResponse::from_domain(context)?;
+
+        assert_eq!(actual.service_tier, None);
 
         Ok(())
     }

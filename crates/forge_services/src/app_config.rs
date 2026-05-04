@@ -65,6 +65,10 @@ impl<F: ProviderRepository + EnvironmentInfra<Config = forge_config::ForgeConfig
             }))
     }
 
+    async fn get_fast_mode(&self) -> anyhow::Result<Option<bool>> {
+        let config = self.infra.get_config()?;
+        Ok(config.fast_mode)
+    }
     async fn update_config(&self, ops: Vec<ConfigOperation>) -> anyhow::Result<()> {
         debug!(ops = ?ops, "Updating app config");
         self.infra.update_environment(ops).await
@@ -199,6 +203,9 @@ mod tests {
                             ));
                         }
                         ConfigOperation::SetReasoningEffort(_) => {
+                            // No-op in tests
+                        }
+                        ConfigOperation::SetFastMode(_) => {
                             // No-op in tests
                         }
                     }

@@ -161,6 +161,7 @@ impl AgentDefinition {
             custom_rules: self.custom_rules,
             max_tool_failure_per_turn: self.max_tool_failure_per_turn,
             max_requests_per_turn: self.max_requests_per_turn,
+            fast_mode: None,
             path: self.path,
         }
     }

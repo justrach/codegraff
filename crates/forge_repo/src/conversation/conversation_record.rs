@@ -819,6 +819,7 @@ impl TryFrom<ContextRecord> for Context {
             reasoning: record.reasoning.map(Into::into),
             stream: record.stream,
             response_format: None,
+            fast_mode: None,
         })
     }
 }

@@ -180,6 +180,12 @@ impl AgentExt for Agent {
             agent.reasoning = Some(merged);
         }
 
+        // Propagate the global fast_mode (Priority Processing) toggle from
+        // config to the agent. Per-agent setting wins if already set.
+        if agent.fast_mode.is_none() && config.fast_mode.is_some() {
+            agent.fast_mode = config.fast_mode;
+        }
+
         agent
     }
 }

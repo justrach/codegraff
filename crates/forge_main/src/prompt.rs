@@ -41,6 +41,9 @@ pub struct ForgePrompt {
     /// rendered to the right of the model when set. `Effort::None` is
     /// suppressed (see [`ForgePrompt::render_prompt_right`]).
     pub reasoning_effort: Option<Effort>,
+    /// When `Some(true)`, OpenAI Priority Processing (`service_tier=priority`)
+    /// is active for the session and a `FAST` chip is rendered.
+    pub fast_mode: Option<bool>,
     pub git_branch: Option<String>,
 }
 
@@ -55,6 +58,7 @@ impl ForgePrompt {
             agent_id,
             model: None,
             reasoning_effort: None,
+            fast_mode: None,
             git_branch,
         }
     }
@@ -205,6 +209,12 @@ impl Prompt for ForgePrompt {
             write!(result, " {}", Style::new().fg(color).paint(&effort_label)).unwrap();
         }
 
+        // FAST chip — rendered when OpenAI Priority Processing is active.
+        if self.fast_mode == Some(true) {
+            let color = if active { Color::LightRed } else { Color::DarkGray };
+            write!(result, " {}", Style::new().bold().fg(color).paint("FAST")).unwrap();
+        }
+
         Cow::Owned(result)
     }
 
@@ -273,6 +283,7 @@ fn effort_label(effort: &Effort, width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use console::strip_ansi_codes;
     use nu_ansi_term::Style;
     use pretty_assertions::assert_eq;
 
@@ -286,6 +297,7 @@ mod tests {
                 agent_id: AgentId::default(),
                 model: None,
                 reasoning_effort: None,
+                fast_mode: None,
                 git_branch: None,
             }
         }
@@ -464,6 +476,47 @@ mod tests {
         assert_eq!(
             effort_label(&Effort::Medium, WIDE_TERMINAL_THRESHOLD),
             "MEDIUM"
+        );
+    }
+
+    #[test]
+    fn test_render_prompt_right_with_fast_mode_shows_fast_chip() {
+        let mut prompt = ForgePrompt::default();
+        let _ = prompt.model(ModelId::new("gpt-5.1"));
+        let _ = prompt.fast_mode(true);
+
+        let actual = prompt.render_prompt_right();
+        let stripped = strip_ansi_codes(&actual);
+        assert!(
+            stripped.contains("FAST"),
+            "expected FAST chip in prompt, got: {stripped}"
+        );
+    }
+
+    #[test]
+    fn test_render_prompt_right_without_fast_mode_hides_fast_chip() {
+        let mut prompt = ForgePrompt::default();
+        let _ = prompt.model(ModelId::new("gpt-5.1"));
+
+        let actual = prompt.render_prompt_right();
+        let stripped = strip_ansi_codes(&actual);
+        assert!(
+            !stripped.contains("FAST"),
+            "expected no FAST chip, got: {stripped}"
+        );
+    }
+
+    #[test]
+    fn test_render_prompt_right_fast_mode_false_hides_fast_chip() {
+        let mut prompt = ForgePrompt::default();
+        let _ = prompt.model(ModelId::new("gpt-5.1"));
+        let _ = prompt.fast_mode(false);
+
+        let actual = prompt.render_prompt_right();
+        let stripped = strip_ansi_codes(&actual);
+        assert!(
+            !stripped.contains("FAST"),
+            "expected no FAST chip when fast_mode=false, got: {stripped}"
         );
     }
 }
