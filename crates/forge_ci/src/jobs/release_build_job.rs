@@ -30,7 +30,7 @@ impl From<ReleaseBuilderJob> for Job {
     fn from(value: ReleaseBuilderJob) -> Job {
         let mut job = Job::new("build-release")
             .strategy(Strategy {
-                fail_fast: None,
+                fail_fast: Some(false),
                 max_parallel: None,
                 matrix: Some(ReleaseMatrix::default().into()),
             })

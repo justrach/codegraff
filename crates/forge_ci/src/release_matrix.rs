@@ -42,7 +42,7 @@ impl Default for ReleaseMatrix {
                 codegraff_binary_path: "target/aarch64-unknown-linux-musl/release/codegraff",
                 build_bins: "--bin graff --bin codegraff",
                 cross: "true",
-                codedb_asset: "codedb-linux-arm64",
+                codedb_asset: "",
             },
             MatrixEntry {
                 os: "ubuntu-latest",
@@ -64,7 +64,7 @@ impl Default for ReleaseMatrix {
                 codegraff_binary_path: "target/aarch64-unknown-linux-gnu/release/codegraff",
                 build_bins: "--bin graff --bin codegraff",
                 cross: "true",
-                codedb_asset: "codedb-linux-arm64",
+                codedb_asset: "",
             },
             MatrixEntry {
                 os: "macos-latest",
