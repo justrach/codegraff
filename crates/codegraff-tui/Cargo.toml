@@ -11,7 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 crossterm = { version = "0.29.0", features = ["event-stream"] }
+dirs.workspace = true
 forge_api.workspace = true
 forge_domain.workspace = true
 futures.workspace = true
@@ -21,6 +23,7 @@ ratatui = "0.28.1"
 # ratatui-image 10.x currently targets ratatui 0.30; keep native support deferred
 # until Codegraff moves to the same ratatui version.
 rustls.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 unicode-width.workspace = true
 
