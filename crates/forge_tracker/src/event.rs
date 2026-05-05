@@ -3,7 +3,6 @@ use std::ops::Deref;
 use bstr::ByteSlice;
 use chrono::{DateTime, Utc};
 use convert_case::{Case, Casing};
-use forge_domain::Conversation;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -20,9 +19,7 @@ pub struct Event {
     pub user: String,
     pub args: Vec<String>,
     pub version: String,
-    pub email: Vec<String>,
     pub model: Option<String>,
-    pub conversation: Option<Conversation>,
     pub identity: Option<Identity>,
 }
 
@@ -74,7 +71,7 @@ impl ToolCallPayload {
 pub enum EventKind {
     Start,
     ToolCall(ToolCallPayload),
-    Prompt(String),
+    Prompt,
     Error(String),
     Trace(Vec<u8>),
     Login(Identity),
@@ -84,7 +81,7 @@ impl EventKind {
     pub fn name(&self) -> Name {
         match self {
             Self::Start => Name::from("start".to_string()),
-            Self::Prompt(_) => Name::from("prompt".to_string()),
+            Self::Prompt => Name::from("prompt".to_string()),
             Self::Error(_) => Name::from("error".to_string()),
             Self::ToolCall(_) => Name::from("tool_call".to_string()),
             Self::Trace(_) => Name::from("trace".to_string()),
@@ -94,7 +91,7 @@ impl EventKind {
     pub fn value(&self) -> String {
         match self {
             Self::Start => "".to_string(),
-            Self::Prompt(content) => content.to_string(),
+            Self::Prompt => "".to_string(),
             Self::Error(content) => content.to_string(),
             Self::ToolCall(payload) => serde_json::to_string(&payload).unwrap_or_default(),
             Self::Trace(trace) => trace.to_str_lossy().to_string(),

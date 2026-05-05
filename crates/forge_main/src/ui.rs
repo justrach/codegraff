@@ -335,7 +335,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         // Handle direct prompt or piped input if provided (raw text messages)
         let input = self.cli.prompt.clone().or(self.cli.piped_input.clone());
         if let Some(input) = input {
-            tracker::prompt(input.clone());
+            tracker::prompt();
             self.spinner.start(None)?;
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
@@ -367,10 +367,6 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                             match result {
                                 Ok(exit) => if exit {return Ok(())},
                                 Err(error) => {
-                                    if let Some(conversation_id) = self.state.conversation_id.as_ref()
-                                        && let Some(conversation) = self.api.conversation(conversation_id).await.ok().flatten() {
-                                            TRACKER.set_conversation(conversation).await;
-                                        }
                                     tracker::error(&error);
                                     tracing::error!(error = ?error);
                                     self.spinner.stop(None)?;

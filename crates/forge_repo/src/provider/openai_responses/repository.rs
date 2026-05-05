@@ -200,10 +200,11 @@ impl<T: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig>>
     pub async fn chat(
         &self,
         model: &ModelId,
-        context: ChatContext,
+        mut context: ChatContext,
     ) -> ResultStream<ChatCompletionMessage, anyhow::Error> {
         let conversation_id = context.conversation_id.as_ref().map(ToString::to_string);
         let headers = create_headers(self.get_headers_for_conversation(conversation_id.as_deref()));
+        super::request::enforce_grammar_support(&mut context, model);
         let mut request = oai::CreateResponse::from_domain(context)?;
         request.model = Some(model.as_str().to_string());
 

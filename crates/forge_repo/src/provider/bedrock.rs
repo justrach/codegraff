@@ -961,6 +961,10 @@ impl FromDomain<forge_domain::ToolDefinition> for aws_sdk_bedrockruntime::types:
     fn from_domain(tool: forge_domain::ToolDefinition) -> anyhow::Result<Self> {
         use aws_sdk_bedrockruntime::types::{Tool, ToolInputSchema, ToolSpecification};
 
+        if tool.grammar.is_some() {
+            anyhow::bail!("Bedrock does not support custom tool grammars");
+        }
+
         let spec = ToolSpecification::builder()
             .name(tool.name.to_string())
             .description(tool.description.clone())
@@ -1559,6 +1563,7 @@ mod tests {
             name: forge_domain::ToolName::new("test_tool"),
             description: "A test tool".to_string(),
             input_schema: schema,
+            grammar: None,
         };
 
         let actual = Tool::from_domain(fixture).unwrap();
