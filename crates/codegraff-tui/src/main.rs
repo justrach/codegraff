@@ -77,11 +77,14 @@ const SHORTCUT_HINT_MILLIS: u64 = 2_500;
 /// Excluded for the same reason as the brief: `:exit`, `:edit`, `:retry`.
 const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("connect", "Connect or configure a provider"),
+    ("help", "Open the command palette to discover available commands"),
     ("image", "Attach an image from the filesystem (path)"),
+    ("info", "Show active agent, model, conversation id and log path"),
     ("login", "Log in to a provider"),
     ("logs", "Show the path to the codegraff log file"),
     ("model", "Switch or select the active model"),
     ("models", "List or pick from registered provider models"),
+    ("new", "Start a new conversation, clearing the transcript"),
     ("usage", "Show token usage and request information"),
     ("workflow", "Open a workflow review dialog for a goal"),
 ];
@@ -1150,6 +1153,29 @@ impl<A: API + 'static> Tui<A> {
             return Ok(());
         }
 
+        if raw_prompt == "/new" {
+            self.start_new_conversation().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        if raw_prompt == "/info" {
+            self.show_info().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        if raw_prompt == "/help" {
+            // /help is the discovery surface — open the command palette so
+            // the user can see (and fuzzy-search) every command available.
+            self.open_command_palette();
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
         match parse_model_command(&raw_prompt) {
             ModelCommand::List => {
                 self.show_models().await;
@@ -1528,6 +1554,81 @@ impl<A: API + 'static> Tui<A> {
                 "Usage is not available yet. Send a message first.".to_string(),
             )),
         }
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Resets the conversation to a fresh one.
+    ///
+    /// Generates a new conversation id, asks the API to upsert it, then
+    /// clears the per-conversation state on the TUI side: transcript,
+    /// pending pastes, image attachments, in-flight workflow, scroll
+    /// positions. Active model and overlay are preserved across the
+    /// transition.
+    async fn start_new_conversation(&mut self) {
+        let new_conversation = Conversation::generate();
+        let new_id = new_conversation.id;
+
+        if let Err(error) = self
+            .api
+            .upsert_conversation(Conversation::new(new_id))
+            .await
+        {
+            self.log_error("upsert new conversation failed", &error);
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not start a new conversation: {error:#}"
+            )));
+            self.scroll_from_bottom = 0;
+            return;
+        }
+
+        self.conversation_id = new_id;
+        self.transcript.clear();
+        self.transcript.push(TranscriptEntry::Status(
+            "New conversation started.".to_string(),
+        ));
+        self.pending_pastes.clear();
+        self.large_paste_counter = 0;
+        self.image_attachments.clear();
+        self.usage = None;
+        self.workflow_run = None;
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Renders system + session info as a series of transcript status
+    /// entries: active agent, model label, conversation id, log path.
+    /// Mirrors the REPL `:info` command but uses the TUI transcript
+    /// surface instead of the Info widget.
+    async fn show_info(&mut self) {
+        let agent = self.api.get_active_agent().await;
+        let model = self.active_model.clone();
+
+        self.transcript
+            .push(TranscriptEntry::Status("─ session info ─".to_string()));
+        if let Some(agent_id) = agent {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Agent: {}",
+                agent_id.as_str()
+            )));
+        } else {
+            self.transcript
+                .push(TranscriptEntry::Status("Agent: (none)".to_string()));
+        }
+        match model {
+            Some(label) => self
+                .transcript
+                .push(TranscriptEntry::Status(format!("Model: {label}"))),
+            None => self
+                .transcript
+                .push(TranscriptEntry::Status("Model: (not set)".to_string())),
+        }
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "Conversation: {}",
+            self.conversation_id
+        )));
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "Logs: {}",
+            self.log_path.display()
+        )));
         self.scroll_from_bottom = 0;
     }
 
@@ -5290,7 +5391,7 @@ mod tests {
         // locally. If you add a command here, also wire it in
         // `handle_enter`, otherwise selecting it from the palette will
         // silently dispatch to the LLM as a chat message.
-        let must_be_present = ["usage", "model", "models", "login", "connect", "workflow", "logs", "image"];
+        let must_be_present = ["usage", "model", "models", "login", "connect", "workflow", "logs", "image", "new", "info", "help"];
         for name in &must_be_present {
             assert!(
                 PALETTE_COMMANDS.iter().any(|(n, _)| n == name),
