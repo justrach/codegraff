@@ -1032,7 +1032,9 @@ version = "0.1.2"
 dependencies = [
  "anyhow",
  "arboard",
+ "chrono",
  "crossterm 0.29.0",
+ "dirs",
  "forge_api",
  "forge_domain",
  "futures",
@@ -1041,6 +1043,7 @@ dependencies = [
  "pretty_assertions",
  "ratatui",
  "rustls 0.23.40",
+ "serde_json",
  "tokio",
  "unicode-width 0.2.2",
 ]
