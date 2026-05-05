@@ -10,6 +10,7 @@ use bstr::ByteSlice;
 use forge_app::McpClientInfra;
 use forge_domain::{
     Environment, Image, McpHttpServer, McpServerConfig, ToolDefinition, ToolName, ToolOutput,
+    ToolValue,
 };
 use reqwest::Client;
 use reqwest::header::{HeaderName, HeaderValue};
@@ -24,7 +25,6 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use crate::error::Error;
 
 const VERSION: &str = match option_env!("APP_VERSION") {
     Some(val) => val,
@@ -513,9 +513,12 @@ impl ForgeMcpClient {
 
     async fn list(&self) -> anyhow::Result<Vec<ToolDefinition>> {
         let client = self.connect().await?;
-        let tools = client.list_tools(None).await?;
+        // `list_all_tools` walks the `next_cursor` chain on the server side
+        // and concatenates every page. The previous `list_tools(None)` call
+        // only returned the first page, so a server with > one page worth of
+        // tools would silently drop the rest.
+        let tools = client.list_all_tools().await?;
         Ok(tools
-            .tools
             .into_iter()
             .filter_map(|tool| {
                 Some(
@@ -544,31 +547,7 @@ impl ForgeMcpClient {
                 },
             })
             .await?;
-
-        let tool_contents: Vec<ToolOutput> = result
-            .content
-            .into_iter()
-            .map(|content| match content.raw {
-                rmcp::model::RawContent::Text(raw_text_content) => {
-                    Ok(ToolOutput::text(raw_text_content.text))
-                }
-                rmcp::model::RawContent::Image(raw_image_content) => Ok(ToolOutput::image(
-                    Image::new_base64(raw_image_content.data, raw_image_content.mime_type.as_str()),
-                )),
-                rmcp::model::RawContent::Resource(_) => {
-                    Err(Error::UnsupportedMcpResponse("Resource").into())
-                }
-                rmcp::model::RawContent::ResourceLink(_) => {
-                    Err(Error::UnsupportedMcpResponse("ResourceLink").into())
-                }
-                rmcp::model::RawContent::Audio(_) => {
-                    Err(Error::UnsupportedMcpResponse("Audio").into())
-                }
-            })
-            .collect::<anyhow::Result<Vec<ToolOutput>>>()?;
-
-        Ok(ToolOutput::from(tool_contents.into_iter())
-            .is_error(result.is_error.unwrap_or_default()))
+        Ok(call_result_to_tool_output(result))
     }
 
     async fn attempt_with_retry<T, F>(&self, call: impl Fn() -> F) -> anyhow::Result<T>
@@ -610,6 +589,55 @@ impl McpClientInfra for ForgeMcpClient {
     async fn call(&self, tool_name: &ToolName, input: Value) -> anyhow::Result<ToolOutput> {
         self.attempt_with_retry(|| self.call(tool_name, &input))
             .await
+    }
+}
+
+/// Convert an `rmcp` `CallToolResult` into our domain `ToolOutput`.
+///
+/// Two design decisions baked into this helper:
+///
+/// 1. When `structured_content` is set we feed only that to the LLM as a
+///    single `ToolValue::Json` and ignore `content`. Per the MCP spec (and
+///    rmcp 0.10), `content` is auto-populated as a stringified copy of the
+///    structured value for backward compatibility — surfacing both would
+///    duplicate the same data into the conversation context.
+///
+/// 2. For non-text/image content variants (`Resource`, `ResourceLink`,
+///    `Audio`) we serialize the raw payload to JSON via `ToolValue::Json`
+///    instead of erroring out. The previous behavior rejected the entire
+///    tool call when any of these arrived, even though the payload was
+///    perfectly valid MCP — this hid otherwise-useful tool results behind
+///    an "Unsupported MCP response" error.
+fn call_result_to_tool_output(result: rmcp::model::CallToolResult) -> ToolOutput {
+    let is_error = result.is_error.unwrap_or_default();
+
+    if let Some(value) = result.structured_content {
+        return ToolOutput { is_error, values: vec![ToolValue::Json(value)] };
+    }
+
+    let values: Vec<ToolValue> = result
+        .content
+        .into_iter()
+        .map(mcp_content_to_tool_value)
+        .collect();
+    ToolOutput { is_error, values }
+}
+
+fn mcp_content_to_tool_value(content: rmcp::model::Content) -> ToolValue {
+    match content.raw {
+        rmcp::model::RawContent::Text(text) => ToolValue::Text(text.text),
+        rmcp::model::RawContent::Image(image) => ToolValue::Image(Image::new_base64(
+            image.data,
+            image.mime_type.as_str(),
+        )),
+        // Resource / ResourceLink / Audio have no first-class domain
+        // representation. Serialize the wire payload (URI, mime, base64
+        // body, …) so the LLM still sees the metadata and the structured
+        // bits are not silently dropped.
+        other => match serde_json::to_value(&other) {
+            Ok(value) => ToolValue::Json(value),
+            Err(_) => ToolValue::Text(format!("{other:?}")),
+        },
     }
 }
 
@@ -850,6 +878,138 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    // ── call_result_to_tool_output ────────────────────────────────────────
+    //
+    // These tests cover the pure helper that converts a wire-level
+    // CallToolResult into our domain ToolOutput. We intentionally do not
+    // spin up a real MCP server here — the helper is a closed function over
+    // value types, so unit-level coverage is enough to lock in the contract:
+    //
+    //   - text/image variants map to first-class ToolValue variants
+    //   - resource / resource_link / audio serialize to ToolValue::Json
+    //     instead of being rejected with an "Unsupported MCP response" error
+    //   - structured_content is authoritative when set; content is ignored
+    //     to avoid duplicating the same payload in the conversation context
+    //   - is_error is propagated, defaulting to false when None on the wire
+
+    fn text_result(text: &str) -> rmcp::model::CallToolResult {
+        rmcp::model::CallToolResult::success(vec![rmcp::model::Content::text(text)])
+    }
+
+    #[test]
+    fn test_call_result_text_content_maps_to_tool_value_text() {
+        let fixture = text_result("hello world");
+        let actual = call_result_to_tool_output(fixture);
+        let expected = ToolOutput {
+            is_error: false,
+            values: vec![ToolValue::Text("hello world".to_string())],
+        };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_call_result_image_content_maps_to_tool_value_image() {
+        let fixture = rmcp::model::CallToolResult::success(vec![rmcp::model::Content::image(
+            "BASE64DATA",
+            "image/png",
+        )]);
+        let actual = call_result_to_tool_output(fixture);
+        assert_eq!(actual.is_error, false);
+        assert_eq!(actual.values.len(), 1);
+        assert!(matches!(actual.values[0], ToolValue::Image(_)));
+    }
+
+    #[test]
+    fn test_call_result_structured_content_alone_emits_single_json_value() {
+        let payload = serde_json::json!({"temperature": 22.5, "unit": "celsius"});
+        let fixture = rmcp::model::CallToolResult {
+            // Empty content vec — structured_content is the only payload.
+            content: vec![],
+            structured_content: Some(payload.clone()),
+            is_error: Some(false),
+            meta: None,
+        };
+        let actual = call_result_to_tool_output(fixture);
+        let expected = ToolOutput {
+            is_error: false,
+            values: vec![ToolValue::Json(payload)],
+        };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_call_result_prefers_structured_content_when_both_set() {
+        // CallToolResult::structured() populates BOTH content (with a
+        // stringified copy) and structured_content. Per the MCP spec, the
+        // client should treat structured_content as authoritative and not
+        // double-feed the same data into the LLM.
+        let payload = serde_json::json!({"answer": 42});
+        let fixture = rmcp::model::CallToolResult::structured(payload.clone());
+        assert!(!fixture.content.is_empty(), "fixture should also set content");
+
+        let actual = call_result_to_tool_output(fixture);
+        let expected = ToolOutput {
+            is_error: false,
+            values: vec![ToolValue::Json(payload)],
+        };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_call_result_embedded_resource_serializes_to_json() {
+        // Previously this would have failed with
+        // Error::UnsupportedMcpResponse("Resource"). Now we serialize the
+        // wire payload so the LLM still sees URI / mime / text body.
+        let fixture = rmcp::model::CallToolResult::success(vec![rmcp::model::Content::new(
+            rmcp::model::RawContent::embedded_text("file:///tmp/notes.txt", "hello"),
+            None,
+        )]);
+        let actual = call_result_to_tool_output(fixture);
+        assert_eq!(actual.is_error, false);
+        assert_eq!(actual.values.len(), 1);
+        match &actual.values[0] {
+            ToolValue::Json(value) => {
+                let s = serde_json::to_string(value).unwrap();
+                assert!(s.contains("file:///tmp/notes.txt"), "uri preserved: {s}");
+                assert!(s.contains("hello"), "body preserved: {s}");
+            }
+            other => panic!("expected ToolValue::Json, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_call_result_propagates_is_error_true() {
+        let fixture = rmcp::model::CallToolResult::error(vec![rmcp::model::Content::text("boom")]);
+        let actual = call_result_to_tool_output(fixture);
+        assert_eq!(actual.is_error, true);
+    }
+
+    #[test]
+    fn test_call_result_is_error_defaults_to_false_when_none() {
+        let fixture = rmcp::model::CallToolResult {
+            content: vec![rmcp::model::Content::text("ok")],
+            structured_content: None,
+            is_error: None,
+            meta: None,
+        };
+        let actual = call_result_to_tool_output(fixture);
+        assert_eq!(actual.is_error, false);
+    }
+
+    #[test]
+    fn test_call_result_preserves_multiple_content_items_in_order() {
+        let fixture = rmcp::model::CallToolResult::success(vec![
+            rmcp::model::Content::text("first"),
+            rmcp::model::Content::image("DATA", "image/png"),
+            rmcp::model::Content::text("third"),
+        ]);
+        let actual = call_result_to_tool_output(fixture);
+        assert_eq!(actual.values.len(), 3);
+        assert!(matches!(&actual.values[0], ToolValue::Text(t) if t == "first"));
+        assert!(matches!(&actual.values[1], ToolValue::Image(_)));
+        assert!(matches!(&actual.values[2], ToolValue::Text(t) if t == "third"));
+    }
 
     #[test]
     fn test_resolve_http_templates_with_env() {

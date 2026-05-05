@@ -60,6 +60,13 @@ impl Transformer for TransformToolCalls {
                                 new_messages.push(ContextMessage::Image(image).into());
                             }
                             crate::ToolValue::Empty => {}
+                            crate::ToolValue::Json(value) => new_messages.push(
+                                ContextMessage::user(
+                                    serde_json::to_string(&value).unwrap_or_else(|_| value.to_string()),
+                                    self.model.clone(),
+                                )
+                                .into(),
+                            ),
                             crate::ToolValue::AI { value, .. } => new_messages
                                 .push(ContextMessage::user(value, self.model.clone()).into()),
                         }

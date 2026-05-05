@@ -1,13 +1,14 @@
 use derive_setters::Setters;
 use forge_template::Element;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{ConversationId, Image, ToolCallFull, ToolCallId, ToolName};
 
 const REFLECTION_PROMPT: &str =
     include_str!("../../../../templates/forge-partial-tool-error-reflection.md");
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Setters)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Setters)]
 #[setters(into)]
 pub struct ToolResult {
     pub name: ToolName,
@@ -79,7 +80,7 @@ impl From<ToolCallFull> for ToolResult {
     }
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Setters)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Setters)]
 #[setters(into, strip_option)]
 pub struct ToolOutput {
     pub is_error: bool,
@@ -103,6 +104,10 @@ impl ToolOutput {
 
     pub fn image(img: Image) -> Self {
         ToolOutput { is_error: false, values: vec![ToolValue::Image(img)] }
+    }
+
+    pub fn json(value: Value) -> Self {
+        ToolOutput { is_error: false, values: vec![ToolValue::Json(value)] }
     }
 
     pub fn combine_mut(&mut self, value: ToolOutput) {
@@ -132,7 +137,7 @@ where
 
 /// Like serde_json::Value, ToolValue represents all the primitive values that
 /// tools can produce.
-#[derive(Default, Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolValue {
     Text(String),
@@ -141,6 +146,7 @@ pub enum ToolValue {
         conversation_id: ConversationId,
     },
     Image(Image),
+    Json(Value),
     #[default]
     Empty,
 }
@@ -154,10 +160,15 @@ impl ToolValue {
         ToolValue::Image(img)
     }
 
+    pub fn json(value: Value) -> Self {
+        ToolValue::Json(value)
+    }
+
     pub fn as_str(&self) -> Option<&str> {
         match self {
             ToolValue::Text(text) => Some(text),
             ToolValue::Image(_) => None,
+            ToolValue::Json(_) => None,
             ToolValue::Empty => None,
             ToolValue::AI { value, .. } => Some(value),
         }

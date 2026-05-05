@@ -536,6 +536,9 @@ impl From<ToolResult> for MessageContent {
                     };
                     parts.push(content);
                 }
+                ToolValue::Json(value) => {
+                    parts.push(ContentPart::Text { text: value.to_string(), cache_control: None })
+                }
                 ToolValue::Empty => {
                     // Handle empty case if needed
                 }

@@ -778,6 +778,9 @@ mod tests {
             ToolValue::Image(image) => {
                 writeln!(result, "Image with mime type: {}", image.mime_type()).unwrap();
             }
+            ToolValue::Json(value) => {
+                writeln!(result, "{}", value).unwrap();
+            }
             ToolValue::Empty => {
                 writeln!(result, "Empty value").unwrap();
             }

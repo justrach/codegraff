@@ -377,6 +377,7 @@ pub(super) enum ToolValueRecord {
         conversation_id: String,
     },
     Image(ImageRecord),
+    Json(serde_json::Value),
     Empty,
     // Legacy variants for backward compatibility with old conversations
     // These were removed from the domain model but may exist in stored data
@@ -405,6 +406,7 @@ impl From<&forge_domain::ToolValue> for ToolValueRecord {
                 conversation_id: conversation_id.into_string(),
             },
             forge_domain::ToolValue::Image(img) => Self::Image(ImageRecord::from(img)),
+            forge_domain::ToolValue::Json(value) => Self::Json(value.clone()),
             forge_domain::ToolValue::Empty => Self::Empty,
         }
     }
@@ -421,6 +423,7 @@ impl TryFrom<ToolValueRecord> for forge_domain::ToolValue {
                 conversation_id: ConversationId::parse(conversation_id)?,
             },
             ToolValueRecord::Image(img) => Self::Image(img.into()),
+            ToolValueRecord::Json(value) => Self::Json(value),
             ToolValueRecord::Empty => Self::Empty,
             // Legacy variant migrations
             ToolValueRecord::Markdown(md) => Self::Text(md),

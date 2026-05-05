@@ -430,6 +430,13 @@ fn create_conversation_context_section(conversation: &Conversation) -> Element {
                                             Some(Element::new("img").attr("src", image.url()))
                                         }
                                         crate::ToolValue::Empty => None,
+                                        crate::ToolValue::Json(value) => Some(
+                                            Element::new("div")
+                                                .append(Element::new("pre").text(
+                                                    serde_json::to_string_pretty(value)
+                                                        .unwrap_or_else(|_| value.to_string()),
+                                                )),
+                                        ),
                                         crate::ToolValue::AI { value, conversation_id } => {
                                             // Use anchor link to navigate within the same HTML
                                             let anchor_id = format!("conversation-{}", conversation_id);
