@@ -84,7 +84,7 @@ impl Default for ZshRPrompt {
     }
 }
 
-const AGENT_SYMBOL: &str = "\u{f167a}";
+const AGENT_SYMBOL: &str = "\u{f013}";
 const MODEL_SYMBOL: &str = "\u{ec19}";
 
 /// Terminal width (in columns) at which the reasoning effort label switches
@@ -102,15 +102,20 @@ impl Display for ZshRPrompt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let active = *self.token_count.unwrap_or_default() > 0usize;
 
-        // Add agent
+        // Add agent. The internal agent ID stays `forge` for backwards
+        // compatibility with `:forge` slash commands and config; the brand-
+        // facing label is `GRAFF`.
         let agent_id = self.agent.clone().unwrap_or_default();
-        let agent_id = if self.use_nerd_font {
-            format!(
-                "{AGENT_SYMBOL} {}",
-                agent_id.to_string().to_case(Case::UpperSnake)
-            )
+        let agent_str = agent_id.to_string();
+        let label = if agent_str == "forge" {
+            "GRAFF".to_string()
         } else {
-            agent_id.to_string().to_case(Case::UpperSnake)
+            agent_str.to_case(Case::UpperSnake)
+        };
+        let agent_id = if self.use_nerd_font {
+            format!("{AGENT_SYMBOL} {}", label)
+        } else {
+            label
         };
         let styled = if active {
             agent_id.zsh().bold().fg(ZshColor::WHITE)
@@ -218,7 +223,7 @@ mod tests {
             .model(Some(ModelId::new("gpt-4")))
             .to_string();
 
-        let expected = " %B%F{240}\u{f167a} FORGE%f%b %F{240}\u{ec19} gpt-4%f";
+        let expected = " %B%F{240}\u{f013} GRAFF%f%b %F{240}\u{ec19} gpt-4%f";
         assert_eq!(actual, expected);
     }
 
@@ -231,7 +236,7 @@ mod tests {
             .token_count(Some(TokenCount::Actual(1500)))
             .to_string();
 
-        let expected = " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f";
+        let expected = " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f";
         assert_eq!(actual, expected);
     }
 
@@ -246,7 +251,7 @@ mod tests {
             .currency_symbol("\u{f155}")
             .to_string();
 
-        let expected = " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %B%F{2}\u{f155}0.01%f%b %F{134}\u{ec19} gpt-4%f";
+        let expected = " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %B%F{2}\u{f155}0.01%f%b %F{134}\u{ec19} gpt-4%f";
         assert_eq!(actual, expected);
     }
 
@@ -260,7 +265,7 @@ mod tests {
             .use_nerd_font(false)
             .to_string();
 
-        let expected = " %B%F{15}FORGE%f%b %B%F{15}1.5k%f%b %F{134}gpt-4%f";
+        let expected = " %B%F{15}GRAFF%f%b %B%F{15}1.5k%f%b %F{134}gpt-4%f";
         assert_eq!(actual, expected);
     }
 
@@ -276,7 +281,7 @@ mod tests {
             .conversion_ratio(83.5)
             .to_string();
 
-        let expected = " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %B%F{2}INR0.83%f%b %F{134}\u{ec19} gpt-4%f";
+        let expected = " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %B%F{2}INR0.83%f%b %F{134}\u{ec19} gpt-4%f";
         assert_eq!(actual, expected);
     }
     #[test]
@@ -291,7 +296,7 @@ mod tests {
             .conversion_ratio(0.92)
             .to_string();
 
-        let expected = " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %B%F{2}€0.01%f%b %F{134}\u{ec19} gpt-4%f";
+        let expected = " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %B%F{2}€0.01%f%b %F{134}\u{ec19} gpt-4%f";
         assert_eq!(actual, expected);
     }
 
@@ -307,7 +312,7 @@ mod tests {
             .to_string();
 
         let expected =
-            " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}HIGH%f";
+            " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}HIGH%f";
         assert_eq!(actual, expected);
     }
 
@@ -320,7 +325,7 @@ mod tests {
             .reasoning_effort(Some(Effort::Medium))
             .to_string();
 
-        let expected = " %B%F{240}\u{f167a} FORGE%f%b %F{240}\u{ec19} gpt-4%f %F{240}MEDIUM%f";
+        let expected = " %B%F{240}\u{f013} GRAFF%f%b %F{240}\u{ec19} gpt-4%f %F{240}MEDIUM%f";
         assert_eq!(actual, expected);
     }
 
@@ -336,7 +341,7 @@ mod tests {
             .use_nerd_font(false)
             .to_string();
 
-        let expected = " %B%F{15}FORGE%f%b %B%F{15}1.5k%f%b %F{134}gpt-4%f %F{3}LOW%f";
+        let expected = " %B%F{15}GRAFF%f%b %B%F{15}1.5k%f%b %F{134}gpt-4%f %F{3}LOW%f";
         assert_eq!(actual, expected);
     }
 
@@ -351,7 +356,7 @@ mod tests {
             .reasoning_effort(Some(Effort::None))
             .to_string();
 
-        let expected = " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f";
+        let expected = " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f";
         assert_eq!(actual, expected);
     }
 
@@ -365,7 +370,7 @@ mod tests {
             .reasoning_effort(None)
             .to_string();
 
-        let expected = " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f";
+        let expected = " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f";
         assert_eq!(actual, expected);
     }
 
@@ -380,7 +385,7 @@ mod tests {
             .to_string();
 
         let expected =
-            " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}XHIGH%f";
+            " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}XHIGH%f";
         assert_eq!(actual, expected);
     }
 
@@ -397,7 +402,7 @@ mod tests {
             .to_string();
 
         let expected =
-            " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}MED%f";
+            " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}MED%f";
         assert_eq!(actual, expected);
     }
 
@@ -414,7 +419,7 @@ mod tests {
             .to_string();
 
         let expected =
-            " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}MEDIUM%f";
+            " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}MEDIUM%f";
         assert_eq!(actual, expected);
     }
 
@@ -431,7 +436,7 @@ mod tests {
             .to_string();
 
         let expected =
-            " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}HIGH%f";
+            " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}HIGH%f";
         assert_eq!(actual, expected);
     }
 
@@ -448,7 +453,7 @@ mod tests {
             .to_string();
 
         let expected =
-            " %B%F{15}\u{f167a} FORGE%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}MIN%f";
+            " %B%F{15}\u{f013} GRAFF%f%b %B%F{15}1.5k%f%b %F{134}\u{ec19} gpt-4%f %F{3}MIN%f";
         assert_eq!(actual, expected);
     }
 

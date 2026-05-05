@@ -2267,7 +2267,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "forge_api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2286,7 +2286,7 @@ dependencies = [
 
 [[package]]
 name = "forge_app"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-recursion",
@@ -2338,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "forge_ci"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "derive_setters",
  "gh-workflow",
@@ -2349,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "forge_config"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "config",
@@ -2372,7 +2372,7 @@ dependencies = [
 
 [[package]]
 name = "forge_display"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "console",
  "derive_setters",
@@ -2389,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "forge_domain"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2431,7 +2431,7 @@ dependencies = [
 
 [[package]]
 name = "forge_embed"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "handlebars",
@@ -2440,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "forge_eventsource"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "forge_eventsource_stream",
  "futures",
@@ -2459,7 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "forge_eventsource_stream"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "futures",
  "futures-core",
@@ -2473,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "forge_fs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bstr",
@@ -2489,7 +2489,7 @@ dependencies = [
 
 [[package]]
 name = "forge_infra"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2540,7 +2540,7 @@ dependencies = [
 
 [[package]]
 name = "forge_json_repair"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pretty_assertions",
  "regex",
@@ -2553,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "forge_main"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2585,6 +2585,7 @@ dependencies = [
  "futures",
  "gix",
  "humantime",
+ "image",
  "include_dir",
  "indexmap 2.14.0",
  "insta",
@@ -2612,12 +2613,13 @@ dependencies = [
  "tracing",
  "update-informer",
  "url",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "forge_markdown_stream"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "colored",
  "insta",
@@ -2635,7 +2637,7 @@ dependencies = [
 
 [[package]]
 name = "forge_repo"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -2701,7 +2703,7 @@ dependencies = [
 
 [[package]]
 name = "forge_select"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "colored",
@@ -2714,7 +2716,7 @@ dependencies = [
 
 [[package]]
 name = "forge_services"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-recursion",
@@ -2773,7 +2775,7 @@ dependencies = [
 
 [[package]]
 name = "forge_snaps"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2788,7 +2790,7 @@ dependencies = [
 
 [[package]]
 name = "forge_spinner"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "colored",
@@ -2804,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "forge_stream"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "futures",
  "tokio",
@@ -2812,7 +2814,7 @@ dependencies = [
 
 [[package]]
 name = "forge_template"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "html-escape",
  "pretty_assertions",
@@ -2820,7 +2822,7 @@ dependencies = [
 
 [[package]]
 name = "forge_test_kit"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2829,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "forge_tool_macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2838,7 +2840,7 @@ dependencies = [
 
 [[package]]
 name = "forge_tracker"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2869,7 +2871,7 @@ dependencies = [
 
 [[package]]
 name = "forge_walker"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "derive_setters",

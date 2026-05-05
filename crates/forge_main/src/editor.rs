@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyEvent, KeyEventKind};
 use forge_api::Environment;
 use nu_ansi_term::{Color, Style};
 use reedline::{
@@ -152,6 +152,36 @@ impl EditMode for ForgeEditMode {
             return ReedlineEvent::Edit(vec![EditCommand::InsertString(wrapped)]);
         }
 
+        // Ctrl+V: capture clipboard image when present, otherwise fall back
+        // to plain-text paste. On macOS users typically use Cmd+V, which the
+        // terminal intercepts before the app sees it — Ctrl+V is the only
+        // reliable in-process binding for clipboard access. Image capture
+        // saves the PNG to `~/forge/clipboard/`, registers a 1-indexed slot,
+        // and inserts a `[Image N]` chip into the buffer. The chip is
+        // rewritten to the canonical `@[<path>]` attachment syntax by
+        // [`crate::clipboard::expand_image_chips`] at message-submit time.
+        if let Event::Key(KeyEvent {
+            code: KeyCode::Char('v'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            ..
+        }) = raw
+        {
+            match crate::clipboard::capture_clipboard_image() {
+                Ok(Some(captured)) => {
+                    let chip = format!("[Image {}]", captured.slot);
+                    return ReedlineEvent::Edit(vec![EditCommand::InsertString(chip)]);
+                }
+                Ok(None) | Err(_) => {
+                    // No image (or capture/encoding failed); fall back to text.
+                }
+            }
+            if let Some(text) = crate::clipboard::capture_clipboard_text() {
+                return ReedlineEvent::Edit(vec![EditCommand::InsertString(text)]);
+            }
+            return ReedlineEvent::None;
+        }
+
         // For every other event, delegate to the inner Emacs mode.
         // We need to reconstruct a ReedlineRawEvent from the crossterm Event.
         // ReedlineRawEvent implements TryFrom<Event>.
@@ -169,25 +199,25 @@ impl EditMode for ForgeEditMode {
 impl From<Signal> for ReadResult {
     fn from(signal: Signal) -> Self {
         match signal {
-            Signal::Success(buffer) => {
-                let trimmed = buffer.trim();
-                if trimmed.is_empty() {
-                    ReadResult::Empty
-                } else {
-                    ReadResult::Success(trimmed.to_string())
-                }
-            }
-            Signal::ExternalBreak(buffer) => {
-                let trimmed = buffer.trim();
-                if trimmed.is_empty() {
-                    ReadResult::Empty
-                } else {
-                    ReadResult::Success(trimmed.to_string())
-                }
-            }
+            Signal::Success(buffer) => buffer_to_result(&buffer),
+            Signal::ExternalBreak(buffer) => buffer_to_result(&buffer),
             Signal::CtrlC => ReadResult::Continue,
             Signal::CtrlD => ReadResult::Exit,
             _ => ReadResult::Continue,
         }
+    }
+}
+
+/// Trims the user's submitted buffer and rewrites any `[Image N]` chips
+/// captured via Ctrl+V into the canonical `@[<path>]` attachment syntax
+/// before the line reaches the agent pipeline. Returns `Empty` for a
+/// blank submission.
+fn buffer_to_result(buffer: &str) -> ReadResult {
+    let trimmed = buffer.trim();
+    if trimmed.is_empty() {
+        ReadResult::Empty
+    } else {
+        let expanded = crate::clipboard::expand_image_chips(trimmed);
+        ReadResult::Success(expanded)
     }
 }
