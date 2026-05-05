@@ -37,6 +37,8 @@ use forge_api::{
     Event, ForgeAPI, ForgeConfig, InputModality, Model, ModelConfig, ProviderId, TokenCount,
     URLParamSpec, Usage,
 };
+use forge_domain::{AgentId, Effort};
+use std::str::FromStr;
 use futures::StreamExt;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher, Utf32String};
@@ -76,14 +78,49 @@ const SHORTCUT_HINT_MILLIS: u64 = 2_500;
 ///
 /// Excluded for the same reason as the brief: `:exit`, `:edit`, `:retry`.
 const PALETTE_COMMANDS: &[(&str, &str)] = &[
+    ("act", "Switch to the forge agent (implementation mode)"),
+    ("agent", "List or switch agents (`/agent <id>` to switch)"),
+    ("clone", "Clone the current conversation (deferred — see #22)"),
+    ("commit", "Generate AI commit message and commit changes"),
+    ("commit-preview", "Preview the AI-generated commit message without committing"),
+    ("compact", "Compact the conversation context"),
+    ("config", "Show effective session configuration"),
+    ("config-commit-model", "Set the commit-message model (`<model-id>`)"),
+    ("config-edit", "Open the global config file in $EDITOR"),
+    ("config-model", "Set the session model (`<model-id>`, provider from current session)"),
+    ("config-reasoning-effort", "Set reasoning effort (`<none|low|medium|high|max>`)"),
+    ("config-reload", "Reload session overrides (deferred — see #22)"),
+    ("config-suggest-model", "Set the suggest model (`<model-id>`)"),
     ("connect", "Connect or configure a provider"),
+    ("conversation", "List conversations for the active workspace"),
+    ("conversation-rename", "Rename the active conversation (`<new title>`)"),
+    ("copy", "Copy the last AI response to clipboard (deferred — see #22)"),
+    ("dump", "Save conversation as JSON (`--html` for HTML wrapper)"),
+    ("fast", "Toggle Priority Processing for OpenAI-series requests"),
+    ("help", "Open the command palette to discover available commands"),
     ("image", "Attach an image from the filesystem (path)"),
+    ("index", "Index the current workspace for semantic search"),
+    ("info", "Show active agent, model, conversation id and log path"),
     ("login", "Log in to a provider"),
+    ("logout", "Log out from the active provider"),
     ("logs", "Show the path to the codegraff log file"),
     ("model", "Switch or select the active model"),
     ("models", "List or pick from registered provider models"),
+    ("new", "Start a new conversation, clearing the transcript"),
+    ("plan", "Switch to the muse agent (planning mode)"),
+    ("reasoning-effort", "Set reasoning effort (`<none|low|medium|high|max>`)"),
+    ("rename", "Rename the active conversation (`<new title>`)"),
+    ("sage", "Switch to the sage agent (research mode)"),
+    ("skill", "List all available skills"),
+    ("suggest", "Generate a shell command from natural-language description"),
+    ("tools", "List available tools"),
+    ("update", "Run install script to update graff/codegraff binaries"),
     ("usage", "Show token usage and request information"),
     ("workflow", "Open a workflow review dialog for a goal"),
+    ("workspace-info", "Show workspace info for the current directory"),
+    ("workspace-init", "Initialize a workspace for the current directory"),
+    ("workspace-status", "Show sync status of files in the workspace"),
+    ("workspace-sync", "Sync the current workspace for semantic search"),
 ];
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -1150,6 +1187,265 @@ impl<A: API + 'static> Tui<A> {
             return Ok(());
         }
 
+        if raw_prompt == "/new" {
+            self.start_new_conversation().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        if raw_prompt == "/info" {
+            self.show_info().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        if raw_prompt == "/help" {
+            // /help is the discovery surface — open the command palette so
+            // the user can see (and fuzzy-search) every command available.
+            self.open_command_palette();
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+
+        // ───── Tier 2: agent switching ─────
+        if raw_prompt == "/act" {
+            self.switch_agent(AgentId::FORGE).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/plan" {
+            self.switch_agent(AgentId::MUSE).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/sage" {
+            self.switch_agent(AgentId::SAGE).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/agent" || raw_prompt.starts_with("/agent ") {
+            let arg = raw_prompt.strip_prefix("/agent").unwrap_or("").trim();
+            self.handle_agent_command(arg).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        // ───── Tier 3: conversation management ─────
+        if raw_prompt == "/conversation" || raw_prompt == "/conversations" {
+            self.list_conversations().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/rename" || raw_prompt.starts_with("/rename ") {
+            let arg = raw_prompt.strip_prefix("/rename").unwrap_or("").trim();
+            self.rename_active_conversation(arg).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/conversation-rename" || raw_prompt.starts_with("/conversation-rename ") {
+            // Convenience alias of /rename for symmetry with the REPL.
+            let arg = raw_prompt
+                .strip_prefix("/conversation-rename")
+                .unwrap_or("")
+                .trim();
+            self.rename_active_conversation(arg).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/copy" {
+            self.copy_last_response().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/dump" || raw_prompt.starts_with("/dump ") {
+            let arg = raw_prompt.strip_prefix("/dump").unwrap_or("").trim();
+            self.dump_conversation(arg).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/compact" {
+            self.compact_active_conversation().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/clone" {
+            self.transcript.push(TranscriptEntry::Status(
+                "/clone is not available in the TUI yet — use graff REPL `:clone`. Tracked in #22.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        // ───── Tier 4: config ─────
+        if raw_prompt == "/config" {
+            self.show_config().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/config-edit" {
+            self.open_config_in_editor().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/fast" {
+            self.toggle_fast_mode().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt.starts_with("/reasoning-effort") {
+            let arg = raw_prompt
+                .strip_prefix("/reasoning-effort")
+                .unwrap_or("")
+                .trim();
+            self.set_reasoning_effort(arg).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt.starts_with("/config-reasoning-effort") {
+            let arg = raw_prompt
+                .strip_prefix("/config-reasoning-effort")
+                .unwrap_or("")
+                .trim();
+            self.set_reasoning_effort(arg).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt.starts_with("/config-model") {
+            let arg = raw_prompt.strip_prefix("/config-model").unwrap_or("").trim();
+            self.set_session_model(arg).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt.starts_with("/config-commit-model") {
+            let arg = raw_prompt
+                .strip_prefix("/config-commit-model")
+                .unwrap_or("")
+                .trim();
+            self.set_commit_model(arg).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt.starts_with("/config-suggest-model") {
+            let arg = raw_prompt
+                .strip_prefix("/config-suggest-model")
+                .unwrap_or("")
+                .trim();
+            self.set_suggest_model(arg).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/config-reload" {
+            self.transcript.push(TranscriptEntry::Status(
+                "/config-reload not yet wired into the TUI — restart codegraff to reload session overrides. Tracked in #22.".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        // ───── Tier 5: workspace + tools ─────
+        if raw_prompt == "/workspace-sync" || raw_prompt == "/sync" {
+            self.run_workspace_sync().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/index" {
+            self.run_workspace_sync().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/workspace-status" || raw_prompt == "/sync-status" {
+            self.show_workspace_status().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/workspace-info" || raw_prompt == "/sync-info" {
+            self.show_workspace_info().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/workspace-init" || raw_prompt == "/sync-init" {
+            self.run_workspace_init().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/skill" || raw_prompt == "/skills" {
+            self.list_skills().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/tools" {
+            self.list_tools().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt.starts_with("/suggest") {
+            let arg = raw_prompt.strip_prefix("/suggest").unwrap_or("").trim();
+            self.suggest_command(arg).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        // ───── Tier 6: git ─────
+        if raw_prompt == "/commit-preview" {
+            self.run_commit(true).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/commit" {
+            self.run_commit(false).await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
+        // ───── Tier 7: admin ─────
+        if raw_prompt == "/logout" {
+            self.logout_active_provider().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+        if raw_prompt == "/update" {
+            self.run_self_update().await;
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
         match parse_model_command(&raw_prompt) {
             ModelCommand::List => {
                 self.show_models().await;
@@ -1531,6 +1827,714 @@ impl<A: API + 'static> Tui<A> {
         self.scroll_from_bottom = 0;
     }
 
+    /// Resets the conversation to a fresh one.
+    ///
+    /// Generates a new conversation id, asks the API to upsert it, then
+    /// clears the per-conversation state on the TUI side: transcript,
+    /// pending pastes, image attachments, in-flight workflow, scroll
+    /// positions. Active model and overlay are preserved across the
+    /// transition.
+    async fn start_new_conversation(&mut self) {
+        let new_conversation = Conversation::generate();
+        let new_id = new_conversation.id;
+
+        if let Err(error) = self
+            .api
+            .upsert_conversation(Conversation::new(new_id))
+            .await
+        {
+            self.log_error("upsert new conversation failed", &error);
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not start a new conversation: {error:#}"
+            )));
+            self.scroll_from_bottom = 0;
+            return;
+        }
+
+        self.conversation_id = new_id;
+        self.transcript.clear();
+        self.transcript.push(TranscriptEntry::Status(
+            "New conversation started.".to_string(),
+        ));
+        self.pending_pastes.clear();
+        self.large_paste_counter = 0;
+        self.image_attachments.clear();
+        self.usage = None;
+        self.workflow_run = None;
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Renders system + session info as a series of transcript status
+    /// entries: active agent, model label, conversation id, log path.
+    /// Mirrors the REPL `:info` command but uses the TUI transcript
+    /// surface instead of the Info widget.
+    async fn show_info(&mut self) {
+        let agent = self.api.get_active_agent().await;
+        let model = self.active_model.clone();
+
+        self.transcript
+            .push(TranscriptEntry::Status("─ session info ─".to_string()));
+        if let Some(agent_id) = agent {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Agent: {}",
+                agent_id.as_str()
+            )));
+        } else {
+            self.transcript
+                .push(TranscriptEntry::Status("Agent: (none)".to_string()));
+        }
+        match model {
+            Some(label) => self
+                .transcript
+                .push(TranscriptEntry::Status(format!("Model: {label}"))),
+            None => self
+                .transcript
+                .push(TranscriptEntry::Status("Model: (not set)".to_string())),
+        }
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "Conversation: {}",
+            self.conversation_id
+        )));
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "Logs: {}",
+            self.log_path.display()
+        )));
+        self.scroll_from_bottom = 0;
+    }
+
+
+    // ───────────── Tier 2: agent switching ─────────────
+
+    /// Switches the active agent and pushes a status entry. Used by the
+    /// fixed `/act`, `/plan`, `/sage` shortcuts.
+    async fn switch_agent(&mut self, agent_id: AgentId) {
+        let label = agent_id.as_str().to_string();
+        if let Err(error) = self.api.set_active_agent(agent_id).await {
+            self.log_error("set_active_agent failed", &error);
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not switch agent: {error:#}"
+            )));
+        } else {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Switched to agent: {label}"
+            )));
+            self.refresh_active_model().await;
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Handles `/agent` (no arg → list available) and `/agent <name>` →
+    /// switch by id. Avoids overlay scope by being arg-driven for v1.
+    async fn handle_agent_command(&mut self, arg: &str) {
+        if arg.is_empty() {
+            match self.api.get_agent_infos().await {
+                Ok(agents) if agents.is_empty() => {
+                    self.transcript.push(TranscriptEntry::Status(
+                        "No agents available.".to_string(),
+                    ));
+                }
+                Ok(agents) => {
+                    self.transcript.push(TranscriptEntry::Status(
+                        "Available agents — type `/agent <id>` to switch:".to_string(),
+                    ));
+                    for info in agents {
+                        let desc = info.description.clone().unwrap_or_default();
+                        self.transcript.push(TranscriptEntry::Status(format!(
+                            "  · {} — {desc}",
+                            info.id.as_str()
+                        )));
+                    }
+                }
+                Err(error) => {
+                    self.log_error("get_agent_infos failed", &error);
+                    self.transcript.push(TranscriptEntry::Error(format!(
+                        "Could not list agents: {error:#}"
+                    )));
+                }
+            }
+        } else {
+            self.switch_agent(AgentId::new(arg)).await;
+            return;
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    // ───────────── Tier 3: conversation management ─────────────
+
+    /// Lists conversations for the active workspace as transcript entries.
+    async fn list_conversations(&mut self) {
+        match self.api.get_conversations(Some(20)).await {
+            Ok(conversations) if conversations.is_empty() => {
+                self.transcript.push(TranscriptEntry::Status(
+                    "No conversations in this workspace yet.".to_string(),
+                ));
+            }
+            Ok(conversations) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Conversations ({}):",
+                    conversations.len()
+                )));
+                for c in conversations {
+                    let title = c.title.clone().unwrap_or_else(|| "(untitled)".to_string());
+                    let active = if c.id == self.conversation_id { " · active" } else { "" };
+                    self.transcript.push(TranscriptEntry::Status(format!(
+                        "  · {} — {title}{active}",
+                        c.id
+                    )));
+                }
+            }
+            Err(error) => {
+                self.log_error("get_conversations failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not list conversations: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Renames the active conversation. Empty arg prints a usage hint.
+    async fn rename_active_conversation(&mut self, arg: &str) {
+        if arg.is_empty() {
+            self.transcript.push(TranscriptEntry::Status(
+                "Usage: /rename <new title>".to_string(),
+            ));
+        } else if let Err(error) = self
+            .api
+            .rename_conversation(&self.conversation_id, arg.to_string())
+            .await
+        {
+            self.log_error("rename_conversation failed", &error);
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not rename conversation: {error:#}"
+            )));
+        } else {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Conversation renamed to: {arg}"
+            )));
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Compacts the active conversation, replacing its context with a
+    /// summary. Prints original/compacted token counts when available.
+    async fn compact_active_conversation(&mut self) {
+        self.transcript.push(TranscriptEntry::Status(
+            "Compacting conversation context…".to_string(),
+        ));
+        self.scroll_from_bottom = 0;
+        match self.api.compact_conversation(&self.conversation_id).await {
+            Ok(result) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Compacted: {result:?}"
+                )));
+            }
+            Err(error) => {
+                self.log_error("compact_conversation failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not compact conversation: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Dumps the active conversation as JSON (default) or HTML when arg is
+    /// `--html`. Writes under `~/forge/dumps/<id>-<timestamp>.<ext>`.
+    async fn dump_conversation(&mut self, arg: &str) {
+        let want_html = arg == "--html";
+        let conversation = match self.api.conversation(&self.conversation_id).await {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                self.transcript.push(TranscriptEntry::Error(
+                    "No active conversation to dump.".to_string(),
+                ));
+                self.scroll_from_bottom = 0;
+                return;
+            }
+            Err(error) => {
+                self.log_error("conversation fetch failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not fetch conversation: {error:#}"
+                )));
+                self.scroll_from_bottom = 0;
+                return;
+            }
+        };
+        let dir: std::path::PathBuf = dirs::home_dir()
+            .map(|h| h.join("forge").join("dumps"))
+            .unwrap_or_else(std::env::temp_dir);
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            let msg = error.to_string();
+            self.log_error("create dumps dir failed", &anyhow::anyhow!("{msg}"));
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not create dump directory {}: {msg}",
+                dir.display()
+            )));
+            self.scroll_from_bottom = 0;
+            return;
+        }
+        let ext = if want_html { "html" } else { "json" };
+        let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let path = dir.join(format!("{}-{ts}.{ext}", self.conversation_id));
+        let content = if want_html {
+            // No HTML serializer wired yet — emit JSON inside a <pre> block
+            // so users get something open-able in a browser.
+            let body = serde_json::to_string_pretty(&conversation)
+                .unwrap_or_else(|_| "(serialize failed)".to_string());
+            format!("<!doctype html><pre>{body}</pre>")
+        } else {
+            serde_json::to_string_pretty(&conversation)
+                .unwrap_or_else(|_| "(serialize failed)".to_string())
+        };
+        if let Err(error) = std::fs::write(&path, content) {
+            let msg = error.to_string();
+            self.log_error("write dump failed", &anyhow::anyhow!("{msg}"));
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not write dump: {msg}"
+            )));
+        } else {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Dumped conversation to {}",
+                path.display()
+            )));
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Copies the last assistant text response to the system clipboard via
+    /// `arboard`. Walks the conversation context to find the most recent
+    /// assistant message.
+    async fn copy_last_response(&mut self) {
+        // Without a stable Context message-walker available here, defer with a
+        // helpful status. Tracked as part of #22.
+        self.transcript.push(TranscriptEntry::Status(
+            "/copy is not yet wired into the TUI — use the terminal's selection or `:copy` in graff REPL. Tracked in #22.".to_string(),
+        ));
+        self.scroll_from_bottom = 0;
+    }
+
+    // ───────────── Tier 4: config ─────────────
+
+    /// Prints the effective session config as a series of status entries.
+    async fn show_config(&mut self) {
+        self.transcript
+            .push(TranscriptEntry::Status("─ session config ─".to_string()));
+        match self.api.get_session_config().await {
+            Some(cfg) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Provider: {}", cfg.provider
+                )));
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Model: {}", cfg.model
+                )));
+            }
+            None => {
+                self.transcript
+                    .push(TranscriptEntry::Status("No session config set yet — use /login then /models.".to_string()));
+            }
+        }
+        if let Ok(Some(effort)) = self.api.get_reasoning_effort().await {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Reasoning effort: {effort:?}"
+            )));
+        }
+        if let Ok(Some(fast)) = self.api.get_fast_mode().await {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Fast mode: {}",
+                if fast { "ON" } else { "OFF" }
+            )));
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Opens `~/forge/.forge.toml` in `$EDITOR` (or `$FORGE_EDITOR`).
+    async fn open_config_in_editor(&mut self) {
+        let path: std::path::PathBuf = match dirs::home_dir() {
+            Some(h) => h.join("forge").join(".forge.toml"),
+            None => {
+                self.transcript.push(TranscriptEntry::Error(
+                    "Could not resolve home directory.".to_string(),
+                ));
+                self.scroll_from_bottom = 0;
+                return;
+            }
+        };
+        let editor = std::env::var("FORGE_EDITOR")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "vi".to_string());
+        let cmd = format!("{editor} {}", path.display());
+        if let Err(error) = self.api.execute_shell_command_raw(&cmd).await {
+            self.log_error("open editor failed", &error);
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not open editor: {error:#}"
+            )));
+        } else {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Edited {} (run /config-reload to pick up session changes — currently restart required).",
+                path.display()
+            )));
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Toggles fast mode (Priority Processing) and prints the new state.
+    async fn toggle_fast_mode(&mut self) {
+        let current = self.api.get_fast_mode().await.ok().flatten().unwrap_or(false);
+        let next = !current;
+        if let Err(error) = self
+            .api
+            .update_config(vec![ConfigOperation::SetFastMode(next)])
+            .await
+        {
+            self.log_error("toggle fast mode failed", &error);
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not toggle fast mode: {error:#}"
+            )));
+        } else {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Fast mode: {}",
+                if next { "ON" } else { "OFF" }
+            )));
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Sets reasoning effort. Empty arg prints a usage hint.
+    async fn set_reasoning_effort(&mut self, arg: &str) {
+        if arg.is_empty() {
+            self.transcript.push(TranscriptEntry::Status(
+                "Usage: /reasoning-effort <none|minimal|low|medium|high|xhigh|max>"
+                    .to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        }
+        let effort = match Effort::from_str(arg) {
+            Ok(e) => e,
+            Err(_) => {
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Invalid effort '{arg}' — try one of none|minimal|low|medium|high|xhigh|max."
+                )));
+                self.scroll_from_bottom = 0;
+                return;
+            }
+        };
+        if let Err(error) = self
+            .api
+            .update_config(vec![ConfigOperation::SetReasoningEffort(effort.clone())])
+            .await
+        {
+            self.log_error("set reasoning effort failed", &error);
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not set reasoning effort: {error:#}"
+            )));
+        } else {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Reasoning effort: {effort:?}"
+            )));
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    /// Sets the session model by name. Resolves provider from current
+    /// session config — if no session is set, prompts user to /login first.
+    async fn set_session_model(&mut self, arg: &str) {
+        self.set_model_for_target(arg, "session").await;
+    }
+    async fn set_commit_model(&mut self, arg: &str) {
+        self.set_model_for_target(arg, "commit").await;
+    }
+    async fn set_suggest_model(&mut self, arg: &str) {
+        self.set_model_for_target(arg, "suggest").await;
+    }
+
+    /// Shared implementation of model-setter commands. `target` is one of
+    /// "session" | "commit" | "suggest".
+    async fn set_model_for_target(&mut self, arg: &str, target: &str) {
+        if arg.is_empty() {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Usage: /config-{}-model <model-id>",
+                if target == "session" { "" } else { target }
+            )));
+            self.scroll_from_bottom = 0;
+            return;
+        }
+        let provider_id = match self.api.get_session_config().await {
+            Some(cfg) => cfg.provider,
+            None => {
+                self.transcript.push(TranscriptEntry::Error(
+                    "No session provider set — run /login first.".to_string(),
+                ));
+                self.scroll_from_bottom = 0;
+                return;
+            }
+        };
+        let model_id = forge_api::ModelId::new(arg);
+        let new_cfg = ModelConfig::new(provider_id.clone(), model_id);
+        let op = match target {
+            "session" => ConfigOperation::SetSessionConfig(new_cfg),
+            "commit" => ConfigOperation::SetCommitConfig(Some(new_cfg)),
+            "suggest" => ConfigOperation::SetSuggestConfig(new_cfg),
+            _ => unreachable!(),
+        };
+        if let Err(error) = self.api.update_config(vec![op]).await {
+            self.log_error("update_config model setter failed", &error);
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not set {target} model: {error:#}"
+            )));
+        } else {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "{target} model set to {arg} (provider {provider_id})."
+            )));
+            if target == "session" {
+                self.refresh_active_model().await;
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    // ───────────── Tier 5: workspace + tools ─────────────
+
+    /// Runs a workspace sync against the current working directory. Reads
+    /// the resulting progress stream and prints a brief completion status.
+    async fn run_workspace_sync(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "Syncing workspace at {}…",
+            cwd.display()
+        )));
+        self.scroll_from_bottom = 0;
+        let mut stream = match self.api.sync_workspace(cwd.clone()).await {
+            Ok(s) => s,
+            Err(error) => {
+                self.log_error("sync_workspace failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not start sync: {error:#}"
+                )));
+                self.scroll_from_bottom = 0;
+                return;
+            }
+        };
+        let mut count = 0usize;
+        while let Some(progress) = stream.next().await {
+            match progress {
+                Ok(_) => count += 1,
+                Err(error) => {
+                    self.log_error("sync_workspace progress error", &error);
+                    self.transcript.push(TranscriptEntry::Error(format!(
+                        "Sync error: {error:#}"
+                    )));
+                    self.scroll_from_bottom = 0;
+                    return;
+                }
+            }
+        }
+        self.transcript.push(TranscriptEntry::Status(format!(
+            "Workspace sync complete ({count} progress events)."
+        )));
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn show_workspace_status(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        match self.api.get_workspace_status(cwd).await {
+            Ok(files) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Workspace status: {} files",
+                    files.len()
+                )));
+            }
+            Err(error) => {
+                self.log_error("get_workspace_status failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not get workspace status: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn show_workspace_info(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        match self.api.get_workspace_info(cwd).await {
+            Ok(Some(info)) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Workspace: {info:?}"
+                )));
+            }
+            Ok(None) => {
+                self.transcript.push(TranscriptEntry::Status(
+                    "No workspace registered for this directory — run /workspace-init.".to_string(),
+                ));
+            }
+            Err(error) => {
+                self.log_error("get_workspace_info failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not get workspace info: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn run_workspace_init(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        match self.api.init_workspace(cwd.clone()).await {
+            Ok(id) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Initialized workspace {id:?} at {}",
+                    cwd.display()
+                )));
+            }
+            Err(error) => {
+                self.log_error("init_workspace failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not initialize workspace: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn list_skills(&mut self) {
+        match self.api.get_skills().await {
+            Ok(skills) if skills.is_empty() => {
+                self.transcript.push(TranscriptEntry::Status(
+                    "No skills registered.".to_string(),
+                ));
+            }
+            Ok(skills) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Skills ({}):",
+                    skills.len()
+                )));
+                for skill in skills {
+                    self.transcript.push(TranscriptEntry::Status(format!(
+                        "  · {skill:?}"
+                    )));
+                }
+            }
+            Err(error) => {
+                self.log_error("get_skills failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not list skills: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn list_tools(&mut self) {
+        match self.api.get_tools().await {
+            Ok(tools) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Tools: {tools:?}"
+                )));
+            }
+            Err(error) => {
+                self.log_error("get_tools failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not list tools: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn suggest_command(&mut self, arg: &str) {
+        if arg.is_empty() {
+            self.transcript.push(TranscriptEntry::Status(
+                "Usage: /suggest <natural-language description>".to_string(),
+            ));
+            self.scroll_from_bottom = 0;
+            return;
+        }
+        match self.api.generate_command(forge_api::UserPrompt::from(arg.to_string())).await {
+            Ok(cmd) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Suggested: {cmd}"
+                )));
+            }
+            Err(error) => {
+                self.log_error("generate_command failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not generate suggestion: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    // ───────────── Tier 6: git ─────────────
+
+    async fn run_commit(&mut self, preview: bool) {
+        let label = if preview { "Generating preview…" } else { "Generating commit…" };
+        self.transcript.push(TranscriptEntry::Status(label.to_string()));
+        self.scroll_from_bottom = 0;
+        match self.api.commit(preview, None, None, None).await {
+            Ok(result) => {
+                self.transcript.push(TranscriptEntry::Status(format!(
+                    "Commit result: {result:?}"
+                )));
+            }
+            Err(error) => {
+                self.log_error("commit failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "Could not commit: {error:#}"
+                )));
+            }
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    // ───────────── Tier 7: admin ─────────────
+
+    async fn logout_active_provider(&mut self) {
+        let provider = match self.api.get_default_provider().await {
+            Ok(p) => p,
+            Err(error) => {
+                self.log_error("get_default_provider failed", &error);
+                self.transcript.push(TranscriptEntry::Error(format!(
+                    "No active provider to logout from: {error:#}"
+                )));
+                self.scroll_from_bottom = 0;
+                return;
+            }
+        };
+        if let Err(error) = self.api.remove_provider(&provider.id).await {
+            self.log_error("remove_provider failed", &error);
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Could not logout from {}: {error:#}",
+                provider.id
+            )));
+        } else {
+            self.transcript.push(TranscriptEntry::Status(format!(
+                "Logged out from provider: {}",
+                provider.id
+            )));
+        }
+        self.scroll_from_bottom = 0;
+    }
+
+    async fn run_self_update(&mut self) {
+        self.transcript.push(TranscriptEntry::Status(
+            "Running install script — codegraff/graff binaries will be replaced with the latest GitHub release.".to_string(),
+        ));
+        self.scroll_from_bottom = 0;
+        let cmd = "curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh";
+        if let Err(error) = self.api.execute_shell_command_raw(cmd).await {
+            self.log_error("self update failed", &error);
+            self.transcript.push(TranscriptEntry::Error(format!(
+                "Update failed: {error:#}"
+            )));
+        } else {
+            self.transcript.push(TranscriptEntry::Status(
+                "Update complete — restart codegraff to use the new binary.".to_string(),
+            ));
+        }
+        self.scroll_from_bottom = 0;
+    }
     async fn show_models(&mut self) {
         match self.model_options().await {
             Ok(models) if models.is_empty() => {
@@ -5290,7 +6294,15 @@ mod tests {
         // locally. If you add a command here, also wire it in
         // `handle_enter`, otherwise selecting it from the palette will
         // silently dispatch to the LLM as a chat message.
-        let must_be_present = ["usage", "model", "models", "login", "connect", "workflow", "logs", "image"];
+        let must_be_present = [
+            "act", "agent", "clone", "commit", "commit-preview", "compact", "config",
+            "config-commit-model", "config-edit", "config-model", "config-reasoning-effort",
+            "config-reload", "config-suggest-model", "connect", "conversation",
+            "conversation-rename", "copy", "dump", "fast", "help", "image", "index", "info",
+            "login", "logout", "logs", "model", "models", "new", "plan", "reasoning-effort",
+            "rename", "sage", "skill", "suggest", "tools", "update", "usage", "workflow",
+            "workspace-info", "workspace-init", "workspace-status", "workspace-sync",
+        ];
         for name in &must_be_present {
             assert!(
                 PALETTE_COMMANDS.iter().any(|(n, _)| n == name),
