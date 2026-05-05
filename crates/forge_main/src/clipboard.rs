@@ -1,8 +1,8 @@
 //! System clipboard helpers and image-attachment registry for the REPL.
 //!
 //! Clipboard images captured via Ctrl+V (see [`crate::editor::ForgeEditMode`])
-//! are stored as PNG files under `~/forge/clipboard/` and registered in a
-//! per-process [`ImageRegistry`]. Each registered image gets a small
+//! are resized and stored as compressed image files under `~/forge/clipboard/`
+//! and registered in a per-process [`ImageRegistry`]. Each registered image gets a small
 //! 1-indexed slot — 1, 2, 3 — and the user sees a tidy `[Image N]` chip
 //! in the input buffer instead of the long file path.
 //!
@@ -22,6 +22,9 @@ use anyhow::Context;
 /// iteration may scope the registry per-conversation.
 static REGISTRY: LazyLock<Mutex<Vec<PathBuf>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
+const CLIPBOARD_IMAGE_MAX_EDGE: u32 = 1600;
+const CLIPBOARD_IMAGE_JPEG_QUALITY: u8 = 82;
+
 /// Result of a successful clipboard image capture.
 #[derive(Debug, Clone)]
 pub struct CapturedImage {
@@ -31,13 +34,13 @@ pub struct CapturedImage {
 }
 
 /// Attempts to capture an image from the system clipboard, write it as a
-/// PNG file under `~/forge/clipboard/<8hex>.png`, and register it for the
-/// `[Image N]` chip syntax.
+/// compressed file under `~/forge/clipboard/<8hex>.<format>`, and register it
+/// for the `[Image N]` chip syntax.
 ///
 /// Returns `Ok(Some(captured))` if an image was captured and successfully
 /// written, `Ok(None)` if the clipboard does not currently hold an image
 /// (or contains an empty image), and `Err` only for unexpected failures
-/// (PNG encoding error, IO error). Callers should treat `Ok(None)` as the
+/// (resize/encoding error, IO error). Callers should treat `Ok(None)` as the
 /// normal "no image, fall back to text paste" path.
 pub fn capture_clipboard_image() -> anyhow::Result<Option<CapturedImage>> {
     let mut clipboard = match arboard::Clipboard::new() {
@@ -54,16 +57,18 @@ pub fn capture_clipboard_image() -> anyhow::Result<Option<CapturedImage>> {
         return Ok(None);
     }
 
-    let width = u32::try_from(img_data.width)
-        .context("clipboard image width does not fit in u32")?;
-    let height = u32::try_from(img_data.height)
-        .context("clipboard image height does not fit in u32")?;
+    let width =
+        u32::try_from(img_data.width).context("clipboard image width does not fit in u32")?;
+    let height =
+        u32::try_from(img_data.height).context("clipboard image height does not fit in u32")?;
     let bytes: Vec<u8> = img_data.bytes.into_owned();
 
     let img = image::RgbaImage::from_raw(width, height, bytes)
         .context("clipboard image bytes did not match width*height*4")?;
 
-    // Save under `~/forge/clipboard/<8hex>.png`. Falls back to the system
+    let encoded = encode_clipboard_image(&img)?;
+
+    // Save under `~/forge/clipboard/<8hex>.<format>`. Falls back to the system
     // temp dir when the home directory is unavailable (sandboxed builds,
     // CI). The user-facing chip uses the registry slot, not the filename,
     // so the on-disk name only matters for debugging.
@@ -77,9 +82,16 @@ pub fn capture_clipboard_image() -> anyhow::Result<Option<CapturedImage>> {
     }
     let id = uuid::Uuid::new_v4().simple().to_string();
     let short = id.get(..8).unwrap_or(&id);
-    let path = dir.join(format!("{short}.png"));
-    img.save_with_format(&path, image::ImageFormat::Png)
-        .context("failed to write clipboard PNG to disk")?;
+    let path = dir.join(format!("{short}.{}", encoded.extension));
+    std::fs::write(&path, &encoded.bytes)
+        .context("failed to write compressed clipboard image to disk")?;
+    tracing::debug!(
+        path = %path.display(),
+        width = encoded.width,
+        height = encoded.height,
+        format = encoded.extension,
+        "saved compressed clipboard image"
+    );
 
     let mut reg = REGISTRY.lock().expect("clipboard registry mutex poisoned");
     reg.push(path);
@@ -93,6 +105,100 @@ pub fn capture_clipboard_image() -> anyhow::Result<Option<CapturedImage>> {
 /// directory can be resolved.
 fn clipboard_dir() -> Option<PathBuf> {
     Some(dirs::home_dir()?.join("forge").join("clipboard"))
+}
+
+#[derive(Debug)]
+struct EncodedClipboardImage {
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+    extension: &'static str,
+}
+
+fn encode_clipboard_image(img: &image::RgbaImage) -> anyhow::Result<EncodedClipboardImage> {
+    encode_clipboard_image_with_limits(img, CLIPBOARD_IMAGE_MAX_EDGE, CLIPBOARD_IMAGE_JPEG_QUALITY)
+}
+
+fn encode_clipboard_image_with_limits(
+    img: &image::RgbaImage,
+    max_edge: u32,
+    jpeg_quality: u8,
+) -> anyhow::Result<EncodedClipboardImage> {
+    let source_width = img.width();
+    let source_height = img.height();
+    let (width, height) = constrained_dimensions(source_width, source_height, max_edge.max(1));
+    let rgba = resized_rgba_pixels(img, width, height)?;
+
+    if has_transparency(&rgba) {
+        let bytes = encode_png(&rgba, width, height)?;
+        return Ok(EncodedClipboardImage { bytes, width, height, extension: "png" });
+    }
+
+    let rgb = rgba_to_rgb(&rgba);
+    let bytes = encode_jpeg(&rgb, width, height, jpeg_quality.clamp(1, 100))?;
+    Ok(EncodedClipboardImage { bytes, width, height, extension: "jpg" })
+}
+
+fn constrained_dimensions(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
+    if width <= max_edge && height <= max_edge {
+        return (width, height);
+    }
+
+    if width >= height {
+        let resized_height = scaled_dimension(height, width, max_edge);
+        (max_edge, resized_height)
+    } else {
+        let resized_width = scaled_dimension(width, height, max_edge);
+        (resized_width, max_edge)
+    }
+}
+
+fn scaled_dimension(size: u32, source_edge: u32, max_edge: u32) -> u32 {
+    let numerator = u64::from(size) * u64::from(max_edge);
+    let denominator = u64::from(source_edge).max(1);
+    u32::try_from(((numerator + denominator / 2) / denominator).max(1)).unwrap_or(max_edge)
+}
+
+fn resized_rgba_pixels(img: &image::RgbaImage, width: u32, height: u32) -> anyhow::Result<Vec<u8>> {
+    if img.width() == width && img.height() == height {
+        return Ok(img.as_raw().clone());
+    }
+
+    let options = pixo::ResizeOptions::builder(img.width(), img.height())
+        .dst(width, height)
+        .color_type(pixo::ColorType::Rgba)
+        .algorithm(pixo::ResizeAlgorithm::Lanczos3)
+        .build();
+    pixo::resize::resize(img.as_raw(), &options).context("failed to resize clipboard image")
+}
+
+fn has_transparency(rgba: &[u8]) -> bool {
+    rgba.chunks_exact(4).any(|pixel| pixel[3] != 255)
+}
+
+fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+    for pixel in rgba.chunks_exact(4) {
+        rgb.extend_from_slice(&pixel[..3]);
+    }
+    rgb
+}
+
+fn encode_png(rgba: &[u8], width: u32, height: u32) -> anyhow::Result<Vec<u8>> {
+    let options = pixo::png::PngOptions::builder(width, height)
+        .color_type(pixo::ColorType::Rgba)
+        .preset(1)
+        .build();
+    pixo::png::encode(rgba, &options).context("failed to encode clipboard image as PNG")
+}
+
+fn encode_jpeg(rgb: &[u8], width: u32, height: u32, quality: u8) -> anyhow::Result<Vec<u8>> {
+    let options = pixo::jpeg::JpegOptions::builder(width, height)
+        .color_type(pixo::ColorType::Rgb)
+        .quality(quality)
+        .preset(1)
+        .build();
+    pixo::jpeg::encode(rgb, &options).context("failed to encode clipboard image as JPEG")
 }
 
 /// Attempts to read text from the system clipboard.
@@ -169,7 +275,12 @@ fn try_chip(bytes: &[u8], start: usize, registry: &[PathBuf]) -> Option<(String,
     }
     let mut cursor = start + PREFIX.len();
     let digits_start = cursor;
-    while bytes.get(cursor).copied().map(|b| b.is_ascii_digit()).unwrap_or(false) {
+    while bytes
+        .get(cursor)
+        .copied()
+        .map(|b| b.is_ascii_digit())
+        .unwrap_or(false)
+    {
         cursor += 1;
     }
     if cursor == digits_start {
@@ -205,6 +316,24 @@ mod tests {
         ]
     }
 
+    fn fixture_opaque_image(width: u32, height: u32) -> image::RgbaImage {
+        image::RgbaImage::from_fn(width, height, |x, y| {
+            image::Rgba([
+                ((x * 31 + y * 17) % 256) as u8,
+                ((x * 11 + y * 29) % 256) as u8,
+                ((x * 23 + y * 7) % 256) as u8,
+                255,
+            ])
+        })
+    }
+
+    fn fixture_transparent_image(width: u32, height: u32) -> image::RgbaImage {
+        image::RgbaImage::from_fn(width, height, |x, y| {
+            let alpha = if x == y { 128 } else { 255 };
+            image::Rgba([64, 128, 192, alpha])
+        })
+    }
+
     #[test]
     fn test_capture_returns_ok_none_when_clipboard_empty() {
         // We cannot control the system clipboard in unit tests; this just
@@ -213,6 +342,50 @@ mod tests {
         let actual = capture_clipboard_image();
         let expected_is_err = false;
         assert_eq!(actual.is_err(), expected_is_err);
+    }
+
+    #[test]
+    fn test_encode_clipboard_image_downscales_and_encodes_jpeg() {
+        let fixture = fixture_opaque_image(8, 4);
+        let encoded = encode_clipboard_image_with_limits(&fixture, 4, 82).unwrap();
+        let actual = (
+            encoded.width,
+            encoded.height,
+            encoded.extension,
+            encoded.bytes.starts_with(&[0xff, 0xd8]),
+            encoded.bytes.ends_with(&[0xff, 0xd9]),
+            encoded.bytes.is_empty(),
+        );
+        let expected = (4, 2, "jpg", true, true, false);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_encode_clipboard_image_preserves_transparent_png() {
+        let fixture = fixture_transparent_image(4, 4);
+        let encoded = encode_clipboard_image_with_limits(&fixture, 8, 82).unwrap();
+        let actual = (
+            encoded.width,
+            encoded.height,
+            encoded.extension,
+            encoded
+                .bytes
+                .starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+            encoded.bytes.is_empty(),
+        );
+        let expected = (4, 4, "png", true, false);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_constrained_dimensions_preserves_aspect_ratio() {
+        let fixture = (1600, 600);
+        let actual = (
+            constrained_dimensions(3200, 1600, fixture.0),
+            constrained_dimensions(900, 1800, fixture.1),
+        );
+        let expected = ((1600, 800), (300, 600));
+        assert_eq!(actual, expected);
     }
 
     #[test]

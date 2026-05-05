@@ -62,6 +62,7 @@ mockito = "1.7.2"
 nom = "8.0.0"
 nu-ansi-term = "0.50.1"
 posthog-rs = "0.5.3"
+pixo = { version = "0.4.1", default-features = false }
 pretty_assertions = "1.4.1"
 proc-macro2 = "1.0"
 quote = "1.0"
