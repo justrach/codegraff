@@ -213,7 +213,7 @@ pub(super) async fn chat(
         .into());
     }
 
-    let (tx, rx) = mpsc::channel::<anyhow::Result<super::response::StreamItem>>(64);
+    let (tx, mut rx) = mpsc::channel::<anyhow::Result<super::response::StreamItem>>(64);
     let active = ActiveResponse {
         session,
         input_len: full_input_len,
@@ -234,8 +234,32 @@ pub(super) async fn chat(
         }
     });
 
+    // Buffer the first item before returning `Ok(stream)`. Without this,
+    // a failure that lands before the first business event leaks out
+    // through the channel as a stream error and bypasses the
+    // synchronous-Err arm in repository.rs::chat that's supposed to fall
+    // back to HTTP for the same turn. Awaiting the first item makes
+    // pre-first-frame failures (idle timeout waiting for `response.created`,
+    // transport reset before any event lands, server hanging up immediately)
+    // surface synchronously so the HTTP fallback fires as advertised.
+    let first = match rx.recv().await {
+        Some(Ok(item)) => item,
+        Some(Err(error)) => return Err(error),
+        None => {
+            return Err(ConnectError::with_source(
+                &websocket_url,
+                anyhow::anyhow!(
+                    "OpenAI Responses WebSocket closed before any event was received"
+                ),
+            )
+            .into());
+        }
+    };
+
+    let prefix = futures::stream::once(async move { Ok(first) });
+    let rest = ReceiverStream::new(rx);
     let stream: BoxStream<super::response::StreamItem, anyhow::Error> =
-        Box::pin(ReceiverStream::new(rx));
+        Box::pin(prefix.chain(rest));
     stream.into_domain()
 }
 
@@ -261,7 +285,11 @@ async fn run_websocket(
         let next = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, socket.next()).await {
             Ok(next) => next,
             Err(_elapsed) => {
-                active.session.clear().await;
+                // Drop the (now likely-stale) socket but preserve the prior
+                // turn's `previous_response_id` so a subsequent attempt can
+                // still chain off it. The local `socket` is dropped on
+                // function exit; `take_socket` already removed it from the
+                // session, so nothing to clean there.
                 return Err(forge_domain::Error::Retryable(anyhow::anyhow!(
                     "OpenAI Responses WebSocket idle for {}s with no events; treating as stale",
                     STREAM_IDLE_TIMEOUT.as_secs()
@@ -279,8 +307,11 @@ async fn run_websocket(
                 // handshake" when the server / proxy drops the TCP connection)
                 // are surfaced as `Retryable` so the orchestrator opens a
                 // fresh socket on the next attempt instead of bubbling up to
-                // the user.
-                active.session.clear().await;
+                // the user. We do NOT clear the session here — the prior
+                // turn's `previous_response_id` is still a valid chain
+                // anchor, and clearing it would force the next turn to send
+                // the full context from scratch even though only this turn's
+                // socket failed.
                 return Err(forge_domain::Error::Retryable(
                     anyhow::Error::from(error).context("OpenAI Responses WebSocket receive failed"),
                 )
@@ -328,10 +359,15 @@ async fn run_websocket(
                         )
                         .await;
                 } else {
+                    // terminal_success without a response_id is a parser bug —
+                    // we can't safely chain off this turn, so wipe the session.
                     active.session.clear().await;
                 }
             } else {
-                active.session.clear().await;
+                // Server-rejected response (response.failed / response.error).
+                // The prior turn's `previous_response_id` is still a valid
+                // chain anchor, so leave it in place — only this turn's
+                // socket is unusable, and we drop it by not stashing it.
             }
 
             // Receiver dropped is fine here — we're returning anyway.
@@ -344,9 +380,11 @@ async fn run_websocket(
             .map_err(|_| anyhow::anyhow!("OpenAI Responses WebSocket receiver dropped"))?;
     }
 
-    // Socket closed without a terminal event — drop any cached state so the
-    // next turn opens a fresh connection.
-    active.session.clear().await;
+    // Socket closed without a terminal event. The current turn is incomplete
+    // (no finish_reason will be emitted, so the orchestrator will retry via
+    // `Error::EmptyCompletion`), but the prior turn's `previous_response_id`
+    // is unrelated to this anomaly — leave the session alone so the next
+    // attempt can still chain off it.
     Ok(())
 }
 
