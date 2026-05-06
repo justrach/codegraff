@@ -8,7 +8,8 @@ use forge_app::{
     AgentProviderResolver, AgentRegistry, AppConfigService, AuthService, CommandInfra,
     CommandLoaderService, ConversationService, DataGenerationApp, EnvironmentInfra,
     FileDiscoveryService, ForgeApp, GitApp, GrpcInfra, McpConfigManager, McpService,
-    ProviderAuthService, ProviderService, Services, User, UserUsage, Walker, WorkspaceService,
+    ProviderAuthService, ProviderService, Services, TrajectoryRepo, User, UserUsage, Walker,
+    WorkspaceService,
 };
 use forge_config::ForgeConfig;
 use forge_domain::{Agent, ConsoleWriter, *};
@@ -67,7 +68,9 @@ impl<
     F: CommandInfra
         + EnvironmentInfra<Config = forge_config::ForgeConfig>
         + SkillRepository
-        + GrpcInfra,
+        + GrpcInfra
+        + TrajectoryRepo
+        + 'static,
 > API for ForgeAPI<A, F>
 {
     async fn discover(&self) -> Result<Vec<File>> {
@@ -134,7 +137,6 @@ impl<
             .find(|p| p.id() == *id)
             .ok_or_else(|| Error::provider_not_available(id.clone()))?)
     }
-
     async fn chat(
         &self,
         chat: ChatRequest,
@@ -144,7 +146,28 @@ impl<
             .get_active_agent_id()
             .await?
             .unwrap_or_default();
-        self.app().chat(agent_id, chat).await
+
+        // Always-on trajectory recording: build the recorder here where
+        // self.infra is concretely bounded on TrajectoryRepo. seq is seeded
+        // from MAX(seq)+1 so a /resume continues numbering instead of
+        // restarting at 0 (which would confuse readers of /trace).
+        let trajectory_repo: Arc<dyn forge_app::TrajectoryRepo> = self.infra.clone();
+        let initial_seq = trajectory_repo
+            .next_seq_for(&chat.conversation_id.to_string(), agent_id.as_str())
+            .await
+            .unwrap_or(0);
+        let recorder = Arc::new(forge_app::TrajectoryRecorder::new(
+            trajectory_repo,
+            chat.conversation_id.to_string(),
+            agent_id.as_str().to_string(),
+            None,
+            initial_seq,
+        ));
+
+        self.app()
+            .with_trajectory_recorder(Some(recorder))
+            .chat(agent_id, chat)
+            .await
     }
 
     async fn upsert_conversation(&self, conversation: Conversation) -> anyhow::Result<()> {
@@ -187,6 +210,19 @@ impl<
     async fn last_conversation(&self) -> anyhow::Result<Option<Conversation>> {
         self.services.last_conversation().await
     }
+
+    async fn list_trajectory(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> anyhow::Result<Vec<TrajectoryEvent>> {
+        // Walk every agent's events for this conversation in one query so
+        // /trace can render the parent → child agent tree without needing
+        // to know each child agent_id ahead of time.
+        self.infra
+            .list_for_conversation(&conversation_id.to_string())
+            .await
+    }
+
 
     async fn delete_conversation(&self, conversation_id: &ConversationId) -> anyhow::Result<()> {
         self.services.delete_conversation(conversation_id).await

@@ -1559,6 +1559,9 @@ mod tests {
             name: forge_domain::ToolName::new("test_tool"),
             description: "A test tool".to_string(),
             input_schema: schema,
+            output_schema: None,
+            annotations: None,
+            title: None,
         };
 
         let actual = Tool::from_domain(fixture).unwrap();

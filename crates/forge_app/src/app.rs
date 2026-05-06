@@ -47,12 +47,32 @@ pub(crate) fn build_template_config(config: &ForgeConfig) -> forge_domain::Templ
 pub struct ForgeApp<S> {
     services: Arc<S>,
     tool_registry: ToolRegistry<S>,
+    /// Optional sidecar that records every tool call into `trajectory_events`
+    /// for /trace + offline debugging. Built at the API layer (which has the
+    /// concrete TrajectoryRepo in scope) and threaded through to the
+    /// orchestrator so the bound doesn't have to live on `S`.
+    trajectory_recorder: Option<Arc<crate::TrajectoryRecorder>>,
 }
 
 impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeApp<S> {
     /// Creates a new ForgeApp instance with the provided services.
     pub fn new(services: Arc<S>) -> Self {
-        Self { tool_registry: ToolRegistry::new(services.clone()), services }
+        Self {
+            tool_registry: ToolRegistry::new(services.clone()),
+            services,
+            trajectory_recorder: None,
+        }
+    }
+
+    /// Attach a trajectory recorder. Builder-style; returns self so the
+    /// caller can chain. Pass `None` (or skip the call) to disable recording.
+    #[must_use]
+    pub fn with_trajectory_recorder(
+        mut self,
+        recorder: Option<Arc<crate::TrajectoryRecorder>>,
+    ) -> Self {
+        self.trajectory_recorder = recorder;
+        self
     }
 
     /// Executes a chat request and returns a stream of responses.
@@ -172,6 +192,9 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
             .on_toolcall_end(tracing_handler)
             .on_end(on_end_hook);
 
+        // Pass the (optional) trajectory recorder through to the orchestrator.
+        // The actual construction happens at the API layer where the concrete
+        // TrajectoryRepo is in scope; ForgeApp just shuttles it.
         let orch = Orchestrator::new(
             services.clone(),
             conversation,
@@ -181,8 +204,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         .error_tracker(ToolErrorTracker::new(max_tool_failure_per_turn))
         .tool_definitions(tool_definitions)
         .models(models)
-        .hook(Arc::new(hook));
-
+        .hook(Arc::new(hook))
+        .trajectory_recorder(self.trajectory_recorder.clone());
         // Create and return the stream
         let stream = MpscStream::spawn(
             |tx: tokio::sync::mpsc::Sender<Result<ChatResponse, anyhow::Error>>| {

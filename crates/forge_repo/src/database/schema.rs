@@ -11,3 +11,18 @@ diesel::table! {
         metrics -> Nullable<Text>,
     }
 }
+
+diesel::table! {
+    trajectory_events (id) {
+        id -> Integer,
+        conversation_id -> Text,
+        agent_id -> Text,
+        parent_agent_id -> Nullable<Text>,
+        seq -> Integer,
+        ts_ms -> BigInt,
+        kind -> Text,
+        payload -> Text,
+    }
+}
+
+diesel::allow_tables_to_appear_in_same_query!(conversations, trajectory_events,);

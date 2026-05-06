@@ -590,6 +590,12 @@ pub(super) struct ToolDefinitionRecord {
     name: ToolNameRecord,
     description: String,
     input_schema: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    annotations: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
 }
 
 impl From<&forge_domain::ToolDefinition> for ToolDefinitionRecord {
@@ -598,6 +604,15 @@ impl From<&forge_domain::ToolDefinition> for ToolDefinitionRecord {
             name: ToolNameRecord::from(&def.name),
             description: def.description.clone(),
             input_schema: serde_json::to_value(&def.input_schema).unwrap_or_default(),
+            output_schema: def
+                .output_schema
+                .as_ref()
+                .and_then(|s| serde_json::to_value(s).ok()),
+            annotations: def
+                .annotations
+                .as_ref()
+                .and_then(|a| serde_json::to_value(a).ok()),
+            title: def.title.clone(),
         }
     }
 }
@@ -610,6 +625,15 @@ impl TryFrom<ToolDefinitionRecord> for forge_domain::ToolDefinition {
             name: record.name.into(),
             description: record.description,
             input_schema: serde_json::from_value(record.input_schema)?,
+            output_schema: record
+                .output_schema
+                .map(serde_json::from_value)
+                .transpose()?,
+            annotations: record
+                .annotations
+                .map(serde_json::from_value)
+                .transpose()?,
+            title: record.title,
         })
     }
 }

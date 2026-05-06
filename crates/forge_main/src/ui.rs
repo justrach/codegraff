@@ -181,6 +181,155 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         Ok(())
     }
 
+    /// Resume a previous conversation by id, or fall back to the most recent
+    /// active conversation when `id` is omitted. Mirrors the behavior of the
+    /// `:conversation resume` CLI subcommand: validates the conversation
+    /// exists, then sets `state.conversation_id` so the next prompt continues
+    /// it.
+    async fn on_resume(&mut self, id: Option<String>) -> Result<()> {
+        let conversation_id = match id {
+            Some(raw) => ConversationId::parse(&raw)
+                .map_err(|e| anyhow::anyhow!("Invalid conversation id '{raw}': {e}"))?,
+            None => self
+                .api
+                .last_conversation()
+                .await?
+                .map(|c| c.id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("No previous conversation to resume. Start one with /new.")
+                })?,
+        };
+
+        // Validate the conversation actually exists; surface a clean error
+        // instead of silently failing on the next user message.
+        if self.api.conversation(&conversation_id).await?.is_none() {
+            return Err(anyhow::anyhow!(
+                "Conversation '{conversation_id}' not found"
+            ));
+        }
+
+        self.state.conversation_id = Some(conversation_id);
+        self.writeln_title(TitleFormat::info(format!(
+            "Resumed conversation: {conversation_id}",
+            conversation_id = conversation_id
+        )))?;
+        Ok(())
+    }
+
+    /// Render the trajectory for the current conversation: tool calls, their
+    /// results (with paired `duration_ms`), errors, and ordering.
+    ///
+    /// `n` is either a positive integer (last N events) or "all". Defaults to
+    /// the last 50 to keep the REPL output bounded.
+    async fn on_trace(&mut self, n: &str) -> Result<()> {
+        let Some(conversation_id) = self.state.conversation_id.as_ref() else {
+            self.writeln_title(TitleFormat::info(
+                "No active conversation. Start one with /new or resume one with /resume.",
+            ))?;
+            return Ok(());
+        };
+
+        let limit: Option<usize> = if n.eq_ignore_ascii_case("all") {
+            None
+        } else {
+            Some(
+                n.parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("'/trace {n}' — expected a number or 'all'"))?,
+            )
+        };
+
+        let events = self.api.list_trajectory(conversation_id).await?;
+        if events.is_empty() {
+            self.writeln_title(TitleFormat::info(format!(
+                "No trajectory events recorded for {conversation_id}. \
+                 (Recording is on by default — events appear after the next tool call.)"
+            )))?;
+            return Ok(());
+        }
+
+        let total = events.len();
+        let to_show: Vec<_> = match limit {
+            Some(n) => events.iter().rev().take(n).rev().cloned().collect(),
+            None => events.clone(),
+        };
+
+        // Pair tool_call → tool_result by call_id to compute per-call latency.
+        // We walk all events (not just the windowed slice) so a slow call that
+        // started before the window still shows latency in its result row.
+        let mut call_ts: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        for e in &events {
+            if let forge_domain::TrajectoryPayload::ToolCall { call_id, .. } = &e.payload {
+                call_ts.insert(call_id.clone(), e.ts_ms);
+            }
+        }
+
+        // Compute each agent_id's depth by walking parent_agent_id chains.
+        // Root agents (parent_agent_id = None) are depth 0; each child is one
+        // deeper. Indentation in the rendered output makes the parent → child
+        // structure immediately readable in /trace.
+        let mut parent_of: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+        for e in &events {
+            parent_of
+                .entry(e.agent_id.clone())
+                .or_insert_with(|| e.parent_agent_id.clone());
+        }
+        let depth_of = |agent: &str| -> usize {
+            let mut depth = 0usize;
+            let mut cur = Some(agent.to_string());
+            // Cap recursion to keep a malformed parent_of cycle from looping
+            // forever (defensive — recorder should never produce one).
+            for _ in 0..32 {
+                let Some(a) = cur else { break };
+                let Some(parent) = parent_of.get(&a).cloned().flatten() else {
+                    break;
+                };
+                depth += 1;
+                cur = Some(parent);
+            }
+            depth
+        };
+
+        self.writeln(format!(
+            "Trajectory for {conversation_id} — showing {} of {total} events across all agents:",
+            to_show.len()
+        ))?;
+        for e in &to_show {
+            let indent = "  ".repeat(depth_of(&e.agent_id));
+            let line = match &e.payload {
+                forge_domain::TrajectoryPayload::ToolCall { tool_name, call_id, .. } => {
+                    format!("{indent}  {:>4}  call    {tool_name:<24}  agent={} call_id={call_id}", e.seq, e.agent_id)
+                }
+                forge_domain::TrajectoryPayload::ToolResult {
+                    tool_name,
+                    call_id,
+                    is_error,
+                    ..
+                } => {
+                    let dur = call_ts
+                        .get(call_id)
+                        .map(|start| format!("{}ms", e.ts_ms - start))
+                        .unwrap_or_else(|| "?".to_string());
+                    let flag = if *is_error { " ERROR" } else { "" };
+                    format!(
+                        "{indent}  {:>4}  result  {tool_name:<24}  agent={} duration={dur}{flag}",
+                        e.seq, e.agent_id
+                    )
+                }
+                forge_domain::TrajectoryPayload::Error { message, .. } => {
+                    format!("{indent}  {:>4}  error   {message}", e.seq)
+                }
+                forge_domain::TrajectoryPayload::ModelTurn { turn } => {
+                    format!("{indent}  {:>4}  turn    #{turn}", e.seq)
+                }
+            };
+            self.writeln(line)?;
+        }
+
+        Ok(())
+    }
+
     // Set the current mode and update conversation variable
     async fn on_agent_change(&mut self, agent_id: AgentId) -> Result<()> {
         // Convert string to AgentId for validation
@@ -845,6 +994,16 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                     "Conversation renamed to '{}'",
                     name.bold()
                 )))?;
+            }
+            ConversationCommand::Trace { id, n } => {
+                // Pipe-friendly: print to stdout via writeln (no spinner, no
+                // ANSI). Mirrors the in-REPL `/trace` command but addressable
+                // from the shell as `graff conversation trace <id>`.
+                self.validate_conversation_exists(&id).await?;
+                let prev = self.state.conversation_id.replace(id);
+                let result = self.on_trace(&n).await;
+                self.state.conversation_id = prev;
+                result?;
             }
         }
 
@@ -2035,6 +2194,12 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             }
             AppCommand::New => {
                 self.on_new().await?;
+            }
+            AppCommand::Resume { ref id } => {
+                self.on_resume(id.clone()).await?;
+            }
+            AppCommand::Trace { ref n } => {
+                self.on_trace(n).await?;
             }
             AppCommand::Info => {
                 self.on_info(false, self.state.conversation_id).await?;

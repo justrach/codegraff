@@ -5,12 +5,16 @@ fn clean_version(version: &str) -> String {
 
 fn main() {
     // Priority order:
-    // 1. APP_VERSION environment variable (for CI/CD builds)
-    // 2. Fallback to dev version
+    // 1. APP_VERSION environment variable (set by CI/CD release builds)
+    // 2. Workspace package version (env!("CARGO_PKG_VERSION") here resolves
+    //    to the build-script crate's version, which inherits from
+    //    `[workspace.package].version` in the root Cargo.toml — so a local
+    //    `cargo build` always shows the real workspace version, not a stale
+    //    hardcoded literal.
 
     let version = std::env::var("APP_VERSION")
         .map(|v| clean_version(&v))
-        .unwrap_or_else(|_| "0.1.2".to_string());
+        .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string());
 
     // Make version available to the application
     println!("cargo:rustc-env=CARGO_PKG_VERSION={version}");

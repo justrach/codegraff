@@ -45,6 +45,7 @@ mod temperature;
 mod template;
 mod terminal_context;
 mod tools;
+mod trajectory;
 
 mod tool_order;
 mod top_k;
@@ -102,6 +103,7 @@ pub use template::*;
 pub use terminal_context::*;
 pub use tool_order::*;
 pub use tools::*;
+pub use trajectory::*;
 pub use top_k::*;
 pub use top_p::*;
 pub use transformer::*;

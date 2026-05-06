@@ -9,8 +9,8 @@ use backon::{ExponentialBuilder, Retryable};
 use bstr::ByteSlice;
 use forge_app::McpClientInfra;
 use forge_domain::{
-    Environment, Image, McpHttpServer, McpServerConfig, ToolDefinition, ToolName, ToolOutput,
-    ToolValue,
+    Environment, Image, McpHttpServer, McpServerConfig, ToolAnnotations, ToolDefinition, ToolName,
+    ToolOutput, ToolValue,
 };
 use reqwest::Client;
 use reqwest::header::{HeaderName, HeaderValue};
@@ -511,28 +511,47 @@ impl ForgeMcpClient {
         self.http_client.clone()
     }
 
+    /// Short, log-friendly identity for this MCP server: the URL for HTTP
+    /// servers, the command for stdio. Used as a `server=…` field on tracing
+    /// events so multi-server setups stay greppable.
+    fn server_identifier(&self) -> String {
+        match &self.config {
+            McpServerConfig::Http(http) => http.url.clone(),
+            McpServerConfig::Stdio(stdio) => stdio.command.clone(),
+        }
+    }
+
     async fn list(&self) -> anyhow::Result<Vec<ToolDefinition>> {
         let client = self.connect().await?;
         // `list_all_tools` walks the `next_cursor` chain on the server side
         // and concatenates every page. The previous `list_tools(None)` call
         // only returned the first page, so a server with > one page worth of
         // tools would silently drop the rest.
-        let tools = client.list_all_tools().await?;
-        Ok(tools
+        let raw_tools = client.list_all_tools().await?;
+        let raw_count = raw_tools.len();
+        let server = self.server_identifier();
+        let tools: Vec<ToolDefinition> = raw_tools
             .into_iter()
             .filter_map(|tool| {
-                Some(
-                    ToolDefinition::new(tool.name)
-                        .description(tool.description.unwrap_or_default())
-                        .input_schema(
-                            serde_json::from_value::<Schema>(Value::Object(
-                                tool.input_schema.as_ref().clone(),
-                            ))
-                            .ok()?,
-                        ),
-                )
+                let tool_name = tool.name.clone();
+                let definition = tool_to_definition(tool);
+                if definition.is_none() {
+                    tracing::warn!(
+                        server = %server,
+                        tool = %tool_name,
+                        "dropped MCP tool: input_schema failed to parse as JSON Schema"
+                    );
+                }
+                definition
             })
-            .collect())
+            .collect();
+        tracing::debug!(
+            server = %server,
+            raw = raw_count,
+            kept = tools.len(),
+            "fetched MCP tools"
+        );
+        Ok(tools)
     }
 
     async fn call(&self, tool_name: &ToolName, input: &Value) -> anyhow::Result<ToolOutput> {
@@ -590,6 +609,41 @@ impl McpClientInfra for ForgeMcpClient {
         self.attempt_with_retry(|| self.call(tool_name, &input))
             .await
     }
+}
+
+/// Convert an `rmcp` `Tool` advertisement into our domain `ToolDefinition`,
+/// preserving the new MCP-only metadata (`outputSchema`, `annotations`,
+/// `title`).
+///
+/// Returns `None` when the input schema cannot be parsed as a JSON Schema,
+/// since a tool with an unparseable schema is not safely callable. Output
+/// schemas are best-effort: a malformed `outputSchema` is dropped to `None`
+/// rather than discarding the whole tool, since it only affects how the LLM
+/// is prompted about results, not whether the tool can be invoked.
+fn tool_to_definition(tool: rmcp::model::Tool) -> Option<ToolDefinition> {
+    let input_schema =
+        serde_json::from_value::<Schema>(Value::Object(tool.input_schema.as_ref().clone())).ok()?;
+
+    let output_schema = tool.output_schema.as_ref().and_then(|schema| {
+        serde_json::from_value::<Schema>(Value::Object(schema.as_ref().clone())).ok()
+    });
+
+    let annotations = tool.annotations.as_ref().map(|ann| ToolAnnotations {
+        title: ann.title.clone(),
+        read_only_hint: ann.read_only_hint,
+        destructive_hint: ann.destructive_hint,
+        idempotent_hint: ann.idempotent_hint,
+        open_world_hint: ann.open_world_hint,
+    });
+
+    Some(ToolDefinition {
+        name: ToolName::new(tool.name),
+        description: tool.description.map(|c| c.into_owned()).unwrap_or_default(),
+        input_schema,
+        output_schema,
+        annotations,
+        title: tool.title,
+    })
 }
 
 /// Convert an `rmcp` `CallToolResult` into our domain `ToolOutput`.
@@ -1140,5 +1194,96 @@ mod tests {
         let expected = "node".to_string();
 
         assert_eq!(actual, expected);
+    }
+
+    // ── tool_to_definition ────────────────────────────────────────────────
+    //
+    // Pure-helper coverage for the rmcp Tool → ToolDefinition mapping. The
+    // contract we lock in here is the wire shape promised to downstream
+    // consumers (provider DTOs, ConversationRecord) once the new MCP-only
+    // metadata fields landed: output_schema, annotations, and title round-
+    // trip when the server advertises them, and stay None when absent.
+
+    fn rmcp_object(value: serde_json::Value) -> std::sync::Arc<rmcp::model::JsonObject> {
+        let serde_json::Value::Object(map) = value else {
+            panic!("rmcp_object expects a JSON object");
+        };
+        std::sync::Arc::new(map)
+    }
+
+    fn rmcp_tool(name: &'static str) -> rmcp::model::Tool {
+        rmcp::model::Tool::new(
+            name,
+            "a test tool",
+            rmcp_object(serde_json::json!({"type": "object"})),
+        )
+    }
+
+    #[test]
+    fn test_tool_to_definition_minimal_tool_drops_optional_metadata() {
+        let actual = tool_to_definition(rmcp_tool("echo")).expect("valid input schema");
+
+        assert_eq!(actual.name, ToolName::new("echo"));
+        assert_eq!(actual.description, "a test tool");
+        assert!(actual.output_schema.is_none());
+        assert!(actual.annotations.is_none());
+        assert!(actual.title.is_none());
+    }
+
+    #[test]
+    fn test_tool_to_definition_preserves_output_schema() {
+        let mut tool = rmcp_tool("get_weather");
+        tool.output_schema = Some(rmcp_object(serde_json::json!({
+            "type": "object",
+            "properties": {"temperature": {"type": "number"}},
+        })));
+
+        let actual = tool_to_definition(tool).expect("valid input schema");
+        let output = actual.output_schema.expect("output_schema preserved");
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["properties"]["temperature"]["type"], "number");
+    }
+
+    #[test]
+    fn test_tool_to_definition_preserves_annotations() {
+        let tool = rmcp_tool("search").annotate(
+            rmcp::model::ToolAnnotations::with_title("Search the web")
+                .read_only(true)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(true),
+        );
+
+        let actual = tool_to_definition(tool).expect("valid input schema");
+        let annotations = actual.annotations.expect("annotations preserved");
+        assert_eq!(annotations.title.as_deref(), Some("Search the web"));
+        assert_eq!(annotations.read_only_hint, Some(true));
+        assert_eq!(annotations.destructive_hint, Some(false));
+        assert_eq!(annotations.idempotent_hint, Some(true));
+        assert_eq!(annotations.open_world_hint, Some(true));
+    }
+
+    #[test]
+    fn test_tool_to_definition_preserves_title() {
+        let mut tool = rmcp_tool("send_email");
+        tool.title = Some("Send Email".to_string());
+
+        let actual = tool_to_definition(tool).expect("valid input schema");
+        assert_eq!(actual.title.as_deref(), Some("Send Email"));
+    }
+
+    #[test]
+    fn test_tool_to_definition_empty_input_schema_object_still_parses() {
+        // schemars 1.x's Schema deserializer only requires the value be an
+        // object or boolean — so even an empty `{}` parses. The point of this
+        // test is to lock in that we don't reject tools with permissive
+        // schemas (e.g. tools that take no arguments and ship `{}` on the
+        // wire).
+        let mut tool = rmcp_tool("noop");
+        tool.input_schema = rmcp_object(serde_json::json!({}));
+
+        let actual = tool_to_definition(tool).expect("empty object is a valid Schema");
+        let json = serde_json::to_value(&actual.input_schema).unwrap();
+        assert!(json.is_object());
     }
 }

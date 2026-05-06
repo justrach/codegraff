@@ -10,6 +10,7 @@ use futures::future::join_all;
 use tokio::sync::Notify;
 
 use crate::agent::AgentService;
+use crate::trajectory_recorder::TrajectoryRecorder;
 use crate::transformers::{DropReasoningOnlyMessages, ModelSpecificReasoning};
 use crate::{EnvironmentInfra, TemplateEngine};
 
@@ -27,6 +28,10 @@ pub struct Orchestrator<S> {
     error_tracker: ToolErrorTracker,
     hook: Arc<Hook>,
     config: forge_config::ForgeConfig,
+    /// Optional sidecar that records per-tool-call trajectory rows for
+    /// debugging. None disables tracing entirely (zero cost). Wired in by
+    /// the caller when `CODEGRAFF_TRACE=1`.
+    trajectory_recorder: Option<Arc<TrajectoryRecorder>>,
 }
 
 impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orchestrator<S> {
@@ -46,6 +51,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             models: Default::default(),
             error_tracker: Default::default(),
             hook: Arc::new(Hook::default()),
+            trajectory_recorder: None,
         }
     }
 
@@ -78,7 +84,16 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         let (task_calls, other_calls): (Vec<_>, Vec<_>) = tool_calls.iter().partition(is_task_call);
 
         // Execute task tool calls in parallel — mirrors how direct agent-as-tool calls
-        // work.
+        // work. We record each subagent dispatch onto the parent's trajectory
+        // (so a /trace of the parent shows "called Task: <child agent>")
+        // before kicking it off; the result is recorded after join_all
+        // settles. The subagent's own internal trajectory is captured under
+        // its own (conversation_id, agent_id) by its own ForgeApp::chat call.
+        if let Some(recorder) = &self.trajectory_recorder {
+            for tc in &task_calls {
+                recorder.record_tool_call(tc).await;
+            }
+        }
         let task_results: Vec<(ToolCallFull, ToolResult)> = join_all(
             task_calls
                 .iter()
@@ -89,6 +104,11 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         .zip(task_calls.iter())
         .map(|(result, tc)| ((*tc).clone(), result))
         .collect();
+        if let Some(recorder) = &self.trajectory_recorder {
+            for (tc, result) in &task_results {
+                recorder.record_tool_result(tc, result).await;
+            }
+        }
 
         let system_tools = self
             .tool_definitions
@@ -126,6 +146,13 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 .handle(&toolcall_start_event, &mut self.conversation)
                 .await?;
 
+            // Best-effort trajectory record: tool call about to fire. Failures
+            // are swallowed inside the recorder so telemetry never aborts the
+            // agent.
+            if let Some(recorder) = &self.trajectory_recorder {
+                recorder.record_tool_call(tool_call).await;
+            }
+
             // Execute the tool
             let tool_result = self
                 .services
@@ -141,6 +168,11 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             self.hook
                 .handle(&toolcall_end_event, &mut self.conversation)
                 .await?;
+
+            // Best-effort trajectory record: tool result.
+            if let Some(recorder) = &self.trajectory_recorder {
+                recorder.record_tool_result(tool_call, &tool_result).await;
+            }
 
             // Send the end notification for system tools and not agent as a tool
             if is_system_tool {
@@ -319,7 +351,24 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                     }
                 }),
             )
-            .await?;
+            .await;
+            // Trajectory: capture model API failures (after all retries
+            // exhausted) so /trace shows why the run halted. The recorder is
+            // best-effort; failures here don't change control flow.
+            let message = match message {
+                Ok(m) => m,
+                Err(err) => {
+                    if let Some(recorder) = &self.trajectory_recorder {
+                        recorder
+                            .record_error(
+                                format!("model turn failed: {err}"),
+                                Some(format!("{:?}", err.root_cause())),
+                            )
+                            .await;
+                    }
+                    return Err(err);
+                }
+            };
 
             // Fire the Response lifecycle event
             let response_event = LifecycleEvent::Response(EventData::new(

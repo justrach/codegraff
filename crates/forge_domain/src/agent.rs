@@ -297,6 +297,9 @@ impl From<Agent> for ToolDefinition {
             name,
             description,
             input_schema: schemars::schema_for!(crate::AgentInput),
+            output_schema: None,
+            annotations: None,
+            title: None,
         }
     }
 }

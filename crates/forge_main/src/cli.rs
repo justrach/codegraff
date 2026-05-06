@@ -700,6 +700,17 @@ pub enum ConversationCommand {
         /// New name for the conversation.
         name: String,
     },
+
+    /// Print the trajectory (tool calls, results, errors) for a conversation
+    /// to stdout. Pipe-friendly. Mirrors the in-REPL `/trace` command.
+    Trace {
+        /// Conversation ID whose trajectory to print.
+        id: ConversationId,
+
+        /// Tail length: a positive integer or "all". Defaults to 50.
+        #[arg(long, default_value_t = String::from("50"))]
+        n: String,
+    },
 }
 
 /// Command group for provider authentication management.

@@ -551,6 +551,26 @@ pub enum AppCommand {
     #[strum(props(usage = "Start a new conversation"))]
     New,
 
+    /// Resume a previous conversation by id (or the most recent if omitted).
+    /// This can be triggered with the '/resume' command.
+    #[strum(props(usage = "Resume a previous conversation [optional id]"))]
+    Resume {
+        /// Conversation ID to resume. If omitted, resumes the most recent
+        /// active conversation.
+        id: Option<String>,
+    },
+
+    /// Print a profile of the current conversation's trajectory: tool calls,
+    /// results, errors, and per-call timing read from `trajectory_events`.
+    /// This can be triggered with the '/trace' command.
+    #[strum(props(usage = "Profile the current conversation's trajectory"))]
+    Trace {
+        /// How many of the most recent events to render. Pass `all` for the
+        /// full trajectory; default is the last 50.
+        #[arg(default_value_t = String::from("50"))]
+        n: String,
+    },
+
     /// A regular text message from the user to be processed by the chat system.
     /// Any input that doesn't start with '/' is treated as a message.
     #[strum(props(usage = "Send a regular message"))]
@@ -747,6 +767,8 @@ impl AppCommand {
             AppCommand::WorkspaceStatus => "workspace-status",
             AppCommand::WorkspaceInfo => "workspace-info",
             AppCommand::WorkspaceInit => "workspace-init",
+            AppCommand::Resume { .. } => "resume",
+            AppCommand::Trace { .. } => "trace",
         }
     }
 

@@ -229,6 +229,9 @@ mod tests {
                 name: crate::ToolName::new("test_tool"),
                 description: "A test tool".to_string(),
                 input_schema: schemars::schema_for!(()),
+                output_schema: None,
+                annotations: None,
+                title: None,
             })
             .add_message(ContextMessage::user("Test message", None));
 

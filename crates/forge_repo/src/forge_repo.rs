@@ -6,7 +6,8 @@ use bytes::Bytes;
 use forge_app::{
     AgentRepository, CommandInfra, DirectoryReaderInfra, EnvironmentInfra, FileDirectoryInfra,
     FileInfoInfra, FileReaderInfra, FileRemoverInfra, FileWriterInfra, GrpcInfra, HttpInfra,
-    KVStore, McpServerInfra, StrategyFactory, UserInfra, WalkedFile, Walker, WalkerInfra,
+    KVStore, McpServerInfra, StrategyFactory, TrajectoryRepo, UserInfra, WalkedFile, Walker,
+    WalkerInfra,
 };
 use forge_config::ForgeConfig;
 use forge_domain::{
@@ -14,7 +15,7 @@ use forge_domain::{
     Conversation, ConversationId, ConversationRepository, Environment, FileInfo,
     FuzzySearchRepository, McpServerConfig, MigrationResult, Model, ModelId, Provider, ProviderId,
     ProviderRepository, ResultStream, SearchMatch, Skill, SkillRepository, Snapshot,
-    SnapshotRepository, TextPatchBlock, TextPatchRepository,
+    SnapshotRepository, TextPatchBlock, TextPatchRepository, TrajectoryEvent,
 };
 use forge_eventsource::EventSource;
 // Re-export CacacheStorage from forge_infra
@@ -31,6 +32,7 @@ use crate::fs_snap::ForgeFileSnapshotService;
 use crate::fuzzy_search::ForgeFuzzySearchRepository;
 use crate::provider::{ForgeChatRepository, ForgeProviderRepository};
 use crate::skill::ForgeSkillRepository;
+use crate::trajectory::TrajectoryRepositoryImpl;
 use crate::validation::ForgeValidationRepository;
 
 /// Repository layer that implements all domain repository traits
@@ -50,6 +52,7 @@ pub struct ForgeRepo<F> {
     skill_repository: Arc<ForgeSkillRepository<F>>,
     validation_repository: Arc<ForgeValidationRepository<F>>,
     fuzzy_search_repository: Arc<ForgeFuzzySearchRepository<F>>,
+    trajectory_repository: Arc<TrajectoryRepositoryImpl>,
 }
 
 impl<
@@ -83,6 +86,7 @@ impl<
         let skill_repository = Arc::new(ForgeSkillRepository::new(infra.clone()));
         let validation_repository = Arc::new(ForgeValidationRepository::new(infra.clone()));
         let fuzzy_search_repository = Arc::new(ForgeFuzzySearchRepository::new(infra.clone()));
+        let trajectory_repository = Arc::new(TrajectoryRepositoryImpl::new(db_pool.clone()));
         Self {
             infra,
             file_snapshot_service,
@@ -95,6 +99,7 @@ impl<
             skill_repository,
             validation_repository,
             fuzzy_search_repository,
+            trajectory_repository,
         }
     }
 }
@@ -676,5 +681,39 @@ impl<F: forge_domain::ConsoleWriter> forge_domain::ConsoleWriter for ForgeRepo<F
 
     fn flush_err(&self) -> std::io::Result<()> {
         self.infra.flush_err()
+    }
+}
+
+#[async_trait::async_trait]
+impl<F: Send + Sync> TrajectoryRepo for ForgeRepo<F> {
+    async fn record(&self, event: TrajectoryEvent) -> anyhow::Result<()> {
+        self.trajectory_repository.record(event).await
+    }
+
+    async fn list(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+    ) -> anyhow::Result<Vec<TrajectoryEvent>> {
+        self.trajectory_repository.list(conversation_id, agent_id).await
+    }
+
+    async fn next_seq_for(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+    ) -> anyhow::Result<i32> {
+        self.trajectory_repository
+            .next_seq_for(conversation_id, agent_id)
+            .await
+    }
+
+    async fn list_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> anyhow::Result<Vec<TrajectoryEvent>> {
+        self.trajectory_repository
+            .list_for_conversation(conversation_id)
+            .await
     }
 }

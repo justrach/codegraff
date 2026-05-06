@@ -417,3 +417,46 @@ pub trait GrpcInfra: Send + Sync {
     /// connection
     fn hydrate(&self);
 }
+
+/// Persistence for per-event trajectory traces — one row per tool call,
+/// tool result, error, or model-turn boundary, scoped by
+/// `(conversation_id, agent_id)`.
+///
+/// Implementations write to the `trajectory_events` SQLite table. Recording
+/// is best-effort from the orchestrator's perspective: a `record` failure
+/// must not abort the agent run, so callers should log and continue.
+#[async_trait::async_trait]
+pub trait TrajectoryRepo: Send + Sync {
+    /// Append one trajectory event. The repo is responsible only for the
+    /// SQLite write — `seq` and `ts_ms` are assigned by the caller (the
+    /// recorder) so reads observe the same ordering the agent saw.
+    async fn record(&self, event: forge_domain::TrajectoryEvent) -> anyhow::Result<()>;
+
+    /// Return every event for a given (conversation_id, agent_id) ordered
+    /// by `seq` ascending. Used by debugging tooling to render a trajectory.
+    async fn list(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+    ) -> anyhow::Result<Vec<forge_domain::TrajectoryEvent>>;
+
+    /// Returns the next `seq` value to use for `(conversation_id, agent_id)`.
+    /// `MAX(seq) + 1`, or `0` when no rows exist yet. Used at recorder
+    /// construction so a resumed conversation continues numbering instead of
+    /// restarting at 0 and confusing readers.
+    async fn next_seq_for(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+    ) -> anyhow::Result<i32>;
+
+    /// Returns every event for the entire conversation across all agents
+    /// (root + subagents), preserving per-agent `seq` ordering. Used by
+    /// `/trace` to render parent → child agent relationships in one view.
+    /// Default implementation walks via `list_agents_for_conversation` +
+    /// `list`; backends can override for a single bulk query.
+    async fn list_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> anyhow::Result<Vec<forge_domain::TrajectoryEvent>>;
+}

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use forge_app::dto::ToolsOverview;
 use forge_app::{User, UserUsage};
-use forge_domain::{AgentId, Effort, ModelId, ProviderModels};
+use forge_domain::{AgentId, Effort, ModelId, ProviderModels, TrajectoryEvent};
 use forge_stream::MpscStream;
 use futures::stream::BoxStream;
 use url::Url;
@@ -69,6 +69,14 @@ pub trait API: Sync + Send {
 
     /// Finds the last active conversation for the current workspace
     async fn last_conversation(&self) -> Result<Option<Conversation>>;
+
+    /// Lists trajectory events for a conversation, ordered by `seq` ascending.
+    /// Returns an empty Vec when nothing has been recorded yet — recording is
+    /// always on but only writes when a tool call fires.
+    async fn list_trajectory(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<TrajectoryEvent>>;
 
     /// Permanently deletes a conversation
     ///
