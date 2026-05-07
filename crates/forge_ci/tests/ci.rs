@@ -10,10 +10,9 @@ fn test_release_drafter() {
     workflow::generate_release_drafter_workflow();
 }
 
-#[test]
-fn test_release_workflow() {
-    workflow::release_publish();
-}
+// release_publish workflow disabled — codegraff publishes binaries manually
+// to GitHub Releases. The npm/homebrew matrix targeted upstream antinomyhq/*
+// repos that this fork doesn't own, so the entire generator was removed.
 
 #[test]
 fn test_labels_workflow() {
