@@ -149,9 +149,11 @@ pub enum TopLevelCommand {
 
     /// Run diagnostics on shell environment (alias for `zsh doctor`).
     Doctor,
-
     /// Stream graff log output (defaults to the most recent log file).
     Logs(LogsArgs),
+
+    /// Debug graff internals (recent MCP calls, etc).
+    Debug(DebugCommandGroup),
 }
 
 /// Command group for custom command management.
@@ -852,6 +854,39 @@ pub struct LogsArgs {
     /// file in the graff logs directory.
     #[arg(long, short = 'f')]
     pub file: Option<PathBuf>,
+}
+
+/// Command group for `graff debug` introspection subcommands.
+#[derive(Parser, Debug, Clone)]
+pub struct DebugCommandGroup {
+    #[command(subcommand)]
+    pub command: DebugCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum DebugCommand {
+    /// Print recent MCP request/response pairs as JSONL. Useful for diagnosing
+    /// MCP tool failures without enabling tracing or grepping log files.
+    LastMcpCall(LastMcpCallArgs),
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct LastMcpCallArgs {
+    /// Number of records to print from the end of the buffer.
+    #[arg(long, short = 'n', default_value_t = 1)]
+    pub n: usize,
+
+    /// Filter by MCP server name (e.g. "codedb").
+    #[arg(long)]
+    pub server: Option<String>,
+
+    /// Filter by tool name (e.g. "codedb_bundle").
+    #[arg(long)]
+    pub tool: Option<String>,
+
+    /// Pretty-print each record (default is one record per line).
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[cfg(test)]

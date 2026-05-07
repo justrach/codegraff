@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Graff Grammar And Tooling Flow</title>
+  <desc id="desc">A diagram showing how Graff turns tool definitions into JSON Schema grammar, streams native tool calls, and falls back to a local text parser when needed.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#181c1f"/>
+      <stop offset="0.52" stop-color="#222821"/>
+      <stop offset="1" stop-color="#17191e"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L12,7 L2,12 Z" fill="#58ddc8"/>
+    </marker>
+    <marker id="arrow2" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L12,7 L2,12 Z" fill="#eeb75e"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+    <style>
+      .title { font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 42px; font-weight: 760; fill: #fbfffd; }
+      .subtitle { font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 20px; fill: #bdc9c1; }
+      .label { font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 22px; font-weight: 730; fill: #fbfffd; }
+      .small { font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 16px; fill: #d3ddd8; }
+      .tiny { font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 14px; fill: #a6b1ad; }
+      .box { fill: #242a2f; stroke: #3c4649; stroke-width: 1.5; rx: 8; filter: url(#shadow); }
+      .schema { fill: #172d2f; stroke: #46d7c6; stroke-width: 1.8; rx: 8; filter: url(#shadow); }
+      .fallback { fill: #30281c; stroke: #eeb75e; stroke-width: 1.8; rx: 8; filter: url(#shadow); }
+      .line { fill: none; stroke: #58ddc8; stroke-width: 4; marker-end: url(#arrow); }
+      .line2 { fill: none; stroke: #eeb75e; stroke-width: 4; marker-end: url(#arrow2); }
+      .dash { fill: none; stroke: #6d7472; stroke-width: 2.5; stroke-dasharray: 8 9; }
+      .chip { fill: #101a1c; stroke: #58ddc8; stroke-width: 1.1; rx: 7; }
+      .chip2 { fill: #241c12; stroke: #eeb75e; stroke-width: 1.1; rx: 7; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="900" fill="url(#bg)"/>
+  <circle cx="1250" cy="760" r="260" fill="#58ddc8" opacity="0.055"/>
+  <circle cx="210" cy="145" r="230" fill="#eeb75e" opacity="0.05"/>
+
+  <text x="72" y="86" class="title">Graff Grammar: Schemas First, Parser As Backup</text>
+  <text x="74" y="124" class="subtitle">Native tool calls use JSON Schema. Text-rendered calls can still be recovered and coerced into typed requests.</text>
+
+  <rect x="84" y="216" width="252" height="162" class="box"/>
+  <text x="116" y="262" class="label">Tool Catalog</text>
+  <text x="116" y="298" class="small">name</text>
+  <text x="116" y="324" class="small">description</text>
+  <text x="116" y="350" class="small">typed arguments</text>
+
+  <rect x="448" y="184" width="286" height="226" class="schema"/>
+  <text x="482" y="232" class="label">JSON Schema</text>
+  <text x="482" y="270" class="small">generated from types</text>
+  <text x="482" y="296" class="small">nullable transform</text>
+  <text x="482" y="322" class="small">strict normalization</text>
+  <rect x="482" y="346" width="194" height="32" class="chip"/>
+  <text x="502" y="368" class="tiny">grammar boundary</text>
+
+  <rect x="848" y="216" width="270" height="162" class="box"/>
+  <text x="884" y="262" class="label">GPT 5.5</text>
+  <text x="884" y="298" class="small">chooses a tool</text>
+  <text x="884" y="324" class="small">streams arguments</text>
+  <text x="884" y="350" class="small">keeps calls typed</text>
+
+  <rect x="1172" y="216" width="184" height="162" class="box"/>
+  <text x="1204" y="262" class="label">Native</text>
+  <text x="1204" y="296" class="label">Tool Call</text>
+  <text x="1204" y="332" class="small">call id</text>
+  <text x="1204" y="356" class="small">name + args</text>
+
+  <rect x="448" y="552" width="286" height="162" class="fallback"/>
+  <text x="482" y="598" class="label">Text Parser</text>
+  <text x="482" y="634" class="small">finds tool envelope</text>
+  <text x="482" y="660" class="small">reads nested fields</text>
+  <text x="482" y="686" class="small">returns raw arguments</text>
+
+  <rect x="848" y="552" width="270" height="162" class="schema"/>
+  <text x="884" y="598" class="label">Coercion</text>
+  <text x="884" y="634" class="small">normalize tool name</text>
+  <text x="884" y="660" class="small">repair JSON values</text>
+  <text x="884" y="686" class="small">match schema types</text>
+
+  <rect x="1172" y="552" width="184" height="162" class="box"/>
+  <text x="1204" y="598" class="label">Executable</text>
+  <text x="1204" y="626" class="label">Request</text>
+  <text x="1204" y="662" class="small">validated</text>
+  <text x="1204" y="686" class="small">dispatchable</text>
+
+  <path d="M336 296 C384 296, 408 296, 448 296" class="line"/>
+  <path d="M734 296 C786 296, 808 296, 848 296" class="line"/>
+  <path d="M1118 296 C1142 296, 1154 296, 1172 296" class="line"/>
+  <path d="M978 378 C948 456, 815 505, 734 596" class="dash"/>
+  <path d="M734 632 C786 632, 808 632, 848 632" class="line2"/>
+  <path d="M1118 632 C1142 632, 1154 632, 1172 632" class="line"/>
+  <path d="M210 378 C250 520, 330 626, 448 632" class="line2"/>
+
+  <text x="372" y="274" class="tiny">derive schema</text>
+  <text x="764" y="274" class="tiny">send tools</text>
+  <text x="1128" y="274" class="tiny">stream</text>
+  <text x="290" y="558" class="tiny">backup path for text-rendered calls</text>
+  <text x="766" y="610" class="tiny">repair</text>
+  <text x="1128" y="610" class="tiny">dispatch</text>
+
+  <rect x="84" y="778" width="1272" height="58" fill="#1d2226" stroke="#394245" stroke-width="1.2" rx="8"/>
+  <text x="116" y="813" class="small">Why it matters: schema grammar prevents most bad calls up front; the backup parser keeps older text-shaped outputs usable without loosening execution safety.</text>
+</svg>

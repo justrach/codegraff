@@ -1,6 +1,7 @@
 pub mod banner;
 mod cli;
 mod clipboard;
+mod debug;
 mod completer;
 mod conversation_selector;
 mod display_constants;

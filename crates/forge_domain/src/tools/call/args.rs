@@ -106,6 +106,17 @@ impl ToolCallArguments {
     }
 
     pub fn from_json(str: &str) -> Self {
+        // Diagnostic: capture the literal accumulated tool-call argument
+        // string exactly as it arrived from the model stream, *before* any
+        // parsing/repair. Pair this with the `MCP call_tool payload` log in
+        // `forge_infra::mcp_client` to compare what the model emitted vs what
+        // we shipped on the wire — divergence pins the loss to graff's own
+        // pipeline rather than the model.
+        tracing::debug!(
+            target: "forge_domain::tools::call::args",
+            raw = %str,
+            "raw streamed tool-call arguments"
+        );
         ToolCallArguments::Unparsed(str.to_string())
     }
 

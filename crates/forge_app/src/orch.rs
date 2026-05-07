@@ -67,6 +67,35 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         tool_calls: &[ToolCallFull],
         tool_context: &ToolCallContext,
     ) -> anyhow::Result<Vec<(ToolCallFull, ToolResult)>> {
+        // When the model emits ≥2 tool calls in a single assistant turn (a
+        // "parallel tool call" in OpenAI/Anthropic terminology), surface a
+        // header line in the REPL so the user can see the batch as a group.
+        // Reuses the existing TaskMessage/ToolInput render path so it lands
+        // cleanly without protocol changes.
+        if tool_calls.len() >= 2 {
+            let mut counts: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            for tc in tool_calls {
+                *counts.entry(tc.name.as_str()).or_insert(0) += 1;
+            }
+            let breakdown = counts
+                .iter()
+                .map(|(name, count)| {
+                    if *count > 1 {
+                        format!("{count}× {name}")
+                    } else {
+                        (*name).to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let title = format!(
+                "⇉ {} parallel tool calls ({breakdown})",
+                tool_calls.len()
+            );
+            self.send(ChatResponse::from(TitleFormat::info(title))).await?;
+        }
+
         let task_tool_name = ToolKind::Task.name();
 
         // Use a case-insensitive comparison since the model may send "Task" or "task".
@@ -292,6 +321,16 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         let mut is_complete = false;
 
         let mut request_count = 0;
+        // Per-run fitness vector accumulators. Sums what's already computed
+        // turn-by-turn (token usage on each assistant message, success/error
+        // flags on each tool result) so an AgentRunEnd event at the bottom
+        // of run() carries the full picture without re-walking events.
+        let run_started_at = std::time::Instant::now();
+        let mut total_prompt_tokens: u64 = 0;
+        let mut total_completion_tokens: u64 = 0;
+        let mut total_tool_calls: u32 = 0;
+        let mut total_tool_errors: u32 = 0;
+        let mut interrupt_reason: Option<String> = None;
         let tool_context =
             ToolCallContext::new(self.conversation.metrics.clone()).sender(self.sender.clone());
 
@@ -301,6 +340,8 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 .max_requests_per_turn
                 .unwrap_or(DEFAULT_MAX_REQUESTS_PER_TURN);
             if request_count >= limit {
+                interrupt_reason =
+                    Some(format!("max_requests_per_turn_reached: {limit}"));
                 self.send(ChatResponse::Interrupt {
                     reason: InterruptionReason::MaxRequestPerTurnLimitReached {
                         limit: limit as u64,
@@ -365,6 +406,21 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                                 Some(format!("{:?}", err.root_cause())),
                             )
                             .await;
+                        // Run terminated unsuccessfully — capture the
+                        // partial fitness vector so /agent stats doesn't
+                        // silently lose runs that crashed before yielding.
+                        recorder
+                            .record_agent_run_end(
+                                false,
+                                request_count as u32,
+                                total_prompt_tokens,
+                                total_completion_tokens,
+                                total_tool_calls,
+                                total_tool_errors,
+                                run_started_at.elapsed().as_millis() as i64,
+                                Some(format!("model_error: {}", err.root_cause())),
+                            )
+                            .await;
                     }
                     return Err(err);
                 }
@@ -392,10 +448,26 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                     .iter()
                     .any(|call| ToolCatalog::should_yield(&call.name));
 
+            // Accumulate per-turn token usage onto the run-wide fitness
+            // counters. TokenCount derefs to usize; we widen to u64 so a
+            // long-running agent can't overflow.
+            total_prompt_tokens =
+                total_prompt_tokens.saturating_add(*message.usage.prompt_tokens as u64);
+            total_completion_tokens = total_completion_tokens
+                .saturating_add(*message.usage.completion_tokens as u64);
+
             // Process tool calls and update context
             let mut tool_call_records = self
                 .execute_tool_calls(&message.tool_calls, &tool_context)
                 .await?;
+            total_tool_calls = total_tool_calls
+                .saturating_add(tool_call_records.len() as u32);
+            total_tool_errors = total_tool_errors.saturating_add(
+                tool_call_records
+                    .iter()
+                    .filter(|(_, r)| r.is_error())
+                    .count() as u32,
+            );
 
             // Update context from conversation after response / tool-call hooks run
             if let Some(updated_context) = &self.conversation.context {
@@ -431,6 +503,10 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             );
 
             if self.error_tracker.limit_reached() {
+                interrupt_reason = Some(format!(
+                    "max_tool_failure_per_turn_reached: {}",
+                    self.error_tracker.limit()
+                ));
                 self.send(ChatResponse::Interrupt {
                     reason: InterruptionReason::MaxToolFailurePerTurnLimitReached {
                         limit: *self.error_tracker.limit() as u64,
@@ -480,6 +556,26 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         }
 
         self.services.update(self.conversation.clone()).await?;
+
+        // Emit the end-of-run fitness vector. `success` mirrors what we
+        // told the user via TaskComplete vs Interrupt — runs that finish
+        // normally with `is_complete` set are successes; everything else
+        // (interrupt-on-limit, max-failures, partial cancellation) is a
+        // failure with a reason for downstream rollups to bin against.
+        if let Some(recorder) = &self.trajectory_recorder {
+            recorder
+                .record_agent_run_end(
+                    is_complete && interrupt_reason.is_none(),
+                    request_count as u32,
+                    total_prompt_tokens,
+                    total_completion_tokens,
+                    total_tool_calls,
+                    total_tool_errors,
+                    run_started_at.elapsed().as_millis() as i64,
+                    interrupt_reason,
+                )
+                .await;
+        }
 
         // Signal Task Completion
         if is_complete {

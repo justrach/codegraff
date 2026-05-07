@@ -153,7 +153,8 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
     /// Displays banner only if user is in interactive mode.
     fn display_banner(&self) -> Result<()> {
         if self.cli.is_interactive() {
-            banner::display(false)?;
+            let log_path = self.api.environment().log_path();
+            banner::display(false, Some(log_path.as_path()))?;
         }
         Ok(())
     }
@@ -322,6 +323,58 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                 }
                 forge_domain::TrajectoryPayload::ModelTurn { turn } => {
                     format!("{indent}  {:>4}  turn    #{turn}", e.seq)
+                }
+                forge_domain::TrajectoryPayload::AgentRun {
+                    agent_id,
+                    requested_model,
+                    resolved_model,
+                    agent_version,
+                    ..
+                } => {
+                    // Show the override round-trip explicitly. When requested
+                    // and resolved differ — or the request was rejected and
+                    // we fell back — the diff is the diagnostic story.
+                    let model_part = match requested_model {
+                        Some(req) if req != resolved_model => {
+                            format!("model={resolved_model} (requested={req})")
+                        }
+                        Some(req) => format!("model={req}"),
+                        None => format!("model={resolved_model}"),
+                    };
+                    let version_part = agent_version
+                        .as_deref()
+                        .map(|v| format!(" version={v}"))
+                        .unwrap_or_default();
+                    format!(
+                        "{indent}  {:>4}  run     agent={agent_id} {model_part}{version_part}",
+                        e.seq
+                    )
+                }
+                forge_domain::TrajectoryPayload::AgentRunEnd {
+                    success,
+                    turns,
+                    prompt_tokens,
+                    completion_tokens,
+                    tool_calls,
+                    tool_errors,
+                    wall_ms,
+                    interrupt_reason,
+                } => {
+                    // Per-spawn fitness vector. The format is space-separated
+                    // key=value so it can be piped to awk/jq-equivalent tools
+                    // for ad-hoc rollups (mean turns, success rate, etc.)
+                    // before the dedicated `agent stats` command lands.
+                    let status = if *success { "ok" } else { "fail" };
+                    let reason = interrupt_reason
+                        .as_deref()
+                        .map(|r| format!(" reason={r}"))
+                        .unwrap_or_default();
+                    format!(
+                        "{indent}  {:>4}  end     agent={} status={status} turns={turns} \
+                         prompt_tokens={prompt_tokens} completion_tokens={completion_tokens} \
+                         tool_calls={tool_calls} tool_errors={tool_errors} wall_ms={wall_ms}{reason}",
+                        e.seq, e.agent_id
+                    )
                 }
             };
             self.writeln(line)?;
@@ -747,7 +800,8 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                 return Ok(());
             }
             TopLevelCommand::Banner => {
-                banner::display(true)?;
+                let log_path = self.api.environment().log_path();
+                banner::display(true, Some(log_path.as_path()))?;
                 return Ok(());
             }
             TopLevelCommand::Config(config_group) => {
@@ -893,6 +947,20 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             TopLevelCommand::Logs(args) => {
                 let log_dir = self.api.environment().log_path();
                 crate::logs::run(args, log_dir).await?;
+                return Ok(());
+            }
+            TopLevelCommand::Debug(group) => {
+                use crate::cli::DebugCommand;
+                match group.command {
+                    DebugCommand::LastMcpCall(args) => {
+                        let env = self.api.environment();
+                        let path = env
+                            .base_path
+                            .join("debug")
+                            .join("mcp-recent.jsonl");
+                        crate::debug::last_mcp_call(&args, &path)?;
+                    }
+                }
                 return Ok(());
             }
         }
@@ -4239,7 +4307,12 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                 }
             }
             ChatResponse::TaskReasoning { content } => {
-                writer.write_dimmed(&content)?;
+                // Reasoning summaries (chain-of-thought) flood the REPL with
+                // "Evaluating ...", "Exploring ..." text that doesn't add user
+                // value. Hide unless --verbose so the trace stays signal-rich.
+                if self.cli.verbose {
+                    writer.write_dimmed(&content)?;
+                }
             }
             ChatResponse::TaskComplete => {
                 writer.finish()?;

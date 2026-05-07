@@ -110,6 +110,10 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
                 let executor = self.agent_executor.clone();
                 let session_id = task_input.session_id.clone();
                 let agent_id = task_input.agent_id.clone();
+                let model_override = task_input
+                    .model
+                    .as_deref()
+                    .map(|m| forge_domain::ModelId::new(m));
                 // Parse session_id into ConversationId if present
                 let conversation_id = session_id
                     .map(|id| forge_domain::ConversationId::parse(&id))
@@ -120,9 +124,16 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
                 let outputs = join_all(task_input.tasks.into_iter().map(|task| {
                     let agent_id = agent_id.clone();
                     let executor = executor.clone();
+                    let model_override = model_override.clone();
                     async move {
                         executor
-                            .execute(AgentId::new(&agent_id), task, context, conversation_id)
+                            .execute(
+                                AgentId::new(&agent_id),
+                                task,
+                                context,
+                                conversation_id,
+                                model_override,
+                            )
                             .await
                     }
                 }))
@@ -175,7 +186,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
                 let executor = executor.clone();
                 async move {
                     executor
-                        .execute(AgentId::new(&agent_name), task, context, None)
+                        .execute(AgentId::new(&agent_name), task, context, None, None)
                         .await
                 }
             }))

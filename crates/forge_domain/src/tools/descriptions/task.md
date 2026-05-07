@@ -29,6 +29,7 @@ Usage notes:
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
 - If the user specifies that they want you to run agents "in parallel", you MUST send a single message with multiple {{tool_names.task}} tool use content blocks. For example, if you need to launch both a build-validator agent and a test-runner agent in parallel, send a single message with both tool calls.
+- Optional `model` field: when the user explicitly asks for a specific model for the subagent (e.g. "spawn a subagent with gpt-5.4-medium" or "use sonnet-4.6 for this delegation"), set `model` to the requested model id. Otherwise OMIT it and let the agent use its default. The override is rejected if the model isn't on the agent's currently-authenticated provider.
 
 Example usage:
 

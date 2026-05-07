@@ -16,12 +16,22 @@ const BUNDLED_CODEDB_COMMAND: &str = "codedb";
 const BUNDLED_CODEDB_MCP_ARG: &str = "mcp";
 
 fn bundled_codedb_config() -> McpConfig {
+    // Ask codedb to ship the discriminated tool schema for `codedb_bundle`.
+    // Without this, bundle's per-op `arguments` arrives at the model as bare
+    // `{type: "object"}`, and the model lawfully emits `arguments: {}` for every
+    // sub-op (causing missing-`path` / missing-`pattern` runtime errors). With
+    // it, codedb advertises a `oneOf` over per-tool branches, which graff
+    // rewrites to `anyOf` for OpenAI compatibility before the request leaves.
+    let env = BTreeMap::from([(
+        "CODEDB_DISCRIMINATED_SCHEMA".to_string(),
+        "1".to_string(),
+    )]);
     BTreeMap::from([(
         ServerName::from(BUNDLED_CODEDB_SERVER_NAME.to_string()),
         McpServerConfig::new_stdio(
             BUNDLED_CODEDB_COMMAND,
             vec![BUNDLED_CODEDB_MCP_ARG.to_string()],
-            None,
+            Some(env),
         ),
     )])
     .into()
@@ -127,10 +137,14 @@ mod tests {
             .mcp_servers
             .get(&ServerName::from(BUNDLED_CODEDB_SERVER_NAME.to_string()))
             .cloned();
+        let expected_env = BTreeMap::from([(
+            "CODEDB_DISCRIMINATED_SCHEMA".to_string(),
+            "1".to_string(),
+        )]);
         let expected = Some(McpServerConfig::new_stdio(
             BUNDLED_CODEDB_COMMAND,
             vec![BUNDLED_CODEDB_MCP_ARG.to_string()],
-            None,
+            Some(expected_env),
         ));
 
         assert_eq!(actual, expected);

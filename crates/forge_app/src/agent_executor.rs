@@ -4,7 +4,7 @@ use anyhow::Context;
 use convert_case::{Case, Casing};
 use forge_domain::{
     AgentId, ChatRequest, ChatResponse, ChatResponseContent, Conversation, ConversationId, Event,
-    TitleFormat, ToolCallContext, ToolDefinition, ToolName, ToolOutput,
+    ModelId, TitleFormat, ToolCallContext, ToolDefinition, ToolName, ToolOutput,
 };
 use forge_template::Element;
 use futures::StreamExt;
@@ -45,15 +45,19 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentEx
         task: String,
         ctx: &ToolCallContext,
         conversation_id: Option<ConversationId>,
+        model_override: Option<ModelId>,
     ) -> anyhow::Result<ToolOutput> {
-        ctx.send_tool_input(
-            TitleFormat::debug(format!(
-                "{} [Agent]",
-                agent_id.as_str().to_case(Case::UpperSnake)
-            ))
-            .sub_title(task.as_str()),
-        )
-        .await?;
+        let header = if let Some(ref m) = model_override {
+            format!(
+                "{} [Agent · {}]",
+                agent_id.as_str().to_case(Case::UpperSnake),
+                m.as_str()
+            )
+        } else {
+            format!("{} [Agent]", agent_id.as_str().to_case(Case::UpperSnake))
+        };
+        ctx.send_tool_input(TitleFormat::debug(header).sub_title(task.as_str()))
+            .await?;
 
         // Reuse existing conversation if provided, otherwise create a new one
         let conversation = if let Some(conversation_id) = conversation_id {
@@ -77,13 +81,11 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentEx
         };
         // Execute the request through the ForgeApp
         let app = crate::ForgeApp::new(self.services.clone());
-        let mut response_stream = app
-            .chat(
-                agent_id.clone(),
-                ChatRequest::new(Event::new(task.clone()), conversation.id),
-            )
-            .await?;
-
+        let mut chat_request = ChatRequest::new(Event::new(task.clone()), conversation.id);
+        if let Some(m) = model_override {
+            chat_request = chat_request.model_override(m);
+        }
+        let mut response_stream = app.chat(agent_id.clone(), chat_request).await?;
         // Collect responses from the agent
         let mut output = String::new();
         while let Some(message) = response_stream.next().await {

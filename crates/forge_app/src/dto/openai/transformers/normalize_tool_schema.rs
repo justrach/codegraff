@@ -1,7 +1,7 @@
 use forge_domain::Transformer;
 
 use crate::dto::openai::{Request, ResponseFormat};
-use crate::utils::enforce_strict_schema;
+use crate::utils::{enforce_strict_schema, rewrite_one_of_to_any_of};
 
 /// Normalizes tool schemas for OpenAI compatibility
 /// Remove duplicate title and description from parameters.
@@ -25,6 +25,17 @@ impl Transformer for NormalizeToolSchema {
     fn transform(&mut self, mut request: Self::Value) -> Self::Value {
         if let Some(tools) = request.tools.as_mut() {
             for tool in tools.iter_mut() {
+                // OpenAI's tool-schema validator (including the chatgpt.com
+                // /codex/responses endpoint) rejects `oneOf` outright with
+                // "'oneOf' is not permitted", regardless of strict-mode
+                // setting. `anyOf` is accepted by both OpenAI and Anthropic,
+                // and for discriminated unions whose branches pin a property
+                // to different `const` values (like codedb_bundle's ops
+                // schema) the two are functionally equivalent — no input
+                // matches more than one branch anyway. Rewrite recursively so
+                // nested schemas inside arrays/objects get the same treatment.
+                rewrite_one_of_to_any_of(&mut tool.function.parameters);
+
                 if let Some(obj) = tool.function.parameters.as_object_mut() {
                     // Remove tool usage description and title from parameters property
                     obj.remove("description");

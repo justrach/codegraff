@@ -342,6 +342,39 @@ fn normalize_additional_properties(
     }
 }
 
+/// Recursively rewrite the JSON Schema keyword `oneOf` to `anyOf` everywhere
+/// in `value`.
+///
+/// OpenAI's tool-schema validator (including the chatgpt.com `/codex/responses`
+/// endpoint) rejects `oneOf` outright with `'oneOf' is not permitted`,
+/// regardless of strict-mode. `anyOf` is accepted by both OpenAI and
+/// Anthropic, and for discriminated unions whose branches pin a property to
+/// different `const` values the two are functionally equivalent — no input
+/// matches more than one branch anyway.
+///
+/// If both `oneOf` and `anyOf` are present on the same object (vanishingly
+/// rare in practice and ambiguous to merge), the existing `anyOf` is left
+/// intact and `oneOf` is dropped to avoid sending both keywords.
+pub fn rewrite_one_of_to_any_of(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(branches) = map.remove("oneOf") {
+                if !map.contains_key("anyOf") {
+                    map.insert("anyOf".to_string(), branches);
+                }
+            }
+            for v in map.values_mut() {
+                rewrite_one_of_to_any_of(v);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                rewrite_one_of_to_any_of(item);
+            }
+        }
+        _ => {}
+    }
+}
 /// Normalizes a JSON schema to meet LLM provider requirements
 ///
 /// Many LLM providers (OpenAI, Anthropic) require that all object types in JSON

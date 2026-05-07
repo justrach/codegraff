@@ -53,7 +53,7 @@ impl fmt::Display for DisplayBox {
 ///
 /// * `FORGE_BANNER` - Optional custom banner text to display instead of the
 ///   default
-pub fn display(cli_mode: bool) -> io::Result<()> {
+pub fn display(cli_mode: bool, log_path: Option<&std::path::Path>) -> io::Result<()> {
     // Check for custom banner via environment variable
     let mut banner = std::env::var("FORGE_BANNER")
         .ok()
@@ -88,8 +88,16 @@ pub fn display(cli_mode: bool) -> io::Result<()> {
     // Build labels array with version and tips
     let labels: Vec<(&str, &str)> = std::iter::once(version_label).chain(tips).collect();
 
-    // Calculate the width of the longest label key for alignment
-    let max_width = labels.iter().map(|(key, _)| key.len()).max().unwrap_or(0);
+    // When a log path is supplied, surface it in the banner so users (and
+    // agents debugging graff) can find the log directory without spelunking
+    // through the source. Width includes "Logs:" so the column stays aligned.
+    let log_path_str = log_path.map(|p| p.display().to_string());
+    let max_width = labels
+        .iter()
+        .map(|(key, _)| key.len())
+        .chain(log_path_str.as_deref().map(|_| "Logs:".len()))
+        .max()
+        .unwrap_or(0);
 
     // Add all lines with right-aligned label keys and their values
     for (key, value) in &labels {
@@ -98,6 +106,17 @@ pub fn display(cli_mode: bool) -> io::Result<()> {
                 "\n{}{}",
                 format!("{key:>max_width$} ").dimmed(),
                 value.cyan()
+            )
+            .as_str(),
+        );
+    }
+
+    if let Some(path) = log_path_str.as_deref() {
+        banner.push_str(
+            format!(
+                "\n{}{}",
+                format!("{:>max_width$} ", "Logs:").dimmed(),
+                path.cyan()
             )
             .as_str(),
         );

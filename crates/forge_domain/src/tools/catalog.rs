@@ -85,13 +85,21 @@ pub struct TaskInput {
     /// The ID of the specialized agent to delegate to (e.g., "forge", "muse",
     /// "sage")
     pub agent_id: String,
-
     /// Optional session ID to continue an existing agent session. If not
     /// provided, a new stateless session will be created. Use this to
     /// maintain context across multiple task invocations with the same
     /// agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+
+    /// Optional model override for this subagent run. When set, the spawned
+    /// agent will use this model id instead of its configured default. The
+    /// model must belong to a provider the user has already authenticated
+    /// with — unauthenticated models are rejected. Use this when the user
+    /// explicitly requests a specific model for a subagent (e.g. "spawn a
+    /// subagent with gpt-5.4-medium to do X").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 fn default_true() -> bool {

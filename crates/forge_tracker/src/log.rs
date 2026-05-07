@@ -29,7 +29,13 @@ pub fn init_tracing(log_path: PathBuf, tracker: Tracker) -> anyhow::Result<Guard
         .with_filter(filter);
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_env("FORGE_LOG").unwrap_or(level))
+        .with(
+            // Honor FORGE_LOG first (graff's documented var), then fall back
+            // to RUST_LOG so anyone with Rust muscle memory just works.
+            tracing_subscriber::EnvFilter::try_from_env("FORGE_LOG")
+                .or_else(|_| tracing_subscriber::EnvFilter::try_from_env("RUST_LOG"))
+                .unwrap_or(level),
+        )
         .with(fmt_layer)
         .init();
 
@@ -44,17 +50,23 @@ fn prepare_writer(
     WorkerGuard,
     tracing_subscriber::EnvFilter,
 ) {
+    // EnvFilter directives are matched as module path *segments* (so `forge`
+    // would only match `forge` and `forge::*`, not `forge_infra::*`). Set a
+    // universal default level here and let `fmt_layer`'s `filter_fn` below
+    // narrow output to `forge_*` crates — otherwise debug events from
+    // `forge_infra`, `forge_domain`, `forge_main`, etc. are silently dropped
+    // unless the user sets `FORGE_LOG`/`RUST_LOG` explicitly.
     let ((non_blocking, guard), env) = if can_track() {
         let append = PostHogWriter::new(tracker);
         (
             tracing_appender::non_blocking(append),
-            tracing_subscriber::EnvFilter::new("forge=info"),
+            tracing_subscriber::EnvFilter::new("info"),
         )
     } else {
         let append = tracing_appender::rolling::daily(log_path, "forge.log");
         (
             tracing_appender::non_blocking(append),
-            tracing_subscriber::EnvFilter::new("forge=debug"),
+            tracing_subscriber::EnvFilter::new("debug"),
         )
     };
     (non_blocking, guard, env)

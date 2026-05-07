@@ -120,8 +120,62 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
             .await?;
 
         let models = services.models(agent_provider).await?;
+
+        // Apply per-request model override (e.g. from TaskInput.model). The
+        // override is only accepted when the model belongs to the agent's
+        // already-authenticated provider — i.e. it appears in `models`.
+        // Unknown / cross-provider models are rejected with a clear error
+        // listing the authenticated alternatives.
+        let agent = if let Some(override_id) = chat.model_override.clone() {
+            if !models.iter().any(|m| m.id == override_id) {
+                let available: Vec<String> =
+                    models.iter().map(|m| m.id.as_str().to_string()).collect();
+                anyhow::bail!(
+                    "model '{}' is not available on the agent's authenticated provider; \
+                     authenticated models for this agent: {}",
+                    override_id.as_str(),
+                    available.join(", ")
+                );
+            }
+            agent.model(override_id)
+        } else {
+            agent
+        };
+
         let selected_model = models.iter().find(|model| model.id == agent.model);
         let agent = agent.compaction_threshold(selected_model);
+
+        // Record the spawn diagnostic: this captures both what the caller
+        // requested (Task-tool override, if any) and what the orchestrator
+        // ended up using, so /trace tells the model-id-vs-display story end
+        // to end. Best-effort — see TrajectoryRecorder::persist.
+        //
+        // `agent_version` is a stable hash of the agent's system_prompt
+        // template — the actual content that determines run-time behaviour.
+        // Editing forge.md produces a new hash; identical-content edits
+        // produce the same hash, so a rollup query can group runs by
+        // *behaviourally distinct* variants rather than by agent_id alone.
+        let agent_version = agent.system_prompt.as_ref().map(|tpl| {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(tpl.template.as_bytes());
+            // Truncate to 16 hex chars — collision probability is negligible
+            // at our scale and the short prefix is human-readable in /trace.
+            let digest = hasher.finalize();
+            let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+            format!("sha256:{}", &hex[..16])
+        });
+        if let Some(recorder) = self.trajectory_recorder.as_ref() {
+            recorder
+                .record_agent_run(
+                    chat.model_override
+                        .as_ref()
+                        .map(|m| m.as_str().to_string()),
+                    agent.model.as_str().to_string(),
+                    agent_version,
+                )
+                .await;
+        }
 
         // Get system and mcp tool definitions and resolve them for the agent
         let all_tool_definitions = self.tool_registry.list().await?;

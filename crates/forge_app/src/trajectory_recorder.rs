@@ -87,6 +87,69 @@ impl TrajectoryRecorder {
         self.persist(event).await;
     }
 
+    /// Record the moment a (sub)agent chat run starts. Captures both the
+    /// `requested_model` (whatever a Task-tool model override asked for, if
+    /// anything) and the `resolved_model` actually used after validation
+    /// against the agent's authenticated provider. Reading `/trace` then
+    /// shows whether the override was honoured verbatim, normalised by the
+    /// model list, or ignored — the diagnostic ground-truth for issues like
+    /// "did the model id silently change between TaskInput and the run?"
+    pub async fn record_agent_run(
+        &self,
+        requested_model: Option<String>,
+        resolved_model: impl Into<String>,
+        agent_version: Option<String>,
+    ) {
+        let seq = self.next_seq();
+        let event = self.build_event(
+            seq,
+            TrajectoryPayload::AgentRun {
+                agent_id: self.agent_id.clone(),
+                parent_agent_id: self.parent_agent_id.clone(),
+                requested_model,
+                resolved_model: resolved_model.into(),
+                agent_version,
+            },
+        );
+        self.persist(event).await;
+    }
+
+    /// Record the end-of-run fitness vector for this (sub)agent. Pairs with
+    /// the most recent `record_agent_run` on the same recorder. The fields
+    /// are intentionally cheap aggregates (counts, sums, durations) so a
+    /// rollup query over `(agent_id, agent_version)` can compute mean
+    /// turns / success rate / tokens-per-success without re-walking the
+    /// full event stream — i.e. the substrate for an empirical archive of
+    /// agent variants à la Darwin Gödel Machine.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_agent_run_end(
+        &self,
+        success: bool,
+        turns: u32,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        tool_calls: u32,
+        tool_errors: u32,
+        wall_ms: i64,
+        interrupt_reason: Option<String>,
+    ) {
+        let seq = self.next_seq();
+        let event = self.build_event(
+            seq,
+            TrajectoryPayload::AgentRunEnd {
+                success,
+                turns,
+                prompt_tokens,
+                completion_tokens,
+                tool_calls,
+                tool_errors,
+                wall_ms,
+                interrupt_reason,
+            },
+        );
+        self.persist(event).await;
+    }
+
     /// Record an orchestrator-level error not tied to a single tool call
     /// (model API failure, budget exceeded, etc.).
     pub async fn record_error(&self, message: impl Into<String>, source: Option<String>) {

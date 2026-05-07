@@ -25,10 +25,10 @@ impl TitleDisplay {
 
         let icon = match self.inner.category {
             Category::Action => "●".yellow(),
-            Category::Info => "●".white(),
-            Category::Debug => "●".cyan(),
-            Category::Error => "●".red(),
-            Category::Completion => "●".yellow(),
+            Category::Info => "●".bright_blue(),
+            Category::Debug => "●".cyan().dimmed(),
+            Category::Error => "✗".red().bold(),
+            Category::Completion => "✓".green().bold(),
             Category::Warning => "⚠️".bright_yellow(),
         };
 
@@ -36,14 +36,14 @@ impl TitleDisplay {
 
         let local_time: chrono::DateTime<Local> = self.inner.timestamp.into();
         let timestamp_str = format!("[{}] ", local_time.format("%H:%M:%S"));
-        buf.push_str(timestamp_str.dimmed().to_string().as_str());
+        buf.push_str(timestamp_str.bright_black().to_string().as_str());
 
         let title = match self.inner.category {
-            Category::Action => self.inner.title.white(),
+            Category::Action => self.inner.title.bright_white(),
             Category::Info => self.inner.title.white(),
-            Category::Debug => self.inner.title.dimmed(),
-            Category::Error => format!("{} {}", "ERROR:".bold(), self.inner.title).red(),
-            Category::Completion => self.inner.title.white().bold(),
+            Category::Debug => self.inner.title.bright_black(),
+            Category::Error => format!("{} {}", "ERROR:".bold(), self.inner.title).bright_red(),
+            Category::Completion => self.inner.title.green().bold(),
             Category::Warning => {
                 format!("{} {}", "WARNING:".bold(), self.inner.title).bright_yellow()
             }
@@ -52,7 +52,7 @@ impl TitleDisplay {
         buf.push_str(title.to_string().as_str());
 
         if let Some(ref sub_title) = self.inner.sub_title {
-            buf.push_str(&format!(" {}", sub_title.dimmed()).to_string());
+            buf.push_str(&format!(" {}", sub_title.bright_black()).to_string());
         }
 
         buf

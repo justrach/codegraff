@@ -14,6 +14,7 @@ mod http;
 mod inquire;
 mod kv_storage;
 mod mcp_client;
+pub mod mcp_debug;
 mod mcp_server;
 mod walker;
 

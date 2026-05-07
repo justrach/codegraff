@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Context as _;
 use async_openai::types::responses as oai;
 use forge_app::domain::{Context as ChatContext, ContextMessage, MessagePhase, Role, ToolChoice};
-use forge_app::utils::enforce_strict_schema;
+use forge_app::utils::{enforce_strict_schema, rewrite_one_of_to_any_of};
 use forge_domain::{Effort, ReasoningConfig, ReasoningFull};
 
 use crate::provider::FromDomain;
@@ -182,6 +182,12 @@ fn has_open_additional_properties(schema: &serde_json::Value) -> bool {
 fn codex_tool_parameters(schema: &schemars::Schema) -> anyhow::Result<(serde_json::Value, bool)> {
     let mut params =
         serde_json::to_value(schema).with_context(|| "Failed to serialize tool schema")?;
+
+    // OpenAI's Responses API rejects `oneOf` in tool schemas. Rewrite to
+    // `anyOf` before strict-mode normalization so MCP tools that ship
+    // discriminated unions (e.g. codedb_bundle) don't get rejected with
+    // `invalid_function_parameters`.
+    rewrite_one_of_to_any_of(&mut params);
 
     let is_strict = !has_open_additional_properties(&params);
 
@@ -699,6 +705,73 @@ mod tests {
         let expected_strict = false;
         assert_eq!(actual, expected);
         assert_eq!(actual_strict, expected_strict);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_codex_tool_parameters_rewrites_one_of_to_any_of() -> anyhow::Result<()> {
+        // Mirrors the shape codedb's bundle ships when CODEDB_DISCRIMINATED_SCHEMA=1
+        // is set: each branch pins `tool` to a const and supplies the per-tool args.
+        // OpenAI's Responses API rejects `oneOf` outright, so codex_tool_parameters
+        // must rewrite it to `anyOf` before strict-mode normalization runs.
+        let fixture = schemars::Schema::try_from(json!({
+            "type": "object",
+            "properties": {
+                "ops": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "tool": { "const": "codedb_read" },
+                                    "path": { "type": "string" }
+                                },
+                                "required": ["tool", "path"],
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "tool": { "const": "codedb_search" },
+                                    "pattern": { "type": "string" }
+                                },
+                                "required": ["tool", "pattern"],
+                                "additionalProperties": false
+                            }
+                        ]
+                    }
+                }
+            },
+            "required": ["ops"],
+            "additionalProperties": false
+        }))
+        .unwrap();
+
+        let (actual, actual_strict) = codex_tool_parameters(&fixture)?;
+
+        // After rewrite no `oneOf` should remain anywhere in the tree.
+        fn contains_one_of(value: &serde_json::Value) -> bool {
+            match value {
+                serde_json::Value::Object(map) => {
+                    map.contains_key("oneOf") || map.values().any(contains_one_of)
+                }
+                serde_json::Value::Array(items) => items.iter().any(contains_one_of),
+                _ => false,
+            }
+        }
+        assert!(!contains_one_of(&actual), "oneOf must be rewritten: {actual:#}");
+
+        let items = actual
+            .pointer("/properties/ops/items")
+            .and_then(|v| v.as_object())
+            .expect("ops.items should be an object schema");
+        assert!(items.contains_key("anyOf"), "expected anyOf at ops.items, got: {items:#?}");
+        assert!(!items.contains_key("oneOf"));
+
+        // Strict mode should still apply since no nested additionalProperties:true is present.
+        assert!(actual_strict);
 
         Ok(())
     }

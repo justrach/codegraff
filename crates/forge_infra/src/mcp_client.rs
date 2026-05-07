@@ -555,17 +555,62 @@ impl ForgeMcpClient {
     }
 
     async fn call(&self, tool_name: &ToolName, input: &Value) -> anyhow::Result<ToolOutput> {
+        let started_at = std::time::Instant::now();
         let client = self.connect().await?;
+        let arguments = if let Value::Object(args) = input {
+            Some(args.clone())
+        } else {
+            None
+        };
+        // Diagnostic log of the literal payload we hand to rmcp's call_tool.
+        // Run with `RUST_LOG=forge_infra::mcp_client=debug` to see exactly
+        // what's hitting the wire — useful when an MCP server complains the
+        // arguments arrived empty (e.g. codedb's bundle sub-op error). If
+        // this log shows the real args here, the loss happens past us inside
+        // rmcp or on the server side; if it already shows `{}`, the loss is
+        // upstream of this method (model parser, transformer, etc.).
+        tracing::debug!(
+            server = %self.server_identifier(),
+            tool = %tool_name,
+            args = %serde_json::to_string(&arguments).unwrap_or_else(|_| "<unserializable>".into()),
+            "MCP call_tool payload"
+        );
+        let server_id = self.server_identifier();
         let result = client
             .call_tool(CallToolRequestParam {
                 name: Cow::Owned(tool_name.to_string()),
-                arguments: if let Value::Object(args) = input {
-                    Some(args.clone())
-                } else {
-                    None
-                },
+                arguments: arguments.clone(),
             })
-            .await?;
+            .await;
+
+        // Persist the round-trip into the debug ring file regardless of
+        // outcome so `graff debug last-mcp-call` can show failures too.
+        match &result {
+            Ok(ok) => {
+                let result_json = serde_json::to_value(ok).unwrap_or(serde_json::Value::Null);
+                crate::mcp_debug::record(
+                    &self.environment,
+                    &server_id,
+                    tool_name.as_str(),
+                    arguments.as_ref(),
+                    started_at,
+                    &crate::mcp_debug::McpCallOutcome::Returned { result_json: &result_json },
+                );
+            }
+            Err(err) => {
+                let msg = format!("{err:#}");
+                crate::mcp_debug::record(
+                    &self.environment,
+                    &server_id,
+                    tool_name.as_str(),
+                    arguments.as_ref(),
+                    started_at,
+                    &crate::mcp_debug::McpCallOutcome::Failed { error: &msg },
+                );
+            }
+        }
+
+        let result = result?;
         Ok(call_result_to_tool_output(result))
     }
 
