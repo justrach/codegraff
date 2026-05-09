@@ -5,13 +5,18 @@
 //! Methods that return data structures emit JSON strings; the `Graff` JS
 //! wrapper parses them so callers get typed objects.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
 use forge_api::{API, ChatRequest, ForgeAPI};
 use forge_config::ForgeConfig;
-use forge_domain::{AgentId, ChatResponse, Conversation, ConversationId, Event, ModelId};
+use forge_domain::{
+    AgentId, ApiKey, ApiKeyResponse, AuthContext, AuthContextRequest, AuthContextResponse,
+    AuthMethod, ChatResponse, Conversation, ConversationId, Event, ModelId, ProviderId, URLParam,
+    URLParamValue,
+};
 use forge_stream::MpscStream;
 use futures::StreamExt;
 use napi::bindgen_prelude::*;
@@ -77,6 +82,66 @@ impl GraffApi {
         let config = ForgeConfig::read().map_err(|e| err(format!("ForgeConfig::read: {e:?}")))?;
         let api: Arc<dyn API> = Arc::new(ForgeAPI::init(cwd, config));
         Ok(GraffApi { inner: api })
+    }
+
+    /// Set or replace the API key credential for a provider — the BYOK entrypoint.
+    ///
+    /// `provider_id` is the snake_case provider name (e.g. "openai",
+    /// "anthropic", "open_router", "xai", "cerebras", "github_copilot").
+    /// `extra_params` is an optional list of `[name, value]` pairs for
+    /// providers that need URL parameters alongside the key (e.g.
+    /// Vertex AI's project + location). Most providers can pass `None`.
+    ///
+    /// Routes through the same auth flow `graff provider login` uses,
+    /// so credentials persist in the configured auth store and the next
+    /// `chat()` whose `model` belongs to this provider authenticates
+    /// without further setup.
+    #[napi]
+    pub async fn upsert_credential(
+        &self,
+        provider_id: String,
+        api_key: String,
+        extra_params: Option<Vec<Vec<String>>>,
+    ) -> Result<()> {
+        let id: ProviderId = provider_id.into();
+        let init = self
+            .inner
+            .init_provider_auth(id.clone(), AuthMethod::ApiKey)
+            .await
+            .map_err(map_err)?;
+        let request = match init {
+            AuthContextRequest::ApiKey(req) => req,
+            _ => return Err(err(format!(
+                "provider {id} does not use ApiKey auth"
+            ))),
+        };
+        let mut url_params: HashMap<URLParam, URLParamValue> = HashMap::new();
+        if let Some(pairs) = extra_params {
+            for pair in pairs {
+                if pair.len() != 2 {
+                    return Err(err(format!(
+                        "extra_params entries must be [name, value] pairs; got {} fields",
+                        pair.len()
+                    )));
+                }
+                url_params.insert(URLParam::from(pair[0].clone()), URLParamValue::from(pair[1].clone()));
+            }
+        }
+        let response = ApiKeyResponse { api_key: ApiKey::from(api_key), url_params };
+        let context = AuthContextResponse::ApiKey(AuthContext { request, response });
+        self.inner
+            .complete_provider_auth(id, context, std::time::Duration::from_secs(30))
+            .await
+            .map_err(map_err)?;
+        Ok(())
+    }
+
+    /// Remove a provider's credential. Mirrors `graff provider logout`.
+    #[napi]
+    pub async fn remove_credential(&self, provider_id: String) -> Result<()> {
+        let id: ProviderId = provider_id.into();
+        self.inner.remove_provider(&id).await.map_err(map_err)?;
+        Ok(())
     }
 
     /// Send a chat request and return a streaming handle.

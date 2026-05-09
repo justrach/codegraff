@@ -44,6 +44,12 @@ jobs/**
 .mcp.json
 *.d.ts
 *.js
+
+# SDK hand-written JS wrappers — exception to the blanket *.js / *.d.ts rules above.
+# (index.js / index.d.ts inside sdk/typescript stay ignored; they're auto-generated
+# by napi build, see sdk/typescript/.gitignore.)
+!sdk/typescript/lib.js
+!sdk/typescript/lib.d.ts
 *.map
 **/.forge/request.body.json
 node_modules/
