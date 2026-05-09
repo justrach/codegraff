@@ -100,8 +100,43 @@ class Graff {
     this._api = api;
   }
 
-  static async init(cwd = process.cwd()) {
-    return new Graff(await GraffApi.init(cwd));
+  /** Initialise a long-lived Graff. Accepts either a string `cwd` (legacy)
+   *  or an options object:
+   *
+   *    Graff.init({
+   *      cwd:       "/path/to/workspace",   // default: process.cwd()
+   *      provider:  "openai",                // optional — sets session provider
+   *      apiKey:    process.env.OPENAI_API_KEY,  // optional — calls upsertCredential
+   *      model:     "gpt-4o-mini",           // optional — sets session model
+   *      maxTokens: 8000,                     // optional — overrides 20480 default
+   *    })
+   *
+   *  When `apiKey` is supplied without `provider`, init throws — there's no way
+   *  to know which provider to bind the key to. When neither is supplied, the
+   *  SDK falls back to whatever `~/.forge/forge.toml` provides (or the bundled
+   *  defaults), so existing call sites keep working.
+   *
+   *  Each option that's set translates to the equivalent FORGE_* env var BEFORE
+   *  the Rust init reads config, so they win over file-level config without
+   *  needing a Rust patch. */
+  static async init(arg) {
+    const opts = typeof arg === "string" ? { cwd: arg } : (arg || {});
+    if (opts.apiKey && !opts.provider) {
+      throw new TypeError("Graff.init: `provider` is required when `apiKey` is supplied");
+    }
+    // Translate options → env-var overrides. These are consumed by ForgeConfig
+    // when GraffApi.init runs below. Setting them on process.env is safe: they
+    // describe this Graff's session config, and any later Graff.init in the
+    // same process can override them again.
+    if (opts.provider) process.env.FORGE_SESSION__PROVIDER_ID = opts.provider;
+    if (opts.model) process.env.FORGE_SESSION__MODEL_ID = opts.model;
+    if (opts.maxTokens != null) process.env.FORGE_MAX_TOKENS = String(opts.maxTokens);
+    const cwd = opts.cwd ?? process.cwd();
+    const graff = new Graff(await GraffApi.init(cwd));
+    if (opts.apiKey) {
+      await graff.upsertCredential(opts.provider, opts.apiKey, opts.extraParams);
+    }
+    return graff;
   }
 
   /** Run a chat turn. Mirrors `runAgent` but reuses this Graff's GraffApi. */

@@ -30,6 +30,22 @@ export interface ChatOptions {
   model?: string;
 }
 
+export interface GraffInitOptions {
+  /** Workspace root. Defaults to `process.cwd()`. */
+  cwd?: string;
+  /** Provider id (snake_case) — e.g. "openai", "anthropic", "open_router". */
+  provider?: string;
+  /** API key. Requires `provider`. The SDK calls `upsertCredential` after init. */
+  apiKey?: string;
+  /** Optional URL parameters for providers that need them (Vertex AI etc). */
+  extraParams?: Array<[string, string]>;
+  /** Pin the session model. Equivalent to `FORGE_SESSION__MODEL_ID`. */
+  model?: string;
+  /** Override the default 20480 max-tokens cap. Required for providers
+   *  with smaller completion limits (gpt-4o-mini caps at 16384). */
+  maxTokens?: number;
+}
+
 // ── Event stream ─────────────────────────────────────────────────────────
 
 export type AgentEventCategory =
@@ -123,7 +139,14 @@ export class GraffSession {
 
 export class Graff {
   /** Initialise a long-lived Graff rooted at `cwd`. */
-  static init(cwd?: string): Promise<Graff>;
+  /** Initialise a long-lived Graff. Pass a `cwd` string for legacy behavior,
+   *  or an options object to also register a BYOK credential and pin the
+   *  session provider/model in one call.
+   *
+   *  When neither `provider` nor `apiKey` is set, the SDK falls back to
+   *  `~/.forge/forge.toml` (or the bundled defaults). Existing call sites
+   *  passing just a string still work. */
+  static init(arg?: string | GraffInitOptions): Promise<Graff>;
 
   /** Run a single chat turn. Same event stream as `runAgent` but reuses this Graff's GraffApi. */
   chat(opts: ChatOptions): AsyncGenerator<AgentEvent, void, unknown>;
