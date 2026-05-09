@@ -1,0 +1,58 @@
+{
+  "name": "@codegraff/sdk",
+  "version": "0.1.5",
+  "description": "TypeScript / Node SDK for the codegraff agent (N-API bindings).",
+  "main": "lib.js",
+  "types": "lib.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justrach/codegraff.git",
+    "directory": "sdk/typescript"
+  },
+  "napi": {
+    "name": "codegraff-sdk",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc"
+      ]
+    }
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">= 18"
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "artifacts": "napi artifacts",
+    "create-npm-dirs": "napi create-npm-dir -t .",
+    "version": "napi version",
+    "smoke": "node examples/smoke.mjs",
+    "demo": "tsx examples/agent-demo.ts",
+    "compare": "tsx examples/compare.ts",
+    "benchmark": "tsx examples/benchmark.ts"
+  },
+  "devDependencies": {
+    "@cursor/sdk": "^1.0.12",
+    "@napi-rs/cli": "^2.18.4",
+    "tsx": "^4.20.0"
+  },
+  "optionalDependencies": {
+    "@codegraff/sdk-darwin-arm64": "0.1.5",
+    "@codegraff/sdk-darwin-x64": "0.1.5",
+    "@codegraff/sdk-linux-arm64-gnu": "0.1.5",
+    "@codegraff/sdk-linux-x64-gnu": "0.1.5",
+    "@codegraff/sdk-win32-x64-msvc": "0.1.5"
+  },
+  "files": [
+    "lib.js",
+    "lib.d.ts",
+    "index.js",
+    "index.d.ts"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@codegraff/sdk-darwin-x64",
+  "version": "0.1.5",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "codegraff-sdk.darwin-x64.node",
+  "files": [
+    "codegraff-sdk.darwin-x64.node"
+  ],
+  "description": "TypeScript / Node SDK for the codegraff agent (N-API bindings).",
+  "license": "MIT",
+  "engines": {
+    "node": ">= 18"
+  }
+}

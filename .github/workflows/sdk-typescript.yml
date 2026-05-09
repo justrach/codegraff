@@ -1,0 +1,153 @@
+# Cross-platform build for `@codegraff/sdk` (sdk/typescript).
+#
+# Builds the napi-rs native addon on each target triple, uploads each .node
+# binary as a CI artifact, and then assembles them into the per-triple npm
+# subpackages under `sdk/typescript/npm/<triple>/`. The assembled tree is
+# uploaded as a single artifact so a maintainer can sanity-check the layout
+# before any future publish workflow gets wired up.
+#
+# Publishing to npm is intentionally NOT done here. When we're ready to ship
+# release 0.2.0 we'll add a separate workflow gated on a `sdk/typescript-vX.Y.Z`
+# tag that downloads the assembled artifact and runs `napi prepublish`.
+
+name: sdk-typescript
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/typescript/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/sdk-typescript.yml'
+  pull_request:
+    paths:
+      - 'sdk/typescript/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/sdk-typescript.yml'
+  workflow_dispatch:
+
+env:
+  RUSTFLAGS: '-Dwarnings'
+
+defaults:
+  run:
+    # All steps are SDK-scoped — the Cargo workspace is at the repo root but
+    # `napi build` reads the package.json next to the crate.
+    working-directory: sdk/typescript
+
+concurrency:
+  group: sdk-typescript-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Don't let one platform failure mask issues on the others.
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest          # Apple Silicon runner
+          - target: x86_64-apple-darwin
+            os: macos-13              # Intel runner
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          # Note: aarch64-unknown-linux-gnu and the musl variants need
+          # cross-compilation (cross / zig). Tracked as a follow-up; for
+          # now those targets are listed in package.json's
+          # optionalDependencies but the addon must be built from source.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Setup protoc
+        # Several forge crates pull in prost-build / tonic-prost-build.
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          shared-key: sdk-typescript-${{ matrix.target }}
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build native addon
+        run: npm run build -- --target ${{ matrix.target }}
+
+      - name: Upload .node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          # napi build emits codegraff-sdk.<platform>.node next to the package.json.
+          path: sdk/typescript/codegraff-sdk.*.node
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    name: assemble npm packages
+    needs: build
+    runs-on: ubuntu-latest
+    # Assemble the per-triple subpackages so a maintainer can inspect the
+    # final shipping layout without us actually publishing anything to npm.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: sdk/typescript/artifacts
+          pattern: bindings-*
+          merge-multiple: false
+
+      - name: Move .node files into npm/<triple>/
+        run: npm run artifacts
+
+      - name: List assembled tree
+        run: |
+          echo "::group::sdk/typescript/npm tree"
+          find npm -type f -printf '%p (%s bytes)\n' | sort
+          echo "::endgroup::"
+
+      - name: Upload assembled npm packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-typescript-npm-packages
+          path: sdk/typescript/npm/
+          if-no-files-found: error
+          retention-days: 14

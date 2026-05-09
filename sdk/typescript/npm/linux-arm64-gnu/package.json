@@ -1,0 +1,22 @@
+{
+  "name": "@codegraff/sdk-linux-arm64-gnu",
+  "version": "0.1.5",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "codegraff-sdk.linux-arm64-gnu.node",
+  "files": [
+    "codegraff-sdk.linux-arm64-gnu.node"
+  ],
+  "description": "TypeScript / Node SDK for the codegraff agent (N-API bindings).",
+  "license": "MIT",
+  "engines": {
+    "node": ">= 18"
+  },
+  "libc": [
+    "glibc"
+  ]
+}

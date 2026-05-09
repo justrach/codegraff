@@ -1,0 +1,19 @@
+{
+  "name": "@codegraff/sdk-win32-x64-msvc",
+  "version": "0.1.5",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "codegraff-sdk.win32-x64-msvc.node",
+  "files": [
+    "codegraff-sdk.win32-x64-msvc.node"
+  ],
+  "description": "TypeScript / Node SDK for the codegraff agent (N-API bindings).",
+  "license": "MIT",
+  "engines": {
+    "node": ">= 18"
+  }
+}

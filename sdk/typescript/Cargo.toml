@@ -1,0 +1,28 @@
+[package]
+name = "forge_sdk_node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "N-API bindings exposing the codegraff agent to Node.js / TypeScript."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2.16", default-features = false, features = ["napi6", "async", "tokio_rt"] }
+napi-derive = "2.16"
+forge_api.workspace = true
+forge_app.workspace = true
+forge_config.workspace = true
+forge_domain.workspace = true
+forge_stream.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+rustls.workspace = true
+
+[build-dependencies]
+napi-build = "2"

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "sdk/typescript"]
 resolver = "2"
 
 
