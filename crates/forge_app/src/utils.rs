@@ -358,10 +358,10 @@ fn normalize_additional_properties(
 pub fn rewrite_one_of_to_any_of(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
-            if let Some(branches) = map.remove("oneOf") {
-                if !map.contains_key("anyOf") {
-                    map.insert("anyOf".to_string(), branches);
-                }
+            if let Some(branches) = map.remove("oneOf")
+                && !map.contains_key("anyOf")
+            {
+                map.insert("anyOf".to_string(), branches);
             }
             for v in map.values_mut() {
                 rewrite_one_of_to_any_of(v);
