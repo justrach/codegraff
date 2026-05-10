@@ -3,7 +3,9 @@
     "name": "release: skip changelog",
     "color": "d73a4a",
     "description": "Skip this change from release notes.",
-    "aliases": ["skip"]
+    "aliases": [
+      "skip"
+    ]
   },
   {
     "name": "release: breaking",
@@ -17,7 +19,6 @@
       "breaking"
     ]
   },
-
   {
     "name": "good first issue",
     "color": "7057ff",
@@ -48,13 +49,20 @@
     "name": "state: approved",
     "color": "C3F7F7",
     "description": "Approved to proceed.",
-    "aliases": ["approved"]
+    "aliases": [
+      "approved"
+    ]
   },
   {
     "name": "state: blocked",
     "color": "C3F7F7",
     "description": "Something is blocking action.",
-    "aliases": ["blocked", "Status: Blocked", "status: blocked", "blocker"]
+    "aliases": [
+      "blocked",
+      "Status: Blocked",
+      "status: blocked",
+      "blocker"
+    ]
   },
   {
     "name": "state: pending",
@@ -88,7 +96,10 @@
     "name": "type: bug",
     "color": "FA1DD4",
     "description": "Something isn't working.",
-    "aliases": ["bug", "Type: Bug"]
+    "aliases": [
+      "bug",
+      "Type: Bug"
+    ]
   },
   {
     "name": "type: chore",
@@ -178,7 +189,9 @@
     "name": "type: security",
     "color": "FA1DD4",
     "description": "Something is vulnerable or not secure.",
-    "aliases": ["security"]
+    "aliases": [
+      "security"
+    ]
   },
   {
     "name": "type: performance",
@@ -189,61 +202,85 @@
     "name": "type: testing",
     "color": "FA1DD4",
     "description": "Related to testing.",
-    "aliases": ["test", "testing"]
+    "aliases": [
+      "test",
+      "testing"
+    ]
   },
   {
     "name": "work: chaotic",
     "color": "0288d1",
     "description": "The situation is chaotic, novel practices used.",
-    "aliases": ["chaotic"]
+    "aliases": [
+      "chaotic"
+    ]
   },
   {
     "name": "work: complex",
     "color": "4fc3f7",
     "description": "The situation is complex, emergent practices used.",
-    "aliases": ["complex"]
+    "aliases": [
+      "complex"
+    ]
   },
   {
     "name": "work: complicated",
     "color": "81d4fa",
     "description": "The situation is complicated, good practices used.",
-    "aliases": ["complicated"]
+    "aliases": [
+      "complicated"
+    ]
   },
   {
     "name": "work: obvious",
     "color": "e1f5fe",
     "description": "The situation is obvious, best practices used.",
-    "aliases": ["obvious"]
+    "aliases": [
+      "obvious"
+    ]
   },
   {
     "name": "ci: lint",
     "color": "F9D0C4",
     "description": "Automatically fix the linters issues and make a commit",
-    "aliases": ["ci:lint"]
+    "aliases": [
+      "ci:lint"
+    ]
   },
   {
     "name": "ci: benchmark",
     "color": "F9D0C4",
     "description": "Runs benchmarks",
-    "aliases": ["ci:benchmark"]
+    "aliases": [
+      "ci:benchmark"
+    ]
   },
   {
     "name": "type: provider",
     "color": "0075ca",
     "description": "Updates provider.json configuration.",
-    "aliases": ["provider", "update: provider"]
+    "aliases": [
+      "provider",
+      "update: provider"
+    ]
   },
   {
     "name": "ci: test-jit",
     "color": "F9D0C4",
     "description": "Run all integration tests for the JIT optimized engine",
-    "aliases": ["ci:test-jit"]
+    "aliases": [
+      "ci:test-jit"
+    ]
   },
   {
     "name": "os: windows",
     "color": "0078d4",
     "description": "Windows-specific issue or feature.",
-    "aliases": ["windows", "win32", "platform: windows"]
+    "aliases": [
+      "windows",
+      "win32",
+      "platform: windows"
+    ]
   },
   {
     "name": "onlydust-wave",
@@ -254,96 +291,34 @@
     "name": "ci: build all targets",
     "color": "F9D0C4",
     "description": "Build release binaries for all target platforms in CI",
-    "aliases": ["ci:build-all-targets", "build-all-targets"]
-  },
-  {
-    "name": "bounty",
-    "color": "F9C74F",
-    "description": "This issue has a bounty attached.",
-    "aliases": ["bounty:open"]
-  },
-  {
-    "name": "bounty: $100",
-    "color": "F9C74F",
-    "description": "This issue has a $100 bounty attached.",
-    "aliases": ["bounty:100", "bounty: 💰 $100"]
-  },
-  {
-    "name": "bounty: $200",
-    "color": "F9C74F",
-    "description": "This issue has a $200 bounty attached.",
-    "aliases": ["bounty:200", "bounty: 💰 $200"]
-  },
-  {
-    "name": "bounty: $300",
-    "color": "F9C74F",
-    "description": "This issue has a $300 bounty attached.",
-    "aliases": ["bounty:300", "bounty: 💰 $300"]
-  },
-  {
-    "name": "bounty: $500",
-    "color": "F9C74F",
-    "description": "This issue has a $500 bounty attached.",
-    "aliases": ["bounty:500", "bounty: 💰 $500"]
-  },
-  {
-    "name": "bounty: $800",
-    "color": "F9C74F",
-    "description": "This issue has a $800 bounty attached.",
-    "aliases": ["bounty:800", "bounty: 💰 $800"]
-  },
-  {
-    "name": "bounty: $1300",
-    "color": "F9C74F",
-    "description": "This issue has a $1300 bounty attached.",
-    "aliases": ["bounty:1300", "bounty: 💰 $1300"]
-  },
-  {
-    "name": "bounty: $2100",
-    "color": "F9C74F",
-    "description": "This issue has a $2100 bounty attached.",
-    "aliases": ["bounty:2100", "bounty: 💰 $2100"]
-  },
-  {
-    "name": "bounty: $3400",
-    "color": "F9C74F",
-    "description": "This issue has a $3400 bounty attached.",
-    "aliases": ["bounty:3400", "bounty: 💰 $3400"]
-  },
-  {
-    "name": "bounty: $5500",
-    "color": "F9C74F",
-    "description": "This issue has a $5500 bounty attached.",
-    "aliases": ["bounty:5500", "bounty: 💰 $5500"]
-  },
-  {
-    "name": "bounty: claimed",
-    "color": "F9C74F",
-    "description": "This bounty has been claimed and is being worked on.",
-    "aliases": ["bounty:claimed"]
-  },
-  {
-    "name": "bounty: rewarded",
-    "color": "F9C74F",
-    "description": "This bounty has been completed and the reward paid out.",
-    "aliases": ["bounty:rewarded", "bounty:earned"]
+    "aliases": [
+      "ci:build-all-targets",
+      "build-all-targets"
+    ]
   },
   {
     "name": "severity: low",
     "color": "FFEB3B",
     "description": "Minor impact; does not significantly affect functionality.",
-    "aliases": ["severity:low"]
+    "aliases": [
+      "severity:low"
+    ]
   },
   {
     "name": "severity: high",
     "color": "FF9800",
     "description": "Significant impact; core functionality is impaired.",
-    "aliases": ["severity:high"]
+    "aliases": [
+      "severity:high"
+    ]
   },
   {
     "name": "severity: critical",
     "color": "B71C1C",
     "description": "Severe impact; system is unusable or data is at risk.",
-    "aliases": ["severity:critical", "critical"]
+    "aliases": [
+      "severity:critical",
+      "critical"
+    ]
   }
 ]

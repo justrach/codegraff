@@ -34,7 +34,7 @@ fn test_stale_workflow() {
 //     workflow::generate_autofix_workflow();
 // }
 
-#[test]
-fn test_bounty_workflow() {
-    workflow::generate_bounty_workflow();
-}
+// bounty workflow disabled — codegraff does not run a paid bounty program,
+// so the entire generator + .github/scripts/bounty/ pipeline + bounty.yml
+// were removed. The upstream Forge Code project still uses this; if we ever
+// want it back, restore from `tailcallhq/forgecode`.
