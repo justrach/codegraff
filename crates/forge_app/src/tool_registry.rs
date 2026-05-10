@@ -113,7 +113,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
                 let model_override = task_input
                     .model
                     .as_deref()
-                    .map(|m| forge_domain::ModelId::new(m));
+                    .map(forge_domain::ModelId::new);
                 // Parse session_id into ConversationId if present
                 let conversation_id = session_id
                     .map(|id| forge_domain::ConversationId::parse(&id))
