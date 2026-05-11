@@ -321,6 +321,14 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         let mut is_complete = false;
 
         let mut request_count = 0;
+        // Counts how many times an `End`-lifecycle hook re-armed the loop
+        // by injecting a follow-up message (most often the pending-todos
+        // reminder). Bounded by `forge_config.max_end_hook_rearms` to stop
+        // self-perpetuating "reminder + reword" loops well before
+        // `max_requests_per_turn` would cap them. `None` in config disables
+        // the cap entirely (legacy behavior).
+        let mut end_hook_rearms: usize = 0;
+        let end_hook_rearm_cap: Option<usize> = self.config.max_end_hook_rearms;
         // Per-run fitness vector accumulators. Sums what's already computed
         // turn-by-turn (token usage on each assistant message, success/error
         // flags on each tool result) so an AgentRunEnd event at the bottom
@@ -550,7 +558,28 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                     if let Some(updated_context) = &self.conversation.context {
                         context = updated_context.clone();
                     }
-                    should_yield = false;
+                    end_hook_rearms = end_hook_rearms.saturating_add(1);
+
+                    // Force-yield once we've re-armed past the configured cap.
+                    // Prevents the "pending-todos reminder fires, agent
+                    // reshuffles todos, fingerprint changes, reminder fires
+                    // again" loop from running until max_requests_per_turn.
+                    if let Some(cap) = end_hook_rearm_cap
+                        && end_hook_rearms > cap
+                    {
+                        interrupt_reason = Some(format!(
+                            "max_end_hook_rearms_reached: {cap}"
+                        ));
+                        self.send(ChatResponse::Interrupt {
+                            reason: InterruptionReason::EndHookRearmLimitReached {
+                                limit: cap as u64,
+                            },
+                        })
+                        .await?;
+                        // leave should_yield = true so the outer loop exits
+                    } else {
+                        should_yield = false;
+                    }
                 }
             }
         }

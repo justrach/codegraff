@@ -43,6 +43,14 @@ pub struct TestContext {
     /// ForgeConfig used to populate TemplateConfig for
     /// system prompt rendering in tests.
     pub config: ForgeConfig,
+
+    /// Optional override for the pending-todos handler reminder cap, used
+    /// only in tests that need to decouple the handler cap from the
+    /// orchestrator-level `max_end_hook_rearms` cap (e.g. exercising the
+    /// orch-level interrupt without the handler short-circuiting first).
+    /// `None` means "follow `config.max_end_hook_rearms`" — production
+    /// behavior.
+    pub pending_todos_handler_cap_override: Option<usize>,
 }
 
 impl Default for TestContext {
@@ -68,6 +76,7 @@ impl Default for TestContext {
             config: ForgeConfig::default()
                 .tool_supported(true)
                 .max_extensions(15),
+            pending_todos_handler_cap_override: None,
             title: Some("test-conversation".into()),
             agent: Agent::new(
                 AgentId::new("forge"),

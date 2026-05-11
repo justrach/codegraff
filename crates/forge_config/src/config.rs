@@ -294,6 +294,21 @@ pub struct ForgeConfig {
     #[serde(default)]
     pub verify_todos: bool,
 
+    /// Maximum number of times an `End`-lifecycle hook may re-arm the
+    /// orchestrator loop in a single run by injecting a follow-up message
+    /// (e.g. the pending-todos reminder).
+    ///
+    /// Once the cap is reached, the orchestrator force-yields with an
+    /// `EndHookRearmLimitReached` interrupt rather than continuing to ping
+    /// the model. This bounds the "reminder + reword + reminder" loop that
+    /// otherwise only terminated at `max_requests_per_turn`.
+    ///
+    /// Also used as the per-fingerprint cap in the pending-todos handler so
+    /// the same set of incomplete todos can't trigger more reminders than
+    /// the orchestrator is willing to honor anyway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_end_hook_rearms: Option<usize>,
+
     /// Whether the deep research agent is available.
     ///
     /// When set to `true`, the Sage agent is added to the agent list and

@@ -224,12 +224,19 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
             TitleGenerationHandler::with_enabled(services.clone(), forge_config.generate_titles);
 
         // Build the on_end hook, conditionally adding PendingTodosHandler based on
-        // config
+        // config. The reminder cap is wired to `max_end_hook_rearms` so a
+        // single knob bounds both the orchestrator's re-arm count and the
+        // number of pending-todo reminders the handler is willing to inject —
+        // they describe the same loop from two ends.
         let on_end_hook = if forge_config.verify_todos {
+            let pending_todos_handler = match forge_config.max_end_hook_rearms {
+                Some(cap) => PendingTodosHandler::with_max_reminders(cap),
+                None => PendingTodosHandler::new(),
+            };
             tracing_handler
                 .clone()
                 .and(title_handler.clone())
-                .and(PendingTodosHandler::new())
+                .and(pending_todos_handler)
         } else {
             tracing_handler.clone().and(title_handler.clone())
         };

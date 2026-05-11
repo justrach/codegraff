@@ -68,6 +68,7 @@ pub enum WireCategory {
 pub enum WireInterrupt {
     MaxToolFailurePerTurnLimitReached { limit: u64 },
     MaxRequestPerTurnLimitReached { limit: u64 },
+    EndHookRearmLimitReached { limit: u64 },
 }
 
 impl From<ChatResponse> for WireEvent {
@@ -144,6 +145,9 @@ impl From<InterruptionReason> for WireInterrupt {
             }
             InterruptionReason::MaxRequestPerTurnLimitReached { limit } => {
                 WireInterrupt::MaxRequestPerTurnLimitReached { limit }
+            }
+            InterruptionReason::EndHookRearmLimitReached { limit } => {
+                WireInterrupt::EndHookRearmLimitReached { limit }
             }
         }
     }
