@@ -362,6 +362,15 @@
       "type": "boolean",
       "default": false
     },
+    "max_end_hook_rearms": {
+      "description": "Maximum number of times an `End`-lifecycle hook may re-arm the\norchestrator loop in a single run by injecting a follow-up message\n(e.g. the pending-todos reminder).\n\nOnce the cap is reached, the orchestrator force-yields with an\n`EndHookRearmLimitReached` interrupt rather than continuing to ping\nthe model. This bounds the \"reminder + reword + reminder\" loop that\notherwise only terminated at `max_requests_per_turn`.\n\nAlso used as the per-fingerprint cap in the pending-todos handler so\nthe same set of incomplete todos can't trigger more reminders than\nthe orchestrator is willing to honor anyway.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint",
+      "minimum": 0
+    },
     "research_subagent": {
       "description": "Whether the deep research agent is available.\n\nWhen set to `true`, the Sage agent is added to the agent list and\nthe `:sage` app command is enabled. Defaults to `false`.",
       "type": "boolean",

@@ -28,6 +28,7 @@ tool_timeout_secs = 300
 top_k = 30
 top_p = 0.8
 verify_todos = true
+max_end_hook_rearms = 3
 research_subagent = false
 currency_symbol = "$"
 currency_conversion_rate = 1.0

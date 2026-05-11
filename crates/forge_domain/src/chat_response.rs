@@ -102,6 +102,14 @@ pub enum InterruptionReason {
     MaxRequestPerTurnLimitReached {
         limit: u64,
     },
+    /// The orchestrator's `End`-lifecycle hooks tried to re-arm the loop
+    /// (by injecting a follow-up message) more times than the configured
+    /// cap allows. Most commonly hit when the pending-todos reminder
+    /// keeps firing because the agent reshuffles its todo list each turn
+    /// instead of completing items.
+    EndHookRearmLimitReached {
+        limit: u64,
+    },
 }
 
 #[derive(Clone)]

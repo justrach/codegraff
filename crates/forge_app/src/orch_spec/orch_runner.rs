@@ -129,13 +129,28 @@ impl Runner {
             ApplyTunableParameters::new(agent.clone(), system_tools.clone()).apply(conversation);
         let conversation = SetConversationId.apply(conversation);
 
+        // Mirror the production wiring in `app.rs`: the pending-todos
+        // handler's reminder cap follows `max_end_hook_rearms` so tests
+        // exercising the orchestrator-level re-arm cap can trip it cleanly
+        // by setting the config field rather than threading a handler
+        // override through the runner. Tests that need to exercise the
+        // orchestrator cap *without* the handler short-circuiting first
+        // can set `pending_todos_handler_cap_override` to a high value.
+        let pending_todos_handler = match setup
+            .pending_todos_handler_cap_override
+            .or(setup.config.max_end_hook_rearms)
+        {
+            Some(cap) => PendingTodosHandler::with_max_reminders(cap),
+            None => PendingTodosHandler::new(),
+        };
+
         let orch = Orchestrator::new(services.clone(), conversation, agent, setup.config.clone())
             .error_tracker(ToolErrorTracker::new(3))
             .tool_definitions(system_tools)
             .hook(Arc::new(
                 Hook::default()
                     .on_request(DoomLoopDetector::default())
-                    .on_end(PendingTodosHandler::new()),
+                    .on_end(pending_todos_handler),
             ))
             .sender(tx);
 

@@ -73,8 +73,83 @@ impl DoomLoopDetector {
             .iter()
             .filter_map(|msg| msg.tool_calls.as_ref())
             .flat_map(|calls| calls.iter())
-            .map(|call| (call.name.clone(), call.arguments.clone()))
+            .map(|call| {
+                (
+                    call.name.clone(),
+                    Self::normalize_arguments(&call.name, &call.arguments),
+                )
+            })
             .collect()
+    }
+
+    /// Normalizes tool-call arguments before doom-loop comparison so that
+    /// near-identical exploration patterns (same file/query, slightly
+    /// different offsets/limits) bucket together as a single signature.
+    ///
+    /// For the read/grep family we keep only the *intent* keys
+    /// (`file_path`, `path`, `pattern`, `query`, `glob_pattern`) and drop
+    /// pagination-style keys (`offset`, `limit`, `line_start`, `line_end`,
+    /// `max_results`, `context_lines`). This catches the common loop where
+    /// an agent re-reads the same file with shifting line ranges, or
+    /// re-greps the same pattern with different `max_results`, without
+    /// triggering before for genuinely new content.
+    ///
+    /// Tools outside this allow-list pass through untouched.
+    fn normalize_arguments(name: &ToolName, args: &ToolCallArguments) -> ToolCallArguments {
+        const NORMALIZED_TOOLS: &[&str] = &[
+            "read",
+            "grep",
+            "fs_search",
+            "fs_read",
+            "find_file_by_name",
+            "search",
+            "codedb_read",
+            "codedb_search",
+            "codedb_word",
+            "codedb_outline",
+        ];
+        // Volatile keys whose values typically change between
+        // exploration calls without changing the agent's intent. Dropped
+        // before signature comparison so [(read, file=A, offset=0)],
+        // [(read, file=A, offset=200)], [(read, file=A, offset=400)]
+        // all collapse to one signature.
+        const VOLATILE_KEYS: &[&str] = &[
+            "offset",
+            "limit",
+            "line_start",
+            "line_end",
+            "start_line",
+            "end_line",
+            "max_results",
+            "max_result",
+            "context_lines",
+            "compact",
+            "if_hash",
+            "scope",
+        ];
+
+        if !NORMALIZED_TOOLS
+            .iter()
+            .any(|t| name.as_str().eq_ignore_ascii_case(t))
+        {
+            return args.clone();
+        }
+
+        // Parse to a JSON Value; fall back to original on any error so we
+        // never drop signatures we couldn't normalize.
+        let Ok(value) = args.parse() else {
+            return args.clone();
+        };
+
+        let serde_json::Value::Object(mut map) = value else {
+            return args.clone();
+        };
+
+        for key in VOLATILE_KEYS {
+            map.remove(*key);
+        }
+
+        ToolCallArguments::Parsed(serde_json::Value::Object(map))
     }
 
     /// Checks for repeating patterns at the end of the sequence.
@@ -322,6 +397,92 @@ mod tests {
         // Second call - no loop yet (need 3 for default threshold)
         let actual = detector.detect_from_conversation(&conversation);
         assert_eq!(actual, None);
+    }
+
+    #[test]
+    fn test_doom_loop_detector_normalizes_read_offsets() {
+        // Regression: agent re-reads the same file with shifting line
+        // ranges (offset/limit, line_start/line_end). Before
+        // normalization these were three different signatures and the
+        // loop was missed; after normalization they collapse to one.
+        let detector = DoomLoopDetector::new();
+
+        let call_a = ToolCallFull::new("read").arguments(ToolCallArguments::from_json(
+            r#"{"path": "huge.ts", "offset": 0, "limit": 200}"#,
+        ));
+        let call_b = ToolCallFull::new("read").arguments(ToolCallArguments::from_json(
+            r#"{"path": "huge.ts", "offset": 200, "limit": 200}"#,
+        ));
+        let call_c = ToolCallFull::new("read").arguments(ToolCallArguments::from_json(
+            r#"{"path": "huge.ts", "offset": 400, "limit": 200}"#,
+        ));
+
+        let messages = vec![
+            create_assistant_message(&call_a),
+            create_assistant_message(&call_b),
+            create_assistant_message(&call_c),
+        ];
+        let conversation = create_conversation_with_messages(messages);
+
+        let actual = detector.detect_from_conversation(&conversation);
+        let expected = Some(3);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_doom_loop_detector_normalizes_grep_max_results() {
+        // Same idea for grep: max_results / context_lines change between
+        // turns but the search intent is identical.
+        let detector = DoomLoopDetector::new();
+
+        let call_a = ToolCallFull::new("grep").arguments(ToolCallArguments::from_json(
+            r#"{"pattern": "TODO", "path": "src/", "max_results": 10}"#,
+        ));
+        let call_b = ToolCallFull::new("grep").arguments(ToolCallArguments::from_json(
+            r#"{"pattern": "TODO", "path": "src/", "max_results": 50}"#,
+        ));
+        let call_c = ToolCallFull::new("grep").arguments(ToolCallArguments::from_json(
+            r#"{"pattern": "TODO", "path": "src/", "max_results": 100, "context_lines": 3}"#,
+        ));
+
+        let messages = vec![
+            create_assistant_message(&call_a),
+            create_assistant_message(&call_b),
+            create_assistant_message(&call_c),
+        ];
+        let conversation = create_conversation_with_messages(messages);
+
+        let actual = detector.detect_from_conversation(&conversation);
+        let expected = Some(3);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_doom_loop_detector_keeps_distinct_files_distinct() {
+        // Sanity: normalization must not collapse genuinely different
+        // file paths together.
+        let detector = DoomLoopDetector::new();
+
+        let call_a = ToolCallFull::new("read").arguments(ToolCallArguments::from_json(
+            r#"{"path": "a.ts", "offset": 0, "limit": 200}"#,
+        ));
+        let call_b = ToolCallFull::new("read").arguments(ToolCallArguments::from_json(
+            r#"{"path": "b.ts", "offset": 0, "limit": 200}"#,
+        ));
+        let call_c = ToolCallFull::new("read").arguments(ToolCallArguments::from_json(
+            r#"{"path": "c.ts", "offset": 0, "limit": 200}"#,
+        ));
+
+        let messages = vec![
+            create_assistant_message(&call_a),
+            create_assistant_message(&call_b),
+            create_assistant_message(&call_c),
+        ];
+        let conversation = create_conversation_with_messages(messages);
+
+        let actual = detector.detect_from_conversation(&conversation);
+        let expected = None;
+        assert_eq!(actual, expected);
     }
 
     #[test]

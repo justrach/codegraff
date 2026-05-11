@@ -4296,6 +4296,11 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                     InterruptionReason::MaxToolFailurePerTurnLimitReached { limit, .. } => {
                         format!("Maximum tool failure limit ({limit}) reached for this turn")
                     }
+                    InterruptionReason::EndHookRearmLimitReached { limit } => {
+                        format!(
+                            "End-hook re-arm limit ({limit}) reached \u{2014} pending-todos reminder kept firing without progress"
+                        )
+                    }
                 };
 
                 self.writeln_title(TitleFormat::action(title))?;
