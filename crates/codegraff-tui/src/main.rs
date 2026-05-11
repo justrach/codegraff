@@ -1652,6 +1652,16 @@ impl<A: API + 'static> Tui<A> {
             ImageCommand::NotCommand => {}
         }
 
+        let dropped_images = parse_dropped_images(&raw_prompt);
+        if !dropped_images.is_empty() {
+            for image in dropped_images {
+                self.attach_image(image);
+            }
+            self.composer.clear();
+            self.composer_scroll_from_bottom = 0;
+            return Ok(());
+        }
+
         if raw_prompt.is_empty() && self.image_attachments.is_empty() {
             return Ok(());
         }
@@ -5608,20 +5618,118 @@ fn build_chat_prompt(prompt: &str, images: &[ImageAttachment]) -> String {
 }
 
 fn parse_pasted_images(text: &str) -> Vec<ImageAttachment> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| pasted_image_path(line).map(ImageAttachment::new))
-        .collect()
+    parse_dropped_images(text)
 }
 
+fn parse_dropped_images(text: &str) -> Vec<ImageAttachment> {
+    let mut images = Vec::new();
+    let mut saw_candidate = false;
+
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        saw_candidate = true;
+        let Some(path) = dropped_image_path(line) else {
+            return Vec::new();
+        };
+        images.push(ImageAttachment::new(path));
+    }
+
+    if saw_candidate { images } else { Vec::new() }
+}
+
+#[cfg(test)]
 fn pasted_image_path(text: &str) -> Option<String> {
-    let path = text
-        .trim()
-        .trim_matches('"')
-        .trim_start_matches("file://")
-        .to_string();
-    is_supported_image_path(Path::new(&path)).then_some(path)
+    dropped_image_path(text)
+}
+
+fn dropped_image_path(text: &str) -> Option<String> {
+    let path = normalize_dropped_path(text)?;
+    is_readable_supported_image_path(&path).then(|| path.to_string_lossy().into_owned())
+}
+
+fn normalize_dropped_path(text: &str) -> Option<PathBuf> {
+    let trimmed = trim_wrapping_quotes(text.trim());
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.starts_with("file://") {
+        decode_file_url(trimmed)
+    } else {
+        Some(PathBuf::from(unescape_shell_path(trimmed)))
+    }
+}
+
+fn trim_wrapping_quotes(text: &str) -> &str {
+    if text.len() >= 2
+        && ((text.starts_with('"') && text.ends_with('"'))
+            || (text.starts_with('\'') && text.ends_with('\'')))
+    {
+        &text[1..text.len() - 1]
+    } else {
+        text
+    }
+}
+
+fn decode_file_url(text: &str) -> Option<PathBuf> {
+    let path = text.strip_prefix("file://")?;
+    let path = if path.starts_with("localhost/") {
+        &path[9..]
+    } else {
+        path
+    };
+    Some(PathBuf::from(percent_decode(path)?))
+}
+
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = *bytes.get(index + 1)?;
+            let low = *bytes.get(index + 2)?;
+            decoded.push(hex_value(high)? * 16 + hex_value(low)?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn unescape_shell_path(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.next() {
+                output.push(next);
+            } else {
+                output.push(ch);
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+
+    output
+}
+
+fn is_readable_supported_image_path(path: &Path) -> bool {
+    is_supported_image_path(path) && path.is_file() && image::open(path).is_ok()
 }
 
 fn normalize_paste_text(text: &str) -> String {
@@ -5662,7 +5770,7 @@ fn build_composer_lines(
     if images.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("Hint: ", Style::default().fg(Color::DarkGray)),
-            Span::raw("paste image path (Cmd+V/Ctrl+V) or /image <path>"),
+            Span::raw("drag image file, paste image/path, or /image <path>"),
         ]));
     } else {
         let summary = match images.len() {
@@ -6538,7 +6646,7 @@ mod tests {
         let fixture = "can you go thru the entire repo real quick w codedb";
         let actual = rendered_composer_lines(fixture, &[], 22);
         let expected = vec![
-            "Hint: paste image path (Cmd+V/Ctrl+V) or /image <path>".to_string(),
+            "Hint: drag image file, paste image/path, or /image <path>".to_string(),
             ">: can you go thru the".to_string(),
             "    entire repo real q".to_string(),
             "   uick w codedb".to_string(),
@@ -6723,21 +6831,27 @@ mod tests {
 
     #[test]
     fn pasted_image_path_attaches_supported_image() {
-        let fixture = "file:///tmp/screen shot.png";
-        let actual = pasted_image_path(fixture);
-        let expected = Some("/tmp/screen shot.png".to_string());
+        let path = write_test_image("screen shot.png");
+        let fixture = format!("file://{}", path.display());
+        let actual = pasted_image_path(&fixture);
+        let expected = Some(path.to_string_lossy().into_owned());
+        let _ = std::fs::remove_file(&path);
 
         assert_eq!(actual, expected);
     }
 
     #[test]
     fn pasted_images_extracts_multiline_image_paths() {
-        let fixture = "/tmp/a.png\n/tmp/b.webp\nplain text";
-        let actual = parse_pasted_images(fixture);
+        let first = write_test_image("a.png");
+        let second = write_test_image("b.png");
+        let fixture = format!("{}\n{}", first.display(), second.display());
+        let actual = parse_pasted_images(&fixture);
         let expected = vec![
-            ImageAttachment::new("/tmp/a.png"),
-            ImageAttachment::new("/tmp/b.webp"),
+            ImageAttachment::new(first.to_string_lossy()),
+            ImageAttachment::new(second.to_string_lossy()),
         ];
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(&second);
 
         assert_eq!(actual, expected);
     }
@@ -6920,21 +7034,64 @@ mod tests {
     }
 
     #[test]
+    fn pasted_images_leave_mixed_text_as_plain_text() {
+        let path = write_test_image("mixed.png");
+        let fixture = format!("describe this\n{}", path.display());
+        let actual = parse_pasted_images(&fixture);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(actual.is_empty());
+    }
+
+    #[test]
+    fn dropped_image_path_accepts_shell_escaped_spaces() {
+        let path = write_test_image("screen shot shell.png");
+        let fixture = path.to_string_lossy().replace(' ', "\\ ");
+        let actual = dropped_image_path(&fixture);
+        let expected = Some(path.to_string_lossy().into_owned());
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn dropped_image_path_accepts_percent_encoded_file_url() {
+        let path = write_test_image("screen shot url.png");
+        let fixture = format!("\"file://{}\"", path.to_string_lossy().replace(' ', "%20"));
+        let actual = dropped_image_path(&fixture);
+        let expected = Some(path.to_string_lossy().into_owned());
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn pasted_image_path_accepts_quoted_file_urls() {
-        let fixture = "\"file:///tmp/screen shot.jpeg\"";
-        let actual = pasted_image_path(fixture);
-        let expected = Some("/tmp/screen shot.jpeg".to_string());
+        let path = write_test_image("quoted screen shot.png");
+        let fixture = format!("\"file://{}\"", path.display());
+        let actual = pasted_image_path(&fixture);
+        let expected = Some(path.to_string_lossy().into_owned());
+        let _ = std::fs::remove_file(&path);
 
         assert_eq!(actual, expected);
     }
 
     #[test]
     fn pasted_images_ignore_unsupported_or_non_path_lines() {
-        let fixture = "hello\n/tmp/a.gif\nfile:///tmp/ok.webp\nnot-an-image";
-        let actual = parse_pasted_images(fixture);
-        let expected = vec![ImageAttachment::new("/tmp/ok.webp")];
+        let path = write_test_image("ok.png");
+        let fixture = format!("hello\n/tmp/a.gif\nfile://{}\nnot-an-image", path.display());
+        let actual = parse_pasted_images(&fixture);
+        let _ = std::fs::remove_file(&path);
 
-        assert_eq!(actual, expected);
+        assert!(actual.is_empty());
+    }
+
+    #[test]
+    fn dropped_image_path_rejects_missing_files() {
+        let fixture = "/tmp/codegraff-missing-screenshot.png";
+        let actual = dropped_image_path(fixture);
+
+        assert_eq!(actual, None);
     }
 
     #[test]
@@ -7161,6 +7318,16 @@ mod tests {
             .into_iter()
             .map(|span| span.content.into_owned())
             .collect::<String>()
+    }
+
+    fn write_test_image(name: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let path = std::env::temp_dir().join(format!("codegraff-test-{timestamp}-{name}"));
+        write_rgba_png(&path, 1, 1, &[255, 0, 0, 255]).unwrap();
+        path
     }
 
     #[test]
