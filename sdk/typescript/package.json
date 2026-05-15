@@ -35,6 +35,7 @@
     "smoke": "node examples/smoke.mjs",
     "demo": "tsx examples/agent-demo.ts",
     "compare": "tsx examples/compare.ts",
+    "swarm": "tsx examples/swarm.ts",
     "benchmark": "tsx examples/benchmark.ts"
   },
   "devDependencies": {
