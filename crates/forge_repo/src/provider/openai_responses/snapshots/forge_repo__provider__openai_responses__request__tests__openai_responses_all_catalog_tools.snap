@@ -7,7 +7,6 @@ expression: actual.tools
     "type": "function",
     "name": "read",
     "parameters": {
-      "title": "FSRead",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -74,7 +73,6 @@ expression: actual.tools
     "type": "function",
     "name": "write",
     "parameters": {
-      "title": "FSWrite",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -104,7 +102,6 @@ expression: actual.tools
     "type": "function",
     "name": "fs_search",
     "parameters": {
-      "title": "FSSearch",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -278,7 +275,6 @@ expression: actual.tools
     "type": "function",
     "name": "sem_search",
     "parameters": {
-      "title": "SemanticSearch",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -317,7 +313,6 @@ expression: actual.tools
     "type": "function",
     "name": "remove",
     "parameters": {
-      "title": "FSRemove",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -337,7 +332,6 @@ expression: actual.tools
     "type": "function",
     "name": "patch",
     "parameters": {
-      "title": "FSPatch",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -373,7 +367,6 @@ expression: actual.tools
     "type": "function",
     "name": "multi_patch",
     "parameters": {
-      "title": "FSMultiPatch",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -423,7 +416,6 @@ expression: actual.tools
     "type": "function",
     "name": "undo",
     "parameters": {
-      "title": "FSUndo",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -443,7 +435,6 @@ expression: actual.tools
     "type": "function",
     "name": "shell",
     "parameters": {
-      "title": "Shell",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -507,7 +498,6 @@ expression: actual.tools
     "type": "function",
     "name": "fetch",
     "parameters": {
-      "title": "NetFetch",
       "description": "Input type for the net fetch tool",
       "type": "object",
       "additionalProperties": false,
@@ -540,7 +530,6 @@ expression: actual.tools
     "type": "function",
     "name": "followup",
     "parameters": {
-      "title": "Followup",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -632,7 +621,6 @@ expression: actual.tools
     "type": "function",
     "name": "plan",
     "parameters": {
-      "title": "PlanCreate",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -662,7 +650,6 @@ expression: actual.tools
     "type": "function",
     "name": "skill",
     "parameters": {
-      "title": "SkillFetch",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -682,7 +669,6 @@ expression: actual.tools
     "type": "function",
     "name": "todo_write",
     "parameters": {
-      "title": "TodoWrite",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -727,7 +713,6 @@ expression: actual.tools
     "type": "function",
     "name": "todo_read",
     "parameters": {
-      "title": "TodoRead",
       "type": "object",
       "additionalProperties": false,
       "required": [],
@@ -740,7 +725,6 @@ expression: actual.tools
     "type": "function",
     "name": "task",
     "parameters": {
-      "title": "TaskInput",
       "description": "Input structure for the Task tool - delegates work to specialized agents",
       "type": "object",
       "additionalProperties": false,
