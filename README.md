@@ -27,28 +27,52 @@ hand-rolls every JSON wire format (`std.json`), and runs tool calls — includin
 subagents — in parallel on the std.Io thread pool. It also compacts its own
 context when the conversation gets long.
 
+**Contents**
+
+- [Install](#install) · [give it a key](#give-it-a-key) · [run it](#run-it)
+- [Why](#why)
+- [Code intelligence](#code-intelligence--token-efficient-by-default)
+- [An evolutionary harness](#an-evolutionary-harness)
+- [Providers & models](#providers--models)
+- [CLI reference](#cli-reference)
+- [REPL commands](#repl-commands)
+- [Permission modes](#permission-modes)
+- [SDKs — TypeScript & Python](#sdks--typescript--python)
+- [Reference](#reference)
+- [Coming soon](#coming-soon)
+
 ---
 
-## Quick start
+## Install
+
+Grab the latest prebuilt release binary — macOS builds are Developer ID signed
+and Apple notarized; on any other platform the installer builds from source with
+Zig 0.16:
 
 ```sh
-# 1. install — grabs the prebuilt release binary (macOS: Developer ID signed
-#    + Apple notarized), otherwise builds from source with Zig 0.16:
-./install.sh
-# or, from anywhere:
-#   curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
-
-# 2. give it a key — there are exactly three ways, pick whichever is easiest:
-graff login                            # free codegraff key (device-code OAuth, no signup forms)
-graff key set deepseek sk-...          # store ANY provider's key (macOS Keychain, else 0600 file)
-export DEEPSEEK_API_KEY=sk-...         # or just an env var (env always wins)
-# already logged into the Codex CLI? no step 2 — your ChatGPT subscription is
-# picked up automatically (~/.codex/auth.json). Or run `graff login codex`.
-
-# 3. run it (optionally pin a provider/model):
-graff                                  # starts on the first provider you have a key for
-graff --model deepseek-reasoner        # or pin one explicitly
+curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 ```
+
+From a checkout, just run `./install.sh`. The binary lands in `~/bin` by default
+(override with `HARNESS_DIR`):
+
+| tool      | purpose |
+| --------- | ------- |
+| `graff`   | the agent CLI + REPL — the one binary this script installs |
+| `codedb`  | optional code-intelligence companion (structural search/outline/callers). graff auto-detects it and points at the [one-line install](https://github.com/justrach/codedb) if it's missing; everything else works without it |
+
+### Give it a key
+
+Three ways — pick whichever is easiest:
+
+```sh
+graff login                     # free codegraff key (device-code OAuth, no signup forms)
+graff key set deepseek sk-...   # store ANY provider's key (macOS Keychain, else 0600 file)
+export DEEPSEEK_API_KEY=sk-...  # or just an env var (env always wins)
+```
+
+Already logged into the Codex CLI? Skip this step — your ChatGPT subscription is
+picked up automatically from `~/.codex/auth.json`. Or run `graff login codex`.
 
 > **Note on `login`:** there is no per-provider `login` command. `graff login`
 > is *specifically* the free codegraff key, and `graff login codex` is the
@@ -56,6 +80,13 @@ graff --model deepseek-reasoner        # or pin one explicitly
 > anthropic, kimi, xai, zai, minimax, xiaomi) is a key — set it with
 > `graff key set <provider> <key>` or its `<PROVIDER>_API_KEY` env var, then
 > select a model with `--model` / `/model`. See [Providers & models](#providers--models).
+
+### Run it
+
+```sh
+graff                            # starts on the first provider you have a key for
+graff --model deepseek-reasoner  # or pin one explicitly
+```
 
 First things to try once you're at the `›` prompt:
 
@@ -304,10 +335,8 @@ clears the input line.
 exit | /exit | ctrl-d | ctrl-c(empty)   quit
 ```
 
-**Plan mode** (`/plan`) is the propose-before-execute toggle: the model is
-steered to explore read-only and present a concrete plan, and the gate
-structurally denies `write_file`/`edit_file`/MCP and any bash beyond the
-read-only seed list while it's on — the prompt shows a ` plan` badge.
+`/plan`, `/yolo`, and `/strict` change how the permission gate behaves for the
+session — see [Permission modes](#permission-modes).
 
 The line editor supports ↑/↓ history (persisted to `~/.simple-harness-history`),
 Tab completion (commands, and model names after `/model `), and emacs-style
@@ -319,6 +348,44 @@ ignored with a note). The prompt is a small statusline:
 compaction budget, last cache hit, and session spend. Errors aim to be
 actionable: `/resume nope` says the session file wasn't found and points at
 `/sessions`; an unknown `/foo` points at `/help`.
+
+---
+
+## Permission modes
+
+By default graff **asks before doing anything that can change your machine.**
+File writes (`write_file`/`edit_file`), MCP tool calls, and any bash command
+that isn't read-only stop at a permission gate:
+
+```
+⚠ rm -rf build/
+[y]es once · [a]lways allow "rm" (saved to .harness/settings.json) · [n]o ›
+```
+
+- **y** runs it once · **a** runs it *and* remembers the rule · **n** denies it
+  (the model is told and picks another path).
+- **Always** appends a prefix rule to `.harness/settings.json` under `"allow"`,
+  so that command never prompts again — this session or a future one. Pre-seed
+  that file by hand to allow commands up front (it lives next to your hooks; the
+  harness preserves the rest of the file).
+- Read-only commands are auto-allowed and never prompt: `ls cat head tail wc
+  grep rg pwd which file`, `git status|diff|log|show`, `zig build|fmt` — but
+  only while every path stays inside the working directory (`cat /etc/passwd`
+  still asks), and only as a plain command. A pipe, redirect, `&&`, or `$(…)`
+  always prompts, so a second command can't be smuggled past a prefix match.
+
+Three session-wide modes change the gate — set on the CLI, or flip them live in
+the REPL:
+
+| mode       | turn on              | what it does |
+| ---------- | -------------------- | ------------ |
+| **yolo**   | `--yolo` · `/yolo`   | Skip **every** prompt — bash, edits, and MCP all run without asking. For sandboxes, CI, and `-p`/`--json` runs where there's no human to answer. `--yolo` starts the session in it; `/yolo` toggles mid-session. |
+| **plan**   | `/plan`              | Read-only: the model explores and *proposes* a plan; the gate hard-denies writes, edits, MCP, and any bash beyond the read-only seed (even your saved allow-list) until you `/plan` again to execute. The prompt shows a ` plan` badge. |
+| **strict** | `/strict`            | "Every message is a tool" — the model must call exactly one tool per message and finish with `attempt_completion`. Useful for deterministic, scriptable agent loops. |
+
+**One-shot mode** (`graff -p "…"` or `--json`) has no human to answer the
+prompt, so the gate denies anything not already allowed — pre-approve commands
+in `.harness/settings.json` or pass `--yolo`.
 
 ---
 
