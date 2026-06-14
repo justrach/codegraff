@@ -32,11 +32,11 @@ context when the conversation gets long.
 ## Quick start
 
 ```sh
-# 1. install — grabs a prebuilt release binary when it can (gh CLI while the
-#    repo is private), otherwise builds from source with Zig 0.16:
+# 1. install — grabs the prebuilt release binary (macOS: Developer ID signed
+#    + Apple notarized), otherwise builds from source with Zig 0.16:
 ./install.sh
-# once the repo is public, this one-liner will work too:
-#   curl -fsSL https://raw.githubusercontent.com/justrach/graff-new/main/install.sh | bash
+# or, from anywhere:
+#   curl -fsSL https://raw.githubusercontent.com/justrach/codegraff/main/install.sh | bash
 
 # 2. give it a key — there are exactly three ways, pick whichever is easiest:
 graff login                            # free codegraff key (device-code OAuth, no signup forms)
@@ -621,6 +621,16 @@ zig build run            # or: ./zig-out/bin/graff
 zig build test           # the test suite (also run by CI — .github/workflows/ci.yml)
 ```
 
+**Releases & verification.** Tagged releases ship a prebuilt **darwin-arm64**
+binary that is **codesigned with a Developer ID certificate and notarized by
+Apple**, so it runs without Gatekeeper prompts. Verify a download:
+
+```sh
+codesign --verify --strict --verbose=2 graff   # → valid on disk; satisfies its Designated Requirement
+codesign -dv --verbose=4 graff 2>&1 | grep Authority
+#   Authority=Developer ID Application: Rachit Pradhan (WWP9DLJ27P)
+```
+
 Keys can come from env vars, or be stored safely with `graff key set <provider>
 <key>` — on macOS in the login **Keychain** (service `simple-harness`),
 elsewhere a `0600` `~/.simple-harness-keys.json`; the harness auto-loads them at
@@ -699,13 +709,12 @@ Notes:
 Honest list of what the harness still lacks, roughly in the order it hurts.
 
 **Foundational:**
-
-1. **A public repo (or public release mirror).** The release workflow
-   (`.github/workflows/release.yml`) cross-compiles darwin-arm64/x86_64 + linux
-   binaries on every `v*` tag, and `install.sh` now prefers that prebuilt
-   download over a source build — but the `curl | bash` one-liner still 404s
-   while the repo is private (with `gh` installed the download works
-   authenticated). Tag a `v0.1.0`, make the repo public, and install becomes one
+1. ~~**A public repo + signed release.**~~ **Done — v0.0.1.** The repo is public at
+   [`justrach/codegraff`](https://github.com/justrach/codegraff), and releases ship
+   a prebuilt **darwin-arm64 binary that is codesigned (Developer ID) and notarized
+   by Apple**. The release workflow (`.github/workflows/release.yml`) cross-compiles
+   the rest on every `v*` tag; `install.sh` prefers the prebuilt download over a
+   source build, so `curl … | bash` now installs in one command with no toolchain.
    command with no toolchain.
 
 **Later:**

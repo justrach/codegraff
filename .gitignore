@@ -24,3 +24,6 @@ __pycache__/
 
 # local agent/IDE config (not project source)
 .devin/
+
+# release artifacts
+dist/

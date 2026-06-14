@@ -5,13 +5,13 @@ set -euo pipefail
 # release; falls back to building from source with Zig. Styled after the
 # codedb/codegraff installers.
 #
-#   curl -fsSL https://raw.githubusercontent.com/justrach/graff-new/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/justrach/codegraff/main/install.sh | bash
 #   # or, from a checkout:  ./install.sh
 #
 # Env overrides: HARNESS_REPO (source repo), HARNESS_DIR (install dir),
 # HARNESS_BUILD=source (skip the release download and compile).
 
-REPO="${HARNESS_REPO:-https://github.com/justrach/graff-new}"
+REPO="${HARNESS_REPO:-https://github.com/justrach/codegraff}"
 INSTALL_DIR="${HARNESS_DIR:-$HOME/bin}"
 BIN="graff"
 
@@ -104,7 +104,7 @@ build_from_source() {
     printf "  ${D}│${N} %-10s ${G}✓${N} (current checkout)\n" "source"
   else
     command -v git >/dev/null 2>&1 || { printf "  ${R}error: git not found${N}\n" >&2; exit 1; }
-    tmp="$(mktemp -d)"; src="$tmp/graff-new"
+    tmp="$(mktemp -d)"; src="$tmp/codegraff"
     printf "  ${D}│${N} %-10s " "clone"
     git clone --depth 1 "$REPO" "$src" >/dev/null 2>&1 \
       && printf "${G}✓${N}\n" \
