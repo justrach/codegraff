@@ -58,6 +58,23 @@ place_bin() {
   mkdir -p "$INSTALL_DIR"
   rm -f "$INSTALL_DIR/$BIN"
   install -m 0755 "$1" "$INSTALL_DIR/$BIN"
+
+  # Overwrite any *other* graff already on PATH (e.g. an older copy in
+  # ~/.local/bin from the codegraff stack) so the binary we just installed
+  # actually wins instead of being shadowed by a stale one earlier on PATH.
+  # Fresh inode each time (rm then install) — same reason as above. Only
+  # touch writable copies; never error on a protected/system path.
+  oldifs="$IFS"; IFS=:
+  for d in $PATH; do
+    [ -n "$d" ] || continue
+    [ "$d" = "$INSTALL_DIR" ] && continue
+    if [ -f "$d/$BIN" ] && [ -w "$d/$BIN" ]; then
+      if rm -f "$d/$BIN" && install -m 0755 "$1" "$d/$BIN" 2>/dev/null; then
+        printf "  ${D}│${N} %-10s ${G}✓${N} (overwrote stale $d/$BIN)\n" "replace"
+      fi
+    fi
+  done
+  IFS="$oldifs"
 }
 
 # Try the latest GitHub release for this platform. Uses `gh` when present
