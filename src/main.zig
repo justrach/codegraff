@@ -4690,9 +4690,9 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             const disabled = skillDisabled(sk.name);
             const state: []const u8 = if (disabled) "disabled     " else if (inst) "installed    " else "not installed";
             try out.print("  {s}{s:<8}{s} {s}{s}{s}  {s}\n", .{
-                style.cyan,                                                       sk.name, style.reset,
-                if (disabled) style.yellow else if (inst) style.green else style.dim, state,
-                style.reset,                                                      sk.desc,
+                style.cyan,                                                           sk.name, style.reset,
+                if (disabled) style.yellow else if (inst) style.green else style.dim, state,   style.reset,
+                sk.desc,
             });
         }
         try out.writeAll("  install/enable: /skills add <name> · disable: /skills remove <name>\n");
@@ -5106,9 +5106,9 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             else
                 "abnormal";
             try out.print("  {s}{d:>3}{s}  {s}{s:<8}{s} {d:>7} unread B  {s}\n", .{
-                style.cyan,                                  job.id,  style.reset,
-                if (job.done) style.dim else style.green,    status,  style.reset,
-                job.buf.items.len - job.cursor,              utf8Prefix(job.cmd, 60),
+                style.cyan,                               job.id,                  style.reset,
+                if (job.done) style.dim else style.green, status,                  style.reset,
+                job.buf.items.len - job.cursor,           utf8Prefix(job.cmd, 60),
             });
         }
         try out.flush();
@@ -5127,7 +5127,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (c.unpriced_calls > 0) try out.print(" ({d} on unpriced models)", .{c.unpriced_calls});
         try out.print("\n  tokens:    {d} in ({d} cached) + {d} out\n", .{ c.in_tokens + c.cache_tokens, c.cache_tokens, c.out_tokens });
         try out.print("  cost:      {s}${d:.4}{s}{s}\n", .{
-            style.green, c.usd, style.reset,
+            style.green,                                                                                     c.usd, style.reset,
             if (c.sub_calls > 0 or c.unpriced_calls > 0) " (API-key calls with a known price only)" else "",
         });
         try out.flush();
