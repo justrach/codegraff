@@ -1,0 +1,47 @@
+name: release
+
+# Pushing a tag like v0.2.0 cross-compiles harness for the four desktop
+# targets and publishes a GitHub Release with tarballs + checksums. The
+# version baked into `--version` comes from the tag via -Dversion.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cross-compile
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Release builds phone usage/evolution telemetry here by default
+          # (anonymous, opt out with --no-telemetry / GRAFF_NO_TELEMETRY).
+          TELEMETRY_ENDPOINT="https://harness-telemetry.rachpradhan.workers.dev"
+          for target in aarch64-macos x86_64-macos x86_64-linux aarch64-linux; do
+            zig build -Doptimize=ReleaseSafe -Dtarget="$target" -Dversion="$VERSION" -Dtelemetry-endpoint="$TELEMETRY_ENDPOINT"
+            name="graff-$target"
+            mkdir "$name"
+            cp zig-out/bin/graff "$name/graff"
+            cp README.md LICENSE "$name/"
+            tar -czf "$name.tar.gz" "$name"
+            rm -r "$name"
+          done
+          sha256sum graff-*.tar.gz > SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" graff-*.tar.gz SHA256SUMS \
+            --title "$GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # No-Zig checks — always enforced. The SDKs are committed, so they can be
+  # validated without building the binary.
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python SDK import smoke
+        run: python3 -c "import sys; sys.path.insert(0, 'sdk/py'); import harness_sdk; assert harness_sdk.MODELS and harness_sdk.TOOLS; print('py sdk ok:', len(harness_sdk.MODELS), 'models')"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: TypeScript SDK validation
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('sdk/ts/package.json','utf8')); console.log('package.json ok')"
+          node --experimental-strip-types -e "import('./sdk/ts/harness.ts').then(m => { if (!m.Harness || !m.runAgent || !m.MODELS) throw new Error('missing exports'); console.log('ts sdk ok:', m.MODELS.length, 'models'); })"
+
+  # Zig build / fmt / test + SDK drift, pinned to the 0.16.0 release the
+  # codebase targets.
+  zig:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: zig build
+        run: zig build
+
+      - name: zig fmt --check
+        run: zig fmt --check src/main.zig src/mcp.zig build.zig
+
+      - name: zig build test
+        run: zig build test --summary all
+
+      - name: SDK generation drift
+        run: |
+          python3 sdk/generate.py --harness ./zig-out/bin/harness
+          git diff --exit-code sdk/ \
+            || (echo "::error::SDKs are stale — run: python3 sdk/generate.py --harness ./zig-out/bin/harness" && exit 1)

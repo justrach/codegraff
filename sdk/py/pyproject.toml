@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simple-harness-sdk"
+version = "0.1.0"
+description = "Python client for the simple-harness agent (drives `harness --json`). Constants auto-generated from `harness --schema`."
+requires-python = ">=3.8"
+license = { text = "BSD-3-Clause" }
+
+[tool.setuptools]
+py-modules = ["harness_sdk"]

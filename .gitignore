@@ -1,0 +1,26 @@
+# build output
+.zig-cache/
+zig-out/
+
+# local runtime state / secrets (never commit)
+harness.trace.jsonl
+harness.trajectory.jsonl
+.harness/
+.claude/scheduled_tasks.lock
+*.session.json
+.mcp.json
+.simple-harness-keys.json
+.simple-harness-codegraff.json
+
+# tooling artifacts
+.zigrep_archive
+codedb.snapshot
+.DS_Store
+__pycache__/
+*.pyc
+.simple-harness-history
+.simple-harness-model
+.wrangler/
+
+# local agent/IDE config (not project source)
+.devin/
