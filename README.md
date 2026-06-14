@@ -36,7 +36,7 @@ context when the conversation gets long.
 #    + Apple notarized), otherwise builds from source with Zig 0.16:
 ./install.sh
 # or, from anywhere:
-#   curl -fsSL https://raw.githubusercontent.com/justrach/codegraff/main/install.sh | bash
+#   curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
 
 # 2. give it a key — there are exactly three ways, pick whichever is easiest:
 graff login                            # free codegraff key (device-code OAuth, no signup forms)
