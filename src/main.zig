@@ -1940,7 +1940,7 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/plan", "/key", "/keepcontext", "/effort", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -4518,6 +4518,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/keepcontext", .desc = "keep history across wire-format switches" },
     .{ .name = "/effort", .desc = "thinking depth: low|medium|high (codex, deepseek, codegraff)" },
     .{ .name = "/reasoning", .desc = "alias for /effort" },
+    .{ .name = "/fast", .desc = "codex priority service tier — lower latency (gpt-5.5)" },
     .{ .name = "/image", .desc = "attach an image to the next message" },
     .{ .name = "/paste", .desc = "attach the clipboard image" },
     .{ .name = "/trace", .desc = "toggle the JSONL event trace" },
@@ -4951,6 +4952,15 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return;
     }
+    if (std.mem.eql(u8, line, "/fast") or std.mem.eql(u8, line, "/fast on") or std.mem.eql(u8, line, "/fast off")) {
+        root.fast = if (std.mem.eql(u8, line, "/fast on")) true else if (std.mem.eql(u8, line, "/fast off")) false else !root.fast;
+        try out.print("fast mode: {s}{s}\n", .{
+            if (root.fast) "on" else "off",
+            if (root.provider.kind != .responses) " (codex only — current model ignores it)" else "",
+        });
+        try out.flush();
+        return;
+    }
     if (std.mem.startsWith(u8, line, "/effort") or std.mem.startsWith(u8, line, "/reasoning")) {
         const prefix: []const u8 = if (std.mem.startsWith(u8, line, "/effort")) "/effort" else "/reasoning";
         const arg = std.mem.trim(u8, line[prefix.len..], " \t");
@@ -5318,6 +5328,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
         \\  /effort         thinking depth: low|medium|high (codex, deepseek, codegraff; default medium)
         \\  /reasoning      alias for /effort
+        \\  /fast           codex only: priority service tier for lower latency (toggle)
         \\  /strict         toggle "every message is a tool" mode
         \\  /yolo           toggle bash auto-approval (skip permission prompts)
         \\  /trace          toggle the JSONL event trace (harness.trace.jsonl)
@@ -6346,6 +6357,7 @@ const Agent = struct {
     home: []const u8 = "", // $HOME, for /key persistence (set by main)
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
+    fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
     sys_strict: []const u8 = main_system_prompt_strict,
     tools_anthropic: []const u8 = tools_anthropic_sub,
     tools_openai: []const u8 = tools_openai_sub,
@@ -7409,6 +7421,13 @@ const Agent = struct {
                     try s.write(if (force_tool) "required" else "auto");
                     try s.objectField("parallel_tool_calls");
                     try s.write(true);
+                }
+                // Codex "fast" mode (/fast): request the priority service
+                // tier for lower latency. This branch is codex-only, so it is
+                // never emitted for other providers.
+                if (self.fast) {
+                    try s.objectField("service_tier");
+                    try s.write("priority");
                 }
                 try s.objectField("reasoning");
                 try s.beginObject();
