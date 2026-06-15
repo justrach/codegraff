@@ -176,7 +176,8 @@ class Harness:
     """Drives a `harness --json` subprocess. One turn = send text, stream events.
 
     Events are plain dicts with a "type" field: "text", "tool_call",
-    "tool_result", "turn", or "error" (see the harness --schema protocol).
+    "ask_user", "tool_result", "turn", or "error" (see the harness
+    --schema protocol).
     """
 
     def __init__(self, binary: Optional[str] = None, args: Optional[list] = None,
@@ -249,6 +250,16 @@ class Harness:
             elif ev.get("type") == "error":
                 raise RuntimeError(ev["message"])
         return final
+
+    def answer(self, text: str = "", cancelled: bool = False,
+               call_id: Optional[str] = None) -> None:
+        """Answer an in-flight ask_user event while chat() is being consumed."""
+        assert self.proc.stdin
+        req = {"type": "answer", "text": text, "cancelled": cancelled}
+        if call_id:
+            req["call_id"] = call_id
+        self.proc.stdin.write(json.dumps(req) + "\n")
+        self.proc.stdin.flush()
 
     def set_system_prompt(self, text: str, append: bool = False) -> None:
         """Replace (or with append=True, extend) the system prompt for later
@@ -455,6 +466,15 @@ class RemoteHarness:
             elif ev.get("type") == "error":
                 raise RuntimeError(ev["message"])
         return final
+
+    def answer(self, text: str = "", cancelled: bool = False,
+               call_id: Optional[str] = None) -> None:
+        """Answer an in-flight ask_user event. The original chat stream
+        continues and later yields the ask_user tool_result plus final turn."""
+        req = {"type": "answer", "text": text, "cancelled": cancelled}
+        if call_id:
+            req["call_id"] = call_id
+        self._request("POST", f"/v1/sessions/{self.session_id}", req).read()
 
     def set_system_prompt(self, text: str, append: bool = False) -> None:
         """Replace (or with append=True, extend) the system prompt for later

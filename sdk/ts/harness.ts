@@ -23,6 +23,7 @@ export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "mi
 export type Event =
   | { type: "text"; text: string }
   | { type: "tool_call"; name: string; input: Record<string, unknown> }
+  | { type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
   | { type: "tool_result"; name: string; is_error: boolean; text: string }
   | { type: "turn"; text: string; context_tokens: number; cost_usd: number }
   | { type: "system_prompt"; ok: boolean; append: boolean; chars: number }
@@ -60,6 +61,12 @@ export interface HarnessOptions {
 export interface ChatOptions {
   /** User prompt for this turn. */
   prompt: string;
+}
+
+export interface AnswerOptions {
+  text?: string;
+  cancelled?: boolean;
+  callId?: string;
 }
 
 export interface RunAgentOptions extends HarnessOptions {
@@ -259,6 +266,16 @@ export class Harness {
     }
     return final;
   }
+
+  /** Answer an in-flight ask_user event. Call this while consuming chat()
+   *  when you receive { type: "ask_user", call_id, ... }. */
+  answer(input: string | AnswerOptions): void {
+    const payload = typeof input === "string"
+      ? { type: "answer", text: input, cancelled: false }
+      : { type: "answer", text: input.text ?? "", cancelled: input.cancelled ?? false, call_id: input.callId };
+    this.proc.stdin.write(JSON.stringify(payload) + "\n");
+  }
+
   /** Replace (or with append=true, extend) the system prompt for subsequent
    *  turns. Call between turns; resolves on the harness's ack.
    *
@@ -353,6 +370,7 @@ export class HarnessSession {
   /** Send a user turn; async-iterate its events. */
   send(input: string | ChatOptions): AsyncGenerator<Event> { return this.agent.chat(input); }
   ask(input: string | ChatOptions): Promise<string> { return this.agent.ask(input); }
+  answer(input: string | AnswerOptions): void { return this.agent.answer(input); }
   setSystemPrompt(text: string, append = false): Promise<void> { return this.agent.setSystemPrompt(text, append); }
   close(): void { this.agent.close(); }
 }

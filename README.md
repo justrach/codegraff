@@ -325,7 +325,8 @@ actionable: `/resume nope` says the session file wasn't found and points at
 ## SDKs — TypeScript & Python
 
 graff is scriptable from your own code. `graff --json` is a structured stdio
-protocol (JSON requests in, JSONL events out) and `graff --schema` prints the
+protocol (JSON requests in, JSONL events out; `ask_user` is answered with a
+structured `{"type":"answer","text":"...","cancelled":false}` line) and `graff --schema` prints the
 machine-readable interface — and the **TypeScript and Python SDKs in
 [`sdk/`](sdk/) are auto-generated from that schema**, so they never drift from
 the binary. On every release tag a GitHub Action rebuilds, regenerates, fails if
@@ -656,8 +657,11 @@ together the foundation for the auto-generated TypeScript + Python SDKs in
 
 `graff serve` puts that same protocol on HTTP for clients that can't spawn a
 local process (edge runtimes, browsers, other machines): each session is a real
-`graff --json` child, one POST is one protocol request, and the response streams
-NDJSON events until that request's terminal event. Bearer auth via
+`graff --json` child, one non-answer POST is one protocol request, and the
+response streams NDJSON events until that request's terminal event. `answer`
+POSTs can be sent while the original stream is waiting on `ask_user`; they ack
+immediately and the original stream continues to the `tool_result`/`turn`.
+Bearer auth via
 `--token`/`HARNESS_SERVE_TOKEN` (required to bind beyond loopback); CORS opens
 only when a token gates access. The SDKs ship matching remote clients —
 `@graff-new/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers) and Python's

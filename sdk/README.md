@@ -1,20 +1,20 @@
 # simple-harness SDKs
 
-TypeScript (`ts/`) and Python (`py/`) clients that drive the harness over its
+TypeScript (`ts/`) and Python (`py/`) clients that drive graff over its
 `--json` stdio protocol. **Both are auto-generated** — never hand-edit the
 generated files.
 
 ## How it works
 
-The harness is the single source of truth. `harness --schema` emits its
+The graff binary is the single source of truth. `graff --schema` emits its
 interface (providers, models, tools, and the `--json` event protocol) as JSON.
 `generate.py` turns that into typed clients:
 
 ```sh
 # regenerate locally from the built binary
-python3 sdk/generate.py --harness ./zig-out/bin/harness
+python3 sdk/generate.py --harness ./zig-out/bin/graff
 # or from a saved schema
-harness --schema | python3 sdk/generate.py
+graff --schema | python3 sdk/generate.py
 ```
 
 On every release tag the `sdk` GitHub Action rebuilds, regenerates, fails if the
@@ -56,6 +56,9 @@ for await (const ev of runAgent({ prompt: "summarize README.md", model: "gpt-5.5
 const harness = Harness.init({ model: "claude-opus-4-8", yolo: true });
 const session = harness.session();
 console.log(await session.ask("what files are here?"));
+for await (const ev of session.send("ask me a follow-up before continuing")) {
+  if (ev.type === "ask_user") session.answer({ text: "continue", callId: ev.call_id });
+}
 console.log(await session.ask("now read the largest one"));
 session.close();
 ```
@@ -66,7 +69,7 @@ Options: `binary`, `cwd`, `env`, `model` (model name *or* provider id, e.g. `"co
 ## Remote (edge runtimes — no local binary)
 
 Both transports above spawn a local process, which edge runtimes can't do.
-Run `harness serve` somewhere (default `127.0.0.1:8787`; pass
+Run `graff serve` somewhere (default `127.0.0.1:8787`; pass
 `--token <secret>` — required for non-loopback binds) and drive it over HTTP
 instead. Same method surface, same event stream:
 
@@ -93,11 +96,12 @@ with RemoteHarness("http://127.0.0.1:8787", token="...", yolo=True) as h:
 
 One protocol request is in flight per session at a time; pass `yolo=True` in
 most cases (the bridge has no terminal to show permission prompts on). The
-HTTP contract lives under the `serve` key of `harness --schema`.
+HTTP contract lives under the `serve` key of `graff --schema`.
 
 ## Protocol
 
-`harness --json` reads `{"type":"user","text":"..."}` lines on stdin and emits
-JSONL events: `text` (assistant delta), `tool_call`, `tool_result`, `turn`
-(final text + `context_tokens` + `cost_usd`), and `error`. See the `protocol`
-key of `harness --schema`.
+`graff --json` reads `{"type":"user","text":"..."}` lines on stdin and emits
+JSONL events: `text` (assistant delta), `tool_call`, `ask_user`, `tool_result`,
+`turn` (final text + `context_tokens` + `cost_usd`), and `error`. Answer an
+`ask_user` event with `{"type":"answer","text":"...","cancelled":false,"call_id":"..."}`.
+See the `protocol` key of `graff --schema`.
