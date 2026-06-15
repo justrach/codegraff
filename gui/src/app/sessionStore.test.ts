@@ -119,6 +119,8 @@ const {
   ensureWorkspaceRuntimeStatusLoaded,
   getAttachments,
   getPromptDraftState,
+  getUiActiveConversationId,
+  getUiActiveWorkspacePath,
   getWorkspaceMetaState,
   resetSessionStore,
   sessionStore,
@@ -307,6 +309,17 @@ describe("sessionStore", () => {
     expect(
       sessionStore.getState().attachmentsByKey[destinationKey],
     ).toBeUndefined();
+  });
+
+  test("workspace draft selection ignores a stale active conversation", () => {
+    sessionStore.getState().applySessionSnapshot(createSnapshot());
+    sessionStore.getState().setBoardSelection({
+      kind: "workspace-draft",
+      workspacePath: "/workspace/other",
+    });
+
+    expect(getUiActiveWorkspacePath()).toBe("/workspace/other");
+    expect(getUiActiveConversationId()).toBeNull();
   });
 
   test("workspace meta loaders dedupe concurrent runtime requests and cache prompt settings", async () => {

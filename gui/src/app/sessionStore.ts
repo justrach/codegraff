@@ -755,6 +755,8 @@ export function getUiActiveConversationId(
       return state.selection.activeChat?.conversationId ?? null;
     case "single-chat":
       return state.selection.chat.conversationId;
+    case "workspace-draft":
+      return null;
     default:
       return state.activeConversationId;
   }
