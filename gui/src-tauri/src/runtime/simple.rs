@@ -1,5 +1,7 @@
 use crate::{
-    bridge::emitter::UiEventEmitter, desktop_open, dto::*,
+    bridge::emitter::UiEventEmitter,
+    desktop_open,
+    dto::*,
     persistence::project_store::{ProjectStore, RegisteredWorkspaceKind},
     terminal::TerminalManager,
 };
@@ -534,21 +536,31 @@ impl RuntimeManager {
                         .unwrap_or("tool")
                         .to_string();
                     let input = event.get("input");
-                    // `ask_user` blocks the graff child on stdin until an answer
-                    // arrives, and (being a meta tool) emits no tool_result.
-                    // Don't render a tool tile that would never complete: stage
-                    // it as the conversation's followup so the FollowupComposer
-                    // renders, then keep reading. `respond_followup` writes the
-                    // reply to stdin, unblocking the child to finish its turn.
-                    // The raw prompt text graff prints to stdout is dropped as
-                    // non-JSON above.
+                    // Older graff binaries surfaced ask_user as a normal
+                    // tool_call and expected a plain answer line. Keep that
+                    // fallback distinct from the structured ask_user event.
                     if name == "ask_user" {
                         let followup = build_followup_request(
                             conversation_id,
                             request_id,
                             workspace_path,
                             input,
+                            Some(format!("legacy-{}", Uuid::new_v4().simple())),
                         );
+                        let id = format!("{request_id}-tool-{}", Uuid::new_v4().simple());
+                        let rid = request_id.to_string();
+                        let call_id = None;
+                        let question = followup.question.clone();
+                        self.mutate_conversation(conversation_id, move |conversation| {
+                            conversation.messages.push(SessionMessageDto::ToolStart {
+                                id,
+                                request_id: rid,
+                                name: "ask_user".to_string(),
+                                call_id,
+                                detail: ToolCallDetailDto::Followup { question },
+                            });
+                        })
+                        .await;
                         self.state
                             .lock()
                             .await
@@ -570,6 +582,42 @@ impl RuntimeManager {
                         });
                     })
                     .await;
+                    self.emit().await?;
+                }
+                Some("ask_user") => {
+                    current_assistant = None;
+                    let input = event.get("input");
+                    let call_id = event
+                        .get("call_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .filter(|id| !id.is_empty())
+                        .unwrap_or_else(|| format!("ask-user-{}", Uuid::new_v4().simple()));
+                    let followup = build_followup_request(
+                        conversation_id,
+                        request_id,
+                        workspace_path,
+                        input,
+                        Some(call_id.clone()),
+                    );
+                    let id = format!("{request_id}-tool-{}", Uuid::new_v4().simple());
+                    let rid = request_id.to_string();
+                    let question = followup.question.clone();
+                    self.mutate_conversation(conversation_id, move |conversation| {
+                        conversation.messages.push(SessionMessageDto::ToolStart {
+                            id,
+                            request_id: rid,
+                            name: "ask_user".to_string(),
+                            call_id: Some(call_id),
+                            detail: ToolCallDetailDto::Followup { question },
+                        });
+                    })
+                    .await;
+                    self.state
+                        .lock()
+                        .await
+                        .pending_followups
+                        .insert(conversation_id.to_string(), followup);
                     self.emit().await?;
                 }
                 Some("tool_result") => {
@@ -1232,6 +1280,32 @@ impl RuntimeManager {
             }
         }
 
+        if request.followup_id.starts_with("legacy-") {
+            let name = "ask_user".to_string();
+            let summary = tool_result_summary(&answer);
+            let detail = if answer.is_empty() {
+                None
+            } else {
+                Some(ToolResultDetailDto::Text {
+                    text: answer.clone(),
+                })
+            };
+            let id = format!("{}-toolend-{}", request.request_id, Uuid::new_v4().simple());
+            let rid = request.request_id.clone();
+            self.mutate_conversation(&request.conversation_id, move |conversation| {
+                conversation.messages.push(SessionMessageDto::ToolEnd {
+                    id,
+                    request_id: rid,
+                    name,
+                    call_id: None,
+                    summary,
+                    is_error: response.cancelled,
+                    detail,
+                });
+            })
+            .await;
+        }
+
         self.emit().await?;
         self.snapshot().await
     }
@@ -1466,7 +1540,9 @@ impl RuntimeManager {
             .conversations
             .values()
             .map(|conversation| {
-                let followup = pending_followups.get(&conversation.conversation_id).cloned();
+                let followup = pending_followups
+                    .get(&conversation.conversation_id)
+                    .cloned();
                 conversation_view(conversation, followup)
             })
             .collect();
@@ -1965,6 +2041,7 @@ fn build_followup_request(
     request_id: &str,
     workspace_path: &str,
     input: Option<&serde_json::Value>,
+    followup_id: Option<String>,
 ) -> FollowupRequestDto {
     let question = input
         .and_then(|value| value.get("question"))
@@ -1992,7 +2069,7 @@ fn build_followup_request(
         FollowupKind::Text
     };
     FollowupRequestDto {
-        followup_id: Uuid::new_v4().to_string(),
+        followup_id: followup_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         workspace_path: workspace_path.to_string(),
         conversation_id: conversation_id.to_string(),
         request_id: request_id.to_string(),
@@ -2003,9 +2080,8 @@ fn build_followup_request(
 }
 
 /// The single line written to graff's stdin in reply to an `ask_user` prompt.
-/// graff returns it verbatim as the tool result, so option *labels* (not ids)
-/// are sent for choice prompts. Newlines are flattened so the answer stays one
-/// protocol line.
+/// New binaries expect structured answer JSON, preserving multiline text via
+/// JSON escaping. Legacy followups keep the pre-protocol plain answer line.
 fn followup_answer_line(request: &FollowupRequestDto, response: &FollowupResponseDto) -> String {
     let answer = if response.cancelled {
         String::new()
@@ -2028,7 +2104,16 @@ fn followup_answer_line(request: &FollowupRequestDto, response: &FollowupRespons
             }
         }
     };
-    answer.replace(['\n', '\r'], " ")
+    if request.followup_id.starts_with("legacy-") {
+        return answer.replace(['\n', '\r'], " ");
+    }
+    serde_json::json!({
+        "type": "answer",
+        "text": answer,
+        "cancelled": response.cancelled,
+        "call_id": request.followup_id,
+    })
+    .to_string()
 }
 
 /// Resolves the `graff` binary to an ABSOLUTE path. Sessions spawn with a child
@@ -2482,5 +2567,79 @@ fn saved_detail(
         name,
         layout_json,
         updated_at,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn followup(
+        id: &str,
+        kind: FollowupKind,
+        options: Option<Vec<FollowupOptionDto>>,
+    ) -> FollowupRequestDto {
+        FollowupRequestDto {
+            followup_id: id.to_string(),
+            workspace_path: "/tmp/work".to_string(),
+            conversation_id: "chat-1".to_string(),
+            request_id: "request-1".to_string(),
+            kind,
+            question: "Continue?".to_string(),
+            options,
+        }
+    }
+
+    #[test]
+    fn structured_followup_answer_preserves_multiline_text() {
+        let request = followup("call-1", FollowupKind::Text, None);
+        let response = FollowupResponseDto {
+            followup_id: "call-1".to_string(),
+            cancelled: false,
+            text: Some("line 1\nline 2".to_string()),
+            selected_option_ids: None,
+        };
+        let line = followup_answer_line(&request, &response);
+        let json: serde_json::Value = serde_json::from_str(&line).expect("answer JSON");
+        assert_eq!(json["type"], "answer");
+        assert_eq!(json["text"], "line 1\nline 2");
+        assert_eq!(json["cancelled"], false);
+        assert_eq!(json["call_id"], "call-1");
+    }
+
+    #[test]
+    fn structured_followup_answer_serializes_cancel() {
+        let request = followup("call-2", FollowupKind::Text, None);
+        let response = FollowupResponseDto {
+            followup_id: "call-2".to_string(),
+            cancelled: true,
+            text: Some("ignored".to_string()),
+            selected_option_ids: None,
+        };
+        let line = followup_answer_line(&request, &response);
+        let json: serde_json::Value = serde_json::from_str(&line).expect("answer JSON");
+        assert_eq!(json["type"], "answer");
+        assert_eq!(json["text"], "");
+        assert_eq!(json["cancelled"], true);
+        assert_eq!(json["call_id"], "call-2");
+    }
+
+    #[test]
+    fn legacy_followup_answer_flattens_choice_labels() {
+        let request = followup(
+            "legacy-1",
+            FollowupKind::Single,
+            Some(vec![FollowupOptionDto {
+                id: "option-0".to_string(),
+                label: "yes\nplease".to_string(),
+            }]),
+        );
+        let response = FollowupResponseDto {
+            followup_id: "legacy-1".to_string(),
+            cancelled: false,
+            text: None,
+            selected_option_ids: Some(vec!["option-0".to_string()]),
+        };
+        assert_eq!(followup_answer_line(&request, &response), "yes please");
     }
 }
