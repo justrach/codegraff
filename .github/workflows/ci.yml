@@ -50,6 +50,6 @@ jobs:
 
       - name: SDK generation drift
         run: |
-          python3 sdk/generate.py --harness ./zig-out/bin/harness
+          python3 sdk/generate.py --harness ./zig-out/bin/graff
           git diff --exit-code sdk/ \
-            || (echo "::error::SDKs are stale — run: python3 sdk/generate.py --harness ./zig-out/bin/harness" && exit 1)
+            || (echo "::error::SDKs are stale — run: python3 sdk/generate.py --harness ./zig-out/bin/graff" && exit 1)
