@@ -2437,6 +2437,65 @@ fn saveSkillSetting(io: Io, gpa: Allocator, name: []const u8, enabled: bool) boo
     return true;
 }
 
+/// Persist the thinking controls (/effort, /fast) to .harness/settings.json,
+/// preserving every other key. Default values (medium effort, fast off) are
+/// removed rather than written so the file stays clean. Best-effort.
+fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool) bool {
+    Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {}; // already-exists is fine
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var root_obj: std.json.ObjectMap = .empty;
+    if (Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, a, .limited(1 << 20))) |data| {
+        if (std.json.parseFromSliceLeaky(Value, a, data, .{ .allocate = .alloc_always })) |v| {
+            if (v == .object) root_obj = v.object;
+        } else |_| {}
+    } else |_| {}
+    if (effort == .medium) {
+        _ = root_obj.orderedRemove("effort");
+    } else {
+        root_obj.put(a, "effort", .{ .string = @tagName(effort) }) catch return false;
+    }
+    if (!fast) {
+        _ = root_obj.orderedRemove("fast");
+    } else {
+        root_obj.put(a, "fast", .{ .bool = true }) catch return false;
+    }
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var s: std.json.Stringify = .{ .writer = &aw.writer, .options = .{ .whitespace = .indent_2 } };
+    s.write(Value{ .object = root_obj }) catch return false;
+    const f = Io.Dir.cwd().createFile(io, Approvals.settings_path, .{}) catch return false;
+    defer f.close(io);
+    var wbuf: [4096]u8 = undefined;
+    var fw = f.writer(io, &wbuf);
+    fw.interface.writeAll(aw.writer.buffered()) catch return false;
+    fw.interface.writeAll("\n") catch return false;
+    fw.interface.flush() catch return false;
+    return true;
+}
+
+/// Load persisted thinking controls into the root agent at startup:
+/// {"effort": "low|medium|high"} and {"fast": true}. Best-effort — a missing
+/// or garbled file just leaves the defaults (medium, off).
+fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
+    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
+    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
+    if (v != .object) return;
+    if (v.object.get("effort")) |e| if (e == .string) {
+        if (std.mem.eql(u8, e.string, "low")) {
+            root.reasoning = .low;
+        } else if (std.mem.eql(u8, e.string, "medium")) {
+            root.reasoning = .medium;
+        } else if (std.mem.eql(u8, e.string, "high")) {
+            root.reasoning = .high;
+        }
+    };
+    if (v.object.get("fast")) |fv| if (fv == .bool) {
+        root.fast = fv.bool;
+    };
+}
+
 /// Tab-completion candidates for the current input. After `/model ` →
 /// model names (deduped) + provider ids matching the partial; a bare `/word`
 /// → slash commands. Returns the byte offset of the word being completed
@@ -3829,6 +3888,7 @@ pub fn main(init: std.process.Init) !void {
         .tools_openai = try renderRootTools(arena, .openai, &root_specs, mcp_tools),
         .tools_responses = try renderRootTools(arena, .responses, &root_specs, mcp_tools),
     };
+    loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
     tracer.note("session", root.provider.model);
 
     // One-shot print mode: run the single prompt to completion, print the
@@ -4954,6 +5014,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/fast") or std.mem.eql(u8, line, "/fast on") or std.mem.eql(u8, line, "/fast off")) {
         root.fast = if (std.mem.eql(u8, line, "/fast on")) true else if (std.mem.eql(u8, line, "/fast off")) false else !root.fast;
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
         try out.print("fast mode: {s}{s}\n", .{
             if (root.fast) "on" else "off",
             if (root.provider.kind != .responses) " (codex only — current model ignores it)" else "",
@@ -4975,6 +5036,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return;
         }
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
         try out.print("reasoning effort: {s}{s}\n", .{
             @tagName(root.reasoning),
             if (!root.effortApplies()) " (current model ignores it — applies to codex, deepseek, codegraff)" else "",
@@ -5326,9 +5388,9 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
         \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
         \\  /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
-        \\  /effort         thinking depth: low|medium|high (codex, deepseek, codegraff; default medium)
+        \\  /effort         thinking depth: low|medium|high (codex, deepseek, codegraff; default medium, persists)
         \\  /reasoning      alias for /effort
-        \\  /fast           codex only: priority service tier for lower latency (toggle)
+        \\  /fast           codex only: priority service tier for lower latency (toggle, persists)
         \\  /strict         toggle "every message is a tool" mode
         \\  /yolo           toggle bash auto-approval (skip permission prompts)
         \\  /trace          toggle the JSONL event trace (harness.trace.jsonl)
