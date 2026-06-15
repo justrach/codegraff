@@ -1,6 +1,7 @@
 use crate::{
     bridge::emitter::UiEventEmitter, desktop_open, dto::*,
-    persistence::project_store::ProjectStore, terminal::TerminalManager,
+    persistence::project_store::{ProjectStore, RegisteredWorkspaceKind},
+    terminal::TerminalManager,
 };
 use anyhow::{Context, Result};
 #[cfg(target_os = "macos")]
@@ -39,6 +40,9 @@ struct RuntimeState {
     selected_model: Option<String>,
     /// Cached `graff --schema` model list (populated lazily).
     model_catalog: Option<Vec<ModelOption>>,
+    /// Live `ask_user` prompts awaiting a GUI answer, keyed by conversation.
+    /// Surfaced as the conversation's `followup` so the FollowupComposer renders.
+    pending_followups: HashMap<String, FollowupRequestDto>,
 }
 
 /// One model the `graff` CLI advertises in `--schema`.
@@ -51,15 +55,20 @@ struct ModelOption {
 
 /// A persistent `graff --json` child bound to one conversation. Keeping the
 /// process alive across turns preserves conversation context (and the model's
-/// KV cache). `io` is taken out for the duration of an in-flight turn so only
-/// one request streams per session at a time (the protocol's contract).
+/// KV cache).
 struct GraffSession {
     child: tokio::process::Child,
-    io: Option<GraffSessionIo>,
+    /// Shared so an `ask_user` answer can be written to stdin (via
+    /// `respond_followup`) while a turn is mid-stream — the turn only holds the
+    /// reader, the stdin handle stays reachable here.
+    stdin: Arc<Mutex<tokio::process::ChildStdin>>,
+    /// Taken out for the duration of an in-flight turn so only one request
+    /// streams per session at a time (the protocol's contract).
+    reader: Option<tokio::io::Lines<BufReader<tokio::process::ChildStdout>>>,
 }
 
 struct GraffSessionIo {
-    stdin: tokio::process::ChildStdin,
+    stdin: Arc<Mutex<tokio::process::ChildStdin>>,
     reader: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
 }
 
@@ -87,7 +96,9 @@ impl RuntimeManager {
     }
 
     /// Cancels pending follow-up prompts.
-    pub async fn cancel_pending_followups(&self) {}
+    pub async fn cancel_pending_followups(&self) {
+        self.state.lock().await.pending_followups.clear();
+    }
 
     /// Returns the current GUI session snapshot.
     pub async fn get_session_snapshot(&self) -> Result<SessionSnapshotDto> {
@@ -362,6 +373,24 @@ impl RuntimeManager {
             });
             conversation.active_request_ids.push(request_id.clone());
         }
+
+        // Managed chats are auto-created `chat_<id>` folders; once a chat has a
+        // prompt, give the workspace a readable name derived from it (unless the
+        // user already named it). Projects keep their folder/display name.
+        if let Ok(Some(registration)) = self
+            .projects
+            .get_workspace_registration(Path::new(&input.workspace_path))
+        {
+            if registration.kind == RegisteredWorkspaceKind::ManagedChat
+                && registration.display_name.is_none()
+            {
+                let _ = self.projects.set_workspace_display_name(
+                    Path::new(&input.workspace_path),
+                    Some(&title_from_prompt(&input.prompt)),
+                );
+            }
+        }
+
         self.emit().await?;
 
         if self.session_exists(&conversation_id).await {
@@ -423,7 +452,7 @@ impl RuntimeManager {
             .await?;
 
         let line = serde_json::json!({ "type": "user", "text": prompt }).to_string();
-        if let Err(error) = write_session_line(&mut io.stdin, &line).await {
+        if let Err(error) = write_session_line(&io.stdin, &line).await {
             self.drop_session(conversation_id).await;
             return Err(anyhow::Error::new(error).context("Failed to send prompt to graff session"));
         }
@@ -504,7 +533,31 @@ impl RuntimeManager {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("tool")
                         .to_string();
-                    let detail = tool_call_detail(&name, event.get("input"));
+                    let input = event.get("input");
+                    // `ask_user` blocks the graff child on stdin until an answer
+                    // arrives, and (being a meta tool) emits no tool_result.
+                    // Don't render a tool tile that would never complete: stage
+                    // it as the conversation's followup so the FollowupComposer
+                    // renders, then keep reading. `respond_followup` writes the
+                    // reply to stdin, unblocking the child to finish its turn.
+                    // The raw prompt text graff prints to stdout is dropped as
+                    // non-JSON above.
+                    if name == "ask_user" {
+                        let followup = build_followup_request(
+                            conversation_id,
+                            request_id,
+                            workspace_path,
+                            input,
+                        );
+                        self.state
+                            .lock()
+                            .await
+                            .pending_followups
+                            .insert(conversation_id.to_string(), followup);
+                        self.emit().await?;
+                        continue;
+                    }
+                    let detail = tool_call_detail(&name, input);
                     let id = format!("{request_id}-tool-{}", Uuid::new_v4().simple());
                     let rid = request_id.to_string();
                     self.mutate_conversation(conversation_id, move |conversation| {
@@ -596,13 +649,17 @@ impl RuntimeManager {
         let session = sessions
             .get_mut(conversation_id)
             .context("No live graff session for this conversation")?;
-        let mut io = session
-            .io
+        let reader = session
+            .reader
             .take()
             .context("a prompt is already running for this conversation")?;
+        let mut io = GraffSessionIo {
+            stdin: session.stdin.clone(),
+            reader,
+        };
         drop(sessions);
 
-        if let Err(error) = write_session_line(&mut io.stdin, &request.to_string()).await {
+        if let Err(error) = write_session_line(&io.stdin, &request.to_string()).await {
             self.drop_session(conversation_id).await;
             return Err(anyhow::Error::new(error)
                 .context("Failed to send control request to graff session"));
@@ -740,26 +797,39 @@ impl RuntimeManager {
         let session = sessions
             .get_mut(conversation_id)
             .expect("session inserted above");
-        session
-            .io
+        let reader = session
+            .reader
             .take()
-            .context("a prompt is already running for this conversation")
+            .context("a prompt is already running for this conversation")?;
+        Ok(GraffSessionIo {
+            stdin: session.stdin.clone(),
+            reader,
+        })
     }
 
-    /// Returns session IO so the next turn on the conversation can reuse it.
+    /// Returns the session reader so the next turn on the conversation can reuse
+    /// it. The stdin handle stays in the session map, so this only restores the
+    /// reader.
     async fn release_session_io(&self, conversation_id: &str, io: GraffSessionIo) {
         let mut sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get_mut(conversation_id) {
-            session.io = Some(io);
+            session.reader = Some(io.reader);
         }
     }
 
     /// Kills and forgets the conversation's session (used by stop / on failure).
+    /// Any unanswered `ask_user` prompt dies with the child, so clear it too.
     async fn drop_session(&self, conversation_id: &str) {
         let mut sessions = self.sessions.lock().await;
         if let Some(mut session) = sessions.remove(conversation_id) {
             let _ = session.child.start_kill();
         }
+        drop(sessions);
+        self.state
+            .lock()
+            .await
+            .pending_followups
+            .remove(conversation_id);
     }
 
     /// Returns whether a live session exists for the conversation.
@@ -1122,8 +1192,47 @@ impl RuntimeManager {
         self.snapshot().await
     }
 
-    /// Handles follow-up responses as a no-op in the MVP adapter.
-    pub async fn respond_followup(&self, _: FollowupResponseDto) -> Result<SessionSnapshotDto> {
+    /// Answers an in-flight `ask_user` prompt: writes the reply to the graff
+    /// child's stdin (unblocking it), clears the pending followup, and lets the
+    /// still-running stream_turn loop pick up the resulting tool_result.
+    pub async fn respond_followup(
+        &self,
+        response: FollowupResponseDto,
+    ) -> Result<SessionSnapshotDto> {
+        let request = {
+            let mut state = self.state.lock().await;
+            let conversation_id =
+                state
+                    .pending_followups
+                    .iter()
+                    .find_map(|(conversation_id, request)| {
+                        (request.followup_id == response.followup_id)
+                            .then(|| conversation_id.clone())
+                    });
+            conversation_id.and_then(|id| state.pending_followups.remove(&id))
+        };
+        // No matching prompt (already answered, or the session was dropped):
+        // just return the current snapshot so the UI reconciles.
+        let Some(request) = request else {
+            return self.snapshot().await;
+        };
+
+        let answer = followup_answer_line(&request, &response);
+        let stdin = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(&request.conversation_id)
+                .map(|session| session.stdin.clone())
+        };
+        if let Some(stdin) = stdin {
+            if let Err(error) = write_session_line(&stdin, &answer).await {
+                self.drop_session(&request.conversation_id).await;
+                return Err(anyhow::Error::new(error)
+                    .context("Failed to send follow-up answer to graff session"));
+            }
+        }
+
+        self.emit().await?;
         self.snapshot().await
     }
 
@@ -1322,13 +1431,33 @@ impl RuntimeManager {
 
     async fn snapshot(&self) -> Result<SessionSnapshotDto> {
         let mut state = self.state.lock().await;
-        for workspace in self.projects.list_workspaces().unwrap_or_default() {
+        let registered = self.projects.list_workspaces().unwrap_or_default();
+        for workspace in &registered {
             let path = workspace.path.to_string_lossy().into_owned();
             if !state.workspaces.contains(&path) {
                 state.workspaces.push(path);
             }
         }
+        // path -> (kind, display_name): routes managed chats to the "Chats"
+        // section (vs "Projects") and supplies their readable name.
+        let registrations: HashMap<String, (WorkspaceKindDto, Option<String>)> = registered
+            .into_iter()
+            .map(|workspace| {
+                let kind = match workspace.kind {
+                    RegisteredWorkspaceKind::ManagedChat => WorkspaceKindDto::ManagedChat,
+                    RegisteredWorkspaceKind::Project => WorkspaceKindDto::Project,
+                };
+                (
+                    workspace.path.to_string_lossy().into_owned(),
+                    (kind, workspace.display_name),
+                )
+            })
+            .collect();
         let active_conversation_id = state.active_conversation_id.clone();
+        let pending_followups = state.pending_followups.clone();
+        let visible_followup = active_conversation_id
+            .as_ref()
+            .and_then(|id| pending_followups.get(id).cloned());
         let visible = active_conversation_id
             .as_ref()
             .and_then(|id| state.conversations.get(id))
@@ -1336,7 +1465,10 @@ impl RuntimeManager {
         let conversation_views = state
             .conversations
             .values()
-            .map(conversation_view)
+            .map(|conversation| {
+                let followup = pending_followups.get(&conversation.conversation_id).cloned();
+                conversation_view(conversation, followup)
+            })
             .collect();
         let workspaces = state
             .workspaces
@@ -1352,13 +1484,18 @@ impl RuntimeManager {
                         updated_at: None,
                         is_draft: conversation.messages.is_empty(),
                         is_running: !conversation.active_request_ids.is_empty(),
-                        has_pending_followup: false,
+                        has_pending_followup: pending_followups
+                            .contains_key(&conversation.conversation_id),
                     })
                     .collect();
+                let (kind, display_name) = registrations
+                    .get(path)
+                    .cloned()
+                    .unwrap_or((WorkspaceKindDto::Project, None));
                 WorkspaceSessionDto {
-                    kind: WorkspaceKindDto::Project,
+                    kind,
                     workspace_path: path.clone(),
-                    workspace_name: workspace_name(path),
+                    workspace_name: display_name.unwrap_or_else(|| workspace_name(path)),
                     configured: true,
                     configuration_error: None,
                     selected_conversation_id: state.selected_by_workspace.get(path).cloned(),
@@ -1390,7 +1527,7 @@ impl RuntimeManager {
                 .unwrap_or_default(),
             visible_request_agent_ids: HashMap::new(),
             visible_todos: vec![],
-            visible_followup: None,
+            visible_followup,
             conversation_views,
             ui_error: None,
             workspaces,
@@ -1582,7 +1719,10 @@ fn set_active_workspace(state: &mut RuntimeState, workspace_path: &str) {
     }
 }
 
-fn conversation_view(conversation: &ConversationState) -> ConversationViewSnapshotDto {
+fn conversation_view(
+    conversation: &ConversationState,
+    followup: Option<FollowupRequestDto>,
+) -> ConversationViewSnapshotDto {
     ConversationViewSnapshotDto {
         workspace_path: conversation.workspace_path.clone(),
         conversation_id: conversation.conversation_id.clone(),
@@ -1590,7 +1730,7 @@ fn conversation_view(conversation: &ConversationState) -> ConversationViewSnapsh
         active_request_ids: conversation.active_request_ids.clone(),
         request_agent_ids: HashMap::new(),
         todos: vec![],
-        followup: None,
+        followup,
     }
 }
 
@@ -1634,7 +1774,8 @@ fn spawn_graff_session(workspace_path: &str, model: Option<&str>) -> Result<Graf
     let reader = BufReader::new(stdout).lines();
     Ok(GraffSession {
         child,
-        io: Some(GraffSessionIo { stdin, reader }),
+        stdin: Arc::new(Mutex::new(stdin)),
+        reader: Some(reader),
     })
 }
 
@@ -1751,11 +1892,14 @@ fn provider_display_name(provider_id: &str) -> String {
         .unwrap_or_else(|| provider_id.to_string())
 }
 
-/// Writes one newline-delimited protocol request to a session's stdin.
+/// Writes one newline-delimited protocol request to a session's stdin. Locks
+/// the shared stdin handle internally so a turn write and an `ask_user` answer
+/// can't interleave on the pipe.
 async fn write_session_line(
-    stdin: &mut tokio::process::ChildStdin,
+    stdin: &Mutex<tokio::process::ChildStdin>,
     line: &str,
 ) -> std::io::Result<()> {
+    let mut stdin = stdin.lock().await;
     stdin.write_all(line.as_bytes()).await?;
     stdin.write_all(b"\n").await?;
     stdin.flush().await
@@ -1811,6 +1955,80 @@ fn tool_call_detail(name: &str, input: Option<&serde_json::Value>) -> ToolCallDe
             name: other.to_string(),
         },
     }
+}
+
+/// Builds the interactive followup from an `ask_user` tool call's input. A
+/// non-empty `options` array makes it a single-choice prompt; otherwise it's a
+/// free-text prompt.
+fn build_followup_request(
+    conversation_id: &str,
+    request_id: &str,
+    workspace_path: &str,
+    input: Option<&serde_json::Value>,
+) -> FollowupRequestDto {
+    let question = input
+        .and_then(|value| value.get("question"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let options = input
+        .and_then(|value| value.get("options"))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .enumerate()
+                .map(|(index, label)| FollowupOptionDto {
+                    id: format!("option-{index}"),
+                    label: label.to_string(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|options| !options.is_empty());
+    let kind = if options.is_some() {
+        FollowupKind::Single
+    } else {
+        FollowupKind::Text
+    };
+    FollowupRequestDto {
+        followup_id: Uuid::new_v4().to_string(),
+        workspace_path: workspace_path.to_string(),
+        conversation_id: conversation_id.to_string(),
+        request_id: request_id.to_string(),
+        kind,
+        question,
+        options,
+    }
+}
+
+/// The single line written to graff's stdin in reply to an `ask_user` prompt.
+/// graff returns it verbatim as the tool result, so option *labels* (not ids)
+/// are sent for choice prompts. Newlines are flattened so the answer stays one
+/// protocol line.
+fn followup_answer_line(request: &FollowupRequestDto, response: &FollowupResponseDto) -> String {
+    let answer = if response.cancelled {
+        String::new()
+    } else {
+        match request.kind {
+            FollowupKind::Text => response.text.clone().unwrap_or_default(),
+            FollowupKind::Single | FollowupKind::Multi => {
+                let selected = response.selected_option_ids.clone().unwrap_or_default();
+                let options = request.options.clone().unwrap_or_default();
+                selected
+                    .iter()
+                    .filter_map(|id| {
+                        options
+                            .iter()
+                            .find(|option| &option.id == id)
+                            .map(|option| option.label.clone())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        }
+    };
+    answer.replace(['\n', '\r'], " ")
 }
 
 /// Resolves the `graff` binary to an ABSOLUTE path. Sessions spawn with a child
