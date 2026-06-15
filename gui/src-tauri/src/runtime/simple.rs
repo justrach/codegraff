@@ -3,6 +3,8 @@ use crate::{
     persistence::project_store::ProjectStore, terminal::TerminalManager,
 };
 use anyhow::{Context, Result};
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -12,8 +14,6 @@ use std::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use uuid::Uuid;
-#[cfg(target_os = "macos")]
-use std::os::unix::fs::PermissionsExt;
 
 #[derive(Clone, Default)]
 struct ConversationState {
@@ -22,6 +22,8 @@ struct ConversationState {
     title: String,
     messages: Vec<SessionMessageDto>,
     active_request_ids: Vec<String>,
+    active_agent_id: Option<String>,
+    plan_mode: bool,
 }
 
 #[derive(Default)]
@@ -120,7 +122,10 @@ impl RuntimeManager {
         let catalog = self.ensure_model_catalog().await;
         let (selected_provider, selected_model) = {
             let state = self.state.lock().await;
-            (state.selected_provider.clone(), state.selected_model.clone())
+            (
+                state.selected_provider.clone(),
+                state.selected_model.clone(),
+            )
         };
 
         if catalog.is_empty() {
@@ -179,15 +184,28 @@ impl RuntimeManager {
         })
     }
 
-    /// Persists the model selection; it takes effect when the next session spawns.
+    /// Persists the model selection and applies it to the live session when possible.
     pub async fn update_prompt_settings(
         &self,
         input: UpdatePromptSettingsInput,
     ) -> Result<PromptSettingsDto> {
-        {
+        let live_conversation_id = {
             let mut state = self.state.lock().await;
             state.selected_provider = Some(input.provider_id.clone());
             state.selected_model = Some(input.model_id.clone());
+            state.active_conversation_id.clone()
+        };
+        if let Some(conversation_id) = live_conversation_id {
+            if self.session_exists(&conversation_id).await {
+                self.send_control(
+                    &conversation_id,
+                    serde_json::json!({
+                        "type": "set_model",
+                        "name": input.model_id,
+                    }),
+                )
+                .await?;
+            }
         }
         self.get_prompt_settings(input.workspace_path).await
     }
@@ -315,6 +333,7 @@ impl RuntimeManager {
             .clone()
             .unwrap_or_else(|| format!("chat-{}", Uuid::new_v4().simple()));
         let request_id = format!("request-{}", Uuid::new_v4().simple());
+        let plan_mode = input.agent_id.as_deref() == Some("muse");
         {
             let mut state = self.state.lock().await;
             set_active_workspace(&mut state, &input.workspace_path);
@@ -322,6 +341,7 @@ impl RuntimeManager {
             state
                 .selected_by_workspace
                 .insert(input.workspace_path.clone(), conversation_id.clone());
+            let active_agent_id = state.active_agent_id.clone();
             let conversation = state
                 .conversations
                 .entry(conversation_id.clone())
@@ -331,7 +351,10 @@ impl RuntimeManager {
                     title: title_from_prompt(&input.prompt),
                     messages: vec![],
                     active_request_ids: vec![],
+                    active_agent_id,
+                    plan_mode,
                 });
+            conversation.plan_mode = plan_mode;
             conversation.messages.push(SessionMessageDto::User {
                 id: format!("{request_id}-user"),
                 request_id: request_id.clone(),
@@ -341,8 +364,24 @@ impl RuntimeManager {
         }
         self.emit().await?;
 
+        if self.session_exists(&conversation_id).await {
+            self.send_control(
+                &conversation_id,
+                serde_json::json!({
+                    "type": "set_mode",
+                    "mode": if plan_mode { "plan" } else { "normal" },
+                }),
+            )
+            .await?;
+        }
+
         if let Err(error) = self
-            .stream_turn(&conversation_id, &request_id, &input.workspace_path, &input.prompt)
+            .stream_turn(
+                &conversation_id,
+                &request_id,
+                &input.workspace_path,
+                &input.prompt,
+            )
             .await
         {
             let message = format_error_chain(&error);
@@ -379,7 +418,9 @@ impl RuntimeManager {
         workspace_path: &str,
         prompt: &str,
     ) -> Result<()> {
-        let mut io = self.acquire_session_io(conversation_id, workspace_path).await?;
+        let mut io = self
+            .acquire_session_io(conversation_id, workspace_path)
+            .await?;
 
         let line = serde_json::json!({ "type": "user", "text": prompt }).to_string();
         if let Err(error) = write_session_line(&mut io.stdin, &line).await {
@@ -402,8 +443,9 @@ impl RuntimeManager {
                 }
                 Err(error) => {
                     self.drop_session(conversation_id).await;
-                    return Err(anyhow::Error::new(error)
-                        .context("Failed reading graff session output"));
+                    return Err(
+                        anyhow::Error::new(error).context("Failed reading graff session output")
+                    );
                 }
             };
             let trimmed = line.trim();
@@ -432,14 +474,17 @@ impl RuntimeManager {
                     let rid = request_id.to_string();
                     let delta = delta.to_string();
                     self.mutate_conversation(conversation_id, move |conversation| {
-                        let existing = conversation.messages.iter_mut().rev().find_map(|message| {
-                            match message {
-                                SessionMessageDto::Assistant { id: mid, text, .. } if *mid == id => {
-                                    Some(text)
-                                }
-                                _ => None,
-                            }
-                        });
+                        let existing =
+                            conversation.messages.iter_mut().rev().find_map(
+                                |message| match message {
+                                    SessionMessageDto::Assistant { id: mid, text, .. }
+                                        if *mid == id =>
+                                    {
+                                        Some(text)
+                                    }
+                                    _ => None,
+                                },
+                            );
                         match existing {
                             Some(text) => text.push_str(&delta),
                             None => conversation.messages.push(SessionMessageDto::Assistant {
@@ -541,6 +586,67 @@ impl RuntimeManager {
         Ok(())
     }
 
+    /// Sends one non-user control request to a live `graff --json` session and returns its ack event.
+    async fn send_control(
+        &self,
+        conversation_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions
+            .get_mut(conversation_id)
+            .context("No live graff session for this conversation")?;
+        let mut io = session
+            .io
+            .take()
+            .context("a prompt is already running for this conversation")?;
+        drop(sessions);
+
+        if let Err(error) = write_session_line(&mut io.stdin, &request.to_string()).await {
+            self.drop_session(conversation_id).await;
+            return Err(anyhow::Error::new(error)
+                .context("Failed to send control request to graff session"));
+        }
+
+        let ack = loop {
+            let line = match io.reader.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => {
+                    self.drop_session(conversation_id).await;
+                    anyhow::bail!("graff session exited before acknowledging control request");
+                }
+                Err(error) => {
+                    self.drop_session(conversation_id).await;
+                    return Err(
+                        anyhow::Error::new(error).context("Failed reading graff control response")
+                    );
+                }
+            };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                continue;
+            };
+            match event.get("type").and_then(serde_json::Value::as_str) {
+                Some("model" | "compact" | "mode" | "agent") => break event,
+                Some("error") => {
+                    let message = event
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("graff control request failed");
+                    self.release_session_io(conversation_id, io).await;
+                    anyhow::bail!(message.to_string());
+                }
+                _ => {}
+            }
+        };
+
+        self.release_session_io(conversation_id, io).await;
+        Ok(ack)
+    }
+
     /// Builds the current snapshot and pushes it to the UI.
     async fn emit(&self) -> Result<()> {
         let snapshot = self.snapshot().await?;
@@ -562,6 +668,8 @@ impl RuntimeManager {
                     conversation_id: conversation.conversation_id.clone(),
                     title: conversation.title.clone(),
                     messages: conversation.messages.clone(),
+                    active_agent_id: conversation.active_agent_id.clone(),
+                    plan_mode: conversation.plan_mode,
                 })
                 .collect()
         };
@@ -597,9 +705,37 @@ impl RuntimeManager {
     ) -> Result<GraffSessionIo> {
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(conversation_id) {
-            let model = self.state.lock().await.selected_model.clone();
+            let (model, active_agent_id, plan_mode) = {
+                let state = self.state.lock().await;
+                let conversation = state.conversations.get(conversation_id);
+                (
+                    state.selected_model.clone(),
+                    conversation
+                        .and_then(|conversation| conversation.active_agent_id.clone())
+                        .or_else(|| state.active_agent_id.clone()),
+                    conversation
+                        .map(|conversation| conversation.plan_mode)
+                        .unwrap_or(false),
+                )
+            };
             let session = spawn_graff_session(workspace_path, model.as_deref())?;
             sessions.insert(conversation_id.to_string(), session);
+            drop(sessions);
+            if let Some(agent_id) = active_agent_id.filter(|id| id != "forge") {
+                self.send_control(
+                    conversation_id,
+                    serde_json::json!({ "type": "set_agent", "id": agent_id }),
+                )
+                .await?;
+            }
+            if plan_mode {
+                self.send_control(
+                    conversation_id,
+                    serde_json::json!({ "type": "set_mode", "mode": "plan" }),
+                )
+                .await?;
+            }
+            sessions = self.sessions.lock().await;
         }
         let session = sessions
             .get_mut(conversation_id)
@@ -624,6 +760,11 @@ impl RuntimeManager {
         if let Some(mut session) = sessions.remove(conversation_id) {
             let _ = session.child.start_kill();
         }
+    }
+
+    /// Returns whether a live session exists for the conversation.
+    async fn session_exists(&self, conversation_id: &str) -> bool {
+        self.sessions.lock().await.contains_key(conversation_id)
     }
 
     /// Runs an MVP slash command.
@@ -741,13 +882,37 @@ impl RuntimeManager {
         draft.export_text
     }
 
-    /// Sets the active agent.
+    /// Sets the active agent and applies it to the live conversation when present.
     pub async fn set_active_agent(
         &self,
         agent_id: String,
         _: Option<String>,
     ) -> Result<AgentsPayloadDto> {
-        self.state.lock().await.active_agent_id = Some(agent_id);
+        let conversation_id = {
+            let mut state = self.state.lock().await;
+            state.active_agent_id = Some(agent_id.clone());
+            let conversation_id = state.active_conversation_id.clone();
+            if let Some(conversation_id) = &conversation_id {
+                if let Some(conversation) = state.conversations.get_mut(conversation_id) {
+                    conversation.active_agent_id = Some(agent_id.clone());
+                }
+            }
+            conversation_id
+        };
+        if let Some(conversation_id) = conversation_id {
+            if self.session_exists(&conversation_id).await {
+                let id = if agent_id == "forge" {
+                    ""
+                } else {
+                    agent_id.as_str()
+                };
+                self.send_control(
+                    &conversation_id,
+                    serde_json::json!({ "type": "set_agent", "id": id }),
+                )
+                .await?;
+            }
+        }
         Ok(self.agents_payload().await)
     }
 
@@ -772,10 +937,7 @@ impl RuntimeManager {
         let incoming: serde_json::Value =
             serde_json::from_str(&input.json).context("Invalid MCP config JSON")?;
         // Accept either {"mcpServers": {...}} or a bare {name: {...}} map.
-        let incoming = incoming
-            .get("mcpServers")
-            .cloned()
-            .unwrap_or(incoming);
+        let incoming = incoming.get("mcpServers").cloned().unwrap_or(incoming);
         let incoming = incoming
             .as_object()
             .context("MCP config must be an object of servers")?;
@@ -829,7 +991,9 @@ impl RuntimeManager {
 
     /// MCP OAuth login — not applicable: graff runs stdio MCP servers only.
     pub async fn login_mcp_server(&self, _: McpServerActionInput) -> Result<McpSettingsPayloadDto> {
-        anyhow::bail!("graff runs stdio MCP servers (command/args) only; OAuth login does not apply")
+        anyhow::bail!(
+            "graff runs stdio MCP servers (command/args) only; OAuth login does not apply"
+        )
     }
 
     /// MCP OAuth logout — not applicable: graff runs stdio MCP servers only.
@@ -837,7 +1001,9 @@ impl RuntimeManager {
         &self,
         _: McpServerActionInput,
     ) -> Result<McpSettingsPayloadDto> {
-        anyhow::bail!("graff runs stdio MCP servers (command/args) only; OAuth logout does not apply")
+        anyhow::bail!(
+            "graff runs stdio MCP servers (command/args) only; OAuth logout does not apply"
+        )
     }
 
     /// Resolves the workspace to act on: the argument if set, else the active one.
@@ -848,25 +1014,35 @@ impl RuntimeManager {
         self.state.lock().await.active_workspace_path.clone()
     }
 
-    /// Compacts a conversation marker in local state.
+    /// Compacts the live conversation and records the real compaction result.
     pub async fn compact_conversation(
         &self,
         workspace_path: String,
         conversation_id: String,
     ) -> Result<SessionSnapshotDto> {
-        let mut state = self.state.lock().await;
-        set_active_workspace(&mut state, &workspace_path);
-        if let Some(conversation) = state.conversations.get_mut(&conversation_id) {
+        {
+            let mut state = self.state.lock().await;
+            set_active_workspace(&mut state, &workspace_path);
+        }
+        let ack = self
+            .send_control(&conversation_id, serde_json::json!({ "type": "compact" }))
+            .await?;
+        let chars = ack
+            .get("chars")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        self.mutate_conversation(&conversation_id, move |conversation| {
             let request_id = format!("compact-{}", Uuid::new_v4().simple());
             conversation
                 .messages
                 .push(SessionMessageDto::ContextCompacted {
                     id: request_id.clone(),
                     request_id,
-                    text: "Conversation compacted for the Zig-native GUI session.".into(),
+                    text: format!("Conversation compacted to a {chars}-character summary."),
                 });
-        }
-        drop(state);
+        })
+        .await;
+        self.persist_conversations().await;
         self.snapshot().await
     }
 
@@ -927,6 +1103,8 @@ impl RuntimeManager {
                 title: "New chat".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                active_agent_id: None,
+                plan_mode: false,
             },
         );
         drop(state);
@@ -1275,17 +1453,30 @@ fn workspace_text_search(
     ]);
     if let Some(exts) = ends_with {
         for ext in exts {
-            command.arg("--glob").arg(format!("*.{}", ext.trim_start_matches('.')));
+            command
+                .arg("--glob")
+                .arg(format!("*.{}", ext.trim_start_matches('.')));
         }
     }
-    command.arg("--").arg(query).arg(".").current_dir(workspace_path);
+    command
+        .arg("--")
+        .arg(query)
+        .arg(".")
+        .current_dir(workspace_path);
 
     let stdout = match command.output() {
         Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
         // ripgrep absent: fall back to git grep (needs a git repo).
         Err(_) => {
             let output = Command::new("git")
-                .args(["grep", "--line-number", "--fixed-strings", "-I", "-e", query])
+                .args([
+                    "grep",
+                    "--line-number",
+                    "--fixed-strings",
+                    "-I",
+                    "-e",
+                    query,
+                ])
                 .current_dir(workspace_path)
                 .output();
             match output {
@@ -1338,12 +1529,18 @@ struct PersistedConversation {
     conversation_id: String,
     title: String,
     messages: Vec<SessionMessageDto>,
+    active_agent_id: Option<String>,
+    #[serde(default)]
+    plan_mode: bool,
 }
 
 /// Path to the transcript store (`~/.codegraff-gui/conversations.json`).
 fn conversations_store_path() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".codegraff-gui").join("conversations.json"))
+    std::env::var_os("HOME").map(|home| {
+        PathBuf::from(home)
+            .join(".codegraff-gui")
+            .join("conversations.json")
+    })
 }
 
 /// Loads persisted transcripts so past chats survive a restart. Live `graff`
@@ -1370,6 +1567,8 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
                     title: conversation.title,
                     messages: conversation.messages,
                     active_request_ids: vec![],
+                    active_agent_id: conversation.active_agent_id,
+                    plan_mode: conversation.plan_mode,
                 },
             )
         })
@@ -1428,7 +1627,10 @@ fn spawn_graff_session(workspace_path: &str, model: Option<&str>) -> Result<Graf
         .spawn()
         .context("Failed to launch Zig-native codegraff --json session")?;
     let stdin = child.stdin.take().context("graff session missing stdin")?;
-    let stdout = child.stdout.take().context("graff session missing stdout")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("graff session missing stdout")?;
     let reader = BufReader::new(stdout).lines();
     Ok(GraffSession {
         child,
@@ -1567,7 +1769,10 @@ fn tool_result_summary(text: &str) -> Option<String> {
     }
     const LIMIT: usize = 160;
     if first_line.chars().count() > LIMIT {
-        Some(format!("{}…", first_line.chars().take(LIMIT).collect::<String>()))
+        Some(format!(
+            "{}…",
+            first_line.chars().take(LIMIT).collect::<String>()
+        ))
     } else {
         Some(first_line.to_string())
     }
@@ -1913,8 +2118,8 @@ fn remove_stored_credential(provider_id: &str) -> Result<()> {
                     .map(|object| object.remove(provider_id).is_some())
                     .unwrap_or(false);
                 if removed {
-                    let text = serde_json::to_string(&value)
-                        .context("Failed to serialize key store")?;
+                    let text =
+                        serde_json::to_string(&value).context("Failed to serialize key store")?;
                     std::fs::write(&path, text).context("Failed to update key store")?;
                 }
             }
@@ -1966,8 +2171,8 @@ async fn launch_codegraff_login(login_target: Option<&str>) -> Result<()> {
             command_line.push(' ');
             command_line.push_str(&shell_single_quote(target));
         }
-        let script_path = std::env::temp_dir()
-            .join(format!("graff-login-{}.command", Uuid::new_v4().simple()));
+        let script_path =
+            std::env::temp_dir().join(format!("graff-login-{}.command", Uuid::new_v4().simple()));
         let script = format!("#!/bin/sh\n{command_line}\nrm -f \"$0\"\n");
         std::fs::write(&script_path, script)
             .context("Failed to write graff login launcher script")?;
