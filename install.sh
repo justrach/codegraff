@@ -105,7 +105,18 @@ fetch_release() {
   done
   [ -f "$tmpd/$asset" ] || { rm -rf "$tmpd"; return 1; }
   tar -xzf "$tmpd/$asset" -C "$tmpd" 2>/dev/null || { rm -rf "$tmpd"; return 1; }
-  place_bin "$tmpd/$stem-$target/$stem"
+  # Current release tarballs are flat ($stem at the root); older ones nested
+  # the binary under a $stem-$target/ dir. Accept either, and fail (so we fall
+  # back to source) instead of handing place_bin a path that doesn't exist.
+  local binsrc
+  if [ -f "$tmpd/$stem" ]; then
+    binsrc="$tmpd/$stem"
+  elif [ -f "$tmpd/$stem-$target/$stem" ]; then
+    binsrc="$tmpd/$stem-$target/$stem"
+  else
+    rm -rf "$tmpd"; return 1
+  fi
+  place_bin "$binsrc"
   if [ "$(uname -s)" = "Darwin" ]; then
     codesign -s - --force "$INSTALL_DIR/$BIN" >/dev/null 2>&1 || true
   fi
@@ -171,12 +182,14 @@ main() {
     if command -v muonry >/dev/null 2>&1 && command -v zigpatch >/dev/null 2>&1; then
       printf "  ${D}│${N} %-10s ${G}✓${N} (already present)\n" "graff"
     else
-      printf "  ${D}│${N} %-10s " "graff"
-      if curl -fsSL https://codegraff.com/install-graff.sh | sh >/dev/null 2>&1; then
-        printf "${G}✓${N} (muonry + zigrep suite)\n"
-      else
-        printf "${Y}skipped${N} ${D}(install-graff.sh unavailable — harness still fully functional)${N}\n"
-      fi
+      # Do NOT auto-curl https://codegraff.com/install-graff.sh here: that URL
+      # currently serves *this* installer, not a muonry/zigpatch suite
+      # installer. Piping it into sh re-runs us — and since this branch can
+      # never make muonry/zigpatch present, every nested run re-enters here and
+      # recurses forever (the installer hangs and never returns; a nested run
+      # could also rm-then-fail the binary we just placed). Until a dedicated
+      # suite-installer URL exists, point the user at it instead of recursing.
+      printf "  ${D}│${N} %-10s ${Y}skipped${N} ${D}(install muonry + zigrep/zigpatch suite separately; premium paths stay dormant)${N}\n" "graff"
     fi
   fi
 
