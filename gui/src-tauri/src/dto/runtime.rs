@@ -317,6 +317,22 @@ pub struct ProviderSummaryDto {
     pub name: String,
     pub configured: bool,
     pub auth_methods: Vec<ProviderAuthMethodDto>,
+    /// Set when the provider is configured via an environment variable, so the
+    /// UI can point at where it's defined (the app can't unset an env var).
+    pub env_override: Option<ProviderEnvOverrideDto>,
+}
+
+/// Where a provider's `<PROVIDER>_API_KEY` environment variable comes from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "ProviderEnvOverride")]
+pub struct ProviderEnvOverrideDto {
+    /// The environment variable name (e.g. `OPENAI_API_KEY`).
+    pub env_key: String,
+    /// Shell config file that defines it, if found (e.g. `~/.zshrc`).
+    pub file_path: Option<String>,
+    /// 1-based line number of the definition, if found.
+    pub line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

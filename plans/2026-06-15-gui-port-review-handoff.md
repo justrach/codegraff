@@ -123,5 +123,17 @@ PID file:
 - Confirm provider IDs match the Zig CLI's actual supported provider identifiers.
 - Confirm macOS Terminal launch is acceptable for `graff login` and `graff login codex`.
 - Decide whether unused copied modules should remain for future parity or be removed/gated now.
-- Decide whether to align the Tauri package mismatch warning (`tauri` Rust crate v2.10.3 vs `@tauri-apps/api` v2.11.0).
+- Tauri versions: `tauri` Rust crate v2.10.3 and `@tauri-apps/api` v2.10.1 (per `gui/package.json`) are compatible; no action needed. (An earlier draft of this checklist cited v2.11.0, which was incorrect.)
 - Smoke test workspace open, new chat, prompt send, API-key provider setup, Codegraff login, and Codex login.
+
+## Validation Notes (2026-06-15 review)
+
+Reviewed the port against the actual Zig CLI. Two things that look suspicious but are correct — do not "fix" them:
+
+- The prompt invocation passes `--print`, the prompt, and `--yolo` as separate argv tokens (`.arg("--print").arg(prompt).arg("--yolo")`). The Zig CLI parses this correctly as flag + positional prompt + flag. Correct.
+- `remove_provider`'s message referencing `~/.simple-harness-keys.json` is accurate: the Zig CLI's key store really uses Keychain service `simple-harness` and fallback file `.simple-harness-keys.json` (`src/main.zig:6143-6144`).
+
+Fixes applied in this review (see `gui/src-tauri/src/runtime/simple.rs`):
+
+- macOS interactive login now uses `osascript ... do script` instead of `open -a Terminal <bin> --args login` (the latter passed `login`/`codex` to Terminal.app, not to `graff`, so login never ran).
+- `stop_prompt` now tracks the in-flight `graff` child PID and kills it, instead of only clearing in-memory request IDs.

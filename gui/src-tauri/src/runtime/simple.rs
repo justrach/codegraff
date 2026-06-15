@@ -9,8 +9,11 @@ use std::{
     process::Command,
     sync::Arc,
 };
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use uuid::Uuid;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::PermissionsExt;
 
 #[derive(Clone, Default)]
 struct ConversationState {
@@ -29,6 +32,33 @@ struct RuntimeState {
     conversations: HashMap<String, ConversationState>,
     selected_by_workspace: HashMap<String, String>,
     active_agent_id: Option<String>,
+    /// UI model selection, applied as `--model` when a session is spawned.
+    selected_provider: Option<String>,
+    selected_model: Option<String>,
+    /// Cached `graff --schema` model list (populated lazily).
+    model_catalog: Option<Vec<ModelOption>>,
+}
+
+/// One model the `graff` CLI advertises in `--schema`.
+#[derive(Clone)]
+struct ModelOption {
+    provider: String,
+    name: String,
+    context: Option<u64>,
+}
+
+/// A persistent `graff --json` child bound to one conversation. Keeping the
+/// process alive across turns preserves conversation context (and the model's
+/// KV cache). `io` is taken out for the duration of an in-flight turn so only
+/// one request streams per session at a time (the protocol's contract).
+struct GraffSession {
+    child: tokio::process::Child,
+    io: Option<GraffSessionIo>,
+}
+
+struct GraffSessionIo {
+    stdin: tokio::process::ChildStdin,
+    reader: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
 }
 
 /// Coordinates the copied desktop GUI with the Zig-native codegraff binary.
@@ -36,6 +66,7 @@ pub struct RuntimeManager {
     emitter: Arc<dyn UiEventEmitter>,
     projects: Arc<ProjectStore>,
     state: Arc<Mutex<RuntimeState>>,
+    sessions: Arc<Mutex<HashMap<String, GraffSession>>>,
 }
 
 impl RuntimeManager {
@@ -46,8 +77,10 @@ impl RuntimeManager {
             projects,
             state: Arc::new(Mutex::new(RuntimeState {
                 active_agent_id: Some("forge".into()),
+                conversations: load_persisted_conversations(),
                 ..RuntimeState::default()
             })),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -82,30 +115,95 @@ impl RuntimeManager {
         ))
     }
 
-    /// Returns minimal prompt settings for local testing.
+    /// Returns the model picker, populated from `graff --schema`.
     pub async fn get_prompt_settings(&self, _: Option<String>) -> Result<PromptSettingsDto> {
-        Ok(PromptSettingsDto {
-            available_models: vec![PromptModelOptionDto {
-                provider_id: "codegraff".into(),
-                provider_name: "Codegraff".into(),
-                model_id: "default".into(),
-                model_name: Some("Default".into()),
-                context_length: None,
+        let catalog = self.ensure_model_catalog().await;
+        let (selected_provider, selected_model) = {
+            let state = self.state.lock().await;
+            (state.selected_provider.clone(), state.selected_model.clone())
+        };
+
+        if catalog.is_empty() {
+            // Schema unavailable (e.g. binary missing): fall back to a single
+            // default so the picker still renders and sessions use the CLI default.
+            return Ok(PromptSettingsDto {
+                available_models: vec![PromptModelOptionDto {
+                    provider_id: "codegraff".into(),
+                    provider_name: "Codegraff".into(),
+                    model_id: "default".into(),
+                    model_name: Some("Default".into()),
+                    context_length: None,
+                    supports_reasoning: false,
+                    reasoning_efforts: vec![],
+                }],
+                selected_provider_id: Some("codegraff".into()),
+                selected_model_id: Some("default".into()),
+                selected_reasoning_effort: None,
+            });
+        }
+
+        let available_models = catalog
+            .iter()
+            .map(|model| PromptModelOptionDto {
+                provider_id: model.provider.clone(),
+                provider_name: provider_display_name(&model.provider),
+                model_id: model.name.clone(),
+                model_name: Some(model.name.clone()),
+                context_length: model.context,
                 supports_reasoning: false,
                 reasoning_efforts: vec![],
-            }],
-            selected_provider_id: Some("codegraff".into()),
-            selected_model_id: Some("default".into()),
+            })
+            .collect();
+
+        // Default to the codegraff gateway's model, else the first advertised.
+        let default_model = catalog
+            .iter()
+            .find(|model| model.name == "deepseek-v4-pro")
+            .or_else(|| catalog.first());
+        let selected_model_id =
+            selected_model.or_else(|| default_model.map(|model| model.name.clone()));
+        let selected_provider_id = selected_provider.or_else(|| {
+            selected_model_id.as_ref().and_then(|name| {
+                catalog
+                    .iter()
+                    .find(|model| &model.name == name)
+                    .map(|model| model.provider.clone())
+            })
+        });
+
+        Ok(PromptSettingsDto {
+            available_models,
+            selected_provider_id,
+            selected_model_id,
             selected_reasoning_effort: None,
         })
     }
 
-    /// Updates prompt settings.
+    /// Persists the model selection; it takes effect when the next session spawns.
     pub async fn update_prompt_settings(
         &self,
         input: UpdatePromptSettingsInput,
     ) -> Result<PromptSettingsDto> {
+        {
+            let mut state = self.state.lock().await;
+            state.selected_provider = Some(input.provider_id.clone());
+            state.selected_model = Some(input.model_id.clone());
+        }
         self.get_prompt_settings(input.workspace_path).await
+    }
+
+    /// Returns the cached model catalog, fetching `graff --schema` on first use.
+    async fn ensure_model_catalog(&self) -> Vec<ModelOption> {
+        {
+            let state = self.state.lock().await;
+            if let Some(catalog) = &state.model_catalog {
+                return catalog.clone();
+            }
+        }
+        let catalog = codegraff_schema_models().await;
+        let mut state = self.state.lock().await;
+        state.model_catalog = Some(catalog.clone());
+        catalog
     }
 
     /// Lists providers supported by the Zig-native codegraff binary.
@@ -168,12 +266,34 @@ impl RuntimeManager {
         provider_summary(provider_id).await
     }
 
-    /// Reports provider auth removal guidance for the target CLI store.
+    /// Deletes a provider's stored credential from the same locations the CLI
+    /// writes (macOS Keychain / `~/.simple-harness-keys.json`, plus the codegraff
+    /// and codex login files). A matching `<PROVIDER>_API_KEY` env var, if set,
+    /// still takes precedence and will keep the provider configured.
     pub async fn remove_provider(&self, input: RemoveProviderInput) -> Result<ProviderSummaryDto> {
-        anyhow::bail!(
-            "Removing stored credentials is not exposed by graff yet. Clear {provider}_API_KEY, remove the stored key from the macOS Keychain, or edit ~/.simple-harness-keys.json.",
-            provider = input.provider_id.to_uppercase()
-        )
+        remove_stored_credential(&input.provider_id)?;
+        let summary = provider_summary(&input.provider_id).await?;
+        // If it's still configured after deleting stored creds, an env var is
+        // overriding it — surface that instead of appearing to do nothing.
+        if summary.configured {
+            if let Some(env_key) = provider_env_key(&input.provider_id) {
+                if std::env::var(env_key)
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .is_some()
+                {
+                    let location = match find_env_definition(env_key) {
+                        Some((path, line)) => format!("{path}:{line}"),
+                        None => "your shell environment".into(),
+                    };
+                    anyhow::bail!(
+                        "Removed the stored {provider} credential, but ${env_key} is set in {location} and takes precedence. Open that file to remove the line, then restart to fully remove this provider.",
+                        provider = input.provider_id
+                    );
+                }
+            }
+        }
+        Ok(summary)
     }
 
     /// Lists slash commands available in the MVP adapter.
@@ -186,7 +306,9 @@ impl RuntimeManager {
         ])
     }
 
-    /// Sends a prompt through the local Zig-native codegraff binary.
+    /// Sends a prompt and streams the reply from a persistent `graff --json`
+    /// session bound to the conversation. Incremental session snapshots are
+    /// emitted as text/tool events arrive, so the UI renders tokens live.
     pub async fn send_prompt(&self, input: SendPromptInput) -> Result<SessionSnapshotDto> {
         let conversation_id = input
             .conversation_id
@@ -217,31 +339,291 @@ impl RuntimeManager {
             });
             conversation.active_request_ids.push(request_id.clone());
         }
-        let _ = self.emitter.emit_session_updated(self.snapshot().await?);
-        let response = run_codegraff_prompt(&input.workspace_path, &input.prompt).await;
+        self.emit().await?;
+
+        if let Err(error) = self
+            .stream_turn(&conversation_id, &request_id, &input.workspace_path, &input.prompt)
+            .await
         {
-            let mut state = self.state.lock().await;
-            if let Some(conversation) = state.conversations.get_mut(&conversation_id) {
-                conversation
-                    .active_request_ids
-                    .retain(|id| id != &request_id);
-                match response {
-                    Ok(text) => conversation.messages.push(SessionMessageDto::Assistant {
-                        id: format!("{request_id}-assistant"),
-                        request_id,
-                        text,
-                    }),
-                    Err(error) => conversation.messages.push(SessionMessageDto::Error {
-                        id: format!("{request_id}-error"),
-                        request_id,
-                        message: format_error_chain(&error),
-                    }),
-                }
-            }
+            let message = format_error_chain(&error);
+            let id = format!("{request_id}-error");
+            let rid = request_id.clone();
+            self.mutate_conversation(&conversation_id, move |conversation| {
+                conversation.messages.push(SessionMessageDto::Error {
+                    id,
+                    request_id: rid,
+                    message,
+                });
+            })
+            .await;
         }
+
+        let rid = request_id.clone();
+        self.mutate_conversation(&conversation_id, move |conversation| {
+            conversation.active_request_ids.retain(|id| id != &rid);
+        })
+        .await;
+
         let snapshot = self.snapshot().await?;
         let _ = self.emitter.emit_session_updated(snapshot.clone());
+        self.persist_conversations().await;
         Ok(snapshot)
+    }
+
+    /// Drives one user turn over the conversation's `graff --json` session,
+    /// translating JSONL events into session messages and emitting after each.
+    async fn stream_turn(
+        &self,
+        conversation_id: &str,
+        request_id: &str,
+        workspace_path: &str,
+        prompt: &str,
+    ) -> Result<()> {
+        let mut io = self.acquire_session_io(conversation_id, workspace_path).await?;
+
+        let line = serde_json::json!({ "type": "user", "text": prompt }).to_string();
+        if let Err(error) = write_session_line(&mut io.stdin, &line).await {
+            self.drop_session(conversation_id).await;
+            return Err(anyhow::Error::new(error).context("Failed to send prompt to graff session"));
+        }
+
+        let mut current_assistant: Option<String> = None;
+        let mut assistant_seq: usize = 0;
+        loop {
+            let next = io.reader.next_line().await;
+            let line = match next {
+                Ok(Some(line)) => line,
+                // EOF: the child exited (a stop_prompt kill, or it crashed).
+                // End the turn keeping whatever streamed so far; the dead
+                // session is dropped so the next prompt respawns it.
+                Ok(None) => {
+                    self.drop_session(conversation_id).await;
+                    return Ok(());
+                }
+                Err(error) => {
+                    self.drop_session(conversation_id).await;
+                    return Err(anyhow::Error::new(error)
+                        .context("Failed reading graff session output"));
+                }
+            };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let event: serde_json::Value = match serde_json::from_str(trimmed) {
+                Ok(event) => event,
+                Err(_) => continue,
+            };
+            match event.get("type").and_then(serde_json::Value::as_str) {
+                Some("text") => {
+                    let delta = event
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    if delta.is_empty() {
+                        continue;
+                    }
+                    let id = current_assistant.get_or_insert_with(|| {
+                        let id = format!("{request_id}-assistant-{assistant_seq}");
+                        assistant_seq += 1;
+                        id
+                    });
+                    let id = id.clone();
+                    let rid = request_id.to_string();
+                    let delta = delta.to_string();
+                    self.mutate_conversation(conversation_id, move |conversation| {
+                        let existing = conversation.messages.iter_mut().rev().find_map(|message| {
+                            match message {
+                                SessionMessageDto::Assistant { id: mid, text, .. } if *mid == id => {
+                                    Some(text)
+                                }
+                                _ => None,
+                            }
+                        });
+                        match existing {
+                            Some(text) => text.push_str(&delta),
+                            None => conversation.messages.push(SessionMessageDto::Assistant {
+                                id,
+                                request_id: rid,
+                                text: delta,
+                            }),
+                        }
+                    })
+                    .await;
+                    self.emit().await?;
+                }
+                Some("tool_call") => {
+                    current_assistant = None;
+                    let name = event
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("tool")
+                        .to_string();
+                    let detail = tool_call_detail(&name, event.get("input"));
+                    let id = format!("{request_id}-tool-{}", Uuid::new_v4().simple());
+                    let rid = request_id.to_string();
+                    self.mutate_conversation(conversation_id, move |conversation| {
+                        conversation.messages.push(SessionMessageDto::ToolStart {
+                            id,
+                            request_id: rid,
+                            name,
+                            call_id: None,
+                            detail,
+                        });
+                    })
+                    .await;
+                    self.emit().await?;
+                }
+                Some("tool_result") => {
+                    current_assistant = None;
+                    let name = event
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("tool")
+                        .to_string();
+                    let is_error = event
+                        .get("is_error")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let text = event
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let summary = tool_result_summary(&text);
+                    let detail = if text.is_empty() {
+                        None
+                    } else {
+                        Some(ToolResultDetailDto::Text { text })
+                    };
+                    let id = format!("{request_id}-toolend-{}", Uuid::new_v4().simple());
+                    let rid = request_id.to_string();
+                    self.mutate_conversation(conversation_id, move |conversation| {
+                        conversation.messages.push(SessionMessageDto::ToolEnd {
+                            id,
+                            request_id: rid,
+                            name,
+                            call_id: None,
+                            summary,
+                            is_error,
+                            detail,
+                        });
+                    })
+                    .await;
+                    self.emit().await?;
+                }
+                Some("turn") => break,
+                Some("error") => {
+                    let message = event
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("graff error")
+                        .to_string();
+                    let id = format!("{request_id}-error-{}", Uuid::new_v4().simple());
+                    let rid = request_id.to_string();
+                    self.mutate_conversation(conversation_id, move |conversation| {
+                        conversation.messages.push(SessionMessageDto::Error {
+                            id,
+                            request_id: rid,
+                            message,
+                        });
+                    })
+                    .await;
+                    break;
+                }
+                // system_prompt / score acks and anything unrecognized: ignore.
+                _ => {}
+            }
+        }
+
+        // Turn completed cleanly; hand the IO back to the session for reuse.
+        self.release_session_io(conversation_id, io).await;
+        Ok(())
+    }
+
+    /// Builds the current snapshot and pushes it to the UI.
+    async fn emit(&self) -> Result<()> {
+        let snapshot = self.snapshot().await?;
+        let _ = self.emitter.emit_session_updated(snapshot);
+        Ok(())
+    }
+
+    /// Writes non-empty transcripts to disk so chats survive a restart.
+    /// Called at turn boundaries / structural changes, not per token.
+    async fn persist_conversations(&self) {
+        let items: Vec<PersistedConversation> = {
+            let state = self.state.lock().await;
+            state
+                .conversations
+                .values()
+                .filter(|conversation| !conversation.messages.is_empty())
+                .map(|conversation| PersistedConversation {
+                    workspace_path: conversation.workspace_path.clone(),
+                    conversation_id: conversation.conversation_id.clone(),
+                    title: conversation.title.clone(),
+                    messages: conversation.messages.clone(),
+                })
+                .collect()
+        };
+        let Some(path) = conversations_store_path() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(text) = serde_json::to_string(&items) {
+            let _ = std::fs::write(&path, text);
+        }
+    }
+
+    /// Applies a mutation to one conversation under the state lock.
+    async fn mutate_conversation<F: FnOnce(&mut ConversationState)>(
+        &self,
+        conversation_id: &str,
+        f: F,
+    ) {
+        let mut state = self.state.lock().await;
+        if let Some(conversation) = state.conversations.get_mut(conversation_id) {
+            f(conversation);
+        }
+    }
+
+    /// Returns the conversation's session IO, spawning the `graff --json` child
+    /// on first use. Errors if a turn is already streaming for the conversation.
+    async fn acquire_session_io(
+        &self,
+        conversation_id: &str,
+        workspace_path: &str,
+    ) -> Result<GraffSessionIo> {
+        let mut sessions = self.sessions.lock().await;
+        if !sessions.contains_key(conversation_id) {
+            let model = self.state.lock().await.selected_model.clone();
+            let session = spawn_graff_session(workspace_path, model.as_deref())?;
+            sessions.insert(conversation_id.to_string(), session);
+        }
+        let session = sessions
+            .get_mut(conversation_id)
+            .expect("session inserted above");
+        session
+            .io
+            .take()
+            .context("a prompt is already running for this conversation")
+    }
+
+    /// Returns session IO so the next turn on the conversation can reuse it.
+    async fn release_session_io(&self, conversation_id: &str, io: GraffSessionIo) {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(conversation_id) {
+            session.io = Some(io);
+        }
+    }
+
+    /// Kills and forgets the conversation's session (used by stop / on failure).
+    async fn drop_session(&self, conversation_id: &str) {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(mut session) = sessions.remove(conversation_id) {
+            let _ = session.child.start_kill();
+        }
     }
 
     /// Runs an MVP slash command.
@@ -313,15 +695,29 @@ impl RuntimeManager {
         })
     }
 
-    /// Returns empty workspace query results.
+    /// Text search over the workspace (ripgrep, falling back to `git grep`).
+    /// This is a literal/substring search, not the semantic index the original
+    /// GUI used — graff's codedb index isn't exposed as a CLI for the adapter.
     pub async fn workspace_query(
         &self,
         input: WorkspaceQueryInput,
     ) -> Result<WorkspaceSearchPayloadDto> {
+        let limit = input.limit.unwrap_or(50).min(500);
+        let results = if input.query.trim().is_empty() {
+            vec![]
+        } else {
+            workspace_text_search(
+                &input.workspace_path,
+                &input.query,
+                input.ends_with.as_deref(),
+                input.starts_with.as_deref(),
+                limit,
+            )
+        };
         Ok(WorkspaceSearchPayloadDto {
             workspace_path: input.workspace_path,
             query: input.query,
-            results: vec![],
+            results,
         })
     }
 
@@ -355,35 +751,101 @@ impl RuntimeManager {
         Ok(self.agents_payload().await)
     }
 
-    /// Lists MCP servers; unsupported in the MVP adapter.
-    pub async fn list_mcp_servers(&self, _: Option<String>) -> Result<McpSettingsPayloadDto> {
-        Ok(McpSettingsPayloadDto { servers: vec![] })
+    /// Lists MCP servers configured in the workspace `.mcp.json`.
+    pub async fn list_mcp_servers(
+        &self,
+        workspace_path: Option<String>,
+    ) -> Result<McpSettingsPayloadDto> {
+        let servers = match self.resolve_workspace(workspace_path).await {
+            Some(workspace) => read_mcp_servers(&workspace),
+            None => vec![],
+        };
+        Ok(McpSettingsPayloadDto { servers })
     }
-    /// Imports MCP config; unsupported in the MVP adapter.
-    pub async fn import_mcp_config(&self, _: McpImportInput) -> Result<McpSettingsPayloadDto> {
-        self.list_mcp_servers(None).await
+
+    /// Merges imported `mcpServers` entries into the workspace `.mcp.json`.
+    pub async fn import_mcp_config(&self, input: McpImportInput) -> Result<McpSettingsPayloadDto> {
+        let workspace = self
+            .resolve_workspace(None)
+            .await
+            .context("No active workspace to import MCP config into")?;
+        let incoming: serde_json::Value =
+            serde_json::from_str(&input.json).context("Invalid MCP config JSON")?;
+        // Accept either {"mcpServers": {...}} or a bare {name: {...}} map.
+        let incoming = incoming
+            .get("mcpServers")
+            .cloned()
+            .unwrap_or(incoming);
+        let incoming = incoming
+            .as_object()
+            .context("MCP config must be an object of servers")?;
+
+        let mut config =
+            read_mcp_config(&workspace).unwrap_or_else(|| serde_json::json!({ "mcpServers": {} }));
+        let servers = config
+            .as_object_mut()
+            .context("`.mcp.json` is not a JSON object")?
+            .entry("mcpServers")
+            .or_insert_with(|| serde_json::json!({}));
+        let servers = servers
+            .as_object_mut()
+            .context("`mcpServers` is not a JSON object")?;
+        for (name, server) in incoming {
+            servers.insert(name.clone(), server.clone());
+        }
+        write_mcp_config(&workspace, &config)?;
+        self.list_mcp_servers(Some(workspace)).await
     }
-    /// Removes an MCP server; unsupported in the MVP adapter.
+
+    /// Removes a server from the workspace `.mcp.json`.
     pub async fn remove_mcp_server(
         &self,
-        _: McpServerActionInput,
+        input: McpServerActionInput,
     ) -> Result<McpSettingsPayloadDto> {
-        self.list_mcp_servers(None).await
+        let workspace = self
+            .resolve_workspace(None)
+            .await
+            .context("No active workspace")?;
+        if let Some(mut config) = read_mcp_config(&workspace) {
+            if let Some(servers) = config
+                .get_mut("mcpServers")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                servers.remove(&input.name);
+            }
+            write_mcp_config(&workspace, &config)?;
+        }
+        self.list_mcp_servers(Some(workspace)).await
     }
-    /// Reloads MCP servers; unsupported in the MVP adapter.
-    pub async fn reload_mcp_servers(&self, _: Option<String>) -> Result<McpSettingsPayloadDto> {
-        self.list_mcp_servers(None).await
+
+    /// Re-reads `.mcp.json`. New entries apply to sessions spawned afterwards;
+    /// live sessions keep the MCP set they started with.
+    pub async fn reload_mcp_servers(
+        &self,
+        workspace_path: Option<String>,
+    ) -> Result<McpSettingsPayloadDto> {
+        self.list_mcp_servers(workspace_path).await
     }
-    /// Logs into an MCP server; unsupported in the MVP adapter.
+
+    /// MCP OAuth login — not applicable: graff runs stdio MCP servers only.
     pub async fn login_mcp_server(&self, _: McpServerActionInput) -> Result<McpSettingsPayloadDto> {
-        self.list_mcp_servers(None).await
+        anyhow::bail!("graff runs stdio MCP servers (command/args) only; OAuth login does not apply")
     }
-    /// Logs out of an MCP server; unsupported in the MVP adapter.
+
+    /// MCP OAuth logout — not applicable: graff runs stdio MCP servers only.
     pub async fn logout_mcp_server(
         &self,
         _: McpServerActionInput,
     ) -> Result<McpSettingsPayloadDto> {
-        self.list_mcp_servers(None).await
+        anyhow::bail!("graff runs stdio MCP servers (command/args) only; OAuth logout does not apply")
+    }
+
+    /// Resolves the workspace to act on: the argument if set, else the active one.
+    async fn resolve_workspace(&self, workspace_path: Option<String>) -> Option<String> {
+        if let Some(workspace) = workspace_path.filter(|workspace| !workspace.is_empty()) {
+            return Some(workspace);
+        }
+        self.state.lock().await.active_workspace_path.clone()
     }
 
     /// Compacts a conversation marker in local state.
@@ -410,15 +872,15 @@ impl RuntimeManager {
 
     /// Stops a prompt in the local GUI state.
     pub async fn stop_prompt(&self, input: ChatBindingDto) -> Result<()> {
-        if let Some(conversation) = self
-            .state
-            .lock()
-            .await
-            .conversations
-            .get_mut(&input.conversation_id)
-        {
+        // Killing the session child makes the in-flight stream_turn read loop
+        // hit EOF and finish, keeping whatever streamed so far. The next prompt
+        // respawns a fresh session.
+        self.drop_session(&input.conversation_id).await;
+        self.mutate_conversation(&input.conversation_id, |conversation| {
             conversation.active_request_ids.clear();
-        }
+        })
+        .await;
+        let _ = self.emit().await;
         Ok(())
     }
 
@@ -493,11 +955,13 @@ impl RuntimeManager {
         _: String,
         conversation_id: String,
     ) -> Result<SessionSnapshotDto> {
+        self.drop_session(&conversation_id).await;
         self.state
             .lock()
             .await
             .conversations
             .remove(&conversation_id);
+        self.persist_conversations().await;
         self.snapshot().await
     }
 
@@ -789,6 +1253,129 @@ pub(crate) fn format_error_chain(error: &anyhow::Error) -> String {
         .join(": ")
 }
 
+/// Runs a literal substring search over the workspace. Tries ripgrep first
+/// (fast, .gitignore-aware), then `git grep`. Returns up to `limit` matches.
+fn workspace_text_search(
+    workspace_path: &str,
+    query: &str,
+    ends_with: Option<&[String]>,
+    starts_with: Option<&str>,
+    limit: usize,
+) -> Vec<WorkspaceSearchResultDto> {
+    let mut command = Command::new("rg");
+    command.args([
+        "--line-number",
+        "--no-heading",
+        "--color",
+        "never",
+        "--fixed-strings",
+        "--smart-case",
+        "--max-count",
+        "20",
+    ]);
+    if let Some(exts) = ends_with {
+        for ext in exts {
+            command.arg("--glob").arg(format!("*.{}", ext.trim_start_matches('.')));
+        }
+    }
+    command.arg("--").arg(query).arg(".").current_dir(workspace_path);
+
+    let stdout = match command.output() {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
+        // ripgrep absent: fall back to git grep (needs a git repo).
+        Err(_) => {
+            let output = Command::new("git")
+                .args(["grep", "--line-number", "--fixed-strings", "-I", "-e", query])
+                .current_dir(workspace_path)
+                .output();
+            match output {
+                Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
+                Err(_) => return vec![],
+            }
+        }
+    };
+
+    parse_grep_results(&stdout, starts_with, limit)
+}
+
+/// Parses `path:line:content` lines (ripgrep / git grep) into search results.
+fn parse_grep_results(
+    text: &str,
+    starts_with: Option<&str>,
+    limit: usize,
+) -> Vec<WorkspaceSearchResultDto> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, ':');
+            let path = parts.next()?;
+            let line_no: u32 = parts.next()?.parse().ok()?;
+            let content = parts.next()?;
+            if let Some(prefix) = starts_with {
+                let normalized = path.trim_start_matches("./");
+                if !normalized.starts_with(prefix) {
+                    return None;
+                }
+            }
+            Some(WorkspaceSearchResultDto {
+                node_id: format!("{path}:{line_no}"),
+                kind: "match".into(),
+                path: Some(path.trim_start_matches("./").to_string()),
+                start_line: Some(line_no),
+                end_line: Some(line_no),
+                preview: content.trim().chars().take(200).collect(),
+                relevance: None,
+                distance: None,
+            })
+        })
+        .take(limit)
+        .collect()
+}
+
+/// On-disk form of a conversation (transient request state is not persisted).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedConversation {
+    workspace_path: String,
+    conversation_id: String,
+    title: String,
+    messages: Vec<SessionMessageDto>,
+}
+
+/// Path to the transcript store (`~/.codegraff-gui/conversations.json`).
+fn conversations_store_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".codegraff-gui").join("conversations.json"))
+}
+
+/// Loads persisted transcripts so past chats survive a restart. Live `graff`
+/// sessions are not restored — continuing a loaded chat starts a fresh session
+/// without the model's prior context (true resume needs a CLI protocol change).
+fn load_persisted_conversations() -> HashMap<String, ConversationState> {
+    let Some(path) = conversations_store_path() else {
+        return HashMap::new();
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    let Ok(items) = serde_json::from_str::<Vec<PersistedConversation>>(&text) else {
+        return HashMap::new();
+    };
+    items
+        .into_iter()
+        .map(|conversation| {
+            (
+                conversation.conversation_id.clone(),
+                ConversationState {
+                    workspace_path: conversation.workspace_path,
+                    conversation_id: conversation.conversation_id,
+                    title: conversation.title,
+                    messages: conversation.messages,
+                    active_request_ids: vec![],
+                },
+            )
+        })
+        .collect()
+}
+
 fn set_active_workspace(state: &mut RuntimeState, workspace_path: &str) {
     state.active_workspace_path = Some(workspace_path.into());
     if !state.workspaces.iter().any(|path| path == workspace_path) {
@@ -824,31 +1411,225 @@ fn command(name: &str, usage: &str, requires_workspace: bool) -> CommandDescript
     }
 }
 
-async fn run_codegraff_prompt(workspace_path: &str, prompt: &str) -> Result<String> {
-    let output = tokio::process::Command::new(codegraff_binary())
-        .arg("--print")
-        .arg(prompt)
-        .arg("--yolo")
+/// Spawns a persistent `graff --json` child for a conversation. `--yolo` skips
+/// permission prompts (the GUI has no approval surface yet); stderr is discarded
+/// since the protocol carries errors as `error` events on stdout.
+fn spawn_graff_session(workspace_path: &str, model: Option<&str>) -> Result<GraffSession> {
+    let mut command = tokio::process::Command::new(codegraff_binary());
+    command.arg("--json").arg("--yolo");
+    if let Some(model) = model.filter(|model| !model.is_empty() && *model != "default") {
+        command.arg("--model").arg(model);
+    }
+    let mut child = command
         .current_dir(workspace_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("Failed to launch Zig-native codegraff --json session")?;
+    let stdin = child.stdin.take().context("graff session missing stdin")?;
+    let stdout = child.stdout.take().context("graff session missing stdout")?;
+    let reader = BufReader::new(stdout).lines();
+    Ok(GraffSession {
+        child,
+        io: Some(GraffSessionIo { stdin, reader }),
+    })
+}
+
+/// Reads the model catalog from `graff --schema`. Returns empty on any failure
+/// (missing binary, parse error) so callers fall back to the CLI default.
+async fn codegraff_schema_models() -> Vec<ModelOption> {
+    let output = match tokio::process::Command::new(codegraff_binary())
+        .arg("--schema")
         .output()
         .await
-        .context("Failed to launch Zig-native codegraff binary")?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().into())
+    {
+        Ok(output) if output.status.success() => output.stdout,
+        _ => return vec![],
+    };
+    let schema: serde_json::Value = match serde_json::from_slice(&output) {
+        Ok(schema) => schema,
+        Err(_) => return vec![],
+    };
+    schema
+        .get("models")
+        .and_then(serde_json::Value::as_array)
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|model| {
+                    Some(ModelOption {
+                        provider: model.get("provider")?.as_str()?.to_string(),
+                        name: model.get("name")?.as_str()?.to_string(),
+                        context: model.get("context").and_then(serde_json::Value::as_u64),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Reads and parses the workspace `.mcp.json`, or None if absent/invalid.
+fn read_mcp_config(workspace_path: &str) -> Option<serde_json::Value> {
+    let path = Path::new(workspace_path).join(".mcp.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Writes the workspace `.mcp.json` pretty-printed.
+fn write_mcp_config(workspace_path: &str, config: &serde_json::Value) -> Result<()> {
+    let path = Path::new(workspace_path).join(".mcp.json");
+    let text = serde_json::to_string_pretty(config).context("Failed to serialize .mcp.json")?;
+    std::fs::write(path, text).context("Failed to write .mcp.json")
+}
+
+/// Builds server summaries from the workspace `.mcp.json`. Tool counts are 0:
+/// MCP tools are loaded inside the `graff` session and aren't enumerable here.
+fn read_mcp_servers(workspace_path: &str) -> Vec<McpServerSummaryDto> {
+    let config = match read_mcp_config(workspace_path) {
+        Some(config) => config,
+        None => return vec![],
+    };
+    let servers = match config
+        .get("mcpServers")
+        .and_then(serde_json::Value::as_object)
+    {
+        Some(servers) => servers,
+        None => return vec![],
+    };
+    servers
+        .iter()
+        .map(|(name, cfg)| {
+            let url = cfg.get("url").and_then(serde_json::Value::as_str);
+            let command = cfg.get("command").and_then(serde_json::Value::as_str);
+            let args = cfg
+                .get("args")
+                .and_then(serde_json::Value::as_array)
+                .map(|args| {
+                    args.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            let (server_type, target) = match url {
+                Some(url) => ("http".to_string(), url.to_string()),
+                None => {
+                    let target = match command {
+                        Some(command) if args.is_empty() => command.to_string(),
+                        Some(command) => format!("{command} {args}"),
+                        None => String::new(),
+                    };
+                    ("stdio".to_string(), target)
+                }
+            };
+            McpServerSummaryDto {
+                name: name.clone(),
+                server_type,
+                target,
+                is_disabled: cfg
+                    .get("disabled")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+                tool_count: 0,
+                tools: vec![],
+                error: None,
+                auth_status: None,
+            }
+        })
+        .collect()
+}
+
+/// Human-readable provider name, reusing the adapter's provider table.
+fn provider_display_name(provider_id: &str) -> String {
+    CODEGRAFF_PROVIDERS
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .map(|provider| provider.name.to_string())
+        .unwrap_or_else(|| provider_id.to_string())
+}
+
+/// Writes one newline-delimited protocol request to a session's stdin.
+async fn write_session_line(
+    stdin: &mut tokio::process::ChildStdin,
+    line: &str,
+) -> std::io::Result<()> {
+    stdin.write_all(line.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+    stdin.flush().await
+}
+
+/// A short, single-line summary of a tool result for the collapsed UI row.
+fn tool_result_summary(text: &str) -> Option<String> {
+    let first_line = text.lines().find(|line| !line.trim().is_empty())?.trim();
+    if first_line.is_empty() {
+        return None;
+    }
+    const LIMIT: usize = 160;
+    if first_line.chars().count() > LIMIT {
+        Some(format!("{}…", first_line.chars().take(LIMIT).collect::<String>()))
     } else {
-        anyhow::bail!(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        Some(first_line.to_string())
     }
 }
 
+/// Maps a `tool_call` event's name + input JSON to a typed UI detail. Known
+/// built-ins get rich rows; everything else (incl. MCP tools) falls back to
+/// `Unknown`, which renders the tool name.
+fn tool_call_detail(name: &str, input: Option<&serde_json::Value>) -> ToolCallDetailDto {
+    let str_field = |key: &str| -> Option<String> {
+        input
+            .and_then(|value| value.get(key))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    match name {
+        "bash" => ToolCallDetailDto::Shell {
+            command: str_field("command").unwrap_or_default(),
+            cwd: None,
+            description: None,
+        },
+        "read_file" => ToolCallDetailDto::FileRead {
+            path: str_field("path").unwrap_or_default(),
+            start_line: None,
+            end_line: None,
+        },
+        "write_file" => ToolCallDetailDto::FileUpdate {
+            path: str_field("path").unwrap_or_default(),
+            operation: FileOperationDto::Overwrite,
+        },
+        "edit_file" => ToolCallDetailDto::FileUpdate {
+            path: str_field("path").unwrap_or_default(),
+            operation: FileOperationDto::Replace,
+        },
+        other => ToolCallDetailDto::Unknown {
+            name: other.to_string(),
+        },
+    }
+}
+
+/// Resolves the `graff` binary to an ABSOLUTE path. Sessions spawn with a child
+/// `current_dir` set to the workspace, and a relative program path would be
+/// resolved against that workspace (not the repo) — so a relative override like
+/// `CODEGRAFF_GUI_BINARY=../zig-out/bin/graff` must be canonicalized here.
 fn codegraff_binary() -> String {
-    std::env::var("CODEGRAFF_GUI_BINARY").unwrap_or_else(|_| {
-        let candidate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zig-out/bin/graff");
-        if candidate.exists() {
-            candidate.to_string_lossy().into_owned()
-        } else {
-            "graff".into()
+    // 1. Explicit override, canonicalized to absolute when it resolves to a file.
+    if let Some(value) = std::env::var("CODEGRAFF_GUI_BINARY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if let Ok(absolute) = std::fs::canonicalize(&value) {
+            return absolute.to_string_lossy().into_owned();
         }
-    })
+        // Doesn't resolve from the current dir — fall through to the built-in.
+    }
+    // 2. Built-in: <crate>/../../zig-out/bin/graff (absolute via CARGO_MANIFEST_DIR).
+    let candidate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zig-out/bin/graff");
+    if let Ok(absolute) = std::fs::canonicalize(&candidate) {
+        return absolute.to_string_lossy().into_owned();
+    }
+    // 3. Bare name: let the OS resolve it on PATH.
+    "graff".into()
 }
 
 #[derive(Debug, Clone)]
@@ -951,7 +1732,64 @@ fn provider_summary_with_key_list(
             kind: provider.auth_method.clone(),
             label: provider_auth_label(provider),
         }],
+        env_override: provider_env_override(provider),
     }
+}
+
+/// Builds the env-override hint when a provider's `<PROVIDER>_API_KEY` is set,
+/// locating where it's defined so the UI can offer to open that file.
+fn provider_env_override(provider: &CodegraffProvider) -> Option<ProviderEnvOverrideDto> {
+    let env_key = provider.env_key?;
+    let is_set = std::env::var(env_key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_some();
+    if !is_set {
+        return None;
+    }
+    let (file_path, line) = match find_env_definition(env_key) {
+        Some((path, line)) => (Some(path), Some(line)),
+        None => (None, None),
+    };
+    Some(ProviderEnvOverrideDto {
+        env_key: env_key.to_string(),
+        file_path,
+        line,
+    })
+}
+
+/// Scans the user's shell startup files for where `env_key` is exported,
+/// returning the file path and 1-based line number of the first definition.
+fn find_env_definition(env_key: &str) -> Option<(String, u32)> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let candidates = [
+        ".zshenv",
+        ".zprofile",
+        ".zshrc",
+        ".profile",
+        ".bashrc",
+        ".bash_profile",
+        ".config/fish/config.fish",
+    ];
+    for relative in candidates {
+        let path = home.join(relative);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (index, raw_line) in text.lines().enumerate() {
+            let line = raw_line.trim_start();
+            if line.starts_with('#') {
+                continue;
+            }
+            let defines = line.contains(&format!("{env_key}="))
+                || line.contains(&format!("set -x {env_key} "))
+                || line.contains(&format!("set -gx {env_key} "));
+            if defines {
+                return Some((path.to_string_lossy().into_owned(), (index + 1) as u32));
+            }
+        }
+    }
+    None
 }
 
 fn provider_auth_label(provider: &CodegraffProvider) -> String {
@@ -1044,6 +1882,61 @@ async fn codegraff_key_list() -> Result<String> {
     }
 }
 
+/// Deletes a provider's stored credential everywhere the CLI persists it:
+/// macOS Keychain (service `simple-harness`, account=provider), the
+/// `~/.simple-harness-keys.json` fallback, and the codegraff/codex login files.
+/// Missing entries are not an error (removal is idempotent).
+fn remove_stored_credential(provider_id: &str) -> Result<()> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+
+    // macOS Keychain entry written by `graff key set`.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("security")
+            .args([
+                "delete-generic-password",
+                "-s",
+                "simple-harness",
+                "-a",
+                provider_id,
+            ])
+            .output();
+    }
+
+    // The 0600 JSON fallback store (used off macOS; cleaned everywhere to be safe).
+    if let Some(home) = &home {
+        let path = home.join(".simple-harness-keys.json");
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) {
+                let removed = value
+                    .as_object_mut()
+                    .map(|object| object.remove(provider_id).is_some())
+                    .unwrap_or(false);
+                if removed {
+                    let text = serde_json::to_string(&value)
+                        .context("Failed to serialize key store")?;
+                    std::fs::write(&path, text).context("Failed to update key store")?;
+                }
+            }
+        }
+    }
+
+    // Provider-specific login files.
+    if let Some(home) = &home {
+        match provider_id {
+            "codegraff" => {
+                let _ = std::fs::remove_file(home.join(".simple-harness-codegraff.json"));
+            }
+            "codex" => {
+                let _ = std::fs::remove_file(home.join(".codex/auth.json"));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
 async fn run_codegraff_key_set(provider_id: &str, api_key: &str) -> Result<()> {
     let output = tokio::process::Command::new(codegraff_binary())
         .args(["key", "set", provider_id, api_key])
@@ -1061,12 +1954,28 @@ async fn launch_codegraff_login(login_target: Option<&str>) -> Result<()> {
     let binary = codegraff_binary();
     #[cfg(target_os = "macos")]
     {
-        let mut command = tokio::process::Command::new("open");
-        command.args(["-a", "Terminal", &binary, "--args", "login"]);
+        // `open -a Terminal <bin> --args login` passes the args to Terminal.app,
+        // not to graff, and opens the binary as a document (a bare REPL). Instead
+        // write a tiny executable launcher and open it with Terminal: Terminal
+        // runs an executable `.command` file, so the full `graff login [codex]`
+        // command line reaches graff — and unlike AppleScript `do script`, this
+        // needs no Apple Events / Automation permission.
+        let mut command_line = shell_single_quote(&binary);
+        command_line.push_str(" login");
         if let Some(target) = login_target {
-            command.arg(target);
+            command_line.push(' ');
+            command_line.push_str(&shell_single_quote(target));
         }
-        command
+        let script_path = std::env::temp_dir()
+            .join(format!("graff-login-{}.command", Uuid::new_v4().simple()));
+        let script = format!("#!/bin/sh\n{command_line}\nrm -f \"$0\"\n");
+        std::fs::write(&script_path, script)
+            .context("Failed to write graff login launcher script")?;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700))
+            .context("Failed to mark graff login launcher executable")?;
+        tokio::process::Command::new("open")
+            .args(["-a", "Terminal"])
+            .arg(&script_path)
             .spawn()
             .context("Failed to launch Terminal for graff login")?;
         Ok(())
@@ -1082,6 +1991,12 @@ async fn launch_codegraff_login(login_target: Option<&str>) -> Result<()> {
         command.spawn().context("Failed to launch graff login")?;
         Ok(())
     }
+}
+
+/// Wraps `value` in single quotes for a POSIX shell, escaping embedded quotes.
+#[cfg(target_os = "macos")]
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn title_from_prompt(prompt: &str) -> String {

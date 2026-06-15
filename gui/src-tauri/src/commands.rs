@@ -551,6 +551,11 @@ pub(crate) async fn open_path_default(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub(crate) async fn open_path_for_edit(path: String) -> Result<(), String> {
+    crate::desktop_open::open_path_for_edit(std::path::Path::new(&path)).map_err(map_command_error)
+}
+
+#[tauri::command]
 pub(crate) async fn save_conversation_layout(
     input: SaveConversationLayoutInput,
     state: tauri::State<'_, DesktopState>,

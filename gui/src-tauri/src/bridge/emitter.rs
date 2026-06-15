@@ -10,6 +10,9 @@ pub const SESSION_UPDATED_EVENT_NAME: &str = "codegraff://session-updated";
 pub const TERMINAL_OUTPUT_EVENT_NAME: &str = "codegraff://terminal-output";
 pub const TERMINAL_EXIT_EVENT_NAME: &str = "codegraff://terminal-exit";
 pub const TERMINAL_ERROR_EVENT_NAME: &str = "codegraff://terminal-error";
+// OAuth-callback bridge is copied scaffolding; the simple adapter uses device /
+// api-key flows, so this isn't emitted yet. Retained for future parity.
+#[allow(dead_code)]
 pub const PROVIDER_OAUTH_CALLBACK_EVENT_NAME: &str = "codegraff://provider-oauth-callback";
 
 pub trait UiEventEmitter: Send + Sync {
@@ -17,6 +20,7 @@ pub trait UiEventEmitter: Send + Sync {
     fn emit_terminal_output(&self, payload: TerminalOutputEventDto) -> Result<()>;
     fn emit_terminal_exit(&self, payload: TerminalExitEventDto) -> Result<()>;
     fn emit_terminal_error(&self, payload: TerminalErrorEventDto) -> Result<()>;
+    #[allow(dead_code)]
     fn emit_provider_oauth_callback(&self, payload: ProviderOAuthCallbackDto) -> Result<()>;
 }
 

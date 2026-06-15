@@ -613,6 +613,10 @@ export function openPathDefault(path: string): Promise<void> {
   return invokeCommand("open_path_default", { path });
 }
 
+export function openPathForEdit(path: string): Promise<void> {
+  return invokeCommand("open_path_for_edit", { path });
+}
+
 export function saveConversationLayout(
   input: SaveConversationLayoutInput,
 ): Promise<void> {

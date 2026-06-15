@@ -7,10 +7,16 @@ mod terminal;
 
 mod bridge {
     pub mod emitter;
+    // Copied OAuth/tonic follow-up bridge; unused by the simple adapter
+    // (graff has no follow-up tool). Retained for future parity.
+    #[allow(dead_code)]
     pub mod followup;
 }
 
 mod persistence {
+    // Some registration/layout helpers are copied but not yet exercised by the
+    // simple adapter. Retained for future parity.
+    #[allow(dead_code)]
     pub mod project_store;
 }
 
@@ -24,7 +30,8 @@ use commands::{
     ensure_conversation_view, export_workflow_draft, get_conversation_layout, get_prompt_settings,
     get_runtime_status, get_saved_workspace, get_session_snapshot, handoff_chat, import_mcp_config,
     list_commands, list_mcp_servers, list_providers, login_mcp_server, logout_mcp_server,
-    open_external_url, open_in_target, open_path_default, open_path_in_target, open_workspace,
+    open_external_url, open_in_target, open_path_default, open_path_for_edit, open_path_in_target,
+    open_workspace,
     pick_directory, pick_workspace, push_git_branch, quick_start_project, reload_mcp_servers,
     remove_mcp_server, remove_provider, rename_saved_workspace, rename_workspace, respond_followup,
     run_slash_command, save_conversation_layout, select_conversation, send_prompt,
@@ -119,6 +126,7 @@ pub fn run() {
             open_path_in_target,
             open_external_url,
             open_path_default,
+            open_path_for_edit,
             save_conversation_layout,
             get_conversation_layout,
             create_saved_workspace,

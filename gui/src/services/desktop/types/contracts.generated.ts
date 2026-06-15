@@ -51,7 +51,26 @@ export type ProviderAuthMethodKind = "api_key" | "o_auth_device" | "o_auth_code"
 
 export type ProviderAuthMethod = { kind: ProviderAuthMethodKind, label: string, };
 
-export type ProviderSummary = { id: string, name: string, configured: boolean, authMethods: Array<ProviderAuthMethod>, };
+export type ProviderEnvOverride = {
+/**
+ * The environment variable name (e.g. `OPENAI_API_KEY`).
+ */
+envKey: string,
+/**
+ * Shell config file that defines it, if found (e.g. `~/.zshrc`).
+ */
+filePath: string | null,
+/**
+ * 1-based line number of the definition, if found.
+ */
+line: number | null, };
+
+export type ProviderSummary = { id: string, name: string, configured: boolean, authMethods: Array<ProviderAuthMethod>,
+/**
+ * Set when the provider is configured via an environment variable, so the
+ * UI can point at where it's defined (the app can't unset an env var).
+ */
+envOverride: ProviderEnvOverride | null, };
 
 export type ProviderUrlParam = { name: string, value: string | null, options: Array<string> | null, };
 

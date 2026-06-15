@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLinkIcon, LoaderCircle, Trash2Icon } from "lucide-react";
+import {
+  ExternalLinkIcon,
+  LoaderCircle,
+  SquarePenIcon,
+  Trash2Icon,
+} from "lucide-react";
 
 import {
   ensureWorkspacePromptSettingsLoaded,
@@ -11,6 +16,7 @@ import {
   listProviders,
   listenProviderOAuthCallback,
   openExternalUrl,
+  openPathForEdit,
   removeProvider,
   startProviderAuth,
 } from "@/services/desktop/client";
@@ -53,6 +59,11 @@ import {
   normalizeProviderError,
   sortProviders,
 } from "./utils/providerAuth";
+
+function basename(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index >= 0 ? path.slice(index + 1) : path;
+}
 
 export function ProvidersSettingsPane() {
   const workspacePath = useSessionStore((state) =>
@@ -318,6 +329,15 @@ export function ProvidersSettingsPane() {
     }
   }
 
+  async function handleOpenEnvFile(filePath: string) {
+    setProvidersError(null);
+    try {
+      await openPathForEdit(filePath);
+    } catch (error) {
+      setProvidersError(normalizeProviderError(error));
+    }
+  }
+
   async function handleRemoveProvider(provider: ProviderSummary) {
     setRemovingProviderId(provider.id);
     setProvidersError(null);
@@ -427,6 +447,33 @@ export function ProvidersSettingsPane() {
                         <span className="truncate text-xs text-muted-foreground">
                           {formatAuthMethods(provider)}
                         </span>
+                        {provider.envOverride ? (
+                          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                            via ${provider.envOverride.envKey}
+                            {provider.envOverride.filePath ? (
+                              <button
+                                type="button"
+                                title={`Open ${provider.envOverride.filePath}${
+                                  provider.envOverride.line
+                                    ? `:${provider.envOverride.line}`
+                                    : ""
+                                }`}
+                                className="inline-flex items-center gap-1 underline underline-offset-2 hover:text-foreground"
+                                onClick={() => {
+                                  void handleOpenEnvFile(
+                                    provider.envOverride!.filePath!,
+                                  );
+                                }}
+                              >
+                                <SquarePenIcon className="size-3" />
+                                {basename(provider.envOverride.filePath)}
+                                {provider.envOverride.line
+                                  ? `:${provider.envOverride.line}`
+                                  : ""}
+                              </button>
+                            ) : null}
+                          </span>
+                        ) : null}
                       </div>
                       <div className="flex items-center gap-2">
                         <Button

@@ -26,6 +26,9 @@ pub fn detect_available_open_targets() -> Vec<String> {
         .collect()
 }
 
+// Copied "open in a specific IDE/app" path; not wired by the simple adapter
+// yet (it uses open_path_default / open_path_for_edit). Kept for future parity.
+#[allow(dead_code)]
 pub fn open_path_in_target(target_id: &str, path: &Path) -> anyhow::Result<()> {
     let mut command = build_open_command(target_id, path)
         .with_context(|| format!("Unsupported open target: {target_id}"))?;
@@ -119,6 +122,7 @@ fn is_open_target_available(target_id: &str) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn build_open_command(target_id: &str, path: &Path) -> Option<Command> {
     #[cfg(target_os = "macos")]
     {
@@ -166,6 +170,48 @@ fn build_open_url_command(url: &str) -> Command {
     {
         let mut command = Command::new("xdg-open");
         command.arg(url);
+        command
+    }
+}
+
+/// Opens a path in the default text editor (for editing config files that may
+/// have no GUI file-type association, like `~/.zshrc`).
+pub fn open_path_for_edit(path: &Path) -> anyhow::Result<()> {
+    let mut command = build_open_edit_command(path);
+    let output = command
+        .output()
+        .with_context(|| "Failed to open the file for editing.".to_string())?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = output.stderr.as_bstr().trim().to_str_lossy().into_owned();
+    if !stderr.is_empty() {
+        anyhow::bail!("{stderr}");
+    }
+    anyhow::bail!("Failed to open the file for editing.")
+}
+
+fn build_open_edit_command(path: &Path) -> Command {
+    #[cfg(target_os = "macos")]
+    {
+        // `-t` opens with the default text editor rather than the (possibly
+        // unset) default app for an extensionless dotfile.
+        let mut command = Command::new("open");
+        command.arg("-t").arg(path);
+        command
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("notepad");
+        command.arg(path);
+        command
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut command = Command::new("xdg-open");
+        command.arg(path);
         command
     }
 }
