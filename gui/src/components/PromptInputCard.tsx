@@ -122,6 +122,8 @@ export function PromptInputCard({
   // command. Only active in command mode, so normal prose typing is untouched.
   const commandMatch = /^(\/[A-Za-z][\w-]*)([\s\S]*)$/.exec(promptDraft);
   const planningThinkingLabel = formatPlanningThinkingLabel();
+  const selectedModelLabel =
+    selectedModel?.modelName ?? selectedModel?.modelId ?? "Model";
 
   function handleSubmit() {
     if (isSubmitDisabled) {
@@ -152,7 +154,7 @@ export function PromptInputCard({
           items={commandAutocomplete.items}
           activeIndex={commandAutocomplete.activeIndex}
           onHighlight={commandAutocomplete.setActiveIndex}
-          onPick={commandAutocomplete.complete}
+          onPick={commandAutocomplete.pick}
         />
       ) : null}
       <Card
@@ -241,17 +243,14 @@ export function PromptInputCard({
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="text-muted-foreground hover:bg-transparent hover:text-foreground"
+                    className="min-w-0 max-w-44 overflow-hidden text-muted-foreground hover:bg-transparent hover:text-foreground"
                     disabled={isControlDisabled || !hasAvailableModels}
+                    title={selectedModelLabel}
                   />
                 }
               >
-                <span>
-                  {selectedModel?.modelName ??
-                    selectedModel?.modelId ??
-                    "Model"}
-                </span>
-                <ChevronDownIcon />
+                <span className="min-w-0 truncate">{selectedModelLabel}</span>
+                <ChevronDownIcon className="shrink-0" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="max-h-80 w-72 pt-0">
                 <div className="sticky z-10 top-0 bg-popover -mx-1 p-1.5">

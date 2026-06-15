@@ -78,7 +78,7 @@ export function AttachmentCard({
         <button
           type="button"
           aria-label={`Remove ${attachment.name}`}
-          className="absolute top-1 right-1 inline-flex size-5 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground group-hover/attachment:opacity-100"
+          className="absolute top-1 right-1 inline-flex size-5 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 group-hover/attachment:opacity-100 group-focus-within/attachment:opacity-100"
           onClick={(event) => {
             event.stopPropagation();
             onRemove(attachment.id);
