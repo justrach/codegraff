@@ -1940,7 +1940,7 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/plan", "/key", "/keepcontext", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/plan", "/key", "/keepcontext", "/effort", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -4516,7 +4516,8 @@ const command_menu = [_]PickItem{
     .{ .name = "/yolo", .desc = "toggle permission prompts" },
     .{ .name = "/strict", .desc = "toggle every-message-is-a-tool mode" },
     .{ .name = "/keepcontext", .desc = "keep history across wire-format switches" },
-    .{ .name = "/reasoning", .desc = "codex/gpt-5 reasoning depth" },
+    .{ .name = "/effort", .desc = "thinking depth: low|medium|high (codex, deepseek, codegraff)" },
+    .{ .name = "/reasoning", .desc = "alias for /effort" },
     .{ .name = "/image", .desc = "attach an image to the next message" },
     .{ .name = "/paste", .desc = "attach the clipboard image" },
     .{ .name = "/trace", .desc = "toggle the JSONL event trace" },
@@ -4690,9 +4691,9 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             const disabled = skillDisabled(sk.name);
             const state: []const u8 = if (disabled) "disabled     " else if (inst) "installed    " else "not installed";
             try out.print("  {s}{s:<8}{s} {s}{s}{s}  {s}\n", .{
-                style.cyan,                                                       sk.name, style.reset,
-                if (disabled) style.yellow else if (inst) style.green else style.dim, state,
-                style.reset,                                                      sk.desc,
+                style.cyan,                                                           sk.name, style.reset,
+                if (disabled) style.yellow else if (inst) style.green else style.dim, state,   style.reset,
+                sk.desc,
             });
         }
         try out.writeAll("  install/enable: /skills add <name> · disable: /skills remove <name>\n");
@@ -4950,8 +4951,9 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return;
     }
-    if (std.mem.startsWith(u8, line, "/reasoning")) {
-        const arg = std.mem.trim(u8, line["/reasoning".len..], " \t");
+    if (std.mem.startsWith(u8, line, "/effort") or std.mem.startsWith(u8, line, "/reasoning")) {
+        const prefix: []const u8 = if (std.mem.startsWith(u8, line, "/effort")) "/effort" else "/reasoning";
+        const arg = std.mem.trim(u8, line[prefix.len..], " \t");
         if (std.mem.eql(u8, arg, "low")) {
             root.reasoning = .low;
         } else if (std.mem.eql(u8, arg, "medium") or std.mem.eql(u8, arg, "med")) {
@@ -4959,13 +4961,13 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         } else if (std.mem.eql(u8, arg, "high")) {
             root.reasoning = .high;
         } else if (arg.len != 0) {
-            try out.writeAll("usage: /reasoning low|medium|high\n");
+            try out.writeAll("usage: /effort low|medium|high\n");
             try out.flush();
             return;
         }
         try out.print("reasoning effort: {s}{s}\n", .{
             @tagName(root.reasoning),
-            if (root.provider.kind != .responses) " (applies to codex/responses models — current model ignores it)" else "",
+            if (!root.effortApplies()) " (current model ignores it — applies to codex, deepseek, codegraff)" else "",
         });
         try out.flush();
         return;
@@ -5106,9 +5108,9 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             else
                 "abnormal";
             try out.print("  {s}{d:>3}{s}  {s}{s:<8}{s} {d:>7} unread B  {s}\n", .{
-                style.cyan,                                  job.id,  style.reset,
-                if (job.done) style.dim else style.green,    status,  style.reset,
-                job.buf.items.len - job.cursor,              utf8Prefix(job.cmd, 60),
+                style.cyan,                               job.id,                  style.reset,
+                if (job.done) style.dim else style.green, status,                  style.reset,
+                job.buf.items.len - job.cursor,           utf8Prefix(job.cmd, 60),
             });
         }
         try out.flush();
@@ -5127,7 +5129,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (c.unpriced_calls > 0) try out.print(" ({d} on unpriced models)", .{c.unpriced_calls});
         try out.print("\n  tokens:    {d} in ({d} cached) + {d} out\n", .{ c.in_tokens + c.cache_tokens, c.cache_tokens, c.out_tokens });
         try out.print("  cost:      {s}${d:.4}{s}{s}\n", .{
-            style.green, c.usd, style.reset,
+            style.green,                                                                                     c.usd, style.reset,
             if (c.sub_calls > 0 or c.unpriced_calls > 0) " (API-key calls with a known price only)" else "",
         });
         try out.flush();
@@ -5314,7 +5316,8 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
         \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
         \\  /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
-        \\  /reasoning      codex/gpt-5 reasoning depth: low|medium|high (default high)
+        \\  /effort         thinking depth: low|medium|high (codex, deepseek, codegraff; default medium)
+        \\  /reasoning      alias for /effort
         \\  /strict         toggle "every message is a tool" mode
         \\  /yolo           toggle bash auto-approval (skip permission prompts)
         \\  /trace          toggle the JSONL event trace (harness.trace.jsonl)
@@ -6342,7 +6345,7 @@ const Agent = struct {
     pending_image: ?PendingImage = null, // staged by /image, sent with the next turn
     home: []const u8 = "", // $HOME, for /key persistence (set by main)
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
-    reasoning: ReasoningEffort = .high, // codex/responses reasoning depth (/reasoning)
+    reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
     sys_strict: []const u8 = main_system_prompt_strict,
     tools_anthropic: []const u8 = tools_anthropic_sub,
     tools_openai: []const u8 = tools_openai_sub,
@@ -6428,6 +6431,16 @@ const Agent = struct {
     fn systemPrompt(self: *const Agent) []const u8 {
         if (self.sub) return self.sys_override orelse sub_system_prompt;
         return if (self.strict) self.sys_strict else self.sys_normal;
+    }
+
+    /// Whether the active provider honors a reasoning-effort hint: the
+    /// Responses API (codex) via reasoning.effort, and the OpenAI-compatible
+    /// providers we know normalize a top-level reasoning_effort — the
+    /// codegraff gateway and deepseek. Everything else ignores it.
+    fn effortApplies(self: *const Agent) bool {
+        return self.provider.kind == .responses or
+            std.mem.eql(u8, self.provider.id, "codegraff") or
+            std.mem.eql(u8, self.provider.id, "deepseek");
     }
 
     fn toolsJson(self: *const Agent) []const u8 {
@@ -7372,6 +7385,13 @@ const Agent = struct {
                 try s.endObject();
                 for (self.messages.items) |m| try s.write(m);
                 try s.endArray();
+                // Reasoning-effort hint for OpenAI-compatible providers that
+                // honor it (codegraff gateway, deepseek). Mirrors the
+                // Responses `reasoning.effort` set in the branch below.
+                if (self.effortApplies()) {
+                    try s.objectField("reasoning_effort");
+                    try s.write(@tagName(self.reasoning));
+                }
             },
             .responses => {
                 // Codex / ChatGPT Responses API. system prompt → instructions;
