@@ -596,6 +596,8 @@ impl RuntimeManager {
 
         let mut current_assistant: Option<String> = None;
         let mut assistant_seq: usize = 0;
+        let mut current_reasoning: Option<String> = None;
+        let mut reasoning_seq: usize = 0;
         loop {
             let next = io.reader.next_line().await;
             let line = match next {
@@ -631,6 +633,7 @@ impl RuntimeManager {
                     if delta.is_empty() {
                         continue;
                     }
+                    current_reasoning = None;
                     let id = current_assistant.get_or_insert_with(|| {
                         let id = format!("{request_id}-assistant-{assistant_seq}");
                         assistant_seq += 1;
@@ -654,6 +657,46 @@ impl RuntimeManager {
                         match existing {
                             Some(text) => text.push_str(&delta),
                             None => conversation.messages.push(SessionMessageDto::Assistant {
+                                id,
+                                request_id: rid,
+                                text: delta,
+                            }),
+                        }
+                    })
+                    .await;
+                    self.emit().await?;
+                }
+                Some("reasoning") => {
+                    let delta = event
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    if delta.is_empty() {
+                        continue;
+                    }
+                    current_assistant = None;
+                    let id = current_reasoning.get_or_insert_with(|| {
+                        let id = format!("{request_id}-reasoning-{reasoning_seq}");
+                        reasoning_seq += 1;
+                        id
+                    });
+                    let id = id.clone();
+                    let rid = request_id.to_string();
+                    let delta = delta.to_string();
+                    self.mutate_conversation(conversation_id, move |conversation| {
+                        let existing = conversation.messages.iter_mut().rev().find_map(
+                            |message| match message {
+                                SessionMessageDto::Reasoning { id: mid, text, .. }
+                                    if *mid == id =>
+                                {
+                                    Some(text)
+                                }
+                                _ => None,
+                            },
+                        );
+                        match existing {
+                            Some(text) => text.push_str(&delta),
+                            None => conversation.messages.push(SessionMessageDto::Reasoning {
                                 id,
                                 request_id: rid,
                                 text: delta,

@@ -83,6 +83,7 @@ const schema_protocol_json =
     \\  "score_request": "{\"type\":\"score\",\"prompt_sha\":\"<16 hex>\",\"score\":0.7,\"notes\":\"...\",\"parent_sha\":\"<16 hex, optional>\"} appends an evaluation record for an agent/prompt variant to harness.trajectory.jsonl (the append-only DGM-style archive; prompt_sha = first 8 bytes of SHA-256 of the system prompt, hex; parent_sha records which prompt this variant was mutated from — the lineage edge DGM parent selection counts children with) and acks with a score event",
     \\  "events": [
     \\    {"type": "text", "text": "assistant text delta"},
+    \\    {"type": "reasoning", "text": "reasoning/thinking delta (GUI shows a collapsible Thinking block)"},
     \\    {"type": "tool_call", "name": "tool", "input": {}},
     \\    {"type": "ask_user", "call_id": "...", "question": "...", "input": {"question": "...", "options": ["..."]}},
     \\    {"type": "tool_result", "name": "tool", "is_error": false, "text": "..."},
@@ -8097,6 +8098,38 @@ const Agent = struct {
                 break :blk if (x == .string) x.string else "";
             },
         };
+        // Reasoning/thinking deltas → a separate `reasoning` event for JSON
+        // clients (terminal mode keeps showing the spinner). deepseek streams
+        // reasoning_content, anthropic a thinking_delta, codex a summary delta.
+        if (json_mode) {
+            const reasoning: []const u8 = switch (self.provider.kind) {
+                .anthropic => blk: {
+                    const d = obj.get("delta") orelse break :blk "";
+                    if (d != .object) break :blk "";
+                    const dt = d.object.get("type") orelse break :blk "";
+                    if (dt != .string or !std.mem.eql(u8, dt.string, "thinking_delta")) break :blk "";
+                    const x = d.object.get("thinking") orelse break :blk "";
+                    break :blk if (x == .string) x.string else "";
+                },
+                .openai => blk: {
+                    const choices = obj.get("choices") orelse break :blk "";
+                    if (choices != .array or choices.array.items.len == 0) break :blk "";
+                    const c0 = choices.array.items[0];
+                    if (c0 != .object) break :blk "";
+                    const d = c0.object.get("delta") orelse break :blk "";
+                    if (d != .object) break :blk "";
+                    const x = d.object.get("reasoning_content") orelse d.object.get("reasoning") orelse break :blk "";
+                    break :blk if (x == .string) x.string else "";
+                },
+                .responses => blk: {
+                    const t = obj.get("type") orelse break :blk "";
+                    if (t != .string or !std.mem.eql(u8, t.string, "response.reasoning_summary_text.delta")) break :blk "";
+                    const x = obj.get("delta") orelse break :blk "";
+                    break :blk if (x == .string) x.string else "";
+                },
+            };
+            if (reasoning.len != 0) self.emit(.{ .type = "reasoning", .text = reasoning });
+        }
         if (text.len == 0) return;
         self.spinnerStop(); // first visible byte: clear the thinking line
         self.streamed_text = true;
