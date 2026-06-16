@@ -7923,6 +7923,15 @@ const Agent = struct {
                     try s.objectField("reasoning_effort");
                     try s.write(@tagName(self.reasoning));
                 }
+                // Kimi K2.7's model card recommends temperature 1.0 + top_p 0.95
+                // for its (always-on) Thinking mode; graff otherwise leaves
+                // sampling to the server default.
+                if (std.mem.eql(u8, self.provider.id, "kimi")) {
+                    try s.objectField("temperature");
+                    try s.write(@as(f64, 1.0));
+                    try s.objectField("top_p");
+                    try s.write(@as(f64, 0.95));
+                }
             },
             .responses => {
                 // Codex / ChatGPT Responses API. system prompt → instructions;
