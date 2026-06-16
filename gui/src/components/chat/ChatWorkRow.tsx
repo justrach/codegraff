@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
-import { Throbber } from "../ui/Throbber";
 import { CHAT_MUTED_TEXT_CLASS } from "./constants/chatStyles";
 import { useRunningNow } from "./hooks/useRunningNow";
 import { ChatActivityRow } from "./ChatActivityRow";
@@ -28,7 +27,7 @@ function WorkHeaderLabel({
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5">
       {isRunning ? (
-        <Throbber variant="spinner" className="text-muted-foreground" />
+        <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
       ) : null}
       <ChatStatusLabel text={label} />
     </span>

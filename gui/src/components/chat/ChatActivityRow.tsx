@@ -7,6 +7,7 @@ import {
   FileText,
   Globe,
   ListTodo,
+  Loader2,
   Map,
   MessageCircle,
   Pencil,
@@ -20,7 +21,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "../ui/Collapsible";
-import { Throbber } from "../ui/Throbber";
 import { cn } from "@/utils/cn";
 
 import {
@@ -181,7 +181,7 @@ export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
         <article className="grid min-w-0 max-w-3xl gap-1">
           <CollapsibleTrigger className={activityTriggerClassName}>
             {item.isRunning ? (
-              <Throbber variant="thinking" className="text-muted-foreground" />
+              <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
             ) : null}
             <ChatStatusLabel text={item.summary} />
             <ActivityChevron
@@ -206,7 +206,7 @@ export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
       <article className="grid min-w-0 max-w-3xl gap-1">
         <CollapsibleTrigger className={activityTriggerClassName}>
           {item.isRunning ? (
-            <Throbber variant="spinner" className="text-muted-foreground" />
+            <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
           ) : null}
           <ChatStatusLabel text={item.summary} />
           <ActivityChevron
