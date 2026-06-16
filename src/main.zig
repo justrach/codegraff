@@ -4192,6 +4192,10 @@ pub fn main(init: std.process.Init) !void {
             \\gate will deny them. The user toggles execution back on with /plan.]
         , .{base_msg});
 
+        // Promote a GUI `@[image]` attachment to a native vision block when the
+        // model can see (otherwise it only gets the path and resorts to OCR).
+        stageGuiImageAttachment(&root, msg);
+
         // "ultracode" codeword: opt this turn into multi-agent workflow mode.
         if (std.ascii.indexOfIgnoreCase(msg, "ultracode") != null) {
             if (!json_mode) {
@@ -9441,6 +9445,26 @@ fn stageImagePath(root: *Agent, path: []const u8) StageResult {
     _ = enc.encode(b64, data);
     root.pending_image = .{ .media_type = imageMediaType(path), .b64 = b64, .label = arena.dupe(u8, path) catch path };
     return .ok;
+}
+
+/// GUI image attachments arrive inline as `@[path]` markers in the prompt text
+/// (see the desktop AttachmentTray / appendAttachmentsToPrompt). Stage the first
+/// image one as a real vision block so a vision model sees it natively instead
+/// of receiving only a path to OCR. The marker is left in the text — harmless
+/// once the image is visible — so non-image `@[path]` entries the agent should
+/// open with its tools are untouched. No-op for non-vision providers, when an
+/// image is already staged (e.g. via /image), or when no image marker is found.
+fn stageGuiImageAttachment(root: *Agent, msg: []const u8) void {
+    if (root.pending_image != null) return;
+    if (!visionCapable(root.provider)) return;
+    var search: usize = 0;
+    while (std.mem.indexOfPos(u8, msg, search, "@[")) |open| {
+        const rest = msg[open + 2 ..];
+        const close = std.mem.indexOfScalar(u8, rest, ']') orelse break;
+        const path = rest[0..close];
+        if (isImagePath(path) and stageImagePath(root, path) == .ok) return;
+        search = open + 2 + close + 1;
+    }
 }
 
 /// macOS: dump the clipboard image (if any) to a temp PNG via osascript and

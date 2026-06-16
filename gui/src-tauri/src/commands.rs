@@ -249,6 +249,25 @@ pub(crate) async fn set_fast(
         .map_err(map_command_error)
 }
 
+/// Persists a clipboard-pasted image to a temp file and returns its path, so it
+/// can flow through the same attachment pipeline as drag-dropped files (the
+/// harness reads image attachments by path). Used by Cmd/Ctrl+V in the composer.
+#[tauri::command]
+pub(crate) async fn save_pasted_image(data: Vec<u8>, ext: String) -> Result<String, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let safe_ext = match ext.to_lowercase().as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "avif" => ext.to_lowercase(),
+        _ => "png".to_string(),
+    };
+    let dir = std::env::temp_dir().join("codegraff-pasted");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join(format!("paste-{}-{n}.{safe_ext}", std::process::id()));
+    std::fs::write(&path, &data).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub(crate) async fn set_active_agent(
     agent_id: String,

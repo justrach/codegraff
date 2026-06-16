@@ -483,6 +483,14 @@ export function setFast(
   });
 }
 
+/** Writes a clipboard-pasted image to a temp file and returns its path. */
+export function savePastedImage(
+  data: number[],
+  ext: string,
+): Promise<string> {
+  return invokeCommand("save_pasted_image", { data, ext });
+}
+
 export function listMcpServers(
   workspacePath?: string | null,
 ): Promise<McpSettingsPayload> {
