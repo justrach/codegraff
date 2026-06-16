@@ -672,6 +672,31 @@ const schema_version = "0.4";
 /// providers, models, built-in tools (name/description/parameters), and the
 /// --json protocol contract. This is the single source of truth that SDK
 /// codegen consumes. Comptime data only — no keys, network, or MCP needed.
+/// Human-facing provider name for the `--schema` providers array (consumed by
+/// the GUI settings page so its provider list stays tied to the harness).
+fn providerDisplayName(id: []const u8) []const u8 {
+    const names = .{
+        .{ "codegraff", "Codegraff" }, .{ "anthropic", "Anthropic" },
+        .{ "deepseek", "DeepSeek" },   .{ "openai", "OpenAI" },
+        .{ "minimax", "MiniMax" },     .{ "xiaomi", "Xiaomi" },
+        .{ "kimi", "Kimi" },           .{ "xai", "xAI" },
+        .{ "zai", "Z.AI" },            .{ "codex", "Codex (ChatGPT)" },
+    };
+    inline for (names) |n| {
+        if (std.mem.eql(u8, id, n[0])) return n[1];
+    }
+    return id;
+}
+
+/// How a provider's credential is acquired, for the GUI settings page:
+/// `codegraff`/`codex` use device/OAuth login flows; everything else is a
+/// drop-in API key (env var or `graff key set <id>`).
+fn providerLoginKind(id: []const u8) []const u8 {
+    if (std.mem.eql(u8, id, "codegraff")) return "codegraff_device";
+    if (std.mem.eql(u8, id, "codex")) return "codex_device";
+    return "api_key";
+}
+
 fn emitSchema(w: *Io.Writer) !void {
     var s: std.json.Stringify = .{ .writer = w, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
@@ -685,10 +710,16 @@ fn emitSchema(w: *Io.Writer) !void {
         try s.beginObject();
         try s.objectField("id");
         try s.write(p.id);
+        try s.objectField("name");
+        try s.write(providerDisplayName(p.id));
         try s.objectField("kind");
         try s.write(@tagName(p.kind));
         try s.objectField("auth");
         try s.write(@tagName(p.auth));
+        try s.objectField("env_key");
+        try s.write(p.env_key);
+        try s.objectField("login");
+        try s.write(providerLoginKind(p.id));
         try s.objectField("default_model");
         try s.write(p.default_model);
         try s.endObject();

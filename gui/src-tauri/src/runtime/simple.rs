@@ -149,10 +149,11 @@ impl RuntimeManager {
         // each group).
         let catalog = {
             let key_list = codegraff_key_list().await.unwrap_or_default();
-            let configured: std::collections::HashSet<&str> = CODEGRAFF_PROVIDERS
+            let configured: std::collections::HashSet<String> = schema_providers()
+                .await
                 .iter()
                 .filter(|provider| provider_configured(provider, &key_list))
-                .map(|provider| provider.id)
+                .map(|provider| provider.id.clone())
                 .collect();
             let mut models: Vec<ModelOption> = catalog
                 .into_iter()
@@ -429,12 +430,12 @@ impl RuntimeManager {
         // overriding it — surface that instead of appearing to do nothing.
         if summary.configured {
             if let Some(env_key) = provider_env_key(&input.provider_id) {
-                if std::env::var(env_key)
+                if std::env::var(&env_key)
                     .ok()
                     .filter(|value| !value.trim().is_empty())
                     .is_some()
                 {
-                    let location = match find_env_definition(env_key) {
+                    let location = match find_env_definition(&env_key) {
                         Some((path, line)) => format!("{path}:{line}"),
                         None => "your shell environment".into(),
                     };
@@ -2252,7 +2253,7 @@ fn read_mcp_servers(workspace_path: &str) -> Vec<McpServerSummaryDto> {
 
 /// Human-readable provider name, reusing the adapter's provider table.
 fn provider_display_name(provider_id: &str) -> String {
-    CODEGRAFF_PROVIDERS
+    fallback_providers()
         .iter()
         .find(|provider| provider.id == provider_id)
         .map(|provider| provider.name.to_string())
@@ -2441,78 +2442,103 @@ fn codegraff_binary() -> String {
 
 #[derive(Debug, Clone)]
 struct CodegraffProvider {
-    id: &'static str,
-    name: &'static str,
-    env_key: Option<&'static str>,
+    id: String,
+    name: String,
+    env_key: Option<String>,
     auth_method: ProviderAuthMethodKindDto,
 }
 
-const CODEGRAFF_PROVIDERS: &[CodegraffProvider] = &[
-    CodegraffProvider {
-        id: "codegraff",
-        name: "Codegraff",
-        env_key: Some("CODEGRAFF_API_KEY"),
-        auth_method: ProviderAuthMethodKindDto::CodegraffDevice,
-    },
-    CodegraffProvider {
-        id: "anthropic",
-        name: "Anthropic",
-        env_key: Some("ANTHROPIC_API_KEY"),
-        auth_method: ProviderAuthMethodKindDto::ApiKey,
-    },
-    CodegraffProvider {
-        id: "deepseek",
-        name: "DeepSeek",
-        env_key: Some("DEEPSEEK_API_KEY"),
-        auth_method: ProviderAuthMethodKindDto::ApiKey,
-    },
-    CodegraffProvider {
-        id: "openai",
-        name: "OpenAI",
-        env_key: Some("OPENAI_API_KEY"),
-        auth_method: ProviderAuthMethodKindDto::ApiKey,
-    },
-    CodegraffProvider {
-        id: "minimax",
-        name: "MiniMax",
-        env_key: Some("MINIMAX_API_KEY"),
-        auth_method: ProviderAuthMethodKindDto::ApiKey,
-    },
-    CodegraffProvider {
-        id: "xiaomi",
-        name: "Xiaomi",
-        env_key: Some("XIAOMI_API_KEY"),
-        auth_method: ProviderAuthMethodKindDto::ApiKey,
-    },
-    CodegraffProvider {
-        id: "kimi",
-        name: "Kimi",
-        env_key: Some("KIMI_API_KEY"),
-        auth_method: ProviderAuthMethodKindDto::ApiKey,
-    },
-    CodegraffProvider {
-        id: "xai",
-        name: "xAI",
-        env_key: Some("XAI_API_KEY"),
-        auth_method: ProviderAuthMethodKindDto::ApiKey,
-    },
-    CodegraffProvider {
-        id: "zai",
-        name: "Z.ai",
-        env_key: Some("ZAI_API_KEY"),
-        auth_method: ProviderAuthMethodKindDto::ApiKey,
-    },
-    CodegraffProvider {
-        id: "codex",
-        name: "Codex / ChatGPT",
-        env_key: None,
-        auth_method: ProviderAuthMethodKindDto::CodexDevice,
-    },
-];
+/// Static fallback list, used only when `graff --schema` can't be read (e.g.
+/// the binary is missing or too old). The live list comes from the harness —
+/// see `schema_providers`.
+fn fallback_providers() -> Vec<CodegraffProvider> {
+    use ProviderAuthMethodKindDto::*;
+    fn p(id: &str, name: &str, env: Option<&str>, auth: ProviderAuthMethodKindDto) -> CodegraffProvider {
+        CodegraffProvider {
+            id: id.into(),
+            name: name.into(),
+            env_key: env.map(Into::into),
+            auth_method: auth,
+        }
+    }
+    vec![
+        p("codegraff", "Codegraff", Some("CODEGRAFF_API_KEY"), CodegraffDevice),
+        p("anthropic", "Anthropic", Some("ANTHROPIC_API_KEY"), ApiKey),
+        p("deepseek", "DeepSeek", Some("DEEPSEEK_API_KEY"), ApiKey),
+        p("openai", "OpenAI", Some("OPENAI_API_KEY"), ApiKey),
+        p("minimax", "MiniMax", Some("MINIMAX_API_KEY"), ApiKey),
+        p("xiaomi", "Xiaomi", Some("XIAOMI_API_KEY"), ApiKey),
+        p("kimi", "Kimi", Some("KIMI_API_KEY"), ApiKey),
+        p("xai", "xAI", Some("XAI_API_KEY"), ApiKey),
+        p("zai", "Z.AI", Some("ZAI_API_KEY"), ApiKey),
+        p("codex", "Codex / ChatGPT", None, CodexDevice),
+    ]
+}
+
+/// The provider list the settings page renders, derived live from the harness's
+/// `graff --schema` so adding a provider in the Zig binary makes it appear here
+/// automatically — names, env vars, and login method all come from the harness.
+/// codegraff (primary login) is pinned first and codex last; otherwise harness
+/// order is preserved. Falls back to `fallback_providers` if the schema can't
+/// be read.
+async fn schema_providers() -> Vec<CodegraffProvider> {
+    let output = match tokio::process::Command::new(codegraff_binary())
+        .arg("--schema")
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return fallback_providers(),
+    };
+    let Ok(schema) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return fallback_providers();
+    };
+    let Some(entries) = schema.get("providers").and_then(|value| value.as_array()) else {
+        return fallback_providers();
+    };
+    let mut providers: Vec<CodegraffProvider> = entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id")?.as_str()?.to_string();
+            let name = entry
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or(&id)
+                .to_string();
+            let auth_method = match entry.get("login").and_then(|value| value.as_str()) {
+                Some("codegraff_device") => ProviderAuthMethodKindDto::CodegraffDevice,
+                Some("codex_device") => ProviderAuthMethodKindDto::CodexDevice,
+                _ => ProviderAuthMethodKindDto::ApiKey,
+            };
+            // Only api-key providers surface an env var; login providers carry a
+            // placeholder env_key in the schema that the UI must not show.
+            let env_key = if matches!(auth_method, ProviderAuthMethodKindDto::ApiKey) {
+                entry
+                    .get("env_key")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string())
+            } else {
+                None
+            };
+            Some(CodegraffProvider { id, name, env_key, auth_method })
+        })
+        .collect();
+    if providers.is_empty() {
+        return fallback_providers();
+    }
+    providers.sort_by_key(|provider| match provider.id.as_str() {
+        "codegraff" => 0u8,
+        "codex" => 2,
+        _ => 1,
+    });
+    providers
+}
 
 async fn list_codegraff_providers() -> Result<Vec<ProviderSummaryDto>> {
     let key_list = codegraff_key_list().await.unwrap_or_default();
-    Ok(CODEGRAFF_PROVIDERS
+    Ok(schema_providers()
+        .await
         .iter()
         .map(|provider| provider_summary_with_key_list(provider, &key_list))
         .collect())
@@ -2520,7 +2546,8 @@ async fn list_codegraff_providers() -> Result<Vec<ProviderSummaryDto>> {
 
 async fn provider_summary(provider_id: &str) -> Result<ProviderSummaryDto> {
     let key_list = codegraff_key_list().await.unwrap_or_default();
-    let provider = CODEGRAFF_PROVIDERS
+    let providers = schema_providers().await;
+    let provider = providers
         .iter()
         .find(|provider| provider.id == provider_id)
         .with_context(|| format!("Unknown provider {provider_id}"))?;
@@ -2532,8 +2559,8 @@ fn provider_summary_with_key_list(
     key_list: &str,
 ) -> ProviderSummaryDto {
     ProviderSummaryDto {
-        id: provider.id.into(),
-        name: provider.name.into(),
+        id: provider.id.clone(),
+        name: provider.name.clone(),
         configured: provider_configured(provider, key_list),
         auth_methods: vec![ProviderAuthMethodDto {
             kind: provider.auth_method.clone(),
@@ -2546,7 +2573,7 @@ fn provider_summary_with_key_list(
 /// Builds the env-override hint when a provider's `<PROVIDER>_API_KEY` is set,
 /// locating where it's defined so the UI can offer to open that file.
 fn provider_env_override(provider: &CodegraffProvider) -> Option<ProviderEnvOverrideDto> {
-    let env_key = provider.env_key?;
+    let env_key = provider.env_key.as_deref()?;
     let is_set = std::env::var(env_key)
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -2603,6 +2630,7 @@ fn provider_auth_label(provider: &CodegraffProvider) -> String {
     match provider.auth_method {
         ProviderAuthMethodKindDto::ApiKey => provider
             .env_key
+            .as_deref()
             .map(|env_key| format!("API key ({env_key} or graff key set {})", provider.id))
             .unwrap_or_else(|| "API key".into()),
         ProviderAuthMethodKindDto::CodegraffDevice => "Codegraff device login".into(),
@@ -2614,6 +2642,7 @@ fn provider_auth_label(provider: &CodegraffProvider) -> String {
 fn provider_configured(provider: &CodegraffProvider, key_list: &str) -> bool {
     if provider
         .env_key
+        .as_deref()
         .and_then(|env_key| std::env::var(env_key).ok())
         .filter(|value| !value.trim().is_empty())
         .is_some()
@@ -2621,13 +2650,13 @@ fn provider_configured(provider: &CodegraffProvider, key_list: &str) -> bool {
         return true;
     }
 
-    match provider.id {
+    match provider.id.as_str() {
         "codegraff" => {
             home_file_exists("forge/.credentials.json")
-                || key_list_mentions_provider(key_list, provider.id)
+                || key_list_mentions_provider(key_list, &provider.id)
         }
         "codex" => home_file_exists(".codex/auth.json"),
-        _ => key_list_mentions_provider(key_list, provider.id),
+        _ => key_list_mentions_provider(key_list, &provider.id),
     }
 }
 
@@ -2650,9 +2679,9 @@ fn home_file_exists(relative_path: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn provider_env_key(provider_id: &str) -> Option<&'static str> {
-    CODEGRAFF_PROVIDERS
-        .iter()
+fn provider_env_key(provider_id: &str) -> Option<String> {
+    fallback_providers()
+        .into_iter()
         .find(|provider| provider.id == provider_id)
         .and_then(|provider| provider.env_key)
 }
