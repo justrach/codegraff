@@ -8134,7 +8134,44 @@ const Agent = struct {
         defer line.deinit();
 
         while (true) {
-            _ = try reader.streamDelimiterEnding(&line.writer, '\n');
+            // Race the line read against an idle-stall watchdog so a dead
+            // stream can't hang the turn (the Esc escape below is TTY-only, so
+            // --json/GUI sessions would otherwise wait forever).
+            read: {
+                const ReadDone = union(enum) { line: anyerror!usize, stall: WatchdogFired };
+                var rd_buf: [2]ReadDone = undefined;
+                var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
+                rsel.concurrent(.line, streamLineTask, .{ reader, &line.writer }) catch {
+                    _ = try reader.streamDelimiterEnding(&line.writer, '\n'); // no spare concurrency
+                    break :read;
+                };
+                rsel.concurrent(.stall, streamStallTask, .{self.io}) catch {
+                    const r = rsel.await() catch |e| {
+                        rsel.cancelDiscard();
+                        return e;
+                    };
+                    rsel.cancelDiscard();
+                    _ = try r.line;
+                    break :read;
+                };
+                const first = rsel.await() catch |e| {
+                    rsel.cancelDiscard();
+                    return e;
+                };
+                rsel.cancelDiscard();
+                switch (first) {
+                    .line => |r| _ = try r,
+                    .stall => |w| {
+                        self.flushStreamTail();
+                        if (req.connection) |conn| conn.closing = true;
+                        if (w == .deadline and !json_mode) if (self.out) |o| {
+                            o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
+                            o.flush() catch {};
+                        };
+                        return error.Interrupted;
+                    },
+                }
+            }
             // End of stream leaves the reader empty; otherwise the '\n' is
             // still buffered (and consumed below, after the line is handled).
             const more = if (reader.peekByte()) |_| true else |_| false;
@@ -9749,6 +9786,30 @@ fn postWatchdog(io: Io) WatchdogFired {
     var waited: u64 = 0;
     while (waited < post_deadline_ms) {
         io.sleep(.fromMilliseconds(200), .awake) catch return .deadline; // canceled: loser arm, result discarded
+        waited += 200;
+        if (Agent.esc_cancel.load(.acquire)) return .esc;
+    }
+    return .deadline;
+}
+
+// A streaming response idle this long (no SSE bytes — a dead/stalled
+// connection, or a model that hung before its first token or mid-answer) is
+// given up on, so a turn can't hang forever. Generous, so a legit reasoning
+// pause doesn't trip it. The TTY Esc-interrupt is the only other escape and
+// doesn't apply to --json/GUI sessions, where this matters most.
+const stream_stall_ms: u64 = 120 * 1000;
+
+/// Select-arm wrapper: read one '\n'-delimited SSE line into `w`.
+fn streamLineTask(reader: *Io.Reader, w: *Io.Writer) anyerror!usize {
+    return reader.streamDelimiterEnding(w, '\n');
+}
+
+/// Select-arm wrapper: fires after stream_stall_ms of no line (idle stall), or
+/// early on Esc — resets each line, so it measures the gap between lines.
+fn streamStallTask(io: Io) WatchdogFired {
+    var waited: u64 = 0;
+    while (waited < stream_stall_ms) {
+        io.sleep(.fromMilliseconds(200), .awake) catch return .deadline; // canceled: a line arrived
         waited += 200;
         if (Agent.esc_cancel.load(.acquire)) return .esc;
     }
