@@ -9380,6 +9380,7 @@ fn visionModel(m: []const u8) bool {
         std.mem.startsWith(u8, m, "gpt-5") or
         std.mem.startsWith(u8, m, "gpt-4") or
         std.mem.startsWith(u8, m, "grok-4") or
+        std.mem.startsWith(u8, m, "kimi") or // kimi-k2.7+ see images (Kimi for Coding endpoint, verified 2026-06-16)
         std.mem.startsWith(u8, m, "gemini");
 }
 
@@ -10965,7 +10966,8 @@ test "visionCapable allowlist" {
     try std.testing.expect(visionCapable(mk("claude-opus-4-8")));
     try std.testing.expect(visionCapable(mk("gpt-5.5")));
     try std.testing.expect(!visionCapable(mk("deepseek-v4-pro")));
-    try std.testing.expect(!visionCapable(mk("kimi-k2.6")));
+    try std.testing.expect(visionCapable(mk("kimi-k2.7"))); // Kimi for Coding sees images
+    try std.testing.expect(!visionCapable(mk("minimax-m3")));
 }
 
 test "binaryFileExt flags binaries, passes text" {
