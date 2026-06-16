@@ -1803,7 +1803,8 @@ impl RuntimeManager {
                     .map(|conversation| ConversationSessionSummaryDto {
                         conversation_id: conversation.conversation_id.clone(),
                         title: conversation.title.clone(),
-                        updated_at: Some(conversation.updated_at.to_string()),
+                        updated_at: (conversation.updated_at > 0)
+                            .then(|| conversation.updated_at.to_string()),
                         is_draft: conversation.messages.is_empty(),
                         is_running: !conversation.active_request_ids.is_empty(),
                         has_pending_followup: pending_followups
