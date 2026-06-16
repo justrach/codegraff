@@ -13,7 +13,11 @@ export function formatRelativeTimestamp(value: string | null): string | null {
     return null
   }
 
-  const timestamp = new Date(value)
+  const trimmed = value.trim()
+  // Accept epoch-millis strings (what the runtime sends) as well as ISO dates.
+  const timestamp = /^\d+$/.test(trimmed)
+    ? new Date(Number(trimmed))
+    : new Date(trimmed)
   if (Number.isNaN(timestamp.getTime())) {
     return null
   }
