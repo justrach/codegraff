@@ -40,6 +40,10 @@ struct RuntimeState {
     /// UI model selection, applied as `--model` when a session is spawned.
     selected_provider: Option<String>,
     selected_model: Option<String>,
+    /// Thinking controls (set via the GUI), applied on session spawn and
+    /// forwarded live to running sessions. None effort = the binary default.
+    selected_effort: Option<String>,
+    fast_enabled: bool,
     /// Cached `graff --schema` model list (populated lazily).
     model_catalog: Option<Vec<ModelOption>>,
     /// Live `ask_user` prompts awaiting a GUI answer, keyed by conversation.
@@ -810,7 +814,7 @@ impl RuntimeManager {
     ) -> Result<GraffSessionIo> {
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(conversation_id) {
-            let (model, active_agent_id, plan_mode) = {
+            let (model, active_agent_id, plan_mode, effort, fast) = {
                 let state = self.state.lock().await;
                 let conversation = state.conversations.get(conversation_id);
                 (
@@ -821,6 +825,8 @@ impl RuntimeManager {
                     conversation
                         .map(|conversation| conversation.plan_mode)
                         .unwrap_or(false),
+                    state.selected_effort.clone(),
+                    state.fast_enabled,
                 )
             };
             let session = spawn_graff_session(workspace_path, model.as_deref())?;
@@ -837,6 +843,20 @@ impl RuntimeManager {
                 self.send_control(
                     conversation_id,
                     serde_json::json!({ "type": "set_mode", "mode": "plan" }),
+                )
+                .await?;
+            }
+            if let Some(level) = effort {
+                self.send_control(
+                    conversation_id,
+                    serde_json::json!({ "type": "set_effort", "level": level }),
+                )
+                .await?;
+            }
+            if fast {
+                self.send_control(
+                    conversation_id,
+                    serde_json::json!({ "type": "set_fast", "on": true }),
                 )
                 .await?;
             }
@@ -1001,6 +1021,46 @@ impl RuntimeManager {
     }
 
     /// Sets the active agent and applies it to the live conversation when present.
+    /// Sets the reasoning-effort level (low|medium|high). Stored for future
+    /// sessions and forwarded to the active session if one is live.
+    pub async fn set_effort(&self, level: String, _: Option<String>) -> Result<()> {
+        let conversation_id = {
+            let mut state = self.state.lock().await;
+            state.selected_effort = Some(level.clone());
+            state.active_conversation_id.clone()
+        };
+        if let Some(conversation_id) = conversation_id {
+            if self.session_exists(&conversation_id).await {
+                self.send_control(
+                    &conversation_id,
+                    serde_json::json!({ "type": "set_effort", "level": level }),
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Toggles Codex "fast" mode (priority service tier). Stored for future
+    /// sessions and forwarded to the active session if one is live.
+    pub async fn set_fast(&self, on: bool, _: Option<String>) -> Result<()> {
+        let conversation_id = {
+            let mut state = self.state.lock().await;
+            state.fast_enabled = on;
+            state.active_conversation_id.clone()
+        };
+        if let Some(conversation_id) = conversation_id {
+            if self.session_exists(&conversation_id).await {
+                self.send_control(
+                    &conversation_id,
+                    serde_json::json!({ "type": "set_fast", "on": on }),
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn set_active_agent(
         &self,
         agent_id: String,
