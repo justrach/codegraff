@@ -89,12 +89,17 @@ pub struct RuntimeManager {
 impl RuntimeManager {
     /// Creates a runtime manager backed by the copied GUI project registry.
     pub fn new(emitter: Arc<dyn UiEventEmitter>, projects: Arc<ProjectStore>) -> Self {
+        let persisted_prompt = load_persisted_prompt_settings();
         Self {
             emitter,
             projects,
             state: Arc::new(Mutex::new(RuntimeState {
                 active_agent_id: Some("forge".into()),
                 conversations: load_persisted_conversations(),
+                selected_provider: persisted_prompt.selected_provider,
+                selected_model: persisted_prompt.selected_model,
+                selected_effort: persisted_prompt.selected_effort,
+                fast_enabled: persisted_prompt.fast_enabled,
                 ..RuntimeState::default()
             })),
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -241,6 +246,21 @@ impl RuntimeManager {
         })
     }
 
+    /// Writes the current model/effort/fast selection to disk so it persists
+    /// across app restarts and seeds new chats.
+    async fn persist_prompt_settings(&self) {
+        let settings = {
+            let state = self.state.lock().await;
+            PersistedPromptSettings {
+                selected_provider: state.selected_provider.clone(),
+                selected_model: state.selected_model.clone(),
+                selected_effort: state.selected_effort.clone(),
+                fast_enabled: state.fast_enabled,
+            }
+        };
+        save_prompt_settings(&settings);
+    }
+
     /// Persists the model selection and applies it to the live session when possible.
     pub async fn update_prompt_settings(
         &self,
@@ -274,6 +294,7 @@ impl RuntimeManager {
                 }
             }
         }
+        self.persist_prompt_settings().await;
         self.get_prompt_settings(input.workspace_path).await
     }
 
@@ -1858,6 +1879,47 @@ struct PersistedConversation {
 }
 
 /// Path to the transcript store (`~/.codegraff-gui/conversations.json`).
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct PersistedPromptSettings {
+    #[serde(default)]
+    selected_provider: Option<String>,
+    #[serde(default)]
+    selected_model: Option<String>,
+    #[serde(default)]
+    selected_effort: Option<String>,
+    #[serde(default)]
+    fast_enabled: bool,
+}
+
+/// Path to the persisted prompt selection (`~/.codegraff-gui/prompt-settings.json`).
+fn prompt_settings_store_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".codegraff-gui").join("prompt-settings.json"))
+}
+
+/// Loads the last model/effort/fast selection so it survives app restarts.
+fn load_persisted_prompt_settings() -> PersistedPromptSettings {
+    let Some(path) = prompt_settings_store_path() else {
+        return PersistedPromptSettings::default();
+    };
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        return PersistedPromptSettings::default();
+    };
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+fn save_prompt_settings(settings: &PersistedPromptSettings) {
+    let Some(path) = prompt_settings_store_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(data) = serde_json::to_string_pretty(settings) {
+        let _ = std::fs::write(&path, data);
+    }
+}
+
 fn conversations_store_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| {
         PathBuf::from(home)
