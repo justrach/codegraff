@@ -5153,7 +5153,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (arg.len == 0) {
             try out.writeAll("rewind to before which prompt?\n");
             for (turns.items, 1..) |idx, n| {
-                var snip = root.messages.items[idx].object.get("content").?.string;
+                var snip = if (root.messages.items[idx].object.get("content")) |c| (if (c == .string) c.string else "[image]") else "";
                 if (std.mem.indexOfScalar(u8, snip, '\n')) |nl| snip = snip[0..nl];
                 const shown = if (snip.len > 70) snip[0..70] else snip;
                 try out.print("  {s}{d}{s}: {s}{s}\n", .{ style.cyan, n, style.reset, shown, if (snip.len > 70) "…" else "" });
@@ -7055,9 +7055,11 @@ const Agent = struct {
             if (live) {
                 if (try self.assembleStream(resp_body)) |root| {
                     if (root.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "error")) {
-                        const e = root.get("error").?.object;
+                        const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
+                        const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
+                        const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
                         if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-                        try self.sayApiError("api error ({s}): {s}", .{ e.get("type").?.string, e.get("message").?.string });
+                        try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                         return error.ApiError;
                     };
                     self.recordUsage(root);
@@ -7075,9 +7077,11 @@ const Agent = struct {
             const root = resp.object;
 
             if (root.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "error")) {
-                const e = root.get("error").?.object;
+                const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
+                const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
+                const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
                 if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-                try self.sayApiError("api error ({s}): {s}", .{ e.get("type").?.string, e.get("message").?.string });
+                try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                 return error.ApiError;
             };
             if (root.get("error")) |e| if (e == .object) {
@@ -7599,9 +7603,13 @@ const Agent = struct {
             self.todos.clearRetainingCapacity();
             if (call.input.object.get("todos")) |list| if (list == .array) {
                 for (list.array.items) |item| {
+                    if (item != .object) continue;
+                    const content = item.object.get("content") orelse continue;
+                    if (content != .string) continue;
+                    const status = if (item.object.get("status")) |st| (if (st == .string) st.string else "pending") else "pending";
                     try self.todos.append(self.arena, .{
-                        .content = try self.arena.dupe(u8, item.object.get("content").?.string),
-                        .status = try self.arena.dupe(u8, item.object.get("status").?.string),
+                        .content = try self.arena.dupe(u8, content.string),
+                        .status = try self.arena.dupe(u8, status),
                     });
                 }
             };
@@ -7767,14 +7775,23 @@ const Agent = struct {
         const root = try self.request(null);
         const summary = switch (self.provider.kind) {
             .anthropic => blk: {
-                for (root.get("content").?.array.items) |block| {
-                    if (std.mem.eql(u8, block.object.get("type").?.string, "text"))
-                        break :blk block.object.get("text").?.string;
+                const content = root.get("content") orelse break :blk "";
+                if (content != .array) break :blk "";
+                for (content.array.items) |block| {
+                    if (block != .object) continue;
+                    const bt = if (block.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+                    if (std.mem.eql(u8, bt, "text"))
+                        if (block.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
                 }
                 break :blk "";
             },
             .openai => blk: {
-                const message = root.get("choices").?.array.items[0].object.get("message").?;
+                const choices = root.get("choices") orelse break :blk "";
+                if (choices != .array or choices.array.items.len == 0) break :blk "";
+                const c0 = choices.array.items[0];
+                if (c0 != .object) break :blk "";
+                const message = c0.object.get("message") orelse break :blk "";
+                if (message != .object) break :blk "";
                 const c = message.object.get("content") orelse break :blk "";
                 break :blk if (c == .string) c.string else "";
             },
@@ -10689,8 +10706,9 @@ fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
         .text = try ctx.gpa.dupe(u8, "subagents cannot spawn subagents — do this work yourself"),
         .is_error = true,
     };
-    const label = if (input.object.get("description")) |d| d.string else "subagent";
-    const prompt = input.object.get("prompt").?.string;
+    const label = if (input.object.get("description")) |d| (if (d == .string) d.string else "subagent") else "subagent";
+    const prompt = if (input.object.get("prompt")) |p| (if (p == .string) p.string else "") else "";
+    if (prompt.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
     const sys_override = resolveOverride(input.object);
     return runSub(ctx, "subagent", label, prompt, sys_override);
 }
@@ -10803,12 +10821,14 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
 
     var prev_results: []const u8 = "";
     for (phases, 1..) |phase_val, phase_no| {
+        if (phase_val != .object) return .{ .text = try gpa.dupe(u8, "each phase must be an object"), .is_error = true };
         const phase = phase_val.object;
-        const title = if (phase.get("title")) |t| t.string else "phase";
+        const title = if (phase.get("title")) |t| (if (t == .string) t.string else "phase") else "phase";
         const tasks_val = phase.get("tasks") orelse return .{
             .text = try gpa.dupe(u8, "each phase needs a tasks array"),
             .is_error = true,
         };
+        if (tasks_val != .array) return .{ .text = try gpa.dupe(u8, "phase tasks must be an array"), .is_error = true };
         const tasks = tasks_val.array.items;
         if (tasks.len == 0 or tasks.len > max_workflow_tasks) return .{
             .text = try std.fmt.allocPrint(gpa, "each phase needs 1-{d} tasks", .{max_workflow_tasks}),
@@ -10821,10 +10841,12 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         const labels = try arena.alloc([]const u8, tasks.len);
         const overrides = try arena.alloc(?[]const u8, tasks.len);
         for (tasks, prompts, labels, overrides) |task_val, *prompt, *label, *override| {
+            if (task_val != .object) return .{ .text = try gpa.dupe(u8, "each task must be an object"), .is_error = true };
             const task = task_val.object;
-            label.* = if (task.get("description")) |d| d.string else "task";
+            label.* = if (task.get("description")) |d| (if (d == .string) d.string else "task") else "task";
             override.* = resolveOverride(task);
-            const raw = task.get("prompt").?.string;
+            const raw = if (task.get("prompt")) |p| (if (p == .string) p.string else "") else "";
+            if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each task needs a non-empty \"prompt\""), .is_error = true };
             if (phase_no == 1) {
                 prompt.* = raw;
             } else if (std.mem.indexOf(u8, raw, "{{prev}}") != null) {

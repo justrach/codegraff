@@ -165,11 +165,11 @@ pub const Registry = struct {
         name: []const u8,
         cfg: std.json.ObjectMap,
     ) !void {
-        const command = cfg.get("command").?.string;
+        const command = if (cfg.get("command")) |c| (if (c == .string) c.string else return error.BadMcpConfig) else return error.BadMcpConfig;
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.append(a, command);
         if (cfg.get("args")) |args| if (args == .array) {
-            for (args.array.items) |arg| try argv.append(a, arg.string);
+            for (args.array.items) |arg| if (arg == .string) try argv.append(a, arg.string);
         };
 
         // Optional per-server env overlaid on the parent environment.
@@ -227,13 +227,19 @@ pub const Registry = struct {
         try notify(server, "notifications/initialized");
 
         const listed = try request(server, a, "{}", "tools/list");
-        const tool_arr = (listed.object.get("result").?.object.get("tools").?).array;
-        for (tool_arr.items) |t| {
-            const orig = try a.dupe(u8, t.object.get("name").?.string);
+        const result_v = listed.object.get("result") orelse return error.BadMcpResponse;
+        if (result_v != .object) return error.BadMcpResponse;
+        const tools_v = result_v.object.get("tools") orelse return error.BadMcpResponse;
+        if (tools_v != .array) return error.BadMcpResponse;
+        for (tools_v.array.items) |t| {
+            if (t != .object) continue;
+            const name_v = t.object.get("name") orelse continue;
+            if (name_v != .string) continue;
+            const orig = try a.dupe(u8, name_v.string);
             const qualified = try std.fmt.allocPrint(a, "mcp__{s}__{s}", .{ name, orig });
             // Prefer description; fall back to the 2025-06-18+ human-readable
             // title so a metadata-only tool isn't blank to the model.
-            const desc = if (t.object.get("description")) |d| d.string else if (t.object.get("title")) |ti| ti.string else "";
+            const desc = if (t.object.get("description")) |d| (if (d == .string) d.string else "") else if (t.object.get("title")) |ti| (if (ti == .string) ti.string else "") else "";
             var schema = t.object.get("inputSchema") orelse Value{ .object = .empty };
             try rewriteOneOf(a, &schema);
             try tools.append(a, .{
@@ -244,7 +250,7 @@ pub const Registry = struct {
                 .input_schema = schema,
             });
         }
-        std.debug.print("  [mcp:{s}] connected (mcp {s}) — {d} tool(s)\n", .{ name, server.protocol_version, tool_arr.items.len });
+        std.debug.print("  [mcp:{s}] connected (mcp {s}) — {d} tool(s)\n", .{ name, server.protocol_version, tools_v.array.items.len });
     }
 
     pub fn deinit(reg: *Registry) void {
@@ -296,7 +302,14 @@ pub const Registry = struct {
                 try out_alloc.dupe(u8, msg);
             return .{ .text = text, .is_error = true };
         }
-        const result = resp.object.get("result").?.object;
+        // A well-formed JSON-RPC reply has `result` xor `error`; `error` was
+        // handled above. Guard a malformed server that sends neither (or a
+        // non-object result) instead of force-unwrapping into a panic.
+        const result_val = resp.object.get("result") orelse
+            return .{ .text = try out_alloc.dupe(u8, "MCP response had neither result nor error"), .is_error = true };
+        if (result_val != .object)
+            return .{ .text = try out_alloc.dupe(u8, "MCP response result was not an object"), .is_error = true };
+        const result = result_val.object;
         const is_error = if (result.get("isError")) |v| (v == .bool and v.bool) else false;
 
         // result.content is an array of {type:"text", text:...} blocks.
@@ -304,7 +317,7 @@ pub const Registry = struct {
         errdefer ow.deinit();
         if (result.get("content")) |content| if (content == .array) {
             for (content.array.items) |block| {
-                if (block.object.get("text")) |txt| if (txt == .string) {
+                if (block == .object) if (block.object.get("text")) |txt| if (txt == .string) {
                     if (ow.writer.buffered().len > 0) try ow.writer.writeByte('\n');
                     try ow.writer.writeAll(txt.string);
                 };
