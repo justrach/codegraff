@@ -152,6 +152,7 @@ const price_table = [_]ModelPrice{
     .{ .name = "minimax-m3", .in = 0.3, .out = 1.2, .cache = 0.06 },
     .{ .name = "mimo-v2.5-pro", .in = 0.435, .out = 0.87, .cache = 0.0036 },
     .{ .name = "mimo-v2.5", .in = 0.14, .out = 0.28, .cache = 0.0028 },
+    .{ .name = "kimi-k2.7", .in = 0.95, .out = 4, .cache = 0.1 },
     .{ .name = "kimi-k2.6", .in = 0.95, .out = 4, .cache = 0.1 },
     .{ .name = "kimi-k2-thinking", .in = 0.6, .out = 2.5, .cache = 0.06 },
     .{ .name = "kimi-k2.5", .in = 0.6, .out = 3, .cache = 0.06 },
@@ -258,7 +259,7 @@ const provider_specs = [_]ProviderSpec{
     .{ .id = "minimax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
     .{ .id = "xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
     // OpenAI-format direct providers (matched to graff's provider.json).
-    .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/chat/completions", .env_key = "KIMI_API_KEY", .default_model = "kimi-k2.6" },
+    .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/chat/completions", .env_key = "KIMI_API_KEY", .default_model = "kimi-k2.7" },
     .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
     .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
@@ -319,10 +320,10 @@ const model_table = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "grok-build", .context = 256_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5", .context = 128_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5-pro", .context = 128_000 },
-    // kimi / xai / zai direct providers (contexts from models.dev 2026-06-10)
-    .{ .provider = "kimi", .name = "kimi-k2.6", .context = 262_144 },
-    .{ .provider = "kimi", .name = "kimi-k2-thinking", .context = 262_144 },
-    .{ .provider = "kimi", .name = "kimi-k2.5", .context = 262_144 },
+    // kimi: the Kimi for Coding plan endpoint accepts versioned ids (and the
+    // `kimi-for-coding` alias), all routed to the latest coding model. We expose
+    // `kimi-k2.7` — its current release. Verified via /coding/v1 2026-06-16.
+    .{ .provider = "kimi", .name = "kimi-k2.7", .context = 262_144 },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
     .{ .provider = "zai", .name = "glm-5", .context = 204_800 },
@@ -371,7 +372,9 @@ const main_system_prompt =
     \\user's machine. Use the provided tools to inspect and modify the current
     \\working directory and to run commands. read_file before editing; prefer
     \\edit_file for changes to existing files and write_file only for new
-    \\files or full rewrites. Some bash commands need user approval — if one
+    \\files or full rewrites. To navigate code — finding symbols, callers,
+    \\definitions, or where logic lives — prefer the codedb tool (it's indexed
+    \\and structural) over bash grep/find/ls. Some bash commands need user approval — if one
     \\is declined, try another approach or ask. For independent,
     \\self-contained chunks of work — exploring several directories, running
     \\unrelated checks, summarizing multiple files — fan out: call the
@@ -672,6 +675,31 @@ const schema_version = "0.4";
 /// providers, models, built-in tools (name/description/parameters), and the
 /// --json protocol contract. This is the single source of truth that SDK
 /// codegen consumes. Comptime data only — no keys, network, or MCP needed.
+/// Human-facing provider name for the `--schema` providers array (consumed by
+/// the GUI settings page so its provider list stays tied to the harness).
+fn providerDisplayName(id: []const u8) []const u8 {
+    const names = .{
+        .{ "codegraff", "Codegraff" }, .{ "anthropic", "Anthropic" },
+        .{ "deepseek", "DeepSeek" },   .{ "openai", "OpenAI" },
+        .{ "minimax", "MiniMax" },     .{ "xiaomi", "Xiaomi" },
+        .{ "kimi", "Kimi" },           .{ "xai", "xAI" },
+        .{ "zai", "Z.AI" },            .{ "codex", "Codex (ChatGPT)" },
+    };
+    inline for (names) |n| {
+        if (std.mem.eql(u8, id, n[0])) return n[1];
+    }
+    return id;
+}
+
+/// How a provider's credential is acquired, for the GUI settings page:
+/// `codegraff`/`codex` use device/OAuth login flows; everything else is a
+/// drop-in API key (env var or `graff key set <id>`).
+fn providerLoginKind(id: []const u8) []const u8 {
+    if (std.mem.eql(u8, id, "codegraff")) return "codegraff_device";
+    if (std.mem.eql(u8, id, "codex")) return "codex_device";
+    return "api_key";
+}
+
 fn emitSchema(w: *Io.Writer) !void {
     var s: std.json.Stringify = .{ .writer = w, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
@@ -685,10 +713,16 @@ fn emitSchema(w: *Io.Writer) !void {
         try s.beginObject();
         try s.objectField("id");
         try s.write(p.id);
+        try s.objectField("name");
+        try s.write(providerDisplayName(p.id));
         try s.objectField("kind");
         try s.write(@tagName(p.kind));
         try s.objectField("auth");
         try s.write(@tagName(p.auth));
+        try s.objectField("env_key");
+        try s.write(p.env_key);
+        try s.objectField("login");
+        try s.write(providerLoginKind(p.id));
         try s.objectField("default_model");
         try s.write(p.default_model);
         try s.endObject();
@@ -3412,6 +3446,7 @@ const usage_text =
     \\  graff [-p] "prompt"              one-shot: run the prompt, print the answer, exit
     \\  graff login                      get a codegraff key (device-code OAuth)
     \\  graff login codex [--refresh]    ChatGPT/Codex OAuth login (PKCE)
+    \\  graff login kimi                 Kimi Code OAuth login (device-code)
     \\  graff key set <provider> <key>   store a key (macOS Keychain, else 0600 file)
     \\  graff key list                   show which providers have keys
     \\  graff --schema                   print the machine-readable interface (SDK codegen)
@@ -3456,6 +3491,7 @@ pub fn main(init: std.process.Init) !void {
     var login_flag = false;
     var refresh_flag = false;
     var codex_login = false;
+    var kimi_login = false;
     var help_flag = false;
     var version_flag = false;
     var print_flag = false;
@@ -3519,6 +3555,7 @@ pub fn main(init: std.process.Init) !void {
         }
         if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "login")) login_flag = true;
         if (positionals.items.len > 1 and std.mem.eql(u8, positionals.items[1], "codex")) codex_login = true;
+        if (positionals.items.len > 1 and std.mem.eql(u8, positionals.items[1], "kimi")) kimi_login = true;
     }
 
     // One-shot print mode: `harness -p "prompt"` or a bare positional prompt
@@ -3555,7 +3592,7 @@ pub fn main(init: std.process.Init) !void {
     // `codex` (or --refresh) runs the ChatGPT PKCE/refresh flow → ~/.codex/auth.json.
     if (login_flag) {
         const home = init.environ_map.get("HOME") orelse std.process.fatal("no HOME", .{});
-        if (codex_login or refresh_flag) try codexLogin(io, gpa, arena, home, refresh_flag) else try codegraffLogin(io, gpa, arena, home);
+        if (kimi_login) try kimiLogin(io, gpa, arena, home) else if (codex_login or refresh_flag) try codexLogin(io, gpa, arena, home, refresh_flag) else try codegraffLogin(io, gpa, arena, home);
         return;
     }
 
@@ -3610,6 +3647,15 @@ pub fn main(init: std.process.Init) !void {
             }
             keys.codex_account = auth.account;
             codex_account = auth.account;
+        }
+    }
+    // Kimi "login": OAuth device-flow token from `graff login kimi`
+    // (~/.kimi/credentials/graff-oauth.json), refreshed in place when near
+    // expiry. Same on-disk-credential pattern as codex/codegraff; env wins.
+    if (init.environ_map.get("HOME")) |home| {
+        for (provider_specs, &keys.values) |spec, *value| {
+            if (std.mem.eql(u8, spec.id, "kimi") and value.* == null)
+                value.* = loadKimiOAuth(io, gpa, arena, home);
         }
     }
     // Stored keys (macOS Keychain / 0600 file via `harness key set`): fill any
@@ -4159,6 +4205,10 @@ pub fn main(init: std.process.Init) !void {
             \\approve it. Do not write files or run mutating commands — the
             \\gate will deny them. The user toggles execution back on with /plan.]
         , .{base_msg});
+
+        // Promote a GUI `@[image]` attachment to a native vision block when the
+        // model can see (otherwise it only gets the path and resorts to OCR).
+        stageGuiImageAttachment(&root, msg);
 
         // "ultracode" codeword: opt this turn into multi-agent workflow mode.
         if (std.ascii.indexOfIgnoreCase(msg, "ultracode") != null) {
@@ -5769,6 +5819,136 @@ fn openBrowser(io: Io, url: []const u8) void {
     _ = child.wait(io) catch {};
 }
 
+// Kimi Code OAuth — device-code flow, same client + endpoints the Kimi CLI
+// uses (auth.kimi.com). `graff login kimi` runs the flow and writes the token
+// to ~/.kimi/credentials/graff-oauth.json; loadKimiOAuth reads it at startup
+// and refreshes in place when near expiry.
+const kimi_oauth_host = "https://auth.kimi.com";
+const kimi_device_auth_url = kimi_oauth_host ++ "/api/oauth/device_authorization";
+const kimi_token_url = kimi_oauth_host ++ "/api/oauth/token";
+const kimi_client_id = "17e5f671-d194-4dfb-9706-5516cb48c098";
+
+/// POST a form body to a Kimi OAuth endpoint; return the parsed JSON object.
+fn kimiOAuthPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body: []const u8) !std.json.ObjectMap {
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
+    _ = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = .POST,
+        .payload = body,
+        .response_writer = &aw.writer,
+        .headers = .{ .content_type = .{ .override = "application/x-www-form-urlencoded" } },
+    });
+    const v = try std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always });
+    if (v != .object) return error.BadOAuthResponse;
+    return v.object;
+}
+
+fn kimiAuthPath(arena: Allocator, home: []const u8) []const u8 {
+    return std.fmt.allocPrint(arena, "{s}/.kimi/credentials/graff-oauth.json", .{home}) catch "";
+}
+
+fn writeKimiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
+    // createDir is one level, so make ~/.kimi then ~/.kimi/credentials.
+    Io.Dir.cwd().createDir(io, try std.fmt.allocPrint(arena, "{s}/.kimi", .{home}), .default_dir) catch {};
+    Io.Dir.cwd().createDir(io, try std.fmt.allocPrint(arena, "{s}/.kimi/credentials", .{home}), .default_dir) catch {};
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(arena, "access_token", .{ .string = access });
+    try obj.put(arena, "refresh_token", .{ .string = refresh });
+    try obj.put(arena, "expires_at", .{ .integer = expires_at });
+    var aw: Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.write(Value{ .object = obj });
+    const f = try Io.Dir.cwd().createFile(io, kimiAuthPath(arena, home), .{});
+    defer f.close(io);
+    var wbuf: [4096]u8 = undefined;
+    var fw = f.writer(io, &wbuf);
+    try fw.interface.writeAll(aw.writer.buffered());
+    try fw.interface.flush();
+}
+
+/// `graff login kimi`: Kimi Code device-code OAuth. Prints a verification URL +
+/// user code, opens the browser, polls until the user authorizes, then stores
+/// the access/refresh token.
+fn kimiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
+    var obuf: [4096]u8 = undefined;
+    var ow = Io.File.stdout().writer(io, &obuf);
+    const out = &ow.interface;
+
+    const da_body = try std.fmt.allocPrint(arena, "client_id={s}", .{kimi_client_id});
+    const da = kimiOAuthPost(io, gpa, arena, kimi_device_auth_url, da_body) catch |err| {
+        try out.print("✗ Kimi device authorization failed: {t}\n", .{err});
+        try out.flush();
+        return;
+    };
+    if (da.get("error")) |e| {
+        try out.print("✗ {s}\n", .{if (e == .string) e.string else "device authorization error"});
+        try out.flush();
+        return;
+    }
+    const device_code = strFieldObj(da, "device_code") orelse return error.BadOAuthResponse;
+    const user_code = strFieldObj(da, "user_code") orelse "";
+    const verify = strFieldObj(da, "verification_uri_complete") orelse strFieldObj(da, "verification_uri") orelse "";
+    const interval: i64 = if (da.get("interval")) |iv| (if (iv == .integer) @max(iv.integer, 1) else 5) else 5;
+
+    try out.print("\nTo log in to Kimi, open this URL (browser should open automatically):\n\n  {s}\n\nand confirm the code:  {s}\n\nwaiting for authorization…\n", .{ verify, user_code });
+    try out.flush();
+    openBrowser(io, verify);
+
+    const poll_body = try std.fmt.allocPrint(arena, "client_id={s}&device_code={s}&grant_type=urn:ietf:params:oauth:grant-type:device_code", .{ kimi_client_id, device_code });
+    var attempts: usize = 0;
+    while (attempts < 360) : (attempts += 1) {
+        io.sleep(Io.Duration.fromSeconds(interval), .awake) catch {};
+        const resp = kimiOAuthPost(io, gpa, arena, kimi_token_url, poll_body) catch continue;
+        if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
+            const refresh = strFieldObj(resp, "refresh_token") orelse "";
+            const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 900) else 900;
+            try writeKimiAuth(io, arena, home, a.string, refresh, @divTrunc(unixMs(io), 1000) + expires_in);
+            try out.print("✓ logged into Kimi — wrote {s}. /model kimi-k2.7\n", .{kimiAuthPath(arena, home)});
+            try out.flush();
+            return;
+        };
+        const msg = if (resp.get("error")) |e| (if (e == .string) e.string else "") else "";
+        if (std.mem.eql(u8, msg, "authorization_pending") or std.mem.eql(u8, msg, "slow_down")) continue;
+        if (std.mem.eql(u8, msg, "expired_token")) {
+            try out.writeAll("✗ the code expired — run `graff login kimi` again\n");
+            try out.flush();
+            return;
+        }
+        if (msg.len > 0) {
+            try out.print("✗ {s}\n", .{msg});
+            try out.flush();
+            return;
+        }
+    }
+    try out.writeAll("✗ timed out waiting for authorization\n");
+    try out.flush();
+}
+
+/// Reads the stored Kimi OAuth access token, refreshing it in place when within
+/// 60s of expiry. Returns null if not logged in. Mirrors loadCodexAuth.
+fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) ?[]const u8 {
+    const data = Io.Dir.cwd().readFileAlloc(io, kimiAuthPath(arena, home), arena, .limited(64 * 1024)) catch return null;
+    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
+    if (v != .object) return null;
+    const access = strFieldObj(v.object, "access_token") orelse return null;
+    const expires_at: i64 = if (v.object.get("expires_at")) |e| (if (e == .integer) e.integer else 0) else 0;
+    if (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - 60) {
+        if (strFieldObj(v.object, "refresh_token")) |refresh| {
+            const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ kimi_client_id, refresh }) catch return access;
+            const resp = kimiOAuthPost(io, gpa, arena, kimi_token_url, body) catch return access;
+            if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
+                const new_refresh = strFieldObj(resp, "refresh_token") orelse refresh;
+                const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 900) else 900;
+                writeKimiAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in) catch {};
+                return a.string;
+            };
+        }
+    }
+    return access;
+}
+
 // ---------------------------------------------------------------------------
 // `harness serve` — the same --json session protocol, served over HTTP so
 // clients that cannot spawn a local process (edge runtimes, browsers, other
@@ -6744,7 +6924,8 @@ const Agent = struct {
     fn effortApplies(self: *const Agent) bool {
         return self.provider.kind == .responses or
             std.mem.eql(u8, self.provider.id, "codegraff") or
-            std.mem.eql(u8, self.provider.id, "deepseek");
+            std.mem.eql(u8, self.provider.id, "deepseek") or
+            std.mem.eql(u8, self.provider.id, "kimi");
     }
 
     fn toolsJson(self: *const Agent) []const u8 {
@@ -7890,7 +8071,10 @@ const Agent = struct {
         };
         var req = try self.client.request(.POST, try std.Uri.parse(provider.url), .{
             .redirect_behavior = .unhandled,
-            .headers = .{ .content_type = .{ .override = "application/json" } },
+            .headers = .{
+                .content_type = .{ .override = "application/json" },
+                .user_agent = providerUserAgent(provider),
+            },
             .extra_headers = extra,
         });
         defer req.deinit();
@@ -9341,6 +9525,7 @@ fn visionModel(m: []const u8) bool {
         std.mem.startsWith(u8, m, "gpt-5") or
         std.mem.startsWith(u8, m, "gpt-4") or
         std.mem.startsWith(u8, m, "grok-4") or
+        std.mem.startsWith(u8, m, "kimi") or // kimi-k2.7+ see images (Kimi for Coding endpoint, verified 2026-06-16)
         std.mem.startsWith(u8, m, "gemini");
 }
 
@@ -9408,6 +9593,26 @@ fn stageImagePath(root: *Agent, path: []const u8) StageResult {
     return .ok;
 }
 
+/// GUI image attachments arrive inline as `@[path]` markers in the prompt text
+/// (see the desktop AttachmentTray / appendAttachmentsToPrompt). Stage the first
+/// image one as a real vision block so a vision model sees it natively instead
+/// of receiving only a path to OCR. The marker is left in the text — harmless
+/// once the image is visible — so non-image `@[path]` entries the agent should
+/// open with its tools are untouched. No-op for non-vision providers, when an
+/// image is already staged (e.g. via /image), or when no image marker is found.
+fn stageGuiImageAttachment(root: *Agent, msg: []const u8) void {
+    if (root.pending_image != null) return;
+    if (!visionCapable(root.provider)) return;
+    var search: usize = 0;
+    while (std.mem.indexOfPos(u8, msg, search, "@[")) |open| {
+        const rest = msg[open + 2 ..];
+        const close = std.mem.indexOfScalar(u8, rest, ']') orelse break;
+        const path = rest[0..close];
+        if (isImagePath(path) and stageImagePath(root, path) == .ok) return;
+        search = open + 2 + close + 1;
+    }
+}
+
 /// macOS: dump the clipboard image (if any) to a temp PNG via osascript and
 /// return its path; null if the clipboard holds no image (or not macOS).
 /// (A terminal can't receive clipboard image bytes over stdin, so we ask the OS.)
@@ -9445,6 +9650,18 @@ fn grabClipboardImage(io: Io) ?[]const u8 {
     return null;
 }
 /// Auth + provider-specific headers shared by post() and Agent.postStream().
+/// User-Agent for an outbound provider call. The Kimi for Coding plan gates
+/// access to recognized coding-agent clients by User-Agent (a graff/* or bare
+/// UA gets `access_terminated`), so graff identifies as one — a user's Kimi
+/// Code key then works here the same as in Kimi CLI or Claude Code. Every
+/// other provider keeps the http client default.
+const kimi_user_agent = "claude-code/1.0.0";
+fn providerUserAgent(provider: Provider) std.http.Client.Request.Headers.Value {
+    if (std.mem.eql(u8, provider.id, "kimi")) {
+        return .{ .override = kimi_user_agent };
+    }
+    return .default;
+}
 fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[6]std.http.Header) []const std.http.Header {
     var n: usize = 0;
     switch (provider.auth) {
@@ -9499,7 +9716,10 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
         .method = .POST,
         .payload = body,
         .response_writer = &aw.writer,
-        .headers = .{ .content_type = .{ .override = "application/json" } },
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+            .user_agent = providerUserAgent(provider),
+        },
         .extra_headers = extra,
     });
     const code = @intFromEnum(res.status);
@@ -10872,7 +11092,7 @@ test "imageMediaType from extension" {
 }
 
 test "contextFor known model and default fallback" {
-    try std.testing.expectEqual(@as(u64, 262_144), contextFor("kimi", "kimi-k2.6"));
+    try std.testing.expectEqual(@as(u64, 262_144), contextFor("kimi", "kimi-k2.7"));
     try std.testing.expectEqual(@as(u64, default_context), contextFor("nope", "unknown-xyz"));
 }
 
@@ -10891,7 +11111,8 @@ test "visionCapable allowlist" {
     try std.testing.expect(visionCapable(mk("claude-opus-4-8")));
     try std.testing.expect(visionCapable(mk("gpt-5.5")));
     try std.testing.expect(!visionCapable(mk("deepseek-v4-pro")));
-    try std.testing.expect(!visionCapable(mk("kimi-k2.6")));
+    try std.testing.expect(visionCapable(mk("kimi-k2.7"))); // Kimi for Coding sees images
+    try std.testing.expect(!visionCapable(mk("minimax-m3")));
 }
 
 test "binaryFileExt flags binaries, passes text" {

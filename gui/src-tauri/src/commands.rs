@@ -249,6 +249,48 @@ pub(crate) async fn set_fast(
         .map_err(map_command_error)
 }
 
+/// Persists a clipboard-pasted image to a temp file and returns its path, so it
+/// can flow through the same attachment pipeline as drag-dropped files (the
+/// harness reads image attachments by path). Used by Cmd/Ctrl+V in the composer.
+#[tauri::command]
+pub(crate) async fn save_pasted_image(data: Vec<u8>, ext: String) -> Result<String, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let safe_ext = match ext.to_lowercase().as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "avif" => ext.to_lowercase(),
+        _ => "png".to_string(),
+    };
+    let dir = std::env::temp_dir().join("codegraff-pasted");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join(format!("paste-{}-{n}.{safe_ext}", std::process::id()));
+    std::fs::write(&path, &data).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Decodes an image, downscales it to fit `max_dim` (default 96px, aspect
+/// preserved), and re-encodes it as a compressed JPEG returned as a data URL —
+/// so the composer can show a real thumbnail without loading the full file into
+/// the webview. Runs the CPU-bound work off the async runtime.
+#[tauri::command]
+pub(crate) async fn image_thumbnail(path: String, max_dim: Option<u32>) -> Result<String, String> {
+    let max = max_dim.unwrap_or(96).clamp(16, 512);
+    tokio::task::spawn_blocking(move || {
+        use base64::Engine as _;
+        let img = image::open(&path).map_err(|error| error.to_string())?;
+        // `thumbnail` is a fast box filter that preserves aspect ratio.
+        let rgb = img.thumbnail(max, max).to_rgb8();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 70)
+            .encode_image(&rgb)
+            .map_err(|error| error.to_string())?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(buf.get_ref());
+        Ok::<String, String>(format!("data:image/jpeg;base64,{b64}"))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub(crate) async fn set_active_agent(
     agent_id: String,

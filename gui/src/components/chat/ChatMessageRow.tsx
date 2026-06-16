@@ -33,7 +33,7 @@ function UserChatMessage({ text, workspacePath }: UserChatMessageProps) {
     .filter((item): item is NonNullable<typeof item> => item != null);
 
   return (
-    <article className="flex w-full flex-col items-end gap-2 select-text">
+    <article className="cg-message-in flex w-full flex-col items-end gap-2 select-text">
       {attachments.length > 0 ? (
         <AttachmentTray
           attachments={attachments}
@@ -62,7 +62,7 @@ function MarkdownChatMessage({
     <article className="max-w-3xl">
       <ChatMarkdown
         text={text}
-        className={toneClassName}
+        className={`cg-stream-in ${toneClassName ?? ""}`}
         workspacePath={workspacePath}
       />
     </article>
