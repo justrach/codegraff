@@ -1,5 +1,19 @@
-import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
+import {
+  Activity,
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Globe,
+  ListTodo,
+  Map,
+  MessageCircle,
+  Pencil,
+  Search,
+  Sparkles,
+  Terminal,
+} from "lucide-react";
 
 import {
   Collapsible,
@@ -35,6 +49,35 @@ const activityTextClassName = cn(
   CHAT_MUTED_TEXT_CLASS,
 );
 
+function operationIcon(kind: string): ComponentType<{ className?: string }> {
+  switch (kind) {
+    case "file_read":
+      return FileText;
+    case "file_update":
+      return Pencil;
+    case "shell":
+      return Terminal;
+    case "search":
+    case "codebase_search":
+      return Search;
+    case "fetch":
+      return Globe;
+    case "followup":
+      return MessageCircle;
+    case "plan":
+      return Map;
+    case "skill":
+      return Sparkles;
+    case "task":
+      return Bot;
+    case "todo_read":
+    case "todo_write":
+      return ListTodo;
+    default:
+      return Activity;
+  }
+}
+
 function ActivityChevron({
   open,
   className,
@@ -64,9 +107,11 @@ function ActivityOperationRow({
   const isExpandable = result != null;
   const label = formatOperationLabel(operation, workspacePath);
   const isCommand = operation.detail.kind === "shell";
+  const Icon = operationIcon(operation.detail.kind);
 
   const content = (
     <>
+      <Icon className="size-3.5 shrink-0 text-muted-foreground/60" />
       <span className="min-w-0">
         {isCommand ? (
           <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
@@ -170,7 +215,7 @@ export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="min-w-0 max-w-full">
-          <div className="grid min-w-0 gap-1">
+          <div className="ml-[7px] grid min-w-0 gap-1.5 border-l border-border/50 pl-3 pt-0.5">
             {item.operations.map((operation) => (
               <ActivityOperationRow
                 key={operation.id}
