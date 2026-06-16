@@ -163,12 +163,13 @@ impl RuntimeManager {
             });
             models
         };
-        let (selected_provider, selected_model, selected_effort) = {
+        let (selected_provider, selected_model, selected_effort, fast_enabled) = {
             let state = self.state.lock().await;
             (
                 state.selected_provider.clone(),
                 state.selected_model.clone(),
                 state.selected_effort.clone(),
+                state.fast_enabled,
             )
         };
 
@@ -188,6 +189,7 @@ impl RuntimeManager {
                 selected_provider_id: Some("codegraff".into()),
                 selected_model_id: Some("default".into()),
                 selected_reasoning_effort: None,
+                fast_enabled: false,
             });
         }
 
@@ -243,6 +245,7 @@ impl RuntimeManager {
             selected_provider_id,
             selected_model_id,
             selected_reasoning_effort: selected_effort,
+            fast_enabled,
         })
     }
 
@@ -1129,6 +1132,7 @@ impl RuntimeManager {
                 .await?;
             }
         }
+        self.persist_prompt_settings().await;
         Ok(())
     }
 

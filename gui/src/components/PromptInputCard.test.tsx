@@ -25,6 +25,7 @@ const promptSettings: PromptSettings = {
   selectedModelId: "claude-sonnet-long",
   selectedProviderId: "anthropic",
   selectedReasoningEffort: "medium",
+  fastEnabled: false,
 };
 
 function renderPromptInputCard() {

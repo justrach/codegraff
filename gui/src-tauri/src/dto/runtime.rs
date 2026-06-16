@@ -276,6 +276,7 @@ pub struct PromptSettingsDto {
     pub selected_provider_id: Option<String>,
     pub selected_model_id: Option<String>,
     pub selected_reasoning_effort: Option<String>,
+    pub fast_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

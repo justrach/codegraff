@@ -185,6 +185,7 @@ function qaPromptSettings(): PromptSettings {
     selectedModelId: "claude-sonnet-4",
     selectedProviderId: "anthropic",
     selectedReasoningEffort: qaReasoningEffort,
+    fastEnabled: false,
   };
 }
 
