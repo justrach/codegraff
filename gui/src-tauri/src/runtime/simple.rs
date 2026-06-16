@@ -168,11 +168,17 @@ impl RuntimeManager {
             .iter()
             .map(|model| {
                 // Effort-capable providers (mirrors the binary's effortApplies):
-                // codex via reasoning.effort, codegraff/deepseek via reasoning_effort.
-                let reasoning_efforts: Vec<String> = if matches!(
-                    model.provider.as_str(),
-                    "codegraff" | "deepseek" | "codex"
-                ) {
+                // codex takes reasoning.effort via the Responses API; codegraff
+                // and deepseek take a top-level reasoning_effort. But the
+                // gateway's gpt-* models go through /v1/chat/completions, which
+                // rejects reasoning_effort (they need the codex/Responses path),
+                // so don't advertise effort for them.
+                let effort_capable = match model.provider.as_str() {
+                    "codex" => true,
+                    "codegraff" | "deepseek" => !model.name.starts_with("gpt-"),
+                    _ => false,
+                };
+                let reasoning_efforts: Vec<String> = if effort_capable {
                     vec!["low".into(), "medium".into(), "high".into()]
                 } else {
                     vec![]
