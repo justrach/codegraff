@@ -260,9 +260,11 @@ impl RuntimeManager {
         model: Option<String>,
     ) {
         let title_prompt = format!(
-            "Write a 3 to 5 word title in Title Case for a chat that opens with the \
-             message below. Reply with ONLY the title — no quotes, no punctuation, \
-             no preamble.\n\nMessage: {prompt}"
+            "Output a concise 2 to 4 word topic label in Title Case for the user's \
+             first chat message. Describe the topic literally — do NOT interpret, \
+             correct, rephrase, or expand the message. Examples: \"hey there\" -> \
+             Greeting; \"go through the repo\" -> Repo Walkthrough; \"fix the login \
+             bug\" -> Login Bug Fix. Reply with ONLY the label, nothing else.\n\nMessage: {prompt}"
         );
         let mut command = tokio::process::Command::new(codegraff_binary());
         command.arg("-p").arg(&title_prompt).arg("--yolo");
