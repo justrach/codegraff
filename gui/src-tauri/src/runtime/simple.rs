@@ -27,6 +27,7 @@ struct ConversationState {
     active_request_ids: Vec<String>,
     active_agent_id: Option<String>,
     plan_mode: bool,
+    updated_at: i64,
 }
 
 #[derive(Default)]
@@ -489,8 +490,10 @@ impl RuntimeManager {
                     active_request_ids: vec![],
                     active_agent_id,
                     plan_mode,
+                    updated_at: now_millis(),
                 });
             conversation.plan_mode = plan_mode;
+            conversation.updated_at = now_millis();
             is_first_turn = conversation.messages.is_empty();
             conversation.messages.push(SessionMessageDto::User {
                 id: format!("{request_id}-user"),
@@ -953,6 +956,7 @@ impl RuntimeManager {
                     messages: conversation.messages.clone(),
                     active_agent_id: conversation.active_agent_id.clone(),
                     plan_mode: conversation.plan_mode,
+                    updated_at: conversation.updated_at,
                 })
                 .collect()
         };
@@ -1458,6 +1462,7 @@ impl RuntimeManager {
                 active_request_ids: vec![],
                 active_agent_id: None,
                 plan_mode: false,
+                updated_at: now_millis(),
             },
         );
         drop(state);
@@ -1785,14 +1790,20 @@ impl RuntimeManager {
             .workspaces
             .iter()
             .map(|path| {
-                let conversations = state
+                let mut workspace_convos: Vec<&ConversationState> = state
                     .conversations
                     .values()
                     .filter(|conversation| &conversation.workspace_path == path)
+                    .collect();
+                // Newest chats first (most recently sent), drafts (updated_at 0)
+                // fall to the bottom.
+                workspace_convos.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                let conversations = workspace_convos
+                    .into_iter()
                     .map(|conversation| ConversationSessionSummaryDto {
                         conversation_id: conversation.conversation_id.clone(),
                         title: conversation.title.clone(),
-                        updated_at: None,
+                        updated_at: Some(conversation.updated_at.to_string()),
                         is_draft: conversation.messages.is_empty(),
                         is_running: !conversation.active_request_ids.is_empty(),
                         has_pending_followup: pending_followups
@@ -1980,6 +1991,8 @@ struct PersistedConversation {
     active_agent_id: Option<String>,
     #[serde(default)]
     plan_mode: bool,
+    #[serde(default)]
+    updated_at: i64,
 }
 
 /// Path to the transcript store (`~/.codegraff-gui/conversations.json`).
@@ -2058,6 +2071,7 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
                     active_request_ids: vec![],
                     active_agent_id: conversation.active_agent_id,
                     plan_mode: conversation.plan_mode,
+                    updated_at: conversation.updated_at,
                 },
             )
         })
@@ -2804,6 +2818,13 @@ fn clean_title(raw: &str) -> String {
         .chars()
         .take(60)
         .collect()
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn title_from_prompt(prompt: &str) -> String {
