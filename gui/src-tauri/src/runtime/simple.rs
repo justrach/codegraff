@@ -768,7 +768,7 @@ impl RuntimeManager {
                 continue;
             };
             match event.get("type").and_then(serde_json::Value::as_str) {
-                Some("model" | "compact" | "mode" | "agent") => break event,
+                Some("model" | "compact" | "mode" | "agent" | "effort" | "fast") => break event,
                 Some("error") => {
                     let message = event
                         .get("message")
