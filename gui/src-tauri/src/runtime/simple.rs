@@ -40,6 +40,10 @@ struct RuntimeState {
     /// UI model selection, applied as `--model` when a session is spawned.
     selected_provider: Option<String>,
     selected_model: Option<String>,
+    /// Thinking controls (set via the GUI), applied on session spawn and
+    /// forwarded live to running sessions. None effort = the binary default.
+    selected_effort: Option<String>,
+    fast_enabled: bool,
     /// Cached `graff --schema` model list (populated lazily).
     model_catalog: Option<Vec<ModelOption>>,
     /// Live `ask_user` prompts awaiting a GUI answer, keyed by conversation.
@@ -75,6 +79,7 @@ struct GraffSessionIo {
 }
 
 /// Coordinates the copied desktop GUI with the Zig-native codegraff binary.
+#[derive(Clone)]
 pub struct RuntimeManager {
     emitter: Arc<dyn UiEventEmitter>,
     projects: Arc<ProjectStore>,
@@ -85,12 +90,17 @@ pub struct RuntimeManager {
 impl RuntimeManager {
     /// Creates a runtime manager backed by the copied GUI project registry.
     pub fn new(emitter: Arc<dyn UiEventEmitter>, projects: Arc<ProjectStore>) -> Self {
+        let persisted_prompt = load_persisted_prompt_settings();
         Self {
             emitter,
             projects,
             state: Arc::new(Mutex::new(RuntimeState {
                 active_agent_id: Some("forge".into()),
                 conversations: load_persisted_conversations(),
+                selected_provider: persisted_prompt.selected_provider,
+                selected_model: persisted_prompt.selected_model,
+                selected_effort: persisted_prompt.selected_effort,
+                fast_enabled: persisted_prompt.fast_enabled,
                 ..RuntimeState::default()
             })),
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -133,11 +143,34 @@ impl RuntimeManager {
     /// Returns the model picker, populated from `graff --schema`.
     pub async fn get_prompt_settings(&self, _: Option<String>) -> Result<PromptSettingsDto> {
         let catalog = self.ensure_model_catalog().await;
-        let (selected_provider, selected_model) = {
+        // Only surface models for providers the user has credentials for,
+        // ordered codex first, then codegraff, then the rest (stable within
+        // each group).
+        let catalog = {
+            let key_list = codegraff_key_list().await.unwrap_or_default();
+            let configured: std::collections::HashSet<&str> = CODEGRAFF_PROVIDERS
+                .iter()
+                .filter(|provider| provider_configured(provider, &key_list))
+                .map(|provider| provider.id)
+                .collect();
+            let mut models: Vec<ModelOption> = catalog
+                .into_iter()
+                .filter(|model| configured.contains(model.provider.as_str()))
+                .collect();
+            models.sort_by_key(|model| match model.provider.as_str() {
+                "codex" => 0u8,
+                "codegraff" => 1,
+                _ => 2,
+            });
+            models
+        };
+        let (selected_provider, selected_model, selected_effort, fast_enabled) = {
             let state = self.state.lock().await;
             (
                 state.selected_provider.clone(),
                 state.selected_model.clone(),
+                state.selected_effort.clone(),
+                state.fast_enabled,
             )
         };
 
@@ -157,19 +190,38 @@ impl RuntimeManager {
                 selected_provider_id: Some("codegraff".into()),
                 selected_model_id: Some("default".into()),
                 selected_reasoning_effort: None,
+                fast_enabled: false,
             });
         }
 
         let available_models = catalog
             .iter()
-            .map(|model| PromptModelOptionDto {
-                provider_id: model.provider.clone(),
-                provider_name: provider_display_name(&model.provider),
-                model_id: model.name.clone(),
-                model_name: Some(model.name.clone()),
-                context_length: model.context,
-                supports_reasoning: false,
-                reasoning_efforts: vec![],
+            .map(|model| {
+                // Effort-capable providers (mirrors the binary's effortApplies):
+                // codex takes reasoning.effort via the Responses API; codegraff
+                // and deepseek take a top-level reasoning_effort. But the
+                // gateway's gpt-* models go through /v1/chat/completions, which
+                // rejects reasoning_effort (they need the codex/Responses path),
+                // so don't advertise effort for them.
+                let effort_capable = match model.provider.as_str() {
+                    "codex" => true,
+                    "codegraff" | "deepseek" => !model.name.starts_with("gpt-"),
+                    _ => false,
+                };
+                let reasoning_efforts: Vec<String> = if effort_capable {
+                    vec!["low".into(), "medium".into(), "high".into()]
+                } else {
+                    vec![]
+                };
+                PromptModelOptionDto {
+                    provider_id: model.provider.clone(),
+                    provider_name: provider_display_name(&model.provider),
+                    model_id: model.name.clone(),
+                    model_name: Some(model.name.clone()),
+                    context_length: model.context,
+                    supports_reasoning: !reasoning_efforts.is_empty(),
+                    reasoning_efforts,
+                }
             })
             .collect();
 
@@ -193,8 +245,65 @@ impl RuntimeManager {
             available_models,
             selected_provider_id,
             selected_model_id,
-            selected_reasoning_effort: None,
+            selected_reasoning_effort: selected_effort,
+            fast_enabled,
         })
+    }
+
+    /// Generates a short chat title with the active model (a one-shot graff run)
+    /// and updates the conversation. Best-effort and fire-and-forget: failures
+    /// just leave the prompt-derived title in place.
+    async fn generate_and_set_title(
+        &self,
+        conversation_id: String,
+        prompt: String,
+        model: Option<String>,
+    ) {
+        let title_prompt = format!(
+            "Output a concise 2 to 4 word topic label in Title Case for the user's \
+             first chat message. Describe the topic literally — do NOT interpret, \
+             correct, rephrase, or expand the message. Examples: \"hey there\" -> \
+             Greeting; \"go through the repo\" -> Repo Walkthrough; \"fix the login \
+             bug\" -> Login Bug Fix. Reply with ONLY the label, nothing else.\n\nMessage: {prompt}"
+        );
+        let mut command = tokio::process::Command::new(codegraff_binary());
+        command.arg("-p").arg(&title_prompt).arg("--yolo");
+        if let Some(model) = &model {
+            command.arg("--model").arg(model);
+        }
+        let Ok(output) = command.output().await else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        let title = clean_title(&String::from_utf8_lossy(&output.stdout));
+        if title.is_empty() {
+            return;
+        }
+        {
+            let mut state = self.state.lock().await;
+            if let Some(conversation) = state.conversations.get_mut(&conversation_id) {
+                conversation.title = title;
+            }
+        }
+        self.persist_conversations().await;
+        let _ = self.emit().await;
+    }
+
+    /// Writes the current model/effort/fast selection to disk so it persists
+    /// across app restarts and seeds new chats.
+    async fn persist_prompt_settings(&self) {
+        let settings = {
+            let state = self.state.lock().await;
+            PersistedPromptSettings {
+                selected_provider: state.selected_provider.clone(),
+                selected_model: state.selected_model.clone(),
+                selected_effort: state.selected_effort.clone(),
+                fast_enabled: state.fast_enabled,
+            }
+        };
+        save_prompt_settings(&settings);
     }
 
     /// Persists the model selection and applies it to the live session when possible.
@@ -206,6 +315,9 @@ impl RuntimeManager {
             let mut state = self.state.lock().await;
             state.selected_provider = Some(input.provider_id.clone());
             state.selected_model = Some(input.model_id.clone());
+            if let Some(effort) = &input.reasoning_effort {
+                state.selected_effort = Some(effort.clone());
+            }
             state.active_conversation_id.clone()
         };
         if let Some(conversation_id) = live_conversation_id {
@@ -218,8 +330,16 @@ impl RuntimeManager {
                     }),
                 )
                 .await?;
+                if let Some(effort) = &input.reasoning_effort {
+                    self.send_control(
+                        &conversation_id,
+                        serde_json::json!({ "type": "set_effort", "level": effort }),
+                    )
+                    .await?;
+                }
             }
         }
+        self.persist_prompt_settings().await;
         self.get_prompt_settings(input.workspace_path).await
     }
 
@@ -347,8 +467,11 @@ impl RuntimeManager {
             .unwrap_or_else(|| format!("chat-{}", Uuid::new_v4().simple()));
         let request_id = format!("request-{}", Uuid::new_v4().simple());
         let plan_mode = input.agent_id.as_deref() == Some("muse");
+        let is_first_turn;
+        let title_model;
         {
             let mut state = self.state.lock().await;
+            title_model = state.selected_model.clone();
             set_active_workspace(&mut state, &input.workspace_path);
             state.active_conversation_id = Some(conversation_id.clone());
             state
@@ -368,6 +491,7 @@ impl RuntimeManager {
                     plan_mode,
                 });
             conversation.plan_mode = plan_mode;
+            is_first_turn = conversation.messages.is_empty();
             conversation.messages.push(SessionMessageDto::User {
                 id: format!("{request_id}-user"),
                 request_id: request_id.clone(),
@@ -394,6 +518,17 @@ impl RuntimeManager {
         }
 
         self.emit().await?;
+
+        if is_first_turn {
+            let manager = self.clone();
+            let conversation_id = conversation_id.clone();
+            let prompt = input.prompt.clone();
+            tokio::spawn(async move {
+                manager
+                    .generate_and_set_title(conversation_id, prompt, title_model)
+                    .await;
+            });
+        }
 
         if self.session_exists(&conversation_id).await {
             self.send_control(
@@ -735,7 +870,7 @@ impl RuntimeManager {
                 continue;
             };
             match event.get("type").and_then(serde_json::Value::as_str) {
-                Some("model" | "compact" | "mode" | "agent") => break event,
+                Some("model" | "compact" | "mode" | "agent" | "effort" | "fast") => break event,
                 Some("error") => {
                     let message = event
                         .get("message")
@@ -810,7 +945,7 @@ impl RuntimeManager {
     ) -> Result<GraffSessionIo> {
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(conversation_id) {
-            let (model, active_agent_id, plan_mode) = {
+            let (model, active_agent_id, plan_mode, effort, fast) = {
                 let state = self.state.lock().await;
                 let conversation = state.conversations.get(conversation_id);
                 (
@@ -821,6 +956,8 @@ impl RuntimeManager {
                     conversation
                         .map(|conversation| conversation.plan_mode)
                         .unwrap_or(false),
+                    state.selected_effort.clone(),
+                    state.fast_enabled,
                 )
             };
             let session = spawn_graff_session(workspace_path, model.as_deref())?;
@@ -837,6 +974,20 @@ impl RuntimeManager {
                 self.send_control(
                     conversation_id,
                     serde_json::json!({ "type": "set_mode", "mode": "plan" }),
+                )
+                .await?;
+            }
+            if let Some(level) = effort {
+                self.send_control(
+                    conversation_id,
+                    serde_json::json!({ "type": "set_effort", "level": level }),
+                )
+                .await?;
+            }
+            if fast {
+                self.send_control(
+                    conversation_id,
+                    serde_json::json!({ "type": "set_fast", "on": true }),
                 )
                 .await?;
             }
@@ -1001,6 +1152,47 @@ impl RuntimeManager {
     }
 
     /// Sets the active agent and applies it to the live conversation when present.
+    /// Sets the reasoning-effort level (low|medium|high). Stored for future
+    /// sessions and forwarded to the active session if one is live.
+    pub async fn set_effort(&self, level: String, _: Option<String>) -> Result<()> {
+        let conversation_id = {
+            let mut state = self.state.lock().await;
+            state.selected_effort = Some(level.clone());
+            state.active_conversation_id.clone()
+        };
+        if let Some(conversation_id) = conversation_id {
+            if self.session_exists(&conversation_id).await {
+                self.send_control(
+                    &conversation_id,
+                    serde_json::json!({ "type": "set_effort", "level": level }),
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Toggles Codex "fast" mode (priority service tier). Stored for future
+    /// sessions and forwarded to the active session if one is live.
+    pub async fn set_fast(&self, on: bool, _: Option<String>) -> Result<()> {
+        let conversation_id = {
+            let mut state = self.state.lock().await;
+            state.fast_enabled = on;
+            state.active_conversation_id.clone()
+        };
+        if let Some(conversation_id) = conversation_id {
+            if self.session_exists(&conversation_id).await {
+                self.send_control(
+                    &conversation_id,
+                    serde_json::json!({ "type": "set_fast", "on": on }),
+                )
+                .await?;
+            }
+        }
+        self.persist_prompt_settings().await;
+        Ok(())
+    }
+
     pub async fn set_active_agent(
         &self,
         agent_id: String,
@@ -1748,6 +1940,47 @@ struct PersistedConversation {
 }
 
 /// Path to the transcript store (`~/.codegraff-gui/conversations.json`).
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct PersistedPromptSettings {
+    #[serde(default)]
+    selected_provider: Option<String>,
+    #[serde(default)]
+    selected_model: Option<String>,
+    #[serde(default)]
+    selected_effort: Option<String>,
+    #[serde(default)]
+    fast_enabled: bool,
+}
+
+/// Path to the persisted prompt selection (`~/.codegraff-gui/prompt-settings.json`).
+fn prompt_settings_store_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".codegraff-gui").join("prompt-settings.json"))
+}
+
+/// Loads the last model/effort/fast selection so it survives app restarts.
+fn load_persisted_prompt_settings() -> PersistedPromptSettings {
+    let Some(path) = prompt_settings_store_path() else {
+        return PersistedPromptSettings::default();
+    };
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        return PersistedPromptSettings::default();
+    };
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+fn save_prompt_settings(settings: &PersistedPromptSettings) {
+    let Some(path) = prompt_settings_store_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(data) = serde_json::to_string_pretty(settings) {
+        let _ = std::fs::write(&path, data);
+    }
+}
+
 fn conversations_store_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| {
         PathBuf::from(home)
@@ -2333,9 +2566,15 @@ fn provider_configured(provider: &CodegraffProvider, key_list: &str) -> bool {
 }
 
 fn key_list_mentions_provider(key_list: &str, provider_id: &str) -> bool {
-    key_list
-        .lines()
-        .any(|line| line.split_whitespace().any(|part| part == provider_id))
+    // `graff key list` lists every provider; a provider only counts as keyed
+    // when its row's trailing "stored" column isn't the "—" placeholder.
+    key_list.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        parts.next() == Some(provider_id)
+            && parts
+                .last()
+                .map_or(false, |stored| stored != "—" && stored != "-")
+    })
 }
 
 fn home_file_exists(relative_path: &str) -> bool {
@@ -2505,6 +2744,23 @@ async fn launch_codegraff_login(login_target: Option<&str>) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Normalizes a model-generated title: first line, stripped of quotes/punctuation,
+/// capped to a handful of words.
+fn clean_title(raw: &str) -> String {
+    let first = raw.trim().lines().next().unwrap_or("").trim();
+    let trimmed = first.trim_matches(|c: char| {
+        c == '"' || c == '\'' || c == '.' || c == ':' || c.is_whitespace()
+    });
+    trimmed
+        .split_whitespace()
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(60)
+        .collect()
 }
 
 fn title_from_prompt(prompt: &str) -> String {

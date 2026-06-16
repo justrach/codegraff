@@ -121,6 +121,7 @@ const promptSettingsFixture: PromptSettings = {
   selectedModelId: "gpt-5.4",
   selectedProviderId: "openai",
   selectedReasoningEffort: "medium",
+  fastEnabled: false,
 };
 
 mock.module("../hooks/useSessionBootstrap", () => ({
@@ -128,6 +129,7 @@ mock.module("../hooks/useSessionBootstrap", () => ({
 }));
 
 mock.module("../services/desktop/client", () => ({
+  setFast: async () => {},
   openExternalUrl: async () => {},
   openPathInTarget: async () => {},
   ensureConversationView: async () => {

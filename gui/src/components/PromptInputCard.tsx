@@ -1,9 +1,10 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowUpIcon,
   ChevronDownIcon,
   MapIcon,
   SquareIcon,
+  ZapIcon,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/Button";
@@ -36,6 +37,7 @@ import { useAttachments } from "@/hooks/useSession";
 import { useCommandAutocomplete } from "@/hooks/useCommandAutocomplete";
 import { useDropZone } from "@/hooks/useFileDrop";
 import { usePromptModelPicker } from "@/hooks/usePromptModelPicker";
+import { setFast } from "@/services/desktop/client";
 import { cn } from "@/utils/cn";
 import {
   formatPlanningThinkingLabel,
@@ -96,6 +98,20 @@ export function PromptInputCard({
     promptSettings,
     updatePromptSettings,
   });
+
+  const [fastEnabled, setFastEnabled] = useState(
+    promptSettings?.fastEnabled ?? false,
+  );
+  useEffect(() => {
+    setFastEnabled(promptSettings?.fastEnabled ?? false);
+  }, [promptSettings?.fastEnabled]);
+  const isCodexModel = selectedModel?.providerId === "codex";
+
+  function handleFastToggle() {
+    const next = !fastEnabled;
+    setFastEnabled(next);
+    void setFast(next);
+  }
 
   function handleAutocompleteSelect(command: Parameters<typeof onCommandSelect>[0]) {
     // The model picker lives in this component, so handle `/model` here rather
@@ -349,6 +365,26 @@ export function PromptInputCard({
               <MapIcon data-icon="inline-start" />
               <span className="text-xs">Plan</span>
             </Button>
+            {isCodexModel ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label="Toggle fast mode"
+                aria-pressed={fastEnabled}
+                className={cn(
+                  "text-muted-foreground hover:bg-transparent hover:text-foreground",
+                  fastEnabled &&
+                    "border-[color:var(--accent)] bg-[color:color-mix(in_oklab,var(--accent)_10%,transparent)] text-foreground hover:bg-[color:color-mix(in_oklab,var(--accent)_14%,transparent)]",
+                )}
+                disabled={isControlDisabled}
+                onClick={handleFastToggle}
+                title="Codex priority service tier — lower latency"
+              >
+                <ZapIcon data-icon="inline-start" />
+                <span className="text-xs">Fast</span>
+              </Button>
+            ) : null}
             {isPlanningMode ? (
               <span
                 className="inline-flex h-8 items-center gap-2 px-1.5 text-xs font-medium text-muted-foreground"

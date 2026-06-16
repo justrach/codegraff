@@ -185,6 +185,7 @@ function qaPromptSettings(): PromptSettings {
     selectedModelId: "claude-sonnet-4",
     selectedProviderId: "anthropic",
     selectedReasoningEffort: qaReasoningEffort,
+    fastEnabled: false,
   };
 }
 
@@ -458,6 +459,26 @@ export function setActiveAgent(
 ): Promise<AgentsPayload> {
   return invokeCommand("set_active_agent", {
     agentId,
+    workspacePath: workspacePath ?? null,
+  });
+}
+
+export function setEffort(
+  level: "low" | "medium" | "high",
+  workspacePath?: string | null,
+): Promise<void> {
+  return invokeCommand("set_effort", {
+    level,
+    workspacePath: workspacePath ?? null,
+  });
+}
+
+export function setFast(
+  on: boolean,
+  workspacePath?: string | null,
+): Promise<void> {
+  return invokeCommand("set_fast", {
+    on,
     workspacePath: workspacePath ?? null,
   });
 }

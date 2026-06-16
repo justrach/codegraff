@@ -43,7 +43,7 @@ export type SessionSnapshot = { activeWorkspacePath: string | null, activeConver
 
 export type PromptModelOption = { providerId: string, providerName: string, modelId: string, modelName: string | null, contextLength: bigint | null, supportsReasoning: boolean, reasoningEfforts: Array<string>, };
 
-export type PromptSettings = { availableModels: Array<PromptModelOption>, selectedProviderId: string | null, selectedModelId: string | null, selectedReasoningEffort: string | null, };
+export type PromptSettings = { availableModels: Array<PromptModelOption>, selectedProviderId: string | null, selectedModelId: string | null, selectedReasoningEffort: string | null, fastEnabled: boolean, };
 
 export type UpdatePromptSettingsInput = { workspacePath: string | null, providerId: string, modelId: string, reasoningEffort: string | null, };
 

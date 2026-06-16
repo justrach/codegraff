@@ -46,6 +46,7 @@ const promptSettingsFixture: PromptSettings = {
   selectedModelId: "gpt-5.4",
   selectedProviderId: "openai",
   selectedReasoningEffort: "medium",
+  fastEnabled: false,
 };
 
 function createSnapshot(
@@ -97,6 +98,7 @@ function createSnapshot(
 }
 
 mock.module("../services/desktop/client", () => ({
+  setFast: async () => {},
   openExternalUrl: async () => {},
   openPathInTarget: async () => {},
   ensureConversationView: async (workspacePath: string, conversationId: string) => {

@@ -35,7 +35,7 @@ use commands::{
     pick_directory, pick_workspace, push_git_branch, quick_start_project, reload_mcp_servers,
     remove_mcp_server, remove_provider, rename_saved_workspace, rename_workspace, respond_followup,
     run_slash_command, save_conversation_layout, select_conversation, send_prompt,
-    set_active_agent, start_new_chat, start_provider_auth, stop_prompt, terminal_close,
+    set_active_agent, set_effort, set_fast, start_new_chat, start_provider_auth, stop_prompt, terminal_close,
     terminal_open, terminal_resize, terminal_write, update_prompt_settings,
     update_saved_workspace_layout, workspace_query, workspace_sync,
 };
@@ -101,6 +101,8 @@ pub fn run() {
             build_workflow_draft,
             export_workflow_draft,
             set_active_agent,
+            set_effort,
+            set_fast,
             list_mcp_servers,
             import_mcp_config,
             remove_mcp_server,

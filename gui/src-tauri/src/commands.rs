@@ -224,6 +224,32 @@ pub(crate) fn export_workflow_draft(
 }
 
 #[tauri::command]
+pub(crate) async fn set_effort(
+    level: String,
+    workspace_path: Option<String>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    state
+        .manager
+        .set_effort(level, workspace_path)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn set_fast(
+    on: bool,
+    workspace_path: Option<String>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    state
+        .manager
+        .set_fast(on, workspace_path)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
 pub(crate) async fn set_active_agent(
     agent_id: String,
     workspace_path: Option<String>,
