@@ -1,0 +1,64 @@
+import type { ActivityOperation } from "../types/chatThread";
+
+function formatPath(path: string, workspacePath: string | null): string {
+  if (workspacePath == null || path.startsWith(workspacePath) === false) {
+    return path;
+  }
+
+  const trimmed = path.slice(workspacePath.length).replace(/^\/+/, "");
+  return trimmed.length === 0 ? "." : trimmed;
+}
+
+export function formatOperationLabel(
+  operation: ActivityOperation,
+  workspacePath: string | null,
+): string {
+  switch (operation.detail.kind) {
+    case "file_read":
+      return `Read ${formatPath(operation.detail.path, workspacePath)}`;
+    case "file_update": {
+      const verb = (() => {
+        switch (operation.detail.operation) {
+          case "create":
+            return "Created";
+          case "overwrite":
+            return "Overwrote";
+          case "replace":
+            return "Updated";
+          case "remove":
+            return "Removed";
+          case "undo":
+            return "Undid";
+          default:
+            return "Updated";
+        }
+      })();
+
+      return `${verb} ${formatPath(operation.detail.path, workspacePath)}`;
+    }
+    case "shell":
+      return operation.detail.command;
+    case "search":
+      return `Searched ${operation.detail.path ? formatPath(operation.detail.path, workspacePath) : "."} for ${operation.detail.pattern}`;
+    case "codebase_search":
+      return `Codebase search: ${operation.detail.queries.join(" · ")}`;
+    case "fetch":
+      return `Fetched ${operation.detail.url}`;
+    case "followup":
+      return `Asked follow-up: ${operation.detail.question}`;
+    case "plan":
+      return `Updated plan ${operation.detail.planName}`;
+    case "skill":
+      return `Loaded skill ${operation.detail.name}`;
+    case "task":
+      return `Delegated to ${operation.detail.agentId}`;
+    case "todo_read":
+      return "Read todos";
+    case "todo_write":
+      return `Updated ${operation.detail.count} todo item${operation.detail.count === 1 ? "" : "s"}`;
+    case "unknown":
+      return `Ran ${operation.detail.name}`;
+    default:
+      return operation.name;
+  }
+}

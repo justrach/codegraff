@@ -1,0 +1,58 @@
+import { describe, expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import type {
+  CommandDescriptor,
+  PromptSettings,
+} from "@/services/desktop/types/contracts";
+import { PromptInputCard } from "./PromptInputCard";
+
+const longModelName =
+  "claude-4.7-sonnet-super-long-context-reasoning-preview-20260615";
+
+const promptSettings: PromptSettings = {
+  availableModels: [
+    {
+      contextLength: 200000n,
+      modelId: "claude-sonnet-long",
+      modelName: longModelName,
+      providerId: "anthropic",
+      providerName: "Anthropic",
+      reasoningEfforts: ["low", "medium", "high"],
+      supportsReasoning: true,
+    },
+  ],
+  selectedModelId: "claude-sonnet-long",
+  selectedProviderId: "anthropic",
+  selectedReasoningEffort: "medium",
+};
+
+function renderPromptInputCard() {
+  return renderToStaticMarkup(
+    <PromptInputCard
+      canCompose
+      isPlanningMode={false}
+      isRequestActive={false}
+      isSendingPrompt={false}
+      onCommandSelect={(_: CommandDescriptor) => {}}
+      promptDraft="Describe this repo"
+      promptSettings={promptSettings}
+      setPlanningMode={() => {}}
+      setPromptDraft={() => {}}
+      stopPrompt={async () => {}}
+      submitPrompt={async () => {}}
+      updatePromptSettings={async () => {}}
+      workspacePath="/workspace/codegraff"
+    />,
+  );
+}
+
+describe("PromptInputCard", () => {
+  test("constrains long selected model names in the footer", () => {
+    const html = renderPromptInputCard();
+
+    expect(html).toContain("max-w-44");
+    expect(html).toContain("truncate");
+    expect(html).toContain(`title="${longModelName}"`);
+  });
+});
