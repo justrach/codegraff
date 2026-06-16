@@ -79,6 +79,7 @@ struct GraffSessionIo {
 }
 
 /// Coordinates the copied desktop GUI with the Zig-native codegraff binary.
+#[derive(Clone)]
 pub struct RuntimeManager {
     emitter: Arc<dyn UiEventEmitter>,
     projects: Arc<ProjectStore>,
@@ -247,6 +248,45 @@ impl RuntimeManager {
             selected_reasoning_effort: selected_effort,
             fast_enabled,
         })
+    }
+
+    /// Generates a short chat title with the active model (a one-shot graff run)
+    /// and updates the conversation. Best-effort and fire-and-forget: failures
+    /// just leave the prompt-derived title in place.
+    async fn generate_and_set_title(
+        &self,
+        conversation_id: String,
+        prompt: String,
+        model: Option<String>,
+    ) {
+        let title_prompt = format!(
+            "Write a 3 to 5 word title in Title Case for a chat that opens with the \
+             message below. Reply with ONLY the title — no quotes, no punctuation, \
+             no preamble.\n\nMessage: {prompt}"
+        );
+        let mut command = tokio::process::Command::new(codegraff_binary());
+        command.arg("-p").arg(&title_prompt).arg("--yolo");
+        if let Some(model) = &model {
+            command.arg("--model").arg(model);
+        }
+        let Ok(output) = command.output().await else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        let title = clean_title(&String::from_utf8_lossy(&output.stdout));
+        if title.is_empty() {
+            return;
+        }
+        {
+            let mut state = self.state.lock().await;
+            if let Some(conversation) = state.conversations.get_mut(&conversation_id) {
+                conversation.title = title;
+            }
+        }
+        self.persist_conversations().await;
+        let _ = self.emit().await;
     }
 
     /// Writes the current model/effort/fast selection to disk so it persists
@@ -425,8 +465,11 @@ impl RuntimeManager {
             .unwrap_or_else(|| format!("chat-{}", Uuid::new_v4().simple()));
         let request_id = format!("request-{}", Uuid::new_v4().simple());
         let plan_mode = input.agent_id.as_deref() == Some("muse");
+        let is_first_turn;
+        let title_model;
         {
             let mut state = self.state.lock().await;
+            title_model = state.selected_model.clone();
             set_active_workspace(&mut state, &input.workspace_path);
             state.active_conversation_id = Some(conversation_id.clone());
             state
@@ -446,6 +489,7 @@ impl RuntimeManager {
                     plan_mode,
                 });
             conversation.plan_mode = plan_mode;
+            is_first_turn = conversation.messages.is_empty();
             conversation.messages.push(SessionMessageDto::User {
                 id: format!("{request_id}-user"),
                 request_id: request_id.clone(),
@@ -472,6 +516,17 @@ impl RuntimeManager {
         }
 
         self.emit().await?;
+
+        if is_first_turn {
+            let manager = self.clone();
+            let conversation_id = conversation_id.clone();
+            let prompt = input.prompt.clone();
+            tokio::spawn(async move {
+                manager
+                    .generate_and_set_title(conversation_id, prompt, title_model)
+                    .await;
+            });
+        }
 
         if self.session_exists(&conversation_id).await {
             self.send_control(
@@ -2687,6 +2742,23 @@ async fn launch_codegraff_login(login_target: Option<&str>) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Normalizes a model-generated title: first line, stripped of quotes/punctuation,
+/// capped to a handful of words.
+fn clean_title(raw: &str) -> String {
+    let first = raw.trim().lines().next().unwrap_or("").trim();
+    let trimmed = first.trim_matches(|c: char| {
+        c == '"' || c == '\'' || c == '.' || c == ':' || c.is_whitespace()
+    });
+    trimmed
+        .split_whitespace()
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(60)
+        .collect()
 }
 
 fn title_from_prompt(prompt: &str) -> String {
