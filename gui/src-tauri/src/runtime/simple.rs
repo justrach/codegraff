@@ -137,6 +137,27 @@ impl RuntimeManager {
     /// Returns the model picker, populated from `graff --schema`.
     pub async fn get_prompt_settings(&self, _: Option<String>) -> Result<PromptSettingsDto> {
         let catalog = self.ensure_model_catalog().await;
+        // Only surface models for providers the user has credentials for,
+        // ordered codex first, then codegraff, then the rest (stable within
+        // each group).
+        let catalog = {
+            let key_list = codegraff_key_list().await.unwrap_or_default();
+            let configured: std::collections::HashSet<&str> = CODEGRAFF_PROVIDERS
+                .iter()
+                .filter(|provider| provider_configured(provider, &key_list))
+                .map(|provider| provider.id)
+                .collect();
+            let mut models: Vec<ModelOption> = catalog
+                .into_iter()
+                .filter(|model| configured.contains(model.provider.as_str()))
+                .collect();
+            models.sort_by_key(|model| match model.provider.as_str() {
+                "codex" => 0u8,
+                "codegraff" => 1,
+                _ => 2,
+            });
+            models
+        };
         let (selected_provider, selected_model, selected_effort) = {
             let state = self.state.lock().await;
             (
@@ -2422,9 +2443,15 @@ fn provider_configured(provider: &CodegraffProvider, key_list: &str) -> bool {
 }
 
 fn key_list_mentions_provider(key_list: &str, provider_id: &str) -> bool {
-    key_list
-        .lines()
-        .any(|line| line.split_whitespace().any(|part| part == provider_id))
+    // `graff key list` lists every provider; a provider only counts as keyed
+    // when its row's trailing "stored" column isn't the "—" placeholder.
+    key_list.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        parts.next() == Some(provider_id)
+            && parts
+                .last()
+                .map_or(false, |stored| stored != "—" && stored != "-")
+    })
 }
 
 fn home_file_exists(relative_path: &str) -> bool {
