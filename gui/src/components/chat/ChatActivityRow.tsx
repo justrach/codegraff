@@ -206,7 +206,7 @@ export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
       <article className="grid min-w-0 max-w-3xl gap-1">
         <CollapsibleTrigger className={activityTriggerClassName}>
           {item.isRunning ? (
-            <Throbber variant="tool" className="text-muted-foreground" />
+            <Throbber variant="spinner" className="text-muted-foreground" />
           ) : null}
           <ChatStatusLabel text={item.summary} />
           <ActivityChevron
