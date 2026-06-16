@@ -46,8 +46,23 @@ CASES = [
     ({"type": "compact"},
      lambda e: e.get("type") == "compact" and e.get("ok") and e.get("chars") == 0,
      "compact (empty history) -> compact ack"),
+    ({"type": "set_effort", "level": "high"},
+     lambda e: e.get("type") == "effort" and e.get("ok") and e.get("level") == "high",
+     "set_effort high -> effort ack"),
+    ({"type": "set_effort", "level": "medium"},
+     lambda e: e.get("type") == "effort" and e.get("level") == "medium",
+     "set_effort medium -> effort ack"),
+    ({"type": "set_effort", "level": "sideways"},
+     lambda e: e.get("type") == "error" and "low" in e.get("message", ""),
+     "set_effort invalid -> error"),
+    ({"type": "set_fast", "on": True},
+     lambda e: e.get("type") == "fast" and e.get("ok") and e.get("on") is True,
+     "set_fast on -> fast ack"),
+    ({"type": "set_fast", "on": False},
+     lambda e: e.get("type") == "fast" and e.get("on") is False,
+     "set_fast off -> fast ack"),
 ]
-CONTROL_TYPES = {"model", "compact", "mode", "agent", "error"}
+CONTROL_TYPES = {"model", "compact", "mode", "agent", "effort", "fast", "error"}
 
 def run():
     env = dict(os.environ)

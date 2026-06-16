@@ -79,7 +79,7 @@ var unattended = false; // -p one-shot: no human to prompt; unapproved tool call
 const schema_protocol_json =
     \\{
     \\  "transport": "newline-delimited JSON over stdin/stdout (--json)",
-    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"name\":\"provider|provider/model|model\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"} are live control requests acked by model/compact/mode/agent events. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
+    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"name\":\"provider|provider/model|model\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"}, {\"type\":\"set_effort\",\"level\":\"low|medium|high\"}, and {\"type\":\"set_fast\",\"on\":true} are live control requests acked by model/compact/mode/agent/effort/fast events. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
     \\  "score_request": "{\"type\":\"score\",\"prompt_sha\":\"<16 hex>\",\"score\":0.7,\"notes\":\"...\",\"parent_sha\":\"<16 hex, optional>\"} appends an evaluation record for an agent/prompt variant to harness.trajectory.jsonl (the append-only DGM-style archive; prompt_sha = first 8 bytes of SHA-256 of the system prompt, hex; parent_sha records which prompt this variant was mutated from — the lineage edge DGM parent selection counts children with) and acks with a score event",
     \\  "events": [
     \\    {"type": "text", "text": "assistant text delta"},
@@ -92,6 +92,8 @@ const schema_protocol_json =
     \\    {"type": "compact", "ok": true, "chars": 0},
     \\    {"type": "mode", "ok": true, "mode": "plan"},
     \\    {"type": "agent", "ok": true, "id": "reviewer", "chars": 0},
+    \\    {"type": "effort", "ok": true, "level": "medium", "applies": true},
+    \\    {"type": "fast", "ok": true, "on": true, "applies": true},
     \\    {"type": "score", "ok": true, "prompt_sha": "..."},
     \\    {"type": "error", "message": "..."}
     \\  ]
@@ -4048,6 +4050,29 @@ pub fn main(init: std.process.Init) !void {
                 root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = root.sys_normal.len });
                 continue;
             }
+            if (std.mem.eql(u8, rtype, "set_effort")) {
+                const level = if (parsed.object.get("level")) |v| (if (v == .string) v.string else "") else "";
+                if (std.mem.eql(u8, level, "low")) {
+                    root.reasoning = .low;
+                } else if (std.mem.eql(u8, level, "medium")) {
+                    root.reasoning = .medium;
+                } else if (std.mem.eql(u8, level, "high")) {
+                    root.reasoning = .high;
+                } else {
+                    root.emit(.{ .type = "error", .message = "set_effort needs level 'low', 'medium', or 'high'" });
+                    continue;
+                }
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
+                root.emit(.{ .type = "effort", .ok = true, .level = level, .applies = root.effortApplies() });
+                continue;
+            }
+            if (std.mem.eql(u8, rtype, "set_fast")) {
+                const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
+                root.fast = on;
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
+                root.emit(.{ .type = "fast", .ok = true, .on = on, .applies = root.provider.kind == .responses });
+                continue;
+            }
             if (std.mem.eql(u8, rtype, "score")) {
                 const sha = if (parsed.object.get("prompt_sha")) |v| (if (v == .string) v.string else "") else "";
                 const sc: f64 = if (parsed.object.get("score")) |v| switch (v) {
@@ -6198,7 +6223,8 @@ fn serveTerminalEvent(line: []const u8) bool {
     return std.mem.eql(u8, t, "turn") or std.mem.eql(u8, t, "error") or
         std.mem.eql(u8, t, "system_prompt") or std.mem.eql(u8, t, "score") or
         std.mem.eql(u8, t, "model") or std.mem.eql(u8, t, "compact") or
-        std.mem.eql(u8, t, "mode") or std.mem.eql(u8, t, "agent");
+        std.mem.eql(u8, t, "mode") or std.mem.eql(u8, t, "agent") or
+        std.mem.eql(u8, t, "effort") or std.mem.eql(u8, t, "fast");
 }
 
 /// Remove a dead session and free it (child already gone or being killed).
