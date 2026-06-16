@@ -4308,6 +4308,7 @@ fn switchProvider(root: *Agent, arena: Allocator, p: Provider, out: *Io.Writer) 
         }
     }
     root.cap_new = false; // per-provider token-cap quirk; relearn on rejection
+    root.effort_rejected = false; // new model may accept reasoning_effort; relearn
     root.provider = p;
     saveModel(root.io, root.home, p.id, p.model); // remember for next launch
     try out.print("switched to {s} via {s} ({t} format, {d}k ctx) — {s}\n", .{
@@ -6362,6 +6363,7 @@ fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !vo
     root.strict = strict;
     root.last_context_tokens = 0;
     root.cap_new = false; // per-provider; relearn on rejection
+    root.effort_rejected = false;
 }
 
 /// A normalized tool invocation — same shape for both providers.
@@ -6440,6 +6442,7 @@ const Agent = struct {
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
     streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
     cap_new: bool = false, // provider rejected max_tokens → use max_completion_tokens
+    effort_rejected: bool = false, // model rejected reasoning_effort → drop it (e.g. gpt-5.5 on chat/completions wants /v1/responses)
 
     fn prompt(self: *Agent) !void {
         if (json_mode) return; // SDK drives turns; no human prompt
@@ -6681,6 +6684,10 @@ const Agent = struct {
                 }
                 if (!self.cap_new and std.mem.indexOf(u8, msg, "max_completion_tokens") != null) {
                     self.cap_new = true; // provider wants the post-deprecation name
+                    continue;
+                }
+                if (!self.effort_rejected and std.mem.indexOf(u8, msg, "reasoning_effort") != null) {
+                    self.effort_rejected = true; // model rejects reasoning_effort here (wants /v1/responses); drop + retry
                     continue;
                 }
                 if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
@@ -7462,7 +7469,7 @@ const Agent = struct {
                 // Reasoning-effort hint for OpenAI-compatible providers that
                 // honor it (codegraff gateway, deepseek). Mirrors the
                 // Responses `reasoning.effort` set in the branch below.
-                if (self.effortApplies()) {
+                if (self.effortApplies() and !self.effort_rejected) {
                     try s.objectField("reasoning_effort");
                     try s.write(@tagName(self.reasoning));
                 }
