@@ -1,0 +1,7 @@
+export const DEFAULT_TERMINAL_COLS = 80;
+export const DEFAULT_TERMINAL_ROWS = 24;
+export const INITIAL_RESIZE_OBSERVER_DELAY_MS = 300;
+export const TERMINAL_STABLE_FRAME_COUNT = 6;
+export const TERMINAL_STABLE_FRAME_ATTEMPTS = 30;
+export const FONT_READY_TIMEOUT_MS = 500;
+export const TERMINAL_CONNECTING_MESSAGE = "Starting shell...";

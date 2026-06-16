@@ -79,14 +79,19 @@ var unattended = false; // -p one-shot: no human to prompt; unapproved tool call
 const schema_protocol_json =
     \\{
     \\  "transport": "newline-delimited JSON over stdin/stdout (--json)",
-    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
+    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"name\":\"provider|provider/model|model\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"} are live control requests acked by model/compact/mode/agent events. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
     \\  "score_request": "{\"type\":\"score\",\"prompt_sha\":\"<16 hex>\",\"score\":0.7,\"notes\":\"...\",\"parent_sha\":\"<16 hex, optional>\"} appends an evaluation record for an agent/prompt variant to harness.trajectory.jsonl (the append-only DGM-style archive; prompt_sha = first 8 bytes of SHA-256 of the system prompt, hex; parent_sha records which prompt this variant was mutated from — the lineage edge DGM parent selection counts children with) and acks with a score event",
     \\  "events": [
     \\    {"type": "text", "text": "assistant text delta"},
     \\    {"type": "tool_call", "name": "tool", "input": {}},
+    \\    {"type": "ask_user", "call_id": "...", "question": "...", "input": {"question": "...", "options": ["..."]}},
     \\    {"type": "tool_result", "name": "tool", "is_error": false, "text": "..."},
     \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0},
     \\    {"type": "system_prompt", "ok": true, "append": false, "chars": 0},
+    \\    {"type": "model", "ok": true, "id": "provider", "name": "model", "context": 0, "note": "context kept"},
+    \\    {"type": "compact", "ok": true, "chars": 0},
+    \\    {"type": "mode", "ok": true, "mode": "plan"},
+    \\    {"type": "agent", "ok": true, "id": "reviewer", "chars": 0},
     \\    {"type": "score", "ok": true, "prompt_sha": "..."},
     \\    {"type": "error", "message": "..."}
     \\  ]
@@ -104,7 +109,7 @@ const schema_serve_json =
     \\    {"method": "GET", "path": "/healthz", "description": "liveness + version, no auth"},
     \\    {"method": "GET", "path": "/v1/schema", "description": "this schema document"},
     \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
-    \\    {"method": "POST", "path": "/v1/sessions/{id}", "description": "body is ONE stdio-protocol request object (user / set_system_prompt / score); response streams application/x-ndjson events until the request's terminal event (turn/error, or the system_prompt/score ack); one request in flight per session at a time"},
+    \\    {"method": "POST", "path": "/v1/sessions/{id}", "description": "body is ONE stdio-protocol request object (user / set_system_prompt / set_model / compact / set_mode / set_agent / score / answer); non-answer requests stream application/x-ndjson events until the request's terminal event (turn/error, or the request-specific ack); answer requests return JSON ack while the original user stream continues; one non-answer request in flight per session at a time"},
     \\    {"method": "DELETE", "path": "/v1/sessions/{id}", "description": "graceful close: waits for any in-flight request, then EOFs the child's stdin"}
     \\  ]
     \\}
@@ -3981,6 +3986,68 @@ pub fn main(init: std.process.Init) !void {
                 (if (parsed.object.get("type")) |v| (if (v == .string) v.string else "") else "")
             else
                 "";
+            if (std.mem.eql(u8, rtype, "set_model")) {
+                const name = if (parsed.object.get("name")) |v| (if (v == .string) v.string else "") else "";
+                if (name.len == 0) {
+                    root.emit(.{ .type = "error", .message = "set_model needs a non-empty name" });
+                    continue;
+                }
+                const provider = resolveProviderRequest(&keys, arena, name) catch |err| {
+                    const message = switch (err) {
+                        error.MissingKey => try std.fmt.allocPrint(arena, "no key/login for requested model '{s}'", .{name}),
+                        error.InvalidModelRequest => "set_model needs a non-empty name",
+                        else => try std.fmt.allocPrint(arena, "failed to switch model '{s}': {s}", .{ name, @errorName(err) }),
+                    };
+                    root.emit(.{ .type = "error", .message = message });
+                    continue;
+                };
+                const note = applyProvider(&root, arena, provider);
+                root.emit(.{ .type = "model", .ok = true, .id = provider.id, .name = provider.model, .context = provider.context, .note = note });
+                continue;
+            }
+            if (std.mem.eql(u8, rtype, "compact")) {
+                const chars = root.compact() catch |err| {
+                    const message = switch (err) {
+                        error.EmptySummary => "compaction failed: empty summary, history unchanged",
+                        else => try std.fmt.allocPrint(arena, "compaction failed: {s}", .{@errorName(err)}),
+                    };
+                    root.emit(.{ .type = "error", .message = message });
+                    continue;
+                };
+                root.emit(.{ .type = "compact", .ok = true, .chars = chars });
+                continue;
+            }
+            if (std.mem.eql(u8, rtype, "set_mode")) {
+                const mode = if (parsed.object.get("mode")) |v| (if (v == .string) v.string else "") else "";
+                if (std.mem.eql(u8, mode, "plan")) {
+                    plan_mode = true;
+                } else if (std.mem.eql(u8, mode, "normal")) {
+                    plan_mode = false;
+                } else {
+                    root.emit(.{ .type = "error", .message = "set_mode needs mode 'plan' or 'normal'" });
+                    continue;
+                }
+                root.emit(.{ .type = "mode", .ok = true, .mode = mode });
+                continue;
+            }
+            if (std.mem.eql(u8, rtype, "set_agent")) {
+                const id = if (parsed.object.get("id")) |v| (if (v == .string) v.string else "") else "";
+                if (id.len == 0) {
+                    root.sys_normal = sys_normal;
+                    root.sys_strict = sys_strict;
+                    root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = root.sys_normal.len });
+                    continue;
+                }
+                const prompt = agentTypePrompt(id) orelse {
+                    const message = try std.fmt.allocPrint(arena, "unknown agent '{s}' (see /agents)", .{id});
+                    root.emit(.{ .type = "error", .message = message });
+                    continue;
+                };
+                root.sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, prompt });
+                root.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ root.sys_normal, strict_note });
+                root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = root.sys_normal.len });
+                continue;
+            }
             if (std.mem.eql(u8, rtype, "score")) {
                 const sha = if (parsed.object.get("prompt_sha")) |v| (if (v == .string) v.string else "") else "";
                 const sc: f64 = if (parsed.object.get("score")) |v| switch (v) {
@@ -4030,6 +4097,10 @@ pub fn main(init: std.process.Init) !void {
                 const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}", .{ judge_id, artifact_sha, eval_set_hash }) catch "";
                 if (g_telem) |t| t.scoreEvent(sha, parent, sc, run_id, if (signed) @as([]const u8, &sig) else "", prov);
                 root.emit(.{ .type = "score", .ok = true, .prompt_sha = sha, .signed = signed });
+                continue;
+            }
+            if (std.mem.eql(u8, rtype, "answer")) {
+                root.emit(.{ .type = "error", .message = "answer received with no active ask_user prompt" });
                 continue;
             }
             const t = if (parsed == .object) parsed.object.get("text") else null;
@@ -4175,7 +4246,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (root.last_context_tokens >= root.provider.compactAt()) {
-            root.compact() catch |err| switch (err) {
+            _ = root.compact() catch |err| switch (err) {
                 error.ApiError => {},
                 else => |e| root.say("[compaction skipped: {t}]\n", .{e}) catch {},
             };
@@ -4289,12 +4360,7 @@ fn translateHistory(arena: Allocator, msgs: *std.json.Array, to_kind: Provider.K
     msgs.* = out;
 }
 
-/// Switch the active provider/model. Within the same wire format
-/// (provider.kind) the conversation is kept verbatim. Across formats
-/// (OpenAI↔Anthropic↔Responses) the stored messages don't fit the new shape:
-/// with keep_context on (default) the dialogue is translated to a text-only
-/// history and carried over; off clears it.
-fn switchProvider(root: *Agent, arena: Allocator, p: Provider, out: *Io.Writer) !void {
+fn applyProvider(root: *Agent, arena: Allocator, p: Provider) []const u8 {
     const same_format = root.provider.kind == p.kind;
     var note: []const u8 = "context kept";
     if (!same_format) {
@@ -4310,6 +4376,40 @@ fn switchProvider(root: *Agent, arena: Allocator, p: Provider, out: *Io.Writer) 
     root.cap_new = false; // per-provider token-cap quirk; relearn on rejection
     root.provider = p;
     saveModel(root.io, root.home, p.id, p.model); // remember for next launch
+    return note;
+}
+
+fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Provider {
+    const arg = std.mem.trim(u8, query, " \t");
+    if (arg.len == 0) return error.InvalidModelRequest;
+
+    if (std.mem.indexOfAny(u8, arg, " /\t")) |i| {
+        const pid = arg[0..i];
+        const mdl = std.mem.trim(u8, arg[i + 1 ..], " \t");
+        for (provider_specs) |spec| {
+            if (!std.mem.eql(u8, spec.id, pid) or mdl.len == 0) continue;
+            const m = try arena.dupe(u8, mdl);
+            return keys.providerById(pid, m);
+        }
+    }
+
+    for (provider_specs) |spec| {
+        if (!std.mem.eql(u8, spec.id, arg)) continue;
+        return keys.providerById(spec.id, spec.default_model);
+    }
+
+    const resolved = resolveModelName(keys.*, arg);
+    const name = try arena.dupe(u8, resolved orelse arg);
+    return keys.providerFor(name);
+}
+
+/// Switch the active provider/model. Within the same wire format
+/// (provider.kind) the conversation is kept verbatim. Across formats
+/// (OpenAI↔Anthropic↔Responses) the stored messages don't fit the new shape:
+/// with keep_context on (default) the dialogue is translated to a text-only
+/// history and carried over; off clears it.
+fn switchProvider(root: *Agent, arena: Allocator, p: Provider, out: *Io.Writer) !void {
+    const note = applyProvider(root, arena, p);
     try out.print("switched to {s} via {s} ({t} format, {d}k ctx) — {s}\n", .{
         p.model, p.id, p.kind, p.context / 1000, note,
     });
@@ -4948,7 +5048,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return;
     }
     if (std.mem.eql(u8, line, "/compact")) {
-        root.compact() catch |err| switch (err) {
+        _ = root.compact() catch |err| switch (err) {
             error.ApiError => {},
             else => |e| return e,
         };
@@ -5686,6 +5786,10 @@ const ServeSession = struct {
     rdr: Io.File.Reader, // persistent reader over child stdout — must not move (gpa.create)
     rbuf: []u8, // gpa-owned backing buffer for rdr
     busy: Io.Mutex = .init, // one in-flight protocol request per session
+    answer_mu: Io.Mutex = .init,
+    awaiting_answer: bool = false,
+    answer_call_id: [128]u8 = undefined,
+    answer_call_id_len: usize = 0,
 };
 
 const ServeState = struct {
@@ -5955,6 +6059,9 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8) 
     if (parsed != .object or std.mem.indexOfScalar(u8, line, '\n') != null)
         return respondJson(st, req, .bad_request, "{\"error\":\"body must be a single-line JSON object\"}");
 
+    const rtype = if (parsed.object.get("type")) |v| (if (v == .string) v.string else "") else "";
+    if (std.mem.eql(u8, rtype, "answer")) return serveAnswer(st, req, s, line, parsed.object);
+
     s.busy.lockUncancelable(io); // serialize requests per session
     defer s.busy.unlock(io);
 
@@ -5994,12 +6101,75 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8) 
         };
         const trimmed = std.mem.trim(u8, ev_line, " \t\r");
         if (trimmed.len == 0) continue;
+        serveUpdateAnswerState(io, s, trimmed);
         bw.writer.writeAll(trimmed) catch return;
         bw.writer.writeByte('\n') catch return;
         bw.flush() catch return; // deliver each event as it happens
-        if (serveTerminalEvent(trimmed)) break;
+        if (serveTerminalEvent(trimmed)) {
+            serveClearAnswerState(io, s);
+            break;
+        }
     }
     bw.end() catch return;
+}
+
+fn serveAnswer(st: *ServeState, req: *std.http.Server.Request, s: *ServeSession, line: []const u8, obj: std.json.ObjectMap) !void {
+    const io = st.io;
+    s.answer_mu.lockUncancelable(io);
+    defer s.answer_mu.unlock(io);
+
+    if (!s.awaiting_answer) {
+        return respondJson(st, req, .conflict, "{\"error\":\"no active ask_user prompt\"}");
+    }
+    const req_call_id = if (obj.get("call_id")) |v| (if (v == .string) v.string else "") else "";
+    const active_call_id = s.answer_call_id[0..s.answer_call_id_len];
+    if (req_call_id.len > 0 and active_call_id.len > 0 and !std.mem.eql(u8, req_call_id, active_call_id)) {
+        return respondJson(st, req, .conflict, "{\"error\":\"answer call_id does not match active ask_user prompt\"}");
+    }
+
+    var wb: [1024]u8 = undefined;
+    var cw = s.child.stdin.?.writerStreaming(io, &wb);
+    cw.interface.writeAll(line) catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
+    cw.interface.writeByte('\n') catch return error.WriteFailed;
+    cw.interface.flush() catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
+    s.awaiting_answer = false;
+    s.answer_call_id_len = 0;
+    return respondJson(st, req, .ok, "{\"ok\":true,\"type\":\"answer\"}");
+}
+
+fn serveUpdateAnswerState(io: Io, s: *ServeSession, line: []const u8) void {
+    const ty = serveStringField(line, "type") orelse return;
+    if (!std.mem.eql(u8, ty, "ask_user")) return;
+    const call_id = serveStringField(line, "call_id") orelse "";
+    s.answer_mu.lockUncancelable(io);
+    defer s.answer_mu.unlock(io);
+    const n = @min(call_id.len, s.answer_call_id.len);
+    @memcpy(s.answer_call_id[0..n], call_id[0..n]);
+    s.answer_call_id_len = n;
+    s.awaiting_answer = true;
+}
+
+fn serveStringField(line: []const u8, field: []const u8) ?[]const u8 {
+    var needle_buf: [64]u8 = undefined;
+    if (field.len + 4 > needle_buf.len) return null;
+    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":\"", .{field}) catch return null;
+    const start = std.mem.indexOf(u8, line, needle) orelse return null;
+    var i = start + needle.len;
+    while (i < line.len) : (i += 1) {
+        if (line[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (line[i] == '"') return line[start + needle.len .. i];
+    }
+    return null;
+}
+
+fn serveClearAnswerState(io: Io, s: *ServeSession) void {
+    s.answer_mu.lockUncancelable(io);
+    defer s.answer_mu.unlock(io);
+    s.awaiting_answer = false;
+    s.answer_call_id_len = 0;
 }
 
 /// Is this child event line the terminal event of a protocol request?
@@ -6026,7 +6196,9 @@ fn serveTerminalEvent(line: []const u8) bool {
         }
     }
     return std.mem.eql(u8, t, "turn") or std.mem.eql(u8, t, "error") or
-        std.mem.eql(u8, t, "system_prompt") or std.mem.eql(u8, t, "score");
+        std.mem.eql(u8, t, "system_prompt") or std.mem.eql(u8, t, "score") or
+        std.mem.eql(u8, t, "model") or std.mem.eql(u8, t, "compact") or
+        std.mem.eql(u8, t, "mode") or std.mem.eql(u8, t, "agent");
 }
 
 /// Remove a dead session and free it (child already gone or being killed).
@@ -6378,6 +6550,33 @@ const ExecResult = struct {
     ms: i64 = 0, // wall-clock of the tool exec (external tools only; --timing)
 };
 
+const AnswerRequest = struct {
+    text: []const u8,
+    cancelled: bool,
+    call_id: []const u8,
+};
+
+fn answerParseError(err: anyerror) []const u8 {
+    return switch (err) {
+        error.AnswerNotObject => "answer must be a JSON object",
+        error.AnswerWrongType => "expected answer request for ask_user",
+        error.AnswerCallIdMismatch => "answer call_id did not match active ask_user prompt",
+        else => "invalid answer JSON for ask_user",
+    };
+}
+
+fn parseAnswerRequest(parsed: Value, expected_call_id: []const u8) !AnswerRequest {
+    if (parsed != .object) return error.AnswerNotObject;
+    const rtype = if (parsed.object.get("type")) |v| (if (v == .string) v.string else "") else "";
+    if (!std.mem.eql(u8, rtype, "answer")) return error.AnswerWrongType;
+    const call_id = if (parsed.object.get("call_id")) |v| (if (v == .string) v.string else "") else "";
+    if (call_id.len > 0 and expected_call_id.len > 0 and !std.mem.eql(u8, call_id, expected_call_id))
+        return error.AnswerCallIdMismatch;
+    const cancelled = if (parsed.object.get("cancelled")) |v| v == .bool and v.bool else false;
+    const text = if (parsed.object.get("text")) |v| (if (v == .string) v.string else "") else "";
+    return .{ .text = text, .cancelled = cancelled, .call_id = call_id };
+}
+
 const TodoItem = struct {
     content: []const u8,
     status: []const u8,
@@ -6440,6 +6639,7 @@ const Agent = struct {
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
     streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
     cap_new: bool = false, // provider rejected max_tokens → use max_completion_tokens
+    next_ask_id: u64 = 1,
 
     fn prompt(self: *Agent) !void {
         if (json_mode) return; // SDK drives turns; no human prompt
@@ -7209,6 +7409,28 @@ const Agent = struct {
         };
         const w = self.out.?;
         const question = if (call.input.object.get("question")) |q| q.string else "(no question)";
+        if (json_mode) {
+            const call_id = if (call.id.len > 0) call.id else blk: {
+                const id = try std.fmt.allocPrint(self.arena, "ask_user-{d}", .{self.next_ask_id});
+                self.next_ask_id += 1;
+                break :blk id;
+            };
+            try self.emitAskUser(call_id, question, call.input);
+            const raw = (try in.takeDelimiter('\n')) orelse return .{
+                .text = "user ended input without answering",
+                .is_error = true,
+            };
+            const parsed = std.json.parseFromSliceLeaky(Value, self.arena, std.mem.trim(u8, raw, " \t\r"), .{ .allocate = .alloc_always }) catch return .{
+                .text = "invalid answer JSON for ask_user",
+                .is_error = true,
+            };
+            const answer = parseAnswerRequest(parsed, call_id) catch |err| return .{
+                .text = answerParseError(err),
+                .is_error = true,
+            };
+            if (answer.cancelled) return .{ .text = "user cancelled the follow-up", .is_error = true };
+            return .{ .text = try self.arena.dupe(u8, answer.text), .is_error = false };
+        }
         // Skip the re-print only when the question streamed live in full.
         if (!self.argStreamedFully(call)) try w.print("\n❓ {s}\n", .{question});
         if (call.input.object.get("options")) |opts| if (opts == .array) {
@@ -7223,6 +7445,23 @@ const Agent = struct {
         };
         const answer = std.mem.trim(u8, raw, " \t\r");
         return .{ .text = try self.arena.dupe(u8, answer), .is_error = false };
+    }
+
+    fn emitAskUser(self: *Agent, call_id: []const u8, question: []const u8, input: Value) !void {
+        const w = self.out orelse return;
+        var s: std.json.Stringify = .{ .writer = w };
+        try s.beginObject();
+        try s.objectField("type");
+        try s.write("ask_user");
+        try s.objectField("call_id");
+        try s.write(call_id);
+        try s.objectField("question");
+        try s.write(question);
+        try s.objectField("input");
+        try s.write(input);
+        try s.endObject();
+        try w.writeByte('\n');
+        try w.flush();
     }
 
     fn renderTodos(self: *Agent) []const u8 {
@@ -7243,6 +7482,7 @@ const Agent = struct {
 
     fn sayToolUse(self: *Agent, call: ToolCall) !void {
         if (json_mode) {
+            if (std.mem.eql(u8, call.name, "ask_user")) return;
             self.emit(.{ .type = "tool_call", .name = call.name, .input = call.input });
             return;
         }
@@ -7267,11 +7507,12 @@ const Agent = struct {
     /// no writer); meta tools render their own UX, so skip them.
     fn sayToolResult(self: *Agent, name: []const u8, r: ExecResult) void {
         const w = self.out orelse return;
-        if (isMetaName(name)) return;
         if (json_mode) {
+            if (isMetaName(name) and !std.mem.eql(u8, name, "ask_user")) return;
             self.emit(.{ .type = "tool_result", .name = name, .is_error = r.is_error, .text = r.text });
             return;
         }
+        if (isMetaName(name)) return;
         const all = std.mem.trim(u8, r.text, " \t\r\n");
         var preview = all;
         if (std.mem.indexOfScalar(u8, preview, '\n')) |nl| preview = preview[0..nl];
@@ -7296,12 +7537,12 @@ const Agent = struct {
 
     /// Ask the model for a context-handoff summary (no tools), then restart
     /// history from that summary.
-    fn compact(self: *Agent) anyerror!void {
+    fn compact(self: *Agent) anyerror!usize {
         if (self.messages.items.len == 0) {
-            try self.say("nothing to compact\n", .{});
-            return;
+            if (!json_mode) try self.say("nothing to compact\n", .{});
+            return 0;
         }
-        try self.say("[compacting ~{d} tokens…]\n", .{self.last_context_tokens});
+        if (!json_mode) try self.say("[compacting ~{d} tokens…]\n", .{self.last_context_tokens});
         try self.messages.append(try textMessage(self.arena, "user", compact_instruction));
         errdefer _ = self.messages.pop();
 
@@ -7343,9 +7584,9 @@ const Agent = struct {
             },
         };
         if (summary.len == 0) {
-            try self.say("[compaction failed: empty summary, history unchanged]\n", .{});
+            if (!json_mode) try self.say("[compaction failed: empty summary, history unchanged]\n", .{});
             _ = self.messages.pop();
-            return;
+            return error.EmptySummary;
         }
 
         var fresh = std.json.Array.init(self.arena);
@@ -7360,7 +7601,8 @@ const Agent = struct {
         try fresh.append(try textMessage(self.arena, "user", handoff));
         self.messages = fresh;
         self.last_context_tokens = 0;
-        try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
+        if (!json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
+        return summary.len;
     }
 
     fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: bool, stream_usage: bool) ![]u8 {
@@ -10755,6 +10997,36 @@ test "skillDisabled: registry lookup and toggle" {
     g_skill_disabled[i] = true;
     try std.testing.expect(skillDisabled("kuri"));
     try std.testing.expect(!skillDisabled("not-a-skill"));
+}
+
+test "parseAnswerRequest: preserves multiline text and optional call id" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"type":"answer","text":"line 1\nline 2","cancelled":false,"call_id":"call-1"}
+    , .{});
+    const answer = try parseAnswerRequest(v, "call-1");
+    try std.testing.expectEqualStrings("line 1\nline 2", answer.text);
+    try std.testing.expectEqualStrings("call-1", answer.call_id);
+    try std.testing.expect(!answer.cancelled);
+}
+
+test "parseAnswerRequest: explicit cancel and mismatched call id" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const cancelled = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"type":"answer","cancelled":true,"call_id":"call-1"}
+    , .{});
+    const answer = try parseAnswerRequest(cancelled, "call-1");
+    try std.testing.expect(answer.cancelled);
+    try std.testing.expectEqualStrings("", answer.text);
+
+    const mismatch = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"type":"answer","text":"nope","call_id":"call-2"}
+    , .{});
+    try std.testing.expectError(error.AnswerCallIdMismatch, parseAnswerRequest(mismatch, "call-1"));
 }
 
 test { // pull in tests from imported modules (mcp.zig)

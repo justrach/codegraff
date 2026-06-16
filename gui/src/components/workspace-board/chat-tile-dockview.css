@@ -1,0 +1,104 @@
+.chat-tile-shell {
+  background: var(--pane-surface);
+}
+
+.chat-tile-inner-dock {
+  --chat-tile-header-height: 2.375rem;
+  --chat-tile-header-padding-x: 0.375rem;
+  --chat-tile-header-item-height: 1.5rem;
+  --chat-tile-surface: var(--pane-surface);
+  --chat-tile-header-divider: rgb(0 0 0 / 5%);
+}
+
+.dark .chat-tile-inner-dock {
+  --chat-tile-header-divider: rgb(255 255 255 / 5%);
+}
+
+.chat-tile-inner-dock:is(.dockview-theme-light, .dockview-theme-dark),
+.chat-tile-inner-dock :is(.dockview-theme-light, .dockview-theme-dark) {
+  --dv-tabs-and-actions-container-height: var(--chat-tile-header-height);
+  --dv-tabs-and-actions-container-font-size: 0.75rem;
+  --dv-tabs-and-actions-container-background-color: var(--chat-tile-surface);
+  --dv-group-view-background-color: var(--chat-tile-surface);
+  --dv-separator-border: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --dv-activegroup-visiblepanel-tab-background-color: transparent;
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
+  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-tab-divider-color: transparent;
+}
+
+.chat-tile-inner-dock .dv-groupview {
+  overflow: hidden;
+  border-radius: 0;
+  background: var(--chat-tile-surface);
+}
+
+.chat-tile-inner-dock .dv-groupview > .dv-tabs-and-actions-container {
+  box-sizing: border-box;
+  height: var(--chat-tile-header-height);
+  min-height: var(--chat-tile-header-height);
+  align-items: center;
+  padding-inline: var(--chat-tile-header-padding-x);
+  background: var(--chat-tile-surface);
+  border-bottom: 1px solid var(--chat-tile-header-divider);
+}
+
+.chat-tile-inner-dock .dv-groupview > .dv-tabs-and-actions-container .dv-scrollable,
+.chat-tile-inner-dock .dv-groupview > .dv-tabs-and-actions-container .dv-tabs-container,
+.chat-tile-inner-dock .dv-groupview > .dv-tabs-and-actions-container .dv-right-actions-container,
+.chat-tile-inner-dock .dv-groupview > .dv-tabs-and-actions-container .dv-void-container {
+  display: flex;
+  align-items: center;
+}
+
+.chat-tile-inner-dock .dv-groupview > .dv-tabs-and-actions-container .dv-tab {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  min-height: var(--chat-tile-header-item-height);
+  border-radius: 0;
+  background: transparent !important;
+}
+
+.chat-tile-inner-dock .dv-groupview > .dv-tabs-and-actions-container .dv-tab.dv-active-tab,
+.chat-tile-inner-dock .dv-groupview > .dv-tabs-and-actions-container .dv-tab.dv-inactive-tab {
+  background: transparent !important;
+}
+
+.chat-pane-dockview-tab {
+  width: 100%;
+  min-width: 0;
+}
+
+/* The chat tile's tab IS the chat's title bar, not a draggable tab affordance.
+   Dockview sets `cursor: pointer` on `.dv-tab`, and when the tile is nested in
+   the workspace board, `.workspace-board-dock .dv-groupview .dv-tab` (index.css)
+   upgrades that to `cursor: grab`. Override on the `.dv-tab` itself with enough
+   specificity to beat that 0,3,0 rule so the title shows the native arrow. */
+.workspace-board-dock .chat-tile-inner-dock .dv-groupview .dv-tab,
+.chat-tile-inner-dock .dv-groupview .dv-tab {
+  cursor: default;
+}
+
+.chat-tile-inner-dock .dv-groupview > .dv-tabs-and-actions-container .dv-right-actions-container {
+  /* Reserve room for the global theme toggle (App.tsx, absolute right-3 top-2)
+     so the rightmost header action doesn't sit under it. Mirrors the pr-11
+     inset on ConversationPanelHeader. */
+  padding-right: 2.75rem;
+}
+
+.chat-tile-inner-dock .dv-groupview .dv-tab:active {
+  cursor: grabbing;
+}
+
+.chat-tile-inner-dock .dv-groupview .dv-content-container {
+  background: var(--chat-tile-surface);
+}
+
+.terminal-pane-shell .wterm {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}

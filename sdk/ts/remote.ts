@@ -20,6 +20,7 @@ export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "mi
 export type Event =
   | { type: "text"; text: string }
   | { type: "tool_call"; name: string; input: Record<string, unknown> }
+  | { type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
   | { type: "tool_result"; name: string; is_error: boolean; text: string }
   | { type: "turn"; text: string; context_tokens: number; cost_usd: number }
   | { type: "system_prompt"; ok: boolean; append: boolean; chars: number }
@@ -53,6 +54,12 @@ export interface RemoteOptions {
 
 export interface ChatOptions {
   prompt: string;
+}
+
+export interface AnswerOptions {
+  text?: string;
+  cancelled?: boolean;
+  callId?: string;
 }
 
 export interface RunAgentRemoteOptions extends RemoteOptions {
@@ -159,6 +166,17 @@ export class RemoteHarness {
     }
     return final;
   }
+
+  /** Answer an in-flight ask_user event. The original chat() stream continues
+   *  and will later yield the ask_user tool_result plus the final turn. */
+  async answer(input: string | AnswerOptions): Promise<void> {
+    const payload = typeof input === "string"
+      ? { type: "answer", text: input, cancelled: false }
+      : { type: "answer", text: input.text ?? "", cancelled: input.cancelled ?? false, call_id: input.callId };
+    const res = await this.req("POST", `/v1/sessions/${await this.sessionId}`, payload);
+    await res.text();
+  }
+
 
   /** Replace (or with append=true, extend) the system prompt for later turns.
    *  Same KV-cache warning as the stdio SDK: any mutation invalidates the

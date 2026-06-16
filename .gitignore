@@ -1,6 +1,8 @@
 # build output
 .zig-cache/
 zig-out/
+target/
+node_modules/
 
 # local runtime state / secrets (never commit)
 harness.trace.jsonl

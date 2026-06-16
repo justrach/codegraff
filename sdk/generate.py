@@ -72,6 +72,7 @@ export type ProviderId = {provider_union};
 export type Event =
   | {{ type: "text"; text: string }}
   | {{ type: "tool_call"; name: string; input: Record<string, unknown> }}
+  | {{ type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }}
   | {{ type: "tool_result"; name: string; is_error: boolean; text: string }}
   | {{ type: "turn"; text: string; context_tokens: number; cost_usd: number }}
   | {{ type: "system_prompt"; ok: boolean; append: boolean; chars: number }}
@@ -109,6 +110,12 @@ export interface HarnessOptions {{
 export interface ChatOptions {{
   /** User prompt for this turn. */
   prompt: string;
+}}
+
+export interface AnswerOptions {{
+  text?: string;
+  cancelled?: boolean;
+  callId?: string;
 }}
 
 export interface RunAgentOptions extends HarnessOptions {{
@@ -308,6 +315,16 @@ export class Harness {{
     }}
     return final;
   }}
+
+  /** Answer an in-flight ask_user event. Call this while consuming chat()
+   *  when you receive {{ type: "ask_user", call_id, ... }}. */
+  answer(input: string | AnswerOptions): void {{
+    const payload = typeof input === "string"
+      ? {{ type: "answer", text: input, cancelled: false }}
+      : {{ type: "answer", text: input.text ?? "", cancelled: input.cancelled ?? false, call_id: input.callId }};
+    this.proc.stdin.write(JSON.stringify(payload) + "\\n");
+  }}
+
   /** Replace (or with append=true, extend) the system prompt for subsequent
    *  turns. Call between turns; resolves on the harness's ack.
    *
@@ -402,6 +419,7 @@ export class HarnessSession {{
   /** Send a user turn; async-iterate its events. */
   send(input: string | ChatOptions): AsyncGenerator<Event> {{ return this.agent.chat(input); }}
   ask(input: string | ChatOptions): Promise<string> {{ return this.agent.ask(input); }}
+  answer(input: string | AnswerOptions): void {{ return this.agent.answer(input); }}
   setSystemPrompt(text: string, append = false): Promise<void> {{ return this.agent.setSystemPrompt(text, append); }}
   close(): void {{ this.agent.close(); }}
 }}
@@ -458,6 +476,7 @@ export type ProviderId = {provider_union};
 export type Event =
   | {{ type: "text"; text: string }}
   | {{ type: "tool_call"; name: string; input: Record<string, unknown> }}
+  | {{ type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }}
   | {{ type: "tool_result"; name: string; is_error: boolean; text: string }}
   | {{ type: "turn"; text: string; context_tokens: number; cost_usd: number }}
   | {{ type: "system_prompt"; ok: boolean; append: boolean; chars: number }}
@@ -491,6 +510,12 @@ export interface RemoteOptions {{
 
 export interface ChatOptions {{
   prompt: string;
+}}
+
+export interface AnswerOptions {{
+  text?: string;
+  cancelled?: boolean;
+  callId?: string;
 }}
 
 export interface RunAgentRemoteOptions extends RemoteOptions {{
@@ -597,6 +622,17 @@ export class RemoteHarness {{
     }}
     return final;
   }}
+
+  /** Answer an in-flight ask_user event. The original chat() stream continues
+   *  and will later yield the ask_user tool_result plus the final turn. */
+  async answer(input: string | AnswerOptions): Promise<void> {{
+    const payload = typeof input === "string"
+      ? {{ type: "answer", text: input, cancelled: false }}
+      : {{ type: "answer", text: input.text ?? "", cancelled: input.cancelled ?? false, call_id: input.callId }};
+    const res = await this.req("POST", `/v1/sessions/${{await this.sessionId}}`, payload);
+    await res.text();
+  }}
+
 
   /** Replace (or with append=true, extend) the system prompt for later turns.
    *  Same KV-cache warning as the stdio SDK: any mutation invalidates the
@@ -833,7 +869,8 @@ class Harness:
     """Drives a `harness --json` subprocess. One turn = send text, stream events.
 
     Events are plain dicts with a "type" field: "text", "tool_call",
-    "tool_result", "turn", or "error" (see the harness --schema protocol).
+    "ask_user", "tool_result", "turn", or "error" (see the harness
+    --schema protocol).
     """
 
     def __init__(self, binary: Optional[str] = None, args: Optional[list] = None,
@@ -906,6 +943,16 @@ class Harness:
             elif ev.get("type") == "error":
                 raise RuntimeError(ev["message"])
         return final
+
+    def answer(self, text: str = "", cancelled: bool = False,
+               call_id: Optional[str] = None) -> None:
+        """Answer an in-flight ask_user event while chat() is being consumed."""
+        assert self.proc.stdin
+        req = {{"type": "answer", "text": text, "cancelled": cancelled}}
+        if call_id:
+            req["call_id"] = call_id
+        self.proc.stdin.write(json.dumps(req) + "\\n")
+        self.proc.stdin.flush()
 
     def set_system_prompt(self, text: str, append: bool = False) -> None:
         """Replace (or with append=True, extend) the system prompt for later
@@ -1112,6 +1159,15 @@ class RemoteHarness:
             elif ev.get("type") == "error":
                 raise RuntimeError(ev["message"])
         return final
+
+    def answer(self, text: str = "", cancelled: bool = False,
+               call_id: Optional[str] = None) -> None:
+        """Answer an in-flight ask_user event. The original chat stream
+        continues and later yields the ask_user tool_result plus final turn."""
+        req = {{"type": "answer", "text": text, "cancelled": cancelled}}
+        if call_id:
+            req["call_id"] = call_id
+        self._request("POST", f"/v1/sessions/{{self.session_id}}", req).read()
 
     def set_system_prompt(self, text: str, append: bool = False) -> None:
         """Replace (or with append=True, extend) the system prompt for later

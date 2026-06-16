@@ -11,7 +11,7 @@ export const HARNESS_VERSION = "0.4";
 
 export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "glm-4.5" | "glm-4.7" | "glm-5" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.4" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.5-codex" | "grok-4.3" | "grok-build" | "kimi-k2-thinking" | "kimi-k2.5" | "kimi-k2.6" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3";
 export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "ask_user" | "attempt_completion" | "subagent" | "workflow";
-export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "xai" | "zai" | "claude" | "codex";
+export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "xai" | "zai" | "codex";
 
 /** Events streamed by the bridge (same `--json` contract as the stdio SDK).
  *  Forward compatibility: a newer (edge) harness may stream event types not
@@ -20,6 +20,7 @@ export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "mi
 export type Event =
   | { type: "text"; text: string }
   | { type: "tool_call"; name: string; input: Record<string, unknown> }
+  | { type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
   | { type: "tool_result"; name: string; is_error: boolean; text: string }
   | { type: "turn"; text: string; context_tokens: number; cost_usd: number }
   | { type: "system_prompt"; ok: boolean; append: boolean; chars: number }
@@ -53,6 +54,12 @@ export interface RemoteOptions {
 
 export interface ChatOptions {
   prompt: string;
+}
+
+export interface AnswerOptions {
+  text?: string;
+  cancelled?: boolean;
+  callId?: string;
 }
 
 export interface RunAgentRemoteOptions extends RemoteOptions {
@@ -159,6 +166,17 @@ export class RemoteHarness {
     }
     return final;
   }
+
+  /** Answer an in-flight ask_user event. The original chat() stream continues
+   *  and will later yield the ask_user tool_result plus the final turn. */
+  async answer(input: string | AnswerOptions): Promise<void> {
+    const payload = typeof input === "string"
+      ? { type: "answer", text: input, cancelled: false }
+      : { type: "answer", text: input.text ?? "", cancelled: input.cancelled ?? false, call_id: input.callId };
+    const res = await this.req("POST", `/v1/sessions/${await this.sessionId}`, payload);
+    await res.text();
+  }
+
 
   /** Replace (or with append=true, extend) the system prompt for later turns.
    *  Same KV-cache warning as the stdio SDK: any mutation invalidates the
