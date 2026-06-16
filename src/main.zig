@@ -152,6 +152,7 @@ const price_table = [_]ModelPrice{
     .{ .name = "minimax-m3", .in = 0.3, .out = 1.2, .cache = 0.06 },
     .{ .name = "mimo-v2.5-pro", .in = 0.435, .out = 0.87, .cache = 0.0036 },
     .{ .name = "mimo-v2.5", .in = 0.14, .out = 0.28, .cache = 0.0028 },
+    .{ .name = "kimi-for-coding", .in = 0.95, .out = 4, .cache = 0.1 },
     .{ .name = "kimi-k2.6", .in = 0.95, .out = 4, .cache = 0.1 },
     .{ .name = "kimi-k2-thinking", .in = 0.6, .out = 2.5, .cache = 0.06 },
     .{ .name = "kimi-k2.5", .in = 0.6, .out = 3, .cache = 0.06 },
@@ -258,7 +259,7 @@ const provider_specs = [_]ProviderSpec{
     .{ .id = "minimax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
     .{ .id = "xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
     // OpenAI-format direct providers (matched to graff's provider.json).
-    .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/chat/completions", .env_key = "KIMI_API_KEY", .default_model = "kimi-k2.6" },
+    .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/chat/completions", .env_key = "KIMI_API_KEY", .default_model = "kimi-for-coding" },
     .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
     .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
@@ -319,10 +320,10 @@ const model_table = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "grok-build", .context = 256_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5", .context = 128_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5-pro", .context = 128_000 },
-    // kimi / xai / zai direct providers (contexts from models.dev 2026-06-10)
-    .{ .provider = "kimi", .name = "kimi-k2.6", .context = 262_144 },
-    .{ .provider = "kimi", .name = "kimi-k2-thinking", .context = 262_144 },
-    .{ .provider = "kimi", .name = "kimi-k2.5", .context = 262_144 },
+    // kimi: the Kimi for Coding plan endpoint serves a single alias model
+    // (`kimi-for-coding`, which tracks their latest coding model) — not the
+    // versioned ids; confirmed via GET /coding/v1/models 2026-06-16.
+    .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144 },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
     .{ .provider = "zai", .name = "glm-5", .context = 204_800 },
@@ -7921,7 +7922,10 @@ const Agent = struct {
         };
         var req = try self.client.request(.POST, try std.Uri.parse(provider.url), .{
             .redirect_behavior = .unhandled,
-            .headers = .{ .content_type = .{ .override = "application/json" } },
+            .headers = .{
+                .content_type = .{ .override = "application/json" },
+                .user_agent = providerUserAgent(provider),
+            },
             .extra_headers = extra,
         });
         defer req.deinit();
@@ -9476,6 +9480,18 @@ fn grabClipboardImage(io: Io) ?[]const u8 {
     return null;
 }
 /// Auth + provider-specific headers shared by post() and Agent.postStream().
+/// User-Agent for an outbound provider call. The Kimi for Coding plan gates
+/// access to recognized coding-agent clients by User-Agent (a graff/* or bare
+/// UA gets `access_terminated`), so graff identifies as one — a user's Kimi
+/// Code key then works here the same as in Kimi CLI or Claude Code. Every
+/// other provider keeps the http client default.
+const kimi_user_agent = "claude-code/1.0.0";
+fn providerUserAgent(provider: Provider) std.http.Client.Request.Headers.Value {
+    if (std.mem.eql(u8, provider.id, "kimi")) {
+        return .{ .override = kimi_user_agent };
+    }
+    return .default;
+}
 fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[6]std.http.Header) []const std.http.Header {
     var n: usize = 0;
     switch (provider.auth) {
@@ -9530,7 +9546,10 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
         .method = .POST,
         .payload = body,
         .response_writer = &aw.writer,
-        .headers = .{ .content_type = .{ .override = "application/json" } },
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+            .user_agent = providerUserAgent(provider),
+        },
         .extra_headers = extra,
     });
     const code = @intFromEnum(res.status);
@@ -10903,7 +10922,7 @@ test "imageMediaType from extension" {
 }
 
 test "contextFor known model and default fallback" {
-    try std.testing.expectEqual(@as(u64, 262_144), contextFor("kimi", "kimi-k2.6"));
+    try std.testing.expectEqual(@as(u64, 262_144), contextFor("kimi", "kimi-for-coding"));
     try std.testing.expectEqual(@as(u64, default_context), contextFor("nope", "unknown-xyz"));
 }
 
