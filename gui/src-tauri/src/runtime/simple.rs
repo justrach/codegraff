@@ -137,11 +137,12 @@ impl RuntimeManager {
     /// Returns the model picker, populated from `graff --schema`.
     pub async fn get_prompt_settings(&self, _: Option<String>) -> Result<PromptSettingsDto> {
         let catalog = self.ensure_model_catalog().await;
-        let (selected_provider, selected_model) = {
+        let (selected_provider, selected_model, selected_effort) = {
             let state = self.state.lock().await;
             (
                 state.selected_provider.clone(),
                 state.selected_model.clone(),
+                state.selected_effort.clone(),
             )
         };
 
@@ -215,7 +216,7 @@ impl RuntimeManager {
             available_models,
             selected_provider_id,
             selected_model_id,
-            selected_reasoning_effort: None,
+            selected_reasoning_effort: selected_effort,
         })
     }
 
