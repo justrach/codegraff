@@ -670,3 +670,46 @@
     > .dv-sash::after {
     background: rgb(255 255 255 / 5%);
 }
+
+/* --- Chat entrance + streaming motion (transitions.dev-style easings) --- */
+
+/* Message slides up + fades in as it lands in the thread. */
+@keyframes cg-message-in {
+    from {
+        opacity: 0;
+        transform: translateY(12px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.cg-message-in {
+    /* easeOutExpo — a soft, fast-settling deceleration */
+    animation: cg-message-in 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Streaming assistant text: each freshly rendered block fades up gently so the
+   answer "flows in" rather than snapping token-by-token. */
+@keyframes cg-stream-in {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.cg-stream-in > * {
+    animation: cg-stream-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cg-message-in,
+    .cg-stream-in > * {
+        animation: none;
+    }
+}
