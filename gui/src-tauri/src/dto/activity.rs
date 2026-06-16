@@ -62,6 +62,7 @@ pub enum ToolCallDetailDto {
     Task {
         #[serde(rename = "agentId")]
         agent_id: String,
+        label: String,
     },
     TodoWrite {
         count: usize,

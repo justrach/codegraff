@@ -548,6 +548,7 @@ function summarizeActivityGroup(operations: ActivityOperation[]): string {
   let commands = 0;
   let searches = 0;
   let fetches = 0;
+  let subagents = 0;
   let others = 0;
 
   for (const operation of operations) {
@@ -568,12 +569,18 @@ function summarizeActivityGroup(operations: ActivityOperation[]): string {
       case "fetch":
         fetches += 1;
         break;
+      case "task":
+        subagents += 1;
+        break;
       default:
         others += 1;
         break;
     }
   }
 
+  if (subagents > 0) {
+    return `${subagents} subagent${subagents === 1 ? "" : "s"}`;
+  }
   if (fileReads > 0) {
     return `Explored ${fileReads} file${fileReads === 1 ? "" : "s"}`;
   }

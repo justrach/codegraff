@@ -51,7 +51,9 @@ export function formatOperationLabel(
     case "skill":
       return `Loaded skill ${operation.detail.name}`;
     case "task":
-      return `Delegated to ${operation.detail.agentId}`;
+      return operation.detail.agentId
+        ? `${operation.detail.agentId} · ${operation.detail.label}`
+        : `Subagent · ${operation.detail.label}`;
     case "todo_read":
       return "Read todos";
     case "todo_write":

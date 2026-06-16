@@ -2318,6 +2318,14 @@ fn tool_call_detail(name: &str, input: Option<&serde_json::Value>) -> ToolCallDe
             path: str_field("path").unwrap_or_default(),
             operation: FileOperationDto::Replace,
         },
+        "subagent" => ToolCallDetailDto::Task {
+            agent_id: str_field("agent").unwrap_or_default(),
+            label: str_field("description").unwrap_or_else(|| "subagent".to_string()),
+        },
+        "workflow" => ToolCallDetailDto::Task {
+            agent_id: String::new(),
+            label: "workflow".to_string(),
+        },
         other => ToolCallDetailDto::Unknown {
             name: other.to_string(),
         },
