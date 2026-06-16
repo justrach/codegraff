@@ -220,6 +220,9 @@
     --pane-surface: var(--background);
     --pane-border: var(--border);
     --pane-shadow: rgb(26 24 19 / 12%);
+    --elevation-xs: 0 1px 2px rgb(0 0 0 / 5%);
+    --elevation-sm: 0 1px 2px rgb(0 0 0 / 5%), 0 2px 6px -1px rgb(0 0 0 / 6%);
+    --elevation-md: 0 2px 4px rgb(0 0 0 / 6%), 0 6px 16px -2px rgb(0 0 0 / 10%);
 }
 
 .dark {
@@ -263,6 +266,9 @@
     --pane-surface: var(--background);
     --pane-border: var(--border);
     --pane-shadow: rgb(0 0 0 / 30%);
+    --elevation-xs: 0 1px 2px rgb(0 0 0 / 30%);
+    --elevation-sm: 0 1px 2px rgb(0 0 0 / 35%), 0 2px 6px -1px rgb(0 0 0 / 30%);
+    --elevation-md: 0 2px 4px rgb(0 0 0 / 35%), 0 8px 20px -3px rgb(0 0 0 / 45%);
 }
 
 /* ── Theme presets ──────────────────────────────────────────────
