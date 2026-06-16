@@ -462,6 +462,26 @@ export function setActiveAgent(
   });
 }
 
+export function setEffort(
+  level: "low" | "medium" | "high",
+  workspacePath?: string | null,
+): Promise<void> {
+  return invokeCommand("set_effort", {
+    level,
+    workspacePath: workspacePath ?? null,
+  });
+}
+
+export function setFast(
+  on: boolean,
+  workspacePath?: string | null,
+): Promise<void> {
+  return invokeCommand("set_fast", {
+    on,
+    workspacePath: workspacePath ?? null,
+  });
+}
+
 export function listMcpServers(
   workspacePath?: string | null,
 ): Promise<McpSettingsPayload> {
