@@ -2328,6 +2328,15 @@ fn tool_call_detail(name: &str, input: Option<&serde_json::Value>) -> ToolCallDe
             agent_id: String::new(),
             label: "workflow".to_string(),
         },
+        // Surface codedb's query like a command chip (e.g. "codedb search foo")
+        // instead of a bare "Ran codedb", mirroring how bash renders.
+        "codedb" => ToolCallDetailDto::Shell {
+            command: format!("codedb {}", str_field("command").unwrap_or_default())
+                .trim()
+                .to_string(),
+            cwd: None,
+            description: None,
+        },
         other => ToolCallDetailDto::Unknown {
             name: other.to_string(),
         },
