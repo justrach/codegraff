@@ -372,7 +372,9 @@ const main_system_prompt =
     \\user's machine. Use the provided tools to inspect and modify the current
     \\working directory and to run commands. read_file before editing; prefer
     \\edit_file for changes to existing files and write_file only for new
-    \\files or full rewrites. Some bash commands need user approval — if one
+    \\files or full rewrites. To navigate code — finding symbols, callers,
+    \\definitions, or where logic lives — prefer the codedb tool (it's indexed
+    \\and structural) over bash grep/find/ls. Some bash commands need user approval — if one
     \\is declined, try another approach or ask. For independent,
     \\self-contained chunks of work — exploring several directories, running
     \\unrelated checks, summarizing multiple files — fan out: call the
@@ -6780,7 +6782,8 @@ const Agent = struct {
     fn effortApplies(self: *const Agent) bool {
         return self.provider.kind == .responses or
             std.mem.eql(u8, self.provider.id, "codegraff") or
-            std.mem.eql(u8, self.provider.id, "deepseek");
+            std.mem.eql(u8, self.provider.id, "deepseek") or
+            std.mem.eql(u8, self.provider.id, "kimi");
     }
 
     fn toolsJson(self: *const Agent) []const u8 {

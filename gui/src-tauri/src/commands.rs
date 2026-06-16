@@ -268,6 +268,29 @@ pub(crate) async fn save_pasted_image(data: Vec<u8>, ext: String) -> Result<Stri
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Decodes an image, downscales it to fit `max_dim` (default 96px, aspect
+/// preserved), and re-encodes it as a compressed JPEG returned as a data URL —
+/// so the composer can show a real thumbnail without loading the full file into
+/// the webview. Runs the CPU-bound work off the async runtime.
+#[tauri::command]
+pub(crate) async fn image_thumbnail(path: String, max_dim: Option<u32>) -> Result<String, String> {
+    let max = max_dim.unwrap_or(96).clamp(16, 512);
+    tokio::task::spawn_blocking(move || {
+        use base64::Engine as _;
+        let img = image::open(&path).map_err(|error| error.to_string())?;
+        // `thumbnail` is a fast box filter that preserves aspect ratio.
+        let rgb = img.thumbnail(max, max).to_rgb8();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 70)
+            .encode_image(&rgb)
+            .map_err(|error| error.to_string())?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(buf.get_ref());
+        Ok::<String, String>(format!("data:image/jpeg;base64,{b64}"))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub(crate) async fn set_active_agent(
     agent_id: String,

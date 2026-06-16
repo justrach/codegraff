@@ -517,6 +517,10 @@ export function SessionProvider({ children }: SessionProviderProps) {
         // submit path in useConversationActions.
         const attachments = getAttachments(promptDraftKey);
         const prompt = appendAttachmentsToPrompt(trimmedPrompt, attachments);
+        // Clear the welcome composer immediately on send (prompt already
+        // captured) so the draft + attachment don't linger while the turn runs.
+        sessionStore.getState().clearPromptDraft(promptDraftKey);
+        sessionStore.getState().clearAttachments(promptDraftKey);
 
         let nextPromptDraftKey: string | null = promptDraftKey;
         sessionStore.getState().setPromptDraftPending(promptDraftKey, true);

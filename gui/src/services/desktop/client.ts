@@ -491,6 +491,14 @@ export function savePastedImage(
   return invokeCommand("save_pasted_image", { data, ext });
 }
 
+/** Returns a compressed JPEG thumbnail of an image file as a data URL. */
+export function imageThumbnail(
+  path: string,
+  maxDim?: number,
+): Promise<string> {
+  return invokeCommand("image_thumbnail", { path, maxDim: maxDim ?? null });
+}
+
 export function listMcpServers(
   workspacePath?: string | null,
 ): Promise<McpSettingsPayload> {

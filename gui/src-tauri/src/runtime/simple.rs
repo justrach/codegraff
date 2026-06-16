@@ -208,6 +208,7 @@ impl RuntimeManager {
                 let effort_capable = match model.provider.as_str() {
                     "codex" => true,
                     "codegraff" | "deepseek" => !model.name.starts_with("gpt-"),
+                    "kimi" => true,
                     _ => false,
                 };
                 let reasoning_efforts: Vec<String> = if effort_capable {

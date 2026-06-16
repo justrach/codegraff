@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { FileIcon, FileTextIcon, ImageIcon, XIcon } from "lucide-react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+
+import { imageThumbnail } from "@/services/desktop/client";
 
 import { cn } from "@/utils/cn";
 import type { Attachment } from "./attachmentTypes";
@@ -24,17 +26,27 @@ export function AttachmentCard({
   onOpen?: (path: string) => void;
 }) {
   const isInteractive = onOpen != null;
+  const [thumbnail, setThumbnail] = useState<string | null>(null);
+  useEffect(() => {
+    if (attachment.kind !== "image") return;
+    let cancelled = false;
+    imageThumbnail(attachment.path).then(
+      (url) => {
+        if (!cancelled) setThumbnail(url);
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [attachment.kind, attachment.path]);
   const subtitle = attachment.ext ? attachment.ext.toUpperCase() : "FILE";
 
   const content = (
     <>
       <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted">
-        {attachment.kind === "image" ? (
-          <img
-            src={convertFileSrc(attachment.path)}
-            alt=""
-            className="size-full object-cover"
-          />
+        {attachment.kind === "image" && thumbnail ? (
+          <img src={thumbnail} alt="" className="size-full object-cover" />
         ) : (
           <KindIcon kind={attachment.kind} />
         )}

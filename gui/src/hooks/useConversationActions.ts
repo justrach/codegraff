@@ -103,6 +103,11 @@ export function useConversationActions(binding?: ChatBinding | null) {
         const attachments = getAttachments(promptDraftKey);
         const prompt = appendAttachmentsToPrompt(trimmedPrompt, attachments);
 
+        // Clear the composer immediately on send so the draft + any attachment
+        // don't linger in the bar while the turn runs (the prompt is already
+        // captured above).
+        sessionStore.getState().clearPromptDraft(promptDraftKey);
+        sessionStore.getState().clearAttachments(promptDraftKey);
         sessionStore.getState().setPromptDraftPending(promptDraftKey, true);
         try {
           const snapshot = await desktopClient.sendPrompt({
@@ -112,8 +117,6 @@ export function useConversationActions(binding?: ChatBinding | null) {
             workspacePath,
           });
           sessionStore.getState().applySessionSnapshot(snapshot);
-          sessionStore.getState().clearPromptDraft(promptDraftKey);
-          sessionStore.getState().clearAttachments(promptDraftKey);
         } catch {
           return;
         } finally {
