@@ -166,14 +166,26 @@ impl RuntimeManager {
 
         let available_models = catalog
             .iter()
-            .map(|model| PromptModelOptionDto {
-                provider_id: model.provider.clone(),
-                provider_name: provider_display_name(&model.provider),
-                model_id: model.name.clone(),
-                model_name: Some(model.name.clone()),
-                context_length: model.context,
-                supports_reasoning: false,
-                reasoning_efforts: vec![],
+            .map(|model| {
+                // Effort-capable providers (mirrors the binary's effortApplies):
+                // codex via reasoning.effort, codegraff/deepseek via reasoning_effort.
+                let reasoning_efforts: Vec<String> = if matches!(
+                    model.provider.as_str(),
+                    "codegraff" | "deepseek" | "codex"
+                ) {
+                    vec!["low".into(), "medium".into(), "high".into()]
+                } else {
+                    vec![]
+                };
+                PromptModelOptionDto {
+                    provider_id: model.provider.clone(),
+                    provider_name: provider_display_name(&model.provider),
+                    model_id: model.name.clone(),
+                    model_name: Some(model.name.clone()),
+                    context_length: model.context,
+                    supports_reasoning: !reasoning_efforts.is_empty(),
+                    reasoning_efforts,
+                }
             })
             .collect();
 
@@ -210,6 +222,9 @@ impl RuntimeManager {
             let mut state = self.state.lock().await;
             state.selected_provider = Some(input.provider_id.clone());
             state.selected_model = Some(input.model_id.clone());
+            if let Some(effort) = &input.reasoning_effort {
+                state.selected_effort = Some(effort.clone());
+            }
             state.active_conversation_id.clone()
         };
         if let Some(conversation_id) = live_conversation_id {
@@ -222,6 +237,13 @@ impl RuntimeManager {
                     }),
                 )
                 .await?;
+                if let Some(effort) = &input.reasoning_effort {
+                    self.send_control(
+                        &conversation_id,
+                        serde_json::json!({ "type": "set_effort", "level": effort }),
+                    )
+                    .await?;
+                }
             }
         }
         self.get_prompt_settings(input.workspace_path).await
