@@ -165,6 +165,25 @@ impl RuntimeManager {
         ))
     }
 
+    async fn selected_model_name(&self) -> Option<String> {
+        let catalog = self.ensure_model_catalog().await;
+        let configured_provider_ids = configured_provider_ids().await;
+        let (selected_provider, selected_model) = {
+            let state = self.state.lock().await;
+            (
+                state.selected_provider.clone(),
+                state.selected_model.clone(),
+            )
+        };
+        selected_prompt_model_pair(
+            &catalog,
+            &configured_provider_ids,
+            selected_provider.as_deref(),
+            selected_model.as_deref(),
+        )
+        .map(|(_, model)| model)
+    }
+
     /// Generates a short chat title with the active model (a one-shot graff run)
     /// and updates the conversation. Best-effort and fire-and-forget: failures
     /// just leave the prompt-derived title in place.
@@ -172,7 +191,7 @@ impl RuntimeManager {
         &self,
         conversation_id: String,
         prompt: String,
-        model: Option<String>,
+        model_arg: Option<String>,
     ) {
         let title_prompt = format!(
             "Output a concise 2 to 4 word topic label in Title Case for the user's \
@@ -183,7 +202,7 @@ impl RuntimeManager {
         );
         let mut command = tokio::process::Command::new(codegraff_binary());
         command.arg("-p").arg(&title_prompt).arg("--yolo");
-        if let Some(model) = &model {
+        if let Some(model) = &model_arg {
             command.arg("--model").arg(model);
         }
         let Ok(output) = command.output().await else {
@@ -399,11 +418,10 @@ impl RuntimeManager {
             .unwrap_or_else(|| format!("chat-{}", Uuid::new_v4().simple()));
         let request_id = format!("request-{}", Uuid::new_v4().simple());
         let plan_mode = input.agent_id.as_deref() == Some("muse");
+        let title_model_arg = self.selected_model_name().await;
         let is_first_turn;
-        let title_model;
         {
             let mut state = self.state.lock().await;
-            title_model = state.selected_model.clone();
             set_active_workspace(&mut state, &input.workspace_path);
             state.active_conversation_id = Some(conversation_id.clone());
             state
@@ -462,7 +480,7 @@ impl RuntimeManager {
             let prompt = input.prompt.clone();
             tokio::spawn(async move {
                 manager
-                    .generate_and_set_title(conversation_id, prompt, title_model)
+                    .generate_and_set_title(conversation_id, prompt, title_model_arg)
                     .await;
             });
         }
@@ -925,13 +943,13 @@ impl RuntimeManager {
         conversation_id: &str,
         workspace_path: &str,
     ) -> Result<GraffSessionIo> {
+        let model_arg = self.selected_model_name().await;
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(conversation_id) {
-            let (model, active_agent_id, plan_mode, effort, fast) = {
+            let (active_agent_id, plan_mode, effort, fast) = {
                 let state = self.state.lock().await;
                 let conversation = state.conversations.get(conversation_id);
                 (
-                    state.selected_model.clone(),
                     conversation
                         .and_then(|conversation| conversation.active_agent_id.clone())
                         .or_else(|| state.active_agent_id.clone()),
@@ -942,7 +960,7 @@ impl RuntimeManager {
                     state.fast_enabled,
                 )
             };
-            let session = spawn_graff_session(workspace_path, model.as_deref())?;
+            let session = spawn_graff_session(workspace_path, model_arg.as_deref())?;
             sessions.insert(conversation_id.to_string(), session);
             drop(sessions);
             if let Some(agent_id) = active_agent_id.filter(|id| id != "forge") {
@@ -2334,6 +2352,45 @@ fn prompt_model_option(model: &ModelOption) -> PromptModelOptionDto {
     }
 }
 
+fn selected_prompt_model_pair(
+    catalog: &[ModelOption],
+    configured_provider_ids: &HashSet<String>,
+    selected_provider: Option<&str>,
+    selected_model: Option<&str>,
+) -> Option<(String, String)> {
+    let available_catalog = filtered_catalog_models(catalog, configured_provider_ids);
+
+    let default_model = available_catalog
+        .iter()
+        .find(|model| model.name == "deepseek-v4-pro")
+        .copied()
+        .or_else(|| available_catalog.first().copied());
+
+    selected_provider
+        .zip(selected_model)
+        .and_then(|(provider, model)| {
+            available_catalog
+                .iter()
+                .find(|candidate| candidate.provider == provider && candidate.name == model)
+                .map(|candidate| (candidate.provider.clone(), candidate.name.clone()))
+        })
+        .or_else(|| default_model.map(|model| (model.provider.clone(), model.name.clone())))
+}
+
+fn selected_pair_exists(
+    catalog: &[ModelOption],
+    configured_provider_ids: &HashSet<String>,
+    selected_provider: Option<&str>,
+    selected_model: Option<&str>,
+) -> bool {
+    let Some((provider, model)) = selected_provider.zip(selected_model) else {
+        return false;
+    };
+    filtered_catalog_models(catalog, configured_provider_ids)
+        .iter()
+        .any(|candidate| candidate.provider == provider && candidate.name == model)
+}
+
 fn build_prompt_settings_from_catalog(
     catalog: &[ModelOption],
     configured_provider_ids: &HashSet<String>,
@@ -2376,22 +2433,22 @@ fn build_prompt_settings_from_catalog(
         .map(|model| prompt_model_option(model))
         .collect();
 
-    // Default to the codegraff gateway's model when configured, else the first
-    // configured provider model.
-    let default_model = available_catalog
-        .iter()
-        .find(|model| model.name == "deepseek-v4-pro")
-        .copied()
-        .or_else(|| available_catalog.first().copied());
-    let selected_pair = selected_provider
-        .zip(selected_model)
-        .and_then(|(provider, model)| {
-            available_catalog
-                .iter()
-                .find(|candidate| candidate.provider == provider && candidate.name == model)
-                .map(|candidate| (candidate.provider.clone(), candidate.name.clone()))
-        })
-        .or_else(|| default_model.map(|model| (model.provider.clone(), model.name.clone())));
+    let selected_pair = selected_prompt_model_pair(
+        catalog,
+        configured_provider_ids,
+        selected_provider,
+        selected_model,
+    );
+    let selected_effort = if selected_pair_exists(
+        catalog,
+        configured_provider_ids,
+        selected_provider,
+        selected_model,
+    ) {
+        selected_effort
+    } else {
+        None
+    };
 
     PromptSettingsDto {
         available_models,
@@ -3478,10 +3535,22 @@ mod tests {
             settings.selected_model_id.as_deref(),
             Some("deepseek-v4-pro")
         );
-        assert_eq!(
-            settings.selected_reasoning_effort.as_deref(),
-            Some("medium")
+        assert_eq!(settings.selected_reasoning_effort, None);
+    }
+
+    #[test]
+    fn selected_prompt_model_pair_falls_back_from_unavailable_codex_model() {
+        let pair = selected_prompt_model_pair(
+            &[
+                model("codegraff", "deepseek-v4-pro"),
+                model("codex", "gpt-5.5"),
+            ],
+            &provider_ids(&["codegraff", "codex"]),
+            Some("codex"),
+            Some("gpt-5.5-codex"),
         );
+
+        assert_eq!(pair, Some(("codegraff".into(), "deepseek-v4-pro".into())));
     }
 
     #[test]
