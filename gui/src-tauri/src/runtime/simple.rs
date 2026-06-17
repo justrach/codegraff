@@ -124,6 +124,11 @@ impl RuntimeManager {
         self.projects.add_project(Path::new(&workspace_path))?;
         let mut state = self.state.lock().await;
         set_active_workspace(&mut state, &workspace_path);
+        // Focus this workspace's own conversation (None for a fresh project).
+        // Otherwise active_conversation_id still points at the previously active
+        // workspace's chat, and the UI's (workspace, conversation) view lookup
+        // misses — leaving the panel stuck on an endless loading spinner.
+        state.active_conversation_id = state.selected_by_workspace.get(&workspace_path).cloned();
         drop(state);
         self.snapshot().await
     }

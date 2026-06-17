@@ -333,6 +333,19 @@ export function openWorkspace(path: string): Promise<SessionSnapshot> {
   return invokeCommand("open_workspace", { path });
 }
 
+// Drains a path passed to `codegraff <path>` before the app launched (cold start).
+export function drainPendingOpen(): Promise<string | null> {
+  return invokeCommand("drain_pending_open");
+}
+
+// Fires when a second `codegraff <path>` invocation forwards a path to this
+// already-running instance (single-instance plugin).
+export function onOpenWorkspacePath(
+  handler: (path: string) => void,
+): Promise<UnlistenFn> {
+  return listenEvent<string>("open-workspace-path", handler);
+}
+
 export function getRuntimeStatus(
   workspacePath?: string | null,
 ): Promise<RuntimeStatus> {

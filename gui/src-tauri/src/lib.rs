@@ -42,13 +42,24 @@ use commands::{
 };
 use persistence::project_store::ProjectStore;
 use runtime::DesktopState;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_rustls_crypto_provider();
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    // single-instance must be registered first. A second `codegraff <path>`
+    // invocation lands here: open the path in the running window and focus it.
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(path) = workspace_path_from_args(argv) {
+                let _ = app.emit("open-workspace-path", path);
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_dialog::init());
     #[cfg(debug_assertions)]
     let builder = builder.plugin(
         tauri_plugin_log::Builder::default()
@@ -70,7 +81,11 @@ pub fn run() {
                 app_dir.join("managed-chats"),
             )?);
             app.manage(DesktopState::new(emitter, projects));
-            // First run: expose the bundled `codegraff` CLI on PATH (macOS).
+            // Cold start: stash a `codegraff <path>` arg so the UI opens it once ready.
+            app.manage(PendingOpen(std::sync::Mutex::new(workspace_path_from_args(
+                std::env::args(),
+            ))));
+            // First run: install the `codegraff` launcher command on PATH (macOS).
             cli_install::ensure_cli_symlink(app);
             Ok(())
         })
@@ -144,10 +159,35 @@ pub fn run() {
             terminal_open,
             terminal_write,
             terminal_resize,
-            terminal_close
+            terminal_close,
+            drain_pending_open
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+/// Holds a workspace path passed on the command line before the UI was ready
+/// (cold start). The frontend drains it via `drain_pending_open` once mounted.
+struct PendingOpen(std::sync::Mutex<Option<String>>);
+
+/// Resolve a `codegraff <path>` argument to an absolute workspace path. Skips
+/// the executable (argv[0]) and any leading flags, then takes the first
+/// argument that exists on disk and canonicalizes it.
+fn workspace_path_from_args<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
+    for arg in args.into_iter().skip(1) {
+        if arg.starts_with('-') {
+            continue;
+        }
+        if let Ok(abs) = std::fs::canonicalize(&arg) {
+            return Some(abs.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// Hand the UI any path passed to `codegraff <path>` at cold start (consumed once).
+#[tauri::command]
+fn drain_pending_open(pending: tauri::State<'_, PendingOpen>) -> Option<String> {
+    pending.0.lock().ok().and_then(|mut slot| slot.take())
 }
 
 fn install_rustls_crypto_provider() {
