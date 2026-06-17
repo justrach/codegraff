@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Codegraff",
-  "version": "0.2.16",
+  "version": "0.0.11",
   "identifier": "dev.codegraff.gui",
   "build": {
     "frontendDist": "../dist",
@@ -41,6 +41,13 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "binaries/codegraff": "codegraff"
+    },
+    "macOS": {
+      "signingIdentity": "Developer ID Application: Rachit Pradhan (WWP9DLJ27P)",
+      "hardenedRuntime": true
+    }
   }
 }
