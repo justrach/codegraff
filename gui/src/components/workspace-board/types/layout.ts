@@ -5,7 +5,7 @@ export interface OuterChatPanelParams extends ChatBinding {
 }
 
 export interface PlaceholderPaneParams extends ChatBinding {
-  kind: "preview" | "terminal";
+  kind: "preview" | "terminal" | "changes";
   label: string;
 }
 

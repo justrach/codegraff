@@ -68,6 +68,7 @@ export interface ConversationDockviewHeaderActionsProps {
   onCloseChat?: () => void;
   onOpenPreview?: () => void;
   onOpenTerminal?: () => void;
+  onOpenChanges?: () => void;
 }
 
 export interface ConversationDockviewTabProps {
@@ -90,6 +91,7 @@ export interface ConversationHeaderActionsProps {
   onOpenCommitDialog: () => void;
   onOpenPreview?: () => void;
   onOpenTerminal?: () => void;
+  onOpenChanges?: () => void;
   onPush: () => Promise<void>;
   onSelectOpenTarget: (appId: AppTargetId) => Promise<void>;
   openTargets: ReadonlyArray<AppTarget>;

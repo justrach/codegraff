@@ -12,6 +12,7 @@ export const INNER_PLACEHOLDER_COMPONENT = "placeholder-pane";
 export const CHAT_PANE_ID = "chat";
 export const PREVIEW_PANE_ID = "preview";
 export const TERMINAL_PANE_ID = "terminal";
+export const CHANGES_PANE_ID = "changes";
 export const TERMINAL_RESTART_EVENT_NAME = "codegraff://terminal-restart-request";
 
 let activeDraggedChatBinding: ChatBinding | null = null;

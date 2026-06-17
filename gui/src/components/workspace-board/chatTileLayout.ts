@@ -7,6 +7,7 @@ import type {
 import type { ChatBinding } from "@/services/desktop/types/contracts";
 
 import {
+  CHANGES_PANE_ID,
   CHAT_PANE_ID,
   INNER_CHAT_COMPONENT,
   INNER_PLACEHOLDER_COMPONENT,
@@ -48,7 +49,12 @@ export function openChatTilePane(
   binding: ChatBinding,
   kind: PlaceholderPaneParams["kind"],
 ): void {
-  const panelId = kind === "preview" ? PREVIEW_PANE_ID : TERMINAL_PANE_ID;
+  const panelId =
+    kind === "preview"
+      ? PREVIEW_PANE_ID
+      : kind === "changes"
+        ? CHANGES_PANE_ID
+        : TERMINAL_PANE_ID;
   const existingPanel = api.getPanel(panelId);
   if (existingPanel != null) {
     existingPanel.focus();
@@ -64,11 +70,13 @@ export function openChatTilePane(
   }
 
   const previewPanel = api.getPanel(PREVIEW_PANE_ID);
-  const panelTitle = kind === "preview" ? "Preview" : "Terminal";
+  const panelTitle =
+    kind === "preview" ? "Preview" : kind === "changes" ? "Changes" : "Terminal";
+  // Preview/Changes open to the right of chat; terminal stacks below the preview.
   const referencePanel =
     kind === "terminal" && previewPanel != null ? previewPanel : chatPanel;
   const direction =
-    kind === "preview" ? "right" : previewPanel != null ? "below" : "right";
+    kind === "terminal" ? (previewPanel != null ? "below" : "right") : "right";
 
   api.addPanel<PlaceholderPaneParams>({
     id: panelId,

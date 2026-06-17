@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/Button";
 import { ButtonGroup } from "@/components/ui/ButtonGroup";
 import * as desktopClient from "@/services/desktop/client";
 
+import { ChangesPane } from "./ChangesPane";
 import { PlaceholderPane } from "./PlaceholderPane";
 import { TerminalPane } from "./TerminalPane";
 import {
@@ -110,7 +111,7 @@ export function ChatTile({
   }, [schedulePersist]);
 
   const handleOpenPane = useCallback(
-    (kind: "preview" | "terminal") => {
+    (kind: "preview" | "terminal" | "changes") => {
       const api = innerApiRef.current;
       if (api == null) {
         return;
@@ -136,6 +137,9 @@ export function ChatTile({
           }}
           onOpenTerminal={() => {
             handleOpenPane("terminal");
+          }}
+          onOpenChanges={() => {
+            handleOpenPane("changes");
           }}
         />
       );
@@ -233,6 +237,10 @@ export function ChatTile({
               {...(props as IDockviewPanelProps<TerminalPaneParams>)}
             />
           );
+        }
+
+        if (props.params.kind === "changes") {
+          return <ChangesPane {...props} />;
         }
 
         return <PlaceholderPane {...props} />;

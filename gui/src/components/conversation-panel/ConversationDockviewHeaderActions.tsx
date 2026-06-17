@@ -14,6 +14,7 @@ export function ConversationDockviewHeaderActions({
   onCloseChat,
   onOpenPreview,
   onOpenTerminal,
+  onOpenChanges,
 }: ConversationDockviewHeaderActionsProps) {
   const { messages } = useConversationSession(binding);
   const artifacts = useChatArtifacts(messages);
@@ -71,6 +72,7 @@ export function ConversationDockviewHeaderActions({
           onOpenCommitDialog={openCommitDialog}
           onOpenPreview={onOpenPreview}
           onOpenTerminal={onOpenTerminal}
+          onOpenChanges={onOpenChanges}
           onPush={handlePush}
           onSelectOpenTarget={handleOpenTarget}
           openTargets={openTargets}

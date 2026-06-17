@@ -1,4 +1,6 @@
-import { Suspense, lazy, useCallback } from "react";
+import { useCallback } from "react";
+
+import { PatchDiff } from "@codegraff/diffs/react";
 
 import { openWorkspacePathInTarget } from "@/app/sessionClientActions";
 import {
@@ -7,7 +9,6 @@ import {
 } from "@/components/conversation-panel/constants/conversationHeader";
 import { usePreferredOpenTarget } from "@/components/conversation-panel/hooks/usePreferredOpenTarget";
 import { useWorkspaceMeta } from "@/hooks/useSession";
-import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import {
   ActivityResultCard,
   ActivityResultPreformattedBody,
@@ -18,20 +19,6 @@ import {
   getFileDiffDisplayPath,
   getFileDiffPatchStats,
 } from "./utils/fileDiff";
-
-const LazyPatchDiff = lazy(async () => {
-  const module = await import("@pierre/diffs/react");
-  return { default: module.PatchDiff };
-});
-
-function FileDiffLoadingBody() {
-  return (
-    <div className="flex min-h-32 items-center justify-center gap-2 px-3 py-6 text-xs/relaxed text-muted-foreground">
-      <LoadingSpinner className="size-4" />
-      <span>Loading diff...</span>
-    </div>
-  );
-}
 
 export function FileDiffResult({ result, workspacePath }: FileDiffResultProps) {
   const workspaceMeta = useWorkspaceMeta(workspacePath);
@@ -102,21 +89,14 @@ export function FileDiffResult({ result, workspacePath }: FileDiffResultProps) {
       footer={footer}
     >
       {isGitPatch ? (
-        <Suspense fallback={<FileDiffLoadingBody />}>
-          <LazyPatchDiff
-            patch={result.patch}
-            disableWorkerPool
-            className="block max-w-full overflow-hidden text-xs/relaxed"
-            options={{
-              diffIndicators: "bars",
-              diffStyle: "unified",
-              lineDiffType: "word-alt",
-              overflow: "scroll",
-              disableFileHeader: true,
-              themeType: "system",
-            }}
-          />
-        </Suspense>
+        <PatchDiff
+          patch={result.patch}
+          className="block max-w-full overflow-hidden text-xs/relaxed"
+          options={{
+            lineDiffType: "word",
+            showFileHeader: false,
+          }}
+        />
       ) : (
         <ActivityResultPreformattedBody text={result.patch} />
       )}

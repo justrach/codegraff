@@ -1,6 +1,7 @@
 import {
   ChevronDownIcon,
   EllipsisIcon,
+  FileDiffIcon,
   FolderIcon,
   GitCommitHorizontalIcon,
   GitBranchPlusIcon,
@@ -44,6 +45,7 @@ export function ConversationHeaderActions({
   onOpenCommitDialog,
   onOpenPreview,
   onOpenTerminal,
+  onOpenChanges,
   onPush,
   onSelectOpenTarget,
   openTargets,
@@ -193,6 +195,16 @@ export function ConversationHeaderActions({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-48">
           <DropdownMenuGroup>
+            {onOpenChanges ? (
+              <DropdownMenuItem
+                onClick={() => {
+                  onOpenChanges();
+                }}
+              >
+                <FileDiffIcon />
+                Open Changes
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuItem
               onClick={() => {
                 onOpenPreview?.();

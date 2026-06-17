@@ -1,0 +1,261 @@
+/* @codegraff/diffs — dependency-free diff styling.
+   Colors are driven by CSS variables so the host app can override them.
+   Light defaults; dark overrides apply under `.dark` or prefers-color-scheme. */
+
+.cgd-root {
+  --cgd-fg: #1f2328;
+  --cgd-muted: #656d76;
+  --cgd-border: #d0d7de;
+  --cgd-add-bg: #e6ffec;
+  --cgd-add-word: #abf2bc;
+  --cgd-del-bg: #ffebe9;
+  --cgd-del-word: #ff9a99;
+  --cgd-hunk-fg: #57606a;
+  --cgd-hunk-bg: #f6f8fa;
+  --cgd-stat-add: #1a7f37;
+  --cgd-stat-del: #cf222e;
+  --cgd-tok-keyword: #cf222e;
+  --cgd-tok-string: #0a3069;
+  --cgd-tok-comment: #6e7781;
+  --cgd-tok-number: #0550ae;
+  --cgd-tok-punct: #57606a;
+
+  display: block;
+  color: var(--cgd-fg);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  -moz-tab-size: 2;
+  tab-size: 2;
+}
+
+.cgd-file + .cgd-file {
+  margin-top: 12px;
+}
+
+.cgd-file-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--cgd-border);
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: var(--cgd-hunk-bg);
+}
+
+.cgd-file-path {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cgd-file-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--cgd-border);
+  color: var(--cgd-muted);
+}
+
+.cgd-file-stats,
+.cgd-fc-stats {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.cgd-stat--add {
+  color: var(--cgd-stat-add);
+}
+
+.cgd-stat--del {
+  color: var(--cgd-stat-del);
+}
+
+.cgd-body {
+  border: 1px solid var(--cgd-border);
+  border-radius: 0 0 6px 6px;
+  overflow-x: auto;
+}
+
+.cgd-file-header + .cgd-body {
+  border-radius: 0 0 6px 6px;
+}
+
+.cgd-line {
+  display: grid;
+  grid-template-columns: 44px 44px 16px 1fr;
+  white-space: pre;
+}
+
+.cgd-gutter {
+  text-align: right;
+  padding: 0 8px;
+  color: var(--cgd-muted);
+  user-select: none;
+}
+
+.cgd-sign {
+  text-align: center;
+  user-select: none;
+}
+
+.cgd-content {
+  padding-right: 12px;
+}
+
+.cgd-line--addition {
+  background: var(--cgd-add-bg);
+}
+
+.cgd-line--deletion {
+  background: var(--cgd-del-bg);
+}
+
+.cgd-line--hunk {
+  background: var(--cgd-hunk-bg);
+  color: var(--cgd-hunk-fg);
+}
+
+.cgd-word--added {
+  background: var(--cgd-add-word);
+  border-radius: 2px;
+}
+
+.cgd-word--removed {
+  background: var(--cgd-del-word);
+  border-radius: 2px;
+}
+
+.cgd-tok--keyword {
+  color: var(--cgd-tok-keyword);
+}
+
+.cgd-tok--string {
+  color: var(--cgd-tok-string);
+}
+
+.cgd-tok--comment {
+  color: var(--cgd-tok-comment);
+  font-style: italic;
+}
+
+.cgd-tok--number {
+  color: var(--cgd-tok-number);
+}
+
+.cgd-tok--punct {
+  color: var(--cgd-tok-punct);
+}
+
+.cgd-empty {
+  padding: 12px;
+  color: var(--cgd-muted);
+}
+
+/* Files-changed list */
+.cgd-fc-row {
+  border: 1px solid var(--cgd-border);
+  border-radius: 6px;
+}
+
+.cgd-fc-row + .cgd-fc-row {
+  margin-top: 6px;
+}
+
+.cgd-fc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 8px;
+}
+
+.cgd-fc-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: none;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.cgd-fc-caret {
+  color: var(--cgd-muted);
+}
+
+.cgd-fc-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cgd-fc-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--cgd-border);
+  color: var(--cgd-muted);
+}
+
+.cgd-fc-body {
+  padding: 0 10px 10px;
+}
+
+.cgd-fc-body .cgd-root {
+  font-size: 12px;
+}
+
+/* Dark theme */
+.dark .cgd-root,
+.dark .cgd-fc-row {
+  --cgd-fg: #e6edf3;
+  --cgd-muted: #8b949e;
+  --cgd-border: #30363d;
+  --cgd-add-bg: rgba(46, 160, 67, 0.15);
+  --cgd-add-word: rgba(46, 160, 67, 0.4);
+  --cgd-del-bg: rgba(248, 81, 73, 0.15);
+  --cgd-del-word: rgba(248, 81, 73, 0.4);
+  --cgd-hunk-fg: #8b949e;
+  --cgd-hunk-bg: #161b22;
+  --cgd-stat-add: #3fb950;
+  --cgd-stat-del: #f85149;
+  --cgd-tok-keyword: #ff7b72;
+  --cgd-tok-string: #a5d6ff;
+  --cgd-tok-comment: #8b949e;
+  --cgd-tok-number: #79c0ff;
+  --cgd-tok-punct: #c9d1d9;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) .cgd-root,
+  :root:not(.light) .cgd-fc-row {
+    --cgd-fg: #e6edf3;
+    --cgd-muted: #8b949e;
+    --cgd-border: #30363d;
+    --cgd-add-bg: rgba(46, 160, 67, 0.15);
+    --cgd-add-word: rgba(46, 160, 67, 0.4);
+    --cgd-del-bg: rgba(248, 81, 73, 0.15);
+    --cgd-del-word: rgba(248, 81, 73, 0.4);
+    --cgd-hunk-fg: #8b949e;
+    --cgd-hunk-bg: #161b22;
+    --cgd-stat-add: #3fb950;
+    --cgd-stat-del: #f85149;
+    --cgd-tok-keyword: #ff7b72;
+    --cgd-tok-string: #a5d6ff;
+    --cgd-tok-comment: #8b949e;
+    --cgd-tok-number: #79c0ff;
+    --cgd-tok-punct: #c9d1d9;
+  }
+}

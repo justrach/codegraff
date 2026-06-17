@@ -6,9 +6,10 @@
   "packageManager": "bun@1.3.10",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "bun run build:deps && vite",
     "gen:desktop-contracts": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --example generate_desktop_contracts",
-    "build": "bun run gen:desktop-contracts && tsc -b && vite build",
+    "build:deps": "bun run --filter '@codegraff/diffs' build",
+    "build": "bun run build:deps && bun run gen:desktop-contracts && tsc -b && vite build",
     "lint": "bun run gen:desktop-contracts && eslint .",
     "preview": "vite preview",
     "tauri": "tauri",
@@ -16,9 +17,9 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",
+    "@codegraff/diffs": "workspace:*",
     "@fontsource-variable/geist": "^5.2.8",
     "@legendapp/list": "^3.0.0-beta.44",
-    "@pierre/diffs": "^1.1.16",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "@wterm/dom": "^0.1.9",
