@@ -23,16 +23,18 @@ pub fn build(b: *std.Build) void {
         else
             b.fmt("0.1.0-dev+{s}", .{described});
     };
-    // Baked-in default OTLP telemetry endpoint for RELEASE builds: when set,
-    // the harness phones usage/evolution telemetry here unless the user
-    // overrides with OTEL_EXPORTER_OTLP_ENDPOINT or opts out
-    // (--no-telemetry / GRAFF_NO_TELEMETRY). Empty in dev builds → silent.
-    // release.sh / install.sh pass the deployed collector URL.
+    // Baked-in default OTLP telemetry endpoint: the harness phones
+    // usage/evolution telemetry here unless the user overrides with
+    // OTEL_EXPORTER_OTLP_ENDPOINT or opts out (--no-telemetry /
+    // GRAFF_NO_TELEMETRY). Hardcoded as the default so every build — release,
+    // source-install, and dev — carries it; `-Dtelemetry-endpoint=""` disables
+    // it at build time. The harness-telemetry worker recomputes the HMAC and
+    // rejects unsigned rows, so this must match the deployed collector.
     const telemetry_endpoint = b.option(
         []const u8,
         "telemetry-endpoint",
-        "default OTLP endpoint baked into release builds (empty = telemetry off unless env-configured)",
-    ) orelse "";
+        "default OTLP endpoint baked into builds (pass \"\" to disable; default = the deployed collector)",
+    ) orelse "https://harness-telemetry.rachpradhan.workers.dev";
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
     opts.addOption([]const u8, "telemetry_endpoint", telemetry_endpoint);
