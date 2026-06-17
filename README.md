@@ -45,6 +45,16 @@ context when the conversation gets long.
 
 ## Install
 
+### Desktop app — macOS (Apple Silicon)
+
+Prefer a window over a terminal? Download the latest signed, notarized build, drag it to Applications, and open it — it bundles the `graff` CLI and adds it to your PATH on first launch, so you get the terminal tool for free.
+
+<p align="center">
+  <a href="https://github.com/justrach/codegraff/releases/latest"><img alt="Download Codegraff for macOS" src="https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
+</p>
+
+### Command line — macOS · Linux
+
 Grab the latest prebuilt release binary — macOS builds are Developer ID signed
 and Apple notarized; on any other platform the installer builds from source with
 Zig 0.16:
