@@ -136,6 +136,35 @@ export function SessionProvider({ children }: SessionProviderProps) {
     syncBoardSelectionFromSnapshot,
   ]);
 
+  // `codegraff <path>` (code-style): open the path the launcher handed us —
+  // either stashed before launch (cold start) or forwarded to this running
+  // instance (single-instance). No-op in the browser/QA mock.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const pending = await desktopClient.drainPendingOpen();
+        if (!cancelled && pending) {
+          void openWorkspaceByPath(pending);
+        }
+      } catch {
+        // No pending path (or not running under Tauri) — ignore.
+      }
+      try {
+        unlisten = await desktopClient.onOpenWorkspacePath((path) => {
+          void openWorkspaceByPath(path);
+        });
+      } catch {
+        // Event bridge unavailable (browser mode) — ignore.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [openWorkspaceByPath]);
+
   const actionState = useMemo(
     () => ({
       checkoutBranch: async (branchName: string) => {
