@@ -7286,11 +7286,8 @@ const Agent = struct {
         if (calls.items.len > 0) {
             const results = try self.runTools(calls.items);
             for (calls.items, results) |call, r| {
-                var fco: std.json.ObjectMap = .empty;
-                try fco.put(self.arena, "type", .{ .string = "function_call_output" });
-                try fco.put(self.arena, "call_id", .{ .string = call.id });
-                try fco.put(self.arena, "output", .{ .string = r.text });
-                try self.messages.append(.{ .object = fco });
+                const fco = try toolResultMessage(self.arena, .responses, call.id, r.text, r.is_error);
+                try self.messages.append(fco);
             }
             if (self.completed) |result| return result;
             return null;
@@ -7338,12 +7335,8 @@ const Agent = struct {
             const results = try self.runTools(calls.items);
             var blocks = std.json.Array.init(self.arena);
             for (calls.items, results) |call, r| {
-                var tr: std.json.ObjectMap = .empty;
-                try tr.put(self.arena, "type", .{ .string = "tool_result" });
-                try tr.put(self.arena, "tool_use_id", .{ .string = call.id });
-                try tr.put(self.arena, "content", .{ .string = r.text });
-                if (r.is_error) try tr.put(self.arena, "is_error", .{ .bool = true });
-                try blocks.append(.{ .object = tr });
+                const tr = try toolResultMessage(self.arena, .anthropic, call.id, r.text, r.is_error);
+                try blocks.append(tr);
             }
             var user_msg: std.json.ObjectMap = .empty;
             try user_msg.put(self.arena, "role", .{ .string = "user" });
@@ -7400,15 +7393,8 @@ const Agent = struct {
         if (calls.items.len > 0) {
             const results = try self.runTools(calls.items);
             for (calls.items, results) |call, r| {
-                var tool_msg: std.json.ObjectMap = .empty;
-                try tool_msg.put(self.arena, "role", .{ .string = "tool" });
-                try tool_msg.put(self.arena, "tool_call_id", .{ .string = call.id });
-                const text = if (r.is_error)
-                    try std.fmt.allocPrint(self.arena, "[error] {s}", .{r.text})
-                else
-                    r.text;
-                try tool_msg.put(self.arena, "content", .{ .string = text });
-                try self.messages.append(.{ .object = tool_msg });
+                const tool_msg = try toolResultMessage(self.arena, .openai, call.id, r.text, r.is_error);
+                try self.messages.append(tool_msg);
             }
             if (self.completed) |result| return result;
             return null;
@@ -9574,6 +9560,43 @@ fn textMessage(arena: Allocator, role: []const u8, text: []const u8) !Value {
     return .{ .object = msg };
 }
 
+/// Build the message appended to the conversation after a tool runs, shaped
+/// for each provider's request body. The tool's result text is ALWAYS written
+/// as a JSON string (`.{ .string = ... }`) — never a raw `[]u8` handed to the
+/// serializer, which std.json would emit as an array of integers and the API
+/// would reject (`'input[N].output[0]': expected an object, got an integer`).
+/// anthropic returns a `tool_result` content block (the caller wraps it in a
+/// user message); openai returns a `tool` role message; responses returns a
+/// `function_call_output` item. Error reporting differs per wire format:
+/// anthropic carries a separate `is_error` flag, openai inlines an `[error]`
+/// prefix, and responses has no error channel (text only).
+fn toolResultMessage(arena: Allocator, kind: Provider.Kind, call_id: []const u8, text: []const u8, is_error: bool) !Value {
+    var obj: std.json.ObjectMap = .empty;
+    switch (kind) {
+        .anthropic => {
+            try obj.put(arena, "type", .{ .string = "tool_result" });
+            try obj.put(arena, "tool_use_id", .{ .string = call_id });
+            try obj.put(arena, "content", .{ .string = text });
+            if (is_error) try obj.put(arena, "is_error", .{ .bool = true });
+        },
+        .openai => {
+            try obj.put(arena, "role", .{ .string = "tool" });
+            try obj.put(arena, "tool_call_id", .{ .string = call_id });
+            const body = if (is_error)
+                try std.fmt.allocPrint(arena, "[error] {s}", .{text})
+            else
+                text;
+            try obj.put(arena, "content", .{ .string = body });
+        },
+        .responses => {
+            try obj.put(arena, "type", .{ .string = "function_call_output" });
+            try obj.put(arena, "call_id", .{ .string = call_id });
+            try obj.put(arena, "output", .{ .string = text });
+        },
+    }
+    return .{ .object = obj };
+}
+
 /// A base64-encoded image staged by `/image`, sent with the next user turn.
 const PendingImage = struct { media_type: []const u8, b64: []const u8, label: []const u8 };
 
@@ -11441,4 +11464,63 @@ test "parseHookList: defaults, malformed entries skipped" {
     try std.testing.expectEqual(@as(u64, 10_000), hooks[0].timeout_ms); // default timeout
     try std.testing.expectEqualStrings("bash", hooks[1].match);
     try std.testing.expectEqual(@as(u64, 500), hooks[1].timeout_ms);
+}
+
+test "toolResultMessage: result text serializes as a JSON string in every wire format" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Serialize a built message the same way buildBody does and return the bytes.
+    const enc = struct {
+        fn run(a: Allocator, msg: Value) ![]u8 {
+            var aw: Io.Writer.Allocating = .init(a);
+            var s: std.json.Stringify = .{ .writer = &aw.writer };
+            try s.write(msg);
+            return aw.toOwnedSlice();
+        }
+    }.run;
+
+    // Responses (codex): result lives in `output`. This is the field that
+    // produced "'input[N].output[0]': expected an object, got an integer"
+    // when a raw []u8 reached the serializer as a byte array. Assert both the
+    // Value tag and the on-the-wire shape are a string, never an array.
+    {
+        const msg = try toolResultMessage(arena, .responses, "call_1", "hello world", false);
+        try std.testing.expect(msg.object.get("output").? == .string);
+        try std.testing.expectEqualStrings("function_call_output", msg.object.get("type").?.string);
+        try std.testing.expectEqualStrings("call_1", msg.object.get("call_id").?.string);
+        const json = try enc(arena, msg);
+        try std.testing.expect(std.mem.indexOf(u8, json, "\"output\":\"hello world\"") != null);
+        // Guard against the regression directly: output must not be a JSON array.
+        try std.testing.expect(std.mem.indexOf(u8, json, "\"output\":[") == null);
+    }
+
+    // OpenAI chat-completions: result in `content` (string); errors inline an
+    // [error] prefix rather than a separate flag.
+    {
+        const ok = try toolResultMessage(arena, .openai, "call_2", "result text", false);
+        try std.testing.expect(ok.object.get("content").? == .string);
+        try std.testing.expectEqualStrings("tool", ok.object.get("role").?.string);
+        try std.testing.expectEqualStrings("result text", ok.object.get("content").?.string);
+
+        const err = try toolResultMessage(arena, .openai, "call_2", "boom", true);
+        try std.testing.expect(err.object.get("content").? == .string);
+        try std.testing.expectEqualStrings("[error] boom", err.object.get("content").?.string);
+    }
+
+    // Anthropic: result in `content` (string) block; errors carry a separate
+    // is_error flag that is absent on success.
+    {
+        const ok = try toolResultMessage(arena, .anthropic, "call_3", "tool said hi", false);
+        try std.testing.expect(ok.object.get("content").? == .string);
+        try std.testing.expectEqualStrings("tool_result", ok.object.get("type").?.string);
+        try std.testing.expectEqualStrings("call_3", ok.object.get("tool_use_id").?.string);
+        try std.testing.expect(ok.object.get("is_error") == null);
+
+        const err = try toolResultMessage(arena, .anthropic, "call_3", "nope", true);
+        try std.testing.expect(err.object.get("is_error").?.bool == true);
+        const json = try enc(arena, err);
+        try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":\"nope\"") != null);
+    }
 }
