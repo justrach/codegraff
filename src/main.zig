@@ -5153,7 +5153,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (arg.len == 0) {
             try out.writeAll("rewind to before which prompt?\n");
             for (turns.items, 1..) |idx, n| {
-                var snip = root.messages.items[idx].object.get("content").?.string;
+                var snip = if (root.messages.items[idx].object.get("content")) |c| (if (c == .string) c.string else "[image]") else "";
                 if (std.mem.indexOfScalar(u8, snip, '\n')) |nl| snip = snip[0..nl];
                 const shown = if (snip.len > 70) snip[0..70] else snip;
                 try out.print("  {s}{d}{s}: {s}{s}\n", .{ style.cyan, n, style.reset, shown, if (snip.len > 70) "…" else "" });
@@ -7055,9 +7055,11 @@ const Agent = struct {
             if (live) {
                 if (try self.assembleStream(resp_body)) |root| {
                     if (root.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "error")) {
-                        const e = root.get("error").?.object;
+                        const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
+                        const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
+                        const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
                         if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-                        try self.sayApiError("api error ({s}): {s}", .{ e.get("type").?.string, e.get("message").?.string });
+                        try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                         return error.ApiError;
                     };
                     self.recordUsage(root);
@@ -7075,9 +7077,11 @@ const Agent = struct {
             const root = resp.object;
 
             if (root.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "error")) {
-                const e = root.get("error").?.object;
+                const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
+                const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
+                const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
                 if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
-                try self.sayApiError("api error ({s}): {s}", .{ e.get("type").?.string, e.get("message").?.string });
+                try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                 return error.ApiError;
             };
             if (root.get("error")) |e| if (e == .object) {
@@ -7599,9 +7603,13 @@ const Agent = struct {
             self.todos.clearRetainingCapacity();
             if (call.input.object.get("todos")) |list| if (list == .array) {
                 for (list.array.items) |item| {
+                    if (item != .object) continue;
+                    const content = item.object.get("content") orelse continue;
+                    if (content != .string) continue;
+                    const status = if (item.object.get("status")) |st| (if (st == .string) st.string else "pending") else "pending";
                     try self.todos.append(self.arena, .{
-                        .content = try self.arena.dupe(u8, item.object.get("content").?.string),
-                        .status = try self.arena.dupe(u8, item.object.get("status").?.string),
+                        .content = try self.arena.dupe(u8, content.string),
+                        .status = try self.arena.dupe(u8, status),
                     });
                 }
             };
@@ -7767,14 +7775,23 @@ const Agent = struct {
         const root = try self.request(null);
         const summary = switch (self.provider.kind) {
             .anthropic => blk: {
-                for (root.get("content").?.array.items) |block| {
-                    if (std.mem.eql(u8, block.object.get("type").?.string, "text"))
-                        break :blk block.object.get("text").?.string;
+                const content = root.get("content") orelse break :blk "";
+                if (content != .array) break :blk "";
+                for (content.array.items) |block| {
+                    if (block != .object) continue;
+                    const bt = if (block.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+                    if (std.mem.eql(u8, bt, "text"))
+                        if (block.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
                 }
                 break :blk "";
             },
             .openai => blk: {
-                const message = root.get("choices").?.array.items[0].object.get("message").?;
+                const choices = root.get("choices") orelse break :blk "";
+                if (choices != .array or choices.array.items.len == 0) break :blk "";
+                const c0 = choices.array.items[0];
+                if (c0 != .object) break :blk "";
+                const message = c0.object.get("message") orelse break :blk "";
+                if (message != .object) break :blk "";
                 const c = message.object.get("content") orelse break :blk "";
                 break :blk if (c == .string) c.string else "";
             },
@@ -7922,6 +7939,15 @@ const Agent = struct {
                 if (self.effortApplies() and !self.effort_rejected) {
                     try s.objectField("reasoning_effort");
                     try s.write(@tagName(self.reasoning));
+                }
+                // Kimi K2.7's model card recommends temperature 1.0 + top_p 0.95
+                // for its (always-on) Thinking mode; graff otherwise leaves
+                // sampling to the server default.
+                if (std.mem.eql(u8, self.provider.id, "kimi")) {
+                    try s.objectField("temperature");
+                    try s.write(@as(f64, 1.0));
+                    try s.objectField("top_p");
+                    try s.write(@as(f64, 0.95));
                 }
             },
             .responses => {
@@ -8125,7 +8151,44 @@ const Agent = struct {
         defer line.deinit();
 
         while (true) {
-            _ = try reader.streamDelimiterEnding(&line.writer, '\n');
+            // Race the line read against an idle-stall watchdog so a dead
+            // stream can't hang the turn (the Esc escape below is TTY-only, so
+            // --json/GUI sessions would otherwise wait forever).
+            read: {
+                const ReadDone = union(enum) { line: anyerror!usize, stall: WatchdogFired };
+                var rd_buf: [2]ReadDone = undefined;
+                var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
+                rsel.concurrent(.line, streamLineTask, .{ reader, &line.writer }) catch {
+                    _ = try reader.streamDelimiterEnding(&line.writer, '\n'); // no spare concurrency
+                    break :read;
+                };
+                rsel.concurrent(.stall, streamStallTask, .{self.io}) catch {
+                    const r = rsel.await() catch |e| {
+                        rsel.cancelDiscard();
+                        return e;
+                    };
+                    rsel.cancelDiscard();
+                    _ = try r.line;
+                    break :read;
+                };
+                const first = rsel.await() catch |e| {
+                    rsel.cancelDiscard();
+                    return e;
+                };
+                rsel.cancelDiscard();
+                switch (first) {
+                    .line => |r| _ = try r,
+                    .stall => |w| {
+                        self.flushStreamTail();
+                        if (req.connection) |conn| conn.closing = true;
+                        if (w == .deadline and !json_mode) if (self.out) |o| {
+                            o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
+                            o.flush() catch {};
+                        };
+                        return error.Interrupted;
+                    },
+                }
+            }
             // End of stream leaves the reader empty; otherwise the '\n' is
             // still buffered (and consumed below, after the line is handled).
             const more = if (reader.peekByte()) |_| true else |_| false;
@@ -9746,6 +9809,30 @@ fn postWatchdog(io: Io) WatchdogFired {
     return .deadline;
 }
 
+// A streaming response idle this long (no SSE bytes — a dead/stalled
+// connection, or a model that hung before its first token or mid-answer) is
+// given up on, so a turn can't hang forever. Generous, so a legit reasoning
+// pause doesn't trip it. The TTY Esc-interrupt is the only other escape and
+// doesn't apply to --json/GUI sessions, where this matters most.
+const stream_stall_ms: u64 = 120 * 1000;
+
+/// Select-arm wrapper: read one '\n'-delimited SSE line into `w`.
+fn streamLineTask(reader: *Io.Reader, w: *Io.Writer) anyerror!usize {
+    return reader.streamDelimiterEnding(w, '\n');
+}
+
+/// Select-arm wrapper: fires after stream_stall_ms of no line (idle stall), or
+/// early on Esc — resets each line, so it measures the gap between lines.
+fn streamStallTask(io: Io) WatchdogFired {
+    var waited: u64 = 0;
+    while (waited < stream_stall_ms) {
+        io.sleep(.fromMilliseconds(200), .awake) catch return .deadline; // canceled: a line arrived
+        waited += 200;
+        if (Agent.esc_cancel.load(.acquire)) return .esc;
+    }
+    return .deadline;
+}
+
 /// Select-arm wrapper for `post` (pins the member type to anyerror![]u8).
 fn postTask(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []const u8) anyerror![]u8 {
     return post(gpa, client, provider, body);
@@ -10619,8 +10706,9 @@ fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
         .text = try ctx.gpa.dupe(u8, "subagents cannot spawn subagents — do this work yourself"),
         .is_error = true,
     };
-    const label = if (input.object.get("description")) |d| d.string else "subagent";
-    const prompt = input.object.get("prompt").?.string;
+    const label = if (input.object.get("description")) |d| (if (d == .string) d.string else "subagent") else "subagent";
+    const prompt = if (input.object.get("prompt")) |p| (if (p == .string) p.string else "") else "";
+    if (prompt.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
     const sys_override = resolveOverride(input.object);
     return runSub(ctx, "subagent", label, prompt, sys_override);
 }
@@ -10733,12 +10821,14 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
 
     var prev_results: []const u8 = "";
     for (phases, 1..) |phase_val, phase_no| {
+        if (phase_val != .object) return .{ .text = try gpa.dupe(u8, "each phase must be an object"), .is_error = true };
         const phase = phase_val.object;
-        const title = if (phase.get("title")) |t| t.string else "phase";
+        const title = if (phase.get("title")) |t| (if (t == .string) t.string else "phase") else "phase";
         const tasks_val = phase.get("tasks") orelse return .{
             .text = try gpa.dupe(u8, "each phase needs a tasks array"),
             .is_error = true,
         };
+        if (tasks_val != .array) return .{ .text = try gpa.dupe(u8, "phase tasks must be an array"), .is_error = true };
         const tasks = tasks_val.array.items;
         if (tasks.len == 0 or tasks.len > max_workflow_tasks) return .{
             .text = try std.fmt.allocPrint(gpa, "each phase needs 1-{d} tasks", .{max_workflow_tasks}),
@@ -10751,10 +10841,12 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         const labels = try arena.alloc([]const u8, tasks.len);
         const overrides = try arena.alloc(?[]const u8, tasks.len);
         for (tasks, prompts, labels, overrides) |task_val, *prompt, *label, *override| {
+            if (task_val != .object) return .{ .text = try gpa.dupe(u8, "each task must be an object"), .is_error = true };
             const task = task_val.object;
-            label.* = if (task.get("description")) |d| d.string else "task";
+            label.* = if (task.get("description")) |d| (if (d == .string) d.string else "task") else "task";
             override.* = resolveOverride(task);
-            const raw = task.get("prompt").?.string;
+            const raw = if (task.get("prompt")) |p| (if (p == .string) p.string else "") else "";
+            if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each task needs a non-empty \"prompt\""), .is_error = true };
             if (phase_no == 1) {
                 prompt.* = raw;
             } else if (std.mem.indexOf(u8, raw, "{{prev}}") != null) {
