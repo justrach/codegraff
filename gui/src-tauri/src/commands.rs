@@ -623,6 +623,39 @@ pub(crate) async fn open_path_for_edit(path: String) -> Result<(), String> {
     crate::desktop_open::open_path_for_edit(std::path::Path::new(&path)).map_err(map_command_error)
 }
 
+/// Reads a workspace file's current contents so the GUI can synthesize a diff
+/// for operations the harness only reports as a byte-count summary (file
+/// creates/overwrites). Confined to the workspace and capped in size; large or
+/// out-of-tree paths return an error so the caller falls back to a placeholder.
+#[tauri::command]
+pub(crate) async fn read_workspace_file(
+    workspace_path: String,
+    path: String,
+) -> Result<String, String> {
+    const MAX_BYTES: u64 = 512 * 1024;
+    let candidate = Path::new(&path);
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        Path::new(&workspace_path).join(candidate)
+    };
+
+    let canonical = std::fs::canonicalize(&resolved).map_err(|error| error.to_string())?;
+    let workspace = Path::new(&workspace_path);
+    let canonical_workspace =
+        std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    if !canonical.starts_with(&canonical_workspace) {
+        return Err("path is outside the workspace".into());
+    }
+
+    let metadata = std::fs::metadata(&canonical).map_err(|error| error.to_string())?;
+    if metadata.len() > MAX_BYTES {
+        return Err("file too large".into());
+    }
+
+    std::fs::read_to_string(&canonical).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub(crate) async fn save_conversation_layout(
     input: SaveConversationLayoutInput,

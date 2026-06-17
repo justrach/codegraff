@@ -1,93 +1,69 @@
-import { getPatchStats } from "@codegraff/diffs";
-
+import { buildChatThreadItems } from "@/components/chat/utils/chatThread";
+import { getActivityResultModel } from "@/components/chat/utils/getActivityResultModel";
 import type {
   FileOperation,
   TranscriptMessage,
 } from "@/services/desktop/types/contracts";
-import { buildRenderableFileDiffPatch } from "@/components/chat/activity-results/utils/fileDiff";
 
 export interface SessionFileChange {
   /** Path as reported by the harness (absolute or workspace-relative). */
   path: string;
-  /** Latest git-style patch for the file, normalized for rendering. */
+  /** Latest raw renderable patch for the file (git diff, excerpt, or byte summary). */
   patch: string;
-  /** Lines added/removed summed across every edit to this file in the session. */
-  additions: number;
-  deletions: number;
-  /** Number of edits observed for this file. */
-  editCount: number;
   /** Most recent file operation, when known. */
   operation: FileOperation | null;
-}
-
-interface MutableChange extends SessionFileChange {
-  order: number;
+  /** Number of edits observed for this file in the session. */
+  editCount: number;
 }
 
 /**
- * Derive the set of files changed during a conversation from its messages.
- * Aggregates `file_diff` tool results (and `file_update` tool starts for the
- * operation label) into one row per file. Combining multiple edits into a single
- * net patch is out of scope — `patch` holds the most recent edit and `editCount`
- * reflects how many edits were seen.
+ * Derive the files changed during a conversation from its messages.
+ *
+ * Uses the same aggregation the transcript uses — `buildChatThreadItems`
+ * assembles `file_update` tool starts with their result text/summary, and
+ * `getActivityResultModel` turns each into a `file_diff` model. (The raw message
+ * stream never carries a `file_diff` detail; it's synthesized here.) One row per
+ * file, keeping the most recent patch/operation and an edit count.
  */
 export function deriveSessionFileChanges(
   messages: readonly TranscriptMessage[],
 ): SessionFileChange[] {
-  const byPath = new Map<string, MutableChange>();
+  const items = buildChatThreadItems([...messages], []);
+  const byPath = new Map<string, { order: number; change: SessionFileChange }>();
   let order = 0;
 
-  const ensure = (path: string): MutableChange => {
-    let entry = byPath.get(path);
-    if (entry == null) {
-      entry = {
-        path,
-        patch: "",
-        additions: 0,
-        deletions: 0,
-        editCount: 0,
-        operation: null,
-        order: order += 1,
-      };
-      byPath.set(path, entry);
-    }
-    return entry;
-  };
-
-  for (const message of messages) {
-    if (message.kind === "tool_start" && message.detail.kind === "file_update") {
-      ensure(message.detail.path).operation = message.detail.operation;
+  for (const item of items) {
+    if (item.kind !== "request_work") {
       continue;
     }
+    for (const activity of item.activities) {
+      for (const operation of activity.operations) {
+        const model = getActivityResultModel(operation);
+        if (model?.kind !== "file_diff") {
+          continue;
+        }
 
-    if (
-      message.kind === "tool_end" &&
-      message.detail != null &&
-      message.detail.kind === "file_diff"
-    ) {
-      const entry = ensure(message.detail.path);
-      const renderablePatch = buildRenderableFileDiffPatch(
-        message.detail.path,
-        message.detail.patch,
-      );
-      const stats = getPatchStats(renderablePatch);
-      if (stats != null) {
-        entry.additions += stats.additions;
-        entry.deletions += stats.deletions;
+        const existing = byPath.get(model.path);
+        if (existing == null) {
+          byPath.set(model.path, {
+            order: order += 1,
+            change: {
+              path: model.path,
+              patch: model.patch,
+              operation: model.operation ?? null,
+              editCount: 1,
+            },
+          });
+        } else {
+          existing.change.patch = model.patch;
+          existing.change.operation = model.operation ?? existing.change.operation;
+          existing.change.editCount += 1;
+        }
       }
-      entry.patch = renderablePatch;
-      entry.editCount += 1;
     }
   }
 
   return Array.from(byPath.values())
     .sort((left, right) => left.order - right.order)
-    .map((change) => ({
-      path: change.path,
-      patch: change.patch,
-      additions: change.additions,
-      deletions: change.deletions,
-      editCount: change.editCount,
-      operation: change.operation,
-    }));
+    .map((entry) => entry.change);
 }

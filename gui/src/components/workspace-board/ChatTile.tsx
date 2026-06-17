@@ -148,7 +148,10 @@ export function ChatTile({
     const panelParams = activePanel?.params as Partial<PlaceholderPaneParams> | undefined;
     const kind = panelParams?.kind;
 
-    if (activePanel == null || (kind !== "preview" && kind !== "terminal")) {
+    if (
+      activePanel == null ||
+      (kind !== "preview" && kind !== "terminal" && kind !== "changes")
+    ) {
       return null;
     }
 
@@ -156,13 +159,13 @@ export function ChatTile({
       activePanel.api.close();
     };
 
-    if (kind === "preview") {
+    if (kind === "preview" || kind === "changes") {
       return (
         <div className={headerActionsClassName}>
           <Button
             variant="outline"
             size="icon-sm"
-            aria-label="Close preview"
+            aria-label={kind === "changes" ? "Close changes" : "Close preview"}
             onClick={handleClose}
           >
             <XIcon />

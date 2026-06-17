@@ -1,0 +1,26 @@
+/* Bind @codegraff/diffs to the app's theme tokens so diffs adapt to light/dark
+   and every `data-theme` preset automatically. Imported after the package's base
+   stylesheet so these overrides win. */
+
+.cgd-root,
+.cgd-fc-row {
+  --cgd-font: var(--font-mono);
+  --cgd-fg: var(--foreground);
+  --cgd-muted: var(--muted-foreground);
+  --cgd-border: var(--border);
+  --cgd-add-bg: var(--diff-add-bg);
+  --cgd-del-bg: var(--diff-del-bg);
+  --cgd-add-word: color-mix(in oklab, var(--success) 32%, transparent);
+  --cgd-del-word: color-mix(in oklab, var(--destructive) 32%, transparent);
+  --cgd-add-accent: var(--success);
+  --cgd-del-accent: var(--destructive);
+  --cgd-hunk-bg: color-mix(in oklab, var(--muted) 60%, transparent);
+  --cgd-hunk-fg: var(--muted-foreground);
+  --cgd-stat-add: var(--success);
+  --cgd-stat-del: var(--destructive);
+  --cgd-tok-keyword: var(--sh-keyword);
+  --cgd-tok-string: var(--sh-string);
+  --cgd-tok-comment: var(--sh-comment);
+  --cgd-tok-number: var(--sh-class);
+  --cgd-tok-punct: var(--sh-sign);
+}

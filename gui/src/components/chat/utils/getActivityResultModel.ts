@@ -96,6 +96,7 @@ export function getActivityResultModel(
           path: operation.detail.path,
           patch,
           copyText: patch,
+          operation: operation.detail.operation,
         }
       : null;
   }

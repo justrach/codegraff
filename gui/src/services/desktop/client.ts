@@ -284,6 +284,8 @@ function mockInvokeCommand<T>(
         { id: `${conversationId}-assistant`, kind: "assistant", requestId: `${conversationId}-request`, text: "QA mock response with a bullet list:\n\n- Markdown bullets align correctly.\n- `inline code` stays readable.\n\n```ts\nconst theme = 'clean-modern';\n```\n\n[Codegraff](https://github.com/justrach/codegraff)" },
       ]) as T);
     }
+    case "read_workspace_file":
+      return Promise.resolve("// QA mock file contents\nexport const value = 1;\n" as T);
     case "list_mcp_servers":
       return Promise.resolve({ servers: [] } as T);
     case "pick_workspace":
@@ -665,6 +667,13 @@ export function openPathDefault(path: string): Promise<void> {
 
 export function openPathForEdit(path: string): Promise<void> {
   return invokeCommand("open_path_for_edit", { path });
+}
+
+export function readWorkspaceFile(
+  workspacePath: string,
+  path: string,
+): Promise<string> {
+  return invokeCommand("read_workspace_file", { workspacePath, path });
 }
 
 export function saveConversationLayout(

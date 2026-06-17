@@ -8,22 +8,59 @@ import {
   appTargets,
 } from "@/components/conversation-panel/constants/conversationHeader";
 import { usePreferredOpenTarget } from "@/components/conversation-panel/hooks/usePreferredOpenTarget";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useWorkspaceMeta } from "@/hooks/useSession";
-import {
-  ActivityResultCard,
-  ActivityResultPreformattedBody,
-} from "./ActivityResultCard";
+import { ActivityResultCard } from "./ActivityResultCard";
 import type { FileDiffResultProps } from "../types/chatComponents";
+import { useRenderableFileDiff } from "./hooks/useRenderableFileDiff";
 import {
   getFileDiffDisplayName,
   getFileDiffDisplayPath,
-  getFileDiffPatchStats,
 } from "./utils/fileDiff";
+import {
+  formatFileChangeLabel,
+  type FileChangePlaceholder,
+} from "./utils/fileChangeLabel";
+
+function FileDiffLoadingBody() {
+  return (
+    <div className="flex min-h-24 items-center justify-center gap-2 px-3 py-6 text-xs/relaxed text-muted-foreground">
+      <LoadingSpinner className="size-4" />
+      <span>Loading diff…</span>
+    </div>
+  );
+}
+
+function FileDiffPlaceholderBody({
+  placeholder,
+}: {
+  placeholder: FileChangePlaceholder;
+}) {
+  const { title, detail } = formatFileChangeLabel(
+    placeholder.operation,
+    placeholder.byteCount,
+  );
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-2.5 text-xs text-muted-foreground">
+      <span className="font-medium text-foreground/80">{title}</span>
+      {detail != null ? (
+        <>
+          <span className="text-muted-foreground/40">·</span>
+          <span className="font-mono text-[11px]">{detail}</span>
+        </>
+      ) : null}
+    </div>
+  );
+}
 
 export function FileDiffResult({ result, workspacePath }: FileDiffResultProps) {
   const workspaceMeta = useWorkspaceMeta(workspacePath);
-  const isGitPatch = result.patch.startsWith("diff --git ");
-  const patchStats = getFileDiffPatchStats(result.patch);
+  const rendered = useRenderableFileDiff({
+    workspacePath,
+    path: result.path,
+    patch: result.patch,
+    operation: result.operation,
+  });
   const displayName = getFileDiffDisplayName(result.path);
   const displayPath = getFileDiffDisplayPath(result.path, workspacePath);
   const availableOpenTargets =
@@ -49,6 +86,10 @@ export function FileDiffResult({ result, workspacePath }: FileDiffResultProps) {
     );
   }, [availableEditorTargets.length, resolvedPreferredAppId, result.path, workspacePath]);
 
+  const stats = rendered.status === "diff"
+    ? { additions: rendered.additions, deletions: rendered.deletions }
+    : null;
+
   const footer = {
     leading: (
       <code className="font-mono text-xs text-muted-foreground">
@@ -56,14 +97,10 @@ export function FileDiffResult({ result, workspacePath }: FileDiffResultProps) {
       </code>
     ),
     trailing:
-      patchStats == null ? null : (
-        <span className="inline-flex items-center gap-2 font-mono text-xs">
-          <span className="text-success">
-            +{patchStats.additions}
-          </span>
-          <span className="text-destructive">
-            -{patchStats.deletions}
-          </span>
+      stats == null ? null : (
+        <span className="inline-flex items-center gap-2 font-mono text-xs tabular-nums">
+          <span className="text-success">+{stats.additions}</span>
+          <span className="text-destructive">-{stats.deletions}</span>
         </span>
       ),
   };
@@ -88,17 +125,18 @@ export function FileDiffResult({ result, workspacePath }: FileDiffResultProps) {
       copyText={result.copyText}
       footer={footer}
     >
-      {isGitPatch ? (
-        <PatchDiff
-          patch={result.patch}
-          className="block max-w-full overflow-hidden text-xs/relaxed"
-          options={{
-            lineDiffType: "word",
-            showFileHeader: false,
-          }}
-        />
+      {rendered.status === "diff" ? (
+        <div className="px-1 py-1.5">
+          <PatchDiff
+            patch={rendered.patch}
+            className="block max-w-full overflow-hidden text-xs/relaxed"
+            options={{ lineDiffType: "word", showFileHeader: false }}
+          />
+        </div>
+      ) : rendered.status === "loading" ? (
+        <FileDiffLoadingBody />
       ) : (
-        <ActivityResultPreformattedBody text={result.patch} />
+        <FileDiffPlaceholderBody placeholder={rendered} />
       )}
     </ActivityResultCard>
   );
