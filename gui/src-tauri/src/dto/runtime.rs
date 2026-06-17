@@ -359,6 +359,7 @@ pub struct ProviderUrlParamValueDto {
 pub enum ProviderAuthSessionKindDto {
     ApiKey,
     DeviceCode,
+    CliLogin,
     OAuthCode,
 }
 

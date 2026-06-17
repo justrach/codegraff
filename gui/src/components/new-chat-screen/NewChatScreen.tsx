@@ -1,17 +1,33 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ChatThread } from "@/components/chat/ChatThread";
 import { useConversationSession } from "@/hooks/useSession";
 import { ConversationSurface } from "@/components/conversation-panel/ConversationSurface";
 import type { RequestTimingInfo } from "@/app/types/sessionContext";
 import type { CommandRunResult } from "@/services/desktop/types/contracts";
+import { useSettingsNavigation } from "@/app/settingsNavigationContext";
+import { ProviderSetupDialog } from "@/components/providers-settings/ProviderSetupDialog";
+import { useProviderSetup } from "@/components/providers-settings/useProviderSetup";
 
 import { CloneRepositoryDialog } from "./CloneRepositoryDialog";
 import { useNewChatScreenController } from "./hooks/useNewChatScreenController";
 import { NewChatLaunchActions } from "./NewChatLaunchActions";
 import { NewChatPromptSection } from "./NewChatPromptSection";
+import { OnboardingPanel } from "./OnboardingPanel";
 import { QuickStartProjectDialog } from "./QuickStartProjectDialog";
 import type { NewChatScreenProps } from "./types/newChatScreen";
+import {
+  hasConfiguredProvider,
+  readOnboardingStorage,
+  shouldShowOnboardingPanel,
+  writeOnboardingCompleted,
+} from "./utils/onboarding";
+
+function initialOnboardingCompleted() {
+  return readOnboardingStorage(
+    typeof window === "undefined" ? null : window.localStorage,
+  ).completed;
+}
 
 export function NewChatScreen({
   binding,
@@ -46,6 +62,7 @@ export function NewChatScreen({
       ? localCommandResultState.results
       : [];
   const visibleCommandResults = commandResults ?? localCommandResults;
+  const [focusSignal, setFocusSignal] = useState(0);
   const appendLocalCommandResult = useCallback(
     (result: CommandRunResult) => {
       if (onCommandResult != null) {
@@ -71,6 +88,10 @@ export function NewChatScreen({
       onOpenClone={controller.openCloneDialog}
       onOpenFolder={() => void controller.handleOpenWorkspacePicker()}
       onOpenQuickStart={controller.openQuickStartDialog}
+      onRequestPromptFocus={() => {
+        setFocusSignal((current) => current + 1);
+      }}
+      promptFocusSignal={focusSignal}
       requestTimingsById={requestTimingsById}
       visibleError={controller.visibleError}
       workspaceLabel={activeWorkspaceLabel}
@@ -132,6 +153,8 @@ function NewChatScreenContent({
   onOpenClone,
   onOpenFolder,
   onOpenQuickStart,
+  onRequestPromptFocus,
+  promptFocusSignal,
   requestTimingsById,
   visibleError,
   workspaceLabel,
@@ -145,6 +168,8 @@ function NewChatScreenContent({
   onOpenClone: () => void;
   onOpenFolder: () => void;
   onOpenQuickStart: () => void;
+  onRequestPromptFocus: () => void;
+  promptFocusSignal: number;
   requestTimingsById: Record<string, RequestTimingInfo>;
   visibleError: string | null;
   workspaceLabel: string;
@@ -154,12 +179,43 @@ function NewChatScreenContent({
     hasCurrentWorkspace,
     workspaceKind,
   } = useConversationSession(binding);
+  const providerSetup = useProviderSetup(workspacePath);
+  const { openProviderSettings } = useSettingsNavigation();
+  const [onboardingCompleted, setOnboardingCompleted] = useState(
+    initialOnboardingCompleted,
+  );
   const heading = hasCurrentWorkspace
     ? workspaceKind === "managed_chat"
       ? "Ask anything"
       : `Ask anything about ${workspaceLabel}`
     : "Ask anything";
   const hasCommandResults = commandResults.length > 0;
+  const hasProvider = hasConfiguredProvider(providerSetup.providers);
+  const showOnboarding =
+    !hasCommandResults &&
+    shouldShowOnboardingPanel({
+      completed: onboardingCompleted,
+      hasProvider,
+      hasWorkspace: hasCurrentWorkspace,
+    });
+
+  useEffect(() => {
+    if (onboardingCompleted || !hasProvider || !hasCurrentWorkspace) {
+      return;
+    }
+
+    setOnboardingCompleted(true);
+    writeOnboardingCompleted(
+      typeof window === "undefined" ? null : window.localStorage,
+    );
+  }, [hasCurrentWorkspace, hasProvider, onboardingCompleted]);
+
+  function completeOnboarding() {
+    setOnboardingCompleted(true);
+    writeOnboardingCompleted(
+      typeof window === "undefined" ? null : window.localStorage,
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-8">
@@ -200,9 +256,29 @@ function NewChatScreenContent({
           </div>
         ) : null}
 
+        {showOnboarding ? (
+          <div className="w-full max-w-3xl self-center text-left">
+            <OnboardingPanel
+              hasProvider={hasProvider}
+              hasWorkspace={hasCurrentWorkspace}
+              isBusy={isBusy}
+              isLoadingProviders={providerSetup.isLoadingProviders}
+              onCollapse={completeOnboarding}
+              onFocusPrompt={onRequestPromptFocus}
+              onOpenClone={onOpenClone}
+              onOpenFolder={onOpenFolder}
+              onOpenProviderSetup={providerSetup.openProviderSetup}
+              onOpenQuickStart={onOpenQuickStart}
+              onOpenSettings={openProviderSettings}
+              providers={providerSetup.providers}
+            />
+          </div>
+        ) : null}
+
         <div className="w-full max-w-3xl self-center">
           <NewChatPromptSection
             binding={binding}
+            focusSignal={promptFocusSignal}
             onCommandResult={onCommandResult}
           />
         </div>
@@ -217,6 +293,14 @@ function NewChatScreenContent({
           />
         ) : null}
       </div>
+      <ProviderSetupDialog
+        initialAuthMethod={providerSetup.initialAuthMethod}
+        isOpen={providerSetup.selectedProvider != null}
+        onClose={providerSetup.closeProviderSetup}
+        onProviderUpdated={providerSetup.applyProviderUpdate}
+        provider={providerSetup.selectedProvider}
+        workspacePath={workspacePath}
+      />
     </div>
   );
 }

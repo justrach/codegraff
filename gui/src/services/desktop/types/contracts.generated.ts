@@ -76,7 +76,7 @@ export type ProviderUrlParam = { name: string, value: string | null, options: Ar
 
 export type ProviderUrlParamValue = { name: string, value: string, };
 
-export type ProviderAuthSessionKind = "api_key" | "device_code" | "o_auth_code";
+export type ProviderAuthSessionKind = "api_key" | "device_code" | "cli_login" | "o_auth_code";
 
 export type ProviderAuthSession = { kind: ProviderAuthSessionKind, authSessionId: string, requiresApiKey: boolean, apiKeyHint: string | null, urlParameters: Array<ProviderUrlParam>, verificationUri: string | null, verificationUriComplete: string | null, userCode: string | null, expiresInSeconds: bigint | null, authorizationUrl: string | null, };
 

@@ -130,6 +130,8 @@ mock.module("../hooks/useSessionBootstrap", () => ({
 
 mock.module("../services/desktop/client", () => ({
   setFast: async () => {},
+  savePastedImage: async () => "/tmp/pasted-image.png",
+  imageThumbnail: async () => "data:image/jpeg;base64,",
   openExternalUrl: async () => {},
   openPathInTarget: async () => {},
   ensureConversationView: async () => {

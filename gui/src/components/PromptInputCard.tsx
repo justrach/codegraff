@@ -53,6 +53,7 @@ export function PromptInputCard({
   placeholder = "Ask about this workspace…",
   promptSettings,
   promptDraft,
+  focusSignal,
   isInputDisabled = false,
   binding,
   workspacePath,
@@ -134,6 +135,13 @@ export function PromptInputCard({
 
   useAutosizeTextarea(textareaRef, promptDraft);
 
+  useEffect(() => {
+    if (focusSignal == null || isControlDisabled) {
+      return;
+    }
+    textareaRef.current?.focus();
+  }, [focusSignal, isControlDisabled]);
+
   // Highlight a leading slash-command token so the user sees they're issuing a
   // command. Only active in command mode, so normal prose typing is untouched.
   const commandMatch = /^(\/[A-Za-z][\w-]*)([\s\S]*)$/.exec(promptDraft);
@@ -208,7 +216,7 @@ export function PromptInputCard({
       ) : null}
       <Card
         className={cn(
-          "relative gap-0 rounded-2xl border border-border bg-background/50 p-2 transition-colors transition-shadow ring-0",
+          "relative gap-0 rounded-2xl border border-foreground/5 bg-background/50 p-2 transition-colors transition-shadow ring-0",
           isPlanningMode &&
             "border-[color:var(--accent)] ring-5 ring-[color:color-mix(in_oklab,var(--accent)_14%,transparent)] border-dashed",
         )}

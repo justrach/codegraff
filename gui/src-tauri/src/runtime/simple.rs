@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
@@ -124,11 +124,6 @@ impl RuntimeManager {
         self.projects.add_project(Path::new(&workspace_path))?;
         let mut state = self.state.lock().await;
         set_active_workspace(&mut state, &workspace_path);
-        // Focus this workspace's own conversation (None for a fresh project).
-        // Otherwise active_conversation_id still points at the previously active
-        // workspace's chat, and the UI's (workspace, conversation) view lookup
-        // misses — leaving the panel stuck on an endless loading spinner.
-        state.active_conversation_id = state.selected_by_workspace.get(&workspace_path).cloned();
         drop(state);
         self.snapshot().await
     }
@@ -149,28 +144,7 @@ impl RuntimeManager {
     /// Returns the model picker, populated from `graff --schema`.
     pub async fn get_prompt_settings(&self, _: Option<String>) -> Result<PromptSettingsDto> {
         let catalog = self.ensure_model_catalog().await;
-        // Only surface models for providers the user has credentials for,
-        // ordered codex first, then codegraff, then the rest (stable within
-        // each group).
-        let catalog = {
-            let key_list = codegraff_key_list().await.unwrap_or_default();
-            let configured: std::collections::HashSet<String> = schema_providers()
-                .await
-                .iter()
-                .filter(|provider| provider_configured(provider, &key_list))
-                .map(|provider| provider.id.clone())
-                .collect();
-            let mut models: Vec<ModelOption> = catalog
-                .into_iter()
-                .filter(|model| configured.contains(model.provider.as_str()))
-                .collect();
-            models.sort_by_key(|model| match model.provider.as_str() {
-                "codex" => 0u8,
-                "codegraff" => 1,
-                _ => 2,
-            });
-            models
-        };
+        let configured_provider_ids = configured_provider_ids().await;
         let (selected_provider, selected_model, selected_effort, fast_enabled) = {
             let state = self.state.lock().await;
             (
@@ -181,81 +155,14 @@ impl RuntimeManager {
             )
         };
 
-        if catalog.is_empty() {
-            // Schema unavailable (e.g. binary missing): fall back to a single
-            // default so the picker still renders and sessions use the CLI default.
-            return Ok(PromptSettingsDto {
-                available_models: vec![PromptModelOptionDto {
-                    provider_id: "codegraff".into(),
-                    provider_name: "Codegraff".into(),
-                    model_id: "default".into(),
-                    model_name: Some("Default".into()),
-                    context_length: None,
-                    supports_reasoning: false,
-                    reasoning_efforts: vec![],
-                }],
-                selected_provider_id: Some("codegraff".into()),
-                selected_model_id: Some("default".into()),
-                selected_reasoning_effort: None,
-                fast_enabled: false,
-            });
-        }
-
-        let available_models = catalog
-            .iter()
-            .map(|model| {
-                // Effort-capable providers (mirrors the binary's effortApplies):
-                // codex takes reasoning.effort via the Responses API; codegraff
-                // and deepseek take a top-level reasoning_effort. But the
-                // gateway's gpt-* models go through /v1/chat/completions, which
-                // rejects reasoning_effort (they need the codex/Responses path),
-                // so don't advertise effort for them.
-                let effort_capable = match model.provider.as_str() {
-                    "codex" => true,
-                    "codegraff" | "deepseek" => !model.name.starts_with("gpt-"),
-                    "kimi" => true,
-                    _ => false,
-                };
-                let reasoning_efforts: Vec<String> = if effort_capable {
-                    vec!["low".into(), "medium".into(), "high".into()]
-                } else {
-                    vec![]
-                };
-                PromptModelOptionDto {
-                    provider_id: model.provider.clone(),
-                    provider_name: provider_display_name(&model.provider),
-                    model_id: model.name.clone(),
-                    model_name: Some(model.name.clone()),
-                    context_length: model.context,
-                    supports_reasoning: !reasoning_efforts.is_empty(),
-                    reasoning_efforts,
-                }
-            })
-            .collect();
-
-        // Default to the codegraff gateway's model, else the first advertised.
-        let default_model = catalog
-            .iter()
-            .find(|model| model.name == "deepseek-v4-pro")
-            .or_else(|| catalog.first());
-        let selected_model_id =
-            selected_model.or_else(|| default_model.map(|model| model.name.clone()));
-        let selected_provider_id = selected_provider.or_else(|| {
-            selected_model_id.as_ref().and_then(|name| {
-                catalog
-                    .iter()
-                    .find(|model| &model.name == name)
-                    .map(|model| model.provider.clone())
-            })
-        });
-
-        Ok(PromptSettingsDto {
-            available_models,
-            selected_provider_id,
-            selected_model_id,
-            selected_reasoning_effort: selected_effort,
+        Ok(build_prompt_settings_from_catalog(
+            &catalog,
+            &configured_provider_ids,
+            selected_provider.as_deref(),
+            selected_model.as_deref(),
+            selected_effort,
             fast_enabled,
-        })
+        ))
     }
 
     /// Generates a short chat title with the active model (a one-shot graff run)
@@ -319,10 +226,23 @@ impl RuntimeManager {
         &self,
         input: UpdatePromptSettingsInput,
     ) -> Result<PromptSettingsDto> {
+        let catalog = self.ensure_model_catalog().await;
+        let configured_provider_ids = configured_provider_ids().await;
+        let available_catalog = filtered_catalog_models(&catalog, &configured_provider_ids);
+        let selected_model = available_catalog
+            .iter()
+            .copied()
+            .find(|model| model.provider == input.provider_id && model.name == input.model_id)
+            .with_context(|| {
+                format!(
+                    "{} is not available for provider {}. Choose a configured provider/model from the picker.",
+                    input.model_id, input.provider_id
+                )
+            })?;
         let live_conversation_id = {
             let mut state = self.state.lock().await;
-            state.selected_provider = Some(input.provider_id.clone());
-            state.selected_model = Some(input.model_id.clone());
+            state.selected_provider = Some(selected_model.provider.clone());
+            state.selected_model = Some(selected_model.name.clone());
             if let Some(effort) = &input.reasoning_effort {
                 state.selected_effort = Some(effort.clone());
             }
@@ -334,7 +254,7 @@ impl RuntimeManager {
                     &conversation_id,
                     serde_json::json!({
                         "type": "set_model",
-                        "name": input.model_id,
+                        "name": selected_model.name,
                     }),
                 )
                 .await?;
@@ -414,15 +334,17 @@ impl RuntimeManager {
         input: CompleteProviderAuthInput,
     ) -> Result<ProviderSummaryDto> {
         let provider_id = provider_from_auth_session_id(&input.auth_session_id);
-        if let Some(api_key) = input
+        let submitted_api_key = input
             .api_key
             .as_deref()
             .map(str::trim)
-            .filter(|key| !key.is_empty())
-        {
+            .filter(|key| !key.is_empty());
+        if let Some(api_key) = submitted_api_key {
             run_codegraff_key_set(provider_id, api_key).await?;
         }
-        provider_summary(provider_id).await
+        let summary = provider_summary(provider_id).await?;
+        validate_provider_auth_completion(&summary, submitted_api_key.is_some())?;
+        Ok(summary)
     }
 
     /// Deletes a provider's stored credential from the same locations the CLI
@@ -441,14 +363,16 @@ impl RuntimeManager {
                     .filter(|value| !value.trim().is_empty())
                     .is_some()
                 {
-                    let location = match find_env_definition(&env_key) {
-                        Some((path, line)) => format!("{path}:{line}"),
-                        None => "your shell environment".into(),
-                    };
-                    anyhow::bail!(
-                        "Removed the stored {provider} credential, but ${env_key} is set in {location} and takes precedence. Open that file to remove the line, then restart to fully remove this provider.",
-                        provider = input.provider_id
-                    );
+                    match find_env_definition(&env_key) {
+                        Some((path, line)) => anyhow::bail!(
+                            "Stored {provider} credential removed. ${env_key} is still set in {path}:{line}, so it is still being used.",
+                            provider = input.provider_id
+                        ),
+                        None => anyhow::bail!(
+                            "Stored {provider} credential removed. ${env_key} is still inherited by the running Codegraff app, so it is still being used.",
+                            provider = input.provider_id
+                        ),
+                    }
                 }
             }
         }
@@ -502,6 +426,9 @@ impl RuntimeManager {
             conversation.plan_mode = plan_mode;
             conversation.updated_at = now_millis();
             is_first_turn = conversation.messages.is_empty();
+            if is_first_turn && is_placeholder_title(&conversation.title) {
+                conversation.title = title_from_prompt(&input.prompt);
+            }
             conversation.messages.push(SessionMessageDto::User {
                 id: format!("{request_id}-user"),
                 request_id: request_id.clone(),
@@ -694,16 +621,17 @@ impl RuntimeManager {
                     let rid = request_id.to_string();
                     let delta = delta.to_string();
                     self.mutate_conversation(conversation_id, move |conversation| {
-                        let existing = conversation.messages.iter_mut().rev().find_map(
-                            |message| match message {
-                                SessionMessageDto::Reasoning { id: mid, text, .. }
-                                    if *mid == id =>
-                                {
-                                    Some(text)
-                                }
-                                _ => None,
-                            },
-                        );
+                        let existing =
+                            conversation.messages.iter_mut().rev().find_map(
+                                |message| match message {
+                                    SessionMessageDto::Reasoning { id: mid, text, .. }
+                                        if *mid == id =>
+                                    {
+                                        Some(text)
+                                    }
+                                    _ => None,
+                                },
+                            );
                         match existing {
                             Some(text) => text.push_str(&delta),
                             None => conversation.messages.push(SessionMessageDto::Reasoning {
@@ -1432,10 +1360,20 @@ impl RuntimeManager {
     ) -> Result<SessionSnapshotDto> {
         let mut state = self.state.lock().await;
         set_active_workspace(&mut state, &workspace_path);
-        state.active_conversation_id = Some(conversation_id.clone());
-        state
-            .selected_by_workspace
-            .insert(workspace_path, conversation_id);
+        if state.conversations.contains_key(&conversation_id) {
+            state.active_conversation_id = Some(conversation_id.clone());
+            state
+                .selected_by_workspace
+                .insert(workspace_path, conversation_id);
+        } else if let Some(fallback_id) = first_workspace_conversation_id(&state, &workspace_path) {
+            state.active_conversation_id = Some(fallback_id.clone());
+            state
+                .selected_by_workspace
+                .insert(workspace_path, fallback_id);
+        } else {
+            state.active_conversation_id = None;
+            state.selected_by_workspace.remove(&workspace_path);
+        }
         drop(state);
         self.snapshot().await
     }
@@ -1560,15 +1498,27 @@ impl RuntimeManager {
     /// Archives a conversation from local state.
     pub async fn archive_conversation(
         &self,
-        _: String,
+        workspace_path: String,
         conversation_id: String,
     ) -> Result<SessionSnapshotDto> {
         self.drop_session(&conversation_id).await;
-        self.state
-            .lock()
-            .await
-            .conversations
-            .remove(&conversation_id);
+        let mut state = self.state.lock().await;
+        state.conversations.remove(&conversation_id);
+        if state.selected_by_workspace.get(&workspace_path) == Some(&conversation_id) {
+            state.selected_by_workspace.remove(&workspace_path);
+        }
+        state
+            .selected_by_workspace
+            .retain(|_, selected_id| selected_id != &conversation_id);
+        if state.active_conversation_id.as_deref() == Some(&conversation_id) {
+            if state.active_workspace_path.as_deref() == Some(&workspace_path) {
+                state.active_conversation_id =
+                    first_workspace_conversation_id(&state, &workspace_path);
+            } else {
+                state.active_conversation_id = None;
+            }
+        }
+        drop(state);
         self.persist_conversations().await;
         self.snapshot().await
     }
@@ -1774,6 +1724,7 @@ impl RuntimeManager {
                 )
             })
             .collect();
+        normalize_runtime_selection(&mut state);
         let active_conversation_id = state.active_conversation_id.clone();
         let pending_followups = state.pending_followups.clone();
         let visible_followup = active_conversation_id
@@ -1822,13 +1773,14 @@ impl RuntimeManager {
                     .get(path)
                     .cloned()
                     .unwrap_or((WorkspaceKindDto::Project, None));
+                let selected_conversation_id = selected_workspace_conversation_id(&state, path);
                 WorkspaceSessionDto {
                     kind,
                     workspace_path: path.clone(),
                     workspace_name: display_name.unwrap_or_else(|| workspace_name(path)),
                     configured: true,
                     configuration_error: None,
-                    selected_conversation_id: state.selected_by_workspace.get(path).cloned(),
+                    selected_conversation_id,
                     conversations,
                 }
             })
@@ -2018,8 +1970,11 @@ struct PersistedPromptSettings {
 
 /// Path to the persisted prompt selection (`~/.codegraff-gui/prompt-settings.json`).
 fn prompt_settings_store_path() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".codegraff-gui").join("prompt-settings.json"))
+    std::env::var_os("HOME").map(|home| {
+        PathBuf::from(home)
+            .join(".codegraff-gui")
+            .join("prompt-settings.json")
+    })
 }
 
 /// Loads the last model/effort/fast selection so it survives app restarts.
@@ -2069,12 +2024,13 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
     items
         .into_iter()
         .map(|conversation| {
+            let title = recover_conversation_title(&conversation.title, &conversation.messages);
             (
                 conversation.conversation_id.clone(),
                 ConversationState {
                     workspace_path: conversation.workspace_path,
                     conversation_id: conversation.conversation_id,
-                    title: conversation.title,
+                    title,
                     messages: conversation.messages,
                     active_request_ids: vec![],
                     active_agent_id: conversation.active_agent_id,
@@ -2086,11 +2042,85 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
         .collect()
 }
 
+fn recover_conversation_title(title: &str, messages: &[SessionMessageDto]) -> String {
+    if !is_placeholder_title(title) {
+        return title.to_string();
+    }
+
+    first_user_message_text(messages)
+        .map(title_from_prompt)
+        .unwrap_or_else(|| title_from_prompt(""))
+}
+
+fn first_user_message_text(messages: &[SessionMessageDto]) -> Option<&str> {
+    messages.iter().find_map(|message| match message {
+        SessionMessageDto::User { text, .. } if !text.trim().is_empty() => Some(text.as_str()),
+        _ => None,
+    })
+}
+
 fn set_active_workspace(state: &mut RuntimeState, workspace_path: &str) {
     state.active_workspace_path = Some(workspace_path.into());
     if !state.workspaces.iter().any(|path| path == workspace_path) {
         state.workspaces.insert(0, workspace_path.into());
     }
+}
+
+fn normalize_runtime_selection(state: &mut RuntimeState) {
+    let conversations = &state.conversations;
+    state
+        .selected_by_workspace
+        .retain(|workspace_path, conversation_id| {
+            conversations
+                .get(conversation_id)
+                .is_some_and(|conversation| &conversation.workspace_path == workspace_path)
+        });
+
+    if let Some(active_conversation_id) = state.active_conversation_id.clone() {
+        let active_workspace_path = state.active_workspace_path.clone();
+        let is_valid_active = state
+            .conversations
+            .get(&active_conversation_id)
+            .is_some_and(|conversation| {
+                active_workspace_path
+                    .as_ref()
+                    .is_none_or(|path| &conversation.workspace_path == path)
+            });
+        if !is_valid_active {
+            state.active_conversation_id = active_workspace_path
+                .as_deref()
+                .and_then(|workspace_path| first_workspace_conversation_id(state, workspace_path));
+        }
+    }
+}
+
+fn selected_workspace_conversation_id(
+    state: &RuntimeState,
+    workspace_path: &str,
+) -> Option<String> {
+    state
+        .selected_by_workspace
+        .get(workspace_path)
+        .filter(|conversation_id| {
+            state
+                .conversations
+                .get(*conversation_id)
+                .is_some_and(|conversation| conversation.workspace_path == workspace_path)
+        })
+        .cloned()
+}
+
+fn first_workspace_conversation_id(state: &RuntimeState, workspace_path: &str) -> Option<String> {
+    state
+        .conversations
+        .values()
+        .filter(|conversation| conversation.workspace_path == workspace_path)
+        .max_by(|a, b| {
+            a.updated_at
+                .cmp(&b.updated_at)
+                .then_with(|| a.conversation_id.cmp(&b.conversation_id))
+        })
+        .map(|conversation| conversation.conversation_id.clone())
 }
 
 fn conversation_view(
@@ -2264,6 +2294,112 @@ fn provider_display_name(provider_id: &str) -> String {
         .find(|provider| provider.id == provider_id)
         .map(|provider| provider.name.to_string())
         .unwrap_or_else(|| provider_id.to_string())
+}
+
+fn filtered_catalog_models<'a>(
+    catalog: &'a [ModelOption],
+    configured_provider_ids: &HashSet<String>,
+) -> Vec<&'a ModelOption> {
+    catalog
+        .iter()
+        .filter(|model| configured_provider_ids.contains(&model.provider))
+        .collect()
+}
+
+fn prompt_model_option(model: &ModelOption) -> PromptModelOptionDto {
+    // Effort-capable providers (mirrors the binary's effortApplies):
+    // codex takes reasoning.effort via the Responses API; codegraff and
+    // deepseek take a top-level reasoning_effort. But the gateway's gpt-*
+    // models go through /v1/chat/completions, which rejects reasoning_effort.
+    let effort_capable = match model.provider.as_str() {
+        "codex" => true,
+        "codegraff" | "deepseek" => !model.name.starts_with("gpt-"),
+        "kimi" => true,
+        _ => false,
+    };
+    let reasoning_efforts: Vec<String> = if effort_capable {
+        vec!["low".into(), "medium".into(), "high".into()]
+    } else {
+        vec![]
+    };
+
+    PromptModelOptionDto {
+        provider_id: model.provider.clone(),
+        provider_name: provider_display_name(&model.provider),
+        model_id: model.name.clone(),
+        model_name: Some(model.name.clone()),
+        context_length: model.context,
+        supports_reasoning: !reasoning_efforts.is_empty(),
+        reasoning_efforts,
+    }
+}
+
+fn build_prompt_settings_from_catalog(
+    catalog: &[ModelOption],
+    configured_provider_ids: &HashSet<String>,
+    selected_provider: Option<&str>,
+    selected_model: Option<&str>,
+    selected_effort: Option<String>,
+    fast_enabled: bool,
+) -> PromptSettingsDto {
+    if catalog.is_empty() {
+        if configured_provider_ids.contains("codegraff") {
+            return PromptSettingsDto {
+                available_models: vec![PromptModelOptionDto {
+                    provider_id: "codegraff".into(),
+                    provider_name: "Codegraff".into(),
+                    model_id: "default".into(),
+                    model_name: Some("Default".into()),
+                    context_length: None,
+                    supports_reasoning: false,
+                    reasoning_efforts: vec![],
+                }],
+                selected_provider_id: Some("codegraff".into()),
+                selected_model_id: Some("default".into()),
+                selected_reasoning_effort: None,
+                fast_enabled,
+            };
+        }
+
+        return PromptSettingsDto {
+            available_models: vec![],
+            selected_provider_id: None,
+            selected_model_id: None,
+            selected_reasoning_effort: None,
+            fast_enabled,
+        };
+    }
+
+    let available_catalog = filtered_catalog_models(catalog, configured_provider_ids);
+    let available_models = available_catalog
+        .iter()
+        .map(|model| prompt_model_option(model))
+        .collect();
+
+    // Default to the codegraff gateway's model when configured, else the first
+    // configured provider model.
+    let default_model = available_catalog
+        .iter()
+        .find(|model| model.name == "deepseek-v4-pro")
+        .copied()
+        .or_else(|| available_catalog.first().copied());
+    let selected_pair = selected_provider
+        .zip(selected_model)
+        .and_then(|(provider, model)| {
+            available_catalog
+                .iter()
+                .find(|candidate| candidate.provider == provider && candidate.name == model)
+                .map(|candidate| (candidate.provider.clone(), candidate.name.clone()))
+        })
+        .or_else(|| default_model.map(|model| (model.provider.clone(), model.name.clone())));
+
+    PromptSettingsDto {
+        available_models,
+        selected_provider_id: selected_pair.as_ref().map(|(provider, _)| provider.clone()),
+        selected_model_id: selected_pair.as_ref().map(|(_, model)| model.clone()),
+        selected_reasoning_effort: selected_pair.and(selected_effort),
+        fast_enabled,
+    }
 }
 
 /// Writes one newline-delimited protocol request to a session's stdin. Locks
@@ -2468,7 +2604,12 @@ struct CodegraffProvider {
 /// see `schema_providers`.
 fn fallback_providers() -> Vec<CodegraffProvider> {
     use ProviderAuthMethodKindDto::*;
-    fn p(id: &str, name: &str, env: Option<&str>, auth: ProviderAuthMethodKindDto) -> CodegraffProvider {
+    fn p(
+        id: &str,
+        name: &str,
+        env: Option<&str>,
+        auth: ProviderAuthMethodKindDto,
+    ) -> CodegraffProvider {
         CodegraffProvider {
             id: id.into(),
             name: name.into(),
@@ -2477,7 +2618,12 @@ fn fallback_providers() -> Vec<CodegraffProvider> {
         }
     }
     vec![
-        p("codegraff", "Codegraff", Some("CODEGRAFF_API_KEY"), CodegraffDevice),
+        p(
+            "codegraff",
+            "Codegraff",
+            Some("CODEGRAFF_API_KEY"),
+            CodegraffDevice,
+        ),
         p("anthropic", "Anthropic", Some("ANTHROPIC_API_KEY"), ApiKey),
         p("deepseek", "DeepSeek", Some("DEEPSEEK_API_KEY"), ApiKey),
         p("openai", "OpenAI", Some("OPENAI_API_KEY"), ApiKey),
@@ -2536,7 +2682,12 @@ async fn schema_providers() -> Vec<CodegraffProvider> {
             } else {
                 None
             };
-            Some(CodegraffProvider { id, name, env_key, auth_method })
+            Some(CodegraffProvider {
+                id,
+                name,
+                env_key,
+                auth_method,
+            })
         })
         .collect();
     if providers.is_empty() {
@@ -2557,6 +2708,22 @@ async fn list_codegraff_providers() -> Result<Vec<ProviderSummaryDto>> {
         .iter()
         .map(|provider| provider_summary_with_key_list(provider, &key_list))
         .collect())
+}
+
+async fn configured_provider_ids() -> HashSet<String> {
+    let key_list = codegraff_key_list().await.unwrap_or_default();
+    configured_provider_ids_from_providers(&schema_providers().await, &key_list)
+}
+
+fn configured_provider_ids_from_providers(
+    providers: &[CodegraffProvider],
+    key_list: &str,
+) -> HashSet<String> {
+    providers
+        .iter()
+        .filter(|provider| provider_configured(provider, key_list))
+        .map(|provider| provider.id.clone())
+        .collect()
 }
 
 async fn provider_summary(provider_id: &str) -> Result<ProviderSummaryDto> {
@@ -2583,6 +2750,19 @@ fn provider_summary_with_key_list(
         }],
         env_override: provider_env_override(provider),
     }
+}
+
+fn validate_provider_auth_completion(
+    summary: &ProviderSummaryDto,
+    submitted_api_key: bool,
+) -> Result<()> {
+    if submitted_api_key || summary.configured {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Provider login not detected yet. Complete the login flow in Terminal, then try Finish setup again."
+    )
 }
 
 /// Builds the env-override hint when a provider's `<PROVIDER>_API_KEY` is set,
@@ -2665,12 +2845,21 @@ fn provider_configured(provider: &CodegraffProvider, key_list: &str) -> bool {
         return true;
     }
 
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    provider_login_configured(provider, key_list, home.as_deref())
+}
+
+fn provider_login_configured(
+    provider: &CodegraffProvider,
+    key_list: &str,
+    home: Option<&Path>,
+) -> bool {
     match provider.id.as_str() {
         "codegraff" => {
-            home_file_exists("forge/.credentials.json")
+            home_file_exists(home, ".simple-harness-codegraff.json")
                 || key_list_mentions_provider(key_list, &provider.id)
         }
-        "codex" => home_file_exists(".codex/auth.json"),
+        "codex" => home_codex_auth_has_valid_token(home),
         _ => key_list_mentions_provider(key_list, &provider.id),
     }
 }
@@ -2687,10 +2876,33 @@ fn key_list_mentions_provider(key_list: &str, provider_id: &str) -> bool {
     })
 }
 
-fn home_file_exists(relative_path: &str) -> bool {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(relative_path).exists())
+fn home_file_exists(home: Option<&Path>, relative_path: &str) -> bool {
+    home.map(|home| home.join(relative_path).exists())
+        .unwrap_or(false)
+}
+
+fn home_codex_auth_has_valid_token(home: Option<&Path>) -> bool {
+    home.map(|home| codex_auth_file_has_valid_token(&home.join(".codex/auth.json")))
+        .unwrap_or(false)
+}
+
+fn codex_auth_file_has_valid_token(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    codex_auth_text_has_valid_token(&text)
+}
+
+fn codex_auth_text_has_valid_token(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    value
+        .get("tokens")
+        .and_then(|tokens| tokens.get("access_token"))
+        .or_else(|| value.get("access_token"))
+        .and_then(|token| token.as_str())
+        .map(|token| !token.trim().is_empty())
         .unwrap_or(false)
 }
 
@@ -2713,7 +2925,7 @@ fn provider_from_auth_session_id(auth_session_id: &str) -> &str {
 
 fn cli_login_session(provider_id: &str, message: &str) -> ProviderAuthSessionDto {
     ProviderAuthSessionDto {
-        kind: ProviderAuthSessionKindDto::DeviceCode,
+        kind: ProviderAuthSessionKindDto::CliLogin,
         auth_session_id: auth_session_id(provider_id),
         requires_api_key: false,
         api_key_hint: Some(message.into()),
@@ -2860,9 +3072,8 @@ fn shell_single_quote(value: &str) -> String {
 /// capped to a handful of words.
 fn clean_title(raw: &str) -> String {
     let first = raw.trim().lines().next().unwrap_or("").trim();
-    let trimmed = first.trim_matches(|c: char| {
-        c == '"' || c == '\'' || c == '.' || c == ':' || c.is_whitespace()
-    });
+    let trimmed = first
+        .trim_matches(|c: char| c == '"' || c == '\'' || c == '.' || c == ':' || c.is_whitespace());
     trimmed
         .split_whitespace()
         .take(8)
@@ -2891,6 +3102,11 @@ fn title_from_prompt(prompt: &str) -> String {
     } else {
         title
     }
+}
+
+fn is_placeholder_title(title: &str) -> bool {
+    let title = title.trim();
+    title.is_empty() || title.eq_ignore_ascii_case("New chat")
 }
 
 fn git_status_files(workspace_path: &str) -> Result<Vec<WorkspaceFileStatusDto>> {
@@ -3014,5 +3230,320 @@ mod tests {
             selected_option_ids: Some(vec!["option-0".to_string()]),
         };
         assert_eq!(followup_answer_line(&request, &response), "yes please");
+    }
+
+    #[test]
+    fn placeholder_title_detection_accepts_empty_and_new_chat() {
+        assert!(is_placeholder_title(""));
+        assert!(is_placeholder_title("  New chat  "));
+        assert!(is_placeholder_title("new CHAT"));
+        assert!(!is_placeholder_title("Investigate stale sidebar state"));
+    }
+
+    #[test]
+    fn recover_conversation_title_uses_first_user_message() {
+        let messages = vec![
+            SessionMessageDto::Assistant {
+                id: "assistant-1".into(),
+                request_id: "request-1".into(),
+                text: "Hello".into(),
+            },
+            SessionMessageDto::User {
+                id: "user-1".into(),
+                request_id: "request-1".into(),
+                text: "Fix the new chat title regression with deterministic fallback".into(),
+            },
+        ];
+
+        assert_eq!(
+            recover_conversation_title("New chat", &messages),
+            "Fix the new chat title regression with deterministic"
+        );
+        assert_eq!(
+            recover_conversation_title("Custom title", &messages),
+            "Custom title"
+        );
+    }
+
+    #[test]
+    fn selected_workspace_conversation_ignores_stale_ids() {
+        let mut state = RuntimeState::default();
+        state.conversations.insert(
+            "chat-1".into(),
+            ConversationState {
+                workspace_path: "/tmp/work".into(),
+                conversation_id: "chat-1".into(),
+                title: "Existing".into(),
+                messages: vec![],
+                active_request_ids: vec![],
+                active_agent_id: None,
+                plan_mode: false,
+                updated_at: 10,
+            },
+        );
+        state
+            .selected_by_workspace
+            .insert("/tmp/work".into(), "missing".into());
+
+        assert_eq!(
+            selected_workspace_conversation_id(&state, "/tmp/work"),
+            None
+        );
+
+        state
+            .selected_by_workspace
+            .insert("/tmp/work".into(), "chat-1".into());
+        assert_eq!(
+            selected_workspace_conversation_id(&state, "/tmp/work"),
+            Some("chat-1".into())
+        );
+    }
+
+    #[test]
+    fn provider_configured_detects_codegraff_login_file() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "codegraff-provider-test-{}",
+            Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        std::fs::write(temp_dir.join(".simple-harness-codegraff.json"), "{}")
+            .expect("write login file");
+
+        let configured = provider_login_configured(
+            &CodegraffProvider {
+                id: "codegraff".into(),
+                name: "Codegraff".into(),
+                env_key: None,
+                auth_method: ProviderAuthMethodKindDto::CodegraffDevice,
+            },
+            "",
+            Some(&temp_dir),
+        );
+        let _ = std::fs::remove_dir_all(temp_dir);
+
+        assert!(configured);
+    }
+
+    #[test]
+    fn codex_auth_text_requires_nonempty_access_token() {
+        assert!(codex_auth_text_has_valid_token(
+            r#"{"tokens":{"access_token":"token"}}"#
+        ));
+        assert!(codex_auth_text_has_valid_token(
+            r#"{"access_token":"legacy-token"}"#
+        ));
+        assert!(!codex_auth_text_has_valid_token(
+            r#"{"tokens":{"access_token":" "}}"#
+        ));
+        assert!(!codex_auth_text_has_valid_token("{}"));
+        assert!(!codex_auth_text_has_valid_token("not json"));
+    }
+
+    #[test]
+    fn provider_configured_detects_codex_auth_file_token() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("codex-provider-test-{}", Uuid::new_v4().simple()));
+        let codex_dir = temp_dir.join(".codex");
+        std::fs::create_dir_all(&codex_dir).expect("create codex dir");
+        std::fs::write(
+            codex_dir.join("auth.json"),
+            r#"{"tokens":{"access_token":"token"}}"#,
+        )
+        .expect("write codex auth file");
+
+        let configured = provider_login_configured(
+            &CodegraffProvider {
+                id: "codex".into(),
+                name: "Codex / ChatGPT".into(),
+                env_key: None,
+                auth_method: ProviderAuthMethodKindDto::CodexDevice,
+            },
+            "",
+            Some(&temp_dir),
+        );
+        let _ = std::fs::remove_dir_all(temp_dir);
+
+        assert!(configured);
+    }
+
+    fn provider_summary_for_test(configured: bool) -> ProviderSummaryDto {
+        ProviderSummaryDto {
+            id: "codegraff".into(),
+            name: "Codegraff".into(),
+            configured,
+            auth_methods: vec![ProviderAuthMethodDto {
+                kind: ProviderAuthMethodKindDto::CodegraffDevice,
+                label: "Codegraff device login".into(),
+            }],
+            env_override: None,
+        }
+    }
+
+    #[test]
+    fn provider_completion_rejects_unfinished_cli_login() {
+        let error = validate_provider_auth_completion(&provider_summary_for_test(false), false)
+            .expect_err("unfinished login should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Provider login not detected yet")
+        );
+    }
+
+    #[test]
+    fn provider_completion_accepts_configured_cli_login() {
+        validate_provider_auth_completion(&provider_summary_for_test(true), false)
+            .expect("configured login should complete");
+    }
+
+    #[test]
+    fn provider_completion_allows_api_key_completion_to_report_summary() {
+        validate_provider_auth_completion(&provider_summary_for_test(false), true)
+            .expect("api-key completion is validated by graff key set");
+    }
+
+    fn model(provider: &str, name: &str) -> ModelOption {
+        ModelOption {
+            provider: provider.into(),
+            name: name.into(),
+            context: None,
+        }
+    }
+
+    fn provider_ids(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    #[test]
+    fn prompt_settings_returns_no_models_without_configured_providers() {
+        let settings = build_prompt_settings_from_catalog(
+            &[
+                model("codegraff", "deepseek-v4-pro"),
+                model("codex", "gpt-5.5"),
+            ],
+            &HashSet::new(),
+            None,
+            None,
+            Some("high".into()),
+            true,
+        );
+
+        assert!(settings.available_models.is_empty());
+        assert_eq!(settings.selected_provider_id, None);
+        assert_eq!(settings.selected_model_id, None);
+        assert_eq!(settings.selected_reasoning_effort, None);
+        assert!(settings.fast_enabled);
+    }
+
+    #[test]
+    fn prompt_settings_filters_models_to_configured_providers() {
+        let settings = build_prompt_settings_from_catalog(
+            &[
+                model("codegraff", "deepseek-v4-pro"),
+                model("codex", "gpt-5.5"),
+                model("openai", "gpt-4.1"),
+            ],
+            &provider_ids(&["codex"]),
+            None,
+            None,
+            None,
+            false,
+        );
+
+        assert_eq!(settings.available_models.len(), 1);
+        assert_eq!(settings.available_models[0].provider_id, "codex");
+        assert_eq!(settings.available_models[0].model_id, "gpt-5.5");
+        assert_eq!(settings.selected_provider_id.as_deref(), Some("codex"));
+        assert_eq!(settings.selected_model_id.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn prompt_settings_ignores_persisted_unconfigured_model() {
+        let settings = build_prompt_settings_from_catalog(
+            &[
+                model("codegraff", "deepseek-v4-pro"),
+                model("codex", "gpt-5.5"),
+            ],
+            &provider_ids(&["codegraff"]),
+            Some("codex"),
+            Some("gpt-5.5"),
+            Some("medium".into()),
+            false,
+        );
+
+        assert_eq!(settings.available_models.len(), 1);
+        assert_eq!(settings.selected_provider_id.as_deref(), Some("codegraff"));
+        assert_eq!(
+            settings.selected_model_id.as_deref(),
+            Some("deepseek-v4-pro")
+        );
+        assert_eq!(
+            settings.selected_reasoning_effort.as_deref(),
+            Some("medium")
+        );
+    }
+
+    #[test]
+    fn prompt_settings_schema_fallback_requires_configured_codegraff() {
+        let unavailable =
+            build_prompt_settings_from_catalog(&[], &HashSet::new(), None, None, None, false);
+        assert!(unavailable.available_models.is_empty());
+
+        let available = build_prompt_settings_from_catalog(
+            &[],
+            &provider_ids(&["codegraff"]),
+            None,
+            None,
+            None,
+            true,
+        );
+        assert_eq!(available.available_models.len(), 1);
+        assert_eq!(available.selected_provider_id.as_deref(), Some("codegraff"));
+        assert_eq!(available.selected_model_id.as_deref(), Some("default"));
+        assert!(available.fast_enabled);
+    }
+
+    #[test]
+    fn normalize_runtime_selection_falls_back_to_existing_conversation() {
+        let mut state = RuntimeState {
+            active_workspace_path: Some("/tmp/work".into()),
+            active_conversation_id: Some("missing".into()),
+            ..RuntimeState::default()
+        };
+        state.conversations.insert(
+            "chat-old".into(),
+            ConversationState {
+                workspace_path: "/tmp/work".into(),
+                conversation_id: "chat-old".into(),
+                title: "Old".into(),
+                messages: vec![],
+                active_request_ids: vec![],
+                active_agent_id: None,
+                plan_mode: false,
+                updated_at: 10,
+            },
+        );
+        state.conversations.insert(
+            "chat-new".into(),
+            ConversationState {
+                workspace_path: "/tmp/work".into(),
+                conversation_id: "chat-new".into(),
+                title: "New".into(),
+                messages: vec![],
+                active_request_ids: vec![],
+                active_agent_id: None,
+                plan_mode: false,
+                updated_at: 20,
+            },
+        );
+        state
+            .selected_by_workspace
+            .insert("/tmp/work".into(), "missing".into());
+
+        normalize_runtime_selection(&mut state);
+
+        assert_eq!(state.active_conversation_id, Some("chat-new".into()));
+        assert_eq!(state.selected_by_workspace.get("/tmp/work"), None);
     }
 }
