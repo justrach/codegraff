@@ -365,6 +365,13 @@ fn modelInTable(name: []const u8) bool {
     for (model_table) |m| if (std.mem.eql(u8, m.name, name)) return true;
     return false;
 }
+
+fn providerModelInTable(provider_id: []const u8, model: []const u8) bool {
+    for (model_table) |m| {
+        if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model)) return true;
+    }
+    return false;
+}
 const main_system_prompt =
     \\You are a coding agent running in a minimal terminal harness on the
     \\user's machine. Use the provided tools to inspect and modify the current
@@ -3684,10 +3691,10 @@ pub fn main(init: std.process.Init) !void {
         const nm = resolveModelName(keys, mname) orelse mname;
         default_provider = keys.providerFor(nm) catch std.process.fatal("no key/login for --model '{s}' — see /models", .{mname});
     } else if (loadModel(io, arena, init.environ_map.get("HOME") orelse "")) |saved| {
-        // No --model flag: resume the model chosen last session — but only if
-        // it's still in the model table; a typo'd /model would otherwise
-        // poison every later launch with a name no API serves.
-        if (modelInTable(saved.model)) {
+        // No --model flag: resume the model chosen last session only if that
+        // exact provider/model pair is still in the catalog; model names can be
+        // shared by providers with different support.
+        if (providerModelInTable(saved.pid, saved.model)) {
             if (keys.providerById(saved.pid, saved.model)) |p| default_provider = p else |_| {}
         } else stale_saved_model = saved.model;
     }
@@ -11257,6 +11264,11 @@ test "codex catalog excludes unsupported codex-suffixed models" {
         if (std.mem.eql(u8, model.name, "gpt-5.5")) has_codex_gpt55 = true;
     }
     try std.testing.expect(has_codex_gpt55);
+    try std.testing.expect(!providerModelInTable("codex", "gpt-5.5-codex"));
+    try std.testing.expect(!providerModelInTable("codex", "gpt-5-codex"));
+    try std.testing.expect(providerModelInTable("openai", "gpt-5-codex"));
+    try std.testing.expect(!providerModelInTable("codex", "gpt-5.2"));
+    try std.testing.expect(providerModelInTable("openai", "gpt-5.2"));
 }
 
 test "resolveModelName exact match and miss" {
