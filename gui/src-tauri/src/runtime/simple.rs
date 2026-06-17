@@ -165,7 +165,7 @@ impl RuntimeManager {
         ))
     }
 
-    async fn selected_model_arg(&self) -> Option<String> {
+    async fn selected_model_name(&self) -> Option<String> {
         let catalog = self.ensure_model_catalog().await;
         let configured_provider_ids = configured_provider_ids().await;
         let (selected_provider, selected_model) = {
@@ -181,7 +181,7 @@ impl RuntimeManager {
             selected_provider.as_deref(),
             selected_model.as_deref(),
         )
-        .map(|(provider, model)| provider_qualified_model(&provider, &model))
+        .map(|(_, model)| model)
     }
 
     /// Generates a short chat title with the active model (a one-shot graff run)
@@ -273,7 +273,7 @@ impl RuntimeManager {
                     &conversation_id,
                     serde_json::json!({
                         "type": "set_model",
-                        "name": provider_qualified_model(&selected_model.provider, &selected_model.name),
+                        "name": selected_model.name,
                     }),
                 )
                 .await?;
@@ -418,7 +418,7 @@ impl RuntimeManager {
             .unwrap_or_else(|| format!("chat-{}", Uuid::new_v4().simple()));
         let request_id = format!("request-{}", Uuid::new_v4().simple());
         let plan_mode = input.agent_id.as_deref() == Some("muse");
-        let title_model_arg = self.selected_model_arg().await;
+        let title_model_arg = self.selected_model_name().await;
         let is_first_turn;
         {
             let mut state = self.state.lock().await;
@@ -943,7 +943,7 @@ impl RuntimeManager {
         conversation_id: &str,
         workspace_path: &str,
     ) -> Result<GraffSessionIo> {
-        let model_arg = self.selected_model_arg().await;
+        let model_arg = self.selected_model_name().await;
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(conversation_id) {
             let (active_agent_id, plan_mode, effort, fast) = {
@@ -2377,10 +2377,6 @@ fn selected_prompt_model_pair(
         .or_else(|| default_model.map(|model| (model.provider.clone(), model.name.clone())))
 }
 
-fn provider_qualified_model(provider: &str, model: &str) -> String {
-    format!("{provider}/{model}")
-}
-
 fn selected_pair_exists(
     catalog: &[ModelOption],
     configured_provider_ids: &HashSet<String>,
@@ -3540,14 +3536,6 @@ mod tests {
             Some("deepseek-v4-pro")
         );
         assert_eq!(settings.selected_reasoning_effort, None);
-    }
-
-    #[test]
-    fn provider_qualified_model_routes_cli_to_selected_provider() {
-        assert_eq!(
-            provider_qualified_model("codex", "gpt-5.5"),
-            "codex/gpt-5.5"
-        );
     }
 
     #[test]
