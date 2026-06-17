@@ -334,15 +334,17 @@ impl RuntimeManager {
         input: CompleteProviderAuthInput,
     ) -> Result<ProviderSummaryDto> {
         let provider_id = provider_from_auth_session_id(&input.auth_session_id);
-        if let Some(api_key) = input
+        let submitted_api_key = input
             .api_key
             .as_deref()
             .map(str::trim)
-            .filter(|key| !key.is_empty())
-        {
+            .filter(|key| !key.is_empty());
+        if let Some(api_key) = submitted_api_key {
             run_codegraff_key_set(provider_id, api_key).await?;
         }
-        provider_summary(provider_id).await
+        let summary = provider_summary(provider_id).await?;
+        validate_provider_auth_completion(&summary, submitted_api_key.is_some())?;
+        Ok(summary)
     }
 
     /// Deletes a provider's stored credential from the same locations the CLI
@@ -2750,6 +2752,19 @@ fn provider_summary_with_key_list(
     }
 }
 
+fn validate_provider_auth_completion(
+    summary: &ProviderSummaryDto,
+    submitted_api_key: bool,
+) -> Result<()> {
+    if submitted_api_key || summary.configured {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Provider login not detected yet. Complete the login flow in Terminal, then try Finish setup again."
+    )
+}
+
 /// Builds the env-override hint when a provider's `<PROVIDER>_API_KEY` is set,
 /// locating where it's defined so the UI can offer to open that file.
 fn provider_env_override(provider: &CodegraffProvider) -> Option<ProviderEnvOverrideDto> {
@@ -3349,6 +3364,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(temp_dir);
 
         assert!(configured);
+    }
+
+    fn provider_summary_for_test(configured: bool) -> ProviderSummaryDto {
+        ProviderSummaryDto {
+            id: "codegraff".into(),
+            name: "Codegraff".into(),
+            configured,
+            auth_methods: vec![ProviderAuthMethodDto {
+                kind: ProviderAuthMethodKindDto::CodegraffDevice,
+                label: "Codegraff device login".into(),
+            }],
+            env_override: None,
+        }
+    }
+
+    #[test]
+    fn provider_completion_rejects_unfinished_cli_login() {
+        let error = validate_provider_auth_completion(&provider_summary_for_test(false), false)
+            .expect_err("unfinished login should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Provider login not detected yet")
+        );
+    }
+
+    #[test]
+    fn provider_completion_accepts_configured_cli_login() {
+        validate_provider_auth_completion(&provider_summary_for_test(true), false)
+            .expect("configured login should complete");
+    }
+
+    #[test]
+    fn provider_completion_allows_api_key_completion_to_report_summary() {
+        validate_provider_auth_completion(&provider_summary_for_test(false), true)
+            .expect("api-key completion is validated by graff key set");
     }
 
     fn model(provider: &str, name: &str) -> ModelOption {
