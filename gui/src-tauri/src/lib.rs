@@ -1,4 +1,5 @@
 mod commands;
+mod cli_install;
 mod desktop_open;
 pub mod dto;
 mod forge_config_home;
@@ -69,6 +70,8 @@ pub fn run() {
                 app_dir.join("managed-chats"),
             )?);
             app.manage(DesktopState::new(emitter, projects));
+            // First run: expose the bundled `codegraff` CLI on PATH (macOS).
+            cli_install::ensure_cli_symlink(app);
             Ok(())
         })
         .on_window_event(|window, event| {
