@@ -105,11 +105,29 @@ fetch_release() {
   done
   [ -f "$tmpd/$asset" ] || { rm -rf "$tmpd"; return 1; }
   tar -xzf "$tmpd/$asset" -C "$tmpd" 2>/dev/null || { rm -rf "$tmpd"; return 1; }
-  place_bin "$tmpd/$stem-$target/$stem"
+  # Locate the extracted binary. CI (release.yml) nests it under
+  # graff-<target>/, but hand-repacked macOS tarballs (the local notarize
+  # flow) ship it flat at the root. Handle both, then fall back to a search
+  # so a future layout change can't silently break the install again.
+  local binpath=""
+  if [ -f "$tmpd/$stem" ]; then
+    binpath="$tmpd/$stem"
+  elif [ -f "$tmpd/$stem-$target/$stem" ]; then
+    binpath="$tmpd/$stem-$target/$stem"
+  else
+    binpath="$(find "$tmpd" -type f -name "$stem" 2>/dev/null | head -1)"
+  fi
+  [ -n "$binpath" ] && [ -f "$binpath" ] || { rm -rf "$tmpd"; return 1; }
+  place_bin "$binpath"
   if [ "$(uname -s)" = "Darwin" ]; then
     codesign -s - --force "$INSTALL_DIR/$BIN" >/dev/null 2>&1 || true
   fi
   rm -rf "$tmpd"
+  # Fail closed: if the binary didn't actually land, return non-zero so the
+  # caller falls back to a source build instead of falsely reporting success.
+  # (set -e is suppressed inside the `if fetch_release` guard, so the install
+  # error above does not abort on its own.)
+  [ -x "$INSTALL_DIR/$BIN" ] || return 1
 }
 
 build_from_source() {
@@ -164,18 +182,26 @@ main() {
 
   # The graff companion suite (muonry, zigrep/zigread/zigpatch, codedb):
   # the harness auto-upgrades to it when present — codedb backs the @ picker
-  # and the codedb tool, zigpatch does atomic edit_file splices. Installed
-  # by default; skip with HARNESS_NO_GRAFF=1 (the harness works fine
-  # without it, premium paths just stay dormant).
+  # and the codedb tool, zigpatch does atomic edit_file splices — but works
+  # fully without it, premium paths just stay dormant.
+  #
+  # Installed by default; skip with HARNESS_NO_GRAFF=1 (the harness works fine
+  # without it, premium paths just stay dormant). The companion installer is
+  # codegraff.com/install.sh (the tools installer). This step previously
+  # called codegraff.com/install-graff.sh, which proxies *this* harness
+  # installer (github releases/.../install.sh) — so it reinstalled the harness
+  # and recursed into itself, hanging at this line. Bounded by --max-time so a
+  # slow network can never freeze the install; override with GRAFF_SUITE_URL.
+  GRAFF_SUITE_URL="${GRAFF_SUITE_URL:-https://codegraff.com/install.sh}"
   if [ -z "${HARNESS_NO_GRAFF:-}" ]; then
     if command -v muonry >/dev/null 2>&1 && command -v zigpatch >/dev/null 2>&1; then
-      printf "  ${D}│${N} %-10s ${G}✓${N} (already present)\n" "graff"
+      printf "  ${D}│${N} %-10s ${G}✓${N} (already present)\n" "suite"
     else
-      printf "  ${D}│${N} %-10s " "graff"
-      if curl -fsSL https://codegraff.com/install-graff.sh | sh >/dev/null 2>&1; then
+      printf "  ${D}│${N} %-10s " "suite"
+      if curl -fsSL --max-time 120 "$GRAFF_SUITE_URL" | sh >/dev/null 2>&1; then
         printf "${G}✓${N} (muonry + zigrep suite)\n"
       else
-        printf "${Y}skipped${N} ${D}(install-graff.sh unavailable — harness still fully functional)${N}\n"
+        printf "${Y}skipped${N} ${D}(companion install unavailable — harness still fully functional)${N}\n"
       fi
     fi
   fi
