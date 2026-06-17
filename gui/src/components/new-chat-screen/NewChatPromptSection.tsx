@@ -1,10 +1,8 @@
 import { useCallback, useState } from "react";
 
-import { useSettingsNavigation } from "@/app/settingsNavigationContext";
 import { getUiActiveBinding, sessionStore } from "@/app/sessionStore";
 import { CommandResultDialog } from "@/components/CommandResultDialog";
 import { FollowupComposer } from "@/components/FollowupComposer";
-import { PromptActionAlert } from "@/components/PromptActionAlert";
 import { PromptInputCard } from "@/components/PromptInputCard";
 import { PlanDecisionCard } from "@/components/conversation-panel/PlanDecisionCard";
 import {
@@ -22,9 +20,11 @@ import type {
 
 export function NewChatPromptSection({
   binding,
+  focusSignal,
   onCommandResult,
 }: {
   binding?: ChatBinding | null;
+  focusSignal?: number;
   onCommandResult?: (result: CommandRunResult) => void;
 }) {
   const {
@@ -47,7 +47,6 @@ export function NewChatPromptSection({
     submitPrompt,
     updatePromptSettings,
   } = usePrompt(binding);
-  const { openProviderSettings } = useSettingsNavigation();
   const [dismissedPlanDecisionId, setDismissedPlanDecisionId] = useState<
     string | null
   >(null);
@@ -100,11 +99,6 @@ export function NewChatPromptSection({
       setDismissedPlanDecisionId(lastAssistant.id);
     }
   }, [lastAssistant]);
-  const showProviderSetupPrompt =
-    hasCurrentWorkspace &&
-    promptSettings != null &&
-    promptSettings.availableModels.length === 0;
-
   if (followupRequest != null) {
     return (
       <FollowupComposer
@@ -123,16 +117,9 @@ export function NewChatPromptSection({
           onContinue={handleContinuePlanning}
         />
       ) : null}
-      {showProviderSetupPrompt ? (
-        <PromptActionAlert
-          title="No provider is configured"
-          description="Configure at least one provider to start chatting."
-          actionLabel="Configure"
-          onAction={openProviderSettings}
-        />
-      ) : null}
       <PromptInputCard
         canCompose={canCompose}
+        focusSignal={focusSignal}
         isRequestActive={isRequestActive}
         isSendingPrompt={isSendingPrompt}
         placeholder={
@@ -145,7 +132,7 @@ export function NewChatPromptSection({
         isPlanningMode={isPlanningMode}
         promptDraft={promptDraft}
         promptSettings={promptSettings}
-        isInputDisabled={showProviderSetupPrompt}
+        isInputDisabled={!hasCurrentWorkspace}
         binding={binding}
         workspacePath={workspacePath}
         onCommandSelect={handleCommandSelect}

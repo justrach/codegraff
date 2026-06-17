@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  ExternalLinkIcon,
   LoaderCircle,
+  RotateCcwIcon,
   SquarePenIcon,
+  TerminalIcon,
   Trash2Icon,
 } from "lucide-react";
 
@@ -12,47 +13,20 @@ import {
 } from "@/app/sessionStore";
 import { useSessionStore } from "@/hooks/useSession";
 import {
-  completeProviderAuth,
-  listProviders,
-  listenProviderOAuthCallback,
-  openExternalUrl,
   openPathForEdit,
   removeProvider,
-  startProviderAuth,
 } from "@/services/desktop/client";
-import type {
-  ProviderAuthMethodKind,
-  ProviderAuthSession,
-  ProviderOAuthCallback,
-  ProviderSummary,
-} from "@/services/desktop/types/contracts";
+import type { ProviderSummary } from "@/services/desktop/types/contracts";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/Dialog";
 import { Input } from "@/components/ui/Input";
-import { Label } from "@/components/ui/Label";
 import { PaneSurface } from "@/components/ui/PaneSurface";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/Select";
 import { Separator } from "@/components/ui/Separator";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/ToggleGroup";
 
+import { ProviderSetupDialog } from "./ProviderSetupDialog";
+import { useProviderSetup } from "./useProviderSetup";
 import {
-  createUrlParameterValues,
   formatAuthMethods,
   getProviderButtonLabel,
   getSortedAuthMethods,
@@ -65,48 +39,42 @@ function basename(path: string): string {
   return index >= 0 ? path.slice(index + 1) : path;
 }
 
+function envOverrideRemovalError(message: string | null) {
+  if (message == null || !message.includes("credential removed")) {
+    return null;
+  }
+
+  const envKey = message.match(/\$([A-Z0-9_]+_API_KEY)\b/)?.[1] ?? null;
+  if (envKey == null) {
+    return null;
+  }
+
+  const fileMatch = message.match(
+    /still set in ([^,]+), so it is still being used\./,
+  );
+  return {
+    envKey,
+    fileLocation: fileMatch?.[1] ?? null,
+    inheritedByApp: message.includes("inherited by the running Codegraff app"),
+  };
+}
+
 export function ProvidersSettingsPane() {
   const workspacePath = useSessionStore((state) =>
     getUiActiveWorkspacePath(state),
   );
-  const startRequestVersionRef = useRef(0);
-
-  const [providers, setProviders] = useState<ProviderSummary[]>([]);
-  const [providersError, setProvidersError] = useState<string | null>(null);
-  const [isLoadingProviders, setIsLoadingProviders] = useState(true);
+  const providerSetup = useProviderSetup(workspacePath);
   const [searchQuery, setSearchQuery] = useState("");
-
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [dialogProviderId, setDialogProviderId] = useState<string | null>(null);
-  const [pendingAutoStartMethod, setPendingAutoStartMethod] =
-    useState<ProviderAuthMethodKind | null>(null);
-  const [selectedAuthMethod, setSelectedAuthMethod] =
-    useState<ProviderAuthMethodKind | null>(null);
-  const [authFlow, setAuthFlow] = useState<ProviderAuthSession | null>(null);
-  const [apiKeyDraft, setApiKeyDraft] = useState("");
-  const [authorizationCodeDraft, setAuthorizationCodeDraft] = useState("");
-  const [urlParameterValues, setUrlParameterValues] = useState<
-    Record<string, string>
-  >({});
-  const [isStartingAuth, setIsStartingAuth] = useState(false);
-  const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [removingProviderId, setRemovingProviderId] = useState<string | null>(
     null,
-  );
-  const [actionError, setActionError] = useState<string | null>(null);
-
-  const selectedProvider = useMemo(
-    () =>
-      providers.find((provider) => provider.id === dialogProviderId) ?? null,
-    [dialogProviderId, providers],
   );
   const visibleProviders = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
     if (normalizedQuery.length === 0) {
-      return providers;
+      return providerSetup.providers;
     }
 
-    return providers.filter((provider) => {
+    return providerSetup.providers.filter((provider) => {
       const searchableText = [
         provider.name,
         provider.id,
@@ -117,230 +85,28 @@ export function ProvidersSettingsPane() {
 
       return searchableText.includes(normalizedQuery);
     });
-  }, [providers, searchQuery]);
-
-  useEffect(() => {
-    let isCancelled = false;
-
-    async function loadProviders() {
-      setIsLoadingProviders(true);
-      setProvidersError(null);
-
-      try {
-        const nextProviders = sortProviders(await listProviders(workspacePath));
-        if (isCancelled) {
-          return;
-        }
-
-        setProviders(nextProviders);
-        setDialogProviderId((current) =>
-          current != null &&
-          nextProviders.some((provider) => provider.id === current)
-            ? current
-            : null,
-        );
-      } catch (error) {
-        if (isCancelled) {
-          return;
-        }
-
-        setProviders([]);
-        setProvidersError(normalizeProviderError(error));
-      } finally {
-        if (!isCancelled) {
-          setIsLoadingProviders(false);
-        }
-      }
-    }
-
-    void loadProviders();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [workspacePath]);
-
-  function resetSetupState(nextAuthMethod: ProviderAuthMethodKind | null) {
-    startRequestVersionRef.current += 1;
-    setSelectedAuthMethod(nextAuthMethod);
-    setAuthFlow(null);
-    setApiKeyDraft("");
-    setAuthorizationCodeDraft("");
-    setUrlParameterValues({});
-    setIsStartingAuth(false);
-    setIsSubmittingAuth(false);
-    setActionError(null);
-  }
+  }, [providerSetup.providers, searchQuery]);
+  const envRemovalError = useMemo(
+    () => envOverrideRemovalError(providerSetup.providersError),
+    [providerSetup.providersError],
+  );
 
   async function refreshPromptSettings() {
     await ensureWorkspacePromptSettingsLoaded(workspacePath, { force: true });
   }
 
-  async function beginProviderSetup(
-    provider: ProviderSummary,
-    authMethod: ProviderAuthMethodKind,
-  ) {
-    const requestVersion = startRequestVersionRef.current + 1;
-    startRequestVersionRef.current = requestVersion;
-    setIsStartingAuth(true);
-    setActionError(null);
-
-    try {
-      const nextAuthFlow = await startProviderAuth({
-        workspacePath,
-        providerId: provider.id,
-        authMethod,
-      });
-      if (startRequestVersionRef.current !== requestVersion) {
-        return;
-      }
-
-      setAuthFlow(nextAuthFlow);
-      setUrlParameterValues(
-        createUrlParameterValues(nextAuthFlow.urlParameters),
-      );
-      setApiKeyDraft("");
-      setAuthorizationCodeDraft("");
-    } catch (error) {
-      if (startRequestVersionRef.current !== requestVersion) {
-        return;
-      }
-
-      setAuthFlow(null);
-      setActionError(normalizeProviderError(error));
-    } finally {
-      if (startRequestVersionRef.current === requestVersion) {
-        setIsStartingAuth(false);
-      }
-    }
-  }
-
-  useEffect(() => {
-    let isDisposed = false;
-    let unlisten: (() => void) | null = null;
-
-    async function subscribeToOAuthCallbacks() {
-      unlisten = await listenProviderOAuthCallback(
-        (payload: ProviderOAuthCallback) => {
-          if (isDisposed) {
-            return;
-          }
-
-          if (
-            authFlow?.kind !== "o_auth_code" ||
-            payload.authSessionId !== authFlow.authSessionId ||
-            payload.providerId !== dialogProviderId
-          ) {
-            return;
-          }
-
-          if (payload.errorMessage) {
-            setActionError(payload.errorMessage);
-            return;
-          }
-
-          if (payload.authorizationCode) {
-            setAuthorizationCodeDraft(payload.authorizationCode);
-            setActionError(null);
-          }
-        },
-      );
-    }
-
-    void subscribeToOAuthCallbacks();
-
-    return () => {
-      isDisposed = true;
-      if (unlisten) {
-        void unlisten();
-      }
-    };
-  }, [authFlow, dialogProviderId]);
-
-  function closeSetupDialog() {
-    setIsDialogOpen(false);
-    setDialogProviderId(null);
-    setPendingAutoStartMethod(null);
-    resetSetupState(null);
-  }
-
-  function openSetupDialog(provider: ProviderSummary) {
-    const authMethods = getSortedAuthMethods(provider);
-    const nextAuthMethod =
-      authMethods.length === 1 ? (authMethods[0]?.kind ?? null) : null;
-
-    setDialogProviderId(provider.id);
-    setIsDialogOpen(true);
-    setPendingAutoStartMethod(nextAuthMethod);
-    resetSetupState(nextAuthMethod);
-  }
-
-  async function handleContinueSetup() {
-    if (selectedProvider == null || selectedAuthMethod == null) {
-      return;
-    }
-
-    await beginProviderSetup(selectedProvider, selectedAuthMethod);
-  }
-
-  async function handleOpenUrl(url: string | null | undefined) {
-    if (url == null || url.length === 0) {
-      return;
-    }
-
-    try {
-      await openExternalUrl(url);
-    } catch (error) {
-      setActionError(normalizeProviderError(error));
-    }
-  }
-
-  async function handleSubmitSetup() {
-    if (authFlow == null || selectedProvider == null) {
-      return;
-    }
-
-    setIsSubmittingAuth(true);
-    setActionError(null);
-
-    try {
-      const updatedProvider = await completeProviderAuth({
-        authSessionId: authFlow.authSessionId,
-        apiKey: authFlow.requiresApiKey ? apiKeyDraft.trim() : null,
-        authorizationCode: authorizationCodeDraft.trim() || null,
-        urlParameters: authFlow.urlParameters.map((parameter) => ({
-          name: parameter.name,
-          value: urlParameterValues[parameter.name] ?? "",
-        })),
-      });
-
-      setProviders((current) =>
-        sortProviders(
-          current.map((provider) =>
-            provider.id === updatedProvider.id ? updatedProvider : provider,
-          ),
-        ),
-      );
-      await refreshPromptSettings();
-      closeSetupDialog();
-    } catch (error) {
-      setActionError(normalizeProviderError(error));
-      setIsSubmittingAuth(false);
-    }
-  }
-
   async function handleOpenEnvFile(filePath: string) {
-    setProvidersError(null);
+    providerSetup.setProvidersError(null);
     try {
       await openPathForEdit(filePath);
     } catch (error) {
-      setProvidersError(normalizeProviderError(error));
+      providerSetup.setProvidersError(normalizeProviderError(error));
     }
   }
 
   async function handleRemoveProvider(provider: ProviderSummary) {
     setRemovingProviderId(provider.id);
-    setProvidersError(null);
+    providerSetup.setProvidersError(null);
 
     try {
       const updatedProvider = await removeProvider({
@@ -348,7 +114,7 @@ export function ProvidersSettingsPane() {
         providerId: provider.id,
       });
 
-      setProviders((current) =>
+      providerSetup.setProviders((current) =>
         sortProviders(
           current.map((currentProvider) =>
             currentProvider.id === updatedProvider.id
@@ -358,31 +124,12 @@ export function ProvidersSettingsPane() {
         ),
       );
       await refreshPromptSettings();
-
-      if (dialogProviderId === provider.id) {
-        closeSetupDialog();
-      }
     } catch (error) {
-      setProvidersError(normalizeProviderError(error));
+      providerSetup.setProvidersError(normalizeProviderError(error));
     } finally {
       setRemovingProviderId(null);
     }
   }
-
-  const requiresUrlParameters =
-    authFlow?.urlParameters.every(
-      (parameter) =>
-        (urlParameterValues[parameter.name] ?? "").trim().length > 0,
-    ) ?? false;
-  const canSubmitApiKeyFlow =
-    authFlow != null &&
-    authFlow.kind === "api_key" &&
-    (!authFlow.requiresApiKey || apiKeyDraft.trim().length > 0) &&
-    requiresUrlParameters;
-  const canSubmitCodeFlow =
-    authFlow != null &&
-    authFlow.kind === "o_auth_code" &&
-    authorizationCodeDraft.trim().length > 0;
 
   return (
     <PaneSurface className="flex-1" aria-label="Providers settings">
@@ -407,7 +154,7 @@ export function ProvidersSettingsPane() {
                 }}
               />
             </div>
-            {isLoadingProviders ? (
+            {providerSetup.isLoadingProviders ? (
               <div className="flex flex-col gap-0">
                 {[0, 1, 2, 3].map((index) => (
                   <div key={index}>
@@ -422,10 +169,54 @@ export function ProvidersSettingsPane() {
                   </div>
                 ))}
               </div>
-            ) : providersError ? (
-              <div className="px-4 py-4 text-sm text-destructive">
-                {providersError}
-              </div>
+            ) : providerSetup.providersError ? (
+              envRemovalError ? (
+                <div className="px-4 py-4">
+                  <div className="rounded-lg border border-destructive/25 bg-destructive/5 p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-background text-destructive shadow-sm">
+                        <RotateCcwIcon className="size-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-foreground">
+                          Restart required
+                        </div>
+                        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                          Stored credential removed.{" "}
+                          <code className="rounded bg-background px-1 py-0.5 font-mono text-xs text-foreground">
+                            {envRemovalError.envKey}
+                          </code>{" "}
+                          is still active because it was{" "}
+                          {envRemovalError.fileLocation
+                            ? "found in your shell config"
+                            : "inherited when Codegraff started"}
+                          .
+                        </p>
+                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                          <span className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-background px-2 py-1">
+                            <TerminalIcon className="size-3.5" />
+                            Clear the variable
+                          </span>
+                          <span className="text-muted-foreground/60">then</span>
+                          <span className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-background px-2 py-1">
+                            <RotateCcwIcon className="size-3.5" />
+                            Fully quit and reopen Codegraff
+                          </span>
+                        </div>
+                        {envRemovalError.fileLocation ? (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Source: {envRemovalError.fileLocation}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="px-4 py-4 text-sm text-destructive">
+                  {providerSetup.providersError}
+                </div>
+              )
             ) : visibleProviders.length === 0 ? (
               <div className="px-4 py-4 text-sm text-muted-foreground">
                 No providers match your search.
@@ -449,7 +240,9 @@ export function ProvidersSettingsPane() {
                         </span>
                         {provider.envOverride ? (
                           <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                            via ${provider.envOverride.envKey}
+                            {provider.envOverride.filePath
+                              ? `via $${provider.envOverride.envKey}`
+                              : `via $${provider.envOverride.envKey} inherited by the running app`}
                             {provider.envOverride.filePath ? (
                               <button
                                 type="button"
@@ -471,7 +264,11 @@ export function ProvidersSettingsPane() {
                                   ? `:${provider.envOverride.line}`
                                   : ""}
                               </button>
-                            ) : null}
+                            ) : (
+                              <span title="No shell startup file currently defines this variable. It was inherited from the terminal or launcher that started Codegraff. Clear that environment variable there, then fully quit and restart Codegraff.">
+                                (source file not found)
+                              </span>
+                            )}
                           </span>
                         ) : null}
                       </div>
@@ -483,7 +280,7 @@ export function ProvidersSettingsPane() {
                           className="shrink-0"
                           disabled={removingProviderId === provider.id}
                           onClick={() => {
-                            openSetupDialog(provider);
+                            providerSetup.openProviderSetup(provider);
                           }}
                         >
                           {getProviderButtonLabel(provider)}
@@ -520,348 +317,14 @@ export function ProvidersSettingsPane() {
           </CardContent>
         </Card>
       </div>
-
-      <Dialog
-        open={isDialogOpen}
-        onOpenChange={(open) => {
-          if (!open) {
-            closeSetupDialog();
-          }
-        }}
-        onOpenChangeComplete={(open) => {
-          if (
-            open &&
-            selectedProvider != null &&
-            pendingAutoStartMethod != null
-          ) {
-            void beginProviderSetup(selectedProvider, pendingAutoStartMethod);
-            setPendingAutoStartMethod(null);
-          }
-        }}
-      >
-        {selectedProvider ? (
-          <DialogContent
-            className="max-w-lg"
-            showCloseButton={!isSubmittingAuth}
-          >
-            <DialogHeader>
-              <DialogTitle>
-                {getProviderButtonLabel(selectedProvider)} provider
-              </DialogTitle>
-              <DialogDescription>
-                {selectedProvider.name}
-                {" · "}
-                {formatAuthMethods(selectedProvider)}
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="flex flex-col gap-4">
-              {selectedProvider.authMethods.length > 1 ? (
-                <div className="flex flex-col gap-2">
-                  <Label>Authentication method</Label>
-                  <ToggleGroup
-                    variant="outline"
-                    size="sm"
-                    spacing={1}
-                    value={selectedAuthMethod ? [selectedAuthMethod] : []}
-                    onValueChange={(value) => {
-                      const nextAuthMethod =
-                        (value[0] as ProviderAuthMethodKind | undefined) ??
-                        null;
-                      setPendingAutoStartMethod(null);
-                      resetSetupState(nextAuthMethod);
-                    }}
-                  >
-                    {getSortedAuthMethods(selectedProvider).map((method) => (
-                      <ToggleGroupItem
-                        key={method.kind}
-                        value={method.kind}
-                        aria-label={`Use ${method.label}`}
-                        disabled={isStartingAuth || isSubmittingAuth}
-                      >
-                        {method.label}
-                      </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
-                </div>
-              ) : null}
-
-              {isStartingAuth && authFlow == null ? (
-                <div className="flex items-center gap-2 rounded-lg border border-border/60 px-3 py-3 text-sm text-muted-foreground">
-                  <LoaderCircle
-                    className="size-4 animate-spin"
-                    strokeWidth={2}
-                  />
-                  Preparing provider setup...
-                </div>
-              ) : null}
-
-              {selectedProvider.authMethods.length > 1 &&
-              authFlow == null &&
-              !isStartingAuth ? (
-                <div className="rounded-lg border border-border/60 px-3 py-3 text-sm text-muted-foreground">
-                  Choose how you want to authenticate, then continue.
-                </div>
-              ) : null}
-
-              {authFlow?.kind === "api_key" ? (
-                <div className="flex flex-col gap-4">
-                  {!authFlow.requiresApiKey ? (
-                    <p className="text-sm text-muted-foreground">
-                      Forge will use Google Application Default Credentials from
-                      your local machine.
-                    </p>
-                  ) : (
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="provider-api-key">API key</Label>
-                      <Input
-                        id="provider-api-key"
-                        type="password"
-                        value={apiKeyDraft}
-                        placeholder={authFlow.apiKeyHint ?? "Paste a key"}
-                        onChange={(event) => {
-                          setApiKeyDraft(event.target.value);
-                        }}
-                        disabled={isSubmittingAuth}
-                      />
-                    </div>
-                  )}
-
-                  {authFlow.urlParameters.length > 0 ? (
-                    <div className="flex flex-col gap-3">
-                      {authFlow.urlParameters.map((parameter) => (
-                        <div
-                          key={parameter.name}
-                          className="flex flex-col gap-2"
-                        >
-                          <Label htmlFor={`provider-param-${parameter.name}`}>
-                            {parameter.name}
-                          </Label>
-                          {parameter.options && parameter.options.length > 0 ? (
-                            <Select
-                              value={urlParameterValues[parameter.name] || null}
-                              onValueChange={(value) => {
-                                setUrlParameterValues((current) => ({
-                                  ...current,
-                                  [parameter.name]: value ?? "",
-                                }));
-                              }}
-                            >
-                              <SelectTrigger
-                                id={`provider-param-${parameter.name}`}
-                                className="w-full"
-                              >
-                                <SelectValue placeholder="Select a value" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectGroup>
-                                  {parameter.options.map((option) => (
-                                    <SelectItem key={option} value={option}>
-                                      {option}
-                                    </SelectItem>
-                                  ))}
-                                </SelectGroup>
-                              </SelectContent>
-                            </Select>
-                          ) : (
-                            <Input
-                              id={`provider-param-${parameter.name}`}
-                              value={urlParameterValues[parameter.name] ?? ""}
-                              onChange={(event) => {
-                                setUrlParameterValues((current) => ({
-                                  ...current,
-                                  [parameter.name]: event.target.value,
-                                }));
-                              }}
-                              disabled={isSubmittingAuth}
-                            />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {authFlow?.kind === "device_code" ? (
-                <div className="flex flex-col gap-4">
-                  <p className="text-sm text-muted-foreground">
-                    Open the verification page, enter the device code, then
-                    finish setup here.
-                  </p>
-                  {authFlow.userCode ? (
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="provider-user-code">Device code</Label>
-                      <Input
-                        id="provider-user-code"
-                        readOnly
-                        value={authFlow.userCode}
-                      />
-                    </div>
-                  ) : null}
-                  {authFlow.verificationUri ? (
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="provider-verification-uri">
-                        Verification URL
-                      </Label>
-                      <Input
-                        id="provider-verification-uri"
-                        readOnly
-                        value={
-                          authFlow.verificationUriComplete ??
-                          authFlow.verificationUri
-                        }
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {authFlow?.kind === "o_auth_code" ? (
-                <div className="flex flex-col gap-4">
-                  <p className="text-sm text-muted-foreground">
-                    Open the auth page. Codegraff will capture the callback and
-                    fill the authorization code automatically. If that does not
-                    happen, paste the returned code here.
-                  </p>
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="provider-authorization-code">
-                      Authorization code
-                    </Label>
-                    <Input
-                      id="provider-authorization-code"
-                      value={authorizationCodeDraft}
-                      placeholder="Paste the returned code"
-                      onChange={(event) => {
-                        setAuthorizationCodeDraft(event.target.value);
-                      }}
-                      disabled={isSubmittingAuth}
-                    />
-                  </div>
-                </div>
-              ) : null}
-
-              {actionError ? (
-                <p className="text-sm text-destructive">{actionError}</p>
-              ) : null}
-            </div>
-
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={closeSetupDialog}
-                disabled={isSubmittingAuth}
-              >
-                Cancel
-              </Button>
-
-              {authFlow?.kind === "device_code" ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    void handleOpenUrl(
-                      authFlow.verificationUriComplete ??
-                        authFlow.verificationUri,
-                    );
-                  }}
-                  disabled={isSubmittingAuth}
-                >
-                  <ExternalLinkIcon data-icon="inline-start" />
-                  Open browser
-                </Button>
-              ) : null}
-
-              {authFlow?.kind === "o_auth_code" ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    void handleOpenUrl(authFlow.authorizationUrl);
-                  }}
-                  disabled={isSubmittingAuth}
-                >
-                  <ExternalLinkIcon data-icon="inline-start" />
-                  Open browser
-                </Button>
-              ) : null}
-
-              {authFlow == null ? (
-                <Button
-                  type="button"
-                  disabled={selectedAuthMethod == null || isStartingAuth}
-                  onClick={() => {
-                    void handleContinueSetup();
-                  }}
-                >
-                  {isStartingAuth ? (
-                    <LoaderCircle
-                      data-icon="inline-start"
-                      className="animate-spin"
-                    />
-                  ) : null}
-                  Continue
-                </Button>
-              ) : null}
-
-              {authFlow?.kind === "api_key" ? (
-                <Button
-                  type="button"
-                  disabled={!canSubmitApiKeyFlow || isSubmittingAuth}
-                  onClick={() => {
-                    void handleSubmitSetup();
-                  }}
-                >
-                  {isSubmittingAuth ? (
-                    <LoaderCircle
-                      data-icon="inline-start"
-                      className="animate-spin"
-                    />
-                  ) : null}
-                  Save provider
-                </Button>
-              ) : null}
-
-              {authFlow?.kind === "device_code" ? (
-                <Button
-                  type="button"
-                  disabled={isSubmittingAuth}
-                  onClick={() => {
-                    void handleSubmitSetup();
-                  }}
-                >
-                  {isSubmittingAuth ? (
-                    <LoaderCircle
-                      data-icon="inline-start"
-                      className="animate-spin"
-                    />
-                  ) : null}
-                  Finish setup
-                </Button>
-              ) : null}
-
-              {authFlow?.kind === "o_auth_code" ? (
-                <Button
-                  type="button"
-                  disabled={!canSubmitCodeFlow || isSubmittingAuth}
-                  onClick={() => {
-                    void handleSubmitSetup();
-                  }}
-                >
-                  {isSubmittingAuth ? (
-                    <LoaderCircle
-                      data-icon="inline-start"
-                      className="animate-spin"
-                    />
-                  ) : null}
-                  Finish setup
-                </Button>
-              ) : null}
-            </DialogFooter>
-          </DialogContent>
-        ) : null}
-      </Dialog>
+      <ProviderSetupDialog
+        initialAuthMethod={providerSetup.initialAuthMethod}
+        isOpen={providerSetup.selectedProvider != null}
+        onClose={providerSetup.closeProviderSetup}
+        onProviderUpdated={providerSetup.applyProviderUpdate}
+        provider={providerSetup.selectedProvider}
+        workspacePath={workspacePath}
+      />
     </PaneSurface>
   );
 }
