@@ -307,8 +307,6 @@ const model_table = [_]ModelInfo{
     .{ .provider = "xiaomi", .name = "mimo-v2.5-pro-ultraspeed", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2-flash", .context = 262_144 },
     .{ .provider = "codex", .name = "gpt-5.5", .context = 400_000 },
-    .{ .provider = "codex", .name = "gpt-5.5-codex", .context = 400_000 },
-    .{ .provider = "codex", .name = "gpt-5-codex", .context = 400_000 },
     // codegraff gateway (its claude aliases use dots, so they don't collide
     // with the anthropic rows above)
     .{ .provider = "codegraff", .name = "claude-opus-4.8", .context = 1_000_000 },
@@ -9468,6 +9466,8 @@ const Agent = struct {
 
     fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
         var content: std.ArrayList(u8) = .empty;
+        var reasoning_content: std.ArrayList(u8) = .empty;
+        var reasoning: std.ArrayList(u8) = .empty;
         var calls: std.ArrayList(CallAcc) = .empty;
         var role: []const u8 = "assistant";
         var finish: ?Value = null;
@@ -9498,6 +9498,8 @@ const Agent = struct {
                 role = x.string;
             };
             if (d.object.get("content")) |x| if (x == .string) try content.appendSlice(self.arena, x.string);
+            if (d.object.get("reasoning_content")) |x| if (x == .string) try reasoning_content.appendSlice(self.arena, x.string);
+            if (d.object.get("reasoning")) |x| if (x == .string) try reasoning.appendSlice(self.arena, x.string);
             if (d.object.get("tool_calls")) |tcs| if (tcs == .array) {
                 for (tcs.array.items) |tc| {
                     if (tc != .object) continue;
@@ -9526,6 +9528,8 @@ const Agent = struct {
         var message: std.json.ObjectMap = .empty;
         try message.put(self.arena, "role", .{ .string = role });
         try message.put(self.arena, "content", if (content.items.len > 0) Value{ .string = content.items } else .null);
+        if (reasoning_content.items.len > 0) try message.put(self.arena, "reasoning_content", .{ .string = reasoning_content.items });
+        if (reasoning.items.len > 0) try message.put(self.arena, "reasoning", .{ .string = reasoning.items });
         if (calls.items.len > 0) {
             var tcs = std.json.Array.init(self.arena);
             for (calls.items) |c| {
@@ -11123,6 +11127,39 @@ test "ArgLive streams the target argument field across fragment splits" {
     try std.testing.expect(a.streamed_args == .none);
 }
 
+test "assembleOpenAI preserves streamed reasoning history" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+
+    const root = (try agent.assembleOpenAI(
+        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think \"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"deep\"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"alt \"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"path\"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n" ++
+            "data: [DONE]\n",
+    )).?;
+    const choices = root.get("choices").?;
+    const message = choices.array.items[0].object.get("message").?.object;
+    try std.testing.expectEqualStrings("assistant", message.get("role").?.string);
+    try std.testing.expectEqualStrings("done", message.get("content").?.string);
+    try std.testing.expectEqualStrings("think deep", message.get("reasoning_content").?.string);
+    try std.testing.expectEqualStrings("alt path", message.get("reasoning").?.string);
+}
+
 test "promptFingerprint is stable, short, and collision-visible" {
     const a = promptFingerprint("you are a careful reviewer");
     const b = promptFingerprint("you are a careful reviewer");
@@ -11209,6 +11246,17 @@ test "imageMediaType from extension" {
 test "contextFor known model and default fallback" {
     try std.testing.expectEqual(@as(u64, 262_144), contextFor("kimi", "kimi-k2.7"));
     try std.testing.expectEqual(@as(u64, default_context), contextFor("nope", "unknown-xyz"));
+}
+
+test "codex catalog excludes unsupported codex-suffixed models" {
+    var has_codex_gpt55 = false;
+    for (model_table) |model| {
+        if (!std.mem.eql(u8, model.provider, "codex")) continue;
+        try std.testing.expect(!std.mem.eql(u8, model.name, "gpt-5.5-codex"));
+        try std.testing.expect(!std.mem.eql(u8, model.name, "gpt-5-codex"));
+        if (std.mem.eql(u8, model.name, "gpt-5.5")) has_codex_gpt55 = true;
+    }
+    try std.testing.expect(has_codex_gpt55);
 }
 
 test "resolveModelName exact match and miss" {
