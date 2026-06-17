@@ -47,7 +47,7 @@ context when the conversation gets long.
 
 ### Desktop app — macOS (Apple Silicon)
 
-Prefer a window over a terminal? Download the latest signed, notarized build, drag it to Applications, and open it — it bundles the `graff` CLI and adds it to your PATH on first launch, so you get the terminal tool for free.
+Prefer a window over a terminal? Download the latest signed, notarized build, drag it to Applications, and open it. On first launch it installs a `codegraff` launcher on your PATH, so `codegraff <path>` opens that folder in the app (`code`-style). For the `graff` agent CLI itself, use the command-line install below — the desktop app runs whatever `graff` is on your PATH.
 
 <p align="center">
   <a href="https://github.com/justrach/codegraff/releases/latest"><img alt="Download Codegraff for macOS" src="https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
