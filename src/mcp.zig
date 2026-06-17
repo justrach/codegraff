@@ -149,6 +149,75 @@ pub const Registry = struct {
         return tools.items.len - before;
     }
 
+    /// Connect any workspace `.mcp.json` servers not already running — the
+    /// in-session equivalent of having started with `--yolo`, so a user who
+    /// declined the startup consent prompt can opt in later without a restart.
+    /// Replays the `init` connect path (so per-server `env` is preserved, which
+    /// `addServer` drops), skipping servers already in the registry by name
+    /// (idempotent: won't double-spawn an auto-activated muonry). Returns the
+    /// number of servers newly connected. Caller must re-render its tool list.
+    /// Run between turns only (no tool calls in flight).
+    pub fn trustWorkspace(reg: *Registry, config_path: []const u8) !usize {
+        const a = reg.arena();
+        const text = Io.Dir.cwd().readFileAlloc(reg.io, config_path, a, .limited(1 << 20)) catch |err| switch (err) {
+            error.FileNotFound => return 0,
+            else => return err,
+        };
+        const parsed = try std.json.parseFromSliceLeaky(Value, a, text, .{ .allocate = .alloc_always });
+        if (parsed != .object) return 0;
+        const servers_v = parsed.object.get("mcpServers") orelse return 0;
+        if (servers_v != .object) return 0;
+
+        var servers: std.ArrayList(*Server) = .empty;
+        try servers.appendSlice(a, reg.servers);
+        var tools: std.ArrayList(Tool) = .empty;
+        try tools.appendSlice(a, reg.tools);
+        const before = servers.items.len;
+
+        var it = servers_v.object.iterator();
+        while (it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            if (entry.value_ptr.* != .object) continue;
+            // Already connected (auto-activated muonry, or a prior /mcp trust)? skip.
+            var present = false;
+            for (reg.servers) |s| if (std.mem.eql(u8, s.name, name)) {
+                present = true;
+                break;
+            };
+            if (present) continue;
+            reg.startServer(a, &servers, &tools, try a.dupe(u8, name), entry.value_ptr.*.object) catch |err| {
+                std.debug.print("  [mcp:{s}] failed to start: {t}\n", .{ name, err });
+            };
+        }
+        reg.servers = try a.dupe(*Server, servers.items);
+        reg.tools = try a.dupe(Tool, tools.items);
+        return servers.items.len - before;
+    }
+
+    /// How many workspace `.mcp.json` servers are NOT yet connected — drives
+    /// the `/mcp trust` discoverability hint. Mirrors `trustWorkspace`'s
+    /// skip-by-name logic; best-effort (any read/parse failure → 0).
+    pub fn pendingWorkspace(reg: *Registry, config_path: []const u8) usize {
+        const a = reg.arena();
+        const text = Io.Dir.cwd().readFileAlloc(reg.io, config_path, a, .limited(1 << 20)) catch return 0;
+        const parsed = std.json.parseFromSliceLeaky(Value, a, text, .{ .allocate = .alloc_always }) catch return 0;
+        if (parsed != .object) return 0;
+        const servers_v = parsed.object.get("mcpServers") orelse return 0;
+        if (servers_v != .object) return 0;
+        var n: usize = 0;
+        var it = servers_v.object.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* != .object) continue;
+            var present = false;
+            for (reg.servers) |s| if (std.mem.eql(u8, s.name, entry.key_ptr.*)) {
+                present = true;
+                break;
+            };
+            if (!present) n += 1;
+        }
+        return n;
+    }
+
     /// Number of tools a given server (by index) contributed — for `/mcp`.
     pub fn toolCount(reg: *Registry, server_index: usize) usize {
         var n: usize = 0;

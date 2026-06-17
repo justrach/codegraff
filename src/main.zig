@@ -3831,7 +3831,7 @@ pub fn main(init: std.process.Init) !void {
         if (g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;
     }) orelse mcp.Registry.empty(gpa, io)) else outer: {
-        if (mcp_count > 0) try out.print("{s}skipped {d} workspace MCP server(s) — re-run with --yolo to trust this workspace{s}\n", .{ style.dim, mcp_count, style.reset });
+        if (mcp_count > 0) try out.print("{s}skipped {d} workspace MCP server(s) — /mcp trust to connect them now (or re-run with --yolo){s}\n", .{ style.dim, mcp_count, style.reset });
         break :outer mcp.Registry.empty(gpa, io);
     };
     defer registry_storage.deinit();
@@ -4767,7 +4767,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/jobs", .desc = "list background bash jobs (bash run_in_background)" },
     .{ .name = "/cost", .desc = "session usage: api calls, tokens, USD total" },
     .{ .name = "/animation", .desc = "pick the thinking animation (braille, matrix, pacman…)" },
-    .{ .name = "/mcp", .desc = "list/connect MCP servers" },
+    .{ .name = "/mcp", .desc = "list/add/trust MCP servers" },
     .{ .name = "/help", .desc = "list all commands" },
 };
 
@@ -5425,7 +5425,28 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return;
         }
+        if (std.mem.eql(u8, arg, "trust")) {
+            // Connect workspace .mcp.json servers that were skipped at startup
+            // (consent declined / no --yolo), live, without a restart.
+            const n = reg.trustWorkspace(mcp_config_path) catch |err| {
+                try out.print("{s}✗ /mcp trust failed: {t}{s}\n", .{ style.red, err, style.reset });
+                try out.flush();
+                return;
+            };
+            if (n == 0) {
+                try out.writeAll("no untrusted workspace MCP server(s) to connect.\n");
+            } else {
+                // Re-render the tool lists so the new tools reach the model.
+                root.tools_anthropic = try renderRootTools(arena, .anthropic, &root_specs, reg.tools);
+                root.tools_openai = try renderRootTools(arena, .openai, &root_specs, reg.tools);
+                root.tools_responses = try renderRootTools(arena, .responses, &root_specs, reg.tools);
+                try out.print("{s}✓{s} trusted workspace — connected {d} MCP server(s); {d} tool(s) total\n", .{ style.green, style.reset, n, reg.tools.len });
+            }
+            try out.flush();
+            return;
+        }
         // Plain /mcp: list servers (with tool counts) then tools.
+        const pending = reg.pendingWorkspace(mcp_config_path);
         if (reg.servers.len == 0) {
             try out.writeAll("no MCP servers connected.\n  add one: /mcp add <name> <command> [args...]\n  e.g.   /mcp add fs npx -y @modelcontextprotocol/server-filesystem .\n");
         } else {
@@ -5436,6 +5457,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             for (reg.tools) |t| try out.print("    {s}{s}{s}\n", .{ style.dim, t.qualified_name, style.reset });
             try out.writeAll("  add more: /mcp add <name> <command> [args...]\n");
         }
+        if (pending > 0) try out.print("  {s}{d} workspace server(s) not connected — /mcp trust to connect them{s}\n", .{ style.dim, pending, style.reset });
         try out.flush();
         return;
     }
@@ -5586,7 +5608,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /todo           show the current task list
         \\  /animation      pick the thinking animation (braille/pulse/orbit-dots/block-wave/
         \\                  shimmer/matrix/pacman/starfield/random/off); persists to settings
-        \\  /mcp [add …]    list MCP servers/tools; /mcp add <name> <cmd> [args...] connects one live
+        \\  /mcp [add …]    list MCP servers/tools; /mcp add <name> <cmd> [args...] connects one live; /mcp trust connects skipped workspace servers
         \\  exit / /exit    quit (also: ctrl-d, or ctrl-c on an empty line)
         \\
         \\esc during a response interrupts the turn (what streamed stays in history).
