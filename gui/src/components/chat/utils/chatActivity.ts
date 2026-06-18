@@ -1,4 +1,18 @@
 import type { ActivityOperation } from "../types/chatThread";
+import { classifyUnknownToolName } from "./classifyActivityResult";
+
+// Turn a raw tool name like "webfetch" / "web_fetch" into a readable verb
+// phrase, e.g. "Fetched web content".
+function formatUnknownToolLabel(name: string): string {
+  switch (classifyUnknownToolName(name)) {
+    case "web":
+      return "Fetched web content";
+    case "github":
+      return `Ran ${name} on GitHub`;
+    default:
+      return `Ran ${name}`;
+  }
+}
 
 function formatPath(path: string, workspacePath: string | null): string {
   if (workspacePath == null || path.startsWith(workspacePath) === false) {
@@ -59,7 +73,7 @@ export function formatOperationLabel(
     case "todo_write":
       return `Updated ${operation.detail.count} todo item${operation.detail.count === 1 ? "" : "s"}`;
     case "unknown":
-      return `Ran ${operation.detail.name}`;
+      return formatUnknownToolLabel(operation.detail.name);
     default:
       return operation.name;
   }

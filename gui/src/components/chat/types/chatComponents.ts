@@ -8,7 +8,10 @@ import type {
   TranscriptMessage,
 } from "@/services/desktop/types/contracts";
 
-import type { ActivityResultModel } from "../activity-results/types/activityResult";
+import type {
+  ActivityResultModel,
+  ActivityResultTone,
+} from "../activity-results/types/activityResult";
 import type {
   ActivityItem,
   ActivityOperation,
@@ -33,10 +36,26 @@ export interface ActivityResultCardProps {
     trailing: ReactNode;
   };
   title: ReactNode;
+  tone?: ActivityResultTone;
 }
 
-export interface ActivityResultPreformattedBodyProps {
+export interface TerminalBodyProps {
   text: string;
+}
+
+export interface CodeBodyProps {
+  text: string;
+}
+
+export interface ProseBodyProps {
+  text: string;
+  workspacePath?: string | null;
+  className?: string;
+}
+
+export interface ContentResultProps {
+  result: Extract<ActivityResultModel, { kind: "content" }>;
+  workspacePath: string | null;
 }
 
 export interface ActivityResultRendererProps {
@@ -167,10 +186,6 @@ export interface RenderChatThreadItemOptions {
   itemCount: number;
 }
 
-export interface ShellOutputResultProps {
-  result: Extract<ActivityResultModel, { kind: "shell" }>;
-}
-
 export interface StatusOutputRowProps {
   text: string;
 }
@@ -183,10 +198,6 @@ export interface StatusRowProps {
 
 export interface TextOnlyMessageProps {
   text: string;
-}
-
-export interface TextResultProps {
-  result: Extract<ActivityResultModel, { kind: "text" }>;
 }
 
 export interface ToolEndRowProps {

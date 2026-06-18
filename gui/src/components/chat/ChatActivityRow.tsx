@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
+  GitPullRequest,
   Globe,
   ListTodo,
   Loader2,
@@ -32,8 +33,10 @@ import type {
   ActivityOperationRowProps,
   ChatActivityRowProps,
 } from "./types/chatComponents";
+import type { ActivityOperation } from "./types/chatThread";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { formatOperationLabel } from "./utils/chatActivity";
+import { classifyUnknownToolName } from "./utils/classifyActivityResult";
 import { ChatInlineText } from "./ChatInlineText";
 import { ChatStatusLabel } from "./ChatStatusLabel";
 import { ActivityResultRenderer } from "./activity-results/ActivityResultRenderer";
@@ -49,8 +52,21 @@ const activityTextClassName = cn(
   CHAT_MUTED_TEXT_CLASS,
 );
 
-function operationIcon(kind: string): ComponentType<{ className?: string }> {
-  switch (kind) {
+function unknownToolIcon(name: string): ComponentType<{ className?: string }> {
+  switch (classifyUnknownToolName(name)) {
+    case "web":
+      return Globe;
+    case "github":
+      return GitPullRequest;
+    default:
+      return Activity;
+  }
+}
+
+function operationIcon(
+  operation: ActivityOperation,
+): ComponentType<{ className?: string }> {
+  switch (operation.detail.kind) {
     case "file_read":
       return FileText;
     case "file_update":
@@ -73,6 +89,8 @@ function operationIcon(kind: string): ComponentType<{ className?: string }> {
     case "todo_read":
     case "todo_write":
       return ListTodo;
+    case "unknown":
+      return unknownToolIcon(operation.name);
     default:
       return Activity;
   }
@@ -107,7 +125,7 @@ function ActivityOperationRow({
   const isExpandable = result != null;
   const label = formatOperationLabel(operation, workspacePath);
   const isCommand = operation.detail.kind === "shell";
-  const Icon = operationIcon(operation.detail.kind);
+  const Icon = operationIcon(operation);
 
   const content = (
     <>
