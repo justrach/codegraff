@@ -2031,6 +2031,15 @@ const Hooks = struct {
 
 var g_hooks: Hooks = .{};
 
+/// Built-in codedb guard (issue #626): when a repo is codedb-indexed, agents
+/// reflexively grep/sed/cat source files and never touch the structural tools,
+/// so codedb degrades to "ripgrep with smaller output." When on, a bash command
+/// that scans/reads a concrete source file is blocked with a redirect to the
+/// codedb tool. Off when GRAFF_NO_CODEDB_GUARD is set; the tri-state cache
+/// records whether `codedb` is actually on PATH (no redirect if it isn't).
+var g_codedb_guard = true;
+var g_codedb_present: ?bool = null;
+
 fn parseHookList(arena: Allocator, v: ?Value) []const Hook {
     const arr = v orelse return &.{};
     if (arr != .array) return &.{};
@@ -2135,8 +2144,8 @@ const SkillDef = struct {
 const skills_registry = [_]SkillDef{
     .{
         .name = "graff",
-        .desc = "code-intelligence suite — muonry edits, zigrep search, codedb index; edit_file upgrades to atomic zigpatch splices",
-        .bins = &.{ "zigpatch", "muonry" },
+        .desc = "code-intelligence suite — codedb-pro edits/search, zigrep, codedb index; edit_file upgrades to atomic zigpatch splices",
+        .bins = &.{ "zigpatch", "codedb-pro" },
         .install = "curl -fsSL https://codegraff.com/install-graff.sh | sh",
         .note = "", // the codedb tool description + zigpatch delegation already cover it
     },
@@ -2157,36 +2166,59 @@ const skills_registry = [_]SkillDef{
 const McpNote = struct { server: []const u8, note: []const u8 };
 const mcp_notes = [_]McpNote{
     .{
+        .server = "codedbpro",
+        .note = "The codedb-pro MCP server is connected (mcp__codedbpro__* tools). SEARCH ORDER: the native codedb tool is free and indexed — always try it first for code search (search/symbol/callers/outline/find); reach for mcp__codedbpro__faster_search or meta_search only when codedb can't answer (raw literal/regex content matches, fuzzy queries, non-indexed files) — codedb-pro is metered. Prefer mcp__codedbpro__read (mode=outline first, then symbol) over read_file for navigating large code files, and mcp__codedbpro__batch to run several independent reads/searches/edits in one round-trip. Keep edits on the native edit_file/write_file tools (they are snapshot-tracked for /rewind). These tools are accelerators, not requirements: whenever an mcp__codedbpro__ call fails or is unavailable, fall back to read_file/codedb/bash and continue.",
+    },
+    .{
         .server = "muonry",
         .note = "The muonry MCP server is connected (mcp__muonry__* tools). SEARCH ORDER: the native codedb tool is free and indexed — always try it first for code search (search/symbol/callers/outline/find); use mcp__muonry__search or faster_search only when codedb can't answer (raw literal/regex content matches, non-code or non-indexed files) — muonry is metered. Prefer mcp__muonry__read (mode=outline first, then symbol) over read_file for navigating large code files, and mcp__muonry__batch to run several independent reads/searches in one round-trip. Keep edits on the native edit_file/write_file tools (they are snapshot-tracked for /rewind). These tools are accelerators, not requirements: whenever an mcp__muonry__ call fails or is unavailable, fall back to read_file/codedb/bash and continue.",
     },
 };
 
-/// Read-only tool names on the trusted muonry server, mirroring the
-/// server's own readOnlyHint annotations.
-const muonry_readonly_tools = [_][]const u8{ "read", "search", "faster_search", "meta_search", "diff", "lint" };
+/// The metered code-intelligence companion. It first shipped as `muonry` and
+/// was renamed to `codedb-pro`; both run as an MCP server (`<bin> --mcp`) and
+/// expose the same tool surface. We auto-connect the first one present and
+/// trust it like the native tools. Server names match the qualified tool
+/// prefix the model sees (mcp__<server>__*); listed in preference order.
+const CompanionServer = struct { server: []const u8, bin: []const u8 };
+const companion_servers = [_]CompanionServer{
+    .{ .server = "codedbpro", .bin = "codedb-pro" },
+    .{ .server = "muonry", .bin = "muonry" }, // legacy name, same suite
+};
 
-fn muonryToolReadOnly(t: []const u8) bool {
-    for (muonry_readonly_tools) |ok| if (std.mem.eql(u8, t, ok)) return true;
+/// Read-only tool names on the companion server, mirroring its own
+/// readOnlyHint annotations.
+const companion_readonly_tools = [_][]const u8{ "read", "search", "faster_search", "meta_search", "diff", "lint" };
+
+fn companionToolReadOnly(t: []const u8) bool {
+    for (companion_readonly_tools) |ok| if (std.mem.eql(u8, t, ok)) return true;
     return false;
 }
 
-/// Every mcp__muonry__* call skips the approval gate — the suite (muonry,
-/// zigpatch, zigrep, codedb) is a user-installed trusted companion, same
-/// standing as the native read_file/edit_file tools, which never prompt.
-fn muonryTrusted(tool: []const u8) bool {
-    return std.mem.startsWith(u8, tool, "mcp__muonry__");
+/// Strip the companion's `mcp__<server>__` prefix, returning the bare tool
+/// name — or null when the call isn't a companion tool at all.
+fn companionToolName(tool: []const u8) ?[]const u8 {
+    inline for (companion_servers) |c| {
+        const prefix = "mcp__" ++ c.server ++ "__";
+        if (std.mem.startsWith(u8, tool, prefix)) return tool[prefix.len..];
+    }
+    return null;
 }
 
-/// Is this muonry call read-only? Decides what muonry may do in PLAN MODE
+/// Every companion call skips the approval gate — the suite (codedb-pro/muonry,
+/// zigpatch, zigrep, codedb) is a user-installed trusted companion, same
+/// standing as the native read_file/edit_file tools, which never prompt.
+fn companionTrusted(tool: []const u8) bool {
+    return companionToolName(tool) != null;
+}
+
+/// Is this companion call read-only? Decides what it may do in PLAN MODE
 /// (read-only by mode semantics — native edit_file is blocked there too,
 /// trust notwithstanding). Mirrors the server's readOnlyHint annotations;
 /// batch is read-only iff every op inside it is.
-fn muonryReadOnly(tool: []const u8, input: Value) bool {
-    const prefix = "mcp__muonry__";
-    if (!std.mem.startsWith(u8, tool, prefix)) return false;
-    const t = tool[prefix.len..];
-    if (muonryToolReadOnly(t)) return true;
+fn companionReadOnly(tool: []const u8, input: Value) bool {
+    const t = companionToolName(tool) orelse return false;
+    if (companionToolReadOnly(t)) return true;
     if (!std.mem.eql(u8, t, "batch")) return false;
     if (input != .object) return false;
     const ops = input.object.get("ops") orelse return false;
@@ -2194,7 +2226,7 @@ fn muonryReadOnly(tool: []const u8, input: Value) bool {
     for (ops.array.items) |op| {
         if (op != .object) return false;
         const name = op.object.get("tool") orelse return false;
-        if (name != .string or !muonryToolReadOnly(name.string)) return false;
+        if (name != .string or !companionToolReadOnly(name.string)) return false;
     }
     return true;
 }
@@ -3841,26 +3873,31 @@ pub fn main(init: std.process.Init) !void {
     };
     defer registry_storage.deinit();
     const registry: ?*mcp.Registry = &registry_storage;
-    // muonry auto-activation: if the muonry binary is installed but nothing
-    // connected it (no workspace .mcp.json entry, or consent declined for the
-    // workspace's servers), spawn it directly — it's a user-installed
-    // companion (the fast code-intelligence suite), the same trust level as
-    // the skills auto-detection above it, NOT arbitrary workspace config.
-    // Failure just means native tools: the mcp_notes usage line below only
-    // enters the context when the connect actually succeeded. Opt out the
-    // same way as a skill: {"skills": {"muonry": false}} in settings.
+    // Companion auto-activation: if the metered code-intelligence companion
+    // (codedb-pro, formerly muonry) is installed but nothing connected it (no
+    // workspace .mcp.json entry, or consent declined), spawn it directly — a
+    // user-installed companion at the same trust level as the skills
+    // auto-detection above it, NOT arbitrary workspace config. Failure just
+    // means native tools; the mcp_notes usage line below only enters context
+    // when the connect actually succeeded. Opt out like a skill:
+    // {"skills": {"codedbpro": false}}.
     g_path_env = try arena.dupe(u8, init.environ_map.get("PATH") orelse "");
+    g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
-    if (!mcpServerConnected(registry_storage.tools, "muonry") and
-        !skillDisabled("muonry") and binOnPath(io, "muonry"))
-    {
-        _ = registry_storage.addServer("muonry", "muonry", &.{"--mcp"}) catch |err| {
-            if (!json_mode and oneshot_prompt == null) {
-                try out.print("{s}[mcp:muonry] auto-connect failed ({t}) — native tools only{s}\n", .{ style.dim, err, style.reset });
-                try out.flush();
+    connect: {
+        for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
+        for (companion_servers) |c| {
+            if (skillDisabled(c.server) or !binOnPath(io, c.bin)) continue;
+            if (registry_storage.addServer(c.server, c.bin, &.{"--mcp"})) |_| {
+                break;
+            } else |err| {
+                if (!json_mode and oneshot_prompt == null) {
+                    try out.print("{s}[mcp:{s}] auto-connect failed ({t}) — native tools only{s}\n", .{ style.dim, c.server, err, style.reset });
+                    try out.flush();
+                }
             }
-        };
+        }
     }
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
 
@@ -4338,14 +4375,17 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Is this .mcp.json entry one the harness would auto-connect anyway? A
-/// muonry entry running the literal `muonry` binary with no args (or just
-/// `--mcp`) carries the same trust as the PATH auto-activation — but ONLY
-/// exactly that shape: a repo putting `{"muonry": {"command": "evil"}}` (or
-/// extra args) in its config still hits the consent gate.
+/// companion entry running its own binary (codedb-pro/muonry) with no args
+/// (or just `--mcp`) carries the same trust as the PATH auto-activation — but
+/// ONLY exactly that shape: a repo putting `{"codedbpro": {"command": "evil"}}`
+/// (or extra args) in its config still hits the consent gate.
 fn trustedMcpEntry(name: []const u8, cfg: Value) bool {
-    if (!std.mem.eql(u8, name, "muonry") or cfg != .object) return false;
+    if (cfg != .object) return false;
+    const expected_bin = for (companion_servers) |c| {
+        if (std.mem.eql(u8, name, c.server)) break c.bin;
+    } else return false;
     const cmd = cfg.object.get("command") orelse return false;
-    if (cmd != .string or !std.mem.eql(u8, cmd.string, "muonry")) return false;
+    if (cmd != .string or !std.mem.eql(u8, cmd.string, expected_bin)) return false;
     const args = cfg.object.get("args") orelse return true;
     if (args != .array) return false;
     if (args.array.items.len == 0) return true;
@@ -4355,7 +4395,7 @@ fn trustedMcpEntry(name: []const u8, cfg: Value) bool {
 }
 
 /// Count the workspace .mcp.json servers that actually need consent at
-/// startup (0 if none/missing; trusted muonry entries are exempt — see
+/// startup (0 if none/missing; trusted companion entries are exempt — see
 /// trustedMcpEntry). Used to gate auto-spawning untrusted workspace servers.
 fn countMcpServers(io: Io, arena: Allocator) usize {
     const data = Io.Dir.cwd().readFileAlloc(io, mcp_config_path, arena, .limited(1 << 20)) catch return 0;
@@ -4755,6 +4795,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/sessions", .desc = "list saved sessions" },
     .{ .name = "/rewind", .desc = "drop a past prompt & revert its file edits" },
     .{ .name = "/key", .desc = "API-key status / add one live" },
+    .{ .name = "/login", .desc = "OAuth sign-in: codegraff | codex/oai | kimi" },
     .{ .name = "/yolo", .desc = "toggle permission prompts" },
     .{ .name = "/strict", .desc = "toggle every-message-is-a-tool mode" },
     .{ .name = "/keepcontext", .desc = "keep history across wire-format switches" },
@@ -4775,6 +4816,26 @@ const command_menu = [_]PickItem{
     .{ .name = "/mcp", .desc = "list/add/trust MCP servers" },
     .{ .name = "/help", .desc = "list all commands" },
 };
+
+/// After an in-session `/login` writes its credential file, pull the fresh key
+/// (and the Codex account id) into the live Keys so the current conversation
+/// uses it without a restart — the in-session twin of the startup loaders.
+fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: []const u8) void {
+    const home = root.home;
+    for (provider_specs, &keys.values) |spec, *value| {
+        if (!std.mem.eql(u8, spec.id, provider_id)) continue;
+        if (std.mem.eql(u8, provider_id, "codegraff")) {
+            if (loadCodegraffKey(root.io, arena, home)) |k| value.* = k;
+        } else if (std.mem.eql(u8, provider_id, "kimi")) {
+            if (loadKimiOAuth(root.io, root.gpa, arena, home)) |k| value.* = k;
+        } else if (std.mem.eql(u8, provider_id, "codex")) {
+            if (loadCodexAuth(root.io, arena, home)) |auth| {
+                value.* = auth.token;
+                keys.codex_account = auth.account;
+            }
+        }
+    }
+}
 
 fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !void {
     if (std.mem.eql(u8, line, "/clear")) {
@@ -4846,6 +4907,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return;
     }
     if (std.mem.eql(u8, line, "/hooks")) {
+        try out.print("{s}codedb guard{s} (built-in, issue #626): {s} — blocks bash grep/sed/cat/wc on indexed source files and redirects to the codedb tool; GRAFF_NO_CODEDB_GUARD=1 disables.\n", .{ style.bold, style.reset, if (g_codedb_guard) "on" else "off" });
         if (g_hooks.total() == 0) {
             try out.print("no lifecycle hooks. Add them to {s}:\n  {s}{{\"hooks\": {{\"pre_tool\": [{{\"match\": \"bash\", \"command\": \"./guard.sh\"}}]}}}}{s}\n  events: pre_tool (exit 2 blocks, stderr → model) · post_tool · turn_end; loaded at startup\n", .{ Approvals.settings_path, style.dim, style.reset });
             try out.flush();
@@ -5279,6 +5341,78 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return;
     }
+    if (std.mem.startsWith(u8, line, "/login")) {
+        // Interactive OAuth sign-in for the providers that have a device/PKCE
+        // flow (codegraff, codex/ChatGPT, kimi). Mirrors the `graff login`
+        // subcommands but runs in-session and pulls the fresh key into the live
+        // Keys, so this conversation keeps going without a restart. Pure
+        // API-key providers don't log in — they point back at /key.
+        const rest = std.mem.trim(u8, line["/login".len..], " \t");
+        var lit = std.mem.tokenizeAny(u8, rest, " \t");
+        var target = lit.next() orelse "";
+        const refresh = while (lit.next()) |a| {
+            if (std.mem.eql(u8, a, "--refresh")) break true;
+        } else false;
+        const login_targets = [_]PickItem{
+            .{ .name = "codegraff", .desc = "free codegraff key (device-code OAuth)" },
+            .{ .name = "codex", .desc = "ChatGPT / OpenAI sign-in (alias: oai)" },
+            .{ .name = "kimi", .desc = "Kimi Code sign-in (device-code OAuth)" },
+        };
+        // Bare /login: pick a provider on a TTY, else just list the options.
+        if (target.len == 0) {
+            if (use_color and root.in != null) {
+                const idx = listPicker(root, arena, out, "Log in to \xe2\x80\xba", &login_targets) orelse return;
+                target = login_targets[idx].name;
+            } else {
+                try out.writeAll("interactive logins (OAuth \xe2\x80\x94 no key to paste):\n");
+                for (login_targets) |t| try out.print("  {s} /login {s:<10} {s}\n", .{ if (keys.get(t.name) != null) "\xe2\x9c\x93" else "\xc2\xb7", t.name, t.desc });
+                try out.print("{s}other providers use an API key:  /key <provider> <key>{s}\n", .{ style.dim, style.reset });
+                try out.flush();
+                return;
+            }
+        }
+        // codex is the OpenAI/ChatGPT login; accept the natural aliases.
+        if (std.mem.eql(u8, target, "oai") or std.mem.eql(u8, target, "openai") or
+            std.mem.eql(u8, target, "chatgpt") or std.mem.eql(u8, target, "gpt"))
+            target = "codex";
+        if (std.mem.eql(u8, target, "graff")) target = "codegraff";
+
+        const home = root.home;
+        try out.flush(); // hand stdout to the login flow's own writer
+        if (std.mem.eql(u8, target, "codegraff")) {
+            codegraffLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 codegraff login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else if (std.mem.eql(u8, target, "codex")) {
+            codexLogin(root.io, root.gpa, arena, home, refresh) catch |err| {
+                try out.print("\xe2\x9c\x97 codex login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else if (std.mem.eql(u8, target, "kimi")) {
+            kimiLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 kimi login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else {
+            // A pure API-key provider, or something unrecognized.
+            for (provider_specs) |spec| if (std.mem.eql(u8, spec.id, target)) {
+                try out.print("{s} uses an API key, not a login \xe2\x80\x94 /key {s} <key>\n", .{ target, target });
+                try out.flush();
+                return;
+            };
+            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | codex | kimi (others: /key <provider> <key>)\n", .{target});
+            try out.flush();
+            return;
+        }
+        // Login wrote its credential file; pull the key into the live session.
+        reloadLoginKey(root, keys, arena, target);
+        try out.flush();
+        return;
+    }
     if (std.mem.startsWith(u8, line, "/image")) {
         const path = std.mem.trim(u8, line["/image".len..], " \t");
         if (path.len == 0) {
@@ -5591,6 +5725,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /clear          wipe the conversation and start fresh
         \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
         \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
+        \\  /login [tgt]    OAuth sign-in (no key to paste): codegraff | codex (alias oai) | kimi; bare → picker
         \\  /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
         \\  /effort         thinking depth: low|medium|high (codex, deepseek, codegraff; default medium, persists)
         \\  /reasoning      alias for /effort
@@ -7518,7 +7653,7 @@ const Agent = struct {
         // up front (no point prompting for something the mode forbids).
         if (plan_mode) {
             if (std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or
-                (mcp.Registry.isMcp(call.name) and !muonryReadOnly(call.name, call.input))) return .{
+                (mcp.Registry.isMcp(call.name) and !companionReadOnly(call.name, call.input))) return .{
                 .text = try self.arena.dupe(u8, "plan mode is on — read-only. Fold this change into the plan you present; the user applies it after approving (/plan toggles the mode off)."),
                 .is_error = true,
             };
@@ -7557,7 +7692,7 @@ const Agent = struct {
                 "?";
             prompt_line = std.fmt.bufPrint(&line_buf, "{s} {s}", .{ call.name, path }) catch call.name;
         } else if (mcp.Registry.isMcp(call.name)) {
-            if (muonryTrusted(call.name)) return null; // the whole suite: like native tools
+            if (companionTrusted(call.name)) return null; // the whole suite: like native tools
             if (approvals.allowedExact(self.io, call.name)) return null;
             key = call.name;
             prompt_line = std.fmt.bufPrint(&line_buf, "call MCP tool {s}", .{call.name}) catch call.name;
@@ -10103,11 +10238,108 @@ fn runPostToolHooks(ctx: ToolCtx, call: ToolCall, out: ToolOutput) void {
     }
 }
 
+/// Built-in pre_tool guard for issue #626. Blocks a bash command that scans or
+/// reads a *concrete source file* (`grep`/`sed`/`cat`/… on a path ending in a
+/// known code extension) and redirects the model to the codedb tool, whose
+/// structural queries (symbol/callers/deps/outline/context) otherwise go
+/// unused. Narrow on purpose: only known scan/read utilities, only a concrete
+/// source path (globs like `*.zig` are left alone), only when `codedb` is on
+/// PATH (else the model would be stuck between a blocked grep and no tool), and
+/// never when GRAFF_NO_CODEDB_GUARD is set. A block returns is_error so the
+/// model adapts — same contract as a pre_tool hook's exit 2.
+fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
+    if (!g_codedb_guard) return null;
+    if (!std.mem.eql(u8, call.name, "bash")) return null;
+    const cmd = strField(call.input, "command") orelse return null;
+
+    // First word must be a code scan/read utility (basename, so /usr/bin/grep
+    // counts; sudo/env prefixes are intentionally not unwrapped).
+    const trimmed = std.mem.trim(u8, cmd, " \t");
+    const word_end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
+    const tool = std.fs.path.basename(trimmed[0..word_end]);
+    const scanners = [_][]const u8{
+        "grep", "egrep", "fgrep", "rg",   "ripgrep", "ag", "ack",
+        "sed",  "awk",   "cat",   "head", "tail",    "wc", "nl",
+        "bat",  "batcat",
+    };
+    var is_scanner = false;
+    for (scanners) |s| if (std.mem.eql(u8, s, tool)) {
+        is_scanner = true;
+    };
+    if (!is_scanner) return null;
+
+    // …aimed at a concrete source file (not a glob — codedb glob/tree cover that).
+    if (!referencesSourceFile(cmd)) return null;
+
+    // Only redirect when codedb is actually installed (cache the PATH lookup).
+    if (g_codedb_present == null) g_codedb_present = binOnPath(ctx.io, "codedb");
+    if (g_codedb_present != true) return null;
+
+    const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool (indexed + structural): search <query> · symbol <name> [--body] · callers <name> · deps <path> · outline <path> · read <path> · context <task>. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
+    return .{ .text = msg, .is_error = true };
+}
+
+/// True when `cmd` names a concrete source file: a whitespace-separated token
+/// (after the command word) ending in a known code extension, with no `*`/`?`
+/// glob metachars. Used only by codedbGuard.
+fn referencesSourceFile(cmd: []const u8) bool {
+    const exts = [_][]const u8{
+        ".zig", ".rs",  ".ts",  ".tsx", ".js",  ".jsx", ".mjs", ".cjs",
+        ".py",  ".go",  ".c",   ".h",   ".cc",  ".cpp", ".hpp", ".cxx",
+        ".java", ".kt", ".rb",  ".php", ".swift", ".scala", ".cs",
+        ".lua", ".ex",  ".exs", ".erl", ".clj", ".dart", ".vue", ".svelte",
+    };
+    var it = std.mem.tokenizeAny(u8, cmd, " \t\n");
+    var first = true;
+    while (it.next()) |raw| {
+        if (first) {
+            first = false;
+            continue; // skip the command word itself
+        }
+        const tok = std.mem.trim(u8, raw, "'\"`()");
+        if (std.mem.indexOfAny(u8, tok, "*?") != null) continue; // glob, not a path
+        for (exts) |e| if (std.mem.endsWith(u8, tok, e)) return true;
+    }
+    return false;
+}
+
+/// Built-in pre_tool router for the metered companion — the tool-layer twin of
+/// providerFor()'s model routing (prefer the configured target, fall back to a
+/// default). codedb-pro's tools (mcp__codedbpro__*) are only advertised while it
+/// is connected; if the model calls one when the companion is gone (disconnected
+/// mid-session, or a stale tool name carried over from a prior turn), don't hand
+/// back a bare "unknown tool" — redirect to the native equivalent, which is
+/// always registered. Returns null (let the call run) when the companion IS
+/// connected, or when this isn't a companion tool at all.
+fn companionRoute(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
+    const bare = companionToolName(call.name) orelse return null;
+    if (ctx.registry) |reg| {
+        for (companion_servers) |c| if (mcpServerConnected(reg.tools, c.server)) return null;
+    }
+    const native = companionNativeFallback(bare);
+    const msg = std.fmt.allocPrint(ctx.gpa, "the codedb-pro companion isn't connected this session, so {s} can't run — it was only an accelerator. Use the native {s} instead (always available).", .{ call.name, native }) catch return .{ .text = &.{}, .is_error = true };
+    return .{ .text = msg, .is_error = true };
+}
+
+/// Map a companion tool (bare name, sans the mcp__<server>__ prefix) to the
+/// native tool that does the same job — the fallback companionRoute steers to.
+fn companionNativeFallback(bare: []const u8) []const u8 {
+    if (std.mem.eql(u8, bare, "read")) return "read_file tool";
+    if (std.mem.eql(u8, bare, "search") or std.mem.eql(u8, bare, "faster_search") or std.mem.eql(u8, bare, "meta_search"))
+        return "codedb tool (search/symbol/callers/outline), or bash grep";
+    if (std.mem.eql(u8, bare, "edit") or std.mem.eql(u8, bare, "patch") or std.mem.eql(u8, bare, "replace"))
+        return "edit_file tool";
+    if (std.mem.eql(u8, bare, "create")) return "write_file tool";
+    if (std.mem.eql(u8, bare, "diff")) return "bash `git diff`";
+    if (std.mem.eql(u8, bare, "lint")) return "bash to run the linter directly";
+    return "native read_file/edit_file/codedb/bash tools";
+}
+
 /// Runs on a pool thread; never throws — failures become is_error results.
 /// Every execution is timed (out.ms) and traced.
 fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     const t0: Io.Timestamp = .now(ctx.io, .awake);
-    if (hookGate(ctx, call)) |blocked| {
+    if (codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
         if (ctx.tracer) |tr| tr.tool(call.name, out.ms, true, out.text.len, ctx.from_sub);
@@ -10942,6 +11174,23 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
 
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────
 
+test "codedbGuard.referencesSourceFile: concrete code paths, not globs/logs/configs" {
+    // The exact #626 screenshot commands — every one reads a source file.
+    try std.testing.expect(referencesSourceFile("grep -n \"description\" src/mcp.zig"));
+    try std.testing.expect(referencesSourceFile("wc -l src/mcp.zig"));
+    try std.testing.expect(referencesSourceFile("sed -n '600,700p' src/mcp.zig"));
+    try std.testing.expect(referencesSourceFile("cat gui/src/hooks/types/copy.ts"));
+    // Globs are discovery, not a read — codedb glob/tree cover those separately.
+    try std.testing.expect(!referencesSourceFile("find . -name '*.zig'"));
+    try std.testing.expect(!referencesSourceFile("grep -r foo --include=*.rs ."));
+    // No concrete source path → leave it alone (logs, docs, bare commands).
+    try std.testing.expect(!referencesSourceFile("grep error /var/log/app.log"));
+    try std.testing.expect(!referencesSourceFile("cat README.md"));
+    try std.testing.expect(!referencesSourceFile("ls -la"));
+    // The command word itself ending in a code ext must not self-trigger.
+    try std.testing.expect(!referencesSourceFile("./build.zig"));
+}
+
 test "fuzzySubseq matches across punctuation gaps" {
     try std.testing.expect(fuzzySubseq("gpt-5.5", "gpt5.5"));
     try std.testing.expect(fuzzySubseq("claude-opus-4-8", "opus"));
@@ -11391,7 +11640,7 @@ test "blankText: webfetch empty-output heuristic" {
     try std.testing.expect(!blankText("# Example Domain\n\nThis domain is for use..."));
 }
 
-test "trustedMcpEntry: only the exact muonry shape skips the consent gate" {
+test "trustedMcpEntry: only the exact companion shape skips the consent gate" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -11400,6 +11649,11 @@ test "trustedMcpEntry: only the exact muonry shape skips the consent gate" {
             return std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable;
         }
     }.p;
+    // codedb-pro: the current companion name.
+    try std.testing.expect(trustedMcpEntry("codedbpro", parse(a, "{\"command\":\"codedb-pro\",\"args\":[\"--mcp\"]}")));
+    try std.testing.expect(trustedMcpEntry("codedbpro", parse(a, "{\"command\":\"codedb-pro\"}")));
+    try std.testing.expect(!trustedMcpEntry("codedbpro", parse(a, "{\"command\":\"muonry\"}"))); // wrong binary
+    // muonry: the legacy alias, still trusted.
     try std.testing.expect(trustedMcpEntry("muonry", parse(a, "{\"command\":\"muonry\",\"args\":[\"--mcp\"]}")));
     try std.testing.expect(trustedMcpEntry("muonry", parse(a, "{\"command\":\"muonry\"}")));
     try std.testing.expect(trustedMcpEntry("muonry", parse(a, "{\"command\":\"muonry\",\"args\":[]}")));
@@ -11409,15 +11663,16 @@ test "trustedMcpEntry: only the exact muonry shape skips the consent gate" {
     try std.testing.expect(!trustedMcpEntry("other", parse(a, "{\"command\":\"muonry\"}")));
 }
 
-test "muonry trust: whole suite skips the gate; plan mode only frees read-only calls" {
-    try std.testing.expect(muonryTrusted("mcp__muonry__read"));
-    try std.testing.expect(muonryTrusted("mcp__muonry__edit"));
-    try std.testing.expect(muonryTrusted("mcp__muonry__batch"));
-    try std.testing.expect(!muonryTrusted("mcp__other__read"));
-    try std.testing.expect(!muonryTrusted("read_file"));
+test "companion trust: whole suite skips the gate; plan mode only frees read-only calls" {
+    try std.testing.expect(companionTrusted("mcp__codedbpro__read"));
+    try std.testing.expect(companionTrusted("mcp__codedbpro__edit"));
+    try std.testing.expect(companionTrusted("mcp__muonry__read")); // legacy alias
+    try std.testing.expect(companionTrusted("mcp__muonry__batch"));
+    try std.testing.expect(!companionTrusted("mcp__other__read"));
+    try std.testing.expect(!companionTrusted("read_file"));
 }
 
-test "muonryReadOnly: the plan-mode classifier mirrors readOnlyHint" {
+test "companionReadOnly: the plan-mode classifier mirrors readOnlyHint" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -11427,23 +11682,59 @@ test "muonryReadOnly: the plan-mode classifier mirrors readOnlyHint" {
         }
     }.p;
     const none = Value{ .null = {} };
-    try std.testing.expect(muonryReadOnly("mcp__muonry__read", none));
-    try std.testing.expect(muonryReadOnly("mcp__muonry__search", none));
-    try std.testing.expect(muonryReadOnly("mcp__muonry__faster_search", none));
-    try std.testing.expect(!muonryReadOnly("mcp__muonry__edit", none));
-    try std.testing.expect(!muonryReadOnly("mcp__muonry__patch", none));
-    try std.testing.expect(!muonryReadOnly("mcp__muonry__memo", none));
-    try std.testing.expect(!muonryReadOnly("mcp__other__read", none)); // only the trusted server
-    try std.testing.expect(!muonryReadOnly("read_file", none));
+    try std.testing.expect(companionReadOnly("mcp__codedbpro__read", none));
+    try std.testing.expect(companionReadOnly("mcp__codedbpro__search", none));
+    try std.testing.expect(companionReadOnly("mcp__codedbpro__faster_search", none));
+    try std.testing.expect(companionReadOnly("mcp__muonry__read", none)); // legacy alias
+    try std.testing.expect(!companionReadOnly("mcp__codedbpro__edit", none));
+    try std.testing.expect(!companionReadOnly("mcp__codedbpro__patch", none));
+    try std.testing.expect(!companionReadOnly("mcp__codedbpro__memo", none));
+    try std.testing.expect(!companionReadOnly("mcp__other__read", none)); // only the trusted server
+    try std.testing.expect(!companionReadOnly("read_file", none));
     // batch: read-only iff every op is
-    try std.testing.expect(muonryReadOnly("mcp__muonry__batch", parse(a,
+    try std.testing.expect(companionReadOnly("mcp__codedbpro__batch", parse(a,
         \\{"ops":[{"tool":"read","args":{}},{"tool":"search","args":{}}]}
     )));
-    try std.testing.expect(!muonryReadOnly("mcp__muonry__batch", parse(a,
+    try std.testing.expect(!companionReadOnly("mcp__codedbpro__batch", parse(a,
         \\{"ops":[{"tool":"read","args":{}},{"tool":"edit","args":{}}]}
     )));
-    try std.testing.expect(!muonryReadOnly("mcp__muonry__batch", parse(a, "{\"ops\":[]}")));
-    try std.testing.expect(!muonryReadOnly("mcp__muonry__batch", parse(a, "{}")));
+    try std.testing.expect(!companionReadOnly("mcp__codedbpro__batch", parse(a, "{\"ops\":[]}")));
+    try std.testing.expect(!companionReadOnly("mcp__codedbpro__batch", parse(a, "{}")));
+}
+
+test "companionNativeFallback: every companion tool maps to a native equivalent" {
+    try std.testing.expectEqualStrings("read_file tool", companionNativeFallback("read"));
+    try std.testing.expectEqualStrings("edit_file tool", companionNativeFallback("patch"));
+    try std.testing.expectEqualStrings("edit_file tool", companionNativeFallback("edit"));
+    try std.testing.expectEqualStrings("write_file tool", companionNativeFallback("create"));
+    try std.testing.expect(std.mem.indexOf(u8, companionNativeFallback("faster_search"), "codedb") != null);
+    // an unknown/new companion tool still gets a sane native pointer
+    try std.testing.expect(std.mem.indexOf(u8, companionNativeFallback("memo"), "native") != null);
+}
+
+test "companionToolName: strips either server prefix, else null" {
+    try std.testing.expectEqualStrings("read", companionToolName("mcp__codedbpro__read").?);
+    try std.testing.expectEqualStrings("faster_search", companionToolName("mcp__codedbpro__faster_search").?);
+    try std.testing.expectEqualStrings("batch", companionToolName("mcp__muonry__batch").?); // legacy alias
+    try std.testing.expect(companionToolName("mcp__other__read") == null);
+    try std.testing.expect(companionToolName("read_file") == null);
+    try std.testing.expect(companionToolName("codedb") == null); // free codedb is a native tool, not a companion
+}
+
+test "companion_servers: codedb-pro is the preferred target, muonry the legacy alias" {
+    try std.testing.expectEqualStrings("codedbpro", companion_servers[0].server);
+    try std.testing.expectEqualStrings("codedb-pro", companion_servers[0].bin);
+    try std.testing.expectEqualStrings("muonry", companion_servers[1].server);
+    try std.testing.expectEqualStrings("muonry", companion_servers[1].bin);
+}
+
+test "mcpServerConnected: detects codedb-pro by its qualified prefix" {
+    const tools = [_]mcp.Tool{
+        .{ .server_index = 0, .original_name = "search", .qualified_name = "mcp__codedbpro__search", .description = "", .input_schema = .null },
+    };
+    try std.testing.expect(mcpServerConnected(&tools, "codedbpro"));
+    try std.testing.expect(!mcpServerConnected(&tools, "muonry"));
+    try std.testing.expect(!mcpServerConnected(&tools, "codedb")); // native codedb tool isn't an MCP server
 }
 
 test "billingFor: subscription, priced, unpriced classification" {
