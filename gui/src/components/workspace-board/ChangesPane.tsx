@@ -3,6 +3,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 import {
   ChevronDownIcon,
   ChevronRight,
+  ExternalLinkIcon,
   FileText,
   GitCommitHorizontalIcon,
   UploadIcon,
@@ -18,14 +19,8 @@ import {
 import { usePreferredOpenTarget } from "@/components/conversation-panel/hooks/usePreferredOpenTarget";
 import { useConversationHeaderState } from "@/components/conversation-panel/hooks/useConversationHeaderState";
 import { CommitChangesDialog } from "@/components/conversation-panel/CommitChangesDialog";
-import {
-  getFileDiffDisplayName,
-  getFileDiffDisplayPath,
-} from "@/components/chat/activity-results/utils/fileDiff";
-import {
-  fileChangeBadge,
-  formatFileChangeLabel,
-} from "@/components/chat/activity-results/utils/fileChangeLabel";
+import { getFileDiffDisplayName } from "@/components/chat/activity-results/utils/fileDiff";
+import { formatFileChangeLabel } from "@/components/chat/activity-results/utils/fileChangeLabel";
 import {
   resolveRenderableFileDiff,
   type ResolvedFileDiff,
@@ -63,13 +58,12 @@ function PlaceholderBody({
 }) {
   const { title, detail } = formatFileChangeLabel(operation, byteCount);
   return (
-    <div className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground">
-      <span className="font-medium text-foreground/80">{title}</span>
+    <div className="px-4 py-3 text-center text-xs text-muted-foreground">
+      <span className="text-foreground/70">{title}</span>
       {detail != null ? (
-        <>
-          <span className="text-muted-foreground/40">·</span>
-          <span className="font-mono text-[11px]">{detail}</span>
-        </>
+        <span className="ml-1.5 font-mono text-[11px] text-muted-foreground/70">
+          {detail}
+        </span>
       ) : null}
     </div>
   );
@@ -78,7 +72,6 @@ function PlaceholderBody({
 interface ChangeRowProps {
   change: SessionFileChange;
   resolved: ResolvedFileDiff | null;
-  workspacePath: string;
   canOpenInEditor: boolean;
   onOpenInEditor: (path: string) => void;
 }
@@ -86,24 +79,21 @@ interface ChangeRowProps {
 function ChangeRow({
   change,
   resolved,
-  workspacePath,
   canOpenInEditor,
   onOpenInEditor,
 }: ChangeRowProps) {
   const [open, setOpen] = useState(true);
   const displayName = getFileDiffDisplayName(change.path);
-  const displayPath = getFileDiffDisplayPath(change.path, workspacePath);
-  const badge = fileChangeBadge(change.operation, change.editCount);
   const stats = resolved?.status === "diff" ? resolved : null;
 
   return (
     <Collapsible
       open={open}
       onOpenChange={setOpen}
-      className="overflow-hidden rounded-lg border border-border bg-card shadow-[var(--elevation-xs)] ring-1 ring-foreground/[0.04] transition-shadow hover:shadow-[var(--elevation-sm)]"
+      className="group border-b border-border last:border-b-0"
     >
-      <div className="flex items-center gap-2 bg-muted/40 pr-2">
-        <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left">
+      <div className="flex items-center gap-2 bg-muted/40 pr-2 transition-colors hover:bg-muted/60">
+        <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left">
           <ChevronRight
             strokeWidth={2}
             className={cn(
@@ -111,14 +101,10 @@ function ChangeRow({
               open && "rotate-90",
             )}
           />
+          <FileText className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="truncate font-mono text-xs font-medium text-foreground">
             {displayName}
           </span>
-          {badge != null ? (
-            <span className="shrink-0 rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-              {badge}
-            </span>
-          ) : null}
           <span className="ml-auto shrink-0 font-mono text-xs tabular-nums">
             {stats != null ? (
               <span className="inline-flex items-center gap-2">
@@ -135,28 +121,25 @@ function ChangeRow({
             type="button"
             title="Open in editor"
             onClick={() => onOpenInEditor(change.path)}
-            className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
           >
-            <FileText className="size-3.5" />
+            <ExternalLinkIcon className="size-3.5" />
           </button>
         ) : null}
       </div>
       <CollapsibleContent className="cgd-collapse">
-        <div className="border-t border-border px-2 py-2">
+        <div className="border-t border-border">
           {resolved == null ? (
-            <div className="px-2 py-3 text-xs text-muted-foreground">Loading diff…</div>
+            <div className="px-3 py-3 text-xs text-muted-foreground">Loading diff…</div>
           ) : resolved.status === "diff" ? (
             <PatchDiff
               patch={resolved.patch}
-              className="block max-w-full overflow-hidden text-xs/relaxed"
+              className="block max-w-full overflow-hidden text-xs"
               options={{ lineDiffType: "word", showFileHeader: false }}
             />
           ) : (
             <PlaceholderBody operation={resolved.operation} byteCount={resolved.byteCount} />
           )}
-          <div className="px-2 pt-2">
-            <code className="font-mono text-[11px] text-muted-foreground">{displayPath}</code>
-          </div>
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -252,8 +235,8 @@ export function ChangesPane({
   };
 
   return (
-    <PaneSurface className="overflow-auto animate-in fade-in-0 slide-in-from-right-2 duration-200">
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-background/70 px-4 py-2.5 text-xs backdrop-blur-md">
+    <PaneSurface className="overflow-auto">
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-background/70 px-4 py-2 text-xs backdrop-blur-md">
         <div className="flex min-w-0 flex-col gap-0.5">
           {repoName != null || branchName != null ? (
             <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
@@ -291,7 +274,7 @@ export function ChangesPane({
               onClick={openCommitDialog}
             >
               <GitCommitHorizontalIcon data-icon="inline-start" />
-              Commit
+              Commit or push
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger
@@ -329,13 +312,12 @@ export function ChangesPane({
           File edits made during this conversation will appear here.
         </div>
       ) : (
-        <div className="flex flex-col gap-2 p-3">
+        <div className="flex flex-col">
           {changes.map((change) => (
             <ChangeRow
               key={change.path}
               change={change}
               resolved={resolvedByPath[change.path] ?? null}
-              workspacePath={params.workspacePath}
               canOpenInEditor={canOpenInEditor}
               onOpenInEditor={handleOpenInEditor}
             />

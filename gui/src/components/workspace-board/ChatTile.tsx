@@ -28,12 +28,14 @@ import { Button } from "@/components/ui/Button";
 import { ButtonGroup } from "@/components/ui/ButtonGroup";
 import * as desktopClient from "@/services/desktop/client";
 
+import { AuxiliaryPaneShell } from "./AuxiliaryPaneShell";
 import { ChangesPane } from "./ChangesPane";
 import { PlaceholderPane } from "./PlaceholderPane";
 import { TerminalPane } from "./TerminalPane";
 import {
   CHAT_PANE_ID,
   createTerminalSessionId,
+  dispatchPaneCloseRequest,
   dispatchTerminalRestartRequest,
   INNER_CHAT_COMPONENT,
   INNER_PLACEHOLDER_COMPONENT,
@@ -157,7 +159,7 @@ export function ChatTile({
     }
 
     const handleClose = () => {
-      activePanel.api.close();
+      dispatchPaneCloseRequest(`${binding.conversationId}:${activePanel.id}`);
     };
 
     if (kind === "preview" || kind === "changes") {
@@ -235,19 +237,27 @@ export function ChatTile({
       [INNER_PLACEHOLDER_COMPONENT]: function AuxiliaryPane(
         props: IDockviewPanelProps<PlaceholderPaneParams>,
       ) {
-        if (props.params.kind === "terminal") {
-          return (
+        const kind = props.params.kind;
+        const content =
+          kind === "terminal" ? (
             <TerminalPane
               {...(props as IDockviewPanelProps<TerminalPaneParams>)}
             />
+          ) : kind === "changes" ? (
+            <ChangesPane {...props} />
+          ) : (
+            <PlaceholderPane {...props} />
           );
-        }
 
-        if (props.params.kind === "changes") {
-          return <ChangesPane {...props} />;
-        }
-
-        return <PlaceholderPane {...props} />;
+        return (
+          <AuxiliaryPaneShell
+            api={props.api}
+            paneId={`${props.params.conversationId}:${props.api.id}`}
+            direction={kind === "terminal" ? "bottom" : "right"}
+          >
+            {content}
+          </AuxiliaryPaneShell>
+        );
       },
     }),
     [binding, canCloseChat, handleOpenPane, onCloseChat],

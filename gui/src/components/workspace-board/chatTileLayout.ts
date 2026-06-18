@@ -1,4 +1,5 @@
 import type {
+  AddPanelPositionOptions,
   DockviewApi,
   DockviewGroupPanel,
   IDockviewPanel,
@@ -11,7 +12,6 @@ import {
   CHAT_PANE_ID,
   INNER_CHAT_COMPONENT,
   INNER_PLACEHOLDER_COMPONENT,
-  PREVIEW_PANE_ID,
   TERMINAL_PANE_ID,
 } from "./layout";
 import type { PlaceholderPaneParams } from "./types/layout";
@@ -91,14 +91,15 @@ export function openChatTilePane(
     return;
   }
 
-  const previewPanel = api.getPanel(PREVIEW_PANE_ID);
   const panelTitle =
     kind === "preview" ? "Preview" : kind === "changes" ? "Changes" : "Terminal";
-  // Preview/Changes open to the right of chat; terminal stacks below the preview.
-  const referencePanel =
-    kind === "terminal" && previewPanel != null ? previewPanel : chatPanel;
-  const direction =
-    kind === "terminal" ? (previewPanel != null ? "below" : "right") : "right";
+  // The terminal opens as a full-width horizontal pane along the bottom (positioned
+  // relative to the whole grid, so it spans beneath chat and any side panes).
+  // Preview/Changes open to the right of chat.
+  const position: AddPanelPositionOptions =
+    kind === "terminal"
+      ? { direction: "below" }
+      : { direction: "right", referencePanel: chatPanel };
 
   api.addPanel<PlaceholderPaneParams>({
     id: panelId,
@@ -110,10 +111,7 @@ export function openChatTilePane(
       kind,
       label: panelTitle,
     },
-    position: {
-      direction,
-      referencePanel,
-    },
+    position,
   });
 
   applyChatTileLayoutConstraints(api);

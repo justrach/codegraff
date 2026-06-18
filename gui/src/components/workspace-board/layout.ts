@@ -14,6 +14,7 @@ export const PREVIEW_PANE_ID = "preview";
 export const TERMINAL_PANE_ID = "terminal";
 export const CHANGES_PANE_ID = "changes";
 export const TERMINAL_RESTART_EVENT_NAME = "codegraff://terminal-restart-request";
+export const PANE_CLOSE_REQUEST_EVENT_NAME = "codegraff://pane-close-request";
 
 let activeDraggedChatBinding: ChatBinding | null = null;
 
@@ -43,6 +44,18 @@ export function dispatchTerminalRestartRequest(terminalId: string): void {
   window.dispatchEvent(
     new CustomEvent(TERMINAL_RESTART_EVENT_NAME, {
       detail: { terminalId },
+    }),
+  );
+}
+
+/**
+ * Request that an auxiliary pane close. The pane component listens for this so it
+ * can play a slide-out animation before actually removing itself from the layout.
+ */
+export function dispatchPaneCloseRequest(paneId: string): void {
+  window.dispatchEvent(
+    new CustomEvent(PANE_CLOSE_REQUEST_EVENT_NAME, {
+      detail: { paneId },
     }),
   );
 }
