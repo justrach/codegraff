@@ -5,40 +5,27 @@ import { cn } from "@/utils/cn";
 
 import { PANE_CLOSE_REQUEST_EVENT_NAME } from "./layout";
 
-export type PaneSlideDirection = "right" | "bottom";
-
 interface AuxiliaryPaneShellProps {
   api: DockviewPanelApi;
   paneId: string;
-  direction: PaneSlideDirection;
   children: ReactNode;
 }
 
-const ENTER_ANIMATION: Record<PaneSlideDirection, string> = {
-  right: "slide-in-from-right-4",
-  bottom: "slide-in-from-bottom-4",
-};
-
-const EXIT_ANIMATION: Record<PaneSlideDirection, string> = {
-  right: "slide-out-to-right-4",
-  bottom: "slide-out-to-bottom-4",
-};
-
 // Fallback close delay (ms) used if the exit animation never reports completion
-// (e.g. under `prefers-reduced-motion`, where the animation may not run).
+// (e.g. under `prefers-reduced-motion`, where the animation may not run). Kept a
+// touch above the exit fade duration in index.css.
 const EXIT_FALLBACK_MS = 220;
 
 /**
- * Wraps an auxiliary dock pane (preview / changes / terminal) so it slides in on
- * mount and slides out on close. Side panes slide along the x-axis; the bottom
- * terminal slides along the y-axis. Closing is driven by a window event
- * ({@link PANE_CLOSE_REQUEST_EVENT_NAME}) so the pane can animate out before
- * `api.close()` removes it from the layout.
+ * Wraps an auxiliary dock pane (preview / changes / terminal) so its content
+ * crossfades in on mount and out on close, while the surrounding panes glide to
+ * their new size (see `.cg-animate-layout` in chat-tile-dockview.css). Closing is
+ * driven by a window event ({@link PANE_CLOSE_REQUEST_EVENT_NAME}) so the pane can
+ * fade out before `api.close()` removes it from the layout.
  */
 export function AuxiliaryPaneShell({
   api,
   paneId,
-  direction,
   children,
 }: AuxiliaryPaneShellProps) {
   const [closing, setClosing] = useState(false);
@@ -81,13 +68,8 @@ export function AuxiliaryPaneShell({
   return (
     <div
       className={cn(
-        "h-full w-full",
-        closing
-          ? cn(
-              "animate-out fade-out-0 fill-mode-forwards duration-150",
-              EXIT_ANIMATION[direction],
-            )
-          : cn("animate-in fade-in-0 duration-200", ENTER_ANIMATION[direction]),
+        "h-full w-full overflow-hidden",
+        closing ? "cg-pane-exit" : "cg-pane-enter",
       )}
       onAnimationEnd={(event) => {
         if (event.target !== event.currentTarget) {

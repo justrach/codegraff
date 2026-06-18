@@ -8,13 +8,14 @@
   --cgd-fg: var(--foreground);
   --cgd-muted: var(--muted-foreground);
   --cgd-border: var(--border);
-  --cgd-add-bg: var(--diff-add-bg);
-  --cgd-del-bg: var(--diff-del-bg);
-  --cgd-add-word: color-mix(in oklab, var(--success) 32%, transparent);
-  --cgd-del-word: color-mix(in oklab, var(--destructive) 32%, transparent);
-  --cgd-add-accent: var(--success);
-  --cgd-del-accent: var(--destructive);
-  --cgd-hunk-bg: color-mix(in oklab, var(--muted) 60%, transparent);
+  /* Subtle, theme-derived line tints (crisper than a flat saturated block). */
+  --cgd-add-bg: color-mix(in oklab, var(--success) 13%, var(--background));
+  --cgd-del-bg: color-mix(in oklab, var(--destructive) 13%, var(--background));
+  --cgd-add-word: color-mix(in oklab, var(--success) 30%, transparent);
+  --cgd-del-word: color-mix(in oklab, var(--destructive) 30%, transparent);
+  --cgd-add-accent: color-mix(in oklab, var(--success) 80%, var(--background));
+  --cgd-del-accent: color-mix(in oklab, var(--destructive) 80%, var(--background));
+  --cgd-hunk-bg: color-mix(in oklab, var(--muted) 45%, transparent);
   --cgd-hunk-fg: var(--muted-foreground);
   --cgd-stat-add: var(--success);
   --cgd-stat-del: var(--destructive);
@@ -23,6 +24,29 @@
   --cgd-tok-comment: var(--sh-comment);
   --cgd-tok-number: var(--sh-class);
   --cgd-tok-punct: var(--sh-sign);
+}
+
+/* Crispness refinements for the per-file diff body (line numbers, hunk band, and
+   line rhythm) so the Changes pane reads cleaner. */
+.cgd-root {
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.cgd-root .cgd-gutter {
+  opacity: 0.4;
+}
+
+.cgd-root .cgd-sign {
+  opacity: 0.5;
+}
+
+.cgd-root .cgd-line--hunk {
+  padding-block: 3px;
+}
+
+.cgd-root .cgd-line--hunk .cgd-content {
+  opacity: 0.6;
 }
 
 /* Smooth expand/collapse for the per-file diff cards in the Changes pane.

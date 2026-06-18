@@ -10,9 +10,11 @@ import type { ChatBinding } from "@/services/desktop/types/contracts";
 import {
   CHANGES_PANE_ID,
   CHAT_PANE_ID,
+  createTerminalPanelId,
   INNER_CHAT_COMPONENT,
   INNER_PLACEHOLDER_COMPONENT,
-  TERMINAL_PANE_ID,
+  isTerminalPanelId,
+  PREVIEW_PANE_ID,
 } from "./layout";
 import type { PlaceholderPaneParams } from "./types/layout";
 
@@ -66,17 +68,74 @@ export function buildDefaultChatTileLayout(
   applyChatTileLayoutConstraints(api);
 }
 
+/** All open terminal tab panels in the chat tile, in layout order. */
+export function getTerminalPanels(api: DockviewApi): IDockviewPanel[] {
+  return api.panels.filter((panel) => isTerminalPanelId(panel.id));
+}
+
+let terminalKeyCounter = 0;
+
+function generateTerminalKey(): string {
+  terminalKeyCounter += 1;
+  return `${Date.now().toString(36)}-${terminalKeyCounter}`;
+}
+
+/**
+ * Add a terminal tab. The first terminal opens as a full-width pane below the grid
+ * (spanning beneath chat + side panes) with the stable key "1"; subsequent ones are
+ * added as sibling tabs in the same bottom group, each with its own PTY key.
+ */
+export function addTerminalTab(api: DockviewApi, binding: ChatBinding): void {
+  if (api.getPanel(CHAT_PANE_ID) == null) {
+    buildDefaultChatTileLayout(api, binding);
+  }
+
+  const existing = getTerminalPanels(api);
+  const isFirst = existing.length === 0;
+  const terminalKey = isFirst ? "1" : generateTerminalKey();
+  const panelId = createTerminalPanelId(terminalKey);
+  const title = isFirst ? "Terminal" : `Terminal ${existing.length + 1}`;
+  const position: AddPanelPositionOptions = isFirst
+    ? { direction: "below" }
+    : { referencePanel: existing[existing.length - 1].id, direction: "within" };
+
+  api.addPanel<PlaceholderPaneParams>({
+    id: panelId,
+    component: INNER_PLACEHOLDER_COMPONENT,
+    tabComponent: INNER_PLACEHOLDER_COMPONENT,
+    title,
+    params: {
+      ...binding,
+      kind: "terminal",
+      label: title,
+      terminalKey,
+    },
+    // Keep every terminal tab mounted when inactive so switching tabs doesn't tear
+    // down its PTY (dockview's default `onlyWhenVisible` would unmount it).
+    renderer: "always",
+    position,
+  });
+
+  applyChatTileLayoutConstraints(api);
+}
+
 export function openChatTilePane(
   api: DockviewApi,
   binding: ChatBinding,
   kind: PlaceholderPaneParams["kind"],
 ): void {
-  const panelId =
-    kind === "preview"
-      ? PREVIEW_PANE_ID
-      : kind === "changes"
-        ? CHANGES_PANE_ID
-        : TERMINAL_PANE_ID;
+  if (kind === "terminal") {
+    const existing = getTerminalPanels(api);
+    if (existing.length > 0) {
+      existing[existing.length - 1].focus();
+      applyChatTileLayoutConstraints(api);
+      return;
+    }
+    addTerminalTab(api, binding);
+    return;
+  }
+
+  const panelId = kind === "preview" ? PREVIEW_PANE_ID : CHANGES_PANE_ID;
   const existingPanel = api.getPanel(panelId);
   if (existingPanel != null) {
     existingPanel.focus();
@@ -91,16 +150,8 @@ export function openChatTilePane(
     return;
   }
 
-  const panelTitle =
-    kind === "preview" ? "Preview" : kind === "changes" ? "Changes" : "Terminal";
-  // The terminal opens as a full-width horizontal pane along the bottom (positioned
-  // relative to the whole grid, so it spans beneath chat and any side panes).
+  const panelTitle = kind === "preview" ? "Preview" : "Changes";
   // Preview/Changes open to the right of chat.
-  const position: AddPanelPositionOptions =
-    kind === "terminal"
-      ? { direction: "below" }
-      : { direction: "right", referencePanel: chatPanel };
-
   api.addPanel<PlaceholderPaneParams>({
     id: panelId,
     component: INNER_PLACEHOLDER_COMPONENT,
@@ -111,7 +162,7 @@ export function openChatTilePane(
       kind,
       label: panelTitle,
     },
-    position,
+    position: { direction: "right", referencePanel: chatPanel },
   });
 
   applyChatTileLayoutConstraints(api);

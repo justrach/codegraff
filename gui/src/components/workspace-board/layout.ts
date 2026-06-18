@@ -36,8 +36,26 @@ export function createChatPanelId(binding: ChatBinding): string {
   return `chat:${encodeURIComponent(binding.workspacePath)}::${binding.conversationId}`;
 }
 
-export function createTerminalSessionId(binding: ChatBinding): string {
-  return `terminal:${encodeURIComponent(binding.workspacePath)}::${binding.conversationId}`;
+export function createTerminalSessionId(
+  binding: ChatBinding,
+  terminalKey?: string,
+): string {
+  const base = `terminal:${encodeURIComponent(binding.workspacePath)}::${binding.conversationId}`;
+  // Suffix the per-tab key so each terminal tab maps to its own PTY. Legacy panes
+  // without a key fall back to "1" (matches the first tab's default key).
+  return `${base}::${terminalKey ?? "1"}`;
+}
+
+// Dockview panel id for a terminal tab. The first/legacy terminal keeps the bare
+// `TERMINAL_PANE_ID`; additional tabs are namespaced by their key.
+export function createTerminalPanelId(terminalKey: string): string {
+  return terminalKey === "1"
+    ? TERMINAL_PANE_ID
+    : `${TERMINAL_PANE_ID}:${terminalKey}`;
+}
+
+export function isTerminalPanelId(panelId: string): boolean {
+  return panelId === TERMINAL_PANE_ID || panelId.startsWith(`${TERMINAL_PANE_ID}:`);
 }
 
 export function dispatchTerminalRestartRequest(terminalId: string): void {

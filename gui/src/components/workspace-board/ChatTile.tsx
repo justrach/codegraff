@@ -6,7 +6,9 @@ import {
   useState,
 } from "react";
 import {
+  PlusIcon,
   RotateCcwIcon,
+  SquareTerminalIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -33,17 +35,21 @@ import { ChangesPane } from "./ChangesPane";
 import { PlaceholderPane } from "./PlaceholderPane";
 import { TerminalPane } from "./TerminalPane";
 import {
+  CHANGES_PANE_ID,
   CHAT_PANE_ID,
   createTerminalSessionId,
   dispatchPaneCloseRequest,
   dispatchTerminalRestartRequest,
   INNER_CHAT_COMPONENT,
   INNER_PLACEHOLDER_COMPONENT,
+  PANE_CLOSE_REQUEST_EVENT_NAME,
 } from "./layout";
 import {
+  addTerminalTab,
   applyChatTileLayoutConstraints,
   autoCloseUndersizedSidePanes,
   buildDefaultChatTileLayout,
+  getTerminalPanels,
   isSingleChatSelfDrop,
   openChatTilePane,
   shouldPreventChatOverlay,
@@ -59,11 +65,34 @@ import { applySavedConversationLayout } from "./utils/savedLayout";
 import "./chat-tile-dockview.css";
 
 function AuxiliaryPaneTab({
+  api,
   params,
 }: IDockviewPanelHeaderProps<PlaceholderPaneParams>) {
+  const isTerminal = params.kind === "terminal";
+
   return (
-    <div className="terminal-pane-tab inline-flex h-6 min-w-0 items-center gap-1.5 px-1.5 text-xs font-medium tracking-tight text-foreground">
+    <div className="terminal-pane-tab group/tab inline-flex h-6 min-w-0 items-center gap-1.5 px-1.5 text-xs font-medium tracking-tight text-foreground">
+      {isTerminal ? (
+        <SquareTerminalIcon className="size-3.5 shrink-0 text-muted-foreground" />
+      ) : null}
       <span className="truncate">{params.label}</span>
+      {isTerminal ? (
+        <button
+          type="button"
+          aria-label={`Close ${params.label}`}
+          className="ml-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/tab:opacity-100"
+          onPointerDown={(event) => {
+            // Stop dockview from treating the close click as a tab drag/activate.
+            event.stopPropagation();
+          }}
+          onClick={(event) => {
+            event.stopPropagation();
+            dispatchPaneCloseRequest(`${params.conversationId}:${api.id}`);
+          }}
+        >
+          <XIcon className="size-3" />
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -77,6 +106,16 @@ export function ChatTile({
   onCloseChat,
 }: ChatTileProps) {
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
+  const [openPanes, setOpenPanes] = useState({
+    changes: false,
+    terminal: false,
+  });
+  // Briefly enables a width/position transition on the dock's view containers so
+  // chat glides to its new size when a pane opens/closes (see chat-tile-dockview.css).
+  // Toggled imperatively (not via state) so the class is in the DOM *before* the
+  // synchronous dockview size mutation, otherwise the transition wouldn't fire.
+  const shellRef = useRef<HTMLElement | null>(null);
+  const layoutAnimateTimeoutRef = useRef<number | null>(null);
   const innerApiRef = useRef<DockviewApi | null>(null);
   const innerDisposablesRef = useRef<Array<{ dispose(): void }>>([]);
   const fallbackToDefaultLayoutRef = useRef(false);
@@ -113,6 +152,43 @@ export function ChatTile({
     schedulePersist(() => innerApiRef.current);
   }, [schedulePersist]);
 
+  // Turn on the dock's size transition for one open/close cycle so chat (and any
+  // other panes) glide to their new size instead of snapping. The window covers
+  // an exit fade (~180ms) plus the size transition (~320ms); re-toggling resets it.
+  const runLayoutAnimation = useCallback(() => {
+    const dock = shellRef.current?.querySelector(".chat-tile-inner-dock");
+    if (dock == null) {
+      return;
+    }
+    dock.classList.add("cg-animate-layout");
+    if (layoutAnimateTimeoutRef.current != null) {
+      window.clearTimeout(layoutAnimateTimeoutRef.current);
+    }
+    layoutAnimateTimeoutRef.current = window.setTimeout(() => {
+      dock.classList.remove("cg-animate-layout");
+      layoutAnimateTimeoutRef.current = null;
+    }, 600);
+  }, []);
+
+  // Any pane close (toolbar button or a terminal tab's ×) goes through the close
+  // request event; animate the resulting reflow for this conversation's panes.
+  useEffect(() => {
+    function handleCloseRequest(event: Event) {
+      const paneId = (event as CustomEvent<{ paneId?: string }>).detail?.paneId;
+      if (paneId != null && paneId.startsWith(`${binding.conversationId}:`)) {
+        runLayoutAnimation();
+      }
+    }
+
+    window.addEventListener(PANE_CLOSE_REQUEST_EVENT_NAME, handleCloseRequest);
+    return () => {
+      window.removeEventListener(PANE_CLOSE_REQUEST_EVENT_NAME, handleCloseRequest);
+      if (layoutAnimateTimeoutRef.current != null) {
+        window.clearTimeout(layoutAnimateTimeoutRef.current);
+      }
+    };
+  }, [binding.conversationId, runLayoutAnimation]);
+
   const handleOpenPane = useCallback(
     (kind: "preview" | "terminal" | "changes") => {
       const api = innerApiRef.current;
@@ -120,11 +196,76 @@ export function ChatTile({
         return;
       }
 
+      runLayoutAnimation();
       openChatTilePane(api, binding, kind);
       scheduleInnerLayoutSave();
     },
-    [binding, scheduleInnerLayoutSave],
+    [binding, runLayoutAnimation, scheduleInnerLayoutSave],
   );
+
+  // Track which auxiliary panes are open so the header toggles can show an active
+  // indicator. Only flips the state object when it actually changes so the memoized
+  // header-actions component (and thus the dockview group control) stays stable.
+  const recomputeOpenPanes = useCallback(() => {
+    const api = innerApiRef.current;
+    if (api == null) {
+      return;
+    }
+
+    const changes = api.getPanel(CHANGES_PANE_ID) != null;
+    const terminal = getTerminalPanels(api).length > 0;
+    setOpenPanes((current) =>
+      current.changes === changes && current.terminal === terminal
+        ? current
+        : { changes, terminal },
+    );
+  }, []);
+
+  const handleToggleChanges = useCallback(() => {
+    const api = innerApiRef.current;
+    if (api == null) {
+      return;
+    }
+
+    if (api.getPanel(CHANGES_PANE_ID) != null) {
+      dispatchPaneCloseRequest(`${binding.conversationId}:${CHANGES_PANE_ID}`);
+      return;
+    }
+
+    runLayoutAnimation();
+    openChatTilePane(api, binding, "changes");
+    scheduleInnerLayoutSave();
+  }, [binding, runLayoutAnimation, scheduleInnerLayoutSave]);
+
+  const handleToggleTerminal = useCallback(() => {
+    const api = innerApiRef.current;
+    if (api == null) {
+      return;
+    }
+
+    const terminals = getTerminalPanels(api);
+    if (terminals.length > 0) {
+      // Re-clicking the toggle closes the whole bottom terminal panel.
+      for (const panel of terminals) {
+        dispatchPaneCloseRequest(`${binding.conversationId}:${panel.id}`);
+      }
+      return;
+    }
+
+    runLayoutAnimation();
+    openChatTilePane(api, binding, "terminal");
+    scheduleInnerLayoutSave();
+  }, [binding, runLayoutAnimation, scheduleInnerLayoutSave]);
+
+  const handleAddTerminal = useCallback(() => {
+    const api = innerApiRef.current;
+    if (api == null) {
+      return;
+    }
+
+    addTerminalTab(api, binding);
+    scheduleInnerLayoutSave();
+  }, [binding, scheduleInnerLayoutSave]);
 
   const headerActionsComponent = useCallback(function InnerHeaderActions({
     activePanel,
@@ -138,12 +279,10 @@ export function ChatTile({
           onOpenPreview={() => {
             handleOpenPane("preview");
           }}
-          onOpenTerminal={() => {
-            handleOpenPane("terminal");
-          }}
-          onOpenChanges={() => {
-            handleOpenPane("changes");
-          }}
+          onOpenTerminal={handleToggleTerminal}
+          onOpenChanges={handleToggleChanges}
+          isChangesOpen={openPanes.changes}
+          isTerminalOpen={openPanes.terminal}
         />
       );
     }
@@ -184,13 +323,24 @@ export function ChatTile({
     const conversationId = typeof resolvedParams.conversationId === "string"
       ? resolvedParams.conversationId
       : "";
-    const terminalId = createTerminalSessionId({
-      workspacePath,
-      conversationId,
-    });
+    const terminalId = createTerminalSessionId(
+      {
+        workspacePath,
+        conversationId,
+      },
+      resolvedParams.terminalKey,
+    );
 
     return (
       <div className={headerActionsClassName}>
+        <Button
+          variant="outline"
+          size="icon-sm"
+          aria-label="New terminal"
+          onClick={handleAddTerminal}
+        >
+          <PlusIcon />
+        </Button>
         <ButtonGroup aria-label="Terminal actions">
           <Button
             variant="outline"
@@ -213,7 +363,17 @@ export function ChatTile({
         </ButtonGroup>
       </div>
     );
-  }, [binding, canCloseChat, handleOpenPane, onCloseChat]);
+  }, [
+    binding,
+    canCloseChat,
+    handleAddTerminal,
+    handleOpenPane,
+    handleToggleChanges,
+    handleToggleTerminal,
+    onCloseChat,
+    openPanes.changes,
+    openPanes.terminal,
+  ]);
 
   const components = useMemo(
     () => ({
@@ -253,7 +413,6 @@ export function ChatTile({
           <AuxiliaryPaneShell
             api={props.api}
             paneId={`${props.params.conversationId}:${props.api.id}`}
-            direction={kind === "terminal" ? "bottom" : "right"}
           >
             {content}
           </AuxiliaryPaneShell>
@@ -341,6 +500,7 @@ export function ChatTile({
           if (!isApplyingLayoutRef.current) {
             autoCloseUndersizedSidePanes(event.api);
           }
+          recomputeOpenPanes();
           scheduleInnerLayoutSave();
         }),
         event.api.onWillDragPanel((dragEvent) => {
@@ -432,11 +592,19 @@ export function ChatTile({
 
       void restoreInnerLayout(event.api);
     },
-    [isApplyingLayoutRef, restoreInnerLayout, scheduleInnerLayoutSave],
+    [
+      isApplyingLayoutRef,
+      recomputeOpenPanes,
+      restoreInnerLayout,
+      scheduleInnerLayoutSave,
+    ],
   );
 
   return (
-    <section className="chat-tile-shell relative flex h-full min-h-0 min-w-0">
+    <section
+      ref={shellRef}
+      className="chat-tile-shell relative flex h-full min-h-0 min-w-0"
+    >
       <DockviewReact
         key={`${binding.conversationId}:${layoutResetNonce}`}
         className="chat-tile-inner-dock h-full w-full"

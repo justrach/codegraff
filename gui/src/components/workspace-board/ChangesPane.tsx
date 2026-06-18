@@ -4,7 +4,6 @@ import {
   ChevronDownIcon,
   ChevronRight,
   ExternalLinkIcon,
-  FileText,
   GitCommitHorizontalIcon,
   UploadIcon,
 } from "lucide-react";
@@ -19,7 +18,10 @@ import {
 import { usePreferredOpenTarget } from "@/components/conversation-panel/hooks/usePreferredOpenTarget";
 import { useConversationHeaderState } from "@/components/conversation-panel/hooks/useConversationHeaderState";
 import { CommitChangesDialog } from "@/components/conversation-panel/CommitChangesDialog";
-import { getFileDiffDisplayName } from "@/components/chat/activity-results/utils/fileDiff";
+import {
+  getFileDiffDisplayName,
+  getFileDiffDisplayPath,
+} from "@/components/chat/activity-results/utils/fileDiff";
 import { formatFileChangeLabel } from "@/components/chat/activity-results/utils/fileChangeLabel";
 import {
   resolveRenderableFileDiff,
@@ -43,6 +45,7 @@ import {
 import { PaneSurface } from "@/components/ui/PaneSurface";
 import { useConversationView, useWorkspaceMeta } from "@/hooks/useSession";
 
+import { FileTypeIcon } from "./FileTypeIcon";
 import type { PlaceholderPaneParams } from "./types/layout";
 import {
   deriveSessionFileChanges,
@@ -58,10 +61,10 @@ function PlaceholderBody({
 }) {
   const { title, detail } = formatFileChangeLabel(operation, byteCount);
   return (
-    <div className="px-4 py-3 text-center text-xs text-muted-foreground">
-      <span className="text-foreground/70">{title}</span>
+    <div className="px-4 py-2 text-xs text-muted-foreground/80">
+      <span className="text-foreground/60">{title}</span>
       {detail != null ? (
-        <span className="ml-1.5 font-mono text-[11px] text-muted-foreground/70">
+        <span className="ml-1.5 font-mono text-[11px] text-muted-foreground/60">
           {detail}
         </span>
       ) : null}
@@ -74,6 +77,7 @@ interface ChangeRowProps {
   resolved: ResolvedFileDiff | null;
   canOpenInEditor: boolean;
   onOpenInEditor: (path: string) => void;
+  workspacePath: string;
 }
 
 function ChangeRow({
@@ -81,9 +85,13 @@ function ChangeRow({
   resolved,
   canOpenInEditor,
   onOpenInEditor,
+  workspacePath,
 }: ChangeRowProps) {
   const [open, setOpen] = useState(true);
   const displayName = getFileDiffDisplayName(change.path);
+  const relativePath = getFileDiffDisplayPath(change.path, workspacePath);
+  const lastSlash = relativePath.lastIndexOf("/");
+  const dirName = lastSlash >= 0 ? relativePath.slice(0, lastSlash + 1) : null;
   const stats = resolved?.status === "diff" ? resolved : null;
 
   return (
@@ -92,18 +100,21 @@ function ChangeRow({
       onOpenChange={setOpen}
       className="group border-b border-border last:border-b-0"
     >
-      <div className="flex items-center gap-2 bg-muted/40 pr-2 transition-colors hover:bg-muted/60">
-        <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left">
+      <div className="flex items-center gap-1 pr-2.5 transition-colors hover:bg-muted/30">
+        <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left">
           <ChevronRight
             strokeWidth={2}
             className={cn(
-              "size-3.5 shrink-0 text-muted-foreground transition-transform",
+              "size-4 shrink-0 text-muted-foreground/70 transition-transform duration-150",
               open && "rotate-90",
             )}
           />
-          <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate font-mono text-xs font-medium text-foreground">
-            {displayName}
+          <FileTypeIcon path={change.path} />
+          <span className="truncate text-[13px] leading-none tracking-tight">
+            {dirName != null ? (
+              <span className="text-muted-foreground/55">{dirName}</span>
+            ) : null}
+            <span className="font-medium text-foreground">{displayName}</span>
           </span>
           <span className="ml-auto shrink-0 font-mono text-xs tabular-nums">
             {stats != null ? (
@@ -112,7 +123,7 @@ function ChangeRow({
                 <span className="text-destructive">-{stats.deletions}</span>
               </span>
             ) : (
-              <span className="text-muted-foreground/60">·</span>
+              <span className="text-muted-foreground/50">·</span>
             )}
           </span>
         </CollapsibleTrigger>
@@ -320,6 +331,7 @@ export function ChangesPane({
               resolved={resolvedByPath[change.path] ?? null}
               canOpenInEditor={canOpenInEditor}
               onOpenInEditor={handleOpenInEditor}
+              workspacePath={params.workspacePath}
             />
           ))}
         </div>

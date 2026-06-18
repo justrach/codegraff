@@ -69,6 +69,8 @@ export interface ConversationDockviewHeaderActionsProps {
   onOpenPreview?: () => void;
   onOpenTerminal?: () => void;
   onOpenChanges?: () => void;
+  isChangesOpen?: boolean;
+  isTerminalOpen?: boolean;
 }
 
 export interface ConversationDockviewTabProps {
@@ -87,6 +89,8 @@ export interface ConversationHeaderActionsProps {
   onOpenPreview?: () => void;
   onOpenTerminal?: () => void;
   onOpenChanges?: () => void;
+  isChangesOpen?: boolean;
+  isTerminalOpen?: boolean;
   onSelectOpenTarget: (appId: AppTargetId) => Promise<void>;
   openTargets: ReadonlyArray<AppTarget>;
   preferredAppId: AppTargetId;

@@ -35,6 +35,8 @@ export function ConversationHeaderActions({
   onOpenPreview,
   onOpenTerminal,
   onOpenChanges,
+  isChangesOpen = false,
+  isTerminalOpen = false,
   onSelectOpenTarget,
   openTargets,
   preferredAppId,
@@ -52,12 +54,29 @@ export function ConversationHeaderActions({
         <Button
           variant="outline"
           size="icon-sm"
-          aria-label="Open changes"
+          aria-label={isChangesOpen ? "Close changes" : "Open changes"}
+          aria-pressed={isChangesOpen}
+          className="aria-pressed:border-accent/60 aria-pressed:bg-accent/10 aria-pressed:text-foreground"
           onClick={() => {
             onOpenChanges();
           }}
         >
           <FileDiffIcon />
+        </Button>
+      ) : null}
+
+      {onOpenTerminal ? (
+        <Button
+          variant="outline"
+          size="icon-sm"
+          aria-label={isTerminalOpen ? "Close terminal" : "Open terminal"}
+          aria-pressed={isTerminalOpen}
+          className="aria-pressed:border-accent/60 aria-pressed:bg-accent/10 aria-pressed:text-foreground"
+          onClick={() => {
+            onOpenTerminal();
+          }}
+        >
+          <SquareTerminalIcon />
         </Button>
       ) : null}
 

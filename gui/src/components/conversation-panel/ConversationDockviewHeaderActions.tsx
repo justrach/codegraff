@@ -10,6 +10,8 @@ export function ConversationDockviewHeaderActions({
   onOpenPreview,
   onOpenTerminal,
   onOpenChanges,
+  isChangesOpen,
+  isTerminalOpen,
 }: ConversationDockviewHeaderActionsProps) {
   const {
     canHandoffToLocal,
@@ -48,6 +50,8 @@ export function ConversationDockviewHeaderActions({
           onOpenPreview={onOpenPreview}
           onOpenTerminal={onOpenTerminal}
           onOpenChanges={onOpenChanges}
+          isChangesOpen={isChangesOpen}
+          isTerminalOpen={isTerminalOpen}
           onSelectOpenTarget={handleOpenTarget}
           openTargets={openTargets}
           preferredAppId={resolvedPreferredAppId}

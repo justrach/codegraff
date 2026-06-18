@@ -595,12 +595,38 @@
     background: var(--pane-surface);
 }
 
+/* Terminal palette derived from the app's theme tokens so it tracks every preset
+   (warm-graphite/slate/nord/forest) and light/dark automatically — the frame
+   (bg/fg/cursor/neutrals) follows the active preset, while the ANSI hues map to
+   the shared syntax-highlight + semantic tokens. */
 .terminal-pane-shell .wterm {
     --term-bg: transparent;
+    --term-fg: var(--foreground);
+    --term-cursor: var(--accent);
     --term-font-family:
         "Geist Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Monaco,
         Consolas, monospace;
     --term-font-size: 13px;
+
+    /* normal */
+    --term-color-0: color-mix(in oklab, var(--foreground) 55%, var(--background));
+    --term-color-1: var(--destructive);
+    --term-color-2: var(--success);
+    --term-color-3: var(--warn);
+    --term-color-4: var(--sh-class);
+    --term-color-5: var(--sh-entity);
+    --term-color-6: color-mix(in oklab, var(--sh-class) 60%, var(--success));
+    --term-color-7: color-mix(in oklab, var(--foreground) 78%, var(--background));
+    /* bright */
+    --term-color-8: var(--muted-foreground);
+    --term-color-9: var(--destructive);
+    --term-color-10: var(--success);
+    --term-color-11: var(--warn);
+    --term-color-12: var(--sh-class);
+    --term-color-13: var(--sh-entity);
+    --term-color-14: color-mix(in oklab, var(--sh-class) 60%, var(--success));
+    --term-color-15: var(--foreground);
+
     background: transparent;
     padding: 0;
     border-radius: 0;
@@ -675,6 +701,42 @@
     > .dv-sash-container
     > .dv-sash::after {
     background: rgb(255 255 255 / 5%);
+}
+
+/* --- Auxiliary pane reveal (changes / preview / terminal) ---
+   The pane's container is resized smoothly by animating the dockview view
+   containers (see chat-tile-dockview.css `.cg-animate-layout`); the pane's own
+   content just crossfades so the appearing/disappearing content reads cleanly
+   against the surrounding panes gliding to their new size. */
+@keyframes cg-pane-fade-in {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+@keyframes cg-pane-fade-out {
+    from {
+        opacity: 1;
+    }
+    to {
+        opacity: 0;
+    }
+}
+
+.cg-pane-enter {
+    animation: cg-pane-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.cg-pane-exit {
+    animation: cg-pane-fade-out 180ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cg-pane-enter,
+    .cg-pane-exit {
+        animation: none;
+    }
 }
 
 /* --- Chat entrance + streaming motion (transitions.dev-style easings) --- */
