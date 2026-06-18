@@ -2176,7 +2176,8 @@ fn command(name: &str, usage: &str, requires_workspace: bool) -> CommandDescript
 /// permission prompts (the GUI has no approval surface yet); stderr is discarded
 /// since the protocol carries errors as `error` events on stdout.
 fn spawn_graff_session(workspace_path: &str, model: Option<&str>) -> Result<GraffSession> {
-    let mut command = tokio::process::Command::new(codegraff_binary());
+    let bin = codegraff_binary();
+    let mut command = tokio::process::Command::new(&bin);
     command.arg("--json").arg("--yolo");
     if let Some(model) = model.filter(|model| !model.is_empty() && *model != "default") {
         command.arg("--model").arg(model);
@@ -2187,7 +2188,11 @@ fn spawn_graff_session(workspace_path: &str, model: Option<&str>) -> Result<Graf
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .context("Failed to launch Zig-native codegraff --json session")?;
+        .with_context(|| {
+            format!(
+                "Failed to launch the codegraff engine ('{bin}'). Install the CLI (curl -fsSL https://codegraff.com/install.sh | sh) or set CODEGRAFF_GUI_BINARY to the graff binary path."
+            )
+        })?;
     let stdin = child.stdin.take().context("graff session missing stdin")?;
     let stdout = child
         .stdout
@@ -2639,12 +2644,42 @@ fn codegraff_binary() -> String {
         }
         // Doesn't resolve from the current dir — fall through to the built-in.
     }
-    // 2. Built-in: <crate>/../../zig-out/bin/graff (absolute via CARGO_MANIFEST_DIR).
+    // 2. Bundled sidecar: Tauri's externalBin lands next to the app executable
+    //    (Contents/MacOS/graff on macOS), so a packaged .app is self-contained —
+    //    no separate CLI install needed. This is what fixes GUI-only users.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("graff");
+            if p.is_file() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    // 3. Dev build: <crate>/../../zig-out/bin/graff (only exists on a dev machine).
     let candidate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zig-out/bin/graff");
     if let Ok(absolute) = std::fs::canonicalize(&candidate) {
         return absolute.to_string_lossy().into_owned();
     }
-    // 3. Bare name: let the OS resolve it on PATH.
+    // 4. Known install locations. A Finder/Dock-launched .app inherits launchd's
+    //    minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), which excludes ~/bin,
+    //    /usr/local/bin and /opt/homebrew/bin — exactly where the CLI installer
+    //    puts `graff`. So a bare PATH lookup (step 5) misses an installed binary
+    //    and the session spawn fails with ENOENT. Probe the standard spots by
+    //    absolute path first.
+    if let Ok(home) = std::env::var("HOME") {
+        for rel in ["bin/graff", ".local/bin/graff"] {
+            let p = Path::new(&home).join(rel);
+            if p.is_file() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    for abs in ["/opt/homebrew/bin/graff", "/usr/local/bin/graff", "/usr/bin/graff"] {
+        if Path::new(abs).is_file() {
+            return abs.to_string();
+        }
+    }
+    // 5. Last resort: bare name, resolved against whatever PATH we inherited.
     "graff".into()
 }
 
