@@ -705,6 +705,21 @@ fn providerLoginKind(id: []const u8) []const u8 {
     return "api_key";
 }
 
+/// Whether a (kind,id,model) combo should carry a top-level reasoning_effort
+/// hint. Effort-honoring providers: the Responses API (codex) and the
+/// OpenAI-compatible gateways we know normalize it (codegraff, deepseek, kimi).
+/// Grok models reject the hint even through the codegraff gateway, so they are
+/// excluded up front (mirrors how opencode gates effort per-model) — the
+/// reactive drop-and-retry in request() still covers any other model that
+/// turns out to reject it.
+fn providerTakesEffort(kind: Provider.Kind, id: []const u8, model: []const u8) bool {
+    if (std.mem.startsWith(u8, model, "grok")) return false;
+    return kind == .responses or
+        std.mem.eql(u8, id, "codegraff") or
+        std.mem.eql(u8, id, "deepseek") or
+        std.mem.eql(u8, id, "kimi");
+}
+
 fn emitSchema(w: *Io.Writer) !void {
     var s: std.json.Stringify = .{ .writer = w, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
@@ -7084,10 +7099,7 @@ const Agent = struct {
     /// providers we know normalize a top-level reasoning_effort — the
     /// codegraff gateway and deepseek. Everything else ignores it.
     fn effortApplies(self: *const Agent) bool {
-        return self.provider.kind == .responses or
-            std.mem.eql(u8, self.provider.id, "codegraff") or
-            std.mem.eql(u8, self.provider.id, "deepseek") or
-            std.mem.eql(u8, self.provider.id, "kimi");
+        return providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
 
     fn toolsJson(self: *const Agent) []const u8 {
@@ -7246,8 +7258,7 @@ const Agent = struct {
                 try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                 return error.ApiError;
             };
-            if (root.get("error")) |e| if (e == .object) {
-                const msg = if (e.object.get("message")) |m| m.string else "unknown error";
+            if (apiErrorMessage(root)) |msg| {
                 if (force and std.mem.indexOf(u8, msg, "tool_choice") != null) {
                     force = false; // provider can't force a tool; soft-strict
                     continue;
@@ -7260,14 +7271,14 @@ const Agent = struct {
                     self.cap_new = true; // provider wants the post-deprecation name
                     continue;
                 }
-                if (!self.effort_rejected and std.mem.indexOf(u8, msg, "reasoning_effort") != null) {
-                    self.effort_rejected = true; // model rejects reasoning_effort here (wants /v1/responses); drop + retry
+                if (!self.effort_rejected and mentionsReasoningEffort(msg)) {
+                    self.effort_rejected = true; // model rejects the effort hint here; drop + retry
                     continue;
                 }
                 if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                 try self.sayApiError("api error: {s}", .{msg});
                 return error.ApiError;
-            };
+            }
 
             self.recordUsage(root);
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
@@ -10369,6 +10380,29 @@ fn failure(gpa: Allocator, err: anyerror) ToolOutput {
 
 /// A required string argument, or null if absent / wrong type. Guards
 /// against malformed model output panicking the process (DoS).
+/// Pull a human-readable message from an OpenAI-style error envelope, handling
+/// both `{"error":{"message":...}}` (OpenAI/Anthropic) and `{"error":"...","code":...}`
+/// where `error` is a bare string (the codegraff gateway's shape, e.g. grok-build
+/// rejecting an unsupported parameter). Returns null when there is no error field
+/// (or it is explicitly null), so a normal response is never mistaken for an error.
+fn apiErrorMessage(root: std.json.ObjectMap) ?[]const u8 {
+    const e = root.get("error") orelse return null;
+    return switch (e) {
+        .null => null,
+        .string => e.string,
+        .object => if (e.object.get("message")) |m| (if (m == .string) m.string else "unknown error") else "unknown error",
+        else => "unknown error",
+    };
+}
+
+/// Does an API error message complain about the reasoning-effort hint? Gateways
+/// word it differently: OpenAI says "reasoning_effort", the codegraff gateway
+/// (e.g. for grok-build) says "reasoningEffort". Either means: drop it and retry.
+fn mentionsReasoningEffort(msg: []const u8) bool {
+    return std.mem.indexOf(u8, msg, "reasoning_effort") != null or
+        std.mem.indexOf(u8, msg, "reasoningEffort") != null;
+}
+
 fn strField(input: Value, name: []const u8) ?[]const u8 {
     if (input != .object) return null;
     const v = input.object.get(name) orelse return null;
@@ -11896,4 +11930,338 @@ test "toolResultMessage: result text serializes as a JSON string in every wire f
         const json = try enc(arena, err);
         try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":\"nope\"") != null);
     }
+}
+
+
+test "Approvals.isSimple: rejects shell metacharacters that could smuggle a second command" {
+    try std.testing.expect(Approvals.isSimple("grep foo src/main.zig"));
+    try std.testing.expect(Approvals.isSimple("ls -la"));
+    try std.testing.expect(!Approvals.isSimple("ls; rm -rf /"));
+    try std.testing.expect(!Approvals.isSimple("cat a | sh"));
+    try std.testing.expect(!Approvals.isSimple("echo $(whoami)"));
+    try std.testing.expect(!Approvals.isSimple("echo `id`"));
+    try std.testing.expect(!Approvals.isSimple("foo > bar"));
+    try std.testing.expect(!Approvals.isSimple("foo < bar"));
+    try std.testing.expect(!Approvals.isSimple("a && b"));
+    try std.testing.expect(!Approvals.isSimple("a\nb"));
+    try std.testing.expect(!Approvals.isSimple("echo $HOME"));
+}
+
+test "Approvals.matchesPrefix: whole-word prefix, never a bare substring" {
+    try std.testing.expect(Approvals.matchesPrefix("git status", "git status"));
+    try std.testing.expect(Approvals.matchesPrefix("git status -s", "git status"));
+    try std.testing.expect(Approvals.matchesPrefix("ls", "ls"));
+    try std.testing.expect(Approvals.matchesPrefix("ls -la", "ls"));
+    try std.testing.expect(!Approvals.matchesPrefix("lsof", "ls")); // not a word boundary
+    try std.testing.expect(!Approvals.matchesPrefix("git statusx", "git status"));
+    try std.testing.expect(!Approvals.matchesPrefix("git", "git status")); // prefix longer than cmd
+}
+
+test "Approvals.escapesCwd: flags tokens that point outside the working directory" {
+    try std.testing.expect(!Approvals.escapesCwd("cat src/main.zig"));
+    try std.testing.expect(!Approvals.escapesCwd("grep foo ./a/b.zig"));
+    try std.testing.expect(!Approvals.escapesCwd("prog --flag=value"));
+    try std.testing.expect(Approvals.escapesCwd("cat /etc/passwd"));
+    try std.testing.expect(Approvals.escapesCwd("cat ~/secrets"));
+    try std.testing.expect(Approvals.escapesCwd("cat ../outside"));
+    try std.testing.expect(Approvals.escapesCwd("grep foo a/../../b"));
+    try std.testing.expect(Approvals.escapesCwd("prog --file=/abs/path"));
+    try std.testing.expect(Approvals.escapesCwd("prog --file=~/x"));
+}
+
+test "Approvals.readOnlyAllowed: only simple, in-cwd, seed-listed commands pass in plan mode" {
+    try std.testing.expect(Approvals.readOnlyAllowed("ls -la"));
+    try std.testing.expect(Approvals.readOnlyAllowed("git status"));
+    try std.testing.expect(Approvals.readOnlyAllowed("cat src/main.zig"));
+    try std.testing.expect(Approvals.readOnlyAllowed("  grep foo bar  ")); // leading/trailing trimmed
+    try std.testing.expect(!Approvals.readOnlyAllowed("rm -rf x")); // not in the seed
+    try std.testing.expect(!Approvals.readOnlyAllowed("cat /etc/passwd")); // escapes cwd
+    try std.testing.expect(!Approvals.readOnlyAllowed("ls; rm x")); // not simple
+    try std.testing.expect(!Approvals.readOnlyAllowed("git push")); // mutating git verb, not seeded
+}
+
+test "Approvals.isInterpreter: flags first words that grant arbitrary code execution" {
+    try std.testing.expect(Approvals.isInterpreter("python3"));
+    try std.testing.expect(Approvals.isInterpreter("node"));
+    try std.testing.expect(Approvals.isInterpreter("bash"));
+    try std.testing.expect(Approvals.isInterpreter("osascript"));
+    try std.testing.expect(!Approvals.isInterpreter("ls"));
+    try std.testing.expect(!Approvals.isInterpreter("git"));
+    try std.testing.expect(!Approvals.isInterpreter("python3x"));
+}
+
+test "Agent.firstWord: splits the command on the first whitespace" {
+    try std.testing.expectEqualStrings("git", Agent.firstWord("git status -s"));
+    try std.testing.expectEqualStrings("ls", Agent.firstWord("ls"));
+    try std.testing.expectEqualStrings("cat", Agent.firstWord("cat\tfile")); // tab delimiter
+    try std.testing.expectEqualStrings("", Agent.firstWord(""));
+    try std.testing.expectEqualStrings("", Agent.firstWord(" leading"));
+}
+
+
+test "Provider.compactAt: auto-compacts at 80% of the context window (long-horizon trigger)" {
+    const big = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 1_000_000 };
+    try std.testing.expectEqual(@as(u64, 800_000), big.compactAt());
+    const small = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 200_000 };
+    try std.testing.expectEqual(@as(u64, 160_000), small.compactAt());
+    const zero = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 0 };
+    try std.testing.expectEqual(@as(u64, 0), zero.compactAt());
+}
+
+test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
+    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    const none = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    try std.testing.expectEqualStrings("anthropic", (try all.providerFor("claude-does-not-exist")).id);
+    try std.testing.expectEqualStrings("codegraff", (try all.providerFor("totally-made-up-model")).id);
+    try std.testing.expectEqualStrings("gpt-5.5", (try all.providerFor("gpt-5.5")).model);
+    try std.testing.expectError(error.MissingKey, none.providerFor("claude-opus-4-8"));
+}
+
+test "Keys.providerById: exact id wins, unknown id falls back to model routing" {
+    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    const p = try all.providerById("anthropic", "claude-opus-4-8");
+    try std.testing.expectEqualStrings("anthropic", p.id);
+    try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
+    const fb = try all.providerById("no-such-provider", "gpt-5.5");
+    try std.testing.expectEqualStrings("gpt-5.5", fb.model);
+}
+
+test "Keys.defaultProvider: first keyed provider on its default model" {
+    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    const p = try all.defaultProvider();
+    try std.testing.expectEqualStrings("anthropic", p.id); // anthropic leads provider_specs
+    try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
+    const none = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    try std.testing.expectError(error.MissingKey, none.defaultProvider());
+}
+
+test "modelInTable: known models present, unknown absent" {
+    try std.testing.expect(modelInTable("gpt-5.5"));
+    try std.testing.expect(modelInTable("claude-opus-4-8"));
+    try std.testing.expect(!modelInTable("not-a-real-model"));
+}
+
+test "priceFor: known model priced, unknown is null" {
+    try std.testing.expect(priceFor("gpt-5.5") != null);
+    try std.testing.expect(priceFor("claude-opus-4-8") != null);
+    try std.testing.expect(priceFor("no-such-model") == null);
+}
+
+test "visionModel: vision-capable model families only" {
+    try std.testing.expect(visionModel("claude-opus-4-8"));
+    try std.testing.expect(visionModel("gpt-5.5"));
+    try std.testing.expect(visionModel("gpt-4o"));
+    try std.testing.expect(visionModel("grok-4.3"));
+    try std.testing.expect(visionModel("kimi-k2.7"));
+    try std.testing.expect(visionModel("gemini-2.0"));
+    try std.testing.expect(!visionModel("deepseek-v4-pro"));
+    try std.testing.expect(!visionModel("mimo-v2.5"));
+    try std.testing.expect(!visionModel("grok-build")); // grok-4 prefix only, not all grok
+}
+
+test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
+    try std.testing.expectEqualStrings("OpenAI", providerDisplayName("openai"));
+    try std.testing.expectEqualStrings("Codex (ChatGPT)", providerDisplayName("codex"));
+    try std.testing.expectEqualStrings("mystery", providerDisplayName("mystery")); // unknown -> echoed id
+    try std.testing.expectEqualStrings("codegraff_device", providerLoginKind("codegraff"));
+    try std.testing.expectEqualStrings("codex_device", providerLoginKind("codex"));
+    try std.testing.expectEqualStrings("api_key", providerLoginKind("openai"));
+}
+
+
+test "strField/intField: typed JSON field extraction, null on wrong type or non-object" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v = std.json.parseFromSliceLeaky(Value, a, "{\"s\":\"hi\",\"n\":42,\"b\":true}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("hi", strField(v, "s").?);
+    try std.testing.expect(strField(v, "n") == null); // present but not a string
+    try std.testing.expect(strField(v, "missing") == null);
+    try std.testing.expect(strField(Value{ .null = {} }, "s") == null); // non-object input
+    try std.testing.expectEqual(@as(i64, 42), intField(v, "n").?);
+    try std.testing.expect(intField(v, "s") == null); // present but not an integer
+    try std.testing.expect(intField(v, "missing") == null);
+}
+
+test "strFieldObj/intFieldObj: object-map variants with defaults" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v = std.json.parseFromSliceLeaky(Value, a, "{\"s\":\"hi\",\"n\":42}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("hi", strFieldObj(v.object, "s").?);
+    try std.testing.expect(strFieldObj(v.object, "n") == null);
+    try std.testing.expectEqual(@as(i64, 42), intFieldObj(v.object, "n", -1));
+    try std.testing.expectEqual(@as(i64, -1), intFieldObj(v.object, "s", -1)); // wrong type -> default
+    try std.testing.expectEqual(@as(i64, -1), intFieldObj(v.object, "missing", -1));
+}
+
+test "b64url: url-safe base64 without padding" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expectEqualStrings("Zm9v", b64url(a, "foo"));
+    try std.testing.expectEqualStrings("", b64url(a, ""));
+    // bytes that would be '+' and '/' in standard base64 use '-' and '_', no '=' padding
+    try std.testing.expectEqualStrings("-_8", b64url(a, &[_]u8{ 0xfb, 0xff }));
+}
+
+test "missingArg: builds an is_error result naming the argument" {
+    const o = try missingArg(std.testing.allocator, "path");
+    defer std.testing.allocator.free(o.text);
+    try std.testing.expect(o.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, o.text, "path") != null);
+}
+
+test "extractText: string content, joined text blocks, and empties" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const plain = std.json.parseFromSliceLeaky(Value, a, "{\"content\":\"plain\"}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("plain", extractText(a, plain));
+    const blocks = std.json.parseFromSliceLeaky(Value, a, "{\"content\":[{\"type\":\"text\",\"text\":\"a\"},{\"type\":\"text\",\"text\":\"b\"}]}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("a\nb", extractText(a, blocks));
+    const empty = std.json.parseFromSliceLeaky(Value, a, "{}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("", extractText(a, empty));
+    try std.testing.expectEqualStrings("", extractText(a, Value{ .null = {} }));
+}
+
+
+test "translateHistory: flattens to {role,content:string}, keeps user/assistant, drops the rest" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const mk = struct {
+        fn p(al: Allocator, s: []const u8) Value {
+            return std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable;
+        }
+    }.p;
+    var msgs = std.json.Array.init(a);
+    try msgs.append(mk(a, "{\"role\":\"system\",\"content\":\"sys\"}")); // dropped
+    try msgs.append(mk(a, "{\"role\":\"user\",\"content\":\"hello\"}")); // kept
+    try msgs.append(mk(a, "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}")); // flattened
+    try msgs.append(mk(a, "{\"role\":\"tool\",\"content\":\"result\"}")); // dropped
+    try msgs.append(mk(a, "{\"role\":\"user\",\"content\":\"   \"}")); // whitespace-only -> dropped
+    translateHistory(a, &msgs, .anthropic);
+    try std.testing.expectEqual(@as(usize, 2), msgs.items.len);
+    try std.testing.expectEqualStrings("user", msgs.items[0].object.get("role").?.string);
+    try std.testing.expectEqualStrings("hello", msgs.items[0].object.get("content").?.string);
+    try std.testing.expectEqualStrings("assistant", msgs.items[1].object.get("role").?.string);
+    try std.testing.expectEqualStrings("hi", msgs.items[1].object.get("content").?.string);
+}
+
+test "isImagePath: known image extensions, case-insensitive" {
+    try std.testing.expect(isImagePath("photo.png"));
+    try std.testing.expect(isImagePath("a.JPEG"));
+    try std.testing.expect(isImagePath("x.webp"));
+    try std.testing.expect(isImagePath("dir/sub/pic.gif"));
+    try std.testing.expect(!isImagePath("readme.md"));
+    try std.testing.expect(!isImagePath("noext"));
+    try std.testing.expect(!isImagePath("archive.tar.gz"));
+}
+
+test "isMetaName: the four orchestrator-handled meta tools" {
+    try std.testing.expect(isMetaName("todo_write"));
+    try std.testing.expect(isMetaName("todo_read"));
+    try std.testing.expect(isMetaName("ask_user"));
+    try std.testing.expect(isMetaName("attempt_completion"));
+    try std.testing.expect(!isMetaName("bash"));
+    try std.testing.expect(!isMetaName("subagent"));
+    try std.testing.expect(!isMetaName("codedb"));
+}
+
+test "queryParam: extracts a value from an HTTP request line's query string" {
+    try std.testing.expectEqualStrings("2", queryParam("GET /p?a=1&b=2 HTTP/1.1", "b").?);
+    try std.testing.expectEqualStrings("1", queryParam("GET /p?a=1&b=2 HTTP/1.1", "a").?);
+    try std.testing.expect(queryParam("GET /p?a=1 HTTP/1.1", "z") == null); // key absent
+    try std.testing.expect(queryParam("GET /p HTTP/1.1", "a") == null); // no query string
+}
+
+test "skillIndex: registry lookup" {
+    try std.testing.expect(skillIndex("graff") != null);
+    try std.testing.expect(skillIndex("kuri") != null);
+    try std.testing.expect(skillIndex("nonexistent-skill") == null);
+}
+
+
+test "confinedPath: rejects absolute, empty, and parent-escaping paths" {
+    try std.testing.expect(confinedPath("src/main.zig"));
+    try std.testing.expect(confinedPath("a/b/c"));
+    try std.testing.expect(!confinedPath(""));
+    try std.testing.expect(!confinedPath("/etc/passwd"));
+    try std.testing.expect(!confinedPath("../outside"));
+    try std.testing.expect(!confinedPath("a/../../b"));
+}
+
+test "Agent.codepointCount: counts UTF-8 codepoints, not bytes" {
+    try std.testing.expectEqual(@as(usize, 5), Agent.codepointCount("hello"));
+    try std.testing.expectEqual(@as(usize, 0), Agent.codepointCount(""));
+    try std.testing.expectEqual(@as(usize, 1), Agent.codepointCount("é")); // 2 bytes, 1 codepoint
+    try std.testing.expectEqual(@as(usize, 3), Agent.codepointCount("a→b")); // arrow is 3 bytes
+}
+
+test "Agent.inlineVisibleLen: matched **bold**/`code` markers drop from the visible width" {
+    try std.testing.expectEqual(@as(usize, 5), Agent.inlineVisibleLen("hello"));
+    try std.testing.expectEqual(@as(usize, 4), Agent.inlineVisibleLen("**bold**"));
+    try std.testing.expectEqual(@as(usize, 4), Agent.inlineVisibleLen("`code`"));
+    try std.testing.expectEqual(@as(usize, 1), Agent.inlineVisibleLen("é")); // wide glyph counts as one column
+    try std.testing.expectEqual(@as(usize, 2), Agent.inlineVisibleLen("**")); // unmatched marker is literal
+}
+
+test "Agent.isTableSeparator: only |, -, :, space and at least one dash" {
+    try std.testing.expect(Agent.isTableSeparator("|---|---|"));
+    try std.testing.expect(Agent.isTableSeparator("| :--- | ---: |"));
+    try std.testing.expect(Agent.isTableSeparator("---"));
+    try std.testing.expect(!Agent.isTableSeparator("| a | b |")); // letters
+    try std.testing.expect(!Agent.isTableSeparator("|   |   |")); // no dash
+    try std.testing.expect(!Agent.isTableSeparator("")); // empty
+}
+
+test "accountFromIdToken: extracts chatgpt_account_id from a JWT payload" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // payload base64url-no-pad encodes
+    // {"https://api.openai.com/auth":{"chatgpt_account_id":"acc_test_123"}}
+    const token = "eyJhbGciOiJub25lIn0." ++
+        "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2NfdGVzdF8xMjMifX0" ++
+        ".sig";
+    try std.testing.expectEqualStrings("acc_test_123", accountFromIdToken(a, token));
+    try std.testing.expectEqualStrings("", accountFromIdToken(a, "not-a-jwt")); // no payload segment
+    try std.testing.expectEqualStrings("", accountFromIdToken(a, "a.b.c")); // payload not valid base64/json
+}
+
+test "apiErrorMessage: object-message, bare-string, and absent envelopes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const mk = struct {
+        fn p(al: Allocator, s: []const u8) Value {
+            return std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable;
+        }
+    }.p;
+    try std.testing.expectEqualStrings("bad thing", apiErrorMessage(mk(a, "{\"error\":{\"message\":\"bad thing\"}}").object).?);
+    // codegraff gateway shape: error is a bare string (the grok-build case)
+    try std.testing.expectEqualStrings(
+        "Model grok-build-0.1 does not support parameter reasoningEffort.",
+        apiErrorMessage(mk(a, "{\"code\":\"invalid-argument\",\"error\":\"Model grok-build-0.1 does not support parameter reasoningEffort.\"}").object).?,
+    );
+    try std.testing.expect(apiErrorMessage(mk(a, "{\"choices\":[]}").object) == null);
+    try std.testing.expect(apiErrorMessage(mk(a, "{\"error\":null}").object) == null);
+}
+
+test "mentionsReasoningEffort: matches snake_case and camelCase wording" {
+    try std.testing.expect(mentionsReasoningEffort("Unknown parameter: reasoning_effort"));
+    try std.testing.expect(mentionsReasoningEffort("Model X does not support parameter reasoningEffort."));
+    try std.testing.expect(!mentionsReasoningEffort("some other error"));
+}
+
+test "providerTakesEffort: effort-honoring providers, but never for grok models" {
+    try std.testing.expect(providerTakesEffort(.responses, "codex", "gpt-5.5"));
+    try std.testing.expect(providerTakesEffort(.openai, "codegraff", "deepseek-v4-pro"));
+    try std.testing.expect(providerTakesEffort(.openai, "deepseek", "deepseek-v4-pro"));
+    try std.testing.expect(providerTakesEffort(.openai, "kimi", "kimi-k2.7"));
+    try std.testing.expect(!providerTakesEffort(.openai, "openai", "gpt-5.5")); // direct openai chat
+    try std.testing.expect(!providerTakesEffort(.openai, "xai", "grok-4.3")); // xai not in the list
+    // grok via the codegraff gateway must NOT get reasoning_effort (grok rejects it)
+    try std.testing.expect(!providerTakesEffort(.openai, "codegraff", "grok-build"));
 }
