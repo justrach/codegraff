@@ -31,6 +31,10 @@ let handoffChatImpl: (
   input: import("../services/desktop/types/contracts").HandoffChatInput,
 ) => Promise<SessionSnapshot>;
 let openWorkspaceImpl: (workspacePath: string) => Promise<SessionSnapshot>;
+let selectConversationImpl: (
+  workspacePath: string,
+  conversationId: string,
+) => Promise<SessionSnapshot>;
 let renameWorkspaceImpl: (
   workspacePath: string,
   displayName: string | null,
@@ -170,7 +174,7 @@ mock.module("../services/desktop/client", () => ({
   },
   selectConversation: async (workspacePath: string, conversationId: string) => {
     selectConversationCallCount += 1;
-    return createSnapshot(workspacePath, conversationId);
+    return await selectConversationImpl(workspacePath, conversationId);
   },
   sendPrompt: async (
     input: import("../services/desktop/types/contracts").SendPromptInput,
@@ -285,6 +289,10 @@ describe("SessionProvider", () => {
       );
     openWorkspaceImpl = async (workspacePath: string) =>
       createSnapshot(workspacePath, "chat-1");
+    selectConversationImpl = async (
+      workspacePath: string,
+      conversationId: string,
+    ) => createSnapshot(workspacePath, conversationId);
     renameWorkspaceImpl = async (
       workspacePath: string,
       displayName: string | null,
@@ -368,6 +376,96 @@ describe("SessionProvider", () => {
       },
       kind: "single-chat",
     });
+  });
+
+  test("failed conversation selection restores the previous board selection", async () => {
+    sessionStore.getState().setBoardSelection({
+      chat: {
+        conversationId: "chat-1",
+        workspacePath: "/workspace/codegraff-gui",
+      },
+      kind: "single-chat",
+    });
+    selectConversationImpl = async () => {
+      throw new Error("selection failed");
+    };
+
+    let capturedActions: SessionActionsContextValue | null = null;
+
+    function CaptureActions() {
+      capturedActions = useContext(SessionActionsContext);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      <SessionProvider>
+        <CaptureActions />
+      </SessionProvider>,
+    );
+
+    if (capturedActions == null) {
+      throw new Error("Expected session actions to be available");
+    }
+
+    const actions = capturedActions as SessionActionsContextValue;
+
+    await actions.selectConversation("/workspace/other", "chat-9");
+
+    expect(sessionStore.getState().selection).toEqual({
+      chat: {
+        conversationId: "chat-1",
+        workspacePath: "/workspace/codegraff-gui",
+      },
+      kind: "single-chat",
+    });
+  });
+
+  test("stale conversation selection snapshots restore the previous board selection", async () => {
+    sessionStore.getState().setBoardSelection({
+      chat: {
+        conversationId: "chat-1",
+        workspacePath: "/workspace/codegraff-gui",
+      },
+      kind: "single-chat",
+    });
+    selectConversationImpl = async (workspacePath, conversationId) =>
+      createSnapshot(workspacePath, conversationId, {
+        conversationViews: [],
+      });
+
+    let capturedActions: SessionActionsContextValue | null = null;
+
+    function CaptureActions() {
+      capturedActions = useContext(SessionActionsContext);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      <SessionProvider>
+        <CaptureActions />
+      </SessionProvider>,
+    );
+
+    if (capturedActions == null) {
+      throw new Error("Expected session actions to be available");
+    }
+
+    const actions = capturedActions as SessionActionsContextValue;
+
+    await actions.selectConversation("/workspace/other", "chat-9");
+
+    expect(sessionStore.getState().selection).toEqual({
+      chat: {
+        conversationId: "chat-1",
+        workspacePath: "/workspace/codegraff-gui",
+      },
+      kind: "single-chat",
+    });
+    expect(
+      sessionStore.getState().conversationViewsByKey[
+        "/workspace/other::chat-9"
+      ],
+    ).toBeUndefined();
   });
 
   test("stopPrompt targets the active binding", async () => {

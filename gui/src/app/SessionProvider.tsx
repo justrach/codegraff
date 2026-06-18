@@ -40,6 +40,17 @@ import { appendAttachmentsToPrompt } from "@/components/attachments/attachmentTy
 import type { SessionProviderProps } from "./types/app";
 import { useSessionBootstrap } from "../hooks/useSessionBootstrap";
 
+function snapshotHasConversationView(
+  snapshot: SessionSnapshot,
+  binding: ChatBinding,
+) {
+  return snapshot.conversationViews.some(
+    (view) =>
+      view.workspacePath === binding.workspacePath &&
+      view.conversationId === binding.conversationId,
+  );
+}
+
 export function SessionProvider({ children }: SessionProviderProps) {
   const activeWorkspacePath = useStore(
     sessionStore,
@@ -407,6 +418,7 @@ export function SessionProvider({ children }: SessionProviderProps) {
         conversationId: string,
       ) => {
         const requestId = beginConversationSelectionRequest();
+        const previousSelection = sessionStore.getState().selection;
 
         const binding = { conversationId, workspacePath } satisfies ChatBinding;
 
@@ -426,9 +438,24 @@ export function SessionProvider({ children }: SessionProviderProps) {
             return;
           }
 
+          // The harness can report the target as active without ever sending its
+          // conversation view (e.g. a draft that was discarded). Selecting it
+          // would leave the board pointing at an empty chat, so revert.
+          if (
+            snapshot.activeWorkspacePath === workspacePath &&
+            snapshot.activeConversationId === conversationId &&
+            !snapshotHasConversationView(snapshot, binding)
+          ) {
+            sessionStore.getState().setBoardSelection(previousSelection);
+            return;
+          }
+
           applySessionSnapshot(snapshot);
           ensureWorkspaceMeta(workspacePath, { forceRuntimeStatus: true });
         } catch {
+          if (isLatestConversationSelectionRequest(requestId)) {
+            sessionStore.getState().setBoardSelection(previousSelection);
+          }
           return;
         }
       },
