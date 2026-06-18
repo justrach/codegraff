@@ -40,6 +40,7 @@ import {
 } from "./layout";
 import {
   applyChatTileLayoutConstraints,
+  autoCloseUndersizedSidePanes,
   buildDefaultChatTileLayout,
   isSingleChatSelfDrop,
   openChatTilePane,
@@ -325,6 +326,11 @@ export function ChatTile({
           draggedPanelRef.current = null;
           draggedGroupRef.current = null;
           applyChatTileLayoutConstraints(event.api);
+          // Skip while a saved layout is being applied so restoring a narrow pane
+          // doesn't immediately close it; only react to user-driven resizes.
+          if (!isApplyingLayoutRef.current) {
+            autoCloseUndersizedSidePanes(event.api);
+          }
           scheduleInnerLayoutSave();
         }),
         event.api.onWillDragPanel((dragEvent) => {
@@ -416,7 +422,7 @@ export function ChatTile({
 
       void restoreInnerLayout(event.api);
     },
-    [restoreInnerLayout, scheduleInnerLayoutSave],
+    [isApplyingLayoutRef, restoreInnerLayout, scheduleInnerLayoutSave],
   );
 
   return (

@@ -53,11 +53,8 @@ export function ConversationPanel({
     commandResultState.key === bindingKey ? commandResultState.results : [];
   const isSidebarVisible = useSidebarVisible();
   const artifacts = useChatArtifacts(messages);
-  const {
-    isOpen: isArtifactsOpen,
-    toggle: toggleArtifacts,
-    close: closeArtifacts,
-  } = useArtifactsDrawer(binding);
+  const { isOpen: isArtifactsOpen, close: closeArtifacts } =
+    useArtifactsDrawer(binding);
   // Full-window panels (drag-enabled) sit under the traffic lights when the
   // sidebar is collapsed, so reserve the titlebar inset then.
   const shouldReserveTitlebarInset =
@@ -90,9 +87,6 @@ export function ConversationPanel({
       {showHeader ? (
         <ConversationPanelHeader
           binding={binding}
-          artifactCount={artifacts.length}
-          isArtifactsOpen={isArtifactsOpen}
-          onToggleArtifacts={toggleArtifacts}
           canCloseChat={canCloseChat}
           onCloseChat={onCloseChat}
           onOpenPreview={onOpenPreview}

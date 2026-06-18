@@ -3,12 +3,9 @@ import {
   EllipsisIcon,
   FileDiffIcon,
   FolderIcon,
-  GitCommitHorizontalIcon,
   GitBranchPlusIcon,
-  GitPullRequestCreateIcon,
   LayoutPanelTopIcon,
   SquareTerminalIcon,
-  UploadIcon,
   XIcon,
 } from "lucide-react";
 
@@ -19,38 +16,28 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/DropdownMenu";
-
-import { ArtifactsButton } from "@/components/artifacts/ArtifactsButton";
 
 import { appTargets } from "./constants/conversationHeader";
 import type { ConversationHeaderActionsProps } from "./types/conversationHeader";
 
 export function ConversationHeaderActions({
-  artifactCount = 0,
-  isArtifactsOpen = false,
-  onToggleArtifacts,
   canCloseChat,
   canHandoffToLocal = false,
   canHandoffToWorktree = false,
-  isGitBusy,
   isHandoffBusy,
   isOpenTargetBusy,
   onCloseChat,
   onHandoffToLocal,
   onHandoffToWorktree,
-  onOpenCommitDialog,
   onOpenPreview,
   onOpenTerminal,
   onOpenChanges,
-  onPush,
   onSelectOpenTarget,
   openTargets,
   preferredAppId,
-  showGitActions = true,
 }: ConversationHeaderActionsProps) {
   const isCloseChatEnabled = canCloseChat?.() ?? false;
   const preferredApp =
@@ -61,12 +48,17 @@ export function ConversationHeaderActions({
 
   return (
     <div className="relative z-20 ml-auto flex shrink-0 items-center gap-1.5 pointer-events-auto">
-      {onToggleArtifacts ? (
-        <ArtifactsButton
-          artifactCount={artifactCount}
-          isOpen={isArtifactsOpen}
-          onToggle={onToggleArtifacts}
-        />
+      {onOpenChanges ? (
+        <Button
+          variant="outline"
+          size="icon-sm"
+          aria-label="Open changes"
+          onClick={() => {
+            onOpenChanges();
+          }}
+        >
+          <FileDiffIcon />
+        </Button>
       ) : null}
 
       <ButtonGroup aria-label="Open with">
@@ -127,60 +119,6 @@ export function ConversationHeaderActions({
         </DropdownMenu>
       </ButtonGroup>
 
-      {showGitActions ? (
-        <ButtonGroup aria-label="Git actions">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={isGitBusy}
-            onClick={onOpenCommitDialog}
-          >
-            <GitCommitHorizontalIcon data-icon="inline-start" />
-            Commit
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  variant="outline"
-                  size="icon-sm"
-                  aria-label="More git actions"
-                  disabled={isGitBusy}
-                />
-              }
-            >
-              <ChevronDownIcon />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              <DropdownMenuGroup>
-                <DropdownMenuLabel>Git actions</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={onOpenCommitDialog}
-                  disabled={isGitBusy}
-                >
-                  <GitCommitHorizontalIcon />
-                  Commit
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => {
-                    void onPush();
-                  }}
-                  disabled={isGitBusy}
-                >
-                  <UploadIcon />
-                  Push
-                </DropdownMenuItem>
-                <DropdownMenuItem disabled>
-                  <GitPullRequestCreateIcon />
-                  Create PR
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </ButtonGroup>
-      ) : null}
-
       <DropdownMenu>
         <DropdownMenuTrigger
           render={
@@ -195,16 +133,6 @@ export function ConversationHeaderActions({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-48">
           <DropdownMenuGroup>
-            {onOpenChanges ? (
-              <DropdownMenuItem
-                onClick={() => {
-                  onOpenChanges();
-                }}
-              >
-                <FileDiffIcon />
-                Open Changes
-              </DropdownMenuItem>
-            ) : null}
             <DropdownMenuItem
               onClick={() => {
                 onOpenPreview?.();

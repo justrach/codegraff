@@ -29,6 +29,28 @@ export function applyChatTileLayoutConstraints(api: DockviewApi): void {
   });
 }
 
+// Width (px) below which a side pane (preview/terminal/changes) auto-closes when
+// the user drags it too small. Kept above dockview's enforced group minimum so the
+// sash can actually reach the threshold.
+const MIN_SIDE_PANE_WIDTH = 180;
+
+/**
+ * Close any auxiliary side pane that the user has dragged narrower than
+ * {@link MIN_SIDE_PANE_WIDTH}. The chat pane is never auto-closed. Panes reporting
+ * a width of 0 (not yet laid out) are skipped to avoid closing on mount.
+ */
+export function autoCloseUndersizedSidePanes(api: DockviewApi): void {
+  for (const panel of api.panels) {
+    if (panel.id === CHAT_PANE_ID) {
+      continue;
+    }
+    const width = panel.api.width;
+    if (width > 0 && width < MIN_SIDE_PANE_WIDTH) {
+      panel.api.close();
+    }
+  }
+}
+
 export function buildDefaultChatTileLayout(
   api: DockviewApi,
   binding: ChatBinding,

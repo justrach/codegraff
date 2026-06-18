@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
-import { ChevronRight, FileText } from "lucide-react";
+import {
+  ChevronDownIcon,
+  ChevronRight,
+  FileText,
+  GitCommitHorizontalIcon,
+  UploadIcon,
+} from "lucide-react";
 
 import { PatchDiff } from "@codegraff/diffs/react";
 
@@ -10,6 +16,8 @@ import {
   appTargets,
 } from "@/components/conversation-panel/constants/conversationHeader";
 import { usePreferredOpenTarget } from "@/components/conversation-panel/hooks/usePreferredOpenTarget";
+import { useConversationHeaderState } from "@/components/conversation-panel/hooks/useConversationHeaderState";
+import { CommitChangesDialog } from "@/components/conversation-panel/CommitChangesDialog";
 import {
   getFileDiffDisplayName,
   getFileDiffDisplayPath,
@@ -23,6 +31,20 @@ import {
   type ResolvedFileDiff,
 } from "@/components/chat/activity-results/utils/renderableFileDiff";
 import { cn } from "@/utils/cn";
+import { Button } from "@/components/ui/Button";
+import { ButtonGroup } from "@/components/ui/ButtonGroup";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/Collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/DropdownMenu";
 import { PaneSurface } from "@/components/ui/PaneSurface";
 import { useConversationView, useWorkspaceMeta } from "@/hooks/useSession";
 
@@ -68,21 +90,20 @@ function ChangeRow({
   canOpenInEditor,
   onOpenInEditor,
 }: ChangeRowProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const displayName = getFileDiffDisplayName(change.path);
   const displayPath = getFileDiffDisplayPath(change.path, workspacePath);
   const badge = fileChangeBadge(change.operation, change.editCount);
   const stats = resolved?.status === "diff" ? resolved : null;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-card shadow-[var(--elevation-xs)] ring-1 ring-foreground/[0.04] transition-shadow hover:shadow-[var(--elevation-sm)]">
-      <div className="flex items-center gap-2 pr-2">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
-          className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2.5 text-left"
-        >
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="overflow-hidden rounded-lg border border-border bg-card shadow-[var(--elevation-xs)] ring-1 ring-foreground/[0.04] transition-shadow hover:shadow-[var(--elevation-sm)]"
+    >
+      <div className="flex items-center gap-2 bg-muted/40 pr-2">
+        <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left">
           <ChevronRight
             strokeWidth={2}
             className={cn(
@@ -108,7 +129,7 @@ function ChangeRow({
               <span className="text-muted-foreground/60">·</span>
             )}
           </span>
-        </button>
+        </CollapsibleTrigger>
         {canOpenInEditor ? (
           <button
             type="button"
@@ -120,7 +141,7 @@ function ChangeRow({
           </button>
         ) : null}
       </div>
-      {open ? (
+      <CollapsibleContent className="cgd-collapse">
         <div className="border-t border-border px-2 py-2">
           {resolved == null ? (
             <div className="px-2 py-3 text-xs text-muted-foreground">Loading diff…</div>
@@ -137,8 +158,8 @@ function ChangeRow({
             <code className="font-mono text-[11px] text-muted-foreground">{displayPath}</code>
           </div>
         </div>
-      ) : null}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -154,6 +175,21 @@ export function ChangesPane({
   );
   const view = useConversationView(binding);
   const workspaceMeta = useWorkspaceMeta(params.workspacePath);
+  const {
+    repoName,
+    branchName,
+    showGitActions,
+    commitMessage,
+    isCommitDialogOpen,
+    isCommitPending,
+    isGitActionPending,
+    openCommitDialog,
+    handleCommitSubmit,
+    handleCommitDialogClose,
+    handleCommitDialogOpenChange,
+    setCommitMessage,
+    handlePush,
+  } = useConversationHeaderState(binding);
 
   const availableOpenTargets =
     workspaceMeta.runtimeStatus?.availableOpenTargets ?? [];
@@ -216,18 +252,75 @@ export function ChangesPane({
   };
 
   return (
-    <PaneSurface className="overflow-auto">
-      <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background/70 px-4 py-3 text-xs backdrop-blur-md">
-        <span className="font-medium text-foreground">
-          {changes.length === 0
-            ? "No files changed"
-            : `${changes.length} file${changes.length === 1 ? "" : "s"} changed`}
-        </span>
-        {changes.length > 0 ? (
-          <span className="inline-flex items-center gap-2 font-mono tabular-nums">
-            <span className="text-success">+{totals.additions}</span>
-            <span className="text-destructive">-{totals.deletions}</span>
+    <PaneSurface className="overflow-auto animate-in fade-in-0 slide-in-from-right-2 duration-200">
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-background/70 px-4 py-2.5 text-xs backdrop-blur-md">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          {repoName != null || branchName != null ? (
+            <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+              {repoName != null ? (
+                <span className="truncate text-foreground/80">{repoName}</span>
+              ) : null}
+              {repoName != null && branchName != null ? (
+                <span className="text-muted-foreground/40">·</span>
+              ) : null}
+              {branchName != null ? (
+                <span className="truncate">{branchName}</span>
+              ) : null}
+            </span>
+          ) : null}
+          <span className="inline-flex items-center gap-2">
+            <span className="font-medium text-foreground">
+              {changes.length === 0
+                ? "No files changed"
+                : `${changes.length} file${changes.length === 1 ? "" : "s"} changed`}
+            </span>
+            {changes.length > 0 ? (
+              <span className="inline-flex items-center gap-2 font-mono tabular-nums">
+                <span className="text-success">+{totals.additions}</span>
+                <span className="text-destructive">-{totals.deletions}</span>
+              </span>
+            ) : null}
           </span>
+        </div>
+        {showGitActions ? (
+          <ButtonGroup aria-label="Git actions">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isGitActionPending}
+              onClick={openCommitDialog}
+            >
+              <GitCommitHorizontalIcon data-icon="inline-start" />
+              Commit
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="outline"
+                    size="icon-sm"
+                    aria-label="More git actions"
+                    disabled={isGitActionPending}
+                  />
+                }
+              >
+                <ChevronDownIcon />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-40">
+                <DropdownMenuGroup>
+                  <DropdownMenuItem
+                    onClick={() => {
+                      void handlePush();
+                    }}
+                    disabled={isGitActionPending}
+                  >
+                    <UploadIcon />
+                    Push
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </ButtonGroup>
         ) : null}
       </div>
 
@@ -249,6 +342,16 @@ export function ChangesPane({
           ))}
         </div>
       )}
+
+      <CommitChangesDialog
+        commitMessage={commitMessage}
+        isOpen={isCommitDialogOpen}
+        isSubmitting={isCommitPending}
+        onClose={handleCommitDialogClose}
+        onCommitMessageChange={setCommitMessage}
+        onOpenChange={handleCommitDialogOpenChange}
+        onSubmit={handleCommitSubmit}
+      />
     </PaneSurface>
   );
 }
