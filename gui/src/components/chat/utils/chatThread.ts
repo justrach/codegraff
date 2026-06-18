@@ -488,6 +488,7 @@ function finalizeRequestActivities(
   const lastRunningIndex = isRunning ? activities.length - 1 : -1;
   return activities.map((activity, index) => ({
     ...activity,
+    key: `${activity.key}:${index}`,
     isRunning: index === lastRunningIndex,
   }));
 }

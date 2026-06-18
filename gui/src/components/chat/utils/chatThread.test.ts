@@ -298,4 +298,45 @@ describe("buildChatThreadItems", () => {
     expect(workItem?.failedStepCount).toBe(1);
     expect(workItem?.hasError).toBe(true);
   });
+
+  test("finalized activity keys are unique when a request flushes repeated operation groups", () => {
+    const items = buildChatThreadItems(
+      [
+        userMessage("user-1", "req-1", "inspect twice"),
+        toolStartMessage("tool-start-1", "req-1", "call-1", {
+          kind: "shell",
+          command: "pwd",
+          cwd: null,
+          description: null,
+        }),
+        toolEndMessage("tool-end-1", "req-1", "call-1", {
+          kind: "text",
+          text: "/tmp/project",
+        }),
+        assistantMessage("assistant-1", "req-1", "Now checking status."),
+        toolStartMessage("tool-start-2", "req-1", "call-2", {
+          kind: "shell",
+          command: "git status --short",
+          cwd: null,
+          description: null,
+        }),
+        toolEndMessage("tool-end-2", "req-1", "call-2", {
+          kind: "text",
+          text: " M file.ts",
+        }),
+        assistantMessage("assistant-2", "req-1", "Done."),
+      ],
+      [],
+    );
+
+    const workItem = items.find(
+      (item): item is Extract<typeof item, { kind: "request_work" }> =>
+        item.kind === "request_work",
+    );
+
+    expect(workItem).toBeDefined();
+    const keys = workItem?.activities.map((activity) => activity.key) ?? [];
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
 });
