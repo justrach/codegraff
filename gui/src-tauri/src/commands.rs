@@ -632,28 +632,57 @@ pub(crate) async fn read_workspace_file(
     workspace_path: String,
     path: String,
 ) -> Result<String, String> {
+    use std::io::Read;
     const MAX_BYTES: u64 = 512 * 1024;
+
+    let workspace = Path::new(&workspace_path);
+    // Reject an empty/blank workspace root. The containment check relies on
+    // canonicalizing a real workspace directory, and `Path::starts_with("")`
+    // matches every path — so an empty root would bypass the sandbox entirely.
+    if workspace_path.trim().is_empty() {
+        return Err("path is outside the workspace".into());
+    }
+    // Fail closed: if the workspace root can't be canonicalized (it doesn't
+    // exist or isn't a directory) refuse rather than falling back to the raw,
+    // untrusted string. Falling back would let a non-existent/empty workspace
+    // defeat the `starts_with` containment check.
+    let canonical_workspace = std::fs::canonicalize(workspace)
+        .map_err(|_| "path is outside the workspace".to_string())?;
+
     let candidate = Path::new(&path);
     let resolved = if candidate.is_absolute() {
         candidate.to_path_buf()
     } else {
-        Path::new(&workspace_path).join(candidate)
+        canonical_workspace.join(candidate)
     };
 
+    // Canonicalize the target so `..` segments and symlinks resolve before the
+    // containment check. A missing target is an error, never a leak.
     let canonical = std::fs::canonicalize(&resolved).map_err(|error| error.to_string())?;
-    let workspace = Path::new(&workspace_path);
-    let canonical_workspace =
-        std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     if !canonical.starts_with(&canonical_workspace) {
         return Err("path is outside the workspace".into());
     }
 
+    // Only read regular files: a FIFO/socket/device reports length 0 (passing
+    // the size cap) but would block `read_to_string` indefinitely, hanging the
+    // command and the "Loading diff…" card forever.
     let metadata = std::fs::metadata(&canonical).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("path is not a regular file".into());
+    }
     if metadata.len() > MAX_BYTES {
         return Err("file too large".into());
     }
 
-    std::fs::read_to_string(&canonical).map_err(|error| error.to_string())
+    // Bounded read closes the TOCTOU between the size check above and the read:
+    // if the file grows (or the stat lied) we still cap memory at MAX_BYTES.
+    let mut file = std::fs::File::open(&canonical).map_err(|error| error.to_string())?;
+    let mut contents = String::new();
+    file.by_ref()
+        .take(MAX_BYTES)
+        .read_to_string(&mut contents)
+        .map_err(|error| error.to_string())?;
+    Ok(contents)
 }
 
 #[tauri::command]
