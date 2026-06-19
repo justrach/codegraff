@@ -90,26 +90,31 @@ export function ProjectSidebarProject({
       </div>
 
       {isExpanded ? (
-        project.conversations.length > 0 ? (
-          <SidebarMenuSub className="ml-3.5 mr-0 pr-0">
-            {project.conversations.map((conversation) => (
-              <ProjectSidebarConversationRow
-                key={`${project.workspacePath}:${conversation.conversationId}`}
-                conversation={conversation}
-                isSelected={
-                  selectedConversationId === conversation.conversationId
-                }
-                onArchiveConversation={onArchiveConversation}
-                workspacePath={project.workspacePath}
-                onSelectConversation={onSelectConversation}
-              />
-            ))}
-          </SidebarMenuSub>
-        ) : isActive ? (
-          <p className="px-2 py-1 text-xs font-medium text-sidebar-foreground/60">
-            No chats yet
-          </p>
-        ) : null
+        (() => {
+          const namedConversations = project.conversations.filter(
+            (conv) => !conv.isDraft,
+          );
+          return namedConversations.length > 0 ? (
+            <SidebarMenuSub className="ml-3.5 mr-0 pr-0">
+              {namedConversations.map((conversation) => (
+                <ProjectSidebarConversationRow
+                  key={`${project.workspacePath}:${conversation.conversationId}`}
+                  conversation={conversation}
+                  isSelected={
+                    selectedConversationId === conversation.conversationId
+                  }
+                  onArchiveConversation={onArchiveConversation}
+                  workspacePath={project.workspacePath}
+                  onSelectConversation={onSelectConversation}
+                />
+              ))}
+            </SidebarMenuSub>
+          ) : isActive ? (
+            <p className="px-2 py-1 text-xs font-medium text-sidebar-foreground/60">
+              No chats yet
+            </p>
+          ) : null;
+        })()
       ) : null}
     </SidebarMenuItem>
   );
