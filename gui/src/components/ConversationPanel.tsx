@@ -2,9 +2,6 @@ import { useCallback, useMemo, useState } from "react";
 
 import { useSidebarVisible } from "@/app/sidebarVisibilityContext";
 import { ChatThread } from "@/components/chat/ChatThread";
-import { ArtifactsDrawer } from "@/components/artifacts/ArtifactsDrawer";
-import { useArtifactsDrawer } from "@/components/artifacts/artifactsDrawerStore";
-import { useChatArtifacts } from "@/components/artifacts/useChatArtifacts";
 import { ConversationPanelAlerts } from "@/components/conversation-panel/ConversationPanelAlerts";
 import { ConversationPanelHeader } from "@/components/conversation-panel/ConversationPanelHeader";
 import { ConversationSurface } from "@/components/conversation-panel/ConversationSurface";
@@ -52,9 +49,6 @@ export function ConversationPanel({
   const commandResults =
     commandResultState.key === bindingKey ? commandResultState.results : [];
   const isSidebarVisible = useSidebarVisible();
-  const artifacts = useChatArtifacts(messages);
-  const { isOpen: isArtifactsOpen, close: closeArtifacts } =
-    useArtifactsDrawer(binding);
   // Full-window panels (drag-enabled) sit under the traffic lights when the
   // sidebar is collapsed, so reserve the titlebar inset then.
   const shouldReserveTitlebarInset =
@@ -132,12 +126,6 @@ export function ConversationPanel({
           />
         </>
       )}
-
-      <ArtifactsDrawer
-        open={isArtifactsOpen}
-        artifacts={artifacts}
-        onClose={closeArtifacts}
-      />
     </ConversationSurface>
   );
 }
