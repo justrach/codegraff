@@ -282,6 +282,11 @@ const ModelInfo = struct {
     context: u64,
 };
 
+// Codex/ChatGPT backend: gpt-5.x window is 272k (codex-rs models.json); budget
+// 270k so compaction (80% -> 216k) fires just under the hard cap and absorbs our
+// token under-count (a turn displaying 270k still 400'd). Not the API's 1.05M.
+const codex_context_window: u64 = 270_000;
+
 const model_table = [_]ModelInfo{
     .{ .provider = "anthropic", .name = "claude-fable-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-8", .context = 1_000_000 },
@@ -307,7 +312,7 @@ const model_table = [_]ModelInfo{
     .{ .provider = "xiaomi", .name = "mimo-v2.5", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2.5-pro-ultraspeed", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2-flash", .context = 262_144 },
-    .{ .provider = "codex", .name = "gpt-5.5", .context = 400_000 },
+    .{ .provider = "codex", .name = "gpt-5.5", .context = codex_context_window },
     // codegraff gateway (its claude aliases use dots, so they don't collide
     // with the anthropic rows above)
     .{ .provider = "codegraff", .name = "claude-opus-4.8", .context = 1_000_000 },
@@ -337,11 +342,15 @@ const default_context = 200_000;
 /// Context window for a model as served by a specific provider; falls back
 /// to any provider's row for the name, then to the conservative default.
 fn contextFor(provider_id: []const u8, model: []const u8) u64 {
+    const is_codex = std.mem.eql(u8, provider_id, "codex");
     for (model_table) |m| {
         if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model)) return m.context;
     }
+    // Name-only fallback: another provider's row may advertise a far larger
+    // window (e.g. the OpenAI API's gpt-5.5 = 1.05M) that the Codex backend
+    // can't honor — cap codex routes at codex_context_window.
     for (model_table) |m| {
-        if (std.mem.eql(u8, m.name, model)) return m.context;
+        if (std.mem.eql(u8, m.name, model)) return if (is_codex) @min(m.context, codex_context_window) else m.context;
     }
     return default_context;
 }
