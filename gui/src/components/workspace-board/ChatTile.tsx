@@ -139,12 +139,38 @@ export function ChatTile({
     onPersist: persistConversationLayout,
   });
 
+  // Guards `autoCloseUndersizedSidePanes` during programmatic layout mutations
+  // (opening a pane, adding a terminal tab). `onDidLayoutChange` fires
+  // synchronously for `addPanel`, so without this guard a side pane opened on a
+  // narrow chat tile is measured below the min width and closed in the same tick
+  // it was added — the feature appears broken. Cleared on the next frame so the
+  // synchronous layout event batch is suppressed, then user-driven resizes take
+  // over again.
+  const isProgrammaticMutationRef = useRef(false);
+  const clearProgrammaticMutationRafRef = useRef<number | null>(null);
+  const withProgrammaticMutation = useCallback(<T,>(fn: () => T): T => {
+    isProgrammaticMutationRef.current = true;
+    if (clearProgrammaticMutationRafRef.current != null) {
+      window.cancelAnimationFrame(clearProgrammaticMutationRafRef.current);
+    }
+    const result = fn();
+    clearProgrammaticMutationRafRef.current = window.requestAnimationFrame(() => {
+      isProgrammaticMutationRef.current = false;
+      clearProgrammaticMutationRafRef.current = null;
+    });
+    return result;
+  }, []);
+
   useEffect(() => {
     return () => {
       innerDisposablesRef.current.forEach((disposable) => disposable.dispose());
       innerDisposablesRef.current = [];
       draggedPanelRef.current = null;
       draggedGroupRef.current = null;
+      if (clearProgrammaticMutationRafRef.current != null) {
+        window.cancelAnimationFrame(clearProgrammaticMutationRafRef.current);
+        clearProgrammaticMutationRafRef.current = null;
+      }
     };
   }, []);
 
@@ -197,10 +223,10 @@ export function ChatTile({
       }
 
       runLayoutAnimation();
-      openChatTilePane(api, binding, kind);
+      withProgrammaticMutation(() => openChatTilePane(api, binding, kind));
       scheduleInnerLayoutSave();
     },
-    [binding, runLayoutAnimation, scheduleInnerLayoutSave],
+    [binding, runLayoutAnimation, scheduleInnerLayoutSave, withProgrammaticMutation],
   );
 
   // Track which auxiliary panes are open so the header toggles can show an active
@@ -233,9 +259,9 @@ export function ChatTile({
     }
 
     runLayoutAnimation();
-    openChatTilePane(api, binding, "changes");
+    withProgrammaticMutation(() => openChatTilePane(api, binding, "changes"));
     scheduleInnerLayoutSave();
-  }, [binding, runLayoutAnimation, scheduleInnerLayoutSave]);
+  }, [binding, runLayoutAnimation, scheduleInnerLayoutSave, withProgrammaticMutation]);
 
   const handleToggleTerminal = useCallback(() => {
     const api = innerApiRef.current;
@@ -253,9 +279,9 @@ export function ChatTile({
     }
 
     runLayoutAnimation();
-    openChatTilePane(api, binding, "terminal");
+    withProgrammaticMutation(() => openChatTilePane(api, binding, "terminal"));
     scheduleInnerLayoutSave();
-  }, [binding, runLayoutAnimation, scheduleInnerLayoutSave]);
+  }, [binding, runLayoutAnimation, scheduleInnerLayoutSave, withProgrammaticMutation]);
 
   const handleAddTerminal = useCallback(() => {
     const api = innerApiRef.current;
@@ -263,9 +289,9 @@ export function ChatTile({
       return;
     }
 
-    addTerminalTab(api, binding);
+    withProgrammaticMutation(() => addTerminalTab(api, binding));
     scheduleInnerLayoutSave();
-  }, [binding, scheduleInnerLayoutSave]);
+  }, [binding, scheduleInnerLayoutSave, withProgrammaticMutation]);
 
   const headerActionsComponent = useCallback(function InnerHeaderActions({
     activePanel,
@@ -441,7 +467,13 @@ export function ChatTile({
   const finishInnerLayoutRestore = useCallback(
     (layoutJson: string | null) => {
       markPersistedLayout(layoutJson);
-      isApplyingLayoutRef.current = false;
+      // Defer clearing the restore guard past the current frame: dockview emits
+      // additional onDidLayoutChange events as the restored layout settles (and
+      // from applyChatTileLayoutConstraints below), which would otherwise run
+      // autoCloseUndersizedSidePanes and close a restored narrow side pane.
+      window.requestAnimationFrame(() => {
+        isApplyingLayoutRef.current = false;
+      });
     },
     [isApplyingLayoutRef, markPersistedLayout],
   );
@@ -461,8 +493,8 @@ export function ChatTile({
       );
       const restoreResult = applySavedConversationLayout(api, savedLayoutJson);
       if (restoreResult.kind === "restored") {
-        finishInnerLayoutRestore(savedLayoutJson);
         applyChatTileLayoutConstraints(api);
+        finishInnerLayoutRestore(savedLayoutJson);
         return;
       }
 
@@ -496,8 +528,11 @@ export function ChatTile({
           draggedGroupRef.current = null;
           applyChatTileLayoutConstraints(event.api);
           // Skip while a saved layout is being applied so restoring a narrow pane
-          // doesn't immediately close it; only react to user-driven resizes.
-          if (!isApplyingLayoutRef.current) {
+          // doesn't immediately close it, and while a programmatic open/add is
+          // settling (onDidLayoutChange fires synchronously for addPanel, which
+          // would otherwise close the pane just opened on a narrow tile); only
+          // react to user-driven resizes.
+          if (!isApplyingLayoutRef.current && !isProgrammaticMutationRef.current) {
             autoCloseUndersizedSidePanes(event.api);
           }
           recomputeOpenPanes();
