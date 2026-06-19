@@ -91,11 +91,17 @@ export function parsePatch(patch: string): ParsedPatch {
       current.isBinary = true;
       continue;
     }
-    if (line.startsWith("--- ")) {
+    // `--- `/`+++ ` file headers only appear between the file header and the
+    // first hunk. Once a hunk has started, a line beginning with `--- ` is a
+    // deletion whose text starts with `-- ` (e.g. a SQL/Lua `-- comment`),
+    // and `+++ ` is an addition whose text starts with `++ ` — not a header.
+    // Recognizing them here would swallow the line, corrupt the file path, and
+    // undercount the +/- stats.
+    if (currentHunk == null && line.startsWith("--- ")) {
       current.oldPath = stripPrefix(line.slice(4).trim());
       continue;
     }
-    if (line.startsWith("+++ ")) {
+    if (currentHunk == null && line.startsWith("+++ ")) {
       current.newPath = stripPrefix(line.slice(4).trim());
       continue;
     }

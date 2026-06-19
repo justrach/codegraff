@@ -78,6 +78,51 @@ describe("parsePatch", () => {
     expect(getPatchStats("just some text")).toBeNull();
     expect(getPatchStats(SIMPLE)).toEqual({ additions: 1, deletions: 1 });
   });
+
+  test("does not treat a `-- ` deletion inside a hunk as a `--- ` file header", () => {
+    // A deleted SQL/Lua `-- comment` is emitted by git as the raw line
+    // `--- FIXME: drop this` (marker `-` + text `-- FIXME: drop this`).
+    // It must be parsed as a deletion, not swallowed as an old-file header.
+    const PATCH = `diff --git a/app.lua b/app.lua
+--- a/app.lua
++++ b/app.lua
+@@ -1,2 +1,1 @@
+--- FIXME: drop this
+ local x = 1
+`;
+    const file = parsePatch(PATCH).files[0]!;
+    expect(file.path).toBe("app.lua");
+    expect(file.stats).toEqual({ additions: 0, deletions: 1 });
+    const lines = file.hunks[0]!.lines;
+    expect(lines.map((l) => l.kind)).toEqual(["deletion", "context"]);
+    expect(lines[0]).toMatchObject({
+      kind: "deletion",
+      beforeLineNumber: 1,
+      afterLineNumber: null,
+      text: "-- FIXME: drop this",
+    });
+  });
+
+  test("does not treat an `++ ` addition inside a hunk as a `+++ ` file header", () => {
+    const PATCH = `diff --git a/app.txt b/app.txt
+--- a/app.txt
++++ b/app.txt
+@@ -1,1 +1,2 @@
+ keep
++++ incremented
+`;
+    const file = parsePatch(PATCH).files[0]!;
+    expect(file.path).toBe("app.txt");
+    expect(file.stats).toEqual({ additions: 1, deletions: 0 });
+    const lines = file.hunks[0]!.lines;
+    expect(lines.map((l) => l.kind)).toEqual(["context", "addition"]);
+    expect(lines[1]).toMatchObject({
+      kind: "addition",
+      beforeLineNumber: null,
+      afterLineNumber: 2,
+      text: "++ incremented",
+    });
+  });
 });
 
 describe("tokenizeLine", () => {
