@@ -18,6 +18,8 @@ const ARG_COMMANDS = new Set([
   "workspace-query",
   "workspace-search",
   "workflow",
+  "goal",
+  "loop",
   "reasoning-effort",
 ]);
 
