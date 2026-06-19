@@ -17,6 +17,7 @@ import {
 } from "./sessionClientActions";
 import {
   beginConversationSelectionRequest,
+  areSelectionsEqual,
   ensureConversationViewLoaded,
   ensureWorkspacePromptSettingsLoaded,
   ensureWorkspaceRuntimeStatusLoaded,
@@ -39,6 +40,17 @@ import {
 import { appendAttachmentsToPrompt } from "@/components/attachments/attachmentTypes";
 import type { SessionProviderProps } from "./types/app";
 import { useSessionBootstrap } from "../hooks/useSessionBootstrap";
+
+function snapshotHasConversationView(
+  snapshot: SessionSnapshot,
+  binding: ChatBinding,
+) {
+  return snapshot.conversationViews.some(
+    (view) =>
+      view.workspacePath === binding.workspacePath &&
+      view.conversationId === binding.conversationId,
+  );
+}
 
 export function SessionProvider({ children }: SessionProviderProps) {
   const activeWorkspacePath = useStore(
@@ -407,15 +419,27 @@ export function SessionProvider({ children }: SessionProviderProps) {
         conversationId: string,
       ) => {
         const requestId = beginConversationSelectionRequest();
+        const previousSelection = sessionStore.getState().selection;
 
         const binding = { conversationId, workspacePath } satisfies ChatBinding;
+        const optimisticSelection = {
+          kind: "single-chat",
+          chat: binding,
+        } as const;
 
         ensureWorkspaceMeta(workspacePath);
 
-        sessionStore.getState().setBoardSelection({
-          kind: "single-chat",
-          chat: binding,
-        });
+        sessionStore.getState().setBoardSelection(optimisticSelection);
+
+        const revertOptimisticSelection = () => {
+          const store = sessionStore.getState();
+          if (
+            isLatestConversationSelectionRequest(requestId) &&
+            areSelectionsEqual(store.selection, optimisticSelection)
+          ) {
+            store.setBoardSelection(previousSelection);
+          }
+        };
 
         try {
           const snapshot = await desktopClient.selectConversation(
@@ -426,9 +450,22 @@ export function SessionProvider({ children }: SessionProviderProps) {
             return;
           }
 
+          // The harness can report the target as active without ever sending its
+          // conversation view (e.g. a draft that was discarded). Selecting it
+          // would leave the board pointing at an empty chat, so revert.
+          if (
+            snapshot.activeWorkspacePath === workspacePath &&
+            snapshot.activeConversationId === conversationId &&
+            !snapshotHasConversationView(snapshot, binding)
+          ) {
+            revertOptimisticSelection();
+            return;
+          }
+
           applySessionSnapshot(snapshot);
           ensureWorkspaceMeta(workspacePath, { forceRuntimeStatus: true });
         } catch {
+          revertOptimisticSelection();
           return;
         }
       },
