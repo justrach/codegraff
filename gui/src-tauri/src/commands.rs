@@ -632,10 +632,18 @@ pub(crate) async fn read_workspace_file(
     workspace_path: String,
     path: String,
 ) -> Result<String, String> {
+    // The filesystem work (canonicalize, metadata, read) is synchronous and can
+    // block — run it off the async runtime, like `image_thumbnail`.
+    tokio::task::spawn_blocking(move || read_workspace_file_blocking(&workspace_path, &path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn read_workspace_file_blocking(workspace_path: &str, path: &str) -> Result<String, String> {
     use std::io::Read;
     const MAX_BYTES: u64 = 512 * 1024;
 
-    let workspace = Path::new(&workspace_path);
+    let workspace = Path::new(workspace_path);
     // Reject an empty/blank workspace root. The containment check relies on
     // canonicalizing a real workspace directory, and `Path::starts_with("")`
     // matches every path — so an empty root would bypass the sandbox entirely.
@@ -649,7 +657,7 @@ pub(crate) async fn read_workspace_file(
     let canonical_workspace = std::fs::canonicalize(workspace)
         .map_err(|_| "path is outside the workspace".to_string())?;
 
-    let candidate = Path::new(&path);
+    let candidate = Path::new(path);
     let resolved = if candidate.is_absolute() {
         candidate.to_path_buf()
     } else {
@@ -664,8 +672,8 @@ pub(crate) async fn read_workspace_file(
     }
 
     // Only read regular files: a FIFO/socket/device reports length 0 (passing
-    // the size cap) but would block `read_to_string` indefinitely, hanging the
-    // command and the "Loading diff…" card forever.
+    // the size cap) but would block the read indefinitely, hanging the command
+    // and the "Loading diff…" card forever.
     let metadata = std::fs::metadata(&canonical).map_err(|error| error.to_string())?;
     if !metadata.is_file() {
         return Err("path is not a regular file".into());
