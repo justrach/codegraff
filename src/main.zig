@@ -10493,8 +10493,8 @@ fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     const word_end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
     const tool = std.fs.path.basename(trimmed[0..word_end]);
     const scanners = [_][]const u8{
-        "grep", "egrep", "fgrep", "rg",   "ripgrep", "ag", "ack",
-        "sed",  "awk",   "cat",   "head", "tail",    "wc", "nl",
+        "grep", "egrep",  "fgrep", "rg",   "ripgrep", "ag", "ack",
+        "sed",  "awk",    "cat",   "head", "tail",    "wc", "nl",
         "bat",  "batcat",
     };
     var is_scanner = false;
@@ -10519,10 +10519,10 @@ fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
 /// glob metachars. Used only by codedbGuard.
 fn referencesSourceFile(cmd: []const u8) bool {
     const exts = [_][]const u8{
-        ".zig", ".rs",  ".ts",  ".tsx", ".js",  ".jsx", ".mjs", ".cjs",
-        ".py",  ".go",  ".c",   ".h",   ".cc",  ".cpp", ".hpp", ".cxx",
-        ".java", ".kt", ".rb",  ".php", ".swift", ".scala", ".cs",
-        ".lua", ".ex",  ".exs", ".erl", ".clj", ".dart", ".vue", ".svelte",
+        ".zig",  ".rs",  ".ts",  ".tsx", ".js",    ".jsx",   ".mjs",    ".cjs",
+        ".py",   ".go",  ".c",   ".h",   ".cc",    ".cpp",   ".hpp",    ".cxx",
+        ".java", ".kt",  ".rb",  ".php", ".swift", ".scala", ".cs",     ".lua",
+        ".ex",   ".exs", ".erl", ".clj", ".dart",  ".vue",   ".svelte",
     };
     var it = std.mem.tokenizeAny(u8, cmd, " \t\n");
     var first = true;
@@ -12156,7 +12156,6 @@ test "toolResultMessage: result text serializes as a JSON string in every wire f
     }
 }
 
-
 test "Approvals.isSimple: rejects shell metacharacters that could smuggle a second command" {
     try std.testing.expect(Approvals.isSimple("grep foo src/main.zig"));
     try std.testing.expect(Approvals.isSimple("ls -la"));
@@ -12221,7 +12220,6 @@ test "Agent.firstWord: splits the command on the first whitespace" {
     try std.testing.expectEqualStrings("", Agent.firstWord(""));
     try std.testing.expectEqualStrings("", Agent.firstWord(" leading"));
 }
-
 
 test "Provider.compactAt: auto-compacts at 80% of the context window (long-horizon trigger)" {
     const big = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 1_000_000 };
@@ -12292,7 +12290,6 @@ test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
     try std.testing.expectEqualStrings("api_key", providerLoginKind("openai"));
 }
 
-
 test "strField/intField: typed JSON field extraction, null on wrong type or non-object" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -12349,7 +12346,6 @@ test "extractText: string content, joined text blocks, and empties" {
     try std.testing.expectEqualStrings("", extractText(a, Value{ .null = {} }));
 }
 
-
 test "translateHistory: flattens to {role,content:string}, keeps user/assistant, drops the rest" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -12405,7 +12401,6 @@ test "skillIndex: registry lookup" {
     try std.testing.expect(skillIndex("kuri") != null);
     try std.testing.expect(skillIndex("nonexistent-skill") == null);
 }
-
 
 test "confinedPath: rejects absolute, empty, and parent-escaping paths" {
     try std.testing.expect(confinedPath("src/main.zig"));
