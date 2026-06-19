@@ -3,11 +3,16 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "simple-harness-sdk"
-version = "0.1.0"
-description = "Python client for the simple-harness agent (drives `harness --json`). Constants auto-generated from `harness --schema`."
+name = "codegraff"
+version = "0.2.0"
+description = "Python client for the codegraff agent — drives `graff --json` over stdio. Constants auto-generated from `graff --schema`."
 requires-python = ">=3.8"
 license = { text = "BSD-3-Clause" }
+keywords = ["codegraff", "graff", "agent", "llm", "harness", "sdk"]
+
+[project.urls]
+Homepage = "https://codegraff.com"
+Repository = "https://github.com/justrach/codegraff"
 
 [tool.setuptools]
 py-modules = ["harness_sdk"]
