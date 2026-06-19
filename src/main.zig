@@ -3606,7 +3606,10 @@ fn updateCommand(
 
     // Delegate download/codesign/atomic swap to install.sh. Inherit our stdio
     // so its progress (and any sudo prompt) reaches the terminal directly.
-    const cmd = try std.fmt.allocPrint(arena, "curl -fsSL {s} | HARNESS_NO_GRAFF=1 sh", .{install_url});
+    // "set -o pipefail" is required: without it, a failed "curl" is masked
+    // by the right-hand "sh" exiting 0 on EOF, and the pipeline reports
+    // success while installing nothing — silently.
+    const cmd = try std.fmt.allocPrint(arena, "set -o pipefail; curl -fsSL {s} | HARNESS_NO_GRAFF=1 sh", .{install_url});
     var child = std.process.spawn(io, .{ .argv = &.{ "/bin/sh", "-c", cmd } }) catch |err|
         std.process.fatal("update: could not launch installer: {t}", .{err});
     const term = child.wait(io) catch std.process.fatal("update: installer did not exit cleanly", .{});
