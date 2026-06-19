@@ -1,76 +1,44 @@
 name: sdk
 
-# Regenerate the TS + Python SDKs from `graff --schema` on every SDK release tag
-# (sdk-v*), so they never drift from the binary, then publish to npm + PyPI via
-# OIDC trusted publishing (no tokens). workflow_dispatch stops at the artifact.
+# Publish the committed SDKs to npm + PyPI via OIDC trusted publishing (no
+# tokens) on every sdk-v* tag. Regenerate locally (python3 sdk/generate.py)
+# before tagging — this ships sdk/ as committed.
 on:
   push:
     tags: ["sdk-v*"]
-  workflow_dispatch: {}
 
 permissions:
-  id-token: write   # OIDC trusted publishing (npm + PyPI)
-  contents: read    # checkout
+  id-token: write
+  contents: read
 
 jobs:
-  generate:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-
-      - name: Build harness
-        run: zig build
-
-      - name: Generate SDKs from --schema
-        run: |
-          ./zig-out/bin/graff --schema > schema.json
-          python3 sdk/generate.py --schema schema.json
-
-      - name: Verify nothing drifted (generated == committed)
-        run: git diff --exit-code sdk/ || (echo "::error::SDKs are stale — run sdk/generate.py and commit" && exit 1)
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sdks
-          path: |
-            sdk/ts
-            sdk/py
-            schema.json
-
-      # --- Publish via OIDC trusted publishing (NO tokens) ---
-      # Fires only on sdk-v* tags. Requires trusted publishers configured for
-      # repo justrach/codegraff + workflow sdk.yml on BOTH npmjs.com and pypi.org.
-      - uses: actions/setup-node@v4
-        if: ${{ startsWith(github.ref, 'refs/tags/sdk-v') }}
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-      - name: Publish TS SDK to npm (OIDC + provenance)
-        if: ${{ startsWith(github.ref, 'refs/tags/sdk-v') }}
-        working-directory: sdk/ts
-        run: |
-          npm install -g npm@latest   # trusted publishing needs npm >= 11.5.1
-          npm version "${GITHUB_REF_NAME#sdk-v}" --no-git-tag-version --allow-same-version
-          npm publish --access public
-
+      # PyPI first: if its trusted publisher isn't live, npm won't have shipped.
       - uses: actions/setup-python@v5
-        if: ${{ startsWith(github.ref, 'refs/tags/sdk-v') }}
         with:
           python-version: "3.12"
-      - name: Build Python SDK (codegraff)
-        if: ${{ startsWith(github.ref, 'refs/tags/sdk-v') }}
+      - name: Build + publish codegraff (PyPI, OIDC)
         working-directory: sdk/py
         run: |
           sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#sdk-v}\"/" pyproject.toml
-          python3 -m pip install build
+          python3 -m pip install --quiet build
           python3 -m build
-      - name: Publish Python SDK to PyPI (OIDC)
-        if: ${{ startsWith(github.ref, 'refs/tags/sdk-v') }}
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: sdk/py/dist
+          skip-existing: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Publish @codegraff/sdk (npm, OIDC + provenance)
+        working-directory: sdk/ts
+        run: |
+          npm install -g npm@latest
+          npm version "${GITHUB_REF_NAME#sdk-v}" --no-git-tag-version --allow-same-version
+          npm publish --access public
