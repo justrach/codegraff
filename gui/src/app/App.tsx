@@ -144,7 +144,7 @@ function AppShell() {
     sidebarAnimateTimeoutRef.current = window.setTimeout(() => {
       setIsSidebarAnimating(false);
       sidebarAnimateTimeoutRef.current = null;
-    }, 220);
+    }, 340);
   }, []);
   const openProvidersSettings = useCallback(() => {
     setIsDesktopSidebarVisible(true);
@@ -292,7 +292,7 @@ function AppShell() {
               collapsible
               collapsedSize={0}
               groupResizeBehavior="preserve-pixel-size"
-              className={`overflow-hidden${isSidebarAnimating ? " transition-[flex-grow] duration-200 ease-out" : ""}`}
+              className={`overflow-hidden${isSidebarAnimating ? " transition-[flex-grow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]" : ""}`}
               onResize={(size) => {
                 const nextIsVisible = size.inPixels > 0;
                 if (!nextIsVisible) {
@@ -324,7 +324,7 @@ function AppShell() {
               id="chat-panel"
               className={
                 isSidebarAnimating
-                  ? "transition-[flex-grow] duration-200 ease-out"
+                  ? "transition-[flex-grow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]"
                   : undefined
               }
             >

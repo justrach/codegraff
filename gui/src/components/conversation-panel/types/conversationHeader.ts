@@ -68,6 +68,9 @@ export interface ConversationDockviewHeaderActionsProps {
   onCloseChat?: () => void;
   onOpenPreview?: () => void;
   onOpenTerminal?: () => void;
+  onOpenChanges?: () => void;
+  isChangesOpen?: boolean;
+  isTerminalOpen?: boolean;
 }
 
 export interface ConversationDockviewTabProps {
@@ -75,26 +78,22 @@ export interface ConversationDockviewTabProps {
 }
 
 export interface ConversationHeaderActionsProps {
-  artifactCount?: number;
-  isArtifactsOpen?: boolean;
-  onToggleArtifacts?: () => void;
   canCloseChat?: () => boolean;
   canHandoffToLocal?: boolean;
   canHandoffToWorktree?: boolean;
-  isGitBusy: boolean;
   isHandoffBusy: boolean;
   isOpenTargetBusy: boolean;
   onCloseChat?: () => void;
   onHandoffToLocal?: () => void;
   onHandoffToWorktree?: () => void;
-  onOpenCommitDialog: () => void;
   onOpenPreview?: () => void;
   onOpenTerminal?: () => void;
-  onPush: () => Promise<void>;
+  onOpenChanges?: () => void;
+  isChangesOpen?: boolean;
+  isTerminalOpen?: boolean;
   onSelectOpenTarget: (appId: AppTargetId) => Promise<void>;
   openTargets: ReadonlyArray<AppTarget>;
   preferredAppId: AppTargetId;
-  showGitActions?: boolean;
 }
 
 export interface ChatHandoffDialogProps {
@@ -116,9 +115,6 @@ export interface ConversationPanelAlertsProps {
 
 export interface ConversationPanelHeaderProps {
   binding?: ChatBinding | null;
-  artifactCount?: number;
-  isArtifactsOpen?: boolean;
-  onToggleArtifacts?: () => void;
   canCloseChat?: () => boolean;
   onCloseChat?: () => void;
   onOpenPreview?: () => void;
