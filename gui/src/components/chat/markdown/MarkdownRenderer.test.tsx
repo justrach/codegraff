@@ -15,3 +15,37 @@ test("autolinks a bare URL in plain text into a clickable control", () => {
   expect(html).toContain("<button");
   expect(html).toContain("https://react.dev/learn");
 });
+
+test("renders unsafe markdown link schemes as plain text", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text="[click me](javascript:alert(1)) and [payload](data:text/html,test)" />,
+  );
+
+  expect(html).toContain("click me");
+  expect(html).toContain("payload");
+  expect(html).not.toContain("<a");
+  expect(html).not.toContain("href=");
+  expect(html).not.toContain("javascript:");
+  expect(html).not.toContain("data:text/html");
+});
+
+test("allows explicit https and mailto markdown links", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text="[docs](https://react.dev/learn) [mail](mailto:team@example.com)" />,
+  );
+
+  expect(html).toContain('href="https://react.dev/learn"');
+  expect(html).toContain('href="mailto:team@example.com"');
+});
+
+test("allows markdown links to workspace file paths", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer
+      text="[source](src/app.ts) [absolute](/Users/example/project/src/app.ts)"
+      workspacePath="/Users/example/project"
+    />,
+  );
+
+  expect(html).toContain('href="src/app.ts"');
+  expect(html).toContain('href="/Users/example/project/src/app.ts"');
+});
