@@ -158,6 +158,7 @@ const price_table = [_]ModelPrice{
     .{ .name = "kimi-k2.5", .in = 0.6, .out = 3, .cache = 0.06 },
     .{ .name = "grok-4.3", .in = 1.25, .out = 2.5, .cache = 0.3 },
     .{ .name = "grok-build", .in = 1, .out = 2, .cache = 0.1 },
+    .{ .name = "glm-5.2", .in = 1, .out = 3.2, .cache = 0.1 },
     .{ .name = "glm-5", .in = 1, .out = 3.2, .cache = 0.1 },
     .{ .name = "glm-4.7", .in = 0.6, .out = 2.2, .cache = 0.06 },
     .{ .name = "glm-4.5", .in = 0.6, .out = 2.2, .cache = 0.06 },
@@ -261,7 +262,7 @@ const provider_specs = [_]ProviderSpec{
     // OpenAI-format direct providers (matched to graff's provider.json).
     .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/chat/completions", .env_key = "KIMI_API_KEY", .default_model = "kimi-k2.7" },
     .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
-    .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5" },
+    .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
     // — it's the OAuth access token read from ~/.codex/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
@@ -316,6 +317,7 @@ const model_table = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "gpt-5.5", .context = 400_000 },
     .{ .provider = "codegraff", .name = "kimi-k2.6", .context = 262_144 },
     .{ .provider = "codegraff", .name = "grok-build", .context = 256_000 },
+    .{ .provider = "codegraff", .name = "glm-5.2", .context = 204_800 },
     .{ .provider = "codegraff", .name = "mimo-v2.5", .context = 128_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5-pro", .context = 128_000 },
     // kimi: the Kimi for Coding plan endpoint accepts versioned ids (and the
@@ -324,6 +326,7 @@ const model_table = [_]ModelInfo{
     .{ .provider = "kimi", .name = "kimi-k2.7", .context = 262_144 },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
+    .{ .provider = "zai", .name = "glm-5.2", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-5", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.7", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.5", .context = 131_072 },
