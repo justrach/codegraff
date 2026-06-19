@@ -52,8 +52,8 @@ function StatusRow({
 
 function StatusOutputRow({ text }: StatusOutputRowProps) {
   return (
-    <article className={`max-w-3xl min-w-0 select-text overflow-x-auto ${CHAT_BODY_TEXT_CLASS} text-muted-foreground`}>
-      <pre className="m-0 max-w-full overflow-x-auto whitespace-pre font-mono leading-6">
+    <article className={`max-w-3xl min-w-0 select-text ${CHAT_BODY_TEXT_CLASS} text-muted-foreground`}>
+      <pre className="m-0 max-w-full whitespace-pre-wrap break-words font-mono leading-6">
         {text}
       </pre>
     </article>

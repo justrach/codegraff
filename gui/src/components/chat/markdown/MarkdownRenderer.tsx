@@ -7,7 +7,7 @@ import { CHAT_BODY_TEXT_CLASS } from "../constants/chatStyles";
 import {
   isExternalHttpUrl,
   resolveChatFilePathTarget,
-  rewriteChatFileUriHref,
+  sanitizeChatMarkdownHref,
 } from "../utils/chatLinks";
 import { openFilePathFromChat, openUrlFromChat } from "../utils/chatOpen";
 import { CodeBlock } from "./CodeBlock";
@@ -196,15 +196,11 @@ function LinkNode({
   node: Extract<MdInline, { type: "link" }>;
   workspacePath?: string | null;
 }) {
-  const href = rewriteChatFileUriHref(node.href) ?? node.href;
+  const href = sanitizeChatMarkdownHref(node.href, workspacePath);
 
   if (!href) {
     return (
-      <span className="text-[color:var(--accent)]">
-        <ChatInlineChildren workspacePath={workspacePath}>
-          {renderInline(node.children, workspacePath)}
-        </ChatInlineChildren>
-      </span>
+      <span>{renderInline(node.children, workspacePath)}</span>
     );
   }
 

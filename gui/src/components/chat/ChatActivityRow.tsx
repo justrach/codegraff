@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type ComponentType } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   Bot,
   ChevronDown,
   ChevronRight,
   FileText,
+  GitPullRequest,
   Globe,
   ListTodo,
   Loader2,
@@ -32,8 +33,10 @@ import type {
   ActivityOperationRowProps,
   ChatActivityRowProps,
 } from "./types/chatComponents";
+import type { ActivityOperation } from "./types/chatThread";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { formatOperationLabel } from "./utils/chatActivity";
+import { classifyUnknownToolName } from "./utils/classifyActivityResult";
 import { ChatInlineText } from "./ChatInlineText";
 import { ChatStatusLabel } from "./ChatStatusLabel";
 import { ActivityResultRenderer } from "./activity-results/ActivityResultRenderer";
@@ -49,32 +52,48 @@ const activityTextClassName = cn(
   CHAT_MUTED_TEXT_CLASS,
 );
 
-function operationIcon(kind: string): ComponentType<{ className?: string }> {
-  switch (kind) {
+function renderUnknownToolIcon(name: string, className: string): ReactNode {
+  switch (classifyUnknownToolName(name)) {
+    case "web":
+      return <Globe className={className} />;
+    case "github":
+      return <GitPullRequest className={className} />;
+    default:
+      return <Activity className={className} />;
+  }
+}
+
+function renderOperationIcon(
+  operation: ActivityOperation,
+  className: string,
+): ReactNode {
+  switch (operation.detail.kind) {
     case "file_read":
-      return FileText;
+      return <FileText className={className} />;
     case "file_update":
-      return Pencil;
+      return <Pencil className={className} />;
     case "shell":
-      return Terminal;
+      return <Terminal className={className} />;
     case "search":
     case "codebase_search":
-      return Search;
+      return <Search className={className} />;
     case "fetch":
-      return Globe;
+      return <Globe className={className} />;
     case "followup":
-      return MessageCircle;
+      return <MessageCircle className={className} />;
     case "plan":
-      return Map;
+      return <Map className={className} />;
     case "skill":
-      return Sparkles;
+      return <Sparkles className={className} />;
     case "task":
-      return Bot;
+      return <Bot className={className} />;
     case "todo_read":
     case "todo_write":
-      return ListTodo;
+      return <ListTodo className={className} />;
+    case "unknown":
+      return renderUnknownToolIcon(operation.name, className);
     default:
-      return Activity;
+      return <Activity className={className} />;
   }
 }
 
@@ -107,11 +126,14 @@ function ActivityOperationRow({
   const isExpandable = result != null;
   const label = formatOperationLabel(operation, workspacePath);
   const isCommand = operation.detail.kind === "shell";
-  const Icon = operationIcon(operation.detail.kind);
+  const icon = renderOperationIcon(
+    operation,
+    "size-3.5 shrink-0 text-muted-foreground/60",
+  );
 
   const content = (
     <>
-      <Icon className="size-3.5 shrink-0 text-muted-foreground/60" />
+      {icon}
       <span className="min-w-0">
         {isCommand ? (
           <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
