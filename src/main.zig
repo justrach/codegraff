@@ -3504,6 +3504,7 @@ const usage_text =
     \\  graff --schema                   print the machine-readable interface (SDK codegen)
     \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
     \\                                   (--host/--port/--token; sessions are --json children)
+    \\  graff update [--force|--check]   update graff to the latest GitHub release
     \\
     \\flags:
     \\  --model <name>   start on this model (same fuzzy resolution as /model)
@@ -3530,6 +3531,89 @@ const usage_text =
     \\
 ;
 
+/// `graff update [--force|--check]` — bring the installed binary up to the
+/// latest GitHub release. Checks the release tag first and skips when already
+/// current (unless --force); --check only reports, never installs. The actual
+/// download, codesign, and atomic binary swap are delegated to install.sh
+/// (curl | sh) — that platform-specific logic already lives there, so we don't
+/// reimplement it. HARNESS_NO_GRAFF=1 keeps the installer from also pulling in
+/// the companion suite: an update touches only graff itself.
+fn updateCommand(
+    io: Io,
+    gpa: Allocator,
+    arena: Allocator,
+    environ: *const std.process.Environ.Map,
+    force: bool,
+    check_only: bool,
+) !void {
+    const repo_api = "https://api.github.com/repos/justrach/codegraff/releases/latest";
+    const install_url = environ.get("GRAFF_INSTALL_URL") orelse environ.get("HARNESS_INSTALL_URL") orelse
+        "https://github.com/justrach/codegraff/releases/latest/download/install.sh";
+
+    var obuf: [4096]u8 = undefined;
+    var ow = Io.File.stdout().writer(io, &obuf);
+    const out = &ow.interface;
+
+    // current version, leading 'v' stripped so the comparison ignores tag style
+    const cur = std.mem.trimStart(u8, harness_version, "v");
+
+    // Query the latest release tag. GitHub's API requires a User-Agent; the
+    // Accept header pins the v3 JSON response. Any failure → null, handled below.
+    const latest_tag: ?[]const u8 = blk: {
+        var client: std.http.Client = .{ .allocator = gpa, .io = io };
+        defer client.deinit();
+        var aw: Io.Writer.Allocating = .init(arena);
+        const extra = [_]std.http.Header{.{ .name = "Accept", .value = "application/vnd.github+json" }};
+        const res = client.fetch(.{
+            .location = .{ .url = repo_api },
+            .method = .GET,
+            .response_writer = &aw.writer,
+            .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
+            .extra_headers = &extra,
+        }) catch break :blk null;
+        if (@intFromEnum(res.status) != 200) break :blk null;
+        const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch break :blk null;
+        if (v != .object) break :blk null;
+        const t = v.object.get("tag_name") orelse break :blk null;
+        break :blk if (t == .string) t.string else null;
+    };
+
+    if (latest_tag) |tag| {
+        const latest = std.mem.trimStart(u8, tag, "v");
+        const up_to_date = std.mem.eql(u8, cur, latest);
+        if (check_only) {
+            if (up_to_date)
+                try out.print("graff is up to date (v{s})\n", .{cur})
+            else
+                try out.print("update available: v{s} → v{s}  (run `graff update`)\n", .{ cur, latest });
+            try out.flush();
+            return;
+        }
+        if (up_to_date and !force) {
+            try out.print("graff is already up to date (v{s})\n", .{cur});
+            try out.flush();
+            return;
+        }
+        try out.print("updating graff v{s} → v{s}…\n", .{ cur, latest });
+    } else {
+        // Version check failed (offline / rate-limited / bad response). For
+        // --check that's a hard error; otherwise fall through to the installer,
+        // which fetches the latest release on its own.
+        if (check_only) std.process.fatal("update check failed — could not reach GitHub", .{});
+        try out.writeAll("could not determine latest version; running installer anyway…\n");
+    }
+    try out.flush();
+
+    // Delegate download/codesign/atomic swap to install.sh. Inherit our stdio
+    // so its progress (and any sudo prompt) reaches the terminal directly.
+    const cmd = try std.fmt.allocPrint(arena, "curl -fsSL {s} | HARNESS_NO_GRAFF=1 sh", .{install_url});
+    var child = std.process.spawn(io, .{ .argv = &.{ "/bin/sh", "-c", cmd } }) catch |err|
+        std.process.fatal("update: could not launch installer: {t}", .{err});
+    const term = child.wait(io) catch std.process.fatal("update: installer did not exit cleanly", .{});
+    if (term != .exited or term.exited != 0)
+        std.process.fatal("update: installer failed — re-run: curl -fsSL {s} | sh", .{install_url});
+}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -3547,6 +3631,8 @@ pub fn main(init: std.process.Init) !void {
     var help_flag = false;
     var version_flag = false;
     var print_flag = false;
+    var update_force = false; // graff update --force
+    var update_check = false; // graff update --check
     var model_flag: ?[]const u8 = null;
     var system_prompt_flag: ?[]const u8 = null;
     var append_system_flag: ?[]const u8 = null;
@@ -3580,6 +3666,10 @@ pub fn main(init: std.process.Init) !void {
                     version_flag = true;
                 } else if (std.mem.eql(u8, arg, "--print") or std.mem.eql(u8, arg, "-p")) {
                     print_flag = true;
+                } else if (std.mem.eql(u8, arg, "--force")) {
+                    update_force = true;
+                } else if (std.mem.eql(u8, arg, "--check")) {
+                    update_check = true;
                 } else if (std.mem.eql(u8, arg, "--model")) {
                     const mv = it.next() orelse std.process.fatal("--model needs a value — harness --help", .{});
                     model_flag = try arena.dupe(u8, mv);
@@ -3614,7 +3704,7 @@ pub fn main(init: std.process.Init) !void {
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     const is_subcommand = positionals.items.len > 0 and
         (std.mem.eql(u8, positionals.items[0], "login") or std.mem.eql(u8, positionals.items[0], "key") or
-            std.mem.eql(u8, positionals.items[0], "serve"));
+            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update"));
     var oneshot_prompt: ?[]const u8 = null;
     if (!is_subcommand and positionals.items.len > 0) {
         oneshot_prompt = try std.mem.join(arena, " ", positionals.items);
@@ -3664,6 +3754,14 @@ pub fn main(init: std.process.Init) !void {
             .system_prompt = system_prompt_flag,
             .append_system_prompt = append_system_flag,
         }, exe);
+        return;
+    }
+
+    // `harness update [--force|--check]`: self-update to the latest GitHub
+    // release. Version-checked (skips if already current), reuses install.sh
+    // for the actual download/codesign/atomic swap. Exits after.
+    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "update")) {
+        try updateCommand(io, gpa, arena, init.environ_map, update_force, update_check);
         return;
     }
 
