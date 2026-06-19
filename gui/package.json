@@ -10,7 +10,7 @@
     "gen:desktop-contracts": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --example generate_desktop_contracts",
     "build:deps": "bun run --filter '@codegraff/diffs' build",
     "build": "bun run build:deps && bun run gen:desktop-contracts && tsc -b && vite build",
-    "lint": "bun run gen:desktop-contracts && eslint .",
+    "lint": "bun run build:deps && bun run gen:desktop-contracts && eslint .",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "bun test"

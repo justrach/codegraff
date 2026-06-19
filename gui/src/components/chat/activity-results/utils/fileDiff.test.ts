@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  buildRenderableFileDiffPatch,
-  getFileDiffPatchStats,
-} from "./fileDiff";
+import { getPatchStats } from "@codegraff/diffs";
+
+import { buildRenderableFileDiffPatch } from "./fileDiff";
 
 describe("fileDiff", () => {
   test("converts excerpt-style file diffs into unified git patches", () => {
@@ -19,7 +18,7 @@ describe("fileDiff", () => {
     expect(patch).toContain(" const before = true;");
     expect(patch).toContain("-removed();");
     expect(patch).toContain("+added();");
-    expect(getFileDiffPatchStats(patch)).toEqual({ additions: 1, deletions: 1 });
+    expect(getPatchStats(patch)).toEqual({ additions: 1, deletions: 1 });
   });
 
   test("keeps surrounding edits when an excerpt contains an unparseable gap line", () => {
@@ -66,7 +65,7 @@ describe("fileDiff", () => {
   test("leaves a byte-summary untouched so it routes to the placeholder path", () => {
     const summary = "wrote 42 bytes to config.json";
     expect(buildRenderableFileDiffPatch("config.json", summary)).toBe(summary);
-    expect(getFileDiffPatchStats(summary)).toBeNull();
+    expect(getPatchStats(summary)).toBeNull();
   });
 
   test("keeps existing unified patches unchanged", () => {
@@ -80,6 +79,6 @@ describe("fileDiff", () => {
     ].join("\n");
 
     expect(buildRenderableFileDiffPatch("src/example.ts", patch)).toBe(patch);
-    expect(getFileDiffPatchStats(patch)).toEqual({ additions: 1, deletions: 1 });
+    expect(getPatchStats(patch)).toEqual({ additions: 1, deletions: 1 });
   });
 });
