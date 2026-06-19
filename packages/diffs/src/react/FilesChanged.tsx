@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 
 import { PatchDiff, type PatchDiffOptions } from "./PatchDiff";
 
@@ -25,7 +25,7 @@ export interface FilesChangedProps {
   emptyState?: ReactNode;
 }
 
-function FileRow({ item, diffOptions }: { item: FilesChangedItem; diffOptions?: PatchDiffOptions }) {
+const FileRow = memo(function FileRow({ item, diffOptions }: { item: FilesChangedItem; diffOptions?: PatchDiffOptions }) {
   const [open, setOpen] = useState(item.defaultOpen ?? false);
   return (
     <div className={`cgd-fc-row${open ? " cgd-fc-row--open" : ""}`}>
@@ -58,7 +58,7 @@ function FileRow({ item, diffOptions }: { item: FilesChangedItem; diffOptions?: 
       ) : null}
     </div>
   );
-}
+});
 
 export function FilesChanged({ files, className, diffOptions, emptyState }: FilesChangedProps) {
   const rootClassName = className != null ? `cgd-fc ${className}` : "cgd-fc";

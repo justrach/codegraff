@@ -40,7 +40,9 @@ function finalizeFile(file: FileDiff): FileDiff {
  */
 export function parsePatch(patch: string): ParsedPatch {
   const files: FileDiff[] = [];
-  const lines = patch.split("\n");
+  // Normalize CRLF so Windows-style patches don't leak a trailing "\r" into
+  // every line's text and the hunk header.
+  const lines = patch.replace(/\r\n/g, "\n").split("\n");
 
   let current: FileDiff | null = null;
   let currentHunk: DiffHunk | null = null;

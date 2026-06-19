@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useMemo, type ReactNode } from "react";
 
 import { languageFromPath, tokenizeLine, type Language } from "../highlight";
 import type { DiffHunk, DiffLine, DiffSegment, FileDiff } from "../types";
@@ -102,7 +102,10 @@ function HunkRows({
   lineDiffType: LineDiffType;
   hunkIndex: number;
 }) {
-  const lines = lineDiffType === "word" ? applyWordDiff(hunk.lines) : hunk.lines;
+  const lines = useMemo(
+    () => (lineDiffType === "word" ? applyWordDiff(hunk.lines) : hunk.lines),
+    [hunk, lineDiffType],
+  );
   return (
     <>
       <div className="cgd-line cgd-line--hunk" role="row">

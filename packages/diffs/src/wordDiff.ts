@@ -19,6 +19,19 @@ export function diffWords(before: string, after: string): {
   const n = a.length;
   const m = b.length;
 
+  // The LCS table is O(n·m) in time and memory. A single long minified/bundled
+  // line pair (tens of thousands of symbols each) would allocate billions of
+  // cells and hang/OOM the tab — and this runs synchronously during render.
+  // Bail out to a single removed/added segment when the pairing is too large;
+  // the line still renders, just without intra-line word highlighting.
+  const LCS_CELL_BUDGET = 200_000;
+  if (n * m > LCS_CELL_BUDGET) {
+    return {
+      before: [{ kind: "removed", value: before }],
+      after: [{ kind: "added", value: after }],
+    };
+  }
+
   // LCS table.
   const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i -= 1) {
