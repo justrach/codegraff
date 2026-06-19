@@ -235,7 +235,7 @@ function buildConversationSummariesByKey(workspaces: WorkspaceSession[]) {
   return byKey;
 }
 
-function areSelectionsEqual(
+export function areSelectionsEqual(
   left: WorkspaceBoardSelection,
   right: WorkspaceBoardSelection,
 ): boolean {

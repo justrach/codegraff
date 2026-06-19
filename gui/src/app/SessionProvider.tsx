@@ -17,6 +17,7 @@ import {
 } from "./sessionClientActions";
 import {
   beginConversationSelectionRequest,
+  areSelectionsEqual,
   ensureConversationViewLoaded,
   ensureWorkspacePromptSettingsLoaded,
   ensureWorkspaceRuntimeStatusLoaded,
@@ -421,13 +422,24 @@ export function SessionProvider({ children }: SessionProviderProps) {
         const previousSelection = sessionStore.getState().selection;
 
         const binding = { conversationId, workspacePath } satisfies ChatBinding;
+        const optimisticSelection = {
+          kind: "single-chat",
+          chat: binding,
+        } as const;
 
         ensureWorkspaceMeta(workspacePath);
 
-        sessionStore.getState().setBoardSelection({
-          kind: "single-chat",
-          chat: binding,
-        });
+        sessionStore.getState().setBoardSelection(optimisticSelection);
+
+        const revertOptimisticSelection = () => {
+          const store = sessionStore.getState();
+          if (
+            isLatestConversationSelectionRequest(requestId) &&
+            areSelectionsEqual(store.selection, optimisticSelection)
+          ) {
+            store.setBoardSelection(previousSelection);
+          }
+        };
 
         try {
           const snapshot = await desktopClient.selectConversation(
@@ -446,16 +458,14 @@ export function SessionProvider({ children }: SessionProviderProps) {
             snapshot.activeConversationId === conversationId &&
             !snapshotHasConversationView(snapshot, binding)
           ) {
-            sessionStore.getState().setBoardSelection(previousSelection);
+            revertOptimisticSelection();
             return;
           }
 
           applySessionSnapshot(snapshot);
           ensureWorkspaceMeta(workspacePath, { forceRuntimeStatus: true });
         } catch {
-          if (isLatestConversationSelectionRequest(requestId)) {
-            sessionStore.getState().setBoardSelection(previousSelection);
-          }
+          revertOptimisticSelection();
           return;
         }
       },

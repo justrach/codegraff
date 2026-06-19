@@ -49,12 +49,14 @@ let lastStopPromptInput:
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
 
-  const promise = new Promise<T>((nextResolve) => {
+  const promise = new Promise<T>((nextResolve, nextReject) => {
     resolve = nextResolve;
+    reject = nextReject;
   });
 
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function createSnapshot(
@@ -417,6 +419,61 @@ describe("SessionProvider", () => {
         workspacePath: "/workspace/codegraff-gui",
       },
       kind: "single-chat",
+    });
+  });
+
+  test("failed conversation selection does not overwrite newer navigation", async () => {
+    sessionStore.getState().setBoardSelection({
+      chat: {
+        conversationId: "chat-1",
+        workspacePath: "/workspace/codegraff-gui",
+      },
+      kind: "single-chat",
+    });
+    const selectionRequest = deferred<SessionSnapshot>();
+    selectConversationImpl = async () => await selectionRequest.promise;
+
+    let capturedActions: SessionActionsContextValue | null = null;
+
+    function CaptureActions() {
+      capturedActions = useContext(SessionActionsContext);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      <SessionProvider>
+        <CaptureActions />
+      </SessionProvider>,
+    );
+
+    if (capturedActions == null) {
+      throw new Error("Expected session actions to be available");
+    }
+
+    const actions = capturedActions as SessionActionsContextValue;
+    const selectPromise = actions.selectConversation("/workspace/other", "chat-9");
+
+    expect(sessionStore.getState().selection).toEqual({
+      chat: {
+        conversationId: "chat-9",
+        workspacePath: "/workspace/other",
+      },
+      kind: "single-chat",
+    });
+
+    await actions.startNewChat();
+
+    expect(sessionStore.getState().selection).toEqual({
+      kind: "workspace-draft",
+      workspacePath: "/workspace/managed-chat",
+    });
+
+    selectionRequest.reject(new Error("selection failed"));
+    await selectPromise;
+
+    expect(sessionStore.getState().selection).toEqual({
+      kind: "workspace-draft",
+      workspacePath: "/workspace/managed-chat",
     });
   });
 
