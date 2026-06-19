@@ -3764,6 +3764,10 @@ pub fn main(init: std.process.Init) !void {
     // release. Version-checked (skips if already current), reuses install.sh
     // for the actual download/codesign/atomic swap. Exits after.
     if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "update")) {
+        // --check never installs, so --force has no effect on it — reject the
+        // contradictory combination up front rather than silently ignoring one.
+        if (update_force and update_check)
+            std.process.fatal("--force and --check are mutually exclusive — use `graff update` (without --check) to install", .{});
         try updateCommand(io, gpa, arena, init.environ_map, update_force, update_check);
         return;
     }
