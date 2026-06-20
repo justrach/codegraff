@@ -447,7 +447,11 @@ impl RuntimeManager {
             bash_command(),
             command("compact", "Compact current conversation.", true),
             command("workspace-status", "Show git status.", true),
-            command("ultracode", "Toggle persistent ultracode (multi-agent workflow) mode.", true),
+            command(
+                "ultracode",
+                "Toggle persistent ultracode (multi-agent workflow) mode.",
+                true,
+            ),
         ])
     }
 
@@ -520,7 +524,10 @@ impl RuntimeManager {
             // after a planning-mode turn completes (gate keys off "muse").
             conversation.request_agent_ids.insert(
                 request_id.clone(),
-                input.agent_id.clone().unwrap_or_else(|| "forge".to_string()),
+                input
+                    .agent_id
+                    .clone()
+                    .unwrap_or_else(|| "forge".to_string()),
             );
             should_queue = !conversation.active_request_ids.is_empty();
             if should_queue {
@@ -1021,7 +1028,9 @@ impl RuntimeManager {
                 continue;
             };
             match event.get("type").and_then(serde_json::Value::as_str) {
-                Some("model" | "compact" | "mode" | "agent" | "effort" | "fast" | "ultracode") => break event,
+                Some("model" | "compact" | "mode" | "agent" | "effort" | "fast" | "ultracode") => {
+                    break event;
+                }
                 Some("error") => {
                     let message = event
                         .get("message")
@@ -1115,7 +1124,8 @@ impl RuntimeManager {
                     conversation.map(|c| c.ultracode_enabled).unwrap_or(false),
                 )
             };
-            let session = spawn_graff_session(workspace_path, model_arg.as_deref())?;
+            let session =
+                spawn_graff_session(workspace_path, model_arg.as_deref(), conversation_id)?;
             sessions.insert(conversation_id.to_string(), session);
             drop(sessions);
             if let Some(agent_id) = active_agent_id.filter(|id| id != "forge") {
@@ -2374,9 +2384,9 @@ fn conversations_store_path() -> Option<PathBuf> {
     })
 }
 
-/// Loads persisted transcripts so past chats survive a restart. Live `graff`
-/// sessions are not restored — continuing a loaded chat starts a fresh session
-/// without the model's prior context (true resume needs a CLI protocol change).
+/// Loads persisted transcripts so past chats survive a restart. Continuing a
+/// chat now spawns `graff --json --resume <conversation_id>`, so new/updated
+/// chats also regain engine-side model context when their session file exists.
 fn load_persisted_conversations() -> HashMap<String, ConversationState> {
     let Some(path) = conversations_store_path() else {
         return HashMap::new();
@@ -2539,7 +2549,9 @@ fn login_shell_env() -> &'static std::collections::HashMap<String, String> {
         std::thread::spawn(move || {
             // -il = interactive login shell: sources the login profile AND
             // .zshrc/.bashrc, where most users export their *_API_KEY.
-            let out = std::process::Command::new(&shell).args(["-ilc", "env"]).output();
+            let out = std::process::Command::new(&shell)
+                .args(["-ilc", "env"])
+                .output();
             let _ = tx.send(out);
         });
         let mut map = std::collections::HashMap::new();
@@ -2561,16 +2573,23 @@ fn bash_command() -> CommandDescriptorDto {
         argument_hint: Some("<command>".into()),
         ..command("bash", "Run a shell command in the workspace.", true)
     }
-
 }
 
 /// Spawns a persistent `graff --json` child for a conversation. `--yolo` skips
 /// permission prompts (the GUI has no approval surface yet); stderr is discarded
 /// since the protocol carries errors as `error` events on stdout.
-fn spawn_graff_session(workspace_path: &str, model: Option<&str>) -> Result<GraffSession> {
+fn spawn_graff_session(
+    workspace_path: &str,
+    model: Option<&str>,
+    conversation_id: &str,
+) -> Result<GraffSession> {
     let bin = codegraff_binary();
     let mut command = tokio::process::Command::new(&bin);
-    command.arg("--json").arg("--yolo");
+    command
+        .arg("--json")
+        .arg("--yolo")
+        .arg("--resume")
+        .arg(conversation_id);
     if let Some(model) = model.filter(|model| !model.is_empty() && *model != "default") {
         command.arg("--model").arg(model);
     }
@@ -3853,13 +3872,19 @@ mod tests {
     #[cfg(unix)]
     fn format_command_output_empty_is_no_output() {
         // stdout+stderr empty, exit 0 -> the "(no output)" placeholder.
-        assert_eq!(format_command_output(&mk_output(b"", b"", 0)), "(no output)");
+        assert_eq!(
+            format_command_output(&mk_output(b"", b"", 0)),
+            "(no output)"
+        );
     }
 
     #[test]
     #[cfg(unix)]
     fn format_command_output_stdout_only_unchanged() {
-        assert_eq!(format_command_output(&mk_output(b"hello\n", b"", 0)), "hello\n");
+        assert_eq!(
+            format_command_output(&mk_output(b"hello\n", b"", 0)),
+            "hello\n"
+        );
     }
 
     #[test]
@@ -3887,7 +3912,6 @@ mod tests {
         // raw status 2 -> WIFSIGNALED -> status.code() is None.
         assert!(format_command_output(&mk_output(b"", b"", 2)).contains("[terminated abnormally]"));
     }
-
 
     fn followup(
         id: &str,

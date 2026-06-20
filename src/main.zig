@@ -2224,7 +2224,7 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -3998,6 +3998,32 @@ fn writeAnthropicMessages(s: *std.json.Stringify, messages: std.json.Array, cach
     try s.endArray();
 }
 
+fn writeOpenAIMessageNormalized(s: *std.json.Stringify, m: Value) !void {
+    if (m != .object) return s.write(m);
+    const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
+    const is_assistant_tool_call = std.mem.eql(u8, role, "assistant") and m.object.get("tool_calls") != null;
+    const null_content = if (m.object.get("content")) |v| v == .null else false;
+    if (!is_assistant_tool_call or !null_content) return s.write(m);
+
+    try s.beginObject();
+    var it = m.object.iterator();
+    var wrote_content = false;
+    while (it.next()) |kv| {
+        try s.objectField(kv.key_ptr.*);
+        if (std.mem.eql(u8, kv.key_ptr.*, "content")) {
+            try s.write("");
+            wrote_content = true;
+        } else {
+            try s.write(kv.value_ptr.*);
+        }
+    }
+    if (!wrote_content) {
+        try s.objectField("content");
+        try s.write("");
+    }
+    try s.endObject();
+}
+
 const harness_version: []const u8 = @import("build_options").version;
 
 /// OTLP endpoint baked into release builds (-Dtelemetry-endpoint); "" in dev
@@ -4023,6 +4049,9 @@ const usage_text =
     \\
     \\flags:
     \\  --model <name>   start on this model (same fuzzy resolution as /model)
+    \\  --resume <name>  resume/autosave <name>.session.json
+    \\  --new            start a fresh autosaved session
+    \\  --no-resume      do not auto-load last.session.json
     \\  --system-prompt <text>          replace the built-in system prompt
     \\  --append-system-prompt <text>   append extra text to the system prompt
     \\  --yolo           skip all permission prompts for the session
@@ -4264,6 +4293,9 @@ pub fn main(init: std.process.Init) !void {
     var host_flag: []const u8 = "127.0.0.1"; // harness serve
     var port_flag: u16 = 8787; // harness serve
     var token_flag: ?[]const u8 = null; // harness serve
+    var resume_flag: ?[]const u8 = null; // restore/save this named session
+    var no_resume_flag = false; // start without auto-loading last.session.json
+    var new_session_flag = false; // start a fresh autosaved session
     var positionals: std.ArrayList([]const u8) = .empty;
     {
         var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
@@ -4295,6 +4327,13 @@ pub fn main(init: std.process.Init) !void {
                     update_force = true;
                 } else if (std.mem.eql(u8, arg, "--check")) {
                     update_check = true;
+                } else if (std.mem.eql(u8, arg, "--resume")) {
+                    const rv = it.next() orelse std.process.fatal("--resume needs a session name — harness --help", .{});
+                    resume_flag = try arena.dupe(u8, rv);
+                } else if (std.mem.eql(u8, arg, "--no-resume")) {
+                    no_resume_flag = true;
+                } else if (std.mem.eql(u8, arg, "--new")) {
+                    new_session_flag = true;
                 } else if (std.mem.eql(u8, arg, "--model")) {
                     const mv = it.next() orelse std.process.fatal("--model needs a value — harness --help", .{});
                     model_flag = try arena.dupe(u8, mv);
@@ -4736,8 +4775,13 @@ pub fn main(init: std.process.Init) !void {
         .tools_openai = try renderRootTools(arena, .openai, &root_specs, mcp_tools),
         .tools_responses = try renderRootTools(arena, .responses, &root_specs, mcp_tools),
     };
+    root.session_name = if (resume_flag) |name| name else if (new_session_flag) try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(io)}) else "last";
     loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
     tracer.note("session", root.provider.model);
+
+    if (oneshot_prompt != null and resume_flag != null and !new_session_flag and !no_resume_flag) {
+        loadSession(&root, keys, arena, root.session_name) catch {};
+    }
 
     // One-shot print mode: run the single prompt to completion, print the
     // final text to stdout, exit. Tool progress goes to stderr (say() with no
@@ -4762,7 +4806,7 @@ pub fn main(init: std.process.Init) !void {
         if (CostTally.render(g_cost.snap(io), &uw)) {
             std.debug.print("[usage] {s}\n", .{uw.buffered()});
         } else |_| {}
-        saveSession(&root, arena, "last") catch |err| {
+        saveSession(&root, arena, root.session_name) catch |err| {
             std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
         };
         return;
@@ -4790,17 +4834,17 @@ pub fn main(init: std.process.Init) !void {
     var prev_turn_id: u64 = 0;
     var prev_prompt_fp: [16]u8 = promptFingerprint(root.systemPrompt());
 
-    // opencode-style auto-resume: a fresh process has a cold provider prompt
-    // cache, but last.session.json on disk survives — restore it so the
-    // conversation just continues. Best-effort: a missing/keyless/corrupt file
-    // silently starts fresh.
-    if (interactive and oneshot_prompt == null) {
-        if (loadSession(&root, keys, arena, "last")) |_| {
+    // opencode-style auto-resume: restore the selected autosave target so
+    // the conversation just continues. JSON/GUI sessions opt in via --resume.
+    // Best-effort: a missing/keyless/corrupt file silently starts fresh.
+    if (oneshot_prompt == null and !new_session_flag and !no_resume_flag and (interactive or resume_flag != null)) {
+        if (loadSession(&root, keys, arena, root.session_name)) |_| {
             if (root.messages.items.len > 0) {
                 // Estimate the restored context from the file size (~4 bytes/token).
-                const est: u64 = if (Io.Dir.cwd().statFile(io, "last" ++ session_ext, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
-                try out.print("↩ resumed last session — {d} message(s) on {s} · /clear for a fresh start\n", .{ root.messages.items.len, root.provider.model });
-                try out.flush();
+                const est_path = try std.fmt.allocPrint(arena, "{s}{s}", .{ root.session_name, session_ext });
+                const est: u64 = if (Io.Dir.cwd().statFile(io, est_path, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
+                if (!json_mode) try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ root.session_name, session_ext, root.messages.items.len, root.provider.model });
+                if (!json_mode) try out.flush();
                 // Cold cache: if the restored context is as large as what would
                 // trigger live compaction, the first turn would re-bill the whole
                 // thing — summarize up front instead.
@@ -4837,12 +4881,16 @@ pub fn main(init: std.process.Init) !void {
             (try in.takeDelimiter('\n')) orelse break;
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
+        const loop_prompt: ?[]const u8 = if (!json_mode and std.mem.startsWith(u8, line, "/loop "))
+            std.mem.trim(u8, line["/loop".len..], " \t")
+        else
+            null;
         if (!json_mode) {
             const l = if (line.len > 0 and line[0] == '/') line[1..] else line;
             if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
         }
 
-        if (!json_mode and line[0] == '/') {
+        if (!json_mode and line[0] == '/' and loop_prompt == null) {
             // Bare "/" on a TTY: open the filterable command menu.
             if (interactive and line.len == 1) {
                 if (listPicker(&root, arena, out, "Command ›", &command_menu)) |idx| {
@@ -4862,7 +4910,7 @@ pub fn main(init: std.process.Init) !void {
         // {"type":"score","prompt_sha":"...","score":0.7,"notes":"..."}
         // appends an evaluation record for an agent variant to the
         // trajectory archive (the DGM evaluation phase writing back).
-        const base_msg: []const u8 = if (json_mode) blk: {
+        const base_msg: []const u8 = if (loop_prompt) |lp| lp else if (json_mode) blk: {
             const parsed = std.json.parseFromSliceLeaky(Value, arena, line, .{ .allocate = .alloc_always }) catch {
                 root.emit(.{ .type = "error", .message = "invalid JSON (expect {\"type\":\"user\",\"text\":\"...\"})" });
                 continue;
@@ -5035,9 +5083,23 @@ pub fn main(init: std.process.Init) !void {
             break :blk text;
         } else line;
 
+        // Persistent goal steering is prepended to every normal/loop turn.
+        const goal_msg: []const u8 = if (root.goal) |goal| try std.fmt.allocPrint(arena,
+            \\{s}
+            \\
+            \\[harness goal: {s}]
+        , .{ base_msg, goal }) else base_msg;
+
+        // /loop asks the model to work autonomously through plan→act→verify.
+        const loop_msg: []const u8 = if (loop_prompt != null) try std.fmt.allocPrint(arena,
+            \\{s}
+            \\
+            \\[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps.]
+        , .{goal_msg}) else goal_msg;
+
         // Plan mode: steer the model to explore read-only and present a plan
         // (the gate enforces the read-only part regardless).
-        const msg: []const u8 = if (!plan_mode) base_msg else try std.fmt.allocPrint(arena,
+        const msg: []const u8 = if (!plan_mode) loop_msg else try std.fmt.allocPrint(arena,
             \\{s}
             \\
             \\[harness note: plan mode is ON — read-only. Explore with read-only
@@ -5045,7 +5107,7 @@ pub fn main(init: std.process.Init) !void {
             \\the changes themselves, sequence, risks) and ask the user to
             \\approve it. Do not write files or run mutating commands — the
             \\gate will deny them. The user toggles execution back on with /plan.]
-        , .{base_msg});
+        , .{loop_msg});
 
         // Promote a GUI `@[image]` attachment to a native vision block when the
         // model can see (otherwise it only gets the path and resorts to OCR).
@@ -5141,13 +5203,13 @@ pub fn main(init: std.process.Init) !void {
                 g_force_interrupt = false;
                 try out.print("{s}{s}{s}\n", .{ style.yellow, int_msg, style.reset });
                 try out.flush();
-                saveSession(&root, arena, "last") catch {};
+                saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
             error.ApiError => {
                 if (g_telem) |t| t.errorEvent("api", root.last_api_error orelse "api error");
                 if (json_mode) root.emit(.{ .type = "error", .message = root.last_api_error orelse "api error" });
-                saveSession(&root, arena, "last") catch {};
+                saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
             else => |e| {
@@ -5157,7 +5219,7 @@ pub fn main(init: std.process.Init) !void {
                 } else {
                     root.say("[turn aborted: {t}]\n", .{e}) catch {};
                 }
-                saveSession(&root, arena, "last") catch {};
+                saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
         };
@@ -5181,19 +5243,19 @@ pub fn main(init: std.process.Init) !void {
         // opencode-style continuous autosave: persist after every turn so a
         // crash or quit never loses the thread — last.session.json, the same
         // file /resume reads. Best-effort; a write failure never breaks the loop.
-        saveSession(&root, arena, "last") catch {};
+        saveSession(&root, arena, root.session_name) catch {};
     }
     // Final save on exit also captures command-driven edits since the last turn
     // (/clear, /rewind) so the next start resumes the true end state.
     if (!json_mode and root.messages.items.len > 0) {
-        saveSession(&root, arena, "last") catch |err| {
+        saveSession(&root, arena, root.session_name) catch |err| {
             out.print("{s}⚠ session save failed: {t}{s}\n", .{ style.yellow, err, style.reset }) catch {};
             out.flush() catch {};
         };
-        out.print("{s}↩ session saved → last{s}{s}\n", .{ style.dim, style.reset, session_ext }) catch {};
+        out.print("{s}↩ session saved → {s}{s}{s}\n", .{ style.dim, root.session_name, style.reset, session_ext }) catch {};
         out.flush() catch {};
     } else {
-        saveSession(&root, arena, "last") catch {};
+        saveSession(&root, arena, root.session_name) catch {};
     }
     try out.writeAll("\n");
     try out.flush();
@@ -5650,6 +5712,10 @@ const command_menu = [_]PickItem{
     .{ .name = "/model", .desc = "switch model/provider (picker)" },
     .{ .name = "/models", .desc = "list known models, context windows" },
     .{ .name = "/clear", .desc = "wipe the conversation, start fresh" },
+    .{ .name = "/new", .desc = "start a new autosaved session" },
+    .{ .name = "/rename", .desc = "rename the current session title" },
+    .{ .name = "/goal", .desc = "set/show persistent objective steering" },
+    .{ .name = "/loop", .desc = "run an autonomous plan→act→verify prompt" },
     .{ .name = "/bash", .desc = "run a shell command in the current workspace" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
     .{ .name = "/plan", .desc = "toggle plan mode (read-only, propose first)" },
@@ -5707,7 +5773,55 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.last_context_tokens = 0;
         root.last_cache_read = 0;
         root.todos.clearRetainingCapacity();
+        saveSession(root, arena, root.session_name) catch {};
         try out.writeAll("context cleared — fresh conversation\n");
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/new")) {
+        root.messages = std.json.Array.init(arena);
+        root.last_context_tokens = 0;
+        root.last_cache_read = 0;
+        root.todos.clearRetainingCapacity();
+        root.goal = null;
+        root.ultracode_mode = false;
+        root.session_title = null;
+        root.session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(root.io)});
+        saveSession(root, arena, root.session_name) catch {};
+        try out.print("new session → {s}{s}\n", .{ root.session_name, session_ext });
+        try out.flush();
+        return;
+    }
+    if (std.mem.startsWith(u8, line, "/rename")) {
+        const title = std.mem.trim(u8, line["/rename".len..], " \t");
+        if (title.len == 0) {
+            try out.writeAll("usage: /rename <title>\n");
+        } else {
+            root.session_title = try arena.dupe(u8, title);
+            saveSession(root, arena, root.session_name) catch {};
+            try out.print("session title → {s}\n", .{title});
+        }
+        try out.flush();
+        return;
+    }
+    if (std.mem.startsWith(u8, line, "/goal")) {
+        const text = std.mem.trim(u8, line["/goal".len..], " \t");
+        if (text.len == 0) {
+            if (root.goal) |goal| try out.print("Current goal: {s}\nClear it with /goal clear.\n", .{goal}) else try out.writeAll("No active goal. Set one with /goal <objective>.\n");
+        } else if (std.ascii.eqlIgnoreCase(text, "clear") or std.ascii.eqlIgnoreCase(text, "off")) {
+            root.goal = null;
+            saveSession(root, arena, root.session_name) catch {};
+            try out.writeAll("Goal cleared. Future turns will not get goal steering.\n");
+        } else {
+            root.goal = try arena.dupe(u8, text);
+            saveSession(root, arena, root.session_name) catch {};
+            try out.print("Goal set: {s}\nFuture turns in this session will include this objective as steering.\n", .{text});
+        }
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/loop")) {
+        try out.writeAll("usage: /loop <prompt> — run an autonomous plan→act→verify pass.\n");
         try out.flush();
         return;
     }
@@ -6165,7 +6279,12 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/ultracode") or std.mem.eql(u8, line, "/ultracode on") or std.mem.eql(u8, line, "/ultracode off")) {
         root.ultracode_mode = if (std.mem.eql(u8, line, "/ultracode on")) true else if (std.mem.eql(u8, line, "/ultracode off")) false else !root.ultracode_mode;
-        try out.print("ultracode mode: {s}\n", .{if (root.ultracode_mode) "on" else "off"});
+        if (root.ultracode_mode) {
+            ultracodeShine(out, root.io);
+            try out.writeAll("\xe2\x9a\xa1 multi-agent workflow mode engaged\n");
+        } else {
+            try out.writeAll("ultracode mode: off\n");
+        }
         try out.flush();
         return;
     }
@@ -6544,12 +6663,13 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.startsWith(u8, line, "/save")) {
         const arg = std.mem.trim(u8, line["/save".len..], " \t");
-        const name = if (arg.len == 0) "last" else arg;
+        const name = if (arg.len == 0) root.session_name else arg;
         saveSession(root, arena, name) catch |err| {
             try out.print("save failed: {t}\n", .{err});
             try out.flush();
             return;
         };
+        root.session_name = name;
         try out.print("saved session → {s}{s}\n", .{ name, session_ext });
         try out.flush();
         return;
@@ -6588,6 +6708,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return;
         };
+        root.session_name = name;
         try out.print("resumed {s}{s} — {d} message(s), {s} via {s}{s}\n", .{
             name,                                 session_ext, root.messages.items.len, root.provider.model, root.provider.id,
             if (root.strict) " (strict)" else "",
@@ -6608,7 +6729,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
             const base = entry.name[0 .. entry.name.len - session_ext.len];
-            try out.print("  {s}\n", .{base});
+            try out.print("  {s}{s}\n", .{ base, if (std.mem.eql(u8, base, root.session_name)) "  ← current" else "" });
             n += 1;
         }
         if (n == 0) try out.writeAll("(no saved sessions in cwd)\n");
@@ -6626,6 +6747,10 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /model <name>   switch model/provider, fuzzy match (e.g. "sonnet", "opus")
         \\  /models         list known models, context windows, compaction points
         \\  /clear          wipe the conversation and start fresh
+        \\  /new            start a fresh autosaved session
+        \\  /rename <title> set the current session title
+        \\  /goal [text]    set/show persistent objective steering; /goal clear clears
+        \\  /loop <prompt>  run an autonomous plan→act→verify pass
         \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
         \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
         \\  /login [tgt]    OAuth sign-in (no key to paste): codegraff | codex (alias oai) | kimi; bare → picker
@@ -6645,7 +6770,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
         \\  /image <path>   attach an image to your next message (vision models only)
         \\  /paste          attach the clipboard image — macOS; also Ctrl-V (⌘V can't be captured)
-        \\  /save [name]    write the conversation to <name>.session.json (default: last)
+        \\  /save [name]    write the conversation to <name>.session.json (default: current)
         \\  /resume [name]  restore a saved conversation (no arg → interactive picker)
         \\  /sessions       list saved sessions in the cwd
         \\  /todo           show the current task list
@@ -7807,6 +7932,29 @@ fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, args: 
     try out.writeAll("usage: graff key set <provider> <key>  |  graff key list\n");
     try out.flush();
 }
+
+fn sessionTitle(root: *Agent) []const u8 {
+    if (root.session_title) |title| return title;
+    for (root.messages.items) |m| {
+        if (m != .object) continue;
+        const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
+        if (!std.mem.eql(u8, role, "user")) continue;
+        if (m.object.get("content")) |c| switch (c) {
+            .string => |text| return utf8Prefix(std.mem.trim(u8, text, " \t\r\n"), 80),
+            .array => |arr| for (arr.items) |part| {
+                if (part == .object) {
+                    const typ = if (part.object.get("type")) |v| (if (v == .string) v.string else "") else "";
+                    if (std.mem.eql(u8, typ, "text")) {
+                        if (part.object.get("text")) |tv| if (tv == .string) return utf8Prefix(std.mem.trim(u8, tv.string, " \t\r\n"), 80);
+                    }
+                }
+            },
+            else => {},
+        };
+    }
+    return "Untitled session";
+}
+
 /// Save the conversation (messages + provider id/model + strict flag) to
 /// <name>.session.json in the cwd. The JSON message array is already the
 /// provider-native wire shape, so resume is a verbatim restore.
@@ -7821,6 +7969,14 @@ fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     try s.write(root.provider.model);
     try s.objectField("strict");
     try s.write(root.strict);
+    try s.objectField("ultracode_mode");
+    try s.write(root.ultracode_mode);
+    try s.objectField("goal");
+    if (root.goal) |goal| try s.write(goal) else try s.write(null);
+    try s.objectField("title");
+    if (root.session_title) |title| try s.write(title) else try s.write(sessionTitle(root));
+    try s.objectField("updated_ms");
+    try s.write(unixMs(root.io));
     try s.objectField("messages");
     try s.write(Value{ .array = root.messages });
     try s.endObject();
@@ -7842,10 +7998,16 @@ fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !vo
     const model = if (obj.get("model")) |v| v.string else return error.BadSession;
     const msgs = if (obj.get("messages")) |v| (if (v == .array) v.array else return error.BadSession) else return error.BadSession;
     const strict = if (obj.get("strict")) |v| (v == .bool and v.bool) else false;
+    const ultracode_mode = if (obj.get("ultracode_mode")) |v| (v == .bool and v.bool) else false;
+    const goal = if (obj.get("goal")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
+    const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
 
     root.provider = try keys.providerById(pid, model);
     root.messages = msgs;
     root.strict = strict;
+    root.ultracode_mode = ultracode_mode;
+    root.goal = goal;
+    root.session_title = title;
     root.last_context_tokens = 0;
     root.cap_new = false; // per-provider; relearn on rejection
     root.effort_rejected = false;
@@ -7935,6 +8097,9 @@ const Agent = struct {
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
     ultracode_mode: bool = false, // persistent ultracode (multi-agent workflow) mode (/ultracode)
+    goal: ?[]const u8 = null, // persistent objective steering (/goal)
+    session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
+    session_title: ?[]const u8 = null, // human-readable title/rename metadata
     sys_strict: []const u8 = main_system_prompt_strict,
     tools_anthropic: []const u8 = tools_anthropic_sub,
     tools_openai: []const u8 = tools_openai_sub,
@@ -9029,7 +9194,7 @@ const Agent = struct {
                 try s.objectField("content");
                 try s.write(self.systemPrompt());
                 try s.endObject();
-                for (self.messages.items) |m| try s.write(m);
+                for (self.messages.items) |m| try writeOpenAIMessageNormalized(&s, m);
                 try s.endArray();
                 // Reasoning-effort hint for OpenAI-compatible providers that
                 // honor it (codegraff gateway, deepseek). Mirrors the
