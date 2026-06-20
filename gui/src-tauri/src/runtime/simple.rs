@@ -42,6 +42,8 @@ struct ConversationState {
     /// (harness semantics). Surfaced to the GUI's task-progress dock.
     todos: Vec<SessionTodoDto>,
     goal: Option<String>,
+    /// Persistent ultracode (multi-agent workflow) mode, scoped to this chat.
+    ultracode_enabled: bool,
     updated_at: i64,
 }
 
@@ -445,6 +447,7 @@ impl RuntimeManager {
             bash_command(),
             command("compact", "Compact current conversation.", true),
             command("workspace-status", "Show git status.", true),
+            command("ultracode", "Toggle persistent ultracode (multi-agent workflow) mode.", true),
         ])
     }
 
@@ -484,6 +487,7 @@ impl RuntimeManager {
                     queued_prompts: VecDeque::new(),
                     active_agent_id,
                     plan_mode,
+                    ultracode_enabled: false,
                     todos: Vec::new(),
                     goal: None,
                     updated_at: now_millis(),
@@ -1017,7 +1021,7 @@ impl RuntimeManager {
                 continue;
             };
             match event.get("type").and_then(serde_json::Value::as_str) {
-                Some("model" | "compact" | "mode" | "agent" | "effort" | "fast") => break event,
+                Some("model" | "compact" | "mode" | "agent" | "effort" | "fast" | "ultracode") => break event,
                 Some("error") => {
                     let message = event
                         .get("message")
@@ -1057,6 +1061,7 @@ impl RuntimeManager {
                     messages: conversation.messages.clone(),
                     active_agent_id: conversation.active_agent_id.clone(),
                     plan_mode: conversation.plan_mode,
+                    ultracode_enabled: conversation.ultracode_enabled,
                     goal: conversation.goal.clone(),
                     updated_at: conversation.updated_at,
                 })
@@ -1095,7 +1100,7 @@ impl RuntimeManager {
         let model_arg = self.selected_model_arg().await;
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(conversation_id) {
-            let (active_agent_id, plan_mode, effort, fast) = {
+            let (active_agent_id, plan_mode, effort, fast, ultracode) = {
                 let state = self.state.lock().await;
                 let conversation = state.conversations.get(conversation_id);
                 (
@@ -1107,6 +1112,7 @@ impl RuntimeManager {
                         .unwrap_or(false),
                     state.selected_effort.clone(),
                     state.fast_enabled,
+                    conversation.map(|c| c.ultracode_enabled).unwrap_or(false),
                 )
             };
             let session = spawn_graff_session(workspace_path, model_arg.as_deref())?;
@@ -1137,6 +1143,13 @@ impl RuntimeManager {
                 self.send_control(
                     conversation_id,
                     serde_json::json!({ "type": "set_fast", "on": true }),
+                )
+                .await?;
+            }
+            if ultracode {
+                self.send_control(
+                    conversation_id,
+                    serde_json::json!({ "type": "set_ultracode", "on": true }),
                 )
                 .await?;
             }
@@ -1202,6 +1215,39 @@ impl RuntimeManager {
                 result_kind: CommandResultKindDto::Agents,
                 payload: Some(CommandPayloadDto::Agents(self.agents_payload().await)),
             }),
+            "ultracode" => {
+                let conversation_id = conversation_id.context("Missing conversation")?;
+                let now_on = {
+                    let mut state = self.state.lock().await;
+                    let conversation = state
+                        .conversations
+                        .get_mut(&conversation_id)
+                        .context("Conversation not found")?;
+                    conversation.ultracode_enabled = !conversation.ultracode_enabled;
+                    conversation.ultracode_enabled
+                };
+                self.persist_conversations().await;
+                if self.session_exists(&conversation_id).await {
+                    self.send_control(
+                        &conversation_id,
+                        serde_json::json!({ "type": "set_ultracode", "on": now_on }),
+                    )
+                    .await?;
+                }
+                let body = if now_on {
+                    "Ultracode mode enabled for this chat."
+                } else {
+                    "Ultracode mode disabled for this chat."
+                };
+                Ok(CommandRunResultDto {
+                    title: "/ultracode".into(),
+                    body: Some(body.into()),
+                    snapshot: None,
+                    saved_path: None,
+                    result_kind: CommandResultKindDto::Text,
+                    payload: None,
+                })
+            }
             "goal" => {
                 let _workspace = workspace_path.context("Missing workspace")?;
                 let conversation_id = conversation_id.context("Missing conversation")?;
@@ -1679,6 +1725,7 @@ impl RuntimeManager {
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
                 updated_at: now_millis(),
@@ -2267,6 +2314,8 @@ struct PersistedConversation {
     #[serde(default)]
     plan_mode: bool,
     #[serde(default)]
+    ultracode_enabled: bool,
+    #[serde(default)]
     goal: Option<String>,
     #[serde(default)]
     updated_at: i64,
@@ -2354,6 +2403,7 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
                     queued_prompts: VecDeque::new(),
                     active_agent_id: conversation.active_agent_id,
                     plan_mode: conversation.plan_mode,
+                    ultracode_enabled: conversation.ultracode_enabled,
                     todos: Vec::new(),
                     goal: conversation.goal,
                     updated_at: conversation.updated_at,
@@ -2469,7 +2519,7 @@ fn command(name: &str, usage: &str, requires_workspace: bool) -> CommandDescript
         is_agent_switch: false,
         execution_kind: CommandExecutionKindDto::Runnable,
         requires_workspace,
-        requires_conversation: matches!(name, "compact" | "goal" | "loop"),
+        requires_conversation: matches!(name, "compact" | "goal" | "loop" | "ultracode"),
         argument_hint: None,
         result_kind: CommandResultKindDto::Text,
     }
@@ -3956,6 +4006,7 @@ mod tests {
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
                 updated_at: 10,
@@ -4226,6 +4277,7 @@ mod tests {
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
                 updated_at: 10,
@@ -4243,6 +4295,7 @@ mod tests {
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
                 updated_at: 20,
