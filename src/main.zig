@@ -2630,12 +2630,14 @@ var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 // main thread, tool-join reads on the esc watch task — never concurrently
 // (the task is stopped and awaited before the main thread resumes).
 var g_steer_buf: std.ArrayList(u8) = .empty; // in-progress line (page-alloc)
-var g_steer_queue: std.ArrayList([]const u8) = .empty; // completed lines
+const SteerEntry = struct { text: []const u8, force: bool };
+var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
 var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
 var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
+var g_force_interrupt = false; // Ctrl-F force caused the last interrupt
 
 /// Pops the next queued steering prompt (FIFO), or null if none.
-fn popSteer() ?[]const u8 {
+fn popSteer() ?SteerEntry {
     if (g_steer_queue.items.len == 0) return null;
     return g_steer_queue.orderedRemove(0);
 }
@@ -4777,12 +4779,16 @@ pub fn main(init: std.process.Init) !void {
         // another, in place of reading a fresh line — Codex-style
         // follow-up queueing. (Empty in --json/GUI mode: no capture.)
         resetSteerPartial();
-        const steer_line: ?[]const u8 = popSteer();
-        defer if (steer_line) |s| std.heap.page_allocator.free(s);
-        const raw_line: []const u8 = if (steer_line) |s| blk: {
-            try out.print("{s}↳ steer ›{s} {s}\n", .{ style.cyan, style.reset, s });
+        const steer_entry: ?SteerEntry = popSteer();
+        defer if (steer_entry) |e| std.heap.page_allocator.free(e.text);
+        const raw_line: []const u8 = if (steer_entry) |e| blk: {
+            if (e.force) {
+                try out.print("{s}↳ force ›{s} {s}\n", .{ style.yellow, style.reset, e.text });
+            } else {
+                try out.print("{s}↳ steer ›{s} {s}\n", .{ style.cyan, style.reset, e.text });
+            }
             try out.flush();
-            break :blk s;
+            break :blk e.text;
         } else if (interactive)
             (try readLine(&root, in, out, gpa, &history, &linebuf)) orelse break
         else
@@ -5083,7 +5089,9 @@ pub fn main(init: std.process.Init) !void {
                 else
                     "[response interrupted by user]";
                 try root.messages.append(try textMessage(arena, "assistant", marker));
-                try out.print("{s}✗ interrupted (esc){s}\n", .{ style.yellow, style.reset });
+                const int_msg: []const u8 = if (g_force_interrupt) "✗ interrupted (force)" else "✗ interrupted (esc)";
+                g_force_interrupt = false;
+                try out.print("{s}{s}{s}\n", .{ style.yellow, int_msg, style.reset });
                 try out.flush();
                 continue;
             },
@@ -9257,7 +9265,9 @@ const Agent = struct {
     /// captured into the steering buffer and echoed when `echo` (main thread
     /// only — the esc watch task runs on the pool and must not race tool
     /// output); Enter flushes the line to g_steer_queue, which the REPL
-    /// drains as follow-up turns after the current one finishes.
+    /// drains as follow-up turns after the current one finishes. Ctrl-F
+    /// force-submits the buffer: queues it AND returns true so the current
+    /// turn is interrupted immediately and the forced prompt runs next.
     fn escPressed(echo: bool) bool {
         var buf: [64]u8 = undefined;
         const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return false;
@@ -9266,12 +9276,15 @@ const Agent = struct {
         while (i < n) : (i += 1) {
             const c = buf[i];
             if (c == 0x1b) {
-                if (i + 1 >= n or (buf[i + 1] != '[' and buf[i + 1] != 'O')) esc_found = true;
+                if (i + 1 >= n or (buf[i + 1] != '[' and buf[i + 1] != 'O')) {
+                    esc_found = true;
+                    g_force_interrupt = false;
+                }
                 continue; // the '[' / 'O' is non-printable and ignored below
             } else if (c == '\n' or c == '\r') {
                 if (g_steer_buf.items.len > 0) {
                     if (g_steer_buf.toOwnedSlice(std.heap.page_allocator)) |dup| {
-                        g_steer_queue.append(std.heap.page_allocator, dup) catch std.heap.page_allocator.free(dup);
+                        g_steer_queue.append(std.heap.page_allocator, .{ .text = dup, .force = false }) catch std.heap.page_allocator.free(dup);
                     } else |_| g_steer_buf.clearRetainingCapacity();
                 }
                 if (echo and g_steer_echoed) steerEcho("\n");
@@ -9282,6 +9295,20 @@ const Agent = struct {
                     _ = g_steer_buf.pop();
                     if (echo) steerEcho("\x08 \x08");
                 }
+                continue;
+            } else if (c == 0x06) { // Ctrl-F: force — interrupt + queue now
+                esc_found = true;
+                g_force_interrupt = true;
+                if (g_steer_buf.items.len > 0) {
+                    if (g_steer_buf.toOwnedSlice(std.heap.page_allocator)) |dup| {
+                        g_steer_queue.append(std.heap.page_allocator, .{ .text = dup, .force = true }) catch std.heap.page_allocator.free(dup);
+                    } else |_| g_steer_buf.clearRetainingCapacity();
+                    if (echo) {
+                        if (g_steer_echoed) steerEcho("\n");
+                        steerEcho("\x1b[33m↳ force › interrupting…\x1b[0m\n");
+                    }
+                }
+                g_steer_echoed = false;
                 continue;
             } else if (c < 0x20) {
                 continue; // other control bytes: ignore
