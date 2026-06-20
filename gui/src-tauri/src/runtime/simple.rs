@@ -178,7 +178,7 @@ impl RuntimeManager {
         ))
     }
 
-    async fn selected_model_name(&self) -> Option<String> {
+    async fn selected_model_arg(&self) -> Option<String> {
         let catalog = self.ensure_model_catalog().await;
         let configured_provider_ids = configured_provider_ids().await;
         let (selected_provider, selected_model) = {
@@ -194,7 +194,7 @@ impl RuntimeManager {
             selected_provider.as_deref(),
             selected_model.as_deref(),
         )
-        .map(|(_, model)| model)
+        .map(|(provider, model)| prompt_model_arg(&provider, &model))
     }
 
     /// Generates a short chat title with the active model (a one-shot graff run)
@@ -286,7 +286,8 @@ impl RuntimeManager {
                     &conversation_id,
                     serde_json::json!({
                         "type": "set_model",
-                        "name": selected_model.name,
+                        "model": selected_model.name.as_str(),
+                        "provider": selected_model.provider.as_str(),
                     }),
                 )
                 .await?;
@@ -452,7 +453,7 @@ impl RuntimeManager {
         let request_id = format!("request-{}", Uuid::new_v4().simple());
         let plan_mode = input.agent_id.as_deref() == Some("muse");
         let loop_mode = input.agent_id.as_deref() == Some("loop");
-        let title_model_arg = self.selected_model_name().await;
+        let title_model_arg = self.selected_model_arg().await;
         let is_first_turn;
         let engine_prompt;
         let should_queue;
@@ -1065,7 +1066,7 @@ impl RuntimeManager {
         conversation_id: &str,
         workspace_path: &str,
     ) -> Result<GraffSessionIo> {
-        let model_arg = self.selected_model_name().await;
+        let model_arg = self.selected_model_arg().await;
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(conversation_id) {
             let (active_agent_id, plan_mode, effort, fast) = {
@@ -2708,6 +2709,10 @@ fn selected_prompt_model_pair(
         .or_else(|| default_model.map(|model| (model.provider.clone(), model.name.clone())))
 }
 
+fn prompt_model_arg(provider: &str, model: &str) -> String {
+    format!("{provider} {model}")
+}
+
 fn selected_pair_exists(
     catalog: &[ModelOption],
     configured_provider_ids: &HashSet<String>,
@@ -3294,8 +3299,7 @@ fn provider_login_configured(
         }
         "codex" => home_codex_auth_has_valid_token(home),
         "kimi" => {
-            key_list_mentions_provider(key_list, &provider.id)
-                || kimi_auth_has_valid_token(home)
+            key_list_mentions_provider(key_list, &provider.id) || kimi_auth_has_valid_token(home)
         }
         _ => key_list_mentions_provider(key_list, &provider.id),
     }
@@ -3973,6 +3977,15 @@ mod tests {
 
     fn provider_ids(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    #[test]
+    fn prompt_model_arg_includes_provider_to_disambiguate_duplicate_names() {
+        assert_eq!(prompt_model_arg("codex", "gpt-5.5"), "codex gpt-5.5");
+        assert_eq!(
+            prompt_model_arg("codegraff", "gpt-5.5"),
+            "codegraff gpt-5.5"
+        );
     }
 
     #[test]
