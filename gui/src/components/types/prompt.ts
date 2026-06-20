@@ -33,6 +33,7 @@ export interface PromptInputCardProps {
   placeholder?: string;
   promptSettings: PromptSettings | null;
   promptDraft: string;
+  promptHistory?: string[];
   focusSignal?: number;
   isInputDisabled?: boolean;
   binding?: ChatBinding | null;

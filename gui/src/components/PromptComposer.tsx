@@ -62,6 +62,9 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
   } = useCommandRouter(binding, { onCommandResult });
   const requiresProviderSetup =
     promptSettings != null && promptSettings.availableModels.length === 0;
+  const promptHistory = messages
+    .filter((message) => message.kind === "user")
+    .map((message) => message.text);
 
   const handleSubmit = useCallback(async () => {
     if (trySubmitAsCommand(promptDraft)) {
@@ -167,6 +170,7 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
             isPlanningMode={isPlanningMode}
             promptSettings={promptSettings}
             promptDraft={promptDraft}
+            promptHistory={promptHistory}
             isInputDisabled={requiresProviderSetup}
             binding={binding}
             workspacePath={workspacePath}
