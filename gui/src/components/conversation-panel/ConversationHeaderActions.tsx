@@ -4,7 +4,6 @@ import {
   FileDiffIcon,
   FolderIcon,
   GitBranchPlusIcon,
-  LayoutPanelTopIcon,
   SquareTerminalIcon,
   XIcon,
 } from "lucide-react";
@@ -32,7 +31,6 @@ export function ConversationHeaderActions({
   onCloseChat,
   onHandoffToLocal,
   onHandoffToWorktree,
-  onOpenPreview,
   onOpenTerminal,
   onOpenChanges,
   isChangesOpen = false,
@@ -152,14 +150,6 @@ export function ConversationHeaderActions({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-48">
           <DropdownMenuGroup>
-            <DropdownMenuItem
-              onClick={() => {
-                onOpenPreview?.();
-              }}
-            >
-              <LayoutPanelTopIcon />
-              Open Preview
-            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => {
                 onOpenTerminal?.();

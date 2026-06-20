@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import { CHAT_MUTED_TEXT_CLASS } from "./constants/chatStyles";
@@ -40,6 +40,21 @@ export function ChatWorkRow({
   workspacePath,
 }: ChatWorkRowProps) {
   const [open, setOpen] = useState(item.isRunning || item.hasError);
+  const previousRunningRef = useRef(item.isRunning);
+
+  // Drive open state from running→idle transitions WITHOUT remounting. Stable
+  // keys (here and in chatThreadList) preserve the user's manual expands across
+  // completion. On a clean finish we leave the group open so the results the
+  // user was watching don't collapse out from under them; errors force-open.
+  // Past (already-idle) turns mount collapsed via the initial state above.
+  useEffect(() => {
+    const wasRunning = previousRunningRef.current;
+    previousRunningRef.current = item.isRunning;
+    if (wasRunning && !item.isRunning && item.hasError) {
+      setOpen(true);
+    }
+  }, [item.isRunning, item.hasError]);
+
   const canExpand = item.activities.length > 0;
 
   const header = (
@@ -78,7 +93,7 @@ export function ChatWorkRow({
         <div className="grid min-w-0 gap-1">
           {item.activities.map((activityItem) => (
             <ChatActivityRow
-              key={`${activityItem.key}:${activityItem.isRunning ? "running" : activityItem.hasError ? "error" : "idle"}`}
+              key={activityItem.key}
               item={activityItem}
               workspacePath={workspacePath}
             />

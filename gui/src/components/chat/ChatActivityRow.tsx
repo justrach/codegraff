@@ -183,18 +183,25 @@ export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
   );
   const previousRunningRef = useRef(item.isRunning);
 
+  // With stable keys (ChatWorkRow) this effect now actually fires on the
+  // running→idle transition instead of being wiped by a remount. On completion
+  // we preserve the user's view — keep the activity open (don't yank the results
+  // they were reading) and force-open on error so failures stay visible. A
+  // step starting to run auto-expands to show live progress.
   useEffect(() => {
+    const wasRunning = previousRunningRef.current;
+    previousRunningRef.current = item.isRunning;
     if (item.isThinking) {
       return;
     }
 
-    if (previousRunningRef.current && item.isRunning === false) {
-      setOpen(item.hasError);
-    } else if (previousRunningRef.current === false && item.isRunning) {
+    if (wasRunning && !item.isRunning) {
+      if (item.hasError) {
+        setOpen(true);
+      }
+    } else if (!wasRunning && item.isRunning) {
       setOpen(true);
     }
-
-    previousRunningRef.current = item.isRunning;
   }, [item.hasError, item.isRunning, item.isThinking]);
 
   if (item.isThinking) {
