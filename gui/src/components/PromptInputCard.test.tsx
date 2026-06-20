@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type {
@@ -28,7 +29,9 @@ const promptSettings: PromptSettings = {
   fastEnabled: false,
 };
 
-function renderPromptInputCard() {
+function renderPromptInputCard(
+  overrides: Partial<ComponentProps<typeof PromptInputCard>> = {},
+) {
   return renderToStaticMarkup(
     <PromptInputCard
       canCompose
@@ -44,6 +47,7 @@ function renderPromptInputCard() {
       submitPrompt={async () => {}}
       updatePromptSettings={async () => {}}
       workspacePath="/workspace/codegraff"
+      {...overrides}
     />,
   );
 }
@@ -55,5 +59,22 @@ describe("PromptInputCard", () => {
     expect(html).toContain("max-w-44");
     expect(html).toContain("truncate");
     expect(html).toContain(`title="${longModelName}"`);
+  });
+
+  test("keeps the textarea editable and send-enabled for queued follow-ups", () => {
+    const html = renderPromptInputCard({ isRequestActive: true });
+
+    expect(html).toContain("Queue a follow-up…");
+    expect(html).toContain('aria-label="Send"');
+    expect(html).not.toContain("<textarea disabled");
+  });
+
+  test("keeps stop available while running with an empty draft", () => {
+    const html = renderPromptInputCard({
+      isRequestActive: true,
+      promptDraft: "",
+    });
+
+    expect(html).toContain('aria-label="Stop"');
   });
 });

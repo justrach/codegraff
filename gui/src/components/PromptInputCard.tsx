@@ -83,17 +83,15 @@ export function PromptInputCard({
   const isControlDisabled =
     isSendingPrompt || isRequestActive || !canCompose || isInputDisabled;
   // Keep the composer editable while a request streams so the user can draft
-  // their next message; only Send is repurposed to Stop. Enter is guarded by
-  // isSubmitDisabled (which includes isRequestActive) so a draft is never sent
-  // mid-stream — it just waits until the run finishes.
-  const isTextareaDisabled =
-    isSendingPrompt || !canCompose || isInputDisabled;
+  // and queue the next message. While streaming, a non-empty draft turns the
+  // primary button back into Send; an empty draft keeps it as Stop.
+  const isTextareaDisabled = isSendingPrompt || !canCompose || isInputDisabled;
   const isWorking = isRequestActive;
+  const isQueueSubmit = isWorking;
   const isSubmitDisabled =
     !canCompose ||
-    isSendingPrompt ||
-    isRequestActive ||
     isInputDisabled ||
+    (!isQueueSubmit && isSendingPrompt) ||
     promptDraft.trim().length === 0;
   const {
     handleModelChange,
@@ -127,7 +125,9 @@ export function PromptInputCard({
     void setFast(next);
   }
 
-  function handleAutocompleteSelect(command: Parameters<typeof onCommandSelect>[0]) {
+  function handleAutocompleteSelect(
+    command: Parameters<typeof onCommandSelect>[0],
+  ) {
     // The model picker lives in this component, so handle `/model` here rather
     // than routing it up.
     if (command.name === "model") {
@@ -149,11 +149,11 @@ export function PromptInputCard({
   useAutosizeTextarea(textareaRef, promptDraft);
 
   useEffect(() => {
-    if (focusSignal == null || isControlDisabled) {
+    if (focusSignal == null || isTextareaDisabled) {
       return;
     }
     textareaRef.current?.focus();
-  }, [focusSignal, isControlDisabled]);
+  }, [focusSignal, isTextareaDisabled]);
 
   // Highlight a leading slash-command token so the user sees they're issuing a
   // command. Only active in command mode, so normal prose typing is untouched.
@@ -171,12 +171,14 @@ export function PromptInputCard({
   }
 
   function handlePrimaryAction() {
-    if (isWorking) {
-      void stopPrompt();
+    if (!isSubmitDisabled) {
+      handleSubmit();
       return;
     }
 
-    handleSubmit();
+    if (isWorking) {
+      void stopPrompt();
+    }
   }
 
   function handlePlanningModeToggle() {
@@ -185,9 +187,7 @@ export function PromptInputCard({
 
   // Cmd/Ctrl+V of an image: persist the clipboard bytes to a temp file and add
   // it through the same attachment pipeline as a drag-dropped file.
-  async function handlePaste(
-    event: React.ClipboardEvent<HTMLTextAreaElement>,
-  ) {
+  async function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = event.clipboardData?.items;
     if (!items) {
       return;
@@ -264,9 +264,10 @@ export function PromptInputCard({
               id="prompt"
               className={cn(
                 "max-h-80 overflow-y-auto rounded-none border-0 bg-transparent px-0 py-0 text-sm shadow-none outline-none ring-0 placeholder:text-muted-foreground/80 focus-visible:border-transparent focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
-                commandMatch && "text-transparent caret-[color:var(--foreground)]",
+                commandMatch &&
+                  "text-transparent caret-[color:var(--foreground)]",
               )}
-              placeholder={placeholder}
+              placeholder={isWorking ? "Queue a follow-up…" : placeholder}
               value={promptDraft}
               onChange={(event) => setPromptDraft(event.target.value)}
               onPaste={handlePaste}
@@ -452,7 +453,10 @@ export function PromptInputCard({
                 className="inline-flex h-8 items-center gap-2 px-1.5 text-xs font-medium text-muted-foreground"
                 title="Planning uses the thinking agent"
               >
-                <Throbber variant="pulse" className="text-[color:var(--accent)]" />
+                <Throbber
+                  variant="pulse"
+                  className="text-[color:var(--accent)]"
+                />
                 {planningThinkingLabel}
               </span>
             ) : null}
@@ -461,11 +465,11 @@ export function PromptInputCard({
             type="button"
             size="icon-lg"
             className="rounded-full"
-            aria-label={isWorking ? "Stop" : "Send"}
+            aria-label={isWorking && isSubmitDisabled ? "Stop" : "Send"}
             onClick={handlePrimaryAction}
             disabled={isWorking ? false : isSubmitDisabled}
           >
-            {isWorking ? <SquareIcon /> : <ArrowUpIcon />}
+            {isWorking && isSubmitDisabled ? <SquareIcon /> : <ArrowUpIcon />}
           </Button>
         </CardFooter>
       </Card>
