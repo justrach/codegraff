@@ -33,7 +33,7 @@ function UserChatMessage({ text, workspacePath }: UserChatMessageProps) {
     .filter((item): item is NonNullable<typeof item> => item != null);
 
   return (
-    <article className="cg-message-in flex w-full flex-col items-end gap-2 select-text">
+    <article className="cg-message-in flex w-full flex-col items-end gap-2 select-none">
       {attachments.length > 0 ? (
         <AttachmentTray
           attachments={attachments}
@@ -43,7 +43,7 @@ function UserChatMessage({ text, workspacePath }: UserChatMessageProps) {
       ) : null}
       {body.length > 0 ? (
         <div
-          className="w-fit rounded-xl bg-muted px-3.5 py-1.5 text-sm text-foreground"
+          className="w-fit select-text rounded-xl bg-muted px-3.5 py-1.5 text-sm text-foreground"
           style={{ maxWidth: "min(42rem, 85%)" }}
         >
           <ChatInlineText as="p" text={body} workspacePath={workspacePath} />
