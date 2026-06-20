@@ -9265,9 +9265,9 @@ const Agent = struct {
     /// captured into the steering buffer and echoed when `echo` (main thread
     /// only — the esc watch task runs on the pool and must not race tool
     /// output); Enter flushes the line to g_steer_queue, which the REPL
-    /// drains as follow-up turns after the current one finishes. Ctrl-F
-    /// force-submits the buffer: queues it AND returns true so the current
-    /// turn is interrupted immediately and the forced prompt runs next.
+    /// drains as follow-up turns after the current one finishes. A second
+    /// Enter on an empty line (double-enter) with a non-empty queue
+    /// force-interrupts the current turn so the queue drains immediately.
     fn escPressed(echo: bool) bool {
         var buf: [64]u8 = undefined;
         const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return false;
@@ -9283,11 +9283,28 @@ const Agent = struct {
                 continue; // the '[' / 'O' is non-printable and ignored below
             } else if (c == '\n' or c == '\r') {
                 if (g_steer_buf.items.len > 0) {
+                    // Flush the typed line to the queue as a regular
+                    // follow-up (runs after the current turn finishes).
                     if (g_steer_buf.toOwnedSlice(std.heap.page_allocator)) |dup| {
                         g_steer_queue.append(std.heap.page_allocator, .{ .text = dup, .force = false }) catch std.heap.page_allocator.free(dup);
                     } else |_| g_steer_buf.clearRetainingCapacity();
+                    if (echo and g_steer_echoed) {
+                        var qbuf: [64]u8 = undefined;
+                        const qmsg = std.fmt.bufPrint(&qbuf, "  \x1b[2m[queued · {d} waiting]\x1b[0m\n", .{g_steer_queue.items.len}) catch "\n";
+                        steerEcho(qmsg);
+                    }
+                } else if (g_steer_queue.items.len > 0) {
+                    // Double-enter (empty line + queue non-empty): force —
+                    // promote the first queued item and interrupt the
+                    // current turn so the queue drains starting now.
+                    g_steer_queue.items[0].force = true;
+                    esc_found = true;
+                    g_force_interrupt = true;
+                    if (echo) {
+                        if (g_steer_echoed) steerEcho("\n");
+                        steerEcho("\x1b[33m↳ force › interrupting…\x1b[0m\n");
+                    }
                 }
-                if (echo and g_steer_echoed) steerEcho("\n");
                 g_steer_echoed = false;
                 continue;
             } else if (c == 0x7f or c == 0x08) { // backspace / Ctrl-H
@@ -9295,20 +9312,6 @@ const Agent = struct {
                     _ = g_steer_buf.pop();
                     if (echo) steerEcho("\x08 \x08");
                 }
-                continue;
-            } else if (c == 0x06) { // Ctrl-F: force — interrupt + queue now
-                esc_found = true;
-                g_force_interrupt = true;
-                if (g_steer_buf.items.len > 0) {
-                    if (g_steer_buf.toOwnedSlice(std.heap.page_allocator)) |dup| {
-                        g_steer_queue.append(std.heap.page_allocator, .{ .text = dup, .force = true }) catch std.heap.page_allocator.free(dup);
-                    } else |_| g_steer_buf.clearRetainingCapacity();
-                    if (echo) {
-                        if (g_steer_echoed) steerEcho("\n");
-                        steerEcho("\x1b[33m↳ force › interrupting…\x1b[0m\n");
-                    }
-                }
-                g_steer_echoed = false;
                 continue;
             } else if (c < 0x20) {
                 continue; // other control bytes: ignore
