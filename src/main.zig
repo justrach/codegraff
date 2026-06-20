@@ -2778,6 +2778,75 @@ fn inputPending(fd: std.posix.fd_t) bool {
     return n > 0;
 }
 
+/// Like inputPending but with a configurable poll timeout (ms). Used by the
+/// ultracode wave to tick at a slower, calmer cadence than the 50ms default.
+fn inputPendingTimed(fd: std.posix.fd_t, timeout_ms: i32) bool {
+    var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+    const n = std.posix.poll(&fds, timeout_ms) catch return false;
+    return n > 0;
+}
+
+/// Raw RGB stops for the ultracode wave (mirrors ultracode_rainbow's hues).
+const ultracode_rgb = [_]struct { r: u8, g: u8, b: u8 }{
+    .{ .r = 255, .g = 87, .b = 51 },
+    .{ .r = 255, .g = 159, .b = 28 },
+    .{ .r = 255, .g = 222, .b = 51 },
+    .{ .r = 120, .g = 255, .b = 51 },
+    .{ .r = 51, .g = 255, .b = 170 },
+    .{ .r = 51, .g = 170, .b = 255 },
+    .{ .r = 120, .g = 51, .b = 255 },
+    .{ .r = 210, .g = 51, .b = 255 },
+    .{ .r = 255, .g = 51, .b = 159 },
+};
+
+/// Smoothly interpolated rainbow hue for the ultracode wave. `pos_q8` is a
+/// 0..2048 fraction across the 9-stop palette (8 bits index + 8 bits blend),
+/// so the wave glides between colors instead of snapping. A sine brightness
+/// breath (period ~2.2s at 110ms/tick) gives a rhythmic pulse rather than a
+/// mechanical scroll. Writes the SGR escape straight to the writer.
+fn ultracodeWaveHue(w: *Io.Writer, pos_q8: u16, phase: usize) void {
+    const pal = &ultracode_rgb;
+    const len: u16 = pal.len;
+    const p: u16 = pos_q8 + @as(u16, @intCast(phase * 32));
+    const idx: u16 = (p >> 8) % len;
+    const frac: u16 = p & 0xff;
+    const a = pal[idx];
+    const b = pal[(idx + 1) % len];
+    // Interpolate in signed space (b-a may be negative) then clamp to 0..255.
+    const r: i32 = @as(i32, a.r) + @divTrunc((@as(i32, b.r) - @as(i32, a.r)) * @as(i32, frac), 256);
+    const g: i32 = @as(i32, a.g) + @divTrunc((@as(i32, b.g) - @as(i32, a.g)) * @as(i32, frac), 256);
+    const bl: i32 = @as(i32, a.b) + @divTrunc((@as(i32, b.b) - @as(i32, a.b)) * @as(i32, frac), 256);
+    // Breath: a gentle sine over phase, period 20 ticks (~2.2s @ 110ms),
+    // modulating brightness between ~81% and ~94% — a soft, subtle pulse.
+    const breath: u16 = switch (phase % 20) {
+        0 => 120,
+        1 => 120,
+        2 => 118,
+        3 => 117,
+        4 => 114,
+        5 => 112,
+        6 => 110,
+        7 => 107,
+        8 => 106,
+        9 => 104,
+        10 => 104,
+        11 => 104,
+        12 => 106,
+        13 => 107,
+        14 => 110,
+        15 => 112,
+        16 => 114,
+        17 => 117,
+        18 => 118,
+        else => 120,
+    };
+    const sc: i32 = @as(i32, breath);
+    const cr: u8 = @intCast(@max(0, @min(255, @divTrunc(r * sc, 128))));
+    const cg: u8 = @intCast(@max(0, @min(255, @divTrunc(g * sc, 128))));
+    const cb: u8 = @intCast(@max(0, @min(255, @divTrunc(bl * sc, 128))));
+    w.print("\x1b[38;2;{d};{d};{d}m", .{ cr, cg, cb }) catch {};
+}
+
 /// Directories the `@` file picker never descends into (every dot-dir is
 /// also skipped): package/build output and caches — never @-mention targets.
 const atpick_skip_dirs = [_][]const u8{ "node_modules", "zig-out", "zig-cache", "__pycache__", "venv", "target", "dist", "build" };
@@ -3077,15 +3146,18 @@ fn readLine(
                 }
                 // Rainbow shine for an `ultracode` span (skipped inside a chip).
                 if (!mark_open) {
-                    var hue: ?[]const u8 = null;
+                    var in_shine = false;
                     for (shine_starts[0..nshine], shine_ends[0..nshine]) |sstart, send| {
                         if (i >= sstart and i < send) {
-                            hue = ultracode_rainbow[(i - sstart + g_shine_phase) % ultracode_rainbow.len];
+                            // Smooth interpolated hue + rhythmic brightness
+                            // breath; pos_q8 spreads the 9 letters across a
+                            // full palette pass so the wave glides.
+                            ultracodeWaveHue(o, @intCast((i - sstart) * 256), g_shine_phase);
+                            in_shine = true;
                             break;
                         }
                     }
-                    if (hue) |h| {
-                        o.writeAll(h) catch {};
+                    if (in_shine) {
                         shine_active = true;
                     } else if (shine_active) {
                         o.writeAll("\x1b[0m") catch {};
@@ -3194,10 +3266,12 @@ fn readLine(
             break :blk b;
         } else blk: {
             // While the input contains `ultracode`, wave the rainbow shine
-            // across the letters: poll for input with a 50ms timeout, and on
-            // each idle tick advance the phase + redraw so the hue sweeps.
+            // across the letters: poll for input with a slower 110ms timeout,
+            // and on each idle tick advance the phase + redraw so the hue
+            // glides and breathes (~9fps, calm + rhythmic rather than a fast
+            // flicker).
             while (std.ascii.indexOfIgnoreCase(buf.items, "ultracode") != null) {
-                if (inputPending(fd)) break; // keystroke ready — read it below
+                if (inputPendingTimed(fd, 110)) break; // keystroke ready — read it below
                 g_shine_phase +%= 1;
                 redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
             }
