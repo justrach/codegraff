@@ -2422,6 +2422,7 @@ var g_anim_index: usize = 0; // /animation selection (index into anims)
 var g_anim_random = false; // pick a fresh one per request
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
+var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 
 /// 9-stop truecolor rainbow for the `ultracode` shine (banner + live input).
 const ultracode_rainbow = [_][]const u8{
@@ -3079,7 +3080,7 @@ fn readLine(
                     var hue: ?[]const u8 = null;
                     for (shine_starts[0..nshine], shine_ends[0..nshine]) |sstart, send| {
                         if (i >= sstart and i < send) {
-                            hue = ultracode_rainbow[(i - sstart) % ultracode_rainbow.len];
+                            hue = ultracode_rainbow[(i - sstart + g_shine_phase) % ultracode_rainbow.len];
                             break;
                         }
                     }
@@ -3191,7 +3192,17 @@ fn readLine(
             const b = pending.items[pend_i];
             pend_i += 1;
             break :blk b;
-        } else in.takeByte() catch return null;
+        } else blk: {
+            // While the input contains `ultracode`, wave the rainbow shine
+            // across the letters: poll for input with a 50ms timeout, and on
+            // each idle tick advance the phase + redraw so the hue sweeps.
+            while (std.ascii.indexOfIgnoreCase(buf.items, "ultracode") != null) {
+                if (inputPending(fd)) break; // keystroke ready — read it below
+                g_shine_phase +%= 1;
+                redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
+            }
+            break :blk in.takeByte() catch return null;
+        };
         if (c != 0x09) comp_active = false; // any non-Tab key ends the cycle
         switch (c) {
             0x09 => { // Tab: complete, or cycle through matches on repeat
