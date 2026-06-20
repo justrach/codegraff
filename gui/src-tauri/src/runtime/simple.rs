@@ -2293,6 +2293,37 @@ fn command(name: &str, usage: &str, requires_workspace: bool) -> CommandDescript
     }
 }
 
+/// macOS GUI processes launched from Finder/Dock get launchd's minimal
+/// environment, not the user's shell — so `export OPENAI_API_KEY=…` (and any
+/// other `*_API_KEY`) from .zshrc/.zprofile is invisible to children we spawn.
+/// Capture the login shell's environment once (best-effort, time-bounded) so a
+/// GUI-spawned `graff` sees the same provider keys the terminal `graff` does.
+fn login_shell_env() -> &'static std::collections::HashMap<String, String> {
+    static ENV: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+        std::sync::OnceLock::new();
+    ENV.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // -il = interactive login shell: sources the login profile AND
+            // .zshrc/.bashrc, where most users export their *_API_KEY.
+            let out = std::process::Command::new(&shell).args(["-ilc", "env"]).output();
+            let _ = tx.send(out);
+        });
+        let mut map = std::collections::HashMap::new();
+        if let Ok(Ok(out)) = rx.recv_timeout(std::time::Duration::from_secs(4)) {
+            if out.status.success() {
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    if let Some((k, v)) = line.split_once('=') {
+                        map.insert(k.to_string(), v.to_string());
+                    }
+                }
+            }
+        }
+        map
+    })
+}
+
 /// Spawns a persistent `graff --json` child for a conversation. `--yolo` skips
 /// permission prompts (the GUI has no approval surface yet); stderr is discarded
 /// since the protocol carries errors as `error` events on stdout.
@@ -2303,6 +2334,12 @@ fn spawn_graff_session(workspace_path: &str, model: Option<&str>) -> Result<Graf
     if let Some(model) = model.filter(|model| !model.is_empty() && *model != "default") {
         command.arg("--model").arg(model);
     }
+    // macOS GUI apps (Finder/Dock) inherit launchd's minimal env, not the user's
+    // shell — so OPENAI_API_KEY & co. exported in .zshrc are invisible to graff,
+    // which then silently falls back to a file-based login (e.g. an empty
+    // codegraff account). Pass the login shell's env so the GUI sees the same
+    // provider keys the terminal does.
+    command.envs(login_shell_env());
     let mut child = command
         .current_dir(workspace_path)
         .stdin(std::process::Stdio::piped())
