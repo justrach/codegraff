@@ -917,10 +917,10 @@
 }
 
 /* --- Auxiliary pane reveal (changes / preview / terminal) ---
-   The pane's container is resized smoothly by animating the dockview view
-   containers (see chat-tile-dockview.css `.cg-animate-layout`); the pane's own
-   content just crossfades so the appearing/disappearing content reads cleanly
-   against the surrounding panes gliding to their new size. */
+   The pane's container is resized smoothly by tweening its dockview group size
+   (see workspace-board/paneResizeAnimation.ts); the pane's own content just
+   crossfades so the appearing/disappearing content reads cleanly against the
+   surrounding panes gliding to their new size. */
 @keyframes cg-pane-fade-in {
     from {
         opacity: 0;

@@ -50,7 +50,10 @@ import {
   dispatchTerminalRestartRequest,
   INNER_CHAT_COMPONENT,
   INNER_PLACEHOLDER_COMPONENT,
+  isTerminalPanelId,
   PANE_CLOSE_REQUEST_EVENT_NAME,
+  PREVIEW_PANE_ID,
+  TERMINAL_PANE_ID,
 } from "./layout";
 import {
   addTerminalTab,
@@ -69,6 +72,12 @@ import type {
   TerminalPaneParams,
 } from "./types/layout";
 import type { ChatTileProps } from "./types/workspaceBoard";
+import {
+  animatePaneClose,
+  animatePaneOpen,
+  type PaneResizeTween,
+  type ResizeAxis,
+} from "./paneResizeAnimation";
 import { applySavedConversationLayout } from "./utils/savedLayout";
 import "./chat-tile-dockview.css";
 
@@ -122,12 +131,13 @@ export function ChatTile({
   // confirmation dialog can warn the user. Closing a single terminal is normal
   // toggle behavior; closing 2+ at once (each with its own PTY) is destructive.
   const [closeTerminalsCount, setCloseTerminalsCount] = useState(0);
-  // Briefly enables a width/position transition on the dock's view containers so
-  // chat glides to its new size when a pane opens/closes (see chat-tile-dockview.css).
-  // Toggled imperatively (not via state) so the class is in the DOM *before* the
-  // synchronous dockview size mutation, otherwise the transition wouldn't fire.
+  // Drives the open/close size glide. When an auxiliary pane opens or closes we
+  // tween its dockview group's grid size (real layout, through dockview's public
+  // API) so the chat — the flexible sibling — reflows to its new size *together*
+  // with the pane instead of snapping in one frame. Held in a ref so a rapid
+  // re-toggle can cancel the in-flight tween. See ./paneResizeAnimation.
   const shellRef = useRef<HTMLElement | null>(null);
-  const layoutAnimateTimeoutRef = useRef<number | null>(null);
+  const paneTweenRef = useRef<PaneResizeTween | null>(null);
   const innerApiRef = useRef<DockviewApi | null>(null);
   const innerDisposablesRef = useRef<Array<{ dispose(): void }>>([]);
   const fallbackToDefaultLayoutRef = useRef(false);
@@ -183,6 +193,8 @@ export function ChatTile({
         window.cancelAnimationFrame(clearProgrammaticMutationRafRef.current);
         clearProgrammaticMutationRafRef.current = null;
       }
+      paneTweenRef.current?.cancel();
+      paneTweenRef.current = null;
     };
   }, []);
 
@@ -190,42 +202,97 @@ export function ChatTile({
     schedulePersist(() => innerApiRef.current);
   }, [schedulePersist]);
 
-  // Turn on the dock's size transition for one open/close cycle so chat (and any
-  // other panes) glide to their new size instead of snapping. The window covers
-  // an exit fade (~180ms) plus the size transition (~320ms); re-toggling resets it.
-  const runLayoutAnimation = useCallback(() => {
-    const dock = shellRef.current?.querySelector(".chat-tile-inner-dock");
-    if (dock == null) {
-      return;
-    }
-    dock.classList.add("cg-animate-layout");
-    if (layoutAnimateTimeoutRef.current != null) {
-      window.clearTimeout(layoutAnimateTimeoutRef.current);
-    }
-    layoutAnimateTimeoutRef.current = window.setTimeout(() => {
-      dock.classList.remove("cg-animate-layout");
-      layoutAnimateTimeoutRef.current = null;
-    }, 600);
-  }, []);
+  // Open a pane and glide chat + the new pane to their final sizes together.
+  // dockview adds the pane and settles its target size synchronously, so we read
+  // that target back, shrink the pane to a sliver, then tween it (and thus chat,
+  // the flexible sibling) up to target. The programmatic-mutation guard is held
+  // for the whole tween so `autoCloseUndersizedSidePanes` doesn't close the pane
+  // while it grows up through the min-width threshold.
+  const runOpenPaneAnimation = useCallback(
+    (api: DockviewApi, kind: "preview" | "terminal" | "changes") => {
+      // A terminal that already exists just gets focused (no new group); only the
+      // first terminal opens a fresh "below" group worth animating.
+      const paneId =
+        kind === "changes"
+          ? CHANGES_PANE_ID
+          : kind === "preview"
+            ? PREVIEW_PANE_ID
+            : TERMINAL_PANE_ID;
+      const wasOpen =
+        kind === "terminal"
+          ? getTerminalPanels(api).length > 0
+          : api.getPanel(paneId) != null;
+
+      paneTweenRef.current?.cancel();
+      isProgrammaticMutationRef.current = true;
+      openChatTilePane(api, binding, kind);
+
+      const group = api.getPanel(paneId)?.group ?? null;
+      if (wasOpen || group == null) {
+        // Nothing newly opened to animate — release the guard on the next frame
+        // (matches withProgrammaticMutation) so the synchronous layout batch is
+        // still suppressed.
+        window.requestAnimationFrame(() => {
+          isProgrammaticMutationRef.current = false;
+        });
+        return;
+      }
+
+      // Preview/Changes open to chat's right (animate width); the first terminal
+      // opens below (animate height).
+      const axis: ResizeAxis = kind === "terminal" ? "height" : "width";
+      paneTweenRef.current = animatePaneOpen(group, axis, () => {
+        paneTweenRef.current = null;
+        // Defer to the next frame: under reduced motion animatePaneOpen calls
+        // this synchronously (no tween), and releasing the guard in the same tick
+        // as the addPanel above would let its synchronous onDidLayoutChange run
+        // autoCloseUndersizedSidePanes and close the pane just opened.
+        window.requestAnimationFrame(() => {
+          isProgrammaticMutationRef.current = false;
+        });
+      });
+    },
+    [binding],
+  );
 
   // Any pane close (toolbar button or a terminal tab's ×) goes through the close
-  // request event; animate the resulting reflow for this conversation's panes.
+  // request event. When the close removes the pane's whole group (chat will
+  // reflow to reclaim the space) glide that group down to a sliver so chat
+  // expands smoothly instead of snapping back. The pane's own fade-out
+  // (AuxiliaryPaneShell) runs over the same window and performs the real close;
+  // this only animates the surrounding reflow.
   useEffect(() => {
     function handleCloseRequest(event: Event) {
       const paneId = (event as CustomEvent<{ paneId?: string }>).detail?.paneId;
-      if (paneId != null && paneId.startsWith(`${binding.conversationId}:`)) {
-        runLayoutAnimation();
+      const prefix = `${binding.conversationId}:`;
+      if (paneId == null || !paneId.startsWith(prefix)) {
+        return;
       }
+      const api = innerApiRef.current;
+      if (api == null) {
+        return;
+      }
+      const dockviewPanelId = paneId.slice(prefix.length);
+      const panel = api.getPanel(dockviewPanelId);
+      // Only glide when closing the pane collapses its group (a lone changes /
+      // preview / last-terminal pane). Closing one terminal tab among several
+      // leaves the group — and chat's size — unchanged, so there's nothing to
+      // animate.
+      if (panel == null || panel.group.panels.length > 1) {
+        return;
+      }
+      const axis: ResizeAxis = isTerminalPanelId(dockviewPanelId)
+        ? "height"
+        : "width";
+      paneTweenRef.current?.cancel();
+      paneTweenRef.current = animatePaneClose(api, dockviewPanelId, axis);
     }
 
     window.addEventListener(PANE_CLOSE_REQUEST_EVENT_NAME, handleCloseRequest);
     return () => {
       window.removeEventListener(PANE_CLOSE_REQUEST_EVENT_NAME, handleCloseRequest);
-      if (layoutAnimateTimeoutRef.current != null) {
-        window.clearTimeout(layoutAnimateTimeoutRef.current);
-      }
     };
-  }, [binding.conversationId, runLayoutAnimation]);
+  }, [binding.conversationId]);
 
   const handleOpenPane = useCallback(
     (kind: "preview" | "terminal" | "changes") => {
@@ -234,11 +301,10 @@ export function ChatTile({
         return;
       }
 
-      runLayoutAnimation();
-      withProgrammaticMutation(() => openChatTilePane(api, binding, kind));
+      runOpenPaneAnimation(api, kind);
       scheduleInnerLayoutSave();
     },
-    [binding, runLayoutAnimation, scheduleInnerLayoutSave, withProgrammaticMutation],
+    [binding, runOpenPaneAnimation, scheduleInnerLayoutSave],
   );
 
   // Track which auxiliary panes are open so the header toggles can show an active
@@ -270,10 +336,9 @@ export function ChatTile({
       return;
     }
 
-    runLayoutAnimation();
-    withProgrammaticMutation(() => openChatTilePane(api, binding, "changes"));
+    runOpenPaneAnimation(api, "changes");
     scheduleInnerLayoutSave();
-  }, [binding, runLayoutAnimation, scheduleInnerLayoutSave, withProgrammaticMutation]);
+  }, [binding, runOpenPaneAnimation, scheduleInnerLayoutSave]);
 
   const handleToggleTerminal = useCallback(() => {
     const api = innerApiRef.current;
@@ -293,10 +358,9 @@ export function ChatTile({
       return;
     }
 
-    runLayoutAnimation();
-    withProgrammaticMutation(() => openChatTilePane(api, binding, "terminal"));
+    runOpenPaneAnimation(api, "terminal");
     scheduleInnerLayoutSave();
-  }, [binding, runLayoutAnimation, scheduleInnerLayoutSave, withProgrammaticMutation]);
+  }, [binding, runOpenPaneAnimation, scheduleInnerLayoutSave]);
 
   const handleCloseAllTerminalsConfirm = useCallback(() => {
     const api = innerApiRef.current;
