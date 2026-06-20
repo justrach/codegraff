@@ -54,7 +54,7 @@ export interface SidebarItemActionsMenuProps {
   dialogDescription: string;
   dialogTitle: string;
   menuAriaLabel: string;
-  onRemove: () => void;
+  onRemove: () => void | Promise<void>;
   onRename: (name: string | null) => Promise<void>;
   placeholder?: string;
   removeIcon: LucideIcon;
