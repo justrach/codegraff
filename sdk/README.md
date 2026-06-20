@@ -17,9 +17,9 @@ python3 sdk/generate.py --harness ./zig-out/bin/graff
 graff --schema | python3 sdk/generate.py
 ```
 
-On every release tag the `sdk` GitHub Action rebuilds, regenerates, fails if the
-committed SDKs are stale, and publishes to npm/PyPI when the registry token
-secrets are present (`NPM_TOKEN`, `PYPI_TOKEN`).
+On every `sdk-v*` tag the `sdk` GitHub Action rebuilds, regenerates, fails if the
+committed SDKs are stale, and publishes to npm/PyPI via OIDC trusted publishing
+(no registry tokens required).
 
 ## Usage
 
@@ -43,7 +43,7 @@ TypeScript — the API mirrors [`@codegraff/sdk`](https://www.npmjs.com/package/
 (`runAgent` one-shot, `Harness.init` long-lived, `.session()`, `.chat()`/`.ask()`):
 
 ```ts
-import { Harness, runAgent } from "@graff-new/sdk"; // or "./harness.ts"
+import { Harness, runAgent } from "@codegraff/sdk"; // or "./harness.ts"
 
 // one-shot, streamed (parallel to codegraff's runAgent)
 for await (const ev of runAgent({ prompt: "summarize README.md", model: "gpt-5.5", yolo: true })) {
@@ -76,7 +76,7 @@ instead. Same method surface, same event stream:
 ```ts
 // fetch + Web Streams only — works on Cloudflare Workers, Deno, Bun,
 // browsers, and Node >= 18
-import { RemoteHarness, runAgentRemote } from "@graff-new/sdk/remote";
+import { RemoteHarness, runAgentRemote } from "@codegraff/sdk/remote";
 
 for await (const ev of runAgentRemote({ url: "https://my-bridge.example", token, yolo: true, prompt: "summarize README.md" })) {
   if (ev.type === "text") console.log(ev.text);

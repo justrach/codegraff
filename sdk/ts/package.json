@@ -1,6 +1,6 @@
 {
   "name": "@codegraff/sdk",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "TypeScript / Node SDK for the codegraff agent — drives `graff --json` over stdio. Types auto-generated from `graff --schema`.",
   "type": "module",
   "main": "harness.ts",
@@ -25,7 +25,7 @@
   },
   "homepage": "https://codegraff.com",
   "keywords": ["codegraff", "graff", "agent", "llm", "harness", "sdk"],
-  "files": ["harness.ts", "remote.ts"],
+  "files": ["harness.ts", "remote.ts", "README.md"],
   "engines": { "node": ">=18" },
   "license": "BSD-3-Clause"
 }
