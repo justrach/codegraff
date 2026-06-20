@@ -2190,6 +2190,13 @@ const skills_registry = [_]SkillDef{
 /// model knows when to reach for its tools. The native tools stay registered
 /// regardless — they are the fallback whenever an MCP call fails, is denied,
 /// or the server is disconnected/skipped.
+/// Licensed-aware variant of the codedbpro note. When `codedb-pro probe`
+/// succeeds (paid + usable) we inject THIS instead of the conservative
+/// "prefer free codedb" note below — leaning into the tools the user pays for.
+/// Edits still stay native: edit_file/write_file are /rewind-snapshotted and
+/// already splice via zigpatch, whereas codedb-pro edit/patch/replace bypass /rewind.
+const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED (mcp__codedbpro__* tools) — prefer it, you are paying for it. Use mcp__codedbpro__read (mode=outline first, then symbol/lines) instead of read_file for navigating code, mcp__codedbpro__faster_search / meta_search for content and fuzzy search (the native codedb tool stays a fine fast path for indexed symbol/outline/callers/find lookups), and mcp__codedbpro__batch to run several independent reads/searches in one round-trip. KEEP EDITS on the native edit_file/write_file tools — they are snapshot-tracked for /rewind and already splice via zigpatch; codedb-pro edit/patch/replace bypass /rewind, so do not route edits through it. Whenever an mcp__codedbpro__ call fails, fall back to read_file/codedb/bash.";
+
 const McpNote = struct { server: []const u8, note: []const u8 };
 const mcp_notes = [_]McpNote{
     .{
@@ -2293,6 +2300,12 @@ fn skillInstalled(io: Io, sk: SkillDef) bool {
 /// webfetch never shells out to it — even when its binaries are on PATH.
 var g_skill_disabled = [_]bool{false} ** skills_registry.len;
 
+/// Same opt-out, for the metered companion MCP servers (codedb-pro). They live
+/// in companion_servers, NOT skills_registry, so they need their own flags —
+/// this is the bug fix: {"skills": {"codedbpro": false}} now actually disables
+/// the auto-connect (skillDisabled() never matched a companion server name).
+var g_companion_disabled = [_]bool{false} ** companion_servers.len;
+
 fn skillIndex(name: []const u8) ?usize {
     for (skills_registry, 0..) |sk, i| if (std.mem.eql(u8, sk.name, name)) return i;
     return null;
@@ -2303,23 +2316,67 @@ fn skillDisabled(name: []const u8) bool {
     return g_skill_disabled[i];
 }
 
+/// Companion-server opt-out (e.g. codedb-pro): {"skills": {"codedbpro": false}}.
+/// Server names aren't in skills_registry, so skillDisabled() can't see them —
+/// the companion auto-connect gate uses this instead.
+fn companionDisabled(server: []const u8) bool {
+    for (companion_servers, 0..) |c, i| if (std.mem.eql(u8, c.server, server)) return g_companion_disabled[i];
+    return false;
+}
+
+/// True when `codedb-pro probe` exits 0 (paid + usable). Set once at startup
+/// after the companion connects; selects the licensed vs conservative note.
+var g_codedbpro_licensed: bool = false;
+
+/// Run the companion's `probe` — its own harness-gating capability check, the
+/// same gate the codedb-pro CLI hooks use. Exit 0 == licensed and usable.
+fn probeCodedbproLicensed(gpa: Allocator, io: Io) bool {
+    const run = runCapped(gpa, io, &.{ "codedb-pro", "probe" }, 256, 256) catch return false;
+    defer {
+        gpa.free(run.stdout);
+        gpa.free(run.stderr);
+    }
+    return switch (run.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+/// Pick the codedbpro system-prompt note: the lean-in note when licensed, else
+/// the conservative free-codedb fallback (`conservative`, from mcp_notes).
+fn codedbproNote(server: []const u8, licensed: bool, conservative: []const u8) []const u8 {
+    if (licensed and std.mem.eql(u8, server, "codedbpro")) return codedbpro_note_licensed;
+    return conservative;
+}
+
 /// Installed AND not user-disabled — the only check callers should use.
 fn skillActive(io: Io, sk: SkillDef) bool {
     return !skillDisabled(sk.name) and skillInstalled(io, sk);
 }
 
-/// Parse the "skills" section of .harness/settings.json into
-/// g_skill_disabled (call once at startup): {"skills": {"<name>": false}}
-/// disables; anything else leaves the skill enabled.
+/// Parse the "skills" section of .harness/settings.json into the disabled
+/// flags (call once at startup): {"skills": {"<name>": false}} disables;
+/// anything else leaves it enabled. Covers skills_registry AND companion
+/// servers (codedb-pro).
 fn loadSkillSettings(io: Io, arena: Allocator) void {
     const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
     if (v != .object) return;
     const skills = v.object.get("skills") orelse return;
+    applySkillSettings(skills);
+}
+
+/// Pure half of loadSkillSettings (no disk I/O), so the opt-out wiring is
+/// unit-testable: maps {"skills": {"<name>": false}} onto the disabled flags.
+fn applySkillSettings(skills: Value) void {
     if (skills != .object) return;
     for (skills_registry, 0..) |sk, i| {
         const entry = skills.object.get(sk.name) orelse continue;
         if (entry == .bool and !entry.bool) g_skill_disabled[i] = true;
+    }
+    for (companion_servers, 0..) |c, i| {
+        const entry = skills.object.get(c.server) orelse continue;
+        if (entry == .bool and !entry.bool) g_companion_disabled[i] = true;
     }
 }
 
@@ -4127,7 +4184,7 @@ pub fn main(init: std.process.Init) !void {
     connect: {
         for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
         for (companion_servers) |c| {
-            if (skillDisabled(c.server) or !binOnPath(io, c.bin)) continue;
+            if (companionDisabled(c.server) or !binOnPath(io, c.bin)) continue;
             if (registry_storage.addServer(c.server, c.bin, &.{"--mcp"})) |_| {
                 break;
             } else |err| {
@@ -4139,6 +4196,9 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
+    // If the metered companion connected, probe its license once so the note
+    // below can lean into the paid tools (vs the conservative free-codedb note).
+    if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);
 
     var approvals: Approvals = .{ .yolo = yolo_flag };
     defer {
@@ -4193,7 +4253,8 @@ pub fn main(init: std.process.Init) !void {
     // succeeded). Native tools remain the fallback either way.
     for (mcp_notes) |mn| {
         if (!mcpServerConnected(mcp_tools, mn.server)) continue;
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, mn.note });
+        const note = codedbproNote(mn.server, g_codedbpro_licensed, mn.note);
+        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, note });
     }
     const sys_strict: []const u8 = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, strict_note });
 
@@ -12030,6 +12091,39 @@ test "skillDisabled: registry lookup and toggle" {
     g_skill_disabled[i] = true;
     try std.testing.expect(skillDisabled("kuri"));
     try std.testing.expect(!skillDisabled("not-a-skill"));
+}
+
+test "companion opt-out: {\"skills\":{\"codedbpro\":false}} disables auto-connect" {
+    // applySkillSettings is the pure half of loadSkillSettings; prove the
+    // settings key flips companionDisabled(), the flag the auto-connect reads.
+    const saved_companion = g_companion_disabled;
+    const ki = skillIndex("kuri").?;
+    const saved_kuri = g_skill_disabled[ki];
+    defer {
+        g_companion_disabled = saved_companion;
+        g_skill_disabled[ki] = saved_kuri;
+    }
+    g_companion_disabled = [_]bool{false} ** companion_servers.len;
+    g_skill_disabled[ki] = false;
+
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const json = "{\"skills\":{\"codedbpro\":false,\"kuri\":false}}";
+    const v = try std.json.parseFromSliceLeaky(Value, arena_inst.allocator(), json, .{ .allocate = .alloc_always });
+    applySkillSettings(v.object.get("skills").?);
+
+    try std.testing.expect(companionDisabled("codedbpro")); // the fix: was always false before
+    try std.testing.expect(skillDisabled("kuri")); // existing registry path still works
+    try std.testing.expect(!companionDisabled("not-a-server"));
+}
+
+test "codedbproNote: licensed flips codedbpro to the lean-in note" {
+    const cons = "CONSERVATIVE-NOTE";
+    try std.testing.expectEqualStrings(cons, codedbproNote("codedbpro", false, cons)); // unlicensed -> conservative
+    try std.testing.expectEqualStrings(cons, codedbproNote("muonry", true, cons)); // other servers untouched
+    try std.testing.expectEqualStrings(codedbpro_note_licensed, codedbproNote("codedbpro", true, cons)); // licensed -> lean-in
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "mcp__codedbpro__read") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "/rewind") != null);
 }
 
 test "parseAnswerRequest: preserves multiline text and optional call id" {

@@ -1,5 +1,6 @@
 mod commands;
 mod cli_install;
+mod debug_bridge;
 mod desktop_open;
 pub mod dto;
 mod forge_config_home;
@@ -88,6 +89,12 @@ pub fn run() {
             ))));
             // First run: install the `codegraff` launcher command on PATH (macOS).
             cli_install::ensure_cli_symlink(app);
+            #[cfg(debug_assertions)]
+            {
+                let bridge = debug_bridge::DebugBridge::new(app.handle().clone());
+                app.manage(bridge.clone());
+                bridge.start();
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -162,7 +169,8 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_close,
-            drain_pending_open
+            drain_pending_open,
+            debug_bridge::cg_debug_eval_result
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

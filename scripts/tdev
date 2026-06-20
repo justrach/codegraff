@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# tdev — agentic remote control for the native Tauri app.
+#
+# Talks to the dev-only debug bridge (debug_bridge.rs) that runs inside the
+# Codegraff desktop app on http://127.0.0.1:9233. Lets an agent (or human)
+# evaluate JS in the real webview WITH return values, screenshot the window,
+# and synthesize clicks/keys — all via curl, against the native app.
+#
+#   tdev health            bridge alive?
+#   tdev eval '<js>'       run JS in webview, print JSON result
+#   tdev shot [file]       screenshot the app window → png (default ./tdev_shot.png)
+#   tdev click '<sel>'     click the first element matching a CSS selector
+#   tdev type '<sel>' '<text>'   set input value + dispatch input event
+#   tdev key '<key>' [meta]      dispatch a KeyboardEvent on window
+#                               (meta = "meta" | "ctrl" | "shift" | "" )
+#
+# Examples:
+#   tdev eval 'document.querySelector("textarea#prompt")?.disabled'
+#   tdev eval 'document.title'
+#   tdev click 'button[aria-label="New chat"]'
+#   tdev key 'n' meta        # fires the Cmd+N shortcut
+#   tdev shot
+
+set -euo pipefail
+
+HOST="http://127.0.0.1:9233"
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+usage() {
+  sed -n '2,24p' "$SELF"
+  exit 1
+}
+
+[ $# -ge 1 ] || usage
+cmd="$1"; shift || true
+
+case "$cmd" in
+  health)
+    curl -fsS "$HOST/health" && echo
+    ;;
+  eval)
+    [ $# -ge 1 ] || { echo "usage: tdev eval '<js>'" >&2; exit 2; }
+    code="$1"
+    curl -fsS -X POST "$HOST/eval" \
+      -H 'Content-Type: application/json' \
+      -d "$(printf '%s' "$code" | python3 -c 'import sys,json; print(json.dumps({"code":sys.stdin.read()}))')" \
+      | python3 -m json.tool
+    ;;
+  shot)
+    out="${1:-./tdev_shot.png}"
+    curl -fsS "$HOST/screenshot" -o "$out"
+    echo "saved $out ($(wc -c < "$out" | tr -d ' ') bytes)"
+    ;;
+  click)
+    [ $# -ge 1 ] || { echo "usage: tdev click '<selector>'" >&2; exit 2; }
+    sel="$1"
+    "$SELF" eval "(()=>{const e=document.querySelector($(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$sel"));if(!e)return null;e.scrollIntoView({block:'center'});e.click();return 'clicked'})()"
+    ;;
+  type)
+    [ $# -ge 2 ] || { echo "usage: tdev type '<selector>' '<text>'" >&2; exit 2; }
+    sel="$1"; text="$2"
+    "$SELF" eval "(()=>{const e=document.querySelector($(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$sel"));if(!e)return null;const s=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set||Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set;s.call(e,$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$text"));e.dispatchEvent(new Event('input',{bubbles:true}));return 'typed'})()"
+    ;;
+  key)
+    [ $# -ge 1 ] || { echo "usage: tdev key '<key>' [meta]" >&2; exit 2; }
+    key="$1"; meta="${2:-}"
+    metaflag="false"
+    [ "$meta" = "meta" ] && metaflag="true"
+    [ "$meta" = "ctrl" ] && metaflag="true"
+    "$SELF" eval "(()=>{window.dispatchEvent(new KeyboardEvent('keydown',{key:$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$key"),metaKey:$metaflag,bubbles:true}));return 'keydown $key'})()"
+    ;;
+  *)
+    usage
+    ;;
+esac

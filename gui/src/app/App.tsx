@@ -133,6 +133,10 @@ function AppShell() {
   const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
   const [isSidebarAnimating, setIsSidebarAnimating] = useState(false);
   const sidebarAnimateTimeoutRef = useRef<number | null>(null);
+  // Holds the latest openNewChat from the always-mounted NewChatTrigger so the
+  // global Cmd/Ctrl+N shortcut can invoke it (including its git-worktree choice
+  // dialog) no matter what's visible.
+  const newChatRef = useRef<(() => void) | null>(null);
   // Briefly enable a width transition on the panels so toggling the sidebar
   // slides smoothly (like the artifacts drawer) instead of snapping. Kept off
   // during drag-resize so dragging stays 1:1 with the cursor.
@@ -227,6 +231,24 @@ function AppShell() {
     };
   }, []);
 
+  // Global Cmd/Ctrl+N → new chat. Reuses NewChatTrigger's openNewChat (captured
+  // in newChatRef) so the git-worktree choice dialog flows through identically.
+  // Skipped while a settings view or dialog is open or while the session is
+  // mid-bootstrap, and ignores key presses originating inside an input/textarea
+  // so it never fights typing — though Cmd+N is uncommon enough to be safe.
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key !== "n") {
+        return;
+      }
+      event.preventDefault();
+      newChatRef.current?.();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   if (!isSessionBootstrapped) {
     return (
       <main className="app-shell relative flex h-screen w-full items-center justify-center overflow-hidden bg-background">
@@ -265,9 +287,13 @@ function AppShell() {
               });
             }}
           />
-          {!isDesktopSidebarVisible && !isSettingsViewOpen ? (
-            <NewChatTrigger>
-              {({ isBusy, openNewChat }) => (
+          <NewChatTrigger>
+            {({ isBusy, openNewChat }) => {
+              newChatRef.current = openNewChat;
+              if (isDesktopSidebarVisible || isSettingsViewOpen) {
+                return null;
+              }
+              return (
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -279,9 +305,9 @@ function AppShell() {
                   <PenSquare strokeWidth={2} className="size-3.5" />
                   <span className="sr-only">New chat</span>
                 </Button>
-              )}
-            </NewChatTrigger>
-          ) : null}
+              );
+            }}
+          </NewChatTrigger>
           <ResizablePanelGroup orientation="horizontal">
             <ResizablePanel
               id="sidebar-panel"

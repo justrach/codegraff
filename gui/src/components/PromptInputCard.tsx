@@ -65,6 +65,12 @@ export function PromptInputCard({
   updatePromptSettings,
 }: PromptInputCardProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // The transparent-text overlay must scroll in lockstep with the textarea so the
+  // highlighted slash-command token stays aligned when the draft exceeds max-h-80
+  // and the textarea becomes scrollable. Without syncing, the overlay (overflow-
+  // hidden, pinned to inset-0) stays put while the textarea content scrolls under
+  // it — the highlight drifts away from the caret.
+  const commandOverlayRef = useRef<HTMLDivElement | null>(null);
   const dropZoneRef = useRef<HTMLDivElement | null>(null);
   const { attachments, addAttachments, removeAttachment } =
     useAttachments(binding);
@@ -76,10 +82,17 @@ export function PromptInputCard({
   });
   const isControlDisabled =
     isSendingPrompt || isRequestActive || !canCompose || isInputDisabled;
+  // Keep the composer editable while a request streams so the user can draft
+  // their next message; only Send is repurposed to Stop. Enter is guarded by
+  // isSubmitDisabled (which includes isRequestActive) so a draft is never sent
+  // mid-stream — it just waits until the run finishes.
+  const isTextareaDisabled =
+    isSendingPrompt || !canCompose || isInputDisabled;
   const isWorking = isRequestActive;
   const isSubmitDisabled =
     !canCompose ||
     isSendingPrompt ||
+    isRequestActive ||
     isInputDisabled ||
     promptDraft.trim().length === 0;
   const {
@@ -236,6 +249,7 @@ export function PromptInputCard({
           <div className="relative m-1">
             {commandMatch ? (
               <div
+                ref={commandOverlayRef}
                 aria-hidden
                 className="pointer-events-none absolute inset-0 max-h-80 overflow-hidden whitespace-pre-wrap break-words text-sm"
               >
@@ -256,6 +270,12 @@ export function PromptInputCard({
               value={promptDraft}
               onChange={(event) => setPromptDraft(event.target.value)}
               onPaste={handlePaste}
+              onScroll={(event) => {
+                if (commandOverlayRef.current != null) {
+                  commandOverlayRef.current.scrollTop =
+                    event.currentTarget.scrollTop;
+                }
+              }}
               onKeyDown={(event) => {
                 // The command menu consumes Enter/Tab/arrows while open, so a
                 // command is completed rather than sent.
@@ -284,7 +304,7 @@ export function PromptInputCard({
                   handleSubmit();
                 }
               }}
-              disabled={isControlDisabled}
+              disabled={isTextareaDisabled}
               rows={3}
             />
           </div>

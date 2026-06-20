@@ -104,7 +104,7 @@ export function renderChatThreadItem(
       renderChatMessage(item.message, workspacePath)
     ) : item.kind === "request_work" ? (
       <ChatWorkRow
-        key={`${item.key}:${item.isRunning ? "running" : item.hasError ? "error" : "idle"}`}
+        key={item.key}
         item={item}
         requestTiming={requestTimingsById[item.requestId]}
         workspacePath={workspacePath}

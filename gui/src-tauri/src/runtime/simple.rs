@@ -27,6 +27,7 @@ struct ConversationState {
     active_request_ids: Vec<String>,
     active_agent_id: Option<String>,
     plan_mode: bool,
+    goal: Option<String>,
     updated_at: i64,
 }
 
@@ -45,7 +46,9 @@ struct RuntimeState {
     /// forwarded live to running sessions. None effort = the binary default.
     selected_effort: Option<String>,
     fast_enabled: bool,
-    /// Cached `graff --schema` model list (populated lazily).
+    /// Last successful `graff --schema` model list. Refreshed when the prompt
+    /// settings endpoint is read so the GUI picks up newly shipped models
+    /// without an app restart.
     model_catalog: Option<Vec<ModelOption>>,
     /// Live `ask_user` prompts awaiting a GUI answer, keyed by conversation.
     /// Surfaced as the conversation's `followup` so the FollowupComposer renders.
@@ -56,8 +59,10 @@ struct RuntimeState {
 #[derive(Clone)]
 struct ModelOption {
     provider: String,
+    provider_name: Option<String>,
     name: String,
     context: Option<u64>,
+    is_default: bool,
 }
 
 /// A persistent `graff --json` child bound to one conversation. Keeping the
@@ -143,7 +148,7 @@ impl RuntimeManager {
 
     /// Returns the model picker, populated from `graff --schema`.
     pub async fn get_prompt_settings(&self, _: Option<String>) -> Result<PromptSettingsDto> {
-        let catalog = self.ensure_model_catalog().await;
+        let catalog = self.refresh_model_catalog().await;
         let configured_provider_ids = configured_provider_ids().await;
         let (selected_provider, selected_model, selected_effort, fast_enabled) = {
             let state = self.state.lock().await;
@@ -245,7 +250,7 @@ impl RuntimeManager {
         &self,
         input: UpdatePromptSettingsInput,
     ) -> Result<PromptSettingsDto> {
-        let catalog = self.ensure_model_catalog().await;
+        let catalog = self.refresh_model_catalog().await;
         let configured_provider_ids = configured_provider_ids().await;
         let available_catalog = filtered_catalog_models(&catalog, &configured_provider_ids);
         let selected_model = available_catalog
@@ -298,8 +303,18 @@ impl RuntimeManager {
                 return catalog.clone();
             }
         }
+        self.refresh_model_catalog().await
+    }
+
+    /// Re-reads `graff --schema` so prompt-settings reflects the current binary's
+    /// provider/model list. If the schema read fails after a successful earlier
+    /// read, keep showing the last known catalog rather than blanking the picker.
+    async fn refresh_model_catalog(&self) -> Vec<ModelOption> {
         let catalog = codegraff_schema_models().await;
         let mut state = self.state.lock().await;
+        if catalog.is_empty() {
+            return state.model_catalog.clone().unwrap_or_default();
+        }
         state.model_catalog = Some(catalog.clone());
         catalog
     }
@@ -341,6 +356,13 @@ impl RuntimeManager {
                 Ok(cli_login_session(
                     &input.provider_id,
                     "Codex login launched in Terminal. Complete the browser OAuth flow there, then finish setup here.",
+                ))
+            }
+            ProviderAuthMethodKindDto::KimiDevice => {
+                launch_codegraff_login(Some("kimi")).await?;
+                Ok(cli_login_session(
+                    &input.provider_id,
+                    "Kimi login launched in Terminal. Complete the device-code flow there, then finish setup here.",
                 ))
             }
             _ => anyhow::bail!("Unsupported auth method for {}", input.provider_id),
@@ -403,6 +425,8 @@ impl RuntimeManager {
         Ok(vec![
             command("help", "Show available commands.", false),
             command("agent", "Show active agent.", false),
+            command("goal", "Set/show the current objective.", true),
+            command("loop", "Run an autonomous plan→act→verify pass.", true),
             command("compact", "Compact current conversation.", true),
             command("workspace-status", "Show git status.", true),
         ])
@@ -418,8 +442,10 @@ impl RuntimeManager {
             .unwrap_or_else(|| format!("chat-{}", Uuid::new_v4().simple()));
         let request_id = format!("request-{}", Uuid::new_v4().simple());
         let plan_mode = input.agent_id.as_deref() == Some("muse");
+        let loop_mode = input.agent_id.as_deref() == Some("loop");
         let title_model_arg = self.selected_model_name().await;
         let is_first_turn;
+        let engine_prompt;
         {
             let mut state = self.state.lock().await;
             set_active_workspace(&mut state, &input.workspace_path);
@@ -439,10 +465,23 @@ impl RuntimeManager {
                     active_request_ids: vec![],
                     active_agent_id,
                     plan_mode,
+                    goal: None,
                     updated_at: now_millis(),
                 });
             conversation.plan_mode = plan_mode;
             conversation.updated_at = now_millis();
+            let goal_prompt = conversation
+                .goal
+                .as_ref()
+                .map(|goal| format!("{}\n\n[harness goal: {}]", input.prompt, goal))
+                .unwrap_or_else(|| input.prompt.clone());
+            engine_prompt = if loop_mode {
+                format!(
+                    "{goal_prompt}\n\n[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps.]"
+                )
+            } else {
+                goal_prompt
+            };
             is_first_turn = conversation.messages.is_empty();
             if is_first_turn && is_placeholder_title(&conversation.title) {
                 conversation.title = title_from_prompt(&input.prompt);
@@ -501,7 +540,7 @@ impl RuntimeManager {
                 &conversation_id,
                 &request_id,
                 &input.workspace_path,
-                &input.prompt,
+                &engine_prompt,
             )
             .await
         {
@@ -909,6 +948,7 @@ impl RuntimeManager {
                     messages: conversation.messages.clone(),
                     active_agent_id: conversation.active_agent_id.clone(),
                     plan_mode: conversation.plan_mode,
+                    goal: conversation.goal.clone(),
                     updated_at: conversation.updated_at,
                 })
                 .collect()
@@ -1053,6 +1093,83 @@ impl RuntimeManager {
                 result_kind: CommandResultKindDto::Agents,
                 payload: Some(CommandPayloadDto::Agents(self.agents_payload().await)),
             }),
+            "goal" => {
+                let _workspace = workspace_path.context("Missing workspace")?;
+                let conversation_id = conversation_id.context("Missing conversation")?;
+                let text = args.join(" ").trim().to_string();
+                let body = if text.is_empty() {
+                    let current = {
+                        let state = self.state.lock().await;
+                        state
+                            .conversations
+                            .get(&conversation_id)
+                            .and_then(|conversation| conversation.goal.clone())
+                    };
+                    current
+                        .map(|goal| format!("Current goal: {goal}\n\nClear it with /goal clear."))
+                        .unwrap_or_else(|| "No active goal. Set one with /goal <objective>.".into())
+                } else if text.eq_ignore_ascii_case("clear") || text.eq_ignore_ascii_case("off") {
+                    self.mutate_conversation(&conversation_id, |conversation| {
+                        conversation.goal = None;
+                    })
+                    .await;
+                    self.persist_conversations().await;
+                    "Goal cleared. Future turns will not get goal steering.".into()
+                } else {
+                    let goal = text.clone();
+                    self.mutate_conversation(&conversation_id, move |conversation| {
+                        conversation.goal = Some(goal);
+                    })
+                    .await;
+                    self.persist_conversations().await;
+                    format!(
+                        "Goal set: {text}\n\nFuture turns in this chat will include this objective as steering."
+                    )
+                };
+                let snapshot = self.snapshot().await?;
+                let _ = self.emitter.emit_session_updated(snapshot.clone());
+                Ok(CommandRunResultDto {
+                    title: "/goal".into(),
+                    body: Some(body),
+                    snapshot: Some(snapshot),
+                    saved_path: None,
+                    result_kind: CommandResultKindDto::Text,
+                    payload: None,
+                })
+            }
+            "loop" => {
+                let prompt = args.join(" ").trim().to_string();
+                if prompt.is_empty() {
+                    return Ok(CommandRunResultDto {
+                        title: "/loop".into(),
+                        body: Some(
+                            "Usage: /loop <prompt> — run an autonomous plan→act→verify pass."
+                                .into(),
+                        ),
+                        snapshot: None,
+                        saved_path: None,
+                        result_kind: CommandResultKindDto::Text,
+                        payload: None,
+                    });
+                }
+                let workspace = workspace_path.context("Missing workspace")?;
+                let snapshot = self
+                    .send_prompt(SendPromptInput {
+                        workspace_path: workspace,
+                        conversation_id,
+                        prompt,
+                        agent_id: Some("loop".into()),
+                    })
+                    .await?;
+                Ok(CommandRunResultDto {
+                    title: "/loop".into(),
+                    body: None,
+                    snapshot: Some(snapshot),
+                    saved_path: None,
+                    result_kind: CommandResultKindDto::Snapshot,
+                    payload: None,
+                })
+            }
             "compact" => Ok(CommandRunResultDto {
                 title: "/compact".into(),
                 body: None,
@@ -1086,7 +1203,7 @@ impl RuntimeManager {
             _ => Ok(CommandRunResultDto {
                 title: format!("/{name}"),
                 body: Some(format!(
-                    "Available MVP commands: /help, /agent, /compact, /workspace-status. Args: {}",
+                    "Available MVP commands: /help, /agent, /goal, /loop, /compact, /workspace-status. Args: {}",
                     args.join(" ")
                 )),
                 snapshot: None,
@@ -1425,6 +1542,7 @@ impl RuntimeManager {
                 active_request_ids: vec![],
                 active_agent_id: None,
                 plan_mode: false,
+                goal: None,
                 updated_at: now_millis(),
             },
         );
@@ -1970,6 +2088,8 @@ struct PersistedConversation {
     #[serde(default)]
     plan_mode: bool,
     #[serde(default)]
+    goal: Option<String>,
+    #[serde(default)]
     updated_at: i64,
 }
 
@@ -2053,6 +2173,7 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
                     active_request_ids: vec![],
                     active_agent_id: conversation.active_agent_id,
                     plan_mode: conversation.plan_mode,
+                    goal: conversation.goal,
                     updated_at: conversation.updated_at,
                 },
             )
@@ -2166,7 +2287,7 @@ fn command(name: &str, usage: &str, requires_workspace: bool) -> CommandDescript
         is_agent_switch: false,
         execution_kind: CommandExecutionKindDto::Runnable,
         requires_workspace,
-        requires_conversation: name == "compact",
+        requires_conversation: matches!(name, "compact" | "goal" | "loop"),
         argument_hint: None,
         result_kind: CommandResultKindDto::Text,
     }
@@ -2221,6 +2342,41 @@ async fn codegraff_schema_models() -> Vec<ModelOption> {
         Ok(schema) => schema,
         Err(_) => return vec![],
     };
+    let provider_names: HashMap<String, String> = schema
+        .get("providers")
+        .and_then(serde_json::Value::as_array)
+        .map(|providers| {
+            providers
+                .iter()
+                .filter_map(|provider| {
+                    Some((
+                        provider.get("id")?.as_str()?.to_string(),
+                        provider
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(provider.get("id")?.as_str()?)
+                            .to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let provider_defaults: HashMap<String, String> = schema
+        .get("providers")
+        .and_then(serde_json::Value::as_array)
+        .map(|providers| {
+            providers
+                .iter()
+                .filter_map(|provider| {
+                    Some((
+                        provider.get("id")?.as_str()?.to_string(),
+                        provider.get("default_model")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     schema
         .get("models")
         .and_then(serde_json::Value::as_array)
@@ -2228,9 +2384,15 @@ async fn codegraff_schema_models() -> Vec<ModelOption> {
             models
                 .iter()
                 .filter_map(|model| {
+                    let provider = model.get("provider")?.as_str()?.to_string();
+                    let name = model.get("name")?.as_str()?.to_string();
                     Some(ModelOption {
-                        provider: model.get("provider")?.as_str()?.to_string(),
-                        name: model.get("name")?.as_str()?.to_string(),
+                        provider_name: provider_names.get(&provider).cloned(),
+                        is_default: provider_defaults
+                            .get(&provider)
+                            .is_some_and(|default_model| default_model == &name),
+                        provider,
+                        name,
                         context: model.get("context").and_then(serde_json::Value::as_u64),
                     })
                 })
@@ -2348,7 +2510,10 @@ fn prompt_model_option(model: &ModelOption) -> PromptModelOptionDto {
 
     PromptModelOptionDto {
         provider_id: model.provider.clone(),
-        provider_name: provider_display_name(&model.provider),
+        provider_name: model
+            .provider_name
+            .clone()
+            .unwrap_or_else(|| provider_display_name(&model.provider)),
         model_id: model.name.clone(),
         model_name: Some(model.name.clone()),
         context_length: model.context,
@@ -2367,8 +2532,14 @@ fn selected_prompt_model_pair(
 
     let default_model = available_catalog
         .iter()
-        .find(|model| model.name == "deepseek-v4-pro")
+        .find(|model| model.provider == "codegraff" && model.is_default)
         .copied()
+        .or_else(|| {
+            available_catalog
+                .iter()
+                .find(|model| model.is_default)
+                .copied()
+        })
         .or_else(|| available_catalog.first().copied());
 
     selected_provider
@@ -2674,7 +2845,11 @@ fn codegraff_binary() -> String {
             }
         }
     }
-    for abs in ["/opt/homebrew/bin/graff", "/usr/local/bin/graff", "/usr/bin/graff"] {
+    for abs in [
+        "/opt/homebrew/bin/graff",
+        "/usr/local/bin/graff",
+        "/usr/bin/graff",
+    ] {
         if Path::new(abs).is_file() {
             return abs.to_string();
         }
@@ -2832,14 +3007,24 @@ fn provider_summary_with_key_list(
     provider: &CodegraffProvider,
     key_list: &str,
 ) -> ProviderSummaryDto {
+    let mut auth_methods = vec![ProviderAuthMethodDto {
+        kind: provider.auth_method.clone(),
+        label: provider_auth_label(provider),
+    }];
+    // Kimi accepts both an API key and a device-code OAuth login (`graff login
+    // kimi`). Offer both so users can re-auth via the CLI's OAuth flow when
+    // their key is removed or expires — mirroring codegraff/codex.
+    if provider.id == "kimi" {
+        auth_methods.push(ProviderAuthMethodDto {
+            kind: ProviderAuthMethodKindDto::KimiDevice,
+            label: "Kimi Code device login".into(),
+        });
+    }
     ProviderSummaryDto {
         id: provider.id.clone(),
         name: provider.name.clone(),
         configured: provider_configured(provider, key_list),
-        auth_methods: vec![ProviderAuthMethodDto {
-            kind: provider.auth_method.clone(),
-            label: provider_auth_label(provider),
-        }],
+        auth_methods,
         env_override: provider_env_override(provider),
     }
 }
@@ -2922,6 +3107,7 @@ fn provider_auth_label(provider: &CodegraffProvider) -> String {
             .unwrap_or_else(|| "API key".into()),
         ProviderAuthMethodKindDto::CodegraffDevice => "Codegraff device login".into(),
         ProviderAuthMethodKindDto::CodexDevice => "Codex browser login".into(),
+        ProviderAuthMethodKindDto::KimiDevice => "Kimi Code device login".into(),
         _ => "Unsupported".into(),
     }
 }
@@ -2952,6 +3138,10 @@ fn provider_login_configured(
                 || key_list_mentions_provider(key_list, &provider.id)
         }
         "codex" => home_codex_auth_has_valid_token(home),
+        "kimi" => {
+            key_list_mentions_provider(key_list, &provider.id)
+                || kimi_auth_has_valid_token(home)
+        }
         _ => key_list_mentions_provider(key_list, &provider.id),
     }
 }
@@ -2976,6 +3166,27 @@ fn home_file_exists(home: Option<&Path>, relative_path: &str) -> bool {
 fn home_codex_auth_has_valid_token(home: Option<&Path>) -> bool {
     home.map(|home| codex_auth_file_has_valid_token(&home.join(".codex/auth.json")))
         .unwrap_or(false)
+}
+
+/// Kimi OAuth login (`graff login kimi`) writes a JSON token file to
+/// `~/.kimi/credentials/graff-oauth.json`. The CLI auto-refreshes the
+/// access token when near expiry, so a non-empty access_token means logged in.
+fn kimi_auth_has_valid_token(home: Option<&Path>) -> bool {
+    home.map(|home| {
+        let path = home.join(".kimi/credentials/graff-oauth.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return false;
+        };
+        value
+            .get("access_token")
+            .and_then(|token| token.as_str())
+            .map(|token| !token.trim().is_empty())
+            .unwrap_or(false)
+    })
+    .unwrap_or(false)
 }
 
 fn codex_auth_file_has_valid_token(path: &Path) -> bool {
@@ -3090,6 +3301,9 @@ fn remove_stored_credential(provider_id: &str) -> Result<()> {
             }
             "codex" => {
                 let _ = std::fs::remove_file(home.join(".codex/auth.json"));
+            }
+            "kimi" => {
+                let _ = std::fs::remove_file(home.join(".kimi/credentials/graff-oauth.json"));
             }
             _ => {}
         }
@@ -3370,6 +3584,7 @@ mod tests {
                 active_request_ids: vec![],
                 active_agent_id: None,
                 plan_mode: false,
+                goal: None,
                 updated_at: 10,
             },
         );
@@ -3498,8 +3713,10 @@ mod tests {
     fn model(provider: &str, name: &str) -> ModelOption {
         ModelOption {
             provider: provider.into(),
+            provider_name: None,
             name: name.into(),
             context: None,
+            is_default: provider == "codegraff" && name == "deepseek-v4-pro",
         }
     }
 
@@ -3625,6 +3842,7 @@ mod tests {
                 active_request_ids: vec![],
                 active_agent_id: None,
                 plan_mode: false,
+                goal: None,
                 updated_at: 10,
             },
         );
@@ -3638,6 +3856,7 @@ mod tests {
                 active_request_ids: vec![],
                 active_agent_id: None,
                 plan_mode: false,
+                goal: None,
                 updated_at: 20,
             },
         );

@@ -61,6 +61,8 @@ export interface SidebarItemActionsMenuProps {
   removeLabel?: string;
   renameLabel?: string;
   allowEmptyName?: boolean;
+  removeConfirmTitle?: string;
+  removeConfirmDescription?: string;
 }
 
 export interface SidebarSettingsControlProps {

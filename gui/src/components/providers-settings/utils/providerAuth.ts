@@ -11,6 +11,7 @@ function getAuthMethodPriority(method: ProviderAuthMethod) {
     case "o_auth_device":
     case "codex_device":
     case "codegraff_device":
+    case "kimi_device":
       return 1;
     case "google_adc":
       return 2;
@@ -29,7 +30,7 @@ export function getSortedAuthMethods(provider: ProviderSummary) {
 
 export function supportsOauth(provider: ProviderSummary) {
   return provider.authMethods.some((method) =>
-    ["o_auth_code", "o_auth_device", "codex_device", "codegraff_device"].includes(method.kind),
+    ["o_auth_code", "o_auth_device", "codex_device", "codegraff_device", "kimi_device"].includes(method.kind),
   );
 }
 

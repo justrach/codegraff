@@ -28,6 +28,14 @@ import { ConversationDockviewHeaderActions } from "@/components/conversation-pan
 import { ConversationDockviewTab } from "@/components/conversation-panel/ConversationDockviewTab";
 import { Button } from "@/components/ui/Button";
 import { ButtonGroup } from "@/components/ui/ButtonGroup";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/Dialog";
 import * as desktopClient from "@/services/desktop/client";
 
 import { AuxiliaryPaneShell } from "./AuxiliaryPaneShell";
@@ -110,6 +118,10 @@ export function ChatTile({
     changes: false,
     terminal: false,
   });
+  // Tracks how many terminal tabs would be destroyed by the toggle-close so the
+  // confirmation dialog can warn the user. Closing a single terminal is normal
+  // toggle behavior; closing 2+ at once (each with its own PTY) is destructive.
+  const [closeTerminalsCount, setCloseTerminalsCount] = useState(0);
   // Briefly enables a width/position transition on the dock's view containers so
   // chat glides to its new size when a pane opens/closes (see chat-tile-dockview.css).
   // Toggled imperatively (not via state) so the class is in the DOM *before* the
@@ -271,10 +283,13 @@ export function ChatTile({
 
     const terminals = getTerminalPanels(api);
     if (terminals.length > 0) {
-      // Re-clicking the toggle closes the whole bottom terminal panel.
-      for (const panel of terminals) {
-        dispatchPaneCloseRequest(`${binding.conversationId}:${panel.id}`);
+      // A single terminal closes immediately (normal toggle). Two or more tabs
+      // each hold a live PTY, so confirm before tearing them all down at once.
+      if (terminals.length > 1) {
+        setCloseTerminalsCount(terminals.length);
+        return;
       }
+      dispatchPaneCloseRequest(`${binding.conversationId}:${terminals[0].id}`);
       return;
     }
 
@@ -282,6 +297,18 @@ export function ChatTile({
     withProgrammaticMutation(() => openChatTilePane(api, binding, "terminal"));
     scheduleInnerLayoutSave();
   }, [binding, runLayoutAnimation, scheduleInnerLayoutSave, withProgrammaticMutation]);
+
+  const handleCloseAllTerminalsConfirm = useCallback(() => {
+    const api = innerApiRef.current;
+    if (api == null) {
+      setCloseTerminalsCount(0);
+      return;
+    }
+    for (const panel of getTerminalPanels(api)) {
+      dispatchPaneCloseRequest(`${binding.conversationId}:${panel.id}`);
+    }
+    setCloseTerminalsCount(0);
+  }, [binding.conversationId]);
 
   const handleAddTerminal = useCallback(() => {
     const api = innerApiRef.current;
@@ -652,6 +679,40 @@ export function ChatTile({
         tabComponents={tabComponents}
         theme={theme}
       />
+      <Dialog
+        open={closeTerminalsCount > 0}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCloseTerminalsCount(0);
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Close {closeTerminalsCount} terminals?</DialogTitle>
+            <DialogDescription>
+              This closes every terminal tab and ends its shell session. This
+              can't be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setCloseTerminalsCount(0)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={handleCloseAllTerminalsConfirm}
+            >
+              Close terminals
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
