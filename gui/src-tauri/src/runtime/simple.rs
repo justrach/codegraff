@@ -3337,6 +3337,56 @@ fn saved_detail(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn mk_output(stdout: &[u8], stderr: &[u8], raw_status: i32) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(raw_status),
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_empty_is_no_output() {
+        // stdout+stderr empty, exit 0 -> the "(no output)" placeholder.
+        assert_eq!(format_command_output(&mk_output(b"", b"", 0)), "(no output)");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_stdout_only_unchanged() {
+        assert_eq!(format_command_output(&mk_output(b"hello\n", b"", 0)), "hello\n");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_stderr_only_gets_label() {
+        // No stdout, so no leading newline; "[stderr]" label prefixes stderr.
+        assert_eq!(
+            format_command_output(&mk_output(b"", b"oops\n", 0)),
+            "[stderr]\noops\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_stderr_separator_and_nonzero_exit() {
+        // stdout present -> "[stderr]" goes on its own line after a separator.
+        let out = format_command_output(&mk_output(b"out\n", b"err\n", 1 << 8));
+        assert!(out.contains("out\n[stderr]\nerr\n"));
+        assert!(out.ends_with("[exit code 1]"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_signal_terminated_is_abnormal() {
+        // raw status 2 -> WIFSIGNALED -> status.code() is None.
+        assert!(format_command_output(&mk_output(b"", b"", 2)).contains("[terminated abnormally]"));
+    }
+
+
     fn followup(
         id: &str,
         kind: FollowupKind,

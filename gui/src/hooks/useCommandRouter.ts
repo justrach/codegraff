@@ -31,7 +31,7 @@ interface UseCommandRouterOptions {
   onCommandResult?: (result: CommandRunResult) => void;
 }
 
-function parseSlashCommand(draft: string): ParsedCommand | null {
+export function parseSlashCommand(draft: string): ParsedCommand | null {
   const match = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(draft.trim());
   if (match == null) {
     return null;
