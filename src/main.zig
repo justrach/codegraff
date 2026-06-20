@@ -2672,6 +2672,8 @@ var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
 var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
 var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
 var g_force_interrupt = false; // Ctrl-F force caused the last interrupt
+var g_5xx_body_buf: [600]u8 = undefined; // snippet of the last 5xx/429 error body
+var g_5xx_body_len: usize = 0; // 0 = no body captured
 
 /// Pops the next queued steering prompt (FIFO), or null if none.
 fn popSteer() ?SteerEntry {
@@ -4760,6 +4762,9 @@ pub fn main(init: std.process.Init) !void {
         if (CostTally.render(g_cost.snap(io), &uw)) {
             std.debug.print("[usage] {s}\n", .{uw.buffered()});
         } else |_| {}
+        saveSession(&root, arena, "last") catch |err| {
+            std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
+        };
         return;
     }
 
@@ -5130,11 +5135,13 @@ pub fn main(init: std.process.Init) !void {
                 g_force_interrupt = false;
                 try out.print("{s}{s}{s}\n", .{ style.yellow, int_msg, style.reset });
                 try out.flush();
+                saveSession(&root, arena, "last") catch {};
                 continue;
             },
             error.ApiError => {
                 if (g_telem) |t| t.errorEvent("api", root.last_api_error orelse "api error");
                 if (json_mode) root.emit(.{ .type = "error", .message = root.last_api_error orelse "api error" });
+                saveSession(&root, arena, "last") catch {};
                 continue;
             },
             else => |e| {
@@ -5144,6 +5151,7 @@ pub fn main(init: std.process.Init) !void {
                 } else {
                     root.say("[turn aborted: {t}]\n", .{e}) catch {};
                 }
+                saveSession(&root, arena, "last") catch {};
                 continue;
             },
         };
@@ -5171,7 +5179,16 @@ pub fn main(init: std.process.Init) !void {
     }
     // Final save on exit also captures command-driven edits since the last turn
     // (/clear, /rewind) so the next start resumes the true end state.
-    saveSession(&root, arena, "last") catch {};
+    if (!json_mode and root.messages.items.len > 0) {
+        saveSession(&root, arena, "last") catch |err| {
+            out.print("{s}⚠ session save failed: {t}{s}\n", .{ style.yellow, err, style.reset }) catch {};
+            out.flush() catch {};
+        };
+        out.print("{s}↩ session saved → last{s}{s}\n", .{ style.dim, style.reset, session_ext }) catch {};
+        out.flush() catch {};
+    } else {
+        saveSession(&root, arena, "last") catch {};
+    }
     try out.writeAll("\n");
     try out.flush();
 }
@@ -8079,15 +8096,23 @@ const Agent = struct {
                             if (throttled) {
                                 const delay_ms = @min(@as(u64, 1000) << @intCast(@min(attempt, 3)), 8000);
                                 const what: []const u8 = if (err == error.RateLimited) "rate limited (429)" else "server error (5xx)";
-                                try self.say("[{s} — retrying in {d}s ({d}/{d})]\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts });
-                                if (self.tracer) |tr| tr.note("retry", what);
+                                if (g_5xx_body_len > 0) {
+                                    try self.say("[{s} — retrying in {d}s ({d}/{d})] {s}\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts, g_5xx_body_buf[0..g_5xx_body_len] });
+                                } else {
+                                    try self.say("[{s} — retrying in {d}s ({d}/{d})]\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts });
+                                }
+                                if (self.tracer) |tr| tr.note("retry", if (g_5xx_body_len > 0) g_5xx_body_buf[0..g_5xx_body_len] else what);
                                 self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                             } else {
                                 try self.say("[network error: {t} — retrying ({d}/{d})]\n", .{ err, attempt + 1, max_attempts });
                             }
                             continue;
                         }
-                        try self.say("[request failed: {t} — giving up this turn]\n", .{err});
+                        if (g_5xx_body_len > 0) {
+                            try self.say("[request failed: {t} — giving up this turn] {s}\n", .{ err, g_5xx_body_buf[0..g_5xx_body_len] });
+                        } else {
+                            try self.say("[request failed: {t} — giving up this turn]\n", .{err});
+                        }
                         // Network give-up is its own error kind: the ApiError
                         // handler's last_api_error is an API envelope, stale
                         // or null on a pure transport failure.
@@ -9224,6 +9249,10 @@ const Agent = struct {
         // off and retries (surfaced in the trace as a "retry" note).
         const status_code = @intFromEnum(response.head.status);
         if (status_code == 429 or status_code >= 500) {
+            // Drain a snippet of the error body so the retry message can
+            // surface the gateway's diagnostic (e.g. "upstream timeout")
+            // instead of a bare "server error (5xx)".
+            capture5xxBodyStream(self.gpa, &response);
             if (req.connection) |conn| conn.closing = true;
             return if (status_code == 429) error.RateLimited else error.ServerError;
         }
@@ -10955,6 +10984,44 @@ fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[6]std.http.Hea
     return buf[0..n];
 }
 
+/// Copy up to g_5xx_body_buf.len bytes of an error response body into the
+/// global buffer so request()'s retry message can surface the gateway's
+/// diagnostic (e.g. "upstream timeout connecting to anthropic") instead of a
+/// bare "server error (5xx)".
+fn capture5xxBody(src: []const u8) void {
+    const n = @min(src.len, g_5xx_body_buf.len);
+    if (n > 0) @memcpy(g_5xx_body_buf[0..n], src[0..n]);
+    g_5xx_body_len = n;
+}
+
+/// Same, but drains from a streaming Response whose head has been received but
+/// whose body hasn't been read yet. Best-effort: a read failure just leaves
+/// g_5xx_body_len at 0.
+fn capture5xxBodyStream(gpa: Allocator, response: *std.http.Client.Response) void {
+    g_5xx_body_len = 0;
+    const dbuf: []u8 = switch (response.head.content_encoding) {
+        .identity => &.{},
+        .zstd => gpa.alloc(u8, std.compress.zstd.default_window_len) catch return,
+        .deflate, .gzip => gpa.alloc(u8, std.compress.flate.max_window_len) catch return,
+        .compress => return,
+    };
+    defer if (dbuf.len > 0) gpa.free(dbuf);
+    var tbuf: [64]u8 = undefined;
+    var dec: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&tbuf, &dec, dbuf);
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    while (g_5xx_body_len < g_5xx_body_buf.len) {
+        _ = reader.streamDelimiterEnding(&aw.writer, '\n') catch break;
+        const chunk = aw.writer.buffered();
+        if (chunk.len == 0) break;
+        const n = @min(chunk.len, g_5xx_body_buf.len - g_5xx_body_len);
+        @memcpy(g_5xx_body_buf[g_5xx_body_len..][0..n], chunk[0..n]);
+        g_5xx_body_len += n;
+        aw.clearRetainingCapacity();
+    }
+}
+
 /// POST the request body; returns the raw response body (caller frees).
 /// std.http.Client.fetch is thread-safe, so subagents on pool threads share
 /// this client (and its connection pool).
@@ -10983,7 +11050,10 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
         .extra_headers = extra,
     });
     const code = @intFromEnum(res.status);
-    if (code == 429 or code >= 500) return if (code == 429) error.RateLimited else error.ServerError;
+    if (code == 429 or code >= 500) {
+        capture5xxBody(aw.writer.buffered());
+        return if (code == 429) error.RateLimited else error.ServerError;
+    }
     return aw.toOwnedSlice();
 }
 
