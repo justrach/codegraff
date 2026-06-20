@@ -8144,13 +8144,13 @@ const Agent = struct {
             const threshold = self.provider.compactAt();
             // % of the compaction budget already used — glanceable headroom.
             const pct = if (threshold > 0) self.last_context_tokens * 100 / threshold else 0;
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · {s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
+            try w.print("\n{s}[{s}{s}{s}{s}{s} · cwd {s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
                 style.dim,   style.reset,   style.cyan,  self.provider.model,      flag,             style.dim,
                 style.reset, g_cwd_display, style.dim,   self.last_context_tokens, threshold / 1000, pct,
                 cached,      cost,          style.reset, style.bold,               style.reset,
             });
         } else {
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · {s}{s}{s}{s}]{s} {s}›{s} ", .{
+            try w.print("\n{s}[{s}{s}{s}{s}{s} · cwd {s}{s}{s}{s}]{s} {s}›{s} ", .{
                 style.dim,   style.reset,   style.cyan, self.provider.model, flag,        style.dim,
                 style.reset, g_cwd_display, style.dim,  cost,                style.reset, style.bold,
                 style.reset,
