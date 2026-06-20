@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   ArrowUpIcon,
   ChevronDownIcon,
@@ -40,10 +40,24 @@ import { usePromptModelPicker } from "@/hooks/usePromptModelPicker";
 import { savePastedImage, setFast } from "@/services/desktop/client";
 import { cn } from "@/utils/cn";
 import {
+  getPromptHistoryNavigationResult,
+  type PromptHistoryCursor,
+} from "./promptHistoryNavigation";
+import {
   formatPlanningThinkingLabel,
   formatReasoningEffortLabel,
 } from "@/utils/reasoning";
 import type { PromptInputCardProps } from "./types/prompt";
+
+const EMPTY_PROMPT_HISTORY: string[] = [];
+
+function isCaretOnFirstLine(textarea: HTMLTextAreaElement) {
+  return !textarea.value.slice(0, textarea.selectionStart).includes("\n");
+}
+
+function isCaretOnLastLine(textarea: HTMLTextAreaElement) {
+  return !textarea.value.slice(textarea.selectionEnd).includes("\n");
+}
 
 export function PromptInputCard({
   canCompose,
@@ -53,6 +67,7 @@ export function PromptInputCard({
   placeholder = "Ask about this workspace…",
   promptSettings,
   promptDraft,
+  promptHistory = EMPTY_PROMPT_HISTORY,
   focusSignal,
   isInputDisabled = false,
   binding,
@@ -83,17 +98,15 @@ export function PromptInputCard({
   const isControlDisabled =
     isSendingPrompt || isRequestActive || !canCompose || isInputDisabled;
   // Keep the composer editable while a request streams so the user can draft
-  // their next message; only Send is repurposed to Stop. Enter is guarded by
-  // isSubmitDisabled (which includes isRequestActive) so a draft is never sent
-  // mid-stream — it just waits until the run finishes.
-  const isTextareaDisabled =
-    isSendingPrompt || !canCompose || isInputDisabled;
+  // and queue the next message. While streaming, a non-empty draft turns the
+  // primary button back into Send; an empty draft keeps it as Stop.
+  const isTextareaDisabled = isSendingPrompt || !canCompose || isInputDisabled;
   const isWorking = isRequestActive;
+  const isQueueSubmit = isWorking;
   const isSubmitDisabled =
     !canCompose ||
-    isSendingPrompt ||
-    isRequestActive ||
     isInputDisabled ||
+    (!isQueueSubmit && isSendingPrompt) ||
     promptDraft.trim().length === 0;
   const {
     handleModelChange,
@@ -116,9 +129,20 @@ export function PromptInputCard({
   const [fastEnabled, setFastEnabled] = useState(
     promptSettings?.fastEnabled ?? false,
   );
+  const [historyCursor, setHistoryCursor] =
+    useState<PromptHistoryCursor>(null);
+  const [draftBeforeHistory, setDraftBeforeHistory] = useState("");
+  const promptHistoryLengthRef = useRef(promptHistory.length);
+
+  function resetHistoryNavigation() {
+    setHistoryCursor(null);
+    setDraftBeforeHistory("");
+  }
+
   useEffect(() => {
     setFastEnabled(promptSettings?.fastEnabled ?? false);
   }, [promptSettings?.fastEnabled]);
+
   const isCodexModel = selectedModel?.providerId === "codex";
 
   function handleFastToggle() {
@@ -127,7 +151,9 @@ export function PromptInputCard({
     void setFast(next);
   }
 
-  function handleAutocompleteSelect(command: Parameters<typeof onCommandSelect>[0]) {
+  function handleAutocompleteSelect(
+    command: Parameters<typeof onCommandSelect>[0],
+  ) {
     // The model picker lives in this component, so handle `/model` here rather
     // than routing it up.
     if (command.name === "model") {
@@ -149,11 +175,11 @@ export function PromptInputCard({
   useAutosizeTextarea(textareaRef, promptDraft);
 
   useEffect(() => {
-    if (focusSignal == null || isControlDisabled) {
+    if (focusSignal == null || isTextareaDisabled) {
       return;
     }
     textareaRef.current?.focus();
-  }, [focusSignal, isControlDisabled]);
+  }, [focusSignal, isTextareaDisabled]);
 
   // Highlight a leading slash-command token so the user sees they're issuing a
   // command. Only active in command mode, so normal prose typing is untouched.
@@ -167,16 +193,94 @@ export function PromptInputCard({
       return;
     }
 
+    resetHistoryNavigation();
     void submitPrompt();
   }
 
+  function handleDraftChange(value: string) {
+    resetHistoryNavigation();
+    setPromptDraft(value);
+  }
+
+  function moveCaretToEndOnNextFrame() {
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (textarea == null) {
+        return;
+      }
+
+      const end = textarea.value.length;
+      textarea.setSelectionRange(end, end);
+    });
+  }
+
+  function handleHistoryNavigation(
+    event: KeyboardEvent<HTMLTextAreaElement>,
+  ) {
+    if (
+      event.nativeEvent.isComposing ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey
+    ) {
+      return false;
+    }
+
+    const direction =
+      event.key === "ArrowUp"
+        ? "previous"
+        : event.key === "ArrowDown"
+          ? "next"
+          : null;
+    if (direction == null) {
+      return false;
+    }
+
+    const textarea = event.currentTarget;
+    if (direction === "previous" && !isCaretOnFirstLine(textarea)) {
+      return false;
+    }
+    if (direction === "next" && !isCaretOnLastLine(textarea)) {
+      return false;
+    }
+
+    const didHistoryLengthChange =
+      promptHistoryLengthRef.current !== promptHistory.length;
+    const effectiveCursor = didHistoryLengthChange ? null : historyCursor;
+    const effectiveDraftBeforeHistory = didHistoryLengthChange
+      ? ""
+      : draftBeforeHistory;
+    promptHistoryLengthRef.current = promptHistory.length;
+
+    const result = getPromptHistoryNavigationResult({
+      direction,
+      promptHistory,
+      cursor: effectiveCursor,
+      currentDraft: promptDraft,
+      draftBeforeHistory: effectiveDraftBeforeHistory,
+    });
+    if (result == null) {
+      return false;
+    }
+
+    event.preventDefault();
+    setHistoryCursor(result.cursor);
+    setDraftBeforeHistory(result.draftBeforeHistory);
+    setPromptDraft(result.draft);
+    moveCaretToEndOnNextFrame();
+    return true;
+  }
+
   function handlePrimaryAction() {
-    if (isWorking) {
-      void stopPrompt();
+    if (!isSubmitDisabled) {
+      handleSubmit();
       return;
     }
 
-    handleSubmit();
+    if (isWorking) {
+      void stopPrompt();
+    }
   }
 
   function handlePlanningModeToggle() {
@@ -185,9 +289,7 @@ export function PromptInputCard({
 
   // Cmd/Ctrl+V of an image: persist the clipboard bytes to a temp file and add
   // it through the same attachment pipeline as a drag-dropped file.
-  async function handlePaste(
-    event: React.ClipboardEvent<HTMLTextAreaElement>,
-  ) {
+  async function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = event.clipboardData?.items;
     if (!items) {
       return;
@@ -264,11 +366,12 @@ export function PromptInputCard({
               id="prompt"
               className={cn(
                 "max-h-80 overflow-y-auto rounded-none border-0 bg-transparent px-0 py-0 text-sm shadow-none outline-none ring-0 placeholder:text-muted-foreground/80 focus-visible:border-transparent focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
-                commandMatch && "text-transparent caret-[color:var(--foreground)]",
+                commandMatch &&
+                  "text-transparent caret-[color:var(--foreground)]",
               )}
-              placeholder={placeholder}
+              placeholder={isWorking ? "Queue a follow-up…" : placeholder}
               value={promptDraft}
-              onChange={(event) => setPromptDraft(event.target.value)}
+              onChange={(event) => handleDraftChange(event.target.value)}
               onPaste={handlePaste}
               onScroll={(event) => {
                 if (commandOverlayRef.current != null) {
@@ -280,6 +383,9 @@ export function PromptInputCard({
                 // The command menu consumes Enter/Tab/arrows while open, so a
                 // command is completed rather than sent.
                 if (commandAutocomplete.handleKeyDown(event)) {
+                  return;
+                }
+                if (handleHistoryNavigation(event)) {
                   return;
                 }
                 if (event.key !== "Enter") {
@@ -452,7 +558,10 @@ export function PromptInputCard({
                 className="inline-flex h-8 items-center gap-2 px-1.5 text-xs font-medium text-muted-foreground"
                 title="Planning uses the thinking agent"
               >
-                <Throbber variant="pulse" className="text-[color:var(--accent)]" />
+                <Throbber
+                  variant="pulse"
+                  className="text-[color:var(--accent)]"
+                />
                 {planningThinkingLabel}
               </span>
             ) : null}
@@ -461,11 +570,11 @@ export function PromptInputCard({
             type="button"
             size="icon-lg"
             className="rounded-full"
-            aria-label={isWorking ? "Stop" : "Send"}
+            aria-label={isWorking && isSubmitDisabled ? "Stop" : "Send"}
             onClick={handlePrimaryAction}
             disabled={isWorking ? false : isSubmitDisabled}
           >
-            {isWorking ? <SquareIcon /> : <ArrowUpIcon />}
+            {isWorking && isSubmitDisabled ? <SquareIcon /> : <ArrowUpIcon />}
           </Button>
         </CardFooter>
       </Card>

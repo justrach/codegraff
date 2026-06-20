@@ -115,7 +115,7 @@ export function renderChatThreadItem(
 
   return (
     <div
-      className="mx-auto min-w-0 w-full max-w-3xl select-text"
+      className="mx-auto min-w-0 w-full max-w-3xl select-none"
       style={{ paddingBottom: index === itemCount - 1 ? 0 : THREAD_ITEM_GAP }}
     >
       {row}

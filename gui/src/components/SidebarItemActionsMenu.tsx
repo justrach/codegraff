@@ -39,10 +39,11 @@ export function SidebarItemActionsMenu({
   removeConfirmTitle,
   removeConfirmDescription,
 }: SidebarItemActionsMenuProps) {
+  const [isRemoveDialogOpen, setIsRemoveDialogOpen] = useState(false);
+  const [isRemovePending, setIsRemovePending] = useState(false);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [isRenamePending, setIsRenamePending] = useState(false);
   const [nameDraft, setNameDraft] = useState(currentName);
-  const [isRemoveDialogOpen, setIsRemoveDialogOpen] = useState(false);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
 
   useFocusOnOpen(renameInputRef, {
@@ -74,9 +75,22 @@ export function SidebarItemActionsMenu({
     }
   }
 
-  function handleRemoveConfirm() {
-    onRemove();
-    setIsRemoveDialogOpen(false);
+  function handleRemoveDialogOpenChange(open: boolean) {
+    if (isRemovePending) {
+      return;
+    }
+
+    setIsRemoveDialogOpen(open);
+  }
+
+  async function handleRemoveSubmit() {
+    setIsRemovePending(true);
+    try {
+      await onRemove();
+      setIsRemoveDialogOpen(false);
+    } finally {
+      setIsRemovePending(false);
+    }
   }
 
   return (
@@ -111,9 +125,7 @@ export function SidebarItemActionsMenu({
             </DropdownMenuItem>
             <DropdownMenuItem
               variant="destructive"
-              onClick={() => {
-                setIsRemoveDialogOpen(true);
-              }}
+              onClick={() => handleRemoveDialogOpenChange(true)}
             >
               <RemoveIcon />
               {removeLabel}
@@ -169,37 +181,36 @@ export function SidebarItemActionsMenu({
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={isRemoveDialogOpen}
-        onOpenChange={(open) => {
-          setIsRemoveDialogOpen(open);
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {removeConfirmTitle ?? `Remove ${currentName}?`}
-            </DialogTitle>
-            <DialogDescription>
-              {removeConfirmDescription ?? "This can't be undone."}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setIsRemoveDialogOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={handleRemoveConfirm}
-            >
-              {removeLabel}
-            </Button>
-          </DialogFooter>
+      <Dialog open={isRemoveDialogOpen} onOpenChange={handleRemoveDialogOpenChange}>
+        <DialogContent className="max-w-md" showCloseButton={!isRemovePending}>
+          <div className="flex flex-col gap-4">
+            <DialogHeader>
+              <DialogTitle>{removeConfirmTitle ?? `Remove ${currentName}?`}</DialogTitle>
+              <DialogDescription>
+                {removeConfirmDescription ?? "This can't be undone."}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isRemovePending}
+                onClick={() => handleRemoveDialogOpenChange(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={isRemovePending}
+                onClick={() => {
+                  void handleRemoveSubmit();
+                }}
+              >
+                {removeLabel}
+              </Button>
+            </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </>

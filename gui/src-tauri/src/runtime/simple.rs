@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
@@ -18,6 +18,13 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[derive(Clone)]
+struct QueuedPrompt {
+    agent_id: Option<String>,
+    engine_prompt: String,
+    request_id: String,
+}
+
 #[derive(Clone, Default)]
 struct ConversationState {
     workspace_path: String,
@@ -25,6 +32,7 @@ struct ConversationState {
     title: String,
     messages: Vec<SessionMessageDto>,
     active_request_ids: Vec<String>,
+    queued_prompts: VecDeque<QueuedPrompt>,
     active_agent_id: Option<String>,
     plan_mode: bool,
     goal: Option<String>,
@@ -170,7 +178,7 @@ impl RuntimeManager {
         ))
     }
 
-    async fn selected_model_name(&self) -> Option<String> {
+    async fn selected_model_arg(&self) -> Option<String> {
         let catalog = self.ensure_model_catalog().await;
         let configured_provider_ids = configured_provider_ids().await;
         let (selected_provider, selected_model) = {
@@ -186,7 +194,7 @@ impl RuntimeManager {
             selected_provider.as_deref(),
             selected_model.as_deref(),
         )
-        .map(|(_, model)| model)
+        .map(|(provider, model)| prompt_model_arg(&provider, &model))
     }
 
     /// Generates a short chat title with the active model (a one-shot graff run)
@@ -278,7 +286,8 @@ impl RuntimeManager {
                     &conversation_id,
                     serde_json::json!({
                         "type": "set_model",
-                        "name": selected_model.name,
+                        "model": selected_model.name.as_str(),
+                        "provider": selected_model.provider.as_str(),
                     }),
                 )
                 .await?;
@@ -444,9 +453,10 @@ impl RuntimeManager {
         let request_id = format!("request-{}", Uuid::new_v4().simple());
         let plan_mode = input.agent_id.as_deref() == Some("muse");
         let loop_mode = input.agent_id.as_deref() == Some("loop");
-        let title_model_arg = self.selected_model_name().await;
+        let title_model_arg = self.selected_model_arg().await;
         let is_first_turn;
         let engine_prompt;
+        let should_queue;
         {
             let mut state = self.state.lock().await;
             set_active_workspace(&mut state, &input.workspace_path);
@@ -464,6 +474,7 @@ impl RuntimeManager {
                     title: title_from_prompt(&input.prompt),
                     messages: vec![],
                     active_request_ids: vec![],
+                    queued_prompts: VecDeque::new(),
                     active_agent_id,
                     plan_mode,
                     goal: None,
@@ -492,7 +503,16 @@ impl RuntimeManager {
                 request_id: request_id.clone(),
                 text: input.prompt.clone(),
             });
-            conversation.active_request_ids.push(request_id.clone());
+            should_queue = !conversation.active_request_ids.is_empty();
+            if should_queue {
+                conversation.queued_prompts.push_back(QueuedPrompt {
+                    agent_id: input.agent_id.clone(),
+                    engine_prompt: engine_prompt.clone(),
+                    request_id: request_id.clone(),
+                });
+            } else {
+                conversation.active_request_ids.push(request_id.clone());
+            }
         }
 
         // Managed chats are auto-created `chat_<id>` folders; once a chat has a
@@ -513,6 +533,10 @@ impl RuntimeManager {
         }
 
         self.emit().await?;
+
+        if should_queue {
+            return self.snapshot().await;
+        }
 
         if is_first_turn {
             let manager = self.clone();
@@ -558,11 +582,69 @@ impl RuntimeManager {
             .await;
         }
 
-        let rid = request_id.clone();
-        self.mutate_conversation(&conversation_id, move |conversation| {
-            conversation.active_request_ids.retain(|id| id != &rid);
-        })
-        .await;
+        let mut completed_request_id = request_id;
+        loop {
+            let next_prompt = {
+                let mut state = self.state.lock().await;
+                let Some(conversation) = state.conversations.get_mut(&conversation_id) else {
+                    break;
+                };
+                conversation
+                    .active_request_ids
+                    .retain(|id| id != &completed_request_id);
+                let next = conversation.queued_prompts.pop_front();
+                if let Some(next) = &next {
+                    conversation.plan_mode = next.agent_id.as_deref() == Some("muse");
+                    conversation.updated_at = now_millis();
+                    conversation
+                        .active_request_ids
+                        .push(next.request_id.clone());
+                }
+                next
+            };
+
+            let Some(next_prompt) = next_prompt else {
+                break;
+            };
+
+            self.emit().await?;
+
+            let next_plan_mode = next_prompt.agent_id.as_deref() == Some("muse");
+            if self.session_exists(&conversation_id).await {
+                self.send_control(
+                    &conversation_id,
+                    serde_json::json!({
+                        "type": "set_mode",
+                        "mode": if next_plan_mode { "plan" } else { "normal" },
+                    }),
+                )
+                .await?;
+            }
+
+            if let Err(error) = self
+                .stream_turn(
+                    &conversation_id,
+                    &next_prompt.request_id,
+                    &input.workspace_path,
+                    &next_prompt.engine_prompt,
+                )
+                .await
+            {
+                let message = format_error_chain(&error);
+                let id = format!("{}-error", next_prompt.request_id);
+                let rid = next_prompt.request_id.clone();
+                self.mutate_conversation(&conversation_id, move |conversation| {
+                    conversation.messages.push(SessionMessageDto::Error {
+                        id,
+                        request_id: rid,
+                        message,
+                    });
+                })
+                .await;
+            }
+
+            completed_request_id = next_prompt.request_id;
+        }
 
         let snapshot = self.snapshot().await?;
         let _ = self.emitter.emit_session_updated(snapshot.clone());
@@ -984,7 +1066,7 @@ impl RuntimeManager {
         conversation_id: &str,
         workspace_path: &str,
     ) -> Result<GraffSessionIo> {
-        let model_arg = self.selected_model_name().await;
+        let model_arg = self.selected_model_arg().await;
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(conversation_id) {
             let (active_agent_id, plan_mode, effort, fast) = {
@@ -1507,6 +1589,7 @@ impl RuntimeManager {
         self.drop_session(&input.conversation_id).await;
         self.mutate_conversation(&input.conversation_id, |conversation| {
             conversation.active_request_ids.clear();
+            conversation.queued_prompts.clear();
         })
         .await;
         let _ = self.emit().await;
@@ -1566,6 +1649,7 @@ impl RuntimeManager {
                 title: "New chat".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
                 goal: None,
@@ -1689,11 +1773,46 @@ impl RuntimeManager {
     pub async fn archive_workspace(&self, workspace_path: String) -> Result<SessionSnapshotDto> {
         self.projects
             .archive_workspace(Path::new(&workspace_path))?;
-        self.state
-            .lock()
-            .await
-            .workspaces
-            .retain(|path| path != &workspace_path);
+        let conversation_ids: Vec<String> = {
+            let state = self.state.lock().await;
+            state
+                .conversations
+                .values()
+                .filter(|conversation| conversation.workspace_path == workspace_path)
+                .map(|conversation| conversation.conversation_id.clone())
+                .collect()
+        };
+        for conversation_id in &conversation_ids {
+            self.drop_session(conversation_id).await;
+        }
+        let removed_conversation_ids: HashSet<String> = conversation_ids.into_iter().collect();
+        let mut state = self.state.lock().await;
+        state.workspaces.retain(|path| path != &workspace_path);
+        state
+            .conversations
+            .retain(|_, conversation| conversation.workspace_path != workspace_path);
+        state.selected_by_workspace.remove(&workspace_path);
+        state
+            .selected_by_workspace
+            .retain(|_, conversation_id| !removed_conversation_ids.contains(conversation_id));
+        if state.active_workspace_path.as_deref() == Some(&workspace_path) {
+            state.active_workspace_path = state.workspaces.first().cloned();
+            state.active_conversation_id = state
+                .active_workspace_path
+                .clone()
+                .and_then(|path| first_workspace_conversation_id(&state, &path));
+        } else if state
+            .active_conversation_id
+            .as_ref()
+            .is_some_and(|conversation_id| removed_conversation_ids.contains(conversation_id))
+        {
+            state.active_conversation_id = state
+                .active_workspace_path
+                .clone()
+                .and_then(|path| first_workspace_conversation_id(&state, &path));
+        }
+        drop(state);
+        self.persist_conversations().await;
         self.snapshot().await
     }
 
@@ -2197,6 +2316,7 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
                     title,
                     messages: conversation.messages,
                     active_request_ids: vec![],
+                    queued_prompts: VecDeque::new(),
                     active_agent_id: conversation.active_agent_id,
                     plan_mode: conversation.plan_mode,
                     goal: conversation.goal,
@@ -2622,6 +2742,10 @@ fn selected_prompt_model_pair(
                 .map(|candidate| (candidate.provider.clone(), candidate.name.clone()))
         })
         .or_else(|| default_model.map(|model| (model.provider.clone(), model.name.clone())))
+}
+
+fn prompt_model_arg(provider: &str, model: &str) -> String {
+    format!("{provider} {model}")
 }
 
 fn selected_pair_exists(
@@ -3210,8 +3334,7 @@ fn provider_login_configured(
         }
         "codex" => home_codex_auth_has_valid_token(home),
         "kimi" => {
-            key_list_mentions_provider(key_list, &provider.id)
-                || kimi_auth_has_valid_token(home)
+            key_list_mentions_provider(key_list, &provider.id) || kimi_auth_has_valid_token(home)
         }
         _ => key_list_mentions_provider(key_list, &provider.id),
     }
@@ -3748,6 +3871,7 @@ mod tests {
                 title: "Existing".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
                 goal: None,
@@ -3891,6 +4015,15 @@ mod tests {
     }
 
     #[test]
+    fn prompt_model_arg_includes_provider_to_disambiguate_duplicate_names() {
+        assert_eq!(prompt_model_arg("codex", "gpt-5.5"), "codex gpt-5.5");
+        assert_eq!(
+            prompt_model_arg("codegraff", "gpt-5.5"),
+            "codegraff gpt-5.5"
+        );
+    }
+
+    #[test]
     fn prompt_settings_returns_no_models_without_configured_providers() {
         let settings = build_prompt_settings_from_catalog(
             &[
@@ -4006,6 +4139,7 @@ mod tests {
                 title: "Old".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
                 goal: None,
@@ -4020,6 +4154,7 @@ mod tests {
                 title: "New".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
                 goal: None,

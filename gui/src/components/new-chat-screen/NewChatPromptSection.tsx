@@ -68,6 +68,9 @@ export function NewChatPromptSection({
     followupRequest == null &&
     interrupt == null &&
     lastAssistant != null;
+  const promptHistory = messages
+    .filter((message) => message.kind === "user")
+    .map((message) => message.text);
   const handleSubmit = useCallback(async () => {
     if (trySubmitAsCommand(promptDraft)) {
       return;
@@ -131,6 +134,7 @@ export function NewChatPromptSection({
         }
         isPlanningMode={isPlanningMode}
         promptDraft={promptDraft}
+        promptHistory={promptHistory}
         promptSettings={promptSettings}
         isInputDisabled={!hasCurrentWorkspace}
         binding={binding}

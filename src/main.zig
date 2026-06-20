@@ -79,7 +79,7 @@ var unattended = false; // -p one-shot: no human to prompt; unapproved tool call
 const schema_protocol_json =
     \\{
     \\  "transport": "newline-delimited JSON over stdin/stdout (--json)",
-    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"name\":\"provider|provider/model|model\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"}, {\"type\":\"set_effort\",\"level\":\"low|medium|high\"}, and {\"type\":\"set_fast\",\"on\":true} are live control requests acked by model/compact/mode/agent/effort/fast events. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
+    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"model\":\"gpt-5.5\",\"provider\":\"codex\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"}, {\"type\":\"set_effort\",\"level\":\"low|medium|high\"}, and {\"type\":\"set_fast\",\"on\":true} are live control requests acked by model/compact/mode/agent/effort/fast events. For compatibility, set_model also accepts legacy {\"name\":\"provider model|model\"}. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
     \\  "score_request": "{\"type\":\"score\",\"prompt_sha\":\"<16 hex>\",\"score\":0.7,\"notes\":\"...\",\"parent_sha\":\"<16 hex, optional>\"} appends an evaluation record for an agent/prompt variant to harness.trajectory.jsonl (the append-only DGM-style archive; prompt_sha = first 8 bytes of SHA-256 of the system prompt, hex; parent_sha records which prompt this variant was mutated from — the lineage edge DGM parent selection counts children with) and acks with a score event",
     \\  "events": [
     \\    {"type": "text", "text": "assistant text delta"},
@@ -89,7 +89,7 @@ const schema_protocol_json =
     \\    {"type": "tool_result", "name": "tool", "is_error": false, "text": "..."},
     \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0},
     \\    {"type": "system_prompt", "ok": true, "append": false, "chars": 0},
-    \\    {"type": "model", "ok": true, "id": "provider", "name": "model", "context": 0, "note": "context kept"},
+    \\    {"type": "model", "ok": true, "provider": "provider", "model": "model", "context": 0, "note": "context kept"},
     \\    {"type": "compact", "ok": true, "chars": 0},
     \\    {"type": "mode", "ok": true, "mode": "plan"},
     \\    {"type": "agent", "ok": true, "id": "reviewer", "chars": 0},
@@ -4454,34 +4454,21 @@ pub fn main(init: std.process.Init) !void {
             else
                 "";
             if (std.mem.eql(u8, rtype, "set_model")) {
-                // #41: explicit provider+model disambiguates colliding model ids
-                // (e.g. gpt-5.5 under both codex and codegraff). Build "provider/model"
-                // so resolveProviderRequest pins the provider; legacy `name`
-                // ("provider", "provider/model", or "model") still works.
                 const provider_field = if (parsed.object.get("provider")) |v| (if (v == .string) v.string else "") else "";
                 const model_field = if (parsed.object.get("model")) |v| (if (v == .string) v.string else "") else "";
                 const legacy_name = if (parsed.object.get("name")) |v| (if (v == .string) v.string else "") else "";
-                const name = if (provider_field.len > 0 and model_field.len > 0)
-                    try std.fmt.allocPrint(arena, "{s}/{s}", .{ provider_field, model_field })
-                else if (model_field.len > 0)
-                    model_field
-                else
-                    legacy_name;
-                if (name.len == 0) {
-                    root.emit(.{ .type = "error", .message = "set_model needs a non-empty name (or provider+model)" });
-                    continue;
-                }
-                const provider = resolveProviderRequest(&keys, arena, name) catch |err| {
+                const provider = resolveProviderControlRequest(&keys, arena, provider_field, model_field, legacy_name) catch |err| {
+                    const label = setModelRequestLabel(arena, provider_field, model_field, legacy_name) catch "<requested model>";
                     const message = switch (err) {
-                        error.MissingKey => try std.fmt.allocPrint(arena, "no key/login for requested model '{s}'", .{name}),
-                        error.InvalidModelRequest => "set_model needs a non-empty name",
-                        else => try std.fmt.allocPrint(arena, "failed to switch model '{s}': {s}", .{ name, @errorName(err) }),
+                        error.MissingKey => try std.fmt.allocPrint(arena, "no key/login for requested model '{s}'", .{label}),
+                        error.InvalidModelRequest => "set_model needs a non-empty provider/model or legacy name",
+                        else => try std.fmt.allocPrint(arena, "failed to switch model '{s}': {s}", .{ label, @errorName(err) }),
                     };
                     root.emit(.{ .type = "error", .message = message });
                     continue;
                 };
                 const note = applyProvider(&root, arena, provider);
-                root.emit(.{ .type = "model", .ok = true, .id = provider.id, .name = provider.model, .provider = provider.id, .model = provider.model, .context = provider.context, .note = note });
+                root.emit(.{ .type = "model", .ok = true, .provider = provider.id, .model = provider.model, .context = provider.context, .note = note });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "compact")) {
@@ -4901,6 +4888,34 @@ fn applyProvider(root: *Agent, arena: Allocator, p: Provider) []const u8 {
     return note;
 }
 
+fn resolveProviderControlRequest(
+    keys: *Keys,
+    arena: Allocator,
+    provider_query: []const u8,
+    model_query: []const u8,
+    legacy_name: []const u8,
+) !Provider {
+    const provider_id = std.mem.trim(u8, provider_query, " \t");
+    const model = std.mem.trim(u8, model_query, " \t");
+
+    if (provider_id.len != 0) {
+        for (provider_specs) |spec| {
+            if (!std.mem.eql(u8, spec.id, provider_id)) continue;
+            const selected_model = if (model.len == 0) spec.default_model else try arena.dupe(u8, model);
+            return keys.providerById(spec.id, selected_model);
+        }
+        return error.InvalidProvider;
+    }
+
+    if (model.len != 0) {
+        const resolved = resolveModelName(keys.*, model);
+        const name = try arena.dupe(u8, resolved orelse model);
+        return keys.providerFor(name);
+    }
+
+    return resolveProviderRequest(keys, arena, legacy_name);
+}
+
 fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Provider {
     const arg = std.mem.trim(u8, query, " \t");
     if (arg.len == 0) return error.InvalidModelRequest;
@@ -4930,6 +4945,15 @@ fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Pro
 /// (OpenAI↔Anthropic↔Responses) the stored messages don't fit the new shape:
 /// with keep_context on (default) the dialogue is translated to a text-only
 /// history and carried over; off clears it.
+fn setModelRequestLabel(arena: Allocator, provider_query: []const u8, model_query: []const u8, legacy_name: []const u8) ![]const u8 {
+    const provider_id = std.mem.trim(u8, provider_query, " \t");
+    const model = std.mem.trim(u8, model_query, " \t");
+    if (provider_id.len != 0 and model.len != 0) return std.fmt.allocPrint(arena, "{s} {s}", .{ provider_id, model });
+    if (provider_id.len != 0) return arena.dupe(u8, provider_id);
+    if (model.len != 0) return arena.dupe(u8, model);
+    return arena.dupe(u8, std.mem.trim(u8, legacy_name, " \t"));
+}
+
 fn switchProvider(root: *Agent, arena: Allocator, p: Provider, out: *Io.Writer) !void {
     const note = applyProvider(root, arena, p);
     try out.print("switched to {s} via {s} ({t} format, {d}k ctx) — {s}\n", .{
@@ -12516,6 +12540,21 @@ test "Keys.providerById: exact id wins, unknown id falls back to model routing" 
     try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
     const fb = try all.providerById("no-such-provider", "gpt-5.5");
     try std.testing.expectEqualStrings("gpt-5.5", fb.model);
+}
+
+test "set_model control resolves explicit provider/model fields" {
+    var all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const codex = try resolveProviderControlRequest(&all, arena, "codex", "gpt-5.5", "");
+    try std.testing.expectEqualStrings("codex", codex.id);
+    try std.testing.expectEqualStrings("gpt-5.5", codex.model);
+
+    const legacy = try resolveProviderControlRequest(&all, arena, "", "", "codegraff gpt-5.5");
+    try std.testing.expectEqualStrings("codegraff", legacy.id);
+    try std.testing.expectEqualStrings("gpt-5.5", legacy.model);
 }
 
 test "Keys.defaultProvider: first keyed provider on its default model" {
