@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   ArrowUpIcon,
   ChevronDownIcon,
@@ -40,10 +40,24 @@ import { usePromptModelPicker } from "@/hooks/usePromptModelPicker";
 import { savePastedImage, setFast } from "@/services/desktop/client";
 import { cn } from "@/utils/cn";
 import {
+  getPromptHistoryNavigationResult,
+  type PromptHistoryCursor,
+} from "./promptHistoryNavigation";
+import {
   formatPlanningThinkingLabel,
   formatReasoningEffortLabel,
 } from "@/utils/reasoning";
 import type { PromptInputCardProps } from "./types/prompt";
+
+const EMPTY_PROMPT_HISTORY: string[] = [];
+
+function isCaretOnFirstLine(textarea: HTMLTextAreaElement) {
+  return !textarea.value.slice(0, textarea.selectionStart).includes("\n");
+}
+
+function isCaretOnLastLine(textarea: HTMLTextAreaElement) {
+  return !textarea.value.slice(textarea.selectionEnd).includes("\n");
+}
 
 export function PromptInputCard({
   canCompose,
@@ -53,6 +67,7 @@ export function PromptInputCard({
   placeholder = "Ask about this workspace…",
   promptSettings,
   promptDraft,
+  promptHistory = EMPTY_PROMPT_HISTORY,
   focusSignal,
   isInputDisabled = false,
   binding,
@@ -114,9 +129,20 @@ export function PromptInputCard({
   const [fastEnabled, setFastEnabled] = useState(
     promptSettings?.fastEnabled ?? false,
   );
+  const [historyCursor, setHistoryCursor] =
+    useState<PromptHistoryCursor>(null);
+  const [draftBeforeHistory, setDraftBeforeHistory] = useState("");
+  const promptHistoryLengthRef = useRef(promptHistory.length);
+
+  function resetHistoryNavigation() {
+    setHistoryCursor(null);
+    setDraftBeforeHistory("");
+  }
+
   useEffect(() => {
     setFastEnabled(promptSettings?.fastEnabled ?? false);
   }, [promptSettings?.fastEnabled]);
+
   const isCodexModel = selectedModel?.providerId === "codex";
 
   function handleFastToggle() {
@@ -167,7 +193,83 @@ export function PromptInputCard({
       return;
     }
 
+    resetHistoryNavigation();
     void submitPrompt();
+  }
+
+  function handleDraftChange(value: string) {
+    resetHistoryNavigation();
+    setPromptDraft(value);
+  }
+
+  function moveCaretToEndOnNextFrame() {
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (textarea == null) {
+        return;
+      }
+
+      const end = textarea.value.length;
+      textarea.setSelectionRange(end, end);
+    });
+  }
+
+  function handleHistoryNavigation(
+    event: KeyboardEvent<HTMLTextAreaElement>,
+  ) {
+    if (
+      event.nativeEvent.isComposing ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey
+    ) {
+      return false;
+    }
+
+    const direction =
+      event.key === "ArrowUp"
+        ? "previous"
+        : event.key === "ArrowDown"
+          ? "next"
+          : null;
+    if (direction == null) {
+      return false;
+    }
+
+    const textarea = event.currentTarget;
+    if (direction === "previous" && !isCaretOnFirstLine(textarea)) {
+      return false;
+    }
+    if (direction === "next" && !isCaretOnLastLine(textarea)) {
+      return false;
+    }
+
+    const didHistoryLengthChange =
+      promptHistoryLengthRef.current !== promptHistory.length;
+    const effectiveCursor = didHistoryLengthChange ? null : historyCursor;
+    const effectiveDraftBeforeHistory = didHistoryLengthChange
+      ? ""
+      : draftBeforeHistory;
+    promptHistoryLengthRef.current = promptHistory.length;
+
+    const result = getPromptHistoryNavigationResult({
+      direction,
+      promptHistory,
+      cursor: effectiveCursor,
+      currentDraft: promptDraft,
+      draftBeforeHistory: effectiveDraftBeforeHistory,
+    });
+    if (result == null) {
+      return false;
+    }
+
+    event.preventDefault();
+    setHistoryCursor(result.cursor);
+    setDraftBeforeHistory(result.draftBeforeHistory);
+    setPromptDraft(result.draft);
+    moveCaretToEndOnNextFrame();
+    return true;
   }
 
   function handlePrimaryAction() {
@@ -269,7 +371,7 @@ export function PromptInputCard({
               )}
               placeholder={isWorking ? "Queue a follow-up…" : placeholder}
               value={promptDraft}
-              onChange={(event) => setPromptDraft(event.target.value)}
+              onChange={(event) => handleDraftChange(event.target.value)}
               onPaste={handlePaste}
               onScroll={(event) => {
                 if (commandOverlayRef.current != null) {
@@ -281,6 +383,9 @@ export function PromptInputCard({
                 // The command menu consumes Enter/Tab/arrows while open, so a
                 // command is completed rather than sent.
                 if (commandAutocomplete.handleKeyDown(event)) {
+                  return;
+                }
+                if (handleHistoryNavigation(event)) {
                   return;
                 }
                 if (event.key !== "Enter") {
