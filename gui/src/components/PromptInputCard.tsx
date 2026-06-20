@@ -143,9 +143,14 @@ export function PromptInputCard({
     setFastEnabled(promptSettings?.fastEnabled ?? false);
   }, [promptSettings?.fastEnabled]);
 
-  const isCodexModel = selectedModel?.providerId === "codex";
+  // Whether /fast actually changes harness behavior. The harness only applies
+  // the priority service tier on the codex provider (the `responses` kind); it
+  // is a no-op everywhere else. The runtime reports this authoritatively via
+  // `fastApplies`, so the toggle stays active only when it's true.
+  const fastApplies = promptSettings?.fastApplies ?? false;
 
   function handleFastToggle() {
+    if (!fastApplies) return;
     const next = !fastEnabled;
     setFastEnabled(next);
     void setFast(next);
@@ -533,26 +538,29 @@ export function PromptInputCard({
               <MapIcon data-icon="inline-start" />
               <span className="text-xs">Plan</span>
             </Button>
-            {isCodexModel ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                aria-label="Toggle fast mode"
-                aria-pressed={fastEnabled}
-                className={cn(
-                  "text-muted-foreground hover:bg-transparent hover:text-foreground",
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label="Toggle fast mode"
+              aria-pressed={fastApplies && fastEnabled}
+              className={cn(
+                "text-muted-foreground hover:bg-transparent hover:text-foreground",
+                fastApplies &&
                   fastEnabled &&
-                    "border-[color:var(--accent)] bg-[color:color-mix(in_oklab,var(--accent)_10%,transparent)] text-foreground hover:bg-[color:color-mix(in_oklab,var(--accent)_14%,transparent)]",
-                )}
-                disabled={isControlDisabled}
-                onClick={handleFastToggle}
-                title="Codex priority service tier — lower latency"
-              >
-                <ZapIcon data-icon="inline-start" />
-                <span className="text-xs">Fast</span>
-              </Button>
-            ) : null}
+                  "border-[color:var(--accent)] bg-[color:color-mix(in_oklab,var(--accent)_10%,transparent)] text-foreground hover:bg-[color:color-mix(in_oklab,var(--accent)_14%,transparent)]",
+              )}
+              disabled={isControlDisabled || !fastApplies}
+              onClick={handleFastToggle}
+              title={
+                fastApplies
+                  ? "Codex priority service tier — lower latency"
+                  : "Fast (priority) — codex only"
+              }
+            >
+              <ZapIcon data-icon="inline-start" />
+              <span className="text-xs">Fast</span>
+            </Button>
             {isPlanningMode ? (
               <span
                 className="inline-flex h-8 items-center gap-2 px-1.5 text-xs font-medium text-muted-foreground"

@@ -27,6 +27,7 @@ const promptSettings: PromptSettings = {
   selectedProviderId: "anthropic",
   selectedReasoningEffort: "medium",
   fastEnabled: false,
+  fastApplies: false,
 };
 
 function renderPromptInputCard(

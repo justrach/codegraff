@@ -47,6 +47,7 @@ const promptSettingsFixture: PromptSettings = {
   selectedProviderId: "openai",
   selectedReasoningEffort: "medium",
   fastEnabled: false,
+  fastApplies: false,
 };
 
 function createSnapshot(

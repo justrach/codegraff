@@ -2830,6 +2830,8 @@ fn build_prompt_settings_from_catalog(
                 selected_model_id: Some("default".into()),
                 selected_reasoning_effort: None,
                 fast_enabled,
+                // codegraff is the `chat` kind, not `responses`: /fast is a no-op.
+                fast_applies: false,
             };
         }
 
@@ -2839,6 +2841,7 @@ fn build_prompt_settings_from_catalog(
             selected_model_id: None,
             selected_reasoning_effort: None,
             fast_enabled,
+            fast_applies: false,
         };
     }
 
@@ -2865,12 +2868,22 @@ fn build_prompt_settings_from_catalog(
         None
     };
 
+    // /fast only changes behavior on the codex provider (the harness `responses`
+    // kind, which emits `service_tier:"priority"`); it reports `applies:false`
+    // for every other provider. Gate on the *resolved* provider so the GUI
+    // matches what the harness will actually do for the active selection.
+    let fast_applies = selected_pair
+        .as_ref()
+        .map(|(provider, _)| provider == "codex")
+        .unwrap_or(false);
+
     PromptSettingsDto {
         available_models,
         selected_provider_id: selected_pair.as_ref().map(|(provider, _)| provider.clone()),
         selected_model_id: selected_pair.as_ref().map(|(_, model)| model.clone()),
         selected_reasoning_effort: selected_pair.and(selected_effort),
         fast_enabled,
+        fast_applies,
     }
 }
 
