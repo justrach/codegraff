@@ -4032,7 +4032,7 @@ const harness_version: []const u8 = @import("build_options").version;
 const default_telemetry_endpoint: []const u8 = @import("build_options").telemetry_endpoint;
 
 const usage_text =
-    \\simple-harness — a minimal agentic coding harness in Zig (zero deps)
+    \\graff — a minimal agentic coding harness in Zig (zero deps)
     \\
     \\usage:
     \\  graff [flags]                    start the REPL
@@ -4380,7 +4380,7 @@ pub fn main(init: std.process.Init) !void {
     if (help_flag or version_flag) {
         var hbuf: [4096]u8 = undefined;
         var hw = Io.File.stdout().writer(io, &hbuf);
-        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("simple-harness {s}\n", .{harness_version});
+        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("graff {s}\n", .{harness_version});
         try hw.interface.flush();
         return;
     }
