@@ -2423,6 +2423,37 @@ var g_anim_random = false; // pick a fresh one per request
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
 
+/// `ultracode` codeword banner: a rainbow shine sweeps across the word in
+/// interactive (color) mode when the codeword engages multi-agent workflow
+/// mode. Truecolor ANSI; best-effort (any write failure aborts silently).
+fn ultracodeShine(w: *Io.Writer, io: Io) void {
+    const word = "ULTRACODE";
+    // 9-stop rainbow; the per-letter hue rotates each frame so the shine
+    // sweeps left->right across the word.
+    const rainbow = [_][]const u8{
+        "\x1b[38;2;255;87;51m",  "\x1b[38;2;255;159;28m", "\x1b[38;2;255;222;51m",
+        "\x1b[38;2;120;255;51m", "\x1b[38;2;51;255;170m", "\x1b[38;2;51;170;255m",
+        "\x1b[38;2;120;51;255m", "\x1b[38;2;210;51;255m", "\x1b[38;2;255;51;159m",
+    };
+    const gold = "\x1b[38;2;255;215;0m";
+    const frames = 14;
+    var f: usize = 0;
+    while (f < frames) : (f += 1) {
+        w.writeAll("\r\x1b[2K") catch return;
+        w.writeAll(style.bold) catch return;
+        w.print("{s}✦ ", .{gold}) catch return;
+        for (word, 0..) |c, i| {
+            w.writeAll(rainbow[(i + f) % rainbow.len]) catch return;
+            w.print("{c}", .{c}) catch return;
+        }
+        w.print("{s} ✦{s}", .{ gold, style.reset }) catch return;
+        w.flush() catch return;
+        io.sleep(.fromMilliseconds(70), .awake) catch {};
+    }
+    w.writeAll("\n") catch {};
+    w.flush() catch {};
+}
+
 fn animIndex(name: []const u8) ?usize {
     for (anims, 0..) |a, i| if (std.mem.eql(u8, a.name, name)) return i;
     return null;
@@ -4612,7 +4643,12 @@ pub fn main(init: std.process.Init) !void {
         // "ultracode" codeword: opt this turn into multi-agent workflow mode.
         if (std.ascii.indexOfIgnoreCase(msg, "ultracode") != null) {
             if (!json_mode) {
-                try out.writeAll("⚡ ultracode — multi-agent workflow mode engaged\n");
+                if (interactive) {
+                    ultracodeShine(out, io);
+                    try out.writeAll("⚡ multi-agent workflow mode engaged\n");
+                } else {
+                    try out.writeAll("⚡ ultracode — multi-agent workflow mode engaged\n");
+                }
                 try out.flush();
             }
             tracer.note("ultracode", msg[0..@min(msg.len, 120)]);
