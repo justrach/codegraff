@@ -1772,11 +1772,46 @@ impl RuntimeManager {
     pub async fn archive_workspace(&self, workspace_path: String) -> Result<SessionSnapshotDto> {
         self.projects
             .archive_workspace(Path::new(&workspace_path))?;
-        self.state
-            .lock()
-            .await
-            .workspaces
-            .retain(|path| path != &workspace_path);
+        let conversation_ids: Vec<String> = {
+            let state = self.state.lock().await;
+            state
+                .conversations
+                .values()
+                .filter(|conversation| conversation.workspace_path == workspace_path)
+                .map(|conversation| conversation.conversation_id.clone())
+                .collect()
+        };
+        for conversation_id in &conversation_ids {
+            self.drop_session(conversation_id).await;
+        }
+        let removed_conversation_ids: HashSet<String> = conversation_ids.into_iter().collect();
+        let mut state = self.state.lock().await;
+        state.workspaces.retain(|path| path != &workspace_path);
+        state
+            .conversations
+            .retain(|_, conversation| conversation.workspace_path != workspace_path);
+        state.selected_by_workspace.remove(&workspace_path);
+        state
+            .selected_by_workspace
+            .retain(|_, conversation_id| !removed_conversation_ids.contains(conversation_id));
+        if state.active_workspace_path.as_deref() == Some(&workspace_path) {
+            state.active_workspace_path = state.workspaces.first().cloned();
+            state.active_conversation_id = state
+                .active_workspace_path
+                .clone()
+                .and_then(|path| first_workspace_conversation_id(&state, &path));
+        } else if state
+            .active_conversation_id
+            .as_ref()
+            .is_some_and(|conversation_id| removed_conversation_ids.contains(conversation_id))
+        {
+            state.active_conversation_id = state
+                .active_workspace_path
+                .clone()
+                .and_then(|path| first_workspace_conversation_id(&state, &path));
+        }
+        drop(state);
+        self.persist_conversations().await;
         self.snapshot().await
     }
 
