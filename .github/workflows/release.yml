@@ -43,5 +43,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" graff-*.tar.gz SHA256SUMS \
+          gh release create "$GITHUB_REF_NAME" graff-*.tar.gz SHA256SUMS install.sh \
             --title "$GITHUB_REF_NAME" --generate-notes
