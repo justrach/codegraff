@@ -2423,18 +2423,18 @@ var g_anim_random = false; // pick a fresh one per request
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
 
+/// 9-stop truecolor rainbow for the `ultracode` shine (banner + live input).
+const ultracode_rainbow = [_][]const u8{
+    "\x1b[38;2;255;87;51m",  "\x1b[38;2;255;159;28m", "\x1b[38;2;255;222;51m",
+    "\x1b[38;2;120;255;51m", "\x1b[38;2;51;255;170m", "\x1b[38;2;51;170;255m",
+    "\x1b[38;2;120;51;255m", "\x1b[38;2;210;51;255m", "\x1b[38;2;255;51;159m",
+};
+
 /// `ultracode` codeword banner: a rainbow shine sweeps across the word in
 /// interactive (color) mode when the codeword engages multi-agent workflow
 /// mode. Truecolor ANSI; best-effort (any write failure aborts silently).
 fn ultracodeShine(w: *Io.Writer, io: Io) void {
     const word = "ULTRACODE";
-    // 9-stop rainbow; the per-letter hue rotates each frame so the shine
-    // sweeps left->right across the word.
-    const rainbow = [_][]const u8{
-        "\x1b[38;2;255;87;51m",  "\x1b[38;2;255;159;28m", "\x1b[38;2;255;222;51m",
-        "\x1b[38;2;120;255;51m", "\x1b[38;2;51;255;170m", "\x1b[38;2;51;170;255m",
-        "\x1b[38;2;120;51;255m", "\x1b[38;2;210;51;255m", "\x1b[38;2;255;51;159m",
-    };
     const gold = "\x1b[38;2;255;215;0m";
     const frames = 14;
     var f: usize = 0;
@@ -2443,7 +2443,7 @@ fn ultracodeShine(w: *Io.Writer, io: Io) void {
         w.writeAll(style.bold) catch return;
         w.print("{s}✦ ", .{gold}) catch return;
         for (word, 0..) |c, i| {
-            w.writeAll(rainbow[(i + f) % rainbow.len]) catch return;
+            w.writeAll(ultracode_rainbow[(i + f) % ultracode_rainbow.len]) catch return;
             w.print("{c}", .{c}) catch return;
         }
         w.print("{s} ✦{s}", .{ gold, style.reset }) catch return;
@@ -3034,6 +3034,24 @@ fn readLine(
             var vcol: usize = plen;
             var mark_end: usize = 0;
             var mark_open = false;
+            // `ultracode` shines the input itself: each letter of every
+            // (case-insensitive) occurrence renders in a rotating rainbow hue.
+            var shine_starts: [8]usize = undefined;
+            var shine_ends: [8]usize = undefined;
+            var nshine: usize = 0;
+            {
+                var si: usize = 0;
+                while (si + 9 <= items.len) : (si += 1) {
+                    if (std.ascii.eqlIgnoreCase(items[si .. si + 9], "ultracode")) {
+                        if (nshine < shine_starts.len) {
+                            shine_starts[nshine] = si;
+                            shine_ends[nshine] = si + 9;
+                            nshine += 1;
+                        }
+                    }
+                }
+            }
+            var shine_active = false;
             while (i < items.len) {
                 if (vcol >= cols) { // row full → wrap to the next
                     o.writeAll("\r\n") catch {};
@@ -3047,9 +3065,30 @@ fn readLine(
                         if (std.mem.eql(u8, items[i .. i + m.len], m) and m.len > best) best = m.len;
                     }
                     if (best > 0) {
+                        if (shine_active) {
+                            o.writeAll("\x1b[0m") catch {};
+                            shine_active = false;
+                        }
                         o.writeAll("\x1b[7;36m") catch {};
                         mark_end = i + best;
                         mark_open = true;
+                    }
+                }
+                // Rainbow shine for an `ultracode` span (skipped inside a chip).
+                if (!mark_open) {
+                    var hue: ?[]const u8 = null;
+                    for (shine_starts[0..nshine], shine_ends[0..nshine]) |sstart, send| {
+                        if (i >= sstart and i < send) {
+                            hue = ultracode_rainbow[(i - sstart) % ultracode_rainbow.len];
+                            break;
+                        }
+                    }
+                    if (hue) |h| {
+                        o.writeAll(h) catch {};
+                        shine_active = true;
+                    } else if (shine_active) {
+                        o.writeAll("\x1b[0m") catch {};
+                        shine_active = false;
                     }
                 }
                 o.writeByte(items[i]) catch {};
@@ -3058,9 +3097,10 @@ fn readLine(
                 if (mark_open and i == mark_end) {
                     o.writeAll("\x1b[0m") catch {};
                     mark_open = false;
+                    shine_active = false;
                 }
             }
-            if (mark_open) o.writeAll("\x1b[0m") catch {};
+            if (mark_open or shine_active) o.writeAll("\x1b[0m") catch {};
 
             // Place the cursor. wrapAt gives its target row/col; when it sits
             // at the very end of a just-filled row that's a fresh row below the
