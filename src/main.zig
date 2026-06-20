@@ -4050,8 +4050,8 @@ const usage_text =
     \\flags:
     \\  --model <name>   start on this model (same fuzzy resolution as /model)
     \\  --resume <name>  resume/autosave <name>.session.json
-    \\  --new            start a fresh autosaved session
-    \\  --no-resume      do not auto-load last.session.json
+    \\  --new            start a fresh autosaved session (default)
+    \\  --no-resume      ignore --resume and start fresh
     \\  --system-prompt <text>          replace the built-in system prompt
     \\  --append-system-prompt <text>   append extra text to the system prompt
     \\  --yolo           skip all permission prompts for the session
@@ -4775,7 +4775,8 @@ pub fn main(init: std.process.Init) !void {
         .tools_openai = try renderRootTools(arena, .openai, &root_specs, mcp_tools),
         .tools_responses = try renderRootTools(arena, .responses, &root_specs, mcp_tools),
     };
-    root.session_name = if (resume_flag) |name| name else if (new_session_flag) try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(io)}) else "last";
+    const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(io)});
+    root.session_name = if (resume_flag) |name| (if (!new_session_flag and !no_resume_flag) name else fresh_session_name) else fresh_session_name;
     loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
     tracer.note("session", root.provider.model);
 
@@ -4834,10 +4835,10 @@ pub fn main(init: std.process.Init) !void {
     var prev_turn_id: u64 = 0;
     var prev_prompt_fp: [16]u8 = promptFingerprint(root.systemPrompt());
 
-    // opencode-style auto-resume: restore the selected autosave target so
-    // the conversation just continues. JSON/GUI sessions opt in via --resume.
-    // Best-effort: a missing/keyless/corrupt file silently starts fresh.
-    if (oneshot_prompt == null and !new_session_flag and !no_resume_flag and (interactive or resume_flag != null)) {
+    // Explicit resume only: bare `graff` starts fresh, while `--resume <name>`
+    // restores that autosave target. Best-effort: a missing/keyless/corrupt
+    // file silently starts fresh.
+    if (oneshot_prompt == null and resume_flag != null and !new_session_flag and !no_resume_flag) {
         if (loadSession(&root, keys, arena, root.session_name)) |_| {
             if (root.messages.items.len > 0) {
                 // Estimate the restored context from the file size (~4 bytes/token).
