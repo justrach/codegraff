@@ -4423,9 +4423,21 @@ pub fn main(init: std.process.Init) !void {
             else
                 "";
             if (std.mem.eql(u8, rtype, "set_model")) {
-                const name = if (parsed.object.get("name")) |v| (if (v == .string) v.string else "") else "";
+                // #41: explicit provider+model disambiguates colliding model ids
+                // (e.g. gpt-5.5 under both codex and codegraff). Build "provider/model"
+                // so resolveProviderRequest pins the provider; legacy `name`
+                // ("provider", "provider/model", or "model") still works.
+                const provider_field = if (parsed.object.get("provider")) |v| (if (v == .string) v.string else "") else "";
+                const model_field = if (parsed.object.get("model")) |v| (if (v == .string) v.string else "") else "";
+                const legacy_name = if (parsed.object.get("name")) |v| (if (v == .string) v.string else "") else "";
+                const name = if (provider_field.len > 0 and model_field.len > 0)
+                    try std.fmt.allocPrint(arena, "{s}/{s}", .{ provider_field, model_field })
+                else if (model_field.len > 0)
+                    model_field
+                else
+                    legacy_name;
                 if (name.len == 0) {
-                    root.emit(.{ .type = "error", .message = "set_model needs a non-empty name" });
+                    root.emit(.{ .type = "error", .message = "set_model needs a non-empty name (or provider+model)" });
                     continue;
                 }
                 const provider = resolveProviderRequest(&keys, arena, name) catch |err| {
@@ -4438,7 +4450,7 @@ pub fn main(init: std.process.Init) !void {
                     continue;
                 };
                 const note = applyProvider(&root, arena, provider);
-                root.emit(.{ .type = "model", .ok = true, .id = provider.id, .name = provider.model, .context = provider.context, .note = note });
+                root.emit(.{ .type = "model", .ok = true, .id = provider.id, .name = provider.model, .provider = provider.id, .model = provider.model, .context = provider.context, .note = note });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "compact")) {
