@@ -403,6 +403,7 @@ impl RuntimeManager {
         Ok(vec![
             command("help", "Show available commands.", false),
             command("agent", "Show active agent.", false),
+            command("pwd", "Show current workspace path.", true),
             command("compact", "Compact current conversation.", true),
             command("workspace-status", "Show git status.", true),
         ])
@@ -1067,6 +1068,20 @@ impl RuntimeManager {
                 result_kind: CommandResultKindDto::Snapshot,
                 payload: None,
             }),
+            "pwd" => {
+                let workspace = self
+                    .resolve_workspace(workspace_path)
+                    .await
+                    .context("Missing workspace")?;
+                Ok(CommandRunResultDto {
+                    title: "/pwd".into(),
+                    body: Some(workspace),
+                    snapshot: None,
+                    saved_path: None,
+                    result_kind: CommandResultKindDto::Text,
+                    payload: None,
+                })
+            }
             "workspace-status" => {
                 let workspace = workspace_path.unwrap_or_default();
                 Ok(CommandRunResultDto {
@@ -1086,7 +1101,7 @@ impl RuntimeManager {
             _ => Ok(CommandRunResultDto {
                 title: format!("/{name}"),
                 body: Some(format!(
-                    "Available MVP commands: /help, /agent, /compact, /workspace-status. Args: {}",
+                    "Available MVP commands: /help, /agent, /pwd, /compact, /workspace-status. Args: {}",
                     args.join(" ")
                 )),
                 snapshot: None,
@@ -2674,7 +2689,11 @@ fn codegraff_binary() -> String {
             }
         }
     }
-    for abs in ["/opt/homebrew/bin/graff", "/usr/local/bin/graff", "/usr/bin/graff"] {
+    for abs in [
+        "/opt/homebrew/bin/graff",
+        "/usr/local/bin/graff",
+        "/usr/bin/graff",
+    ] {
         if Path::new(abs).is_file() {
             return abs.to_string();
         }

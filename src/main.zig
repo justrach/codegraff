@@ -2269,6 +2269,8 @@ fn mcpServerConnected(tools: []const mcp.Tool, server: []const u8) bool {
 
 /// PATH captured at startup for skill detection (PATH won't change mid-run).
 var g_path_env: []const u8 = "";
+/// Human-facing current workspace folder shown in the REPL prompt and /pwd.
+var g_cwd_display: []const u8 = ".";
 
 fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, g_path_env, ':');
@@ -3986,9 +3988,14 @@ pub fn main(init: std.process.Init) !void {
         style = Style.ansi;
         use_color = true;
     }
+    var cwd_buf: [4096]u8 = undefined;
+    g_cwd_display = if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
+        try arena.dupe(u8, cwd_buf[0..n])
+    else |_|
+        try arena.dupe(u8, init.environ_map.get("PWD") orelse ".");
 
     if (!json_mode and oneshot_prompt == null) {
-        try out.print("{s}simple-harness{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, trace_path });
+        try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.cyan, g_cwd_display, style.reset, trace_path });
         try out.flush();
         if (codex_account) |acct| {
             try out.print("logged into Codex (ChatGPT account {s}…) — /model gpt-5.5\n", .{acct[0..@min(acct.len, 8)]});
@@ -5027,6 +5034,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/model", .desc = "switch model/provider (picker)" },
     .{ .name = "/models", .desc = "list known models, context windows" },
     .{ .name = "/clear", .desc = "wipe the conversation, start fresh" },
+    .{ .name = "/pwd", .desc = "show the current workspace folder" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
     .{ .name = "/plan", .desc = "toggle plan mode (read-only, propose first)" },
     .{ .name = "/resume", .desc = "restore a saved session (picker)" },
@@ -5083,6 +5091,11 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.last_cache_read = 0;
         root.todos.clearRetainingCapacity();
         try out.writeAll("context cleared — fresh conversation\n");
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/pwd")) {
+        try out.print("{s}\n", .{g_cwd_display});
         try out.flush();
         return;
     }
@@ -7273,15 +7286,16 @@ const Agent = struct {
             const threshold = self.provider.compactAt();
             // % of the compaction budget already used — glanceable headroom.
             const pct = if (threshold > 0) self.last_context_tokens * 100 / threshold else 0;
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
-                style.dim,                style.reset,      style.cyan, self.provider.model, flag, style.dim,
-                self.last_context_tokens, threshold / 1000, pct,        cached,              cost, style.reset,
-                style.bold,               style.reset,
+            try w.print("\n{s}[{s}{s}{s}{s}{s} · {s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
+                style.dim,   style.reset,   style.cyan,  self.provider.model,      flag,             style.dim,
+                style.reset, g_cwd_display, style.dim,   self.last_context_tokens, threshold / 1000, pct,
+                cached,      cost,          style.reset, style.bold,               style.reset,
             });
         } else {
-            try w.print("\n{s}[{s}{s}{s}{s}{s}{s}]{s} {s}›{s} ", .{
-                style.dim,   style.reset, style.cyan,  self.provider.model, flag, style.dim, cost,
-                style.reset, style.bold,  style.reset,
+            try w.print("\n{s}[{s}{s}{s}{s}{s} · {s}{s}{s}{s}]{s} {s}›{s} ", .{
+                style.dim,   style.reset,   style.cyan, self.provider.model, flag,        style.dim,
+                style.reset, g_cwd_display, style.dim,  cost,                style.reset, style.bold,
+                style.reset,
             });
         }
         try w.flush();
