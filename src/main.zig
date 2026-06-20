@@ -261,6 +261,10 @@ const provider_specs = [_]ProviderSpec{
     .{ .id = "xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
     // OpenAI-format direct providers (matched to graff's provider.json).
     .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/chat/completions", .env_key = "KIMI_API_KEY", .default_model = "kimi-k2.7" },
+    // moonshot: the regular Kimi Open Platform (pay-as-you-go API key, not the
+    // Coding plan). OpenAI-compatible; .cn host for China. kimi-latest tracks
+    // the newest Kimi. Same /v1/models discovery applies if wired later.
+    .{ .id = "moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
     .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
     .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
@@ -329,6 +333,7 @@ const model_table = [_]ModelInfo{
     // `kimi-for-coding` alias), all routed to the latest coding model. We expose
     // `kimi-k2.7` — its current release. Verified via /coding/v1 2026-06-16.
     .{ .provider = "kimi", .name = "kimi-k2.7", .context = 262_144 },
+    .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
     .{ .provider = "zai", .name = "glm-5.2", .context = 204_800 },
@@ -700,6 +705,7 @@ fn providerDisplayName(id: []const u8) []const u8 {
         .{ "deepseek", "DeepSeek" },   .{ "openai", "OpenAI" },
         .{ "minimax", "MiniMax" },     .{ "xiaomi", "Xiaomi" },
         .{ "kimi", "Kimi" },           .{ "xai", "xAI" },
+        .{ "moonshot", "Moonshot" },
         .{ "zai", "Z.AI" },            .{ "codex", "Codex (ChatGPT)" },
     };
     inline for (names) |n| {
@@ -848,11 +854,18 @@ const Keys = struct {
     /// a key wins (spec order breaks ties). Unknown claude* models go to
     /// Anthropic; any other unknown model goes to the codegraff gateway.
     fn providerFor(keys: Keys, model: []const u8) error{MissingKey}!Provider {
-        for (provider_specs, keys.values) |spec, value| {
-            const key = value orelse continue;
-            for (model_table) |m| {
-                if (std.mem.eql(u8, m.provider, spec.id) and std.mem.eql(u8, m.name, model))
-                    return keys.build(spec, key, model);
+        // Prefer a direct provider the user keyed over the codegraff gateway: the
+        // gateway proxies almost every model, so a low gateway balance would
+        // otherwise block models the user can serve with their own key. Pass 1
+        // skips the gateway (direct keys win); pass 2 lets it back in as fallback.
+        for ([_]bool{ false, true }) |allow_gateway| {
+            for (provider_specs, keys.values) |spec, value| {
+                const key = value orelse continue;
+                if (std.mem.eql(u8, spec.id, "codegraff") != allow_gateway) continue;
+                for (model_table) |m| {
+                    if (std.mem.eql(u8, m.provider, spec.id) and std.mem.eql(u8, m.name, model))
+                        return keys.build(spec, key, model);
+                }
             }
         }
         const fallback_id: []const u8 = if (std.mem.startsWith(u8, model, "claude")) "anthropic" else "codegraff";
@@ -4003,7 +4016,7 @@ pub fn main(init: std.process.Init) !void {
             \\no API key found. quickest fixes:
             \\  graff login                         free codegraff key (device-code OAuth)
             \\  graff key set <provider> <key>      store a key (macOS Keychain, else 0600 file)
-            \\  export ANTHROPIC_API_KEY=sk-ant-…   or CODEGRAFF/DEEPSEEK/OPENAI/MINIMAX/XIAOMI/KIMI/XAI/ZAI _API_KEY
+            \\  export ANTHROPIC_API_KEY=sk-ant-…   or CODEGRAFF/DEEPSEEK/OPENAI/MINIMAX/XIAOMI/KIMI/MOONSHOT/XAI/ZAI _API_KEY
             \\a Codex CLI login (~/.codex/auth.json) is also picked up automatically.
         , .{});
     };
@@ -4334,6 +4347,31 @@ pub fn main(init: std.process.Init) !void {
     // changed prompt fingerprint marks a set_system_prompt mutation edge.
     var prev_turn_id: u64 = 0;
     var prev_prompt_fp: [16]u8 = promptFingerprint(root.systemPrompt());
+
+    // opencode-style auto-resume: a fresh process has a cold provider prompt
+    // cache, but last.session.json on disk survives — restore it so the
+    // conversation just continues. Best-effort: a missing/keyless/corrupt file
+    // silently starts fresh.
+    if (interactive and oneshot_prompt == null) {
+        if (loadSession(&root, keys, arena, "last")) |_| {
+            if (root.messages.items.len > 0) {
+                // Estimate the restored context from the file size (~4 bytes/token).
+                const est: u64 = if (Io.Dir.cwd().statFile(io, "last" ++ session_ext, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
+                try out.print("↩ resumed last session — {d} message(s) on {s} · /clear for a fresh start\n", .{ root.messages.items.len, root.provider.model });
+                try out.flush();
+                // Cold cache: if the restored context is as large as what would
+                // trigger live compaction, the first turn would re-bill the whole
+                // thing — summarize up front instead.
+                if (est >= root.provider.compactAt()) {
+                    root.last_context_tokens = est;
+                    _ = root.compact() catch |err| switch (err) {
+                        error.ApiError => {},
+                        else => |e| root.say("[resume compaction skipped: {t}]\n", .{e}) catch {},
+                    };
+                }
+            }
+        } else |_| {}
+    }
 
     while (true) {
         try root.prompt();
@@ -4669,7 +4707,14 @@ pub fn main(init: std.process.Init) !void {
                 else => |e| root.say("[compaction skipped: {t}]\n", .{e}) catch {},
             };
         }
+        // opencode-style continuous autosave: persist after every turn so a
+        // crash or quit never loses the thread — last.session.json, the same
+        // file /resume reads. Best-effort; a write failure never breaks the loop.
+        saveSession(&root, arena, "last") catch {};
     }
+    // Final save on exit also captures command-driven edits since the last turn
+    // (/clear, /rewind) so the next start resumes the true end state.
+    saveSession(&root, arena, "last") catch {};
     try out.writeAll("\n");
     try out.flush();
 }
@@ -6367,7 +6412,10 @@ fn kimiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
             const refresh = strFieldObj(resp, "refresh_token") orelse "";
             const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 900) else 900;
             try writeKimiAuth(io, arena, home, a.string, refresh, @divTrunc(unixMs(io), 1000) + expires_in);
-            try out.print("✓ logged into Kimi — wrote {s}. /model kimi-k2.7\n", .{kimiAuthPath(arena, home)});
+            if (fetchKimiModel(io, gpa, arena, a.string)) |model|
+                try out.print("✓ logged into Kimi — wrote {s}. /model kimi {s}\n", .{ kimiAuthPath(arena, home), model })
+            else
+                try out.print("✓ logged into Kimi — wrote {s}. /model kimi-k2.7\n", .{kimiAuthPath(arena, home)});
             try out.flush();
             return;
         };
@@ -6409,6 +6457,44 @@ fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) ?[]
         }
     }
     return access;
+}
+
+// The Kimi for Coding plan's model-listing endpoint (sibling of the
+// chat/completions URL in provider_specs). The official Kimi Code client reads
+// the served model id from here rather than baking in a version, so login does
+// the same — staying correct when the plan's coding model is bumped.
+const kimi_models_url = "https://api.kimi.com/coding/v1/models";
+
+/// GET the coding-plan /models endpoint and return the first model id it
+/// advertises (arena-owned), or null on any failure — the caller falls back to
+/// the baked-in id so a network hiccup never breaks login. Carries the same
+/// bearer token + claude-code User-Agent the plan gates on.
+fn fetchKimiModel(io: Io, gpa: Allocator, arena: Allocator, access: []const u8) ?[]const u8 {
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
+    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{access}) catch return null;
+    const extra = [_]std.http.Header{
+        .{ .name = "authorization", .value = bearer },
+        .{ .name = "Accept", .value = "application/json" },
+    };
+    const res = client.fetch(.{
+        .location = .{ .url = kimi_models_url },
+        .method = .GET,
+        .response_writer = &aw.writer,
+        .headers = .{ .user_agent = .{ .override = kimi_user_agent } },
+        .extra_headers = &extra,
+    }) catch return null;
+    if (@intFromEnum(res.status) != 200) return null;
+    const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch return null;
+    if (v != .object) return null;
+    const data = v.object.get("data") orelse return null;
+    if (data != .array) return null;
+    for (data.array.items) |item| {
+        if (item != .object) continue;
+        if (strFieldObj(item.object, "id")) |id| if (id.len > 0) return id;
+    }
+    return null;
 }
 
 // ---------------------------------------------------------------------------
