@@ -9172,12 +9172,53 @@ const Agent = struct {
         errdefer if (req.connection) |conn| {
             conn.closing = true;
         };
-        req.transfer_encoding = .{ .content_length = body.len };
-        var bw = try req.sendBodyUnflushed(&.{});
-        try bw.writer.writeAll(body);
-        try bw.end();
-        try req.connection.?.flush();
-        var response = try req.receiveHead(&.{});
+        // Race the send + head receive against a stall watchdog so a
+        // freshly-redialed connection that the server accepts but never
+        // answers can't hang the turn (issue #54: "retrying (1/3)" then
+        // "thinking… forever"). Mirrors the SSE line-loop and postWatched
+        // patterns. Falls back to a bare send+receiveHead (the old behavior)
+        // when no spare concurrency exists.
+        var response: std.http.Client.Response = undefined;
+        head: {
+            const HeadDone = union(enum) { sent: anyerror!void, stall: WatchdogFired };
+            var hd_buf: [2]HeadDone = undefined;
+            var hsel: Io.Select(HeadDone) = .init(self.io, &hd_buf);
+            hsel.concurrent(.sent, sendHeadTask, .{ &req, body, &response }) catch {
+                // No spare concurrency: accept the hang risk (existing behavior).
+                req.transfer_encoding = .{ .content_length = body.len };
+                var bw = try req.sendBodyUnflushed(&.{});
+                try bw.writer.writeAll(body);
+                try bw.end();
+                try req.connection.?.flush();
+                response = try req.receiveHead(&.{});
+                break :head;
+            };
+            hsel.concurrent(.stall, headStallTask, .{self.io}) catch {
+                const r = hsel.await() catch |e| {
+                    hsel.cancelDiscard();
+                    return e;
+                };
+                hsel.cancelDiscard();
+                r.sent catch |e| {
+                    return e;
+                };
+                break :head;
+            };
+            const first = hsel.await() catch |e| {
+                hsel.cancelDiscard();
+                return e;
+            };
+            hsel.cancelDiscard();
+            switch (first) {
+                .sent => |s| s catch |e| {
+                    return e;
+                },
+                .stall => |w| {
+                    if (req.connection) |conn| conn.closing = true;
+                    return if (w == .esc) error.Interrupted else error.HungRequest;
+                },
+            }
+        }
 
         // 429/5xx before any body: a retryable throttle — request() backs
         // off and retries (surfaced in the trace as a "retry" note).
@@ -10972,6 +11013,24 @@ fn postWatchdog(io: Io) WatchdogFired {
 // doesn't apply to --json/GUI sessions, where this matters most.
 const stream_stall_ms: u64 = 120 * 1000;
 
+/// A response head (HTTP status line + headers) idle this long means the
+/// server accepted the connection but isn't responding — common right
+/// after a keep-alive drop that caused an HttpConnectionClosing retry.
+/// Shorter than stream_stall_ms because the head should arrive in
+/// milliseconds; any delay past this is a stall, not a slow model.
+const head_stall_ms: u64 = 30 * 1000;
+
+/// Select-arm wrapper: send the request body and receive the response head.
+/// Stores the response in `out` for the main thread to use after the select.
+fn sendHeadTask(req: *std.http.Client.Request, body: []const u8, out: *std.http.Client.Response) anyerror!void {
+    req.transfer_encoding = .{ .content_length = body.len };
+    var bw = try req.sendBodyUnflushed(&.{});
+    try bw.writer.writeAll(body);
+    try bw.end();
+    try req.connection.?.flush();
+    out.* = try req.receiveHead(&.{});
+}
+
 /// Select-arm wrapper: read one '\n'-delimited SSE line into `w`.
 fn streamLineTask(reader: *Io.Reader, w: *Io.Writer) anyerror!usize {
     return reader.streamDelimiterEnding(w, '\n');
@@ -10983,6 +11042,20 @@ fn streamStallTask(io: Io) WatchdogFired {
     var waited: u64 = 0;
     while (waited < stream_stall_ms) {
         io.sleep(.fromMilliseconds(200), .awake) catch return .deadline; // canceled: a line arrived
+        waited += 200;
+        if (Agent.esc_cancel.load(.acquire)) return .esc;
+    }
+    return .deadline;
+}
+
+/// Select-arm wrapper: fires after head_stall_ms (head receive stall), or
+/// early on Esc. Races postStream's send + receiveHead so a freshly-redialed
+/// connection that the server accepts but never answers can't hang the turn
+/// (the root cause of the "retrying (1/3)" → "thinking… forever" bug).
+fn headStallTask(io: Io) WatchdogFired {
+    var waited: u64 = 0;
+    while (waited < head_stall_ms) {
+        io.sleep(.fromMilliseconds(200), .awake) catch return .deadline;
         waited += 200;
         if (Agent.esc_cancel.load(.acquire)) return .esc;
     }
