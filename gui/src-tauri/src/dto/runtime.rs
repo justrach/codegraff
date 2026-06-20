@@ -300,6 +300,9 @@ pub enum ProviderAuthMethodKindDto {
     AwsProfile,
     CodexDevice,
     CodegraffDevice,
+    /// Kimi Code device-code OAuth (`graff login kimi`). Kimi also accepts an
+    /// API key, so this is offered as a second auth method alongside `ApiKey`.
+    KimiDevice,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

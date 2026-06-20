@@ -358,6 +358,13 @@ impl RuntimeManager {
                     "Codex login launched in Terminal. Complete the browser OAuth flow there, then finish setup here.",
                 ))
             }
+            ProviderAuthMethodKindDto::KimiDevice => {
+                launch_codegraff_login(Some("kimi")).await?;
+                Ok(cli_login_session(
+                    &input.provider_id,
+                    "Kimi login launched in Terminal. Complete the device-code flow there, then finish setup here.",
+                ))
+            }
             _ => anyhow::bail!("Unsupported auth method for {}", input.provider_id),
         }
     }
@@ -3000,14 +3007,24 @@ fn provider_summary_with_key_list(
     provider: &CodegraffProvider,
     key_list: &str,
 ) -> ProviderSummaryDto {
+    let mut auth_methods = vec![ProviderAuthMethodDto {
+        kind: provider.auth_method.clone(),
+        label: provider_auth_label(provider),
+    }];
+    // Kimi accepts both an API key and a device-code OAuth login (`graff login
+    // kimi`). Offer both so users can re-auth via the CLI's OAuth flow when
+    // their key is removed or expires — mirroring codegraff/codex.
+    if provider.id == "kimi" {
+        auth_methods.push(ProviderAuthMethodDto {
+            kind: ProviderAuthMethodKindDto::KimiDevice,
+            label: "Kimi Code device login".into(),
+        });
+    }
     ProviderSummaryDto {
         id: provider.id.clone(),
         name: provider.name.clone(),
         configured: provider_configured(provider, key_list),
-        auth_methods: vec![ProviderAuthMethodDto {
-            kind: provider.auth_method.clone(),
-            label: provider_auth_label(provider),
-        }],
+        auth_methods,
         env_override: provider_env_override(provider),
     }
 }
@@ -3090,6 +3107,7 @@ fn provider_auth_label(provider: &CodegraffProvider) -> String {
             .unwrap_or_else(|| "API key".into()),
         ProviderAuthMethodKindDto::CodegraffDevice => "Codegraff device login".into(),
         ProviderAuthMethodKindDto::CodexDevice => "Codex browser login".into(),
+        ProviderAuthMethodKindDto::KimiDevice => "Kimi Code device login".into(),
         _ => "Unsupported".into(),
     }
 }
@@ -3120,6 +3138,10 @@ fn provider_login_configured(
                 || key_list_mentions_provider(key_list, &provider.id)
         }
         "codex" => home_codex_auth_has_valid_token(home),
+        "kimi" => {
+            key_list_mentions_provider(key_list, &provider.id)
+                || kimi_auth_has_valid_token(home)
+        }
         _ => key_list_mentions_provider(key_list, &provider.id),
     }
 }
@@ -3144,6 +3166,27 @@ fn home_file_exists(home: Option<&Path>, relative_path: &str) -> bool {
 fn home_codex_auth_has_valid_token(home: Option<&Path>) -> bool {
     home.map(|home| codex_auth_file_has_valid_token(&home.join(".codex/auth.json")))
         .unwrap_or(false)
+}
+
+/// Kimi OAuth login (`graff login kimi`) writes a JSON token file to
+/// `~/.kimi/credentials/graff-oauth.json`. The CLI auto-refreshes the
+/// access token when near expiry, so a non-empty access_token means logged in.
+fn kimi_auth_has_valid_token(home: Option<&Path>) -> bool {
+    home.map(|home| {
+        let path = home.join(".kimi/credentials/graff-oauth.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return false;
+        };
+        value
+            .get("access_token")
+            .and_then(|token| token.as_str())
+            .map(|token| !token.trim().is_empty())
+            .unwrap_or(false)
+    })
+    .unwrap_or(false)
 }
 
 fn codex_auth_file_has_valid_token(path: &Path) -> bool {
@@ -3258,6 +3301,9 @@ fn remove_stored_credential(provider_id: &str) -> Result<()> {
             }
             "codex" => {
                 let _ = std::fs::remove_file(home.join(".codex/auth.json"));
+            }
+            "kimi" => {
+                let _ = std::fs::remove_file(home.join(".kimi/credentials/graff-oauth.json"));
             }
             _ => {}
         }
