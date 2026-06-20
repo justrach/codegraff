@@ -2014,7 +2014,7 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -2269,7 +2269,7 @@ fn mcpServerConnected(tools: []const mcp.Tool, server: []const u8) bool {
 
 /// PATH captured at startup for skill detection (PATH won't change mid-run).
 var g_path_env: []const u8 = "";
-/// Human-facing current workspace folder shown in the REPL prompt and /pwd.
+/// Human-facing current workspace folder shown in the REPL prompt.
 var g_cwd_display: []const u8 = ".";
 
 fn binOnPath(io: Io, name: []const u8) bool {
@@ -5034,7 +5034,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/model", .desc = "switch model/provider (picker)" },
     .{ .name = "/models", .desc = "list known models, context windows" },
     .{ .name = "/clear", .desc = "wipe the conversation, start fresh" },
-    .{ .name = "/pwd", .desc = "show the current workspace folder" },
+    .{ .name = "/bash", .desc = "run a shell command in the current workspace" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
     .{ .name = "/plan", .desc = "toggle plan mode (read-only, propose first)" },
     .{ .name = "/resume", .desc = "restore a saved session (picker)" },
@@ -5094,8 +5094,35 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return;
     }
-    if (std.mem.eql(u8, line, "/pwd")) {
-        try out.print("{s}\n", .{g_cwd_display});
+    if (std.mem.eql(u8, line, "/bash") or std.mem.startsWith(u8, line, "/bash ")) {
+        const cmd = std.mem.trim(u8, line["/bash".len..], " \t\r\n");
+        if (cmd.len == 0) {
+            try out.writeAll("usage: /bash <command>\n");
+            try out.flush();
+            return;
+        }
+        var input_obj: std.json.ObjectMap = .empty;
+        try input_obj.put(arena, "command", .{ .string = cmd });
+        const call: ToolCall = .{ .id = "slash-bash", .name = "bash", .input = .{ .object = input_obj } };
+        if (try root.gateTool(call)) |denied| {
+            try out.print("{s}\n", .{denied.text});
+            try out.flush();
+            return;
+        }
+        const result = execTool(.{
+            .gpa = root.gpa,
+            .io = root.io,
+            .client = root.client,
+            .provider = root.provider,
+            .registry = root.registry,
+            .from_sub = false,
+            .approvals = root.approvals,
+            .tracer = root.tracer,
+            .snapshots = root.snapshots,
+            .tools_used = &root.tools_used,
+        }, call);
+        try out.writeAll(result.text);
+        if (result.text.len == 0 or result.text[result.text.len - 1] != '\n') try out.writeAll("\n");
         try out.flush();
         return;
     }

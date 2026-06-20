@@ -18,6 +18,7 @@ const ARG_COMMANDS = new Set([
   "workspace-query",
   "workspace-search",
   "workflow",
+  "bash",
   "reasoning-effort",
 ]);
 
@@ -35,10 +36,11 @@ function parseSlashCommand(draft: string): ParsedCommand | null {
   if (match == null) {
     return null;
   }
+  const name = match[1];
   const rest = match[2]?.trim() ?? "";
   return {
-    name: match[1],
-    args: rest.length > 0 ? rest.split(/\s+/) : [],
+    name,
+    args: rest.length > 0 ? (name === "bash" ? [rest] : rest.split(/\s+/)) : [],
   };
 }
 

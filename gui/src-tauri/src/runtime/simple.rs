@@ -403,7 +403,7 @@ impl RuntimeManager {
         Ok(vec![
             command("help", "Show available commands.", false),
             command("agent", "Show active agent.", false),
-            command("pwd", "Show current workspace path.", true),
+            bash_command(),
             command("compact", "Compact current conversation.", true),
             command("workspace-status", "Show git status.", true),
         ])
@@ -1068,14 +1068,25 @@ impl RuntimeManager {
                 result_kind: CommandResultKindDto::Snapshot,
                 payload: None,
             }),
-            "pwd" => {
+            "bash" => {
                 let workspace = self
                     .resolve_workspace(workspace_path)
                     .await
                     .context("Missing workspace")?;
+                let shell_command = args.join(" ").trim().to_string();
+                if shell_command.is_empty() {
+                    return Ok(CommandRunResultDto {
+                        title: "/bash".into(),
+                        body: Some("usage: /bash <command>".into()),
+                        snapshot: None,
+                        saved_path: None,
+                        result_kind: CommandResultKindDto::Text,
+                        payload: None,
+                    });
+                }
                 Ok(CommandRunResultDto {
-                    title: "/pwd".into(),
-                    body: Some(workspace),
+                    title: format!("/bash {shell_command}"),
+                    body: Some(run_shell_command(&workspace, &shell_command)?),
                     snapshot: None,
                     saved_path: None,
                     result_kind: CommandResultKindDto::Text,
@@ -1101,7 +1112,7 @@ impl RuntimeManager {
             _ => Ok(CommandRunResultDto {
                 title: format!("/{name}"),
                 body: Some(format!(
-                    "Available MVP commands: /help, /agent, /pwd, /compact, /workspace-status. Args: {}",
+                    "Available MVP commands: /help, /agent, /bash <command>, /compact, /workspace-status. Args: {}",
                     args.join(" ")
                 )),
                 snapshot: None,
@@ -2187,6 +2198,13 @@ fn command(name: &str, usage: &str, requires_workspace: bool) -> CommandDescript
     }
 }
 
+fn bash_command() -> CommandDescriptorDto {
+    CommandDescriptorDto {
+        argument_hint: Some("<command>".into()),
+        ..command("bash", "Run a shell command in the workspace.", true)
+    }
+}
+
 /// Spawns a persistent `graff --json` child for a conversation. `--yolo` skips
 /// permission prompts (the GUI has no approval surface yet); stderr is discarded
 /// since the protocol carries errors as `error` events on stdout.
@@ -3218,6 +3236,51 @@ fn title_from_prompt(prompt: &str) -> String {
 fn is_placeholder_title(title: &str) -> bool {
     let title = title.trim();
     title.is_empty() || title.eq_ignore_ascii_case("New chat")
+}
+
+fn run_shell_command(workspace_path: &str, shell_command: &str) -> Result<String> {
+    let output = Command::new("/bin/sh")
+        .args(["-c", shell_command])
+        .current_dir(workspace_path)
+        .output()
+        .with_context(|| format!("Failed to run shell command in {workspace_path}"))?;
+    Ok(format_command_output(&output))
+}
+
+fn format_command_output(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut text = String::new();
+    if !stdout.is_empty() {
+        text.push_str(&stdout);
+    }
+    if !stderr.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str("[stderr]\n");
+        text.push_str(&stderr);
+    }
+    match output.status.code() {
+        Some(0) => {}
+        Some(code) => {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&format!("[exit code {code}]"));
+        }
+        None => {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str("[terminated abnormally]");
+        }
+    }
+    if text.is_empty() {
+        "(no output)".into()
+    } else {
+        text
+    }
 }
 
 fn git_status_files(workspace_path: &str) -> Result<Vec<WorkspaceFileStatusDto>> {
