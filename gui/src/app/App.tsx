@@ -21,6 +21,7 @@ import { NewChatTrigger } from "../components/NewChatTrigger";
 import { GeneralSettingsPane } from "../components/general-settings/GeneralSettingsPane";
 import { McpSettingsPane } from "../components/mcp-settings/McpSettingsPane";
 import { ProvidersSettingsPane } from "../components/providers-settings/ProvidersSettingsPane";
+import { ProviderSuccessPage } from "../components/providers-settings/ProviderSuccessPage";
 import { ProjectSidebar } from "../components/ProjectSidebar";
 import { WorkspaceBoard } from "../components/workspace-board/WorkspaceBoard";
 import { Button } from "../components/ui/Button";
@@ -382,6 +383,10 @@ function AppShell() {
 }
 
 function App() {
+  if (window.location.pathname === "/success") {
+    return <ProviderSuccessPage />;
+  }
+
   return (
     <SessionProvider>
       <DragDropProvider>
