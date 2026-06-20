@@ -271,6 +271,219 @@
     --elevation-md: 0 2px 4px rgb(0 0 0 / 35%), 0 8px 20px -3px rgb(0 0 0 / 45%);
 }
 
+.provider-success-page {
+    position: relative;
+    display: grid;
+    min-height: 100vh;
+    place-items: center;
+    overflow: hidden;
+    padding: 2rem;
+    color: #edeae2;
+    background:
+        radial-gradient(circle at 50% 8%, rgb(189 128 228 / 18%), transparent 34rem),
+        radial-gradient(circle at 18% 82%, rgb(232 163 61 / 14%), transparent 30rem),
+        linear-gradient(180deg, #1b1812 0%, #100f0b 100%);
+}
+
+.provider-success-page::before {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    content: "";
+    background-image:
+        linear-gradient(rgb(255 255 255 / 3%) 1px, transparent 1px),
+        linear-gradient(90deg, rgb(255 255 255 / 3%) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: radial-gradient(circle at center, black, transparent 72%);
+}
+
+.provider-success-ambient {
+    position: absolute;
+    width: 24rem;
+    height: 24rem;
+    pointer-events: none;
+    border-radius: 999px;
+    filter: blur(72px);
+    opacity: 0.62;
+}
+
+.provider-success-ambient-primary {
+    top: 8%;
+    right: 18%;
+    background: rgb(189 128 228 / 34%);
+}
+
+.provider-success-ambient-secondary {
+    bottom: 9%;
+    left: 16%;
+    background: rgb(232 163 61 / 24%);
+}
+
+.provider-success-card {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    width: min(100%, 31rem);
+    flex-direction: column;
+    align-items: center;
+    padding: 2.75rem;
+    text-align: center;
+    border: 1px solid rgb(237 234 226 / 10%);
+    border-radius: 2rem;
+    background:
+        linear-gradient(180deg, rgb(255 255 255 / 6%), transparent 42%),
+        rgb(31 28 22 / 78%);
+    box-shadow:
+        0 28px 90px rgb(0 0 0 / 42%),
+        inset 0 1px 0 rgb(255 255 255 / 10%);
+    backdrop-filter: blur(22px);
+}
+
+.provider-success-brand {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 11.25rem;
+    margin-bottom: 2rem;
+}
+
+.provider-success-brand img {
+    width: 100%;
+    height: auto;
+    filter: drop-shadow(0 14px 28px rgb(0 0 0 / 28%));
+}
+
+.provider-success-badge {
+    position: relative;
+    display: grid;
+    width: 5.75rem;
+    height: 5.75rem;
+    place-items: center;
+    margin-bottom: 1.5rem;
+    color: #10100b;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 999px;
+    background:
+        radial-gradient(circle at 32% 22%, rgb(255 255 255 / 90%), transparent 24%),
+        linear-gradient(135deg, #a9c989 0%, #7fa86b 45%, #e8a33d 120%);
+    box-shadow:
+        0 0 0 0.65rem rgb(127 168 107 / 10%),
+        0 0 56px rgb(127 168 107 / 36%);
+}
+
+.provider-success-check {
+    width: 2.35rem;
+    height: 2.35rem;
+}
+
+.provider-success-sparkle {
+    position: absolute;
+    top: -0.35rem;
+    right: -0.35rem;
+    width: 1.55rem;
+    height: 1.55rem;
+    padding: 0.3rem;
+    color: #e8a33d;
+    border: 1px solid rgb(232 163 61 / 28%);
+    border-radius: 999px;
+    background: #1f1c16;
+    box-shadow: 0 8px 24px rgb(232 163 61 / 24%);
+}
+
+.provider-success-eyebrow {
+    margin: 0 0 0.75rem;
+    color: #e8a33d;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+
+.provider-success-title {
+    max-width: 24rem;
+    margin: 0;
+    color: #fffaf0;
+    font-size: clamp(2.25rem, 7vw, 4.25rem);
+    font-weight: 760;
+    letter-spacing: -0.065em;
+    line-height: 0.95;
+}
+
+.provider-success-copy {
+    max-width: 25rem;
+    margin: 1.15rem 0 0;
+    color: rgb(237 234 226 / 72%);
+    font-size: 1rem;
+    line-height: 1.65;
+}
+
+.provider-success-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    margin-top: 2rem;
+    padding: 0.9rem 1.25rem;
+    color: #16140f;
+    font-size: 0.95rem;
+    font-weight: 750;
+    text-decoration: none;
+    border: 1px solid rgb(255 255 255 / 16%);
+    border-radius: 999px;
+    background: linear-gradient(135deg, #f0bd62, #e8a33d 48%, #bd80e4 135%);
+    box-shadow:
+        0 16px 36px rgb(232 163 61 / 22%),
+        inset 0 1px 0 rgb(255 255 255 / 38%);
+    transition:
+        transform 160ms ease,
+        box-shadow 160ms ease,
+        filter 160ms ease;
+}
+
+.provider-success-button:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.04);
+    box-shadow:
+        0 20px 46px rgb(232 163 61 / 30%),
+        inset 0 1px 0 rgb(255 255 255 / 42%);
+}
+
+.provider-success-button:focus-visible {
+    outline: 2px solid #bd80e4;
+    outline-offset: 4px;
+}
+
+.provider-success-note {
+    margin: 1rem 0 0;
+    color: rgb(237 234 226 / 48%);
+    font-size: 0.82rem;
+}
+
+@media (max-width: 520px) {
+    .provider-success-page {
+        padding: 1rem;
+    }
+
+    .provider-success-card {
+        padding: 2rem 1.35rem;
+        border-radius: 1.5rem;
+    }
+
+    .provider-success-brand {
+        width: 9rem;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .provider-success-button {
+        transition: none;
+    }
+
+    .provider-success-button:hover {
+        transform: none;
+    }
+}
+
 /* ── Theme presets ──────────────────────────────────────────────
    Warm Graphite is the default (:root / .dark above). Each preset
    redefines the same token names; every component reads semantic
