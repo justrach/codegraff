@@ -20,6 +20,12 @@ import type {
 export interface PromptDraftEntry {
   isPending: boolean;
   isPlanningMode: boolean;
+  /**
+   * Per-turn opt-in to the harness `ultracode` codeword (multi-agent workflow
+   * mode). The codeword is injected into the outgoing message text at submit,
+   * then this flag is reset to false.
+   */
+  isUltraMode: boolean;
   value: string;
 }
 
@@ -64,6 +70,7 @@ export interface SessionStoreState {
     key: string | null,
     isPlanningMode: boolean,
   ) => void;
+  setPromptDraftUltraMode: (key: string | null, isUltraMode: boolean) => void;
   setPromptDraftValue: (key: string | null, value: string) => void;
   setWorkspacePromptSettings: (
     workspacePath: string | null,

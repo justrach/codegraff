@@ -3,6 +3,7 @@ import {
   ArrowUpIcon,
   ChevronDownIcon,
   MapIcon,
+  SparklesIcon,
   SquareIcon,
   ZapIcon,
 } from "lucide-react";
@@ -64,6 +65,7 @@ export function PromptInputCard({
   isRequestActive,
   isSendingPrompt,
   isPlanningMode,
+  isUltraMode,
   placeholder = "Ask about this workspace…",
   promptSettings,
   promptDraft,
@@ -74,6 +76,7 @@ export function PromptInputCard({
   workspacePath,
   onCommandSelect,
   setPlanningMode,
+  setUltraMode,
   setPromptDraft,
   stopPrompt,
   submitPrompt,
@@ -339,6 +342,7 @@ export function PromptInputCard({
           "relative gap-0 rounded-2xl border border-foreground/5 bg-background/50 p-2 transition-colors transition-shadow ring-0",
           isPlanningMode &&
             "border-[color:var(--accent)] ring-5 ring-[color:color-mix(in_oklab,var(--accent)_14%,transparent)] border-dashed",
+          isUltraMode && "cg-ultra-shine border-transparent",
         )}
       >
         <CardHeader className="sr-only">
@@ -374,7 +378,13 @@ export function PromptInputCard({
                 commandMatch &&
                   "text-transparent caret-[color:var(--foreground)]",
               )}
-              placeholder={isWorking ? "Queue a follow-up…" : placeholder}
+              placeholder={
+                isWorking
+                  ? "Queue a follow-up…"
+                  : isUltraMode
+                    ? "Describe the job — Ultra fans out parallel agents"
+                    : placeholder
+              }
               value={promptDraft}
               onChange={(event) => handleDraftChange(event.target.value)}
               onPaste={handlePaste}
@@ -561,6 +571,27 @@ export function PromptInputCard({
               <ZapIcon data-icon="inline-start" />
               <span className="text-xs">Fast</span>
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label="Toggle Ultra mode"
+              aria-pressed={isUltraMode}
+              className={cn(
+                "text-muted-foreground hover:bg-transparent hover:text-foreground",
+                isUltraMode &&
+                  "border-[color:var(--accent)] bg-[color:color-mix(in_oklab,var(--accent)_12%,transparent)] text-foreground shadow-[0_0_12px_-3px_color-mix(in_oklab,var(--accent)_75%,transparent)] hover:bg-[color:color-mix(in_oklab,var(--accent)_16%,transparent)]",
+              )}
+              disabled={isControlDisabled}
+              onClick={() => setUltraMode(!isUltraMode)}
+              title="Ultra — engage the ultracode codeword: fan out parallel agents for this turn"
+            >
+              <SparklesIcon
+                data-icon="inline-start"
+                className={cn(isUltraMode && "text-[color:var(--accent)]")}
+              />
+              <span className="text-xs">Ultra</span>
+            </Button>
             {isPlanningMode ? (
               <span
                 className="inline-flex h-8 items-center gap-2 px-1.5 text-xs font-medium text-muted-foreground"
@@ -577,7 +608,11 @@ export function PromptInputCard({
           <Button
             type="button"
             size="icon-lg"
-            className="rounded-full"
+            className={cn(
+              "rounded-full transition-shadow",
+              isUltraMode &&
+                "shadow-[0_0_18px_-2px_color-mix(in_oklab,var(--accent)_70%,transparent)] ring-2 ring-[color:color-mix(in_oklab,var(--accent)_45%,transparent)]",
+            )}
             aria-label={isWorking && isSubmitDisabled ? "Stop" : "Send"}
             onClick={handlePrimaryAction}
             disabled={isWorking ? false : isSubmitDisabled}

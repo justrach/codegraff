@@ -39,10 +39,12 @@ export function NewChatPromptSection({
     isPlanningMode,
     isRequestActive,
     isSendingPrompt,
+    isUltraMode,
     promptSettings,
     promptDraft,
     setPlanningMode,
     setPromptDraft,
+    setUltraMode,
     stopPrompt,
     submitPrompt,
     updatePromptSettings,
@@ -133,6 +135,7 @@ export function NewChatPromptSection({
               : "Ask anything…"
         }
         isPlanningMode={isPlanningMode}
+        isUltraMode={isUltraMode}
         promptDraft={promptDraft}
         promptHistory={promptHistory}
         promptSettings={promptSettings}
@@ -141,6 +144,7 @@ export function NewChatPromptSection({
         workspacePath={workspacePath}
         onCommandSelect={handleCommandSelect}
         setPlanningMode={setPlanningMode}
+        setUltraMode={setUltraMode}
         setPromptDraft={setPromptDraft}
         stopPrompt={stopPrompt}
         submitPrompt={handleSubmit}

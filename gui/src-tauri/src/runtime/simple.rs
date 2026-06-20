@@ -2125,6 +2125,7 @@ impl RuntimeManager {
                 .as_ref()
                 .map(|c| c.todos.clone())
                 .unwrap_or_default(),
+            visible_goal: visible.as_ref().and_then(|c| c.goal.clone()),
             visible_followup,
             conversation_views,
             ui_error: None,
@@ -2456,6 +2457,7 @@ fn conversation_view(
         active_request_ids: conversation.active_request_ids.clone(),
         request_agent_ids: conversation.request_agent_ids.clone(),
         todos: conversation.todos.clone(),
+        goal: conversation.goal.clone(),
         followup,
     }
 }

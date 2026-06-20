@@ -994,3 +994,100 @@
         animation: none;
     }
 }
+
+/* --- Ultra mode shine (the `ultracode` codeword opt-in) ---
+   When Ultra is engaged on the composer, the card wears a slowly rotating
+   rainbow border, mirroring the harness TUI's `ultracodeShine`. The border is
+   painted into a masked ::before so the conic gradient only shows as a ring,
+   and the hue sweep is driven by animating a registered --cg-ultra-angle
+   custom property (smooth, GPU-cheap — no layout, no repaint of children). */
+@property --cg-ultra-angle {
+    syntax: "<angle>";
+    inherits: false;
+    initial-value: 0deg;
+}
+
+@keyframes cg-ultra-spin {
+    to {
+        --cg-ultra-angle: 360deg;
+    }
+}
+
+@keyframes cg-ultra-glow {
+    0%,
+    100% {
+        opacity: 0.85;
+    }
+    50% {
+        opacity: 1;
+    }
+}
+
+.cg-ultra-shine {
+    position: relative;
+    isolation: isolate;
+}
+
+.cg-ultra-shine::before {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    padding: 1.5px;
+    content: "";
+    border-radius: inherit;
+    background: conic-gradient(
+        from var(--cg-ultra-angle),
+        #ff5f6d,
+        #ffb347,
+        #ffe66d,
+        #5cd68a,
+        #36c5d6,
+        #5b7cff,
+        #b06aff,
+        #ff5fa2,
+        #ff5f6d
+    );
+    /* Show the gradient only as a ring: fill minus content box. */
+    -webkit-mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    animation:
+        cg-ultra-spin 4s linear infinite,
+        cg-ultra-glow 2.4s ease-in-out infinite;
+}
+
+/* Soft outer bloom so the card reads as "lit" against the dark surface. */
+.cg-ultra-shine::after {
+    position: absolute;
+    inset: -1px;
+    z-index: -2;
+    content: "";
+    border-radius: inherit;
+    background: conic-gradient(
+        from var(--cg-ultra-angle),
+        #ff5f6d,
+        #ffb347,
+        #ffe66d,
+        #5cd68a,
+        #36c5d6,
+        #5b7cff,
+        #b06aff,
+        #ff5fa2,
+        #ff5f6d
+    );
+    filter: blur(11px);
+    opacity: 0.35;
+    animation: cg-ultra-spin 4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cg-ultra-shine::before,
+    .cg-ultra-shine::after {
+        animation: none;
+    }
+}

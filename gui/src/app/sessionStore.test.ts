@@ -260,11 +260,13 @@ describe("sessionStore", () => {
     expect(getPromptDraftState(sourceKey)).toEqual({
       isPending: false,
       isPlanningMode: false,
+      isUltraMode: false,
       value: "",
     });
     expect(getPromptDraftState(destinationKey)).toEqual({
       isPending: false,
       isPlanningMode: true,
+      isUltraMode: false,
       value: "ship it",
     });
 
@@ -273,6 +275,7 @@ describe("sessionStore", () => {
     expect(getPromptDraftState(destinationKey)).toEqual({
       isPending: false,
       isPlanningMode: true,
+      isUltraMode: false,
       value: "",
     });
 
@@ -281,6 +284,7 @@ describe("sessionStore", () => {
     expect(getPromptDraftState(destinationKey)).toEqual({
       isPending: false,
       isPlanningMode: false,
+      isUltraMode: false,
       value: "",
     });
     expect(sessionStore.getState().promptDraftsByKey[destinationKey]).toBeUndefined();
