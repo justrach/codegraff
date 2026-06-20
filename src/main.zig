@@ -701,12 +701,12 @@ const schema_version = "0.4";
 /// the GUI settings page so its provider list stays tied to the harness).
 fn providerDisplayName(id: []const u8) []const u8 {
     const names = .{
-        .{ "codegraff", "Codegraff" }, .{ "anthropic", "Anthropic" },
-        .{ "deepseek", "DeepSeek" },   .{ "openai", "OpenAI" },
-        .{ "minimax", "MiniMax" },     .{ "xiaomi", "Xiaomi" },
-        .{ "kimi", "Kimi" },           .{ "xai", "xAI" },
-        .{ "moonshot", "Moonshot" },
-        .{ "zai", "Z.AI" },            .{ "codex", "Codex (ChatGPT)" },
+        .{ "codegraff", "Codegraff" },   .{ "anthropic", "Anthropic" },
+        .{ "deepseek", "DeepSeek" },     .{ "openai", "OpenAI" },
+        .{ "minimax", "MiniMax" },       .{ "xiaomi", "Xiaomi" },
+        .{ "kimi", "Kimi" },             .{ "xai", "xAI" },
+        .{ "moonshot", "Moonshot" },     .{ "zai", "Z.AI" },
+        .{ "codex", "Codex (ChatGPT)" },
     };
     inline for (names) |n| {
         if (std.mem.eql(u8, id, n[0])) return n[1];
@@ -2027,7 +2027,7 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -2289,6 +2289,8 @@ fn mcpServerConnected(tools: []const mcp.Tool, server: []const u8) bool {
 
 /// PATH captured at startup for skill detection (PATH won't change mid-run).
 var g_path_env: []const u8 = "";
+/// Human-facing current workspace folder shown in the REPL prompt.
+var g_cwd_display: []const u8 = ".";
 
 fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, g_path_env, ':');
@@ -4056,9 +4058,14 @@ pub fn main(init: std.process.Init) !void {
         style = Style.ansi;
         use_color = true;
     }
+    var cwd_buf: [4096]u8 = undefined;
+    g_cwd_display = if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
+        try arena.dupe(u8, cwd_buf[0..n])
+    else |_|
+        try arena.dupe(u8, init.environ_map.get("PWD") orelse ".");
 
     if (!json_mode and oneshot_prompt == null) {
-        try out.print("{s}simple-harness{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, trace_path });
+        try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.cyan, g_cwd_display, style.reset, trace_path });
         try out.flush();
         if (codex_account) |acct| {
             try out.print("logged into Codex (ChatGPT account {s}…) — /model gpt-5.5\n", .{acct[0..@min(acct.len, 8)]});
@@ -5133,6 +5140,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/model", .desc = "switch model/provider (picker)" },
     .{ .name = "/models", .desc = "list known models, context windows" },
     .{ .name = "/clear", .desc = "wipe the conversation, start fresh" },
+    .{ .name = "/bash", .desc = "run a shell command in the current workspace" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
     .{ .name = "/plan", .desc = "toggle plan mode (read-only, propose first)" },
     .{ .name = "/resume", .desc = "restore a saved session (picker)" },
@@ -5189,6 +5197,39 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.last_cache_read = 0;
         root.todos.clearRetainingCapacity();
         try out.writeAll("context cleared — fresh conversation\n");
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/bash") or std.mem.startsWith(u8, line, "/bash ")) {
+        const cmd = std.mem.trim(u8, line["/bash".len..], " \t\r\n");
+        if (cmd.len == 0) {
+            try out.writeAll("usage: /bash <command>\n");
+            try out.flush();
+            return;
+        }
+        var input_obj: std.json.ObjectMap = .empty;
+        try input_obj.put(arena, "command", .{ .string = cmd });
+        const call: ToolCall = .{ .id = "slash-bash", .name = "bash", .input = .{ .object = input_obj } };
+        if (try root.gateTool(call)) |denied| {
+            try out.print("{s}\n", .{denied.text});
+            try out.flush();
+            return;
+        }
+        const result = execTool(.{
+            .gpa = root.gpa,
+            .io = root.io,
+            .client = root.client,
+            .provider = root.provider,
+            .registry = root.registry,
+            .from_sub = false,
+            .approvals = root.approvals,
+            .tracer = root.tracer,
+            .snapshots = root.snapshots,
+            .tools_used = &root.tools_used,
+        }, call);
+        defer root.gpa.free(result.text);
+        try out.writeAll(result.text);
+        if (result.text.len == 0 or result.text[result.text.len - 1] != '\n') try out.writeAll("\n");
         try out.flush();
         return;
     }
@@ -7420,15 +7461,16 @@ const Agent = struct {
             const threshold = self.provider.compactAt();
             // % of the compaction budget already used — glanceable headroom.
             const pct = if (threshold > 0) self.last_context_tokens * 100 / threshold else 0;
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
-                style.dim,                style.reset,      style.cyan, self.provider.model, flag, style.dim,
-                self.last_context_tokens, threshold / 1000, pct,        cached,              cost, style.reset,
-                style.bold,               style.reset,
+            try w.print("\n{s}[{s}{s}{s}{s}{s} · {s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
+                style.dim,   style.reset,   style.cyan,  self.provider.model,      flag,             style.dim,
+                style.reset, g_cwd_display, style.dim,   self.last_context_tokens, threshold / 1000, pct,
+                cached,      cost,          style.reset, style.bold,               style.reset,
             });
         } else {
-            try w.print("\n{s}[{s}{s}{s}{s}{s}{s}]{s} {s}›{s} ", .{
-                style.dim,   style.reset, style.cyan,  self.provider.model, flag, style.dim, cost,
-                style.reset, style.bold,  style.reset,
+            try w.print("\n{s}[{s}{s}{s}{s}{s} · {s}{s}{s}{s}]{s} {s}›{s} ", .{
+                style.dim,   style.reset,   style.cyan, self.provider.model, flag,        style.dim,
+                style.reset, g_cwd_display, style.dim,  cost,                style.reset, style.bold,
+                style.reset,
             });
         }
         try w.flush();
@@ -12663,4 +12705,51 @@ test "providerTakesEffort: effort-honoring providers, but never for grok models"
     try std.testing.expect(!providerTakesEffort(.openai, "xai", "grok-4.3")); // xai not in the list
     // grok via the codegraff gateway must NOT get reasoning_effort (grok rejects it)
     try std.testing.expect(!providerTakesEffort(.openai, "codegraff", "grok-build"));
+}
+
+test "/bash slash command runs the bash tool and frees its gpa-allocated result" {
+    // Regression guard for PR #38: the /bash slash handler routes through
+    // execTool, whose result.text is gpa-owned (NOT arena-owned — every other
+    // caller frees it). Forgetting `defer root.gpa.free(result.text)` in
+    // handleCommand leaks on every /bash invocation; std.testing.allocator
+    // catches that here.
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+
+    var root: Agent = .{
+        .gpa = gpa,
+        .arena = arena,
+        .io = io,
+        .client = &client,
+        .provider = .{
+            .id = "test",
+            .kind = .openai,
+            .auth = .bearer,
+            .url = "",
+            .api_key = "",
+            .model = "m",
+            .context = 100_000,
+        },
+        .messages = std.json.Array.init(arena),
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+    var keys: Keys = .{ .values = [_]?[]const u8{null} ** provider_specs.len };
+
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+
+    defer root.tools_used.deinit(gpa);
+    try handleCommand(&root, &keys, arena, "/bash printf leak-guard-XYZ", &aw.writer);
+
+    const written = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "leak-guard-XYZ") != null);
 }

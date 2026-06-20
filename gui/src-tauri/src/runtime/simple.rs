@@ -427,6 +427,7 @@ impl RuntimeManager {
             command("agent", "Show active agent.", false),
             command("goal", "Set/show the current objective.", true),
             command("loop", "Run an autonomous plan→act→verify pass.", true),
+            bash_command(),
             command("compact", "Compact current conversation.", true),
             command("workspace-status", "Show git status.", true),
         ])
@@ -1184,6 +1185,31 @@ impl RuntimeManager {
                 result_kind: CommandResultKindDto::Snapshot,
                 payload: None,
             }),
+            "bash" => {
+                let workspace = self
+                    .resolve_workspace(workspace_path)
+                    .await
+                    .context("Missing workspace")?;
+                let shell_command = args.join(" ").trim().to_string();
+                if shell_command.is_empty() {
+                    return Ok(CommandRunResultDto {
+                        title: "/bash".into(),
+                        body: Some("usage: /bash <command>".into()),
+                        snapshot: None,
+                        saved_path: None,
+                        result_kind: CommandResultKindDto::Text,
+                        payload: None,
+                    });
+                }
+                Ok(CommandRunResultDto {
+                    title: format!("/bash {shell_command}"),
+                    body: Some(run_shell_command(&workspace, &shell_command)?),
+                    snapshot: None,
+                    saved_path: None,
+                    result_kind: CommandResultKindDto::Text,
+                    payload: None,
+                })
+            }
             "workspace-status" => {
                 let workspace = workspace_path.unwrap_or_default();
                 Ok(CommandRunResultDto {
@@ -1203,7 +1229,7 @@ impl RuntimeManager {
             _ => Ok(CommandRunResultDto {
                 title: format!("/{name}"),
                 body: Some(format!(
-                    "Available MVP commands: /help, /agent, /goal, /loop, /compact, /workspace-status. Args: {}",
+                    "Available MVP commands: /help, /agent, /goal, /loop, /bash <command>, /compact, /workspace-status. Args: {}",
                     args.join(" ")
                 )),
                 snapshot: None,
@@ -2322,6 +2348,14 @@ fn login_shell_env() -> &'static std::collections::HashMap<String, String> {
         }
         map
     })
+}
+
+fn bash_command() -> CommandDescriptorDto {
+    CommandDescriptorDto {
+        argument_hint: Some("<command>".into()),
+        ..command("bash", "Run a shell command in the workspace.", true)
+    }
+
 }
 
 /// Spawns a persistent `graff --json` child for a conversation. `--yolo` skips
@@ -3452,6 +3486,51 @@ fn is_placeholder_title(title: &str) -> bool {
     title.is_empty() || title.eq_ignore_ascii_case("New chat")
 }
 
+fn run_shell_command(workspace_path: &str, shell_command: &str) -> Result<String> {
+    let output = Command::new("/bin/sh")
+        .args(["-c", shell_command])
+        .current_dir(workspace_path)
+        .output()
+        .with_context(|| format!("Failed to run shell command in {workspace_path}"))?;
+    Ok(format_command_output(&output))
+}
+
+fn format_command_output(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut text = String::new();
+    if !stdout.is_empty() {
+        text.push_str(&stdout);
+    }
+    if !stderr.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str("[stderr]\n");
+        text.push_str(&stderr);
+    }
+    match output.status.code() {
+        Some(0) => {}
+        Some(code) => {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&format!("[exit code {code}]"));
+        }
+        None => {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str("[terminated abnormally]");
+        }
+    }
+    if text.is_empty() {
+        "(no output)".into()
+    } else {
+        text
+    }
+}
+
 fn git_status_files(workspace_path: &str) -> Result<Vec<WorkspaceFileStatusDto>> {
     let output = Command::new("git")
         .args(["status", "--short"])
@@ -3505,6 +3584,56 @@ fn saved_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn mk_output(stdout: &[u8], stderr: &[u8], raw_status: i32) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(raw_status),
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_empty_is_no_output() {
+        // stdout+stderr empty, exit 0 -> the "(no output)" placeholder.
+        assert_eq!(format_command_output(&mk_output(b"", b"", 0)), "(no output)");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_stdout_only_unchanged() {
+        assert_eq!(format_command_output(&mk_output(b"hello\n", b"", 0)), "hello\n");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_stderr_only_gets_label() {
+        // No stdout, so no leading newline; "[stderr]" label prefixes stderr.
+        assert_eq!(
+            format_command_output(&mk_output(b"", b"oops\n", 0)),
+            "[stderr]\noops\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_stderr_separator_and_nonzero_exit() {
+        // stdout present -> "[stderr]" goes on its own line after a separator.
+        let out = format_command_output(&mk_output(b"out\n", b"err\n", 1 << 8));
+        assert!(out.contains("out\n[stderr]\nerr\n"));
+        assert!(out.ends_with("[exit code 1]"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_signal_terminated_is_abnormal() {
+        // raw status 2 -> WIFSIGNALED -> status.code() is None.
+        assert!(format_command_output(&mk_output(b"", b"", 2)).contains("[terminated abnormally]"));
+    }
+
 
     fn followup(
         id: &str,

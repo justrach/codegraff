@@ -70,6 +70,7 @@ const qaCommandRows: Array<[
 ]> = [
   ["help", "Show available slash commands.", null, "text"],
   ["agent", "Show active agent and available agents.", null, "agents"],
+  ["bash", "Run a shell command in the workspace.", "<command>", "text"],
   ["sage", "Switch to Sage.", null, "agents"],
   ["reasoning-effort", "Update reasoning effort.", "<low|medium|high>", "text"],
   ["goal", "Set/show the current objective.", "<objective|clear>", "text"],
@@ -101,7 +102,7 @@ const qaCommands: CommandDescriptor[] = qaCommandRows.map(
             : "builtin",
       name,
       requiresConversation: false,
-      requiresWorkspace: name.startsWith("workspace-"),
+      requiresWorkspace: name === "bash" || name.startsWith("workspace-"),
       resultKind,
       usage,
       value: name === "sage" ? "sage" : null,
@@ -229,9 +230,13 @@ function qaCommandResult(input: {
 
   switch (input.name) {
     case "help":
-      return { body: "| Command | What it does | UI expectation |\n|---|---|---|\n| `/help` | Lists commands | Inline table |\n| `/agent` | Shows current agent | Inline cards |\n| `/workspace-info` | Shows metadata | Inline markdown/table |\n| `/workflow <goal>` | Builds a workflow draft | Review modal |", payload: null, resultKind: "text", savedPath: null, snapshot: null, title: "/help" };
+      return { body: "| Command | What it does | UI expectation |\n|---|---|---|\n| `/help` | Lists commands | Inline table |\n| `/agent` | Shows current agent | Inline cards |\n| `/bash <command>` | Runs a workspace shell command | Inline text |\n| `/workspace-info` | Shows metadata | Inline markdown/table |\n| `/workflow <goal>` | Builds a workflow draft | Review modal |", payload: null, resultKind: "text", savedPath: null, snapshot: null, title: "/help" };
     case "agent":
       return { body: "Current agent status.", payload: { kind: "agents", ...qaAgentsPayload() }, resultKind: "agents", savedPath: null, snapshot: null, title };
+    case "bash": {
+      const command = input.args.join(" ").trim();
+      return { body: command.length > 0 ? `QA mock did not execute shell command:\n\n$ ${command}` : "usage: /bash <command>", payload: null, resultKind: "text", savedPath: null, snapshot: null, title: command.length > 0 ? `/bash ${command}` : "/bash" };
+    }
     case "sage":
       qaActiveAgentId = "sage";
       return { body: "Switched active agent to Sage.", payload: { kind: "agents", ...qaAgentsPayload() }, resultKind: "agents", savedPath: null, snapshot: null, title };
