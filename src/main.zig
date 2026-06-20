@@ -2621,6 +2621,43 @@ var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
 var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 
+// Steering (Codex-style): bytes typed while a turn streams are captured
+// instead of discarded, echoed live in dim cyan, and on Enter queued to
+// run as the next turn — so you can line up follow-ups one after the
+// other without waiting for the current turn to finish. TTY-only (the
+// raw-stdin esc-watch path is gated off in --json/GUI mode), so the queue
+// stays empty there. Single-threaded access: streaming reads run on the
+// main thread, tool-join reads on the esc watch task — never concurrently
+// (the task is stopped and awaited before the main thread resumes).
+var g_steer_buf: std.ArrayList(u8) = .empty; // in-progress line (page-alloc)
+var g_steer_queue: std.ArrayList([]const u8) = .empty; // completed lines
+var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
+var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
+
+/// Pops the next queued steering prompt (FIFO), or null if none.
+fn popSteer() ?[]const u8 {
+    if (g_steer_queue.items.len == 0) return null;
+    return g_steer_queue.orderedRemove(0);
+}
+
+/// Drops any half-typed steering line (no Enter yet) — called at the top
+/// of each REPL iteration so a partial mid-turn draft never leaks into the
+/// next prompt.
+fn resetSteerPartial() void {
+    g_steer_buf.clearRetainingCapacity();
+    g_steer_echoed = false;
+}
+
+/// Writes steering echo to the stdout writer (the same buffered writer the
+/// streaming text uses, already flushed before escPressed runs, so ordering
+/// stays correct) and flushes so the user sees queued keystrokes live.
+fn steerEcho(bytes: []const u8) void {
+    if (g_out) |w| {
+        w.writeAll(bytes) catch {};
+        w.flush() catch {};
+    }
+}
+
 /// 9-stop truecolor rainbow for the `ultracode` shine (banner + live input).
 const ultracode_rainbow = [_][]const u8{
     "\x1b[38;2;255;87;51m",  "\x1b[38;2;255;159;28m", "\x1b[38;2;255;222;51m",
@@ -4405,6 +4442,7 @@ pub fn main(init: std.process.Init) !void {
     var stdout_buf: [4096]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const out = &stdout_writer.interface;
+    g_out = out;
 
     // Color only on an interactive terminal, and honor NO_COLOR.
     if (init.environ_map.get("NO_COLOR") == null and (Io.File.stdout().isTty(io) catch false)) {
@@ -4734,8 +4772,18 @@ pub fn main(init: std.process.Init) !void {
     }
 
     while (true) {
-        try root.prompt();
-        const raw_line = if (interactive)
+        // Steering drain: prompts typed while the previous turn streamed
+        // were captured into g_steer_queue. Run them now, one after
+        // another, in place of reading a fresh line — Codex-style
+        // follow-up queueing. (Empty in --json/GUI mode: no capture.)
+        resetSteerPartial();
+        const steer_line: ?[]const u8 = popSteer();
+        defer if (steer_line) |s| std.heap.page_allocator.free(s);
+        const raw_line: []const u8 = if (steer_line) |s| blk: {
+            try out.print("{s}↳ steer ›{s} {s}\n", .{ style.cyan, style.reset, s });
+            try out.flush();
+            break :blk s;
+        } else if (interactive)
             (try readLine(&root, in, out, gpa, &history, &linebuf)) orelse break
         else
             (try in.takeDelimiter('\n')) orelse break;
@@ -9095,7 +9143,7 @@ const Agent = struct {
         }
         // Esc pressed while connecting / waiting for headers? Stop before
         // reading any of the body.
-        if (orig_tio != null and escPressed()) {
+        if (orig_tio != null and escPressed(true)) {
             if (req.connection) |conn| conn.closing = true;
             return error.Interrupted;
         }
@@ -9162,7 +9210,7 @@ const Agent = struct {
             try full.writer.writeByte('\n');
             self.printDelta(line.writer.buffered());
             line.clearRetainingCapacity();
-            if ((orig_tio != null and escPressed()) or (self.sub and esc_cancel.load(.acquire))) {
+            if ((orig_tio != null and escPressed(true)) or (self.sub and esc_cancel.load(.acquire))) {
                 self.flushStreamTail();
                 // Mark the connection closing so req.deinit() tears it down
                 // instead of draining the rest of the stream (which would
@@ -9196,26 +9244,58 @@ const Agent = struct {
         while (!esc_watch_done.load(.acquire)) {
             var fds = [_]std.posix.pollfd{.{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 }};
             const n = std.posix.poll(&fds, 100) catch return;
-            if (n > 0 and escPressed()) {
+            if (n > 0 and escPressed(false)) {
                 esc_cancel.store(true, .release);
                 return;
             }
         }
     }
 
-    /// Non-blocking scan of stdin for a bare Esc keypress (terminal must be
-    /// in VMIN=0 raw mode). Escape *sequences* (arrows: ESC [ …) don't count;
-    /// any other typed-ahead bytes are discarded.
-    fn escPressed() bool {
+    /// Non-blocking scan of stdin (terminal must be in VMIN=0 raw mode). A
+    /// lone Esc cancels the turn (returns true); CSI sequences (arrows:
+    /// ESC[…/ESC O…) are swallowed and don't cancel. Printable bytes are
+    /// captured into the steering buffer and echoed when `echo` (main thread
+    /// only — the esc watch task runs on the pool and must not race tool
+    /// output); Enter flushes the line to g_steer_queue, which the REPL
+    /// drains as follow-up turns after the current one finishes.
+    fn escPressed(echo: bool) bool {
         var buf: [64]u8 = undefined;
         const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return false;
+        var esc_found = false;
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            if (buf[i] != 0x1b) continue;
-            if (i + 1 >= n) return true; // lone Esc at the end of the burst
-            if (buf[i + 1] != '[' and buf[i + 1] != 'O') return true;
+            const c = buf[i];
+            if (c == 0x1b) {
+                if (i + 1 >= n or (buf[i + 1] != '[' and buf[i + 1] != 'O')) esc_found = true;
+                continue; // the '[' / 'O' is non-printable and ignored below
+            } else if (c == '\n' or c == '\r') {
+                if (g_steer_buf.items.len > 0) {
+                    if (g_steer_buf.toOwnedSlice(std.heap.page_allocator)) |dup| {
+                        g_steer_queue.append(std.heap.page_allocator, dup) catch std.heap.page_allocator.free(dup);
+                    } else |_| g_steer_buf.clearRetainingCapacity();
+                }
+                if (echo and g_steer_echoed) steerEcho("\n");
+                g_steer_echoed = false;
+                continue;
+            } else if (c == 0x7f or c == 0x08) { // backspace / Ctrl-H
+                if (g_steer_buf.items.len > 0) {
+                    _ = g_steer_buf.pop();
+                    if (echo) steerEcho("\x08 \x08");
+                }
+                continue;
+            } else if (c < 0x20) {
+                continue; // other control bytes: ignore
+            }
+            g_steer_buf.append(std.heap.page_allocator, c) catch continue;
+            if (echo) {
+                if (!g_steer_echoed) {
+                    steerEcho("\n\x1b[36m↳ steer ›\x1b[0m ");
+                    g_steer_echoed = true;
+                }
+                steerEcho(buf[i .. i + 1]);
+            }
         }
-        return false;
+        return esc_found;
     }
 
     /// Discard any bytes queued on stdin (terminal must be in VMIN=0 raw
@@ -9253,7 +9333,7 @@ const Agent = struct {
             const chunk = @min(left, 100);
             self.io.sleep(.fromMilliseconds(@intCast(chunk)), .awake) catch {};
             left -= chunk;
-            if (orig_tio != null and escPressed()) return error.Interrupted;
+            if (orig_tio != null and escPressed(true)) return error.Interrupted;
         }
     }
 
