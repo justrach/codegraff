@@ -2277,6 +2277,43 @@ var g_hooks: Hooks = .{};
 var g_codedb_guard = true;
 var g_codedb_present: ?bool = null;
 
+/// Per-file cache for the codedb guard: `codedb outline <path>` is run once
+/// per source file to check whether codedb actually indexed it (large files
+/// are silently skipped — e.g. a 13K-line main.zig). Entries are page-alloc
+/// and never freed; the set is small (only files the agent greps). A mutex
+/// guards concurrent tool-thread access; a miss is benign (duplicate probe).
+const CodedbFileCheck = struct { path: []const u8, indexed: bool };
+var g_codedb_file_checks: std.ArrayList(CodedbFileCheck) = .empty;
+var g_codedb_file_mu: Io.Mutex = .init;
+
+/// True when `path` is in codedb's symbol index. Runs `codedb outline <path>`
+/// (cached): returns "not indexed: <path>" when the file is too large or
+/// otherwise skipped, so the guard knows to let bash through instead of
+/// trapping the agent between a blocked grep and an empty codedb result.
+fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
+    g_codedb_file_mu.lockUncancelable(io);
+    for (g_codedb_file_checks.items) |e| {
+        if (std.mem.eql(u8, e.path, path)) {
+            g_codedb_file_mu.unlock(io);
+            return e.indexed;
+        }
+    }
+    g_codedb_file_mu.unlock(io);
+    // Cache miss: probe once, then store. On error, assume indexed (safe:
+    // the guard still redirects to codedb, which is the status-quo behavior).
+    const run = runCapped(gpa, io, &.{ "codedb", "outline", path }, 512, 256) catch return true;
+    defer gpa.free(run.stdout);
+    defer gpa.free(run.stderr);
+    const not_indexed = std.mem.indexOf(u8, run.stdout, "not indexed") != null or
+        std.mem.indexOf(u8, run.stderr, "not indexed") != null;
+    const result: bool = !not_indexed;
+    g_codedb_file_mu.lockUncancelable(io);
+    defer g_codedb_file_mu.unlock(io);
+    const dup = gpa.dupe(u8, path) catch return result;
+    g_codedb_file_checks.append(gpa, .{ .path = dup, .indexed = result }) catch gpa.free(dup);
+    return result;
+}
+
 fn parseHookList(arena: Allocator, v: ?Value) []const Hook {
     const arr = v orelse return &.{};
     if (arr != .array) return &.{};
@@ -11197,20 +11234,28 @@ fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     if (!is_scanner) return null;
 
     // …aimed at a concrete source file (not a glob — codedb glob/tree cover that).
-    if (!referencesSourceFile(cmd)) return null;
+    const src_path = extractSourceFilePath(cmd) orelse return null;
 
     // Only redirect when codedb is actually installed (cache the PATH lookup).
     if (g_codedb_present == null) g_codedb_present = binOnPath(ctx.io, "codedb");
     if (g_codedb_present != true) return null;
 
+    // Only redirect when codedb actually indexed this file. Large files
+    // (e.g. a 13K-line main.zig) are silently skipped by codedb; blocking
+    // bash grep on them traps the agent between a blocked grep and an empty
+    // codedb result. Let bash through for un-indexed files (issue #54).
+    if (!codedbFileIndexed(ctx.io, ctx.gpa, src_path)) return null;
+
     const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool (indexed + structural): search <query> · symbol <name> [--body] · callers <name> · deps <path> · outline <path> · read <path> · context <task>. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
     return .{ .text = msg, .is_error = true };
 }
 
-/// True when `cmd` names a concrete source file: a whitespace-separated token
-/// (after the command word) ending in a known code extension, with no `*`/`?`
-/// glob metachars. Used only by codedbGuard.
-fn referencesSourceFile(cmd: []const u8) bool {
+/// Extract the first concrete source file path from a bash command (after
+/// the command word). Returns null for globs or non-source tokens. Used by
+/// the codedb guard to check whether the target file is actually indexed
+/// before redirecting bash to codedb — a file codedb skipped (too large)
+/// must be allowed through bash, or the agent is trapped.
+fn extractSourceFilePath(cmd: []const u8) ?[]const u8 {
     const exts = [_][]const u8{
         ".zig",  ".rs",  ".ts",  ".tsx", ".js",    ".jsx",   ".mjs",    ".cjs",
         ".py",   ".go",  ".c",   ".h",   ".cc",    ".cpp",   ".hpp",    ".cxx",
@@ -11226,9 +11271,15 @@ fn referencesSourceFile(cmd: []const u8) bool {
         }
         const tok = std.mem.trim(u8, raw, "'\"`()");
         if (std.mem.indexOfAny(u8, tok, "*?") != null) continue; // glob, not a path
-        for (exts) |e| if (std.mem.endsWith(u8, tok, e)) return true;
+        for (exts) |e| if (std.mem.endsWith(u8, tok, e)) return tok;
     }
-    return false;
+    return null;
+}
+
+/// True when `cmd` names a concrete source file (delegates to
+/// extractSourceFilePath). Kept for the /hooks display and tests.
+fn referencesSourceFile(cmd: []const u8) bool {
+    return extractSourceFilePath(cmd) != null;
 }
 
 /// Built-in pre_tool router for the metered companion — the tool-layer twin of
