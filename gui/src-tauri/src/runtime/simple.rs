@@ -32,9 +32,15 @@ struct ConversationState {
     title: String,
     messages: Vec<SessionMessageDto>,
     active_request_ids: Vec<String>,
+    /// Maps a request id to the agent label ("muse"/"forge") it was sent under,
+    /// so the GUI's plan-decision card can key off the planning-mode request.
+    request_agent_ids: HashMap<String, String>,
     queued_prompts: VecDeque<QueuedPrompt>,
     active_agent_id: Option<String>,
     plan_mode: bool,
+    /// Live task list, replaced wholesale on every `todo_write` tool call
+    /// (harness semantics). Surfaced to the GUI's task-progress dock.
+    todos: Vec<SessionTodoDto>,
     goal: Option<String>,
     updated_at: i64,
 }
@@ -474,9 +480,11 @@ impl RuntimeManager {
                     title: title_from_prompt(&input.prompt),
                     messages: vec![],
                     active_request_ids: vec![],
+                    request_agent_ids: HashMap::new(),
                     queued_prompts: VecDeque::new(),
                     active_agent_id,
                     plan_mode,
+                    todos: Vec::new(),
                     goal: None,
                     updated_at: now_millis(),
                 });
@@ -503,6 +511,13 @@ impl RuntimeManager {
                 request_id: request_id.clone(),
                 text: input.prompt.clone(),
             });
+            // Remember which agent ("muse" planning / "forge" normal) this
+            // request ran under so the GUI's plan-decision card can light up
+            // after a planning-mode turn completes (gate keys off "muse").
+            conversation.request_agent_ids.insert(
+                request_id.clone(),
+                input.agent_id.clone().unwrap_or_else(|| "forge".to_string()),
+            );
             should_queue = !conversation.active_request_ids.is_empty();
             if should_queue {
                 conversation.queued_prompts.push_back(QueuedPrompt {
@@ -826,9 +841,20 @@ impl RuntimeManager {
                         continue;
                     }
                     let detail = tool_call_detail(&name, input);
+                    // A `todo_write` replaces the whole task list (harness
+                    // semantics). Capture the items so the task-progress dock
+                    // can render them; the op itself stays hidden in the feed.
+                    let todos = if name == "todo_write" {
+                        Some(parse_todo_items(input))
+                    } else {
+                        None
+                    };
                     let id = format!("{request_id}-tool-{}", Uuid::new_v4().simple());
                     let rid = request_id.to_string();
                     self.mutate_conversation(conversation_id, move |conversation| {
+                        if let Some(todos) = todos {
+                            conversation.todos = todos;
+                        }
                         conversation.messages.push(SessionMessageDto::ToolStart {
                             id,
                             request_id: rid,
@@ -1649,9 +1675,11 @@ impl RuntimeManager {
                 title: "New chat".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                request_agent_ids: HashMap::new(),
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                todos: Vec::new(),
                 goal: None,
                 updated_at: now_millis(),
             },
@@ -2088,8 +2116,14 @@ impl RuntimeManager {
                 .as_ref()
                 .map(|c| c.active_request_ids.clone())
                 .unwrap_or_default(),
-            visible_request_agent_ids: HashMap::new(),
-            visible_todos: vec![],
+            visible_request_agent_ids: visible
+                .as_ref()
+                .map(|c| c.request_agent_ids.clone())
+                .unwrap_or_default(),
+            visible_todos: visible
+                .as_ref()
+                .map(|c| c.todos.clone())
+                .unwrap_or_default(),
             visible_followup,
             conversation_views,
             ui_error: None,
@@ -2316,9 +2350,11 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
                     title,
                     messages: conversation.messages,
                     active_request_ids: vec![],
+                    request_agent_ids: HashMap::new(),
                     queued_prompts: VecDeque::new(),
                     active_agent_id: conversation.active_agent_id,
                     plan_mode: conversation.plan_mode,
+                    todos: Vec::new(),
                     goal: conversation.goal,
                     updated_at: conversation.updated_at,
                 },
@@ -2417,8 +2453,8 @@ fn conversation_view(
         conversation_id: conversation.conversation_id.clone(),
         messages: conversation.messages.clone(),
         active_request_ids: conversation.active_request_ids.clone(),
-        request_agent_ids: HashMap::new(),
-        todos: vec![],
+        request_agent_ids: conversation.request_agent_ids.clone(),
+        todos: conversation.todos.clone(),
         followup,
     }
 }
@@ -2860,6 +2896,41 @@ fn tool_result_summary(text: &str) -> Option<String> {
     }
 }
 
+/// Parses the `todos` array from a `todo_write` tool call's input into typed
+/// items. The harness sends `{"todos":[{"content":string,"status":string}]}`
+/// with replace-the-whole-list semantics and no ids, so a stable id is derived
+/// from the item's index. Unknown/missing statuses default to `Pending`.
+fn parse_todo_items(input: Option<&serde_json::Value>) -> Vec<SessionTodoDto> {
+    input
+        .and_then(|value| value.get("todos"))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let content = item
+                        .get("content")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let status = match item.get("status").and_then(serde_json::Value::as_str) {
+                        Some("in_progress") => SessionTodoStatusDto::InProgress,
+                        Some("completed") => SessionTodoStatusDto::Completed,
+                        Some("cancelled") => SessionTodoStatusDto::Cancelled,
+                        _ => SessionTodoStatusDto::Pending,
+                    };
+                    SessionTodoDto {
+                        id: format!("todo-{index:04}"),
+                        content,
+                        status,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Maps a `tool_call` event's name + input JSON to a typed UI detail. Known
 /// built-ins get rich rows; everything else (incl. MCP tools) falls back to
 /// `Unknown`, which renders the tool name.
@@ -2893,6 +2964,16 @@ fn tool_call_detail(name: &str, input: Option<&serde_json::Value>) -> ToolCallDe
             agent_id: str_field("agent").unwrap_or_default(),
             label: str_field("description").unwrap_or_else(|| "subagent".to_string()),
         },
+        // Todos render in the dedicated task-progress dock, not the activity
+        // feed; the GUI hides these ops, but only when the detail kind matches.
+        "todo_write" => ToolCallDetailDto::TodoWrite {
+            count: input
+                .and_then(|value| value.get("todos"))
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0),
+        },
+        "todo_read" => ToolCallDetailDto::TodoRead,
         "workflow" => ToolCallDetailDto::Task {
             agent_id: String::new(),
             label: "workflow".to_string(),
@@ -3871,9 +3952,11 @@ mod tests {
                 title: "Existing".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                request_agent_ids: HashMap::new(),
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                todos: Vec::new(),
                 goal: None,
                 updated_at: 10,
             },
@@ -4139,9 +4222,11 @@ mod tests {
                 title: "Old".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                request_agent_ids: HashMap::new(),
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                todos: Vec::new(),
                 goal: None,
                 updated_at: 10,
             },
@@ -4154,9 +4239,11 @@ mod tests {
                 title: "New".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                request_agent_ids: HashMap::new(),
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                todos: Vec::new(),
                 goal: None,
                 updated_at: 20,
             },
