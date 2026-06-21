@@ -6,6 +6,7 @@ const mer_runtime = @import("runtime");
 const log = std.log.scoped(.backend);
 const Value = std.json.Value;
 const default_reasoning_effort = "medium";
+const session_ext = ".session.json";
 
 pub var instance: ?*Runtime = null;
 
@@ -35,6 +36,7 @@ const Message = struct {
 const Conversation = struct {
     workspace_path: []const u8,
     conversation_id: []const u8,
+    session_name: []const u8,
     title: []const u8,
     messages: std.ArrayList(Message) = .empty,
     active_request_ids: std.ArrayList([]const u8) = .empty,
@@ -98,6 +100,7 @@ pub const Runtime = struct {
     active_workspace_path: ?[]const u8 = null,
     active_conversation_id: ?[]const u8 = null,
     active_agent_id: []const u8 = "forge",
+    gui_state_loaded: bool = false,
     settings_loaded: bool = false,
     settings: PromptSettings = .{},
 
@@ -129,6 +132,7 @@ pub const Runtime = struct {
 
     pub fn handleApi(self: *Runtime, req: mer.Request) mer.Response {
         if (req.method != .POST) return mer.Response.init(.method_not_allowed, .json, "{\"error\":\"method not allowed\"}");
+        self.ensureGuiStateLoaded();
         const cmd = commandName(req.path);
 
         if (std.mem.eql(u8, cmd, "get_session_snapshot")) return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
@@ -213,7 +217,11 @@ pub const Runtime = struct {
         self.mutex.lockUncancelable(mer_runtime.io);
         const owned = self.dupe(path);
         self.activateWorkspaceLocked(owned);
+        self.scanWorkspaceSessionsLocked(owned);
+        self.ensureWorkspaceSelectionLocked(owned);
+        self.active_conversation_id = self.selected_by_workspace.get(owned);
         self.bumpLocked();
+        self.saveGuiStateLocked();
         self.mutex.unlock(mer_runtime.io);
         return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
     }
@@ -304,6 +312,7 @@ pub const Runtime = struct {
             self.selected_by_workspace.put(wpath, conversation.conversation_id) catch {};
         }
         self.bumpLocked();
+        self.saveGuiStateLocked();
         self.mutex.unlock(mer_runtime.io);
         return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
     }
@@ -316,7 +325,9 @@ pub const Runtime = struct {
         const conversation = self.createConversationLocked(workspace, cid, "New chat");
         self.active_conversation_id = conversation.conversation_id;
         self.selected_by_workspace.put(conversation.workspace_path, conversation.conversation_id) catch {};
+        self.writeConversationSessionFileLocked(conversation);
         self.bumpLocked();
+        self.saveGuiStateLocked();
         self.mutex.unlock(mer_runtime.io);
         return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
     }
@@ -331,7 +342,13 @@ pub const Runtime = struct {
             self.workspaces.items[idx].kind = "managed_chat";
             self.workspaces.items[idx].display_name = "New chat";
         }
+        const cid = self.uniqueId("chat");
+        const conversation = self.createConversationLocked(owned, cid, "New chat");
+        self.active_conversation_id = conversation.conversation_id;
+        self.selected_by_workspace.put(conversation.workspace_path, conversation.conversation_id) catch {};
+        self.writeConversationSessionFileLocked(conversation);
         self.bumpLocked();
+        self.saveGuiStateLocked();
         self.mutex.unlock(mer_runtime.io);
         return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
     }
@@ -363,6 +380,7 @@ pub const Runtime = struct {
             self.setActiveWorkspaceLocked(conv.workspace_path);
             self.active_conversation_id = conv.conversation_id;
             self.selected_by_workspace.put(conv.workspace_path, conv.conversation_id) catch {};
+            self.ensureConversationSessionFileLocked(conv);
             conv.plan_mode = agent_id != null and std.mem.eql(u8, agent_id.?, "muse");
             conv.active_agent_id = if (agent_id) |a| self.dupe(a) else conv.active_agent_id;
             conv.updated_at = nowMillis();
@@ -374,6 +392,7 @@ pub const Runtime = struct {
             }) catch {};
             conv.active_request_ids.append(self.arena, request_id) catch {};
             self.bumpLocked();
+            self.saveGuiStateLocked();
         }
         self.mutex.unlock(mer_runtime.io);
 
@@ -448,10 +467,12 @@ pub const Runtime = struct {
         const cid = stringField(root, "conversationId") orelse return bad(req, "missing conversationId");
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
+            self.deleteConversationSessionFileLocked(conv);
             _ = self.conversations.remove(cid);
             if (self.active_conversation_id != null and std.mem.eql(u8, self.active_conversation_id.?, conv.conversation_id)) self.active_conversation_id = null;
         }
         self.bumpLocked();
+        self.saveGuiStateLocked();
         self.mutex.unlock(mer_runtime.io);
         return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
     }
@@ -461,11 +482,13 @@ pub const Runtime = struct {
         const workspace = stringField(root, "workspacePath") orelse return bad(req, "missing workspacePath");
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.workspaceIndexLocked(workspace)) |idx| _ = self.workspaces.swapRemove(idx);
+        _ = self.selected_by_workspace.remove(workspace);
         if (self.active_workspace_path != null and std.mem.eql(u8, self.active_workspace_path.?, workspace)) {
             self.active_workspace_path = null;
             self.active_conversation_id = null;
         }
         self.bumpLocked();
+        self.saveGuiStateLocked();
         self.mutex.unlock(mer_runtime.io);
         return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
     }
@@ -478,6 +501,7 @@ pub const Runtime = struct {
             self.workspaces.items[idx].display_name = if (stringField(root, "displayName")) |name| self.dupe(name) else null;
         }
         self.bumpLocked();
+        self.saveGuiStateLocked();
         self.mutex.unlock(mer_runtime.io);
         return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
     }
@@ -683,11 +707,7 @@ pub const Runtime = struct {
 
         var out: std.Io.Writer.Allocating = .init(req.allocator);
         const kind =
-            if (std.mem.eql(u8, method, "api_key")) "api_key"
-            else if (std.mem.eql(u8, method, "o_auth_code")) "o_auth_code"
-            else if (std.mem.eql(u8, method, "o_auth_device")) "device_code"
-            else if (std.mem.eql(u8, method, "codex_device")) "cli_login"
-            else "cli_login";
+            if (std.mem.eql(u8, method, "api_key")) "api_key" else if (std.mem.eql(u8, method, "o_auth_code")) "o_auth_code" else if (std.mem.eql(u8, method, "o_auth_device")) "device_code" else if (std.mem.eql(u8, method, "codex_device")) "cli_login" else "cli_login";
         const requires_api_key = std.mem.eql(u8, kind, "api_key") and !std.mem.eql(u8, method, "google_adc");
         const sid = std.fmt.allocPrint(req.allocator, "codegraff-provider:{s}", .{provider}) catch provider;
         out.writer.writeAll("{\"kind\":") catch return oom();
@@ -1017,6 +1037,12 @@ pub const Runtime = struct {
         const model = self.selectedModelLocked();
         const provider = self.selectedProviderLocked();
         const effort = self.selectedEffortFor(provider, model);
+        const session_name = blk: {
+            self.mutex.lockUncancelable(mer_runtime.io);
+            defer self.mutex.unlock(mer_runtime.io);
+            if (self.conversations.get(conversation_id)) |conv| break :blk conv.session_name;
+            break :blk conversation_id;
+        };
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.append(self.allocator, "/usr/bin/env");
         try argv.append(self.allocator, try std.fmt.allocPrint(self.allocator, "HOME={s}", .{homeDir()}));
@@ -1024,6 +1050,8 @@ pub const Runtime = struct {
         try argv.append(self.allocator, bin);
         try argv.append(self.allocator, "--json");
         try argv.append(self.allocator, "--yolo");
+        try argv.append(self.allocator, "--resume");
+        try argv.append(self.allocator, session_name);
         if (model) |m| {
             if (m.len > 0 and !std.mem.eql(u8, m, "default")) {
                 try argv.append(self.allocator, "--model");
@@ -1413,11 +1441,23 @@ pub const Runtime = struct {
     }
 
     fn createConversationLocked(self: *Runtime, workspace: []const u8, cid_raw: []const u8, title_raw: []const u8) *Conversation {
+        return self.createConversationWithSessionLocked(workspace, cid_raw, cid_raw, title_raw);
+    }
+
+    fn createConversationWithSessionLocked(self: *Runtime, workspace: []const u8, cid_raw: []const u8, session_raw: []const u8, title_raw: []const u8) *Conversation {
         const wpath = self.dupe(workspace);
         const cid = self.dupe(cid_raw);
+        const session_name = self.dupe(session_raw);
         self.setActiveWorkspaceLocked(wpath);
         const conv = self.arena.create(Conversation) catch @panic("oom");
-        conv.* = .{ .workspace_path = wpath, .conversation_id = cid, .title = self.dupe(title_raw), .active_agent_id = self.active_agent_id, .updated_at = 0 };
+        conv.* = .{
+            .workspace_path = wpath,
+            .conversation_id = cid,
+            .session_name = session_name,
+            .title = self.dupe(title_raw),
+            .active_agent_id = self.active_agent_id,
+            .updated_at = 0,
+        };
         self.conversations.put(cid, conv) catch {};
         return conv;
     }
@@ -1475,6 +1515,297 @@ pub const Runtime = struct {
         const home = homeDir();
         const path = self.fmt("{s}/Library/Application Support/dev.codegraff.gui/managed-chats/chat_{d}", .{ home, nowMillis() });
         return path;
+    }
+
+    fn loadGuiState(self: *Runtime) void {
+        const path = guiStatePath(self.allocator) catch return;
+        defer self.allocator.free(path);
+        const data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, path, self.allocator, .limited(1024 * 1024)) catch return;
+        defer self.allocator.free(data);
+
+        var tmp = std.heap.ArenaAllocator.init(self.allocator);
+        defer tmp.deinit();
+        const parsed = std.json.parseFromSliceLeaky(Value, tmp.allocator(), data, .{ .allocate = .alloc_always }) catch return;
+        if (parsed != .object) return;
+
+        if (arrayField(parsed, "workspaces")) |workspaces| {
+            for (workspaces.items) |item| {
+                if (item != .object) continue;
+                const raw_path = stringField(item, "path") orelse stringField(item, "workspacePath") orelse continue;
+                if (!self.stateWorkspaceAvailable(raw_path)) continue;
+                const owned_path = self.dupe(raw_path);
+                const kind = if (stringField(item, "kind")) |value| self.dupe(value) else "project";
+                const display_name = if (stringField(item, "displayName")) |value| self.dupe(value) else null;
+                if (self.workspaceIndexLocked(owned_path)) |idx| {
+                    self.workspaces.items[idx].kind = kind;
+                    self.workspaces.items[idx].display_name = display_name;
+                } else {
+                    self.workspaces.append(self.arena, .{ .path = owned_path, .kind = kind, .display_name = display_name }) catch {};
+                }
+                if (stringField(item, "selectedConversationId")) |selected| {
+                    self.selected_by_workspace.put(owned_path, self.dupe(selected)) catch {};
+                }
+                self.scanWorkspaceSessionsLocked(owned_path);
+                self.ensureWorkspaceSelectionLocked(owned_path);
+            }
+        }
+
+        const active_workspace = stringField(parsed, "activeWorkspacePath");
+        const active_conversation = stringField(parsed, "activeConversationId");
+        if (active_workspace) |workspace| {
+            if (self.workspaceIndexLocked(workspace) != null) {
+                self.active_workspace_path = self.dupe(workspace);
+                if (active_conversation) |cid| {
+                    if (self.conversations.get(cid)) |conv| {
+                        if (std.mem.eql(u8, conv.workspace_path, workspace)) {
+                            self.active_conversation_id = conv.conversation_id;
+                            self.selected_by_workspace.put(conv.workspace_path, conv.conversation_id) catch {};
+                        }
+                    }
+                }
+                if (self.active_conversation_id == null) {
+                    self.active_conversation_id = self.selected_by_workspace.get(workspace);
+                }
+                return;
+            }
+        }
+
+        if (self.workspaces.items.len > 0) {
+            const workspace = self.workspaces.items[0].path;
+            self.active_workspace_path = workspace;
+            self.active_conversation_id = self.selected_by_workspace.get(workspace);
+        }
+    }
+
+    fn ensureGuiStateLoaded(self: *Runtime) void {
+        if (builtin.is_test) return;
+        self.mutex.lockUncancelable(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        if (self.gui_state_loaded) return;
+        self.gui_state_loaded = true;
+        self.loadGuiState();
+    }
+
+    fn saveGuiStateLocked(self: *Runtime) void {
+        if (builtin.is_test) return;
+        ensureSettingsDir(self.allocator);
+        const path = guiStatePath(self.allocator) catch return;
+        defer self.allocator.free(path);
+
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        const w = &out.writer;
+        w.writeAll("{\"activeWorkspacePath\":") catch return;
+        writeNullableString(w, self.active_workspace_path) catch return;
+        w.writeAll(",\"activeConversationId\":") catch return;
+        writeNullableString(w, self.active_conversation_id) catch return;
+        w.writeAll(",\"workspaces\":[") catch return;
+        for (self.workspaces.items, 0..) |workspace, idx| {
+            if (idx > 0) w.writeByte(',') catch return;
+            w.writeAll("{\"path\":") catch return;
+            writeString(w, workspace.path) catch return;
+            w.writeAll(",\"kind\":") catch return;
+            writeString(w, workspace.kind) catch return;
+            w.writeAll(",\"displayName\":") catch return;
+            writeNullableString(w, workspace.display_name) catch return;
+            w.writeAll(",\"selectedConversationId\":") catch return;
+            writeNullableString(w, self.selected_by_workspace.get(workspace.path)) catch return;
+            w.writeAll("}") catch return;
+        }
+        w.writeAll("]}") catch return;
+        std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = out.written() }) catch {};
+    }
+
+    fn stateWorkspaceAvailable(self: *Runtime, path: []const u8) bool {
+        if (fileExists(path)) return true;
+        if (!isGeneratedManagedChatPath(self.allocator, path)) return false;
+        ensureDirectory(self.allocator, path) catch return false;
+        return true;
+    }
+
+    fn scanWorkspaceSessionsLocked(self: *Runtime, workspace_path: []const u8) void {
+        var dir = std.Io.Dir.cwd().openDir(mer_runtime.io, workspace_path, .{ .iterate = true }) catch return;
+        defer dir.close(mer_runtime.io);
+        var it = dir.iterate();
+        while (it.next(mer_runtime.io) catch null) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
+            const base = entry.name[0 .. entry.name.len - session_ext.len];
+            if (base.len == 0 or std.mem.indexOfAny(u8, base, "/\\") != null) continue;
+            const full_path = sessionFilePath(self.allocator, workspace_path, base) catch continue;
+            self.importSessionFileLocked(workspace_path, base, full_path);
+            self.allocator.free(full_path);
+        }
+        self.ensureWorkspaceSelectionLocked(workspace_path);
+    }
+
+    fn importSessionFileLocked(self: *Runtime, workspace_path: []const u8, session_name: []const u8, full_path: []const u8) void {
+        var tmp = std.heap.ArenaAllocator.init(self.allocator);
+        defer tmp.deinit();
+        const tmp_alloc = tmp.allocator();
+        const data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, full_path, tmp_alloc, .limited(8 * 1024 * 1024)) catch return;
+        const parsed = std.json.parseFromSliceLeaky(Value, tmp_alloc, data, .{ .allocate = .alloc_always }) catch return;
+        if (parsed != .object) return;
+        self.importSessionValueLocked(workspace_path, session_name, parsed, tmp_alloc);
+    }
+
+    fn importSessionValueLocked(self: *Runtime, workspace_path: []const u8, session_name: []const u8, parsed: Value, parse_alloc: std.mem.Allocator) void {
+        if (parsed != .object) return;
+        const cid = self.conversationIdForSession(workspace_path, session_name);
+        const title_value = stringField(parsed, "title");
+        const initial_title = if (title_value) |title| (if (title.len > 0) title else session_name) else session_name;
+        const conv = self.conversations.get(cid) orelse self.createConversationWithSessionLocked(workspace_path, cid, session_name, initial_title);
+        conv.session_name = self.dupe(session_name);
+        conv.title = self.dupe(initial_title);
+        conv.updated_at = intField(parsed, "updated_ms", conv.updated_at);
+        conv.goal = if (stringField(parsed, "goal")) |goal| (if (goal.len > 0) self.dupe(goal) else null) else null;
+
+        if (conv.active_request_ids.items.len > 0) return;
+        conv.messages.clearRetainingCapacity();
+        var first_user_title: ?[]const u8 = null;
+        if (arrayField(parsed, "messages")) |messages| {
+            for (messages.items, 0..) |message, idx| {
+                if (message != .object) continue;
+                const role = stringField(message, "role") orelse continue;
+                const raw_text = sessionMessageText(parse_alloc, message);
+                const text = std.mem.trim(u8, raw_text, " \t\r\n");
+                const reasoning_raw = sessionMessageReasoning(message);
+                const reasoning = if (reasoning_raw) |value| std.mem.trim(u8, value, " \t\r\n") else "";
+                const rid = self.fmt("{s}-loaded-{d}", .{ conv.conversation_id, idx });
+                if (std.mem.eql(u8, role, "user")) {
+                    if (text.len == 0) continue;
+                    if (first_user_title == null) first_user_title = titleFromPrompt(self.arena, text);
+                    conv.messages.append(self.arena, .{
+                        .kind = .user,
+                        .id = self.fmt("{s}-user", .{rid}),
+                        .request_id = rid,
+                        .text = self.dupe(text),
+                    }) catch {};
+                } else if (std.mem.eql(u8, role, "assistant")) {
+                    if (reasoning.len > 0) {
+                        conv.messages.append(self.arena, .{
+                            .kind = .reasoning,
+                            .id = self.fmt("{s}-reasoning", .{rid}),
+                            .request_id = rid,
+                            .text = self.dupe(reasoning),
+                        }) catch {};
+                    }
+                    if (text.len > 0) {
+                        conv.messages.append(self.arena, .{
+                            .kind = .assistant,
+                            .id = self.fmt("{s}-assistant", .{rid}),
+                            .request_id = rid,
+                            .text = self.dupe(text),
+                        }) catch {};
+                    }
+                }
+            }
+        }
+        if (title_value == null and first_user_title != null) conv.title = first_user_title.?;
+    }
+
+    fn ensureWorkspaceSelectionLocked(self: *Runtime, workspace_path: []const u8) void {
+        if (self.selected_by_workspace.get(workspace_path)) |selected| {
+            if (self.conversations.get(selected)) |conv| {
+                if (std.mem.eql(u8, conv.workspace_path, workspace_path)) return;
+            }
+        }
+
+        var best: ?*Conversation = null;
+        var it = self.conversations.iterator();
+        while (it.next()) |entry| {
+            const conv = entry.value_ptr.*;
+            if (!std.mem.eql(u8, conv.workspace_path, workspace_path)) continue;
+            if (best == null or conv.updated_at > best.?.updated_at) best = conv;
+        }
+        if (best) |conv| {
+            self.selected_by_workspace.put(workspace_path, conv.conversation_id) catch {};
+            if (self.active_workspace_path != null and std.mem.eql(u8, self.active_workspace_path.?, workspace_path)) {
+                self.active_conversation_id = conv.conversation_id;
+            }
+        } else {
+            _ = self.selected_by_workspace.remove(workspace_path);
+            if (self.active_workspace_path != null and std.mem.eql(u8, self.active_workspace_path.?, workspace_path)) {
+                self.active_conversation_id = null;
+            }
+        }
+    }
+
+    fn conversationIdForSession(self: *Runtime, workspace_path: []const u8, session_name: []const u8) []const u8 {
+        if (isGuiChatSessionName(session_name)) return self.dupe(session_name);
+        const hash = std.hash.Wyhash.hash(0, workspace_path);
+        return self.fmt("session-{x:0>16}-{s}", .{ hash, self.sanitizeIdPart(session_name) });
+    }
+
+    fn sanitizeIdPart(self: *Runtime, value: []const u8) []const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        for (value) |c| {
+            const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '-' or c == '_';
+            out.append(self.arena, if (ok) c else '_') catch {};
+        }
+        if (out.items.len == 0) out.appendSlice(self.arena, "session") catch {};
+        return out.toOwnedSlice(self.arena) catch self.dupe("session");
+    }
+
+    fn ensureConversationSessionFileLocked(self: *Runtime, conv: *Conversation) void {
+        const path = sessionFilePath(self.allocator, conv.workspace_path, conv.session_name) catch return;
+        defer self.allocator.free(path);
+        if (fileExists(path)) return;
+        self.writeConversationSessionFileLocked(conv);
+    }
+
+    fn writeConversationSessionFileLocked(self: *Runtime, conv: *Conversation) void {
+        if (conv.session_name.len == 0 or std.mem.indexOfAny(u8, conv.session_name, "/\\") != null) return;
+        ensureDirectory(self.allocator, conv.workspace_path) catch {};
+        const path = sessionFilePath(self.allocator, conv.workspace_path, conv.session_name) catch return;
+        defer self.allocator.free(path);
+        const provider = self.settings.selected_provider orelse "codegraff";
+        const selected_model = self.settings.selected_model orelse "deepseek-v4-pro";
+        const model = if (selected_model.len == 0 or std.mem.eql(u8, selected_model, "default")) "deepseek-v4-pro" else selected_model;
+        const data = self.conversationSessionJsonLocked(conv, provider, model) catch return;
+        defer self.allocator.free(data);
+
+        std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = data }) catch {};
+    }
+
+    fn conversationSessionJsonLocked(self: *Runtime, conv: *Conversation, provider: []const u8, model: []const u8) ![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        const w = &out.writer;
+        try w.writeAll("{\"provider\":");
+        try writeString(w, provider);
+        try w.writeAll(",\"model\":");
+        try writeString(w, model);
+        try w.writeAll(",\"strict\":false,\"ultracode_mode\":false,\"goal\":");
+        try writeNullableString(w, conv.goal);
+        try w.writeAll(",\"title\":");
+        try writeString(w, conv.title);
+        try w.writeAll(",\"updated_ms\":");
+        try w.print("{d}", .{if (conv.updated_at > 0) conv.updated_at else nowMillis()});
+        try w.writeAll(",\"messages\":[");
+        var first = true;
+        for (conv.messages.items) |message| {
+            const role: []const u8 = switch (message.kind) {
+                .user => "user",
+                .assistant => "assistant",
+                else => continue,
+            };
+            if (!first) try w.writeByte(',');
+            first = false;
+            try w.writeAll("{\"role\":");
+            try writeString(w, role);
+            try w.writeAll(",\"content\":");
+            try writeString(w, message.text);
+            try w.writeAll("}");
+        }
+        try w.writeAll("]}");
+        return try self.allocator.dupe(u8, out.written());
+    }
+
+    fn deleteConversationSessionFileLocked(self: *Runtime, conv: *Conversation) void {
+        const path = sessionFilePath(self.allocator, conv.workspace_path, conv.session_name) catch return;
+        defer self.allocator.free(path);
+        std.Io.Dir.cwd().deleteFile(mer_runtime.io, path) catch {};
     }
 
     fn loadPromptSettings(self: *Runtime) void {
@@ -1973,6 +2304,10 @@ fn promptSettingsPath(alloc: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(alloc, "{s}/.codegraff-gui/prompt-settings.json", .{homeDir()});
 }
 
+fn guiStatePath(alloc: std.mem.Allocator) ![]const u8 {
+    return std.fmt.allocPrint(alloc, "{s}/.codegraff-gui/state.json", .{homeDir()});
+}
+
 fn themeSettingsPath(alloc: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(alloc, "{s}/.codegraff-gui/theme-settings.json", .{homeDir()});
 }
@@ -2061,6 +2396,53 @@ fn isGeneratedManagedChatPath(alloc: std.mem.Allocator, path: []const u8) bool {
         if (c < '0' or c > '9') return false;
     }
     return true;
+}
+
+fn sessionFilePath(alloc: std.mem.Allocator, workspace_path: []const u8, session_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(alloc, "{s}/{s}{s}", .{ workspace_path, session_name, session_ext });
+}
+
+fn isGuiChatSessionName(value: []const u8) bool {
+    if (!std.mem.startsWith(u8, value, "chat-")) return false;
+    const suffix = value["chat-".len..];
+    if (suffix.len != 16) return false;
+    for (suffix) |c| {
+        const hex = (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+        if (!hex) return false;
+    }
+    return true;
+}
+
+fn sessionMessageReasoning(message: Value) ?[]const u8 {
+    if (message != .object) return null;
+    if (message.object.get("reasoning_content")) |value| if (value == .string) return value.string;
+    if (message.object.get("reasoning")) |value| if (value == .string) return value.string;
+    return null;
+}
+
+fn sessionMessageText(alloc: std.mem.Allocator, message: Value) []const u8 {
+    if (message != .object) return "";
+    const content = message.object.get("content") orelse return "";
+    if (content == .string) return content.string;
+    if (content != .array) return "";
+
+    var out: std.ArrayList(u8) = .empty;
+    for (content.array.items) |part| {
+        if (part != .object) continue;
+        const text = sessionContentText(part) orelse continue;
+        if (text.len == 0) continue;
+        if (out.items.len > 0) out.append(alloc, '\n') catch return out.items;
+        out.appendSlice(alloc, text) catch return out.items;
+    }
+    return out.items;
+}
+
+fn sessionContentText(part: Value) ?[]const u8 {
+    if (part != .object) return null;
+    inline for (.{ "text", "input_text", "output_text" }) |field| {
+        if (part.object.get(field)) |value| if (value == .string) return value.string;
+    }
+    return null;
 }
 
 const DeviceStart = struct {
@@ -2526,4 +2908,82 @@ test "activateWorkspaceLocked clears stale conversation and restores workspace s
     rt.activateWorkspaceLocked(conv.workspace_path);
     try std.testing.expectEqualStrings(first_workspace, rt.active_workspace_path.?);
     try std.testing.expectEqualStrings("chat-one", rt.active_conversation_id.?);
+}
+
+test "importSessionValueLocked imports CLI session files" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const data =
+        \\{"provider":"codegraff","model":"deepseek-v4-pro","strict":false,"ultracode_mode":false,"goal":"ship persistence","title":"CLI title","updated_ms":42,"messages":[
+        \\{"role":"user","content":"hello from cli"},
+        \\{"role":"assistant","reasoning_content":"thinking through it","content":[{"type":"text","text":"hello from gui"}]},
+        \\{"role":"tool","content":"hidden"}
+        \\]}
+    ;
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const parsed = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), data, .{ .allocate = .alloc_always });
+
+    const workspace = "/tmp/codegraff-gui-session-import";
+    rt.importSessionValueLocked(workspace, "last", parsed, tmp.allocator());
+    rt.ensureWorkspaceSelectionLocked(workspace);
+
+    const cid = rt.conversationIdForSession(workspace, "last");
+    const conv = rt.conversations.get(cid) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("last", conv.session_name);
+    try std.testing.expectEqualStrings("CLI title", conv.title);
+    try std.testing.expectEqualStrings("ship persistence", conv.goal.?);
+    try std.testing.expectEqual(@as(usize, 3), conv.messages.items.len);
+    try std.testing.expectEqual(.user, conv.messages.items[0].kind);
+    try std.testing.expectEqualStrings("hello from cli", conv.messages.items[0].text);
+    try std.testing.expectEqual(.reasoning, conv.messages.items[1].kind);
+    try std.testing.expectEqualStrings("thinking through it", conv.messages.items[1].text);
+    try std.testing.expectEqual(.assistant, conv.messages.items[2].kind);
+    try std.testing.expectEqualStrings("hello from gui", conv.messages.items[2].text);
+    try std.testing.expectEqualStrings(cid, rt.selected_by_workspace.get(workspace).?);
+}
+
+test "importSessionValueLocked preserves GUI chat ids from session filenames" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const session_name = "chat-0123456789abcdef";
+    const workspace = "/tmp/codegraff-gui-session-id";
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const parsed = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"provider\":\"codegraff\",\"model\":\"deepseek-v4-pro\",\"messages\":[],\"updated_ms\":1}", .{ .allocate = .alloc_always });
+
+    rt.importSessionValueLocked(workspace, session_name, parsed, tmp.allocator());
+    const conv = rt.conversations.get(session_name) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings(session_name, conv.conversation_id);
+    try std.testing.expectEqualStrings(session_name, conv.session_name);
+}
+
+test "conversationSessionJsonLocked writes CLI-readable session JSON" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const workspace = "/tmp/codegraff-gui-session-write";
+    const session_name = "chat-fedcba9876543210";
+
+    const conv = rt.createConversationLocked(workspace, session_name, "New chat");
+    conv.updated_at = 123;
+    conv.messages.append(rt.arena, .{ .kind = .user, .id = "u", .request_id = "r", .text = "persist me" }) catch {};
+    conv.messages.append(rt.arena, .{ .kind = .assistant, .id = "a", .request_id = "r", .text = "persisted" }) catch {};
+    const data = try rt.conversationSessionJsonLocked(conv, "codegraff", "deepseek-v4-pro");
+    defer rt.allocator.free(data);
+
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const parsed = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), data, .{ .allocate = .alloc_always });
+    try std.testing.expectEqualStrings("codegraff", stringField(parsed, "provider").?);
+    try std.testing.expectEqualStrings("deepseek-v4-pro", stringField(parsed, "model").?);
+    try std.testing.expectEqualStrings("New chat", stringField(parsed, "title").?);
+    const messages = arrayField(parsed, "messages").?;
+    try std.testing.expectEqual(@as(usize, 2), messages.items.len);
+    try std.testing.expectEqualStrings("user", stringField(messages.items[0], "role").?);
+    try std.testing.expectEqualStrings("persist me", stringField(messages.items[0], "content").?);
+    try std.testing.expectEqualStrings("assistant", stringField(messages.items[1], "role").?);
+    try std.testing.expectEqualStrings("persisted", stringField(messages.items[1], "content").?);
 }
