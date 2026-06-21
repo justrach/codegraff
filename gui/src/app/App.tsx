@@ -7,7 +7,6 @@ import {
   useState,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowLeftIcon,
   LoaderCircle,
@@ -38,7 +37,6 @@ import { useSessionStore } from "../hooks/useSession";
 import { DragDropProvider } from "../hooks/useFileDrop";
 import { SessionProvider } from "./SessionProvider";
 import { SettingsNavigationProvider } from "./settingsNavigation";
-import { hasTauriInternals } from "../utils/tauri";
 import {
   DEFAULT_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
@@ -127,7 +125,7 @@ function AppShell() {
   const isSessionBootstrapped = useSessionStore(
     (state) => state.isBootstrapped,
   );
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const isFullscreen = false;
   const [isDesktopSidebarVisible, setIsDesktopSidebarVisible] = useState(true);
   const [isSettingsViewOpen, setIsSettingsViewOpen] = useState(false);
   const [selectedSettingsSection, setSelectedSettingsSection] =
@@ -173,55 +171,6 @@ function AppShell() {
     }),
     [openMcpSettings, openProvidersSettings],
   );
-
-  useEffect(() => {
-    if (
-      import.meta.env.VITE_CODEGRAFF_QA_MOCK === "1" ||
-      !hasTauriInternals()
-    ) {
-      return;
-    }
-
-    let appWindow: ReturnType<typeof getCurrentWindow>;
-    try {
-      appWindow = getCurrentWindow();
-    } catch {
-      return;
-    }
-    let isMounted = true;
-    let unlistenResize: (() => void) | null = null;
-    let unlistenFocus: (() => void) | null = null;
-
-    const syncFullscreenState = () => {
-      void appWindow.isFullscreen().then((nextIsFullscreen) => {
-        if (isMounted) {
-          setIsFullscreen(nextIsFullscreen);
-        }
-      });
-    };
-
-    syncFullscreenState();
-    void appWindow.onResized(syncFullscreenState).then((unlisten) => {
-      if (isMounted) {
-        unlistenResize = unlisten;
-        return;
-      }
-      unlisten();
-    });
-    void appWindow.onFocusChanged(syncFullscreenState).then((unlisten) => {
-      if (isMounted) {
-        unlistenFocus = unlisten;
-        return;
-      }
-      unlisten();
-    });
-
-    return () => {
-      isMounted = false;
-      unlistenResize?.();
-      unlistenFocus?.();
-    };
-  }, []);
 
   useLayoutEffect(() => {
     const panel = sidebarPanelRef.current;

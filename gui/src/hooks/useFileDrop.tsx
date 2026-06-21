@@ -6,11 +6,8 @@ import {
   useId,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import type { ReactNode, RefObject } from "react";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { hasTauriInternals } from "@/utils/tauri";
 
 interface DropZone {
   id: string;
@@ -28,8 +25,8 @@ const DragDropContext = createContext<DragDropContextValue | null>(null);
 
 export function DragDropProvider({ children }: { children: ReactNode }) {
   const zonesRef = useRef<Map<string, DropZone>>(new Map());
-  const [isDragging, setIsDragging] = useState(false);
-  const [activeZoneId, setActiveZoneId] = useState<string | null>(null);
+  const isDragging = false;
+  const activeZoneId: string | null = null;
 
   const resolveZoneId = useCallback(
     (position: { x: number; y: number }): string | null => {
@@ -66,8 +63,8 @@ export function DragDropProvider({ children }: { children: ReactNode }) {
         return candidates[0].id;
       }
 
-      // Multiple panes visible: hit-test the cursor. Tauri reports physical
-      // pixels; the DOM works in CSS pixels.
+      // Multiple panes visible: hit-test the cursor. Native drops report
+      // physical pixels; the DOM works in CSS pixels.
       const dpr = window.devicePixelRatio || 1;
       const x = position.x / dpr;
       const y = position.y / dpr;
@@ -95,64 +92,9 @@ export function DragDropProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    // Visual QA runs in a normal browser where Tauri's webview API is absent.
-    if (
-      import.meta.env.VITE_CODEGRAFF_QA_MOCK === "1" ||
-      !hasTauriInternals()
-    ) {
-      return;
-    }
-
-    let isMounted = true;
-    let unlisten: (() => void) | null = null;
-
-    try {
-      void getCurrentWebview()
-        .onDragDropEvent((event) => {
-          const payload = event.payload;
-          if (import.meta.env.DEV) {
-            console.debug("[file-drop] event", payload);
-          }
-          switch (payload.type) {
-            case "enter":
-            case "over": {
-              setIsDragging(true);
-              setActiveZoneId(resolveZoneId(payload.position));
-              break;
-            }
-            case "drop": {
-              const zoneId = resolveZoneId(payload.position);
-              if (zoneId != null) {
-                zonesRef.current.get(zoneId)?.onDrop(payload.paths);
-              }
-              setIsDragging(false);
-              setActiveZoneId(null);
-              break;
-            }
-            default: {
-              setIsDragging(false);
-              setActiveZoneId(null);
-            }
-          }
-        })
-        .then((dispose) => {
-          if (isMounted) {
-            unlisten = dispose;
-          } else {
-            dispose();
-          }
-        })
-        .catch((error) => {
-          console.error("[file-drop] failed to attach drag-drop listener", error);
-        });
-    } catch (error) {
-      console.error("[file-drop] getCurrentWebview() threw", error);
-    }
-
-    return () => {
-      isMounted = false;
-      unlisten?.();
-    };
+    // The Mer native shell does not expose a file-drop bridge yet, so keep the
+    // registration state intact and make native drop delivery a no-op for now.
+    void resolveZoneId;
   }, [resolveZoneId]);
 
   const register = useCallback((zone: DropZone) => {

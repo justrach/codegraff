@@ -3,7 +3,7 @@
 // Builds the native desktop shell: a merjs HTTP server (serving the Vite-built
 // React SPA from dist/ + api/ backend routes + SSE /events) hosted in a system
 // WKWebView. The React frontend (src/) is unchanged; only its runtime host
-// changes from Tauri to merjs.
+// changes from the old desktop backend to merjs.
 //
 //   zig build native       # dev: run the shell (serves dist/)
 //   zig build native-build # prod: build the binary
@@ -110,7 +110,7 @@ pub fn build(b: *std.Build) void {
         b.getInstallPath(.prefix, pkg_name),
     });
     const pkg_icon = b.addInstallFile(
-        b.path("src-tauri/icons/icon.icns"),
+        b.path("native/icons/icon.icns"),
         b.fmt("{s}/Contents/Resources/icon.icns", .{pkg_name}),
     );
     const pkg_dist = b.addInstallDirectory(.{

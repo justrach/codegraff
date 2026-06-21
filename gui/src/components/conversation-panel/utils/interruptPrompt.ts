@@ -2,7 +2,7 @@ import type { TranscriptMessage } from "@/services/desktop/types/contracts";
 
 // Limit-based interrupts (tool-failure / request / end-hook) surface as the
 // conversation's final "Interrupted" status, and their reason always starts
-// with this prefix (see format_interruption in src-tauri/src/dto/chat.rs).
+// with this prefix.
 // User-initiated stops use a different reason, so they are excluded — we only
 // offer "Continue" when the agent stopped itself against a limit.
 const INTERRUPT_REASON_PREFIX = "Stopped after reaching";

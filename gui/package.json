@@ -7,12 +7,10 @@
   "type": "module",
   "scripts": {
     "dev": "bun run build:deps && vite",
-    "gen:desktop-contracts": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --example generate_desktop_contracts",
     "build:deps": "bun run --filter '@codegraff/diffs' build",
-    "build": "bun run build:deps && bun run gen:desktop-contracts && tsc -b && vite build",
-    "lint": "bun run build:deps && bun run gen:desktop-contracts && eslint .",
+    "build": "bun run build:deps && tsc -b && vite build",
+    "lint": "bun run build:deps && eslint .",
     "preview": "vite preview",
-    "tauri": "tauri",
     "test": "bun test"
   },
   "dependencies": {
@@ -20,10 +18,6 @@
     "@codegraff/diffs": "workspace:*",
     "@fontsource-variable/geist": "^5.2.8",
     "@legendapp/list": "^3.0.0-beta.44",
-    "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/plugin-dialog": "^2.7.0",
-    "@tauri-apps/plugin-process": "^2.3.0",
-    "@tauri-apps/plugin-updater": "^2.9.0",
     "@wterm/dom": "^0.1.9",
     "@zane-chen/agents-are-thinking": "^0.1.6",
     "border-beam": "^1.0.1",
@@ -46,7 +40,6 @@
     "@eslint/js": "^9.39.4",
     "@rolldown/plugin-babel": "^0.2.3",
     "@tailwindcss/vite": "^4.2.2",
-    "@tauri-apps/cli": "^2.10.1",
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
