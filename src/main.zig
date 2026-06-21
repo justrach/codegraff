@@ -7815,6 +7815,27 @@ fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !vo
 
     root.provider = try keys.providerById(pid, model);
     root.messages = msgs;
+    // Repair histories written by older builds where a Responses
+    // `function_call_output.output` was persisted as a byte array instead of a
+    // string. The Responses API rejects that ("input[N].output[0]: expected an
+    // object, got an integer instead"), and we restore messages verbatim — so a
+    // poisoned last.session.json would otherwise re-break every resume.
+    for (root.messages.items) |*m| {
+        if (m.* != .object) continue;
+        const mtype = if (m.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+        if (!std.mem.eql(u8, mtype, "function_call_output")) continue;
+        const out = m.object.get("output") orelse continue;
+        if (out == .string) continue; // already correct
+        var repaired: std.ArrayList(u8) = .empty;
+        if (out == .array) {
+            for (out.array.items) |el| {
+                if (el == .integer and el.integer >= 0 and el.integer <= 255) {
+                    try repaired.append(arena, @intCast(el.integer));
+                }
+            }
+        }
+        try m.object.put(arena, "output", .{ .string = repaired.items });
+    }
     root.strict = strict;
     root.last_context_tokens = 0;
     root.cap_new = false; // per-provider; relearn on rejection
