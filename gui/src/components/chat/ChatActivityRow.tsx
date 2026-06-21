@@ -97,6 +97,34 @@ function renderOperationIcon(
   }
 }
 
+// A representative icon for the whole step, so every group summary carries an
+// aligned leading glyph — not just the running one. Mirrors summarizeActivityGroup's
+// category priority; thinking steps get a sparkle.
+function renderGroupIcon(
+  item: ChatActivityRowProps["item"],
+  className: string,
+): ReactNode {
+  if (item.isThinking) {
+    return <Sparkles className={className} />;
+  }
+  const kinds = new Set(
+    item.operations.map((operation) => operation.detail.kind),
+  );
+  const hasRealSubagent = item.operations.some(
+    (operation) =>
+      operation.detail.kind === "task" &&
+      operation.detail.label !== "workflow",
+  );
+  if (hasRealSubagent) return <Bot className={className} />;
+  if (kinds.has("file_read")) return <FileText className={className} />;
+  if (kinds.has("shell")) return <Terminal className={className} />;
+  if (kinds.has("file_update")) return <Pencil className={className} />;
+  if (kinds.has("search") || kinds.has("codebase_search"))
+    return <Search className={className} />;
+  if (kinds.has("fetch")) return <Globe className={className} />;
+  return <Activity className={className} />;
+}
+
 function ActivityChevron({
   open,
   className,
@@ -223,7 +251,9 @@ export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
           <CollapsibleTrigger className={activityTriggerClassName}>
             {item.isRunning ? (
               <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-            ) : null}
+            ) : (
+              renderGroupIcon(item, "size-3.5 shrink-0 text-muted-foreground/70")
+            )}
             <ChatStatusLabel text={item.summary} />
             <ActivityChevron
               open={open}
@@ -248,7 +278,9 @@ export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
         <CollapsibleTrigger className={activityTriggerClassName}>
           {item.isRunning ? (
             <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-          ) : null}
+          ) : (
+            renderGroupIcon(item, "size-3.5 shrink-0 text-muted-foreground/70")
+          )}
           <ChatStatusLabel text={item.summary} />
           <ActivityChevron
             open={open}
