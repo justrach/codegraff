@@ -8081,27 +8081,11 @@ fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !vo
 
     root.provider = try keys.providerById(pid, model);
     root.messages = msgs;
-    // Repair histories written by older builds where a Responses
-    // `function_call_output.output` was persisted as a byte array instead of a
-    // string. The Responses API rejects that ("input[N].output[0]: expected an
-    // object, got an integer instead"), and we restore messages verbatim — so a
-    // poisoned last.session.json would otherwise re-break every resume.
-    for (root.messages.items) |*m| {
-        if (m.* != .object) continue;
-        const mtype = if (m.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-        if (!std.mem.eql(u8, mtype, "function_call_output")) continue;
-        const out = m.object.get("output") orelse continue;
-        if (out == .string) continue; // already correct
-        var repaired: std.ArrayList(u8) = .empty;
-        if (out == .array) {
-            for (out.array.items) |el| {
-                if (el == .integer and el.integer >= 0 and el.integer <= 255) {
-                    try repaired.append(arena, @intCast(el.integer));
-                }
-            }
-        }
-        try m.object.put(arena, "output", .{ .string = repaired.items });
-    }
+    // Repair histories where a Responses `function_call_output.output` was stored
+    // as a byte array instead of a string (older builds, or a model output item
+    // kept verbatim). The Responses API rejects byte-array outputs ("input[N].
+    // output[0]: expected an object, got an integer instead").
+    try sanitizeByteArrayOutputs(arena, root.messages.items);
     root.strict = strict;
     root.ultracode_mode = ultracode_mode;
     root.goal = goal;
@@ -9388,6 +9372,12 @@ const Agent = struct {
                 // returned encrypted and passed back for cross-turn continuity.
                 try s.objectField("instructions");
                 try s.write(self.systemPrompt());
+                // No Responses `function_call_output.output` may reach the wire as a
+                // byte array (array of integers) — the API rejects it ("input[N].
+                // output[0]: expected an object, got an integer"). A byte array can
+                // enter the history transiently no matter how it was built, so we
+                // sweep the conversation at this single serialization choke point.
+                try sanitizeByteArrayOutputs(self.arena, self.messages.items);
                 try s.objectField("input");
                 try s.write(Value{ .array = self.messages });
                 if (tools) |t| {
@@ -11147,6 +11137,29 @@ fn toolResultMessage(arena: Allocator, kind: Provider.Kind, call_id: []const u8,
     return .{ .object = obj };
 }
 
+/// Coerce any item `output` field that was serialized as a raw byte array (a
+/// non-empty JSON array of integers) back into a string. The Responses API
+/// rejects byte-array outputs ("input[N].output[0]: expected an object, got an
+/// integer instead"). graff always builds `function_call_output.output` as a
+/// string, but a byte array can still reach the history (an older session file,
+/// or a model output item kept verbatim), so we sweep both on load and at the
+/// request-serialization choke point. An array of content objects is a valid
+/// output shape and is left untouched.
+fn sanitizeByteArrayOutputs(arena: Allocator, messages: []Value) !void {
+    for (messages) |*m| {
+        if (m.* != .object) continue;
+        const out = m.object.get("output") orelse continue;
+        if (out != .array or out.array.items.len == 0) continue;
+        for (out.array.items) |el| {
+            if (el != .integer or el.integer < 0 or el.integer > 255) break;
+        } else {
+            // Every element is a byte (0-255): reassemble the original string.
+            var repaired: std.ArrayList(u8) = .empty;
+            for (out.array.items) |el| try repaired.append(arena, @intCast(el.integer));
+            try m.object.put(arena, "output", .{ .string = repaired.items });
+        }
+    }
+}
 /// A base64-encoded image staged by `/image`, sent with the next user turn.
 const PendingImage = struct { media_type: []const u8, b64: []const u8, label: []const u8 };
 
@@ -13483,6 +13496,38 @@ test "toolResultMessage: result text serializes as a JSON string in every wire f
         const json = try enc(arena, err);
         try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":\"nope\"") != null);
     }
+}
+
+test "sanitizeByteArrayOutputs: coerces a byte-array output to a string, leaves content arrays alone" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // A function_call_output whose `output` was poisoned into a byte array — the
+    // exact shape that triggers "input[N].output[0]: expected an object, got an
+    // integer instead" on the Responses API.
+    var bytes = std.json.Array.init(arena);
+    for ("hi") |c| try bytes.append(.{ .integer = @as(i64, c) });
+    var poisoned: std.json.ObjectMap = .empty;
+    try poisoned.put(arena, "type", .{ .string = "function_call_output" });
+    try poisoned.put(arena, "output", .{ .array = bytes });
+
+    // A valid content-object output array must survive untouched.
+    var content = std.json.Array.init(arena);
+    var part: std.json.ObjectMap = .empty;
+    try part.put(arena, "type", .{ .string = "output_text" });
+    try part.put(arena, "text", .{ .string = "ok" });
+    try content.append(.{ .object = part });
+    var valid: std.json.ObjectMap = .empty;
+    try valid.put(arena, "type", .{ .string = "function_call_output" });
+    try valid.put(arena, "output", .{ .array = content });
+
+    var msgs = [_]Value{ .{ .object = poisoned }, .{ .object = valid } };
+    try sanitizeByteArrayOutputs(arena, &msgs);
+
+    try std.testing.expect(msgs[0].object.get("output").? == .string);
+    try std.testing.expectEqualStrings("hi", msgs[0].object.get("output").?.string);
+    try std.testing.expect(msgs[1].object.get("output").? == .array);
 }
 
 test "Approvals.isSimple: rejects shell metacharacters that could smuggle a second command" {
