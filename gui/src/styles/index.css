@@ -1186,7 +1186,7 @@
     content: "";
     border-radius: inherit;
     background: linear-gradient(
-        90deg,
+        90deg in oklab,
         #ff5f6d,
         #ffb347,
         #ffe66d,
@@ -1220,7 +1220,7 @@
     content: "";
     border-radius: inherit;
     background: linear-gradient(
-        90deg,
+        90deg in oklab,
         #ff5f6d,
         #ffb347,
         #ffe66d,
