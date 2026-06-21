@@ -6,6 +6,7 @@ use crate::{
     terminal::TerminalManager,
 };
 use anyhow::{Context, Result};
+use base64::Engine;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -971,11 +972,17 @@ impl RuntimeManager {
                 }
                 Some("turn") => break,
                 Some("error") => {
-                    let message = event
+                    let raw_message = event
                         .get("message")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("graff error")
                         .to_string();
+                    let auth_error = is_provider_auth_error_message(&raw_message);
+                    let message = if auth_error {
+                        provider_auth_error_message(&raw_message)
+                    } else {
+                        raw_message
+                    };
                     let id = format!("{request_id}-error-{}", Uuid::new_v4().simple());
                     let rid = request_id.to_string();
                     self.mutate_conversation(conversation_id, move |conversation| {
@@ -986,6 +993,15 @@ impl RuntimeManager {
                         });
                     })
                     .await;
+                    if auth_error {
+                        // A rejected/expired credential can leave the long-lived
+                        // child in a bad state. Drop it so retrying after the
+                        // user reconnects spawns a fresh graff process instead
+                        // of reusing a session that already failed auth.
+                        self.drop_session(conversation_id).await;
+                        self.emit().await?;
+                        return Ok(());
+                    }
                     break;
                 }
                 // system_prompt / score acks and anything unrecognized: ignore.
@@ -2239,6 +2255,25 @@ pub(crate) fn format_error_chain(error: &anyhow::Error) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(": ")
+}
+
+fn is_provider_auth_error_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("invalid_api_key")
+        || lower.contains("unauthorized")
+        || (lower.contains("api key")
+            && (lower.contains("invalid")
+                || lower.contains("expired")
+                || lower.contains("incorrect")))
+        || (lower.contains("token") && lower.contains("expired"))
+        || (lower.contains("authentication")
+            && (lower.contains("failed") || lower.contains("invalid")))
+}
+
+fn provider_auth_error_message(raw: &str) -> String {
+    format!(
+        "Provider authentication failed before the turn could run. The selected API key/login was rejected or expired. Re-open Settings → Providers and reconnect the provider, then retry.\n\nThe GUI dropped the live graff session so the next retry starts fresh.\n\n{raw}"
+    )
 }
 
 /// Runs a literal substring search over the workspace. Tries ripgrep first
@@ -3547,7 +3582,11 @@ fn env_has_provider_key(env_key: &str) -> bool {
 }
 
 fn provider_configured(provider: &CodegraffProvider, key_list: &str) -> bool {
-    if provider.env_key.as_deref().is_some_and(env_has_provider_key) {
+    if provider
+        .env_key
+        .as_deref()
+        .is_some_and(env_has_provider_key)
+    {
         return true;
     }
 
@@ -3596,8 +3635,8 @@ fn home_codex_auth_has_valid_token(home: Option<&Path>) -> bool {
 }
 
 /// Kimi OAuth login (`graff login kimi`) writes a JSON token file to
-/// `~/.kimi/credentials/graff-oauth.json`. The CLI auto-refreshes the
-/// access token when near expiry, so a non-empty access_token means logged in.
+/// `~/.kimi/credentials/graff-oauth.json`. Treat an expired token file as not
+/// configured so the GUI asks the user to reconnect before starting a run.
 fn kimi_auth_has_valid_token(home: Option<&Path>) -> bool {
     home.map(|home| {
         let path = home.join(".kimi/credentials/graff-oauth.json");
@@ -3607,10 +3646,17 @@ fn kimi_auth_has_valid_token(home: Option<&Path>) -> bool {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
             return false;
         };
+        if value
+            .get("expires_at")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|expires_at| unix_seconds() >= expires_at.saturating_sub(60))
+        {
+            return false;
+        }
         value
             .get("access_token")
             .and_then(|token| token.as_str())
-            .map(|token| !token.trim().is_empty())
+            .map(|token| !token.trim().is_empty() && jwt_token_not_expired(token))
             .unwrap_or(false)
     })
     .unwrap_or(false)
@@ -3632,8 +3678,33 @@ fn codex_auth_text_has_valid_token(text: &str) -> bool {
         .and_then(|tokens| tokens.get("access_token"))
         .or_else(|| value.get("access_token"))
         .and_then(|token| token.as_str())
-        .map(|token| !token.trim().is_empty())
+        .map(|token| !token.trim().is_empty() && jwt_token_not_expired(token))
         .unwrap_or(false)
+}
+
+fn jwt_token_not_expired(token: &str) -> bool {
+    let Some(payload) = token.split('.').nth(1) else {
+        // API keys and opaque OAuth tokens do not expose an expiry locally; they
+        // still need the runtime auth-error handling above.
+        return true;
+    };
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
+        return true;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return true;
+    };
+    let Some(exp) = value.get("exp").and_then(serde_json::Value::as_i64) else {
+        return true;
+    };
+    unix_seconds() < exp.saturating_sub(60)
+}
+
+fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn provider_env_key(provider_id: &str) -> Option<String> {
@@ -4175,6 +4246,24 @@ mod tests {
         ));
         assert!(!codex_auth_text_has_valid_token("{}"));
         assert!(!codex_auth_text_has_valid_token("not json"));
+    }
+
+    #[test]
+    fn codex_auth_text_rejects_expired_jwt_token() {
+        let expired_payload =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"exp":1}"#);
+        let token = format!("header.{expired_payload}.signature");
+        let auth = serde_json::json!({ "tokens": { "access_token": token } }).to_string();
+
+        assert!(!codex_auth_text_has_valid_token(&auth));
+    }
+
+    #[test]
+    fn provider_auth_error_detection_matches_invalid_api_key() {
+        assert!(is_provider_auth_error_message(
+            "api error: The API Key appears to be invalid or may have expired. Please verify your credentials and try again."
+        ));
+        assert!(provider_auth_error_message("invalid_api_key").contains("reconnect"));
     }
 
     #[test]

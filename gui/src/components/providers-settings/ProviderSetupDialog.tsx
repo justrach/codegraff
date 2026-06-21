@@ -27,6 +27,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/ToggleGroup";
 import {
   completeProviderAuth,
+  listProviders,
   listenProviderOAuthCallback,
   openExternalUrl,
   startProviderAuth,
@@ -75,6 +76,12 @@ export function ProviderSetupDialog({
   const [isStartingAuth, setIsStartingAuth] = useState(false);
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // True while polling for a CLI login (codegraff/codex/kimi) to land on disk.
+  // The external Terminal runs `graff login …` (a device-code flow that polls
+  // every few seconds); this polls `list_providers` so the dialog auto-completes
+  // the moment the credential file appears — no manual "Finish setup" click and
+  // no clicking-too-early error.
+  const [isDetectingLogin, setIsDetectingLogin] = useState(false);
   const providerId = provider?.id ?? null;
 
   const defaultAuthMethod = useMemo(() => {
@@ -94,6 +101,7 @@ export function ProviderSetupDialog({
     setUrlParameterValues({});
     setIsStartingAuth(false);
     setIsSubmittingAuth(false);
+    setIsDetectingLogin(false);
     setActionError(null);
   }
 
@@ -102,9 +110,15 @@ export function ProviderSetupDialog({
       return;
     }
 
-    const nextAuthMethod = initialAuthMethod ?? defaultAuthMethod;
-    resetSetupState(nextAuthMethod);
-    setPendingAutoStartMethod(nextAuthMethod);
+    const timer = window.setTimeout(() => {
+      const nextAuthMethod = initialAuthMethod ?? defaultAuthMethod;
+      resetSetupState(nextAuthMethod);
+      setPendingAutoStartMethod(nextAuthMethod);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, [defaultAuthMethod, initialAuthMethod, isOpen, provider]);
 
   async function refreshPromptSettings() {
@@ -191,6 +205,75 @@ export function ProviderSetupDialog({
       }
     };
   }, [authFlow, providerId]);
+
+  // Auto-detect CLI login completion: poll list_providers while a cli_login flow
+  // is active. The moment the provider flips to configured, auto-complete — no
+  // need for the user to manually click "Finish setup" (which would error if
+  // clicked before the OAuth file lands).
+  useEffect(() => {
+    if (authFlow?.kind !== "cli_login" || providerId == null) {
+      const resetTimer = window.setTimeout(() => {
+        setIsDetectingLogin(false);
+      }, 0);
+      return () => {
+        window.clearTimeout(resetTimer);
+      };
+    }
+
+    let isCancelled = false;
+    const startTimer = window.setTimeout(() => {
+      if (isCancelled) return;
+      setIsDetectingLogin(true);
+      setActionError(null);
+    }, 0);
+
+    async function poll() {
+      // Give the external Terminal a moment to get going before the first check.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      while (!isCancelled) {
+        try {
+          const providers = await listProviders(workspacePath);
+          if (isCancelled) return;
+          const current = providers.find((p) => p.id === providerId);
+          if (current?.configured) {
+            // Credential landed — complete the auth session.
+            try {
+              const updatedProvider = await completeProviderAuth({
+                authSessionId: authFlow!.authSessionId,
+                apiKey: null,
+                authorizationCode: null,
+                urlParameters: [],
+              });
+              if (isCancelled) return;
+              onProviderUpdated(updatedProvider);
+              await ensureWorkspacePromptSettingsLoaded(workspacePath, {
+                force: true,
+              });
+              closeSetupDialog();
+            } catch (error) {
+              if (isCancelled) return;
+              // The file appeared but completion failed — surface it and stop
+              // polling so the user can retry with "Finish setup".
+              setActionError(normalizeProviderError(error));
+              setIsDetectingLogin(false);
+            }
+            return;
+          }
+        } catch {
+          // Transient listProviders failure — keep polling.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    }
+
+    void poll();
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(startTimer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authFlow?.kind, authFlow?.authSessionId, providerId, workspacePath]);
 
   function closeSetupDialog() {
     setPendingAutoStartMethod(null);
@@ -441,11 +524,26 @@ export function ProviderSetupDialog({
             ) : null}
 
             {authFlow?.kind === "cli_login" ? (
-              <div className="flex flex-col gap-4">
-                <p className="rounded-lg border border-border/60 px-3 py-3 text-sm text-muted-foreground">
-                  {authFlow.apiKeyHint ??
-                    "Login launched in Terminal. Complete the CLI flow there, then finish setup here."}
-                  </p>
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-2.5 rounded-lg border border-border/60 px-3 py-3 text-sm text-muted-foreground">
+                  {isDetectingLogin ? (
+                    <>
+                      <LoaderCircle
+                        className="size-4 shrink-0 animate-spin text-[color:var(--accent)]"
+                        strokeWidth={2}
+                      />
+                      <span>
+                        Waiting for login to complete in Terminal… The dialog
+                        closes automatically once detected.
+                      </span>
+                    </>
+                  ) : (
+                    <span>
+                      {authFlow.apiKeyHint ??
+                        "Login launched in Terminal. Complete the CLI flow there, then finish setup here."}
+                    </span>
+                  )}
+                </div>
               </div>
             ) : null}
 
@@ -558,7 +656,7 @@ export function ProviderSetupDialog({
             {authFlow?.kind === "device_code" || authFlow?.kind === "cli_login" ? (
               <Button
                 type="button"
-                disabled={isSubmittingAuth}
+                disabled={isSubmittingAuth || isDetectingLogin}
                 onClick={() => {
                   void handleSubmitSetup();
                 }}

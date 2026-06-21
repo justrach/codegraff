@@ -4917,10 +4917,10 @@ pub fn main(init: std.process.Init) !void {
             }
             try out.flush();
             break :blk e.text;
-        } else if (interactive)
-            (try readLine(&root, in, out, gpa, &history, &linebuf)) orelse break
-        else
-            (try in.takeDelimiter('\n')) orelse break;
+        } else if (interactive) blk: {
+            try root.prompt();
+            break :blk (try readLine(&root, in, out, gpa, &history, &linebuf)) orelse break;
+        } else (try in.takeDelimiter('\n')) orelse break;
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
         const loop_prompt: ?[]const u8 = if (!json_mode and std.mem.startsWith(u8, line, "/loop "))
