@@ -32,12 +32,13 @@ import {
 } from "../components/ui/Resizable";
 import { SidebarProvider, useSidebar } from "../components/ui/Sidebar";
 import { TooltipProvider } from "../components/ui/Tooltip";
-import { useThemeStore } from "./themeStore";
+import { hydrateThemeSettings, useThemeStore } from "./themeStore";
 import { SidebarVisibilityContext } from "./sidebarVisibilityContext";
 import { useSessionStore } from "../hooks/useSession";
 import { DragDropProvider } from "../hooks/useFileDrop";
 import { SessionProvider } from "./SessionProvider";
 import { SettingsNavigationProvider } from "./settingsNavigation";
+import { hasTauriInternals } from "../utils/tauri";
 import {
   DEFAULT_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
@@ -161,6 +162,10 @@ function AppShell() {
     setSelectedSettingsSection("mcp");
     setIsSettingsViewOpen(true);
   }, []);
+
+  useEffect(() => {
+    void hydrateThemeSettings();
+  }, []);
   const settingsNavigation = useMemo(
     () => ({
       openProviderSettings: openProvidersSettings,
@@ -170,11 +175,19 @@ function AppShell() {
   );
 
   useEffect(() => {
-    if (import.meta.env.VITE_CODEGRAFF_QA_MOCK === "1") {
+    if (
+      import.meta.env.VITE_CODEGRAFF_QA_MOCK === "1" ||
+      !hasTauriInternals()
+    ) {
       return;
     }
 
-    const appWindow = getCurrentWindow();
+    let appWindow: ReturnType<typeof getCurrentWindow>;
+    try {
+      appWindow = getCurrentWindow();
+    } catch {
+      return;
+    }
     let isMounted = true;
     let unlistenResize: (() => void) | null = null;
     let unlistenFocus: (() => void) | null = null;

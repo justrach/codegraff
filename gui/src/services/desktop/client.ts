@@ -1,5 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+// Transport: the codegraff GUI backend is a merjs/Zig HTTP server served by
+// the native shell. Commands go over fetch POST /api/<command>; OS-level shell
+// ops go through window.mer.invoke when that bridge exists. Push events arrive
+// over a single SSE EventSource on /events.
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import {
   SESSION_UPDATED_EVENT_NAME,
@@ -308,6 +311,77 @@ function mockInvokeCommand<T>(
   }
 }
 
+const NATIVE_COMMANDS: Record<string, string> = {
+  pick_workspace: "dialog.pickDirectory",
+  pick_directory: "dialog.pickDirectory",
+  drain_pending_open: "drainPendingOpen",
+  open_path_default: "open.path",
+  open_path_for_edit: "open.path",
+  open_in_target: "open.path",
+  open_path_in_target: "open.path",
+};
+
+async function httpInvoke<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  const res = await fetch(`/api/${command}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: args ? JSON.stringify(args) : "{}",
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    let parsedError: string | null = null;
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown };
+      if (typeof parsed.error === "string" && parsed.error.length > 0) {
+        parsedError = parsed.error;
+      }
+    } catch {
+      // Fall through to the raw HTTP message for non-JSON responses.
+    }
+    if (parsedError != null) {
+      throw new Error(parsedError);
+    }
+    throw new Error(`${command} failed: ${res.status} ${text}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+async function merInvoke<T>(
+  name: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  const w = window as unknown as {
+    mer?: { invoke?: (n: string, a: unknown) => Promise<T> };
+  };
+  if (w.mer?.invoke) {
+    try {
+      return await w.mer.invoke(name, args ?? {});
+    } catch (error) {
+      if (name === "open.external") {
+        const url = typeof args?.url === "string" ? args.url : null;
+        if (url != null) {
+          window.open(url, "_blank", "noopener,noreferrer");
+        }
+        return null as T;
+      }
+      if (name.startsWith("open.") || name === "drainPendingOpen") {
+        return null as T;
+      }
+      throw error;
+    }
+  }
+  if (name === "open.external") {
+    const url = typeof args?.url === "string" ? args.url : null;
+    if (url != null) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  }
+  return null as T;
+}
+
 function invokeCommand<T>(
   command: string,
   args?: Record<string, unknown>,
@@ -315,7 +389,33 @@ function invokeCommand<T>(
   if (isQaMockMode) {
     return mockInvokeCommand<T>(command, args);
   }
-  return invoke<T>(command, args);
+  const nativeName = NATIVE_COMMANDS[command];
+  if (nativeName) {
+    return merInvoke<T>(nativeName, args);
+  }
+  return httpInvoke<T>(command, args);
+}
+
+let sessionEventSource: EventSource | null = null;
+const sessionUpdatedHandlers = new Set<(payload: unknown) => void>();
+
+function ensureSessionEventSource(): EventSource {
+  if (sessionEventSource) {
+    return sessionEventSource;
+  }
+  const es = new EventSource("/events");
+  sessionEventSource = es;
+  es.addEventListener("session-updated", (event: MessageEvent) => {
+    try {
+      const payload = JSON.parse(event.data);
+      for (const handler of sessionUpdatedHandlers) {
+        handler(payload);
+      }
+    } catch {
+      // Ignore malformed frames; EventSource will continue reconnecting.
+    }
+  });
+  return es;
 }
 
 async function listenEvent<T>(
@@ -330,9 +430,21 @@ async function listenEvent<T>(
     return () => undefined;
   }
 
-  return listen<T>(eventName, (event) => {
-    handler(event.payload);
-  });
+  if (eventName === SESSION_UPDATED_EVENT_NAME) {
+    ensureSessionEventSource();
+    const wrapped = (payload: unknown) => handler(payload as T);
+    sessionUpdatedHandlers.add(wrapped);
+    return () => {
+      sessionUpdatedHandlers.delete(wrapped);
+      if (sessionUpdatedHandlers.size === 0 && sessionEventSource != null) {
+        sessionEventSource.close();
+        sessionEventSource = null;
+      }
+    };
+  }
+
+  void handler;
+  return () => undefined;
 }
 
 export function pickWorkspace(): Promise<string | null> {

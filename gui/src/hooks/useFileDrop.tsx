@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { ReactNode, RefObject } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { hasTauriInternals } from "@/utils/tauri";
 
 interface DropZone {
   id: string;
@@ -95,7 +96,10 @@ export function DragDropProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // Visual QA runs in a normal browser where Tauri's webview API is absent.
-    if (import.meta.env.VITE_CODEGRAFF_QA_MOCK === "1") {
+    if (
+      import.meta.env.VITE_CODEGRAFF_QA_MOCK === "1" ||
+      !hasTauriInternals()
+    ) {
       return;
     }
 

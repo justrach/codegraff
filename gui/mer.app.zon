@@ -1,0 +1,36 @@
+// mer.app.zon — codegraff-zig GUI native app manifest.
+//
+// The merjs native shell reads this comptime: window size/title, server mode,
+// static dir, and bridge permissions. The React SPA (built to dist/ by Vite) is
+// served by the embedded merjs server; the Zig backend exposes api/ routes +
+// an SSE /events channel for session-updated pushes.
+.{
+    .id = "dev.codegraff.gui",
+    .name = "codegraff-gui",
+    .display_name = "Codegraff",
+    .version = "0.0.13",
+    .web_engine = "system",
+    .server = .{
+        .mode = "embedded", // in-process loopback server (no hot reload in prod)
+        .host = "127.0.0.1",
+        .port = 0, // 0 = ephemeral; shell reads back via ServerReady
+        .static_dir = "dist", // serve the Vite-built React SPA
+    },
+    .capabilities = .{ "webview", "js_bridge" },
+    .permissions = .{ "window", "clipboard", "dialog", "open" },
+    .security = .{
+        .navigation = .{ .allowed_origins = .{ "http://127.0.0.1" } },
+    },
+    .windows = .{
+        .{ .label = "main", .title = "Codegraff", .width = 1280, .height = 832 },
+    },
+    .bridge = .{
+        .commands = .{
+            .{ .name = "dialog.openFile", .permissions = .{ "dialog" }, .origins = .{ "http://127.0.0.1" } },
+            .{ .name = "dialog.pickDirectory", .permissions = .{ "dialog" }, .origins = .{ "http://127.0.0.1" } },
+            .{ .name = "open.external", .permissions = .{ "open" }, .origins = .{ "http://127.0.0.1" } },
+            .{ .name = "open.path", .permissions = .{ "open" }, .origins = .{ "http://127.0.0.1" } },
+            .{ .name = "window.setTitle", .permissions = .{ "window" }, .origins = .{ "http://127.0.0.1" } },
+        },
+    },
+}
