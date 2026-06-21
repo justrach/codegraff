@@ -1,0 +1,20 @@
+.{
+    .name = .codegraff_gui,
+    .fingerprint = 0xbaf1ec805de39b91,
+    .version = "0.0.13",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .merjs = .{
+            .path = "../../../merjs",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "mer.app.zon",
+        "native",
+        "api",
+        "src-backend",
+        "routes.zig",
+    },
+}

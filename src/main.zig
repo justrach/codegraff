@@ -811,6 +811,7 @@ fn providerDisplayName(id: []const u8) []const u8 {
 fn providerLoginKind(id: []const u8) []const u8 {
     if (std.mem.eql(u8, id, "codegraff")) return "codegraff_device";
     if (std.mem.eql(u8, id, "codex")) return "codex_device";
+    if (std.mem.eql(u8, id, "kimi")) return "kimi_device";
     return "api_key";
 }
 
@@ -16730,6 +16731,7 @@ test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
     try std.testing.expectEqualStrings("mystery", providerDisplayName("mystery")); // unknown -> echoed id
     try std.testing.expectEqualStrings("codegraff_device", providerLoginKind("codegraff"));
     try std.testing.expectEqualStrings("codex_device", providerLoginKind("codex"));
+    try std.testing.expectEqualStrings("kimi_device", providerLoginKind("kimi"));
     try std.testing.expectEqualStrings("api_key", providerLoginKind("openai"));
 }
 

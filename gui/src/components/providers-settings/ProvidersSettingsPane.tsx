@@ -285,7 +285,7 @@ export function ProvidersSettingsPane() {
                         >
                           {getProviderButtonLabel(provider)}
                         </Button>
-                        {provider.configured ? (
+                        {provider.configured && provider.envOverride == null ? (
                           <Button
                             type="button"
                             variant="destructive"
