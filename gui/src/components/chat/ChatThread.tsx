@@ -71,10 +71,24 @@ export function ChatThread({
     });
   }, []);
 
-  const scrollToBottom = useCallback(() => {
+  const scrollToBottom = useCallback((options?: { force?: boolean }) => {
     const list = listRef.current;
     if (list == null) {
       return;
+    }
+
+    // Don't yank the scroll — and steal focus from the composer — while the user
+    // is typing a follow-up mid-stream. Explicit jumps (the pill) pass force.
+    if (options?.force !== true) {
+      const active = document.activeElement;
+      if (
+        active != null &&
+        (active.tagName === "TEXTAREA" ||
+          active.tagName === "INPUT" ||
+          (active as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
     }
 
     markProgrammaticScroll();
@@ -245,7 +259,7 @@ export function ChatThread({
   const handleJumpToLatest = useCallback(() => {
     userWantsFollowRef.current = true;
     setFollowing(true);
-    scrollToBottom();
+    scrollToBottom({ force: true });
   }, [scrollToBottom, setFollowing]);
 
   return (
