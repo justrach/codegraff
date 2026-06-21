@@ -111,6 +111,18 @@ export function useConversationActions(binding?: ChatBinding | null) {
           prompt = `${prompt}\n\nultracode`;
         }
 
+        const restorePromptDraft = () => {
+          const store = sessionStore.getState();
+          store.setPromptDraftValue(promptDraftKey, draftState.value);
+          store.setPromptDraftPlanningMode(
+            promptDraftKey,
+            draftState.isPlanningMode,
+          );
+          store.setPromptDraftUltraMode(promptDraftKey, draftState.isUltraMode);
+          store.clearAttachments(promptDraftKey);
+          store.addAttachments(promptDraftKey, attachments);
+        };
+
         // Clear the composer immediately on send so the draft + any attachment
         // don't linger in the bar while the turn runs (the prompt is already
         // captured above). Reset Ultra explicitly: clearing only blanks the
@@ -129,6 +141,7 @@ export function useConversationActions(binding?: ChatBinding | null) {
           });
           sessionStore.getState().applySessionSnapshot(snapshot);
         } catch {
+          restorePromptDraft();
           return;
         } finally {
           sessionStore.getState().setPromptDraftPending(promptDraftKey, false);

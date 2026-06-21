@@ -388,12 +388,8 @@ async function invokeCommand<T>(
     return mockInvokeCommand<T>(command, args);
   }
   if (command === "pick_workspace" || command === "pick_directory") {
-    const picked = await merInvoke<T | null>("dialog.pickDirectory", args).catch(
-      () => null,
-    );
-    if (picked != null) {
-      return picked as T;
-    }
+    // Mer's folder dialog bridge is currently a stub in this shell. Calling it
+    // first adds a failing round trip before the working backend picker opens.
     return httpInvoke<T>(command, args);
   }
   const nativeName = NATIVE_COMMANDS[command];

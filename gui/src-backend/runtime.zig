@@ -316,6 +316,14 @@ pub const Runtime = struct {
         const provided_conversation = stringField(input, "conversationId");
         const agent_id = stringField(input, "agentId");
 
+        if (!fileExists(workspace)) {
+            if (isGeneratedManagedChatPath(req.allocator, workspace)) {
+                ensureDirectory(req.allocator, workspace) catch return bad(req, "failed to create managed chat workspace");
+            } else {
+                return bad(req, "workspace path does not exist");
+            }
+        }
+
         const request_id = self.uniqueId("request");
         var conversation_id: []const u8 = undefined;
 
@@ -1666,6 +1674,10 @@ fn themeSettingsPath(alloc: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(alloc, "{s}/.codegraff-gui/theme-settings.json", .{homeDir()});
 }
 
+fn legacyThemeSettingsPath(_: std.mem.Allocator) []const u8 {
+    return "/tmp/.codegraff-gui/theme-settings.json";
+}
+
 fn ensureSettingsDir(alloc: std.mem.Allocator) void {
     ensureDirectory(alloc, std.fmt.allocPrint(alloc, "{s}/.codegraff-gui", .{homeDir()}) catch return) catch {};
 }
@@ -1688,8 +1700,18 @@ fn validThemePreset(preset: []const u8) bool {
 fn readThemeSettings(alloc: std.mem.Allocator) ![]const u8 {
     const path = try themeSettingsPath(alloc);
     const data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, path, alloc, .limited(16 * 1024)) catch {
-        return "{\"mode\":null,\"preset\":null}";
+        const legacy_path = legacyThemeSettingsPath(alloc);
+        const legacy_data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, legacy_path, alloc, .limited(16 * 1024)) catch {
+            return "{\"mode\":null,\"preset\":null}";
+        };
+        ensureSettingsDir(alloc);
+        std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = legacy_data }) catch {};
+        return normalizeThemeSettingsJson(alloc, legacy_data);
     };
+    return normalizeThemeSettingsJson(alloc, data);
+}
+
+fn normalizeThemeSettingsJson(alloc: std.mem.Allocator, data: []const u8) ![]const u8 {
     const v = std.json.parseFromSliceLeaky(Value, alloc, data, .{ .allocate = .alloc_always }) catch {
         return "{\"mode\":null,\"preset\":null}";
     };
@@ -1718,6 +1740,23 @@ fn writeThemeSettings(alloc: std.mem.Allocator, mode: []const u8, preset: []cons
 
 fn fileExists(path: []const u8) bool {
     std.Io.Dir.cwd().access(mer_runtime.io, path, .{}) catch return false;
+    return true;
+}
+
+fn generatedManagedChatsRoot(alloc: std.mem.Allocator) ![]const u8 {
+    return std.fmt.allocPrint(alloc, "{s}/Library/Application Support/dev.codegraff.gui/managed-chats/", .{homeDir()});
+}
+
+fn isGeneratedManagedChatPath(alloc: std.mem.Allocator, path: []const u8) bool {
+    const root = generatedManagedChatsRoot(alloc) catch return false;
+    if (!std.mem.startsWith(u8, path, root)) return false;
+    const name = path[root.len..];
+    if (!std.mem.startsWith(u8, name, "chat_")) return false;
+    const suffix = name["chat_".len..];
+    if (suffix.len == 0) return false;
+    for (suffix) |c| {
+        if (c < '0' or c > '9') return false;
+    }
     return true;
 }
 

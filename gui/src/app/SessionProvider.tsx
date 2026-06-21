@@ -583,6 +583,17 @@ export function SessionProvider({ children }: SessionProviderProps) {
         // submit path in useConversationActions.
         const attachments = getAttachments(promptDraftKey);
         const prompt = appendAttachmentsToPrompt(trimmedPrompt, attachments);
+        const restorePromptDraft = () => {
+          const store = sessionStore.getState();
+          store.setPromptDraftValue(promptDraftKey, draftState.value);
+          store.setPromptDraftPlanningMode(
+            promptDraftKey,
+            draftState.isPlanningMode,
+          );
+          store.setPromptDraftUltraMode(promptDraftKey, draftState.isUltraMode);
+          store.clearAttachments(promptDraftKey);
+          store.addAttachments(promptDraftKey, attachments);
+        };
         // Clear the welcome composer immediately on send (prompt already
         // captured) so the draft + attachment don't linger while the turn runs.
         sessionStore.getState().clearPromptDraft(promptDraftKey);
@@ -591,14 +602,19 @@ export function SessionProvider({ children }: SessionProviderProps) {
         let nextPromptDraftKey: string | null = promptDraftKey;
         sessionStore.getState().setPromptDraftPending(promptDraftKey, true);
 
-        const snapshot = await runSnapshotCommand(() =>
-          desktopClient.sendPrompt({
+        const snapshot = await desktopClient
+          .sendPrompt({
             agentId: draftState.isPlanningMode ? "muse" : "forge",
             conversationId,
             prompt,
             workspacePath,
-          }),
-        );
+          })
+          .catch(() => null);
+        if (snapshot == null) {
+          restorePromptDraft();
+          sessionStore.getState().setPromptDraftPending(promptDraftKey, false);
+          return;
+        }
         if (snapshot != null) {
           applySessionSnapshot(snapshot);
           nextPromptDraftKey = getPromptDraftKey(
