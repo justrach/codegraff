@@ -27,12 +27,8 @@ export function NewChatPromptSection({
   focusSignal?: number;
   onCommandResult?: (result: CommandRunResult) => void;
 }) {
-  const {
-    hasCurrentWorkspace,
-    messages,
-    requestAgentIds,
-    workspaceKind,
-  } = useConversationSession(binding);
+  const { hasCurrentWorkspace, messages, requestAgentIds, workspaceKind } =
+    useConversationSession(binding);
   const {
     canCompose,
     followupRequest,
@@ -42,6 +38,7 @@ export function NewChatPromptSection({
     isUltraMode,
     promptSettings,
     promptDraft,
+    queuedPrompts,
     setPlanningMode,
     setPromptDraft,
     setUltraMode,
@@ -73,18 +70,26 @@ export function NewChatPromptSection({
   const promptHistory = messages
     .filter((message) => message.kind === "user")
     .map((message) => message.text);
-  const handleSubmit = useCallback(async () => {
-    if (trySubmitAsCommand(promptDraft)) {
-      return;
-    }
-    await submitPrompt();
-  }, [promptDraft, submitPrompt, trySubmitAsCommand]);
+  const handleSubmit = useCallback(
+    async (draftOverride?: string) => {
+      const draft = draftOverride ?? promptDraft;
+      if (draftOverride != null) {
+        setPromptDraft(draftOverride);
+      }
+      if (trySubmitAsCommand(draft)) {
+        return;
+      }
+      await submitPrompt(draftOverride);
+    },
+    [promptDraft, setPromptDraft, submitPrompt, trySubmitAsCommand],
+  );
   const handleImplementPlan = useCallback(async () => {
     if (lastAssistant == null) {
       return;
     }
 
-    const activeBinding = binding ?? getUiActiveBinding(sessionStore.getState());
+    const activeBinding =
+      binding ?? getUiActiveBinding(sessionStore.getState());
     if (activeBinding == null) {
       return;
     }
@@ -137,6 +142,7 @@ export function NewChatPromptSection({
         isPlanningMode={isPlanningMode}
         isUltraMode={isUltraMode}
         promptDraft={promptDraft}
+        queuedPrompts={queuedPrompts}
         promptHistory={promptHistory}
         promptSettings={promptSettings}
         isInputDisabled={!hasCurrentWorkspace}

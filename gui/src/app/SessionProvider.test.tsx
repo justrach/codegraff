@@ -153,7 +153,12 @@ mock.module("../services/desktop/client", () => ({
     getRuntimeStatusCallCount += 1;
     return runtimeStatusFixture;
   },
-  renameWorkspace: async (workspacePath: string, displayName: string | null) => {
+  getSessionSnapshot: async () =>
+    createSnapshot("/workspace/codegraff-gui", "chat-1"),
+  renameWorkspace: async (
+    workspacePath: string,
+    displayName: string | null,
+  ) => {
     renameWorkspaceCallCount += 1;
     return await renameWorkspaceImpl(workspacePath, displayName);
   },
@@ -338,15 +343,13 @@ describe("SessionProvider", () => {
       kind: "saved-workspace",
       workspace: {
         id: "saved-1",
-        layoutJson: "{\"grid\":true}",
+        layoutJson: '{"grid":true}',
         name: "Workspace",
         updatedAt: 1n,
       },
     });
 
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -363,8 +366,7 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
 
     await actions.selectConversation("/workspace/other", "chat-9");
 
@@ -452,7 +454,10 @@ describe("SessionProvider", () => {
     }
 
     const actions = capturedActions as SessionActionsContextValue;
-    const selectPromise = actions.selectConversation("/workspace/other", "chat-9");
+    const selectPromise = actions.selectConversation(
+      "/workspace/other",
+      "chat-9",
+    );
 
     expect(sessionStore.getState().selection).toEqual({
       chat: {
@@ -535,9 +540,7 @@ describe("SessionProvider", () => {
       kind: "single-chat",
     });
 
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -554,8 +557,7 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
 
     await actions.stopPrompt();
 
@@ -575,7 +577,7 @@ describe("SessionProvider", () => {
       kind: "saved-workspace",
       workspace: {
         id: "saved-1",
-        layoutJson: "{\"grid\":true}",
+        layoutJson: '{"grid":true}',
         name: "Workspace",
         updatedAt: 1n,
       },
@@ -584,9 +586,7 @@ describe("SessionProvider", () => {
     const workspaceRequest = deferred<SessionSnapshot>();
     openWorkspaceImpl = async () => await workspaceRequest.promise;
 
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -603,8 +603,7 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
     const openProjectPromise = actions.openProject("/workspace/other");
 
     expect(openWorkspaceCallCount).toBe(1);
@@ -616,7 +615,7 @@ describe("SessionProvider", () => {
       kind: "saved-workspace",
       workspace: {
         id: "saved-1",
-        layoutJson: "{\"grid\":true}",
+        layoutJson: '{"grid":true}',
         name: "Workspace",
         updatedAt: 1n,
       },
@@ -635,9 +634,7 @@ describe("SessionProvider", () => {
   });
 
   test("starting a sidebar chat without a project creates a managed chat workspace", async () => {
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -654,8 +651,7 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
 
     await actions.startNewChat();
 
@@ -720,9 +716,7 @@ describe("SessionProvider", () => {
         ],
       });
 
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -739,8 +733,7 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
 
     await actions.startNewChat();
 
@@ -753,13 +746,13 @@ describe("SessionProvider", () => {
   });
 
   test("handoffing a chat updates the active selection to the target workspace", async () => {
-    sessionStore.getState().applySessionSnapshot(
-      createSnapshot("/workspace/codegraff-gui", "chat-1"),
-    );
+    sessionStore
+      .getState()
+      .applySessionSnapshot(
+        createSnapshot("/workspace/codegraff-gui", "chat-1"),
+      );
 
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -776,8 +769,7 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
 
     await actions.handoffChat({
       branchName: "feature/worktree",
@@ -802,11 +794,11 @@ describe("SessionProvider", () => {
       throw new Error("Expected a prompt draft key");
     }
 
-    sessionStore.getState().setPromptDraftValue(sourceDraftKey, "Investigate the bug");
+    sessionStore
+      .getState()
+      .setPromptDraftValue(sourceDraftKey, "Investigate the bug");
 
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -823,8 +815,7 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
 
     await actions.handoffChat({
       branchName: "feature/draft-handoff",
@@ -833,11 +824,17 @@ describe("SessionProvider", () => {
       target: "worktree",
     });
 
-    const targetDraftKey = getPromptDraftKey("/workspace/codegraff-gui-worktree", null);
+    const targetDraftKey = getPromptDraftKey(
+      "/workspace/codegraff-gui-worktree",
+      null,
+    );
     expect(targetDraftKey).not.toBeNull();
-    expect(sessionStore.getState().promptDraftsByKey[sourceDraftKey]).toBeUndefined();
     expect(
-      sessionStore.getState().promptDraftsByKey[targetDraftKey as string]?.value,
+      sessionStore.getState().promptDraftsByKey[sourceDraftKey],
+    ).toBeUndefined();
+    expect(
+      sessionStore.getState().promptDraftsByKey[targetDraftKey as string]
+        ?.value,
     ).toBe("Investigate the bug");
   });
 
@@ -923,9 +920,7 @@ describe("SessionProvider", () => {
         ],
       });
 
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -942,8 +937,7 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
 
     await actions.submitPrompt();
 
@@ -1052,9 +1046,7 @@ describe("SessionProvider", () => {
         ],
       });
 
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -1071,8 +1063,7 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
 
     await actions.submitPrompt();
 
@@ -1086,13 +1077,13 @@ describe("SessionProvider", () => {
   });
 
   test("renaming a project updates the workspace label in session state", async () => {
-    sessionStore.getState().applySessionSnapshot(
-      createSnapshot("/workspace/codegraff-gui", "chat-1"),
-    );
+    sessionStore
+      .getState()
+      .applySessionSnapshot(
+        createSnapshot("/workspace/codegraff-gui", "chat-1"),
+      );
 
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -1109,15 +1100,15 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
 
     await actions.renameWorkspace("/workspace/codegraff-gui", "Renamed UI");
 
     expect(renameWorkspaceCallCount).toBe(1);
-    expect(sessionStore.getState().workspacesByPath["/workspace/codegraff-gui"]?.workspaceName).toBe(
-      "Renamed UI",
-    );
+    expect(
+      sessionStore.getState().workspacesByPath["/workspace/codegraff-gui"]
+        ?.workspaceName,
+    ).toBe("Renamed UI");
     expect(sessionStore.getState().selection).toEqual({
       chat: {
         conversationId: "chat-1",
@@ -1136,18 +1127,18 @@ describe("SessionProvider", () => {
       kind: "saved-workspace",
       workspace: {
         id: "saved-1",
-        layoutJson: "{\"grid\":true}",
+        layoutJson: '{"grid":true}',
         name: "Workspace",
         updatedAt: 1n,
       },
     });
-    sessionStore.getState().applySessionSnapshot(
-      createSnapshot("/workspace/codegraff-gui", "chat-1"),
-    );
+    sessionStore
+      .getState()
+      .applySessionSnapshot(
+        createSnapshot("/workspace/codegraff-gui", "chat-1"),
+      );
 
-    let capturedActions:
-      | SessionActionsContextValue
-      | null = null;
+    let capturedActions: SessionActionsContextValue | null = null;
 
     function CaptureActions() {
       capturedActions = useContext(SessionActionsContext);
@@ -1164,8 +1155,7 @@ describe("SessionProvider", () => {
       throw new Error("Expected session actions to be available");
     }
 
-    const actions =
-      capturedActions as SessionActionsContextValue;
+    const actions = capturedActions as SessionActionsContextValue;
 
     await actions.renameSavedWorkspace("saved-1", "Renamed workspace");
 
@@ -1181,7 +1171,7 @@ describe("SessionProvider", () => {
       kind: "saved-workspace",
       workspace: {
         id: "saved-1",
-        layoutJson: "{\"grid\":true}",
+        layoutJson: '{"grid":true}',
         name: "Renamed workspace",
         updatedAt: 2n,
       },

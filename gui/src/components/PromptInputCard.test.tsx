@@ -84,6 +84,23 @@ describe("PromptInputCard", () => {
     expect(html).not.toContain("<textarea disabled");
   });
 
+  test("renders queued messages above the composer", () => {
+    const html = renderPromptInputCard({
+      queuedPrompts: [
+        {
+          attachments: [],
+          isPlanningMode: false,
+          isUltraMode: false,
+          value: "like this",
+        },
+      ],
+    });
+
+    expect(html).toContain("Messages queued to send after this turn");
+    expect(html).toContain("like this");
+    expect(html.indexOf("like this")).toBeLessThan(html.indexOf("<textarea"));
+  });
+
   test("keeps stop available while running with an empty draft", () => {
     const html = renderPromptInputCard({
       isRequestActive: true,

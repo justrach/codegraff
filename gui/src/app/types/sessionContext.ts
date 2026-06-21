@@ -42,7 +42,7 @@ export interface SessionActionsContextValue {
     reasoningEffort?: string | null;
   }) => Promise<void>;
   stopPrompt: () => Promise<void>;
-  submitPrompt: () => Promise<void>;
+  submitPrompt: (draftOverride?: string) => Promise<void>;
   submitFollowup: (input: {
     cancelled: boolean;
     text?: string;

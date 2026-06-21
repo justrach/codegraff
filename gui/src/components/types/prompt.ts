@@ -6,6 +6,7 @@ import type {
   PromptSettings,
 } from "@/services/desktop/types/contracts";
 import type { WorkspacePromptSettingsUpdateInput } from "@/app/types/sessionClientActions";
+import type { QueuedPromptEntry } from "@/app/types/sessionStore";
 
 export interface FollowupSubmitInput {
   cancelled: boolean;
@@ -34,6 +35,7 @@ export interface PromptInputCardProps {
   placeholder?: string;
   promptSettings: PromptSettings | null;
   promptDraft: string;
+  queuedPrompts?: QueuedPromptEntry[];
   promptHistory?: string[];
   focusSignal?: number;
   isInputDisabled?: boolean;
@@ -44,6 +46,6 @@ export interface PromptInputCardProps {
   setUltraMode: (value: boolean) => void;
   setPromptDraft: (value: string) => void;
   stopPrompt: () => Promise<void>;
-  submitPrompt: () => Promise<void>;
+  submitPrompt: (draftOverride?: string) => Promise<void>;
   updatePromptSettings: (input: PromptSettingsUpdateInput) => Promise<void>;
 }
