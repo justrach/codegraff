@@ -634,7 +634,12 @@ pub const Runtime = struct {
         out.writer.writeAll(",\"requiresApiKey\":") catch return oom();
         out.writer.writeAll(if (requires_api_key) "true" else "false") catch return oom();
         out.writer.writeAll(",\"apiKeyHint\":") catch return oom();
-        writeNullableString(&out.writer, if (std.mem.eql(u8, kind, "cli_login")) "Complete the provider login in your terminal, then finish setup here." else "Paste an API key for this provider.") catch return oom();
+        const cli_hint =
+            if (std.mem.eql(u8, method, "codex_device"))
+                "Codex uses the shared Codex CLI login. Run `codex login` in your terminal if needed, then finish setup here."
+            else
+                "Complete the provider login in your terminal, then finish setup here.";
+        writeNullableString(&out.writer, if (std.mem.eql(u8, kind, "cli_login")) cli_hint else "Paste an API key for this provider.") catch return oom();
         out.writer.writeAll(",\"urlParameters\":[],\"verificationUri\":") catch return oom();
         writeNullableString(&out.writer, null) catch return oom();
         out.writer.writeAll(",\"verificationUriComplete\":") catch return oom();
@@ -669,6 +674,9 @@ pub const Runtime = struct {
             storeProviderKey(req.allocator, provider, key) catch |err| {
                 return bad(req, authErrorMessage(err));
             };
+        }
+        if (std.mem.eql(u8, provider, "codex") and !providerConfiguredById("codex", null)) {
+            return bad(req, "Codex is not logged in. Run `codex login` in your terminal, then click Finish setup again.");
         }
         return providerSummaryResponse(req, provider);
     }
@@ -1659,7 +1667,32 @@ fn intFieldObj(obj: std.json.ObjectMap, name: []const u8, default: i64) i64 {
 }
 
 fn homeDir() []const u8 {
-    return mer_runtime.threaded.environString("HOME") orelse "/tmp";
+    if (mer_runtime.threaded.environString("HOME")) |home| {
+        if (home.len > 0 and !std.mem.eql(u8, home, "/tmp")) return home;
+    }
+    if (builtin.os.tag == .macos) {
+        const alloc = std.heap.page_allocator;
+        const user_raw = commandOutput(alloc, &.{ "/usr/bin/id", "-un" }) catch return "/tmp";
+        const user = std.mem.trim(u8, user_raw, " \t\r\n");
+        if (user.len > 0) return std.fmt.allocPrint(alloc, "/Users/{s}", .{user}) catch "/tmp";
+    }
+    return "/tmp";
+}
+
+fn commandOutput(alloc: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
+    var child = try std.process.spawn(mer_runtime.io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
+    const out_file = child.stdout orelse return error.CommandFailed;
+    var rbuf: [8 * 1024]u8 = undefined;
+    var reader = out_file.readerStreaming(mer_runtime.io, &rbuf);
+    const output = try reader.interface.allocRemaining(alloc, .limited(64 * 1024));
+    const term = try child.wait(mer_runtime.io);
+    if (term != .exited or term.exited != 0) return error.CommandFailed;
+    return output;
 }
 
 fn writeCodegraffKey(alloc: std.mem.Allocator, key: []const u8) !void {
@@ -1853,7 +1886,7 @@ const fallback_providers = [_]Provider{
     .{ .id = "kimi", .name = "Kimi", .env_key = "KIMI_API_KEY", .auth_kind = "kimi_device", .auth_label = "Kimi device login" },
     .{ .id = "xai", .name = "xAI", .env_key = "XAI_API_KEY", .auth_kind = "api_key", .auth_label = "API key (XAI_API_KEY or graff key set xai)" },
     .{ .id = "zai", .name = "Z.AI", .env_key = "ZAI_API_KEY", .auth_kind = "api_key", .auth_label = "API key (ZAI_API_KEY or graff key set zai)" },
-    .{ .id = "codex", .name = "Codex / ChatGPT", .env_key = null, .auth_kind = "codex_device", .auth_label = "Codex browser login" },
+    .{ .id = "codex", .name = "Codex / ChatGPT", .env_key = null, .auth_kind = "codex_device", .auth_label = "Shared Codex CLI login (~/.codex/auth.json)" },
 };
 
 fn providerInfo(id: []const u8) Provider {
