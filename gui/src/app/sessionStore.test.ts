@@ -290,6 +290,39 @@ describe("sessionStore", () => {
     expect(sessionStore.getState().promptDraftsByKey[destinationKey]).toBeUndefined();
   });
 
+  test("toggling Ultra mode persists even when the draft is otherwise unchanged", () => {
+    // Regression: writePromptDraftEntry's no-change guard previously omitted
+    // isUltraMode, so flipping Ultra while value/pending/planning stayed the same
+    // was discarded as a no-op — the composer's `cg-ultra-shine` never engaged.
+    const key = "/workspace/codegraff-gui::ultra-regression";
+
+    // A draft entry already exists (the user has typed) — the exact showcase
+    // scenario where the dropped update bit.
+    sessionStore.getState().setPromptDraftValue(key, "describe the job");
+
+    sessionStore.getState().setPromptDraftUltraMode(key, true);
+    expect(getPromptDraftState(key)).toEqual({
+      isPending: false,
+      isPlanningMode: false,
+      isUltraMode: true,
+      value: "describe the job",
+    });
+
+    // Toggling back off must also stick.
+    sessionStore.getState().setPromptDraftUltraMode(key, false);
+    expect(getPromptDraftState(key).isUltraMode).toBe(false);
+
+    // Ultra composes independently with planning mode.
+    sessionStore.getState().setPromptDraftPlanningMode(key, true);
+    sessionStore.getState().setPromptDraftUltraMode(key, true);
+    expect(getPromptDraftState(key)).toEqual({
+      isPending: false,
+      isPlanningMode: true,
+      isUltraMode: true,
+      value: "describe the job",
+    });
+  });
+
   test("attachments move from the workspace draft key to the conversation key without being lost", () => {
     const sourceKey = "workspace:/workspace/codegraff-gui";
     const destinationKey = "conversation:chat-1";

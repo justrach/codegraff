@@ -85,12 +85,12 @@ function writePromptDraftEntry(
     delete nextDrafts[key];
     return nextDrafts;
   }
-    current?.isPlanningMode === nextEntry.isPlanningMode &&
-    current?.isUltraMode === nextEntry.isUltraMode
+
   if (
     current?.value === nextEntry.value &&
     current?.isPending === nextEntry.isPending &&
-    current?.isPlanningMode === nextEntry.isPlanningMode
+    current?.isPlanningMode === nextEntry.isPlanningMode &&
+    current?.isUltraMode === nextEntry.isUltraMode
   ) {
     return drafts;
   }
