@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { CHAT_MUTED_TEXT_CLASS } from "./constants/chatStyles";
 import { useRunningNow } from "./hooks/useRunningNow";
@@ -27,9 +27,12 @@ function WorkHeaderLabel({
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5">
       {isRunning ? (
-        <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-      ) : null}
-      <ChatStatusLabel text={label} />
+        <span className="shimmer shimmer-invert shimmer-repeat-delay-0">
+          {label}
+        </span>
+      ) : (
+        <ChatStatusLabel text={label} />
+      )}
     </span>
   );
 }
