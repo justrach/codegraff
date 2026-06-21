@@ -73,7 +73,11 @@ const initialMode = readInitialMode();
 const initialPreset = readStoredPreset() ?? "warm-graphite";
 
 // Apply immediately at module import (before React renders) to avoid a flash.
-applyTheme(initialMode, initialPreset);
+// Guarded so the module is import-safe in non-DOM environments (SSR / unit tests
+// that render to static markup); applyTheme touches document.documentElement.
+if (typeof document !== "undefined") {
+  applyTheme(initialMode, initialPreset);
+}
 
 type ThemeStore = {
   mode: ThemeMode;
