@@ -20,7 +20,10 @@ import { sessionStore } from "@/app/sessionStore";
 import * as desktopClient from "@/services/desktop/client";
 import type { PromptComposerProps } from "./types/prompt";
 
-export function PromptComposer({ binding, onCommandResult }: PromptComposerProps) {
+export function PromptComposer({
+  binding,
+  onCommandResult,
+}: PromptComposerProps) {
   const {
     canCompose,
     followupRequest,
@@ -30,6 +33,7 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
     isUltraMode,
     promptSettings,
     promptDraft,
+    queuedPrompts,
     setPlanningMode,
     setPromptDraft,
     setUltraMode,
@@ -40,9 +44,9 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
   const { goal, messages, requestAgentIds, todos } =
     useConversationSession(binding);
   const { openProviderSettings } = useSettingsNavigation();
-  const [dismissedInterruptId, setDismissedInterruptId] = useState<string | null>(
-    null,
-  );
+  const [dismissedInterruptId, setDismissedInterruptId] = useState<
+    string | null
+  >(null);
   const [dismissedPlanDecisionId, setDismissedPlanDecisionId] = useState<
     string | null
   >(null);
@@ -77,12 +81,19 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
     .filter((message) => message.kind === "user")
     .map((message) => message.text);
 
-  const handleSubmit = useCallback(async () => {
-    if (trySubmitAsCommand(promptDraft)) {
-      return;
-    }
-    await submitPrompt();
-  }, [promptDraft, submitPrompt, trySubmitAsCommand]);
+  const handleSubmit = useCallback(
+    async (draftOverride?: string) => {
+      const draft = draftOverride ?? promptDraft;
+      if (draftOverride != null) {
+        setPromptDraft(draftOverride);
+      }
+      if (trySubmitAsCommand(draft)) {
+        return;
+      }
+      await submitPrompt(draftOverride);
+    },
+    [promptDraft, setPromptDraft, submitPrompt, trySubmitAsCommand],
+  );
 
   // The goal chip mutates `/goal` directly (set/clear). The backend persists
   // it on the conversation and returns a fresh snapshot, which we apply so the
@@ -226,6 +237,7 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
             isUltraMode={isUltraMode}
             promptSettings={promptSettings}
             promptDraft={promptDraft}
+            queuedPrompts={queuedPrompts}
             promptHistory={promptHistory}
             isInputDisabled={requiresProviderSetup}
             binding={binding}

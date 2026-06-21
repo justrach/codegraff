@@ -147,14 +147,22 @@ export function useConversationActions(binding?: ChatBinding | null) {
             workspacePath,
           })
           .catch(() => null);
+        sessionStore.getState().setPromptDraftPending(promptDraftKey, false);
+        await desktopClient
+          .getSessionSnapshot()
+          .then((snapshot) => {
+            sessionStore.getState().applySessionSnapshot(snapshot);
+          })
+          .catch(() => null);
       },
-      submitPrompt: async () => {
+      submitPrompt: async (draftOverride?: string) => {
         if (promptDraftKey == null) {
           return;
         }
 
         const draftState = getPromptDraftState(promptDraftKey);
-        const trimmedPrompt = draftState.value.trim();
+        const draftValue = draftOverride ?? draftState.value;
+        const trimmedPrompt = draftValue.trim();
         if (trimmedPrompt.length === 0) {
           return;
         }

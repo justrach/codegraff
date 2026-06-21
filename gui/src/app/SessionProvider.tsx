@@ -53,9 +53,8 @@ function snapshotHasConversationView(
 }
 
 export function SessionProvider({ children }: SessionProviderProps) {
-  const activeWorkspacePath = useStore(
-    sessionStore,
-    (state) => getUiActiveWorkspacePath(state),
+  const activeWorkspacePath = useStore(sessionStore, (state) =>
+    getUiActiveWorkspacePath(state),
   );
 
   const applySessionSnapshot = useCallback((snapshot: SessionSnapshot) => {
@@ -70,7 +69,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
 
   const syncBoardSelectionFromSnapshot = useCallback(
     (snapshot: SessionSnapshot) => {
-      sessionStore.getState().setBoardSelection(getSelectionFromSnapshot(snapshot));
+      sessionStore
+        .getState()
+        .setBoardSelection(getSelectionFromSnapshot(snapshot));
     },
     [],
   );
@@ -124,29 +125,32 @@ export function SessionProvider({ children }: SessionProviderProps) {
     );
   }, []);
 
-  const openWorkspaceByPath = useCallback(async (workspacePath: string) => {
-    const store = sessionStore.getState();
-    store.setIsOpeningProject(true);
-    try {
-      const snapshot = await runSnapshotCommand(() =>
-        desktopClient.openWorkspace(workspacePath),
-      );
-      if (snapshot == null) {
-        return;
-      }
+  const openWorkspaceByPath = useCallback(
+    async (workspacePath: string) => {
+      const store = sessionStore.getState();
+      store.setIsOpeningProject(true);
+      try {
+        const snapshot = await runSnapshotCommand(() =>
+          desktopClient.openWorkspace(workspacePath),
+        );
+        if (snapshot == null) {
+          return;
+        }
 
-      applySessionSnapshot(snapshot);
-      syncBoardSelectionFromSnapshot(snapshot);
-      ensureWorkspaceMeta(workspacePath, { forceRuntimeStatus: true });
-    } finally {
-      sessionStore.getState().setIsOpeningProject(false);
-    }
-  }, [
-    applySessionSnapshot,
-    ensureWorkspaceMeta,
-    runSnapshotCommand,
-    syncBoardSelectionFromSnapshot,
-  ]);
+        applySessionSnapshot(snapshot);
+        syncBoardSelectionFromSnapshot(snapshot);
+        ensureWorkspaceMeta(workspacePath, { forceRuntimeStatus: true });
+      } finally {
+        sessionStore.getState().setIsOpeningProject(false);
+      }
+    },
+    [
+      applySessionSnapshot,
+      ensureWorkspaceMeta,
+      runSnapshotCommand,
+      syncBoardSelectionFromSnapshot,
+    ],
+  );
 
   // `codegraff <path>` (code-style): open the path the launcher handed us —
   // either stashed before launch (cold start) or forwarded to this running
@@ -336,7 +340,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
         });
 
         await Promise.all(
-          uniqueBindings.map((binding) => ensureConversationViewLoaded(binding)),
+          uniqueBindings.map((binding) =>
+            ensureConversationViewLoaded(binding),
+          ),
         );
 
         const workspacePaths = Array.from(
@@ -540,7 +546,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
       }) => {
         const activeBinding = getUiActiveBinding(sessionStore.getState());
         const followupRequest =
-          activeBinding == null ? null : getConversationView(activeBinding)?.followup ?? null;
+          activeBinding == null
+            ? null
+            : (getConversationView(activeBinding)?.followup ?? null);
         if (followupRequest == null) {
           return;
         }
@@ -559,21 +567,37 @@ export function SessionProvider({ children }: SessionProviderProps) {
         }
 
         await desktopClient.stopPrompt(activeBinding).catch(() => null);
+        sessionStore
+          .getState()
+          .setPromptDraftPending(
+            getPromptDraftKey(
+              activeBinding.workspacePath,
+              activeBinding.conversationId,
+            ),
+            false,
+          );
+        await desktopClient
+          .getSessionSnapshot()
+          .then(applySessionSnapshot)
+          .catch(() => null);
       },
-      submitPrompt: async () => {
+      submitPrompt: async (draftOverride?: string) => {
         const workspacePath = getUiActiveWorkspacePath(sessionStore.getState());
         if (workspacePath == null) {
           return;
         }
 
-        const conversationId = getUiActiveConversationId(sessionStore.getState());
+        const conversationId = getUiActiveConversationId(
+          sessionStore.getState(),
+        );
         const promptDraftKey = getPromptDraftKey(workspacePath, conversationId);
         if (promptDraftKey == null) {
           return;
         }
 
         const draftState = getPromptDraftState(promptDraftKey);
-        const trimmedPrompt = draftState.value.trim();
+        const draftValue = draftOverride ?? draftState.value;
+        const trimmedPrompt = draftValue.trim();
         if (trimmedPrompt.length === 0) {
           return;
         }
@@ -585,7 +609,7 @@ export function SessionProvider({ children }: SessionProviderProps) {
         const prompt = appendAttachmentsToPrompt(trimmedPrompt, attachments);
         const restorePromptDraft = () => {
           const store = sessionStore.getState();
-          store.setPromptDraftValue(promptDraftKey, draftState.value);
+          store.setPromptDraftValue(promptDraftKey, draftValue);
           store.setPromptDraftPlanningMode(
             promptDraftKey,
             draftState.isPlanningMode,

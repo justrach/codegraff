@@ -74,6 +74,7 @@ export function PromptInputCard({
   placeholder = "Ask about this workspace…",
   promptSettings,
   promptDraft,
+  queuedPrompts = [],
   promptHistory = EMPTY_PROMPT_HISTORY,
   focusSignal,
   isInputDisabled = false,
@@ -113,6 +114,15 @@ export function PromptInputCard({
   const isTextareaDisabled = !canEditPrompt || isInputDisabled;
   const isWorking = isRequestActive;
   const isQueueSubmit = isWorking;
+  function canSubmitDraft(value: string) {
+    return !(
+      isInputDisabled ||
+      (!canCompose && !isQueueSubmit) ||
+      (!isQueueSubmit && isSendingPrompt) ||
+      (isQueueSubmit && !canQueueFollowup) ||
+      value.trim().length === 0
+    );
+  }
   const isSubmitDisabled =
     isInputDisabled ||
     (!canCompose && !isQueueSubmit) ||
@@ -140,8 +150,7 @@ export function PromptInputCard({
   const [fastEnabled, setFastEnabled] = useState(
     promptSettings?.fastEnabled ?? false,
   );
-  const [historyCursor, setHistoryCursor] =
-    useState<PromptHistoryCursor>(null);
+  const [historyCursor, setHistoryCursor] = useState<PromptHistoryCursor>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState("");
   // Live attachment tray captured when entering history, restored on the way out.
   const [attachmentsBeforeHistory, setAttachmentsBeforeHistory] = useState<
@@ -218,13 +227,16 @@ export function PromptInputCard({
   const selectedModelLabel =
     selectedModel?.modelName ?? selectedModel?.modelId ?? "Model";
 
-  function handleSubmit() {
-    if (isSubmitDisabled) {
+  function handleSubmit(draftOverride = promptDraft) {
+    if (!canSubmitDraft(draftOverride)) {
       return;
     }
 
     resetHistoryNavigation();
-    void submitPrompt();
+    if (draftOverride !== promptDraft) {
+      setPromptDraft(draftOverride);
+    }
+    void submitPrompt(draftOverride);
   }
 
   function handleDraftChange(value: string) {
@@ -244,9 +256,7 @@ export function PromptInputCard({
     });
   }
 
-  function handleHistoryNavigation(
-    event: KeyboardEvent<HTMLTextAreaElement>,
-  ) {
+  function handleHistoryNavigation(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (
       event.nativeEvent.isComposing ||
       event.altKey ||
@@ -326,8 +336,9 @@ export function PromptInputCard({
   }
 
   function handlePrimaryAction() {
-    if (!isSubmitDisabled) {
-      handleSubmit();
+    const currentDraft = textareaRef.current?.value ?? promptDraft;
+    if (canSubmitDraft(currentDraft)) {
+      handleSubmit(currentDraft);
       return;
     }
 
@@ -381,6 +392,25 @@ export function PromptInputCard({
           onHighlight={commandAutocomplete.setActiveIndex}
           onPick={commandAutocomplete.pick}
         />
+      ) : null}
+      {queuedPrompts.length > 0 ? (
+        <div className="mb-2 rounded-xl border border-border/70 bg-card/70 px-3 py-2 text-xs text-muted-foreground shadow-sm">
+          <div className="font-medium text-foreground">
+            Messages queued to send after this turn
+          </div>
+          <ul className="mt-1 space-y-1">
+            {queuedPrompts.map((queuedPrompt, index) => (
+              <li key={`${index}:${queuedPrompt.value}`} className="flex gap-2">
+                <span aria-hidden className="text-muted-foreground">
+                  -&gt;
+                </span>
+                <span className="min-w-0 whitespace-pre-wrap break-words">
+                  {queuedPrompt.value}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       <Card
         className={cn(
@@ -466,8 +496,9 @@ export function PromptInputCard({
                   return;
                 }
                 event.preventDefault();
-                if (!isSubmitDisabled) {
-                  handleSubmit();
+                const currentDraft = event.currentTarget.value;
+                if (canSubmitDraft(currentDraft)) {
+                  handleSubmit(currentDraft);
                 }
               }}
               disabled={isTextareaDisabled}

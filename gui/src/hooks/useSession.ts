@@ -2,9 +2,7 @@ import { useCallback, useContext, useEffect, useMemo } from "react";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
-import {
-  SessionActionsContext,
-} from "../app/SessionContext";
+import { SessionActionsContext } from "../app/SessionContext";
 import { getPromptDraftKey } from "../app/sessionSnapshot";
 import {
   ensureWorkspacePromptSettingsLoaded,
@@ -17,6 +15,7 @@ import {
   sessionStore,
 } from "../app/sessionStore";
 import type {
+  QueuedPromptEntry,
   SessionStoreState,
   WorkspaceMetaState,
 } from "../app/types/sessionStore";
@@ -29,10 +28,13 @@ const EMPTY_REQUEST_TIMINGS = {};
 const EMPTY_REQUEST_AGENT_IDS: Record<string, string> = {};
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_ATTACHMENTS: Attachment[] = [];
+const EMPTY_QUEUED_PROMPTS: QueuedPromptEntry[] = [];
 const EMPTY_MESSAGES: Array<
   import("../services/desktop/types/contracts").TranscriptMessage
 > = [];
-const EMPTY_TODOS: Array<import("../services/desktop/types/contracts").SessionTodo> = [];
+const EMPTY_TODOS: Array<
+  import("../services/desktop/types/contracts").SessionTodo
+> = [];
 const EMPTY_WORKSPACE_META: WorkspaceMetaState = {
   promptSettings: null,
   promptSettingsLoaded: false,
@@ -40,10 +42,7 @@ const EMPTY_WORKSPACE_META: WorkspaceMetaState = {
   runtimeStatusLoaded: false,
 };
 
-function useRequiredContext<T>(
-  value: T | null,
-  name: string,
-): T {
+function useRequiredContext<T>(value: T | null, name: string): T {
   if (value == null) {
     throw new Error(`${name} must be used within a SessionProvider`);
   }
@@ -142,13 +141,18 @@ export function useBoardSelection(): WorkspaceBoardSelection {
 }
 
 export function useBoardSelectionKey(): string {
-  return useSessionStore((state) => getWorkspaceBoardSelectionKey(state.selection));
+  return useSessionStore((state) =>
+    getWorkspaceBoardSelectionKey(state.selection),
+  );
 }
 
-export function useWorkspaceMeta(workspacePath: string | null): WorkspaceMetaState {
+export function useWorkspaceMeta(
+  workspacePath: string | null,
+): WorkspaceMetaState {
   const workspaceMetaKey = getWorkspaceMetaStoreKey(workspacePath);
   const meta = useSessionStore(
-    (state) => state.workspaceMetaByKey[workspaceMetaKey] ?? EMPTY_WORKSPACE_META,
+    (state) =>
+      state.workspaceMetaByKey[workspaceMetaKey] ?? EMPTY_WORKSPACE_META,
   );
 
   useEffect(() => {
@@ -163,7 +167,9 @@ export function useWorkspaceMeta(workspacePath: string | null): WorkspaceMetaSta
 
 export function useWorkspaceSession(workspacePath: string | null) {
   return useSessionStore((state) =>
-    workspacePath == null ? null : (state.workspacesByPath[workspacePath] ?? null),
+    workspacePath == null
+      ? null
+      : (state.workspacesByPath[workspacePath] ?? null),
   );
 }
 
@@ -171,8 +177,12 @@ export function useConversationView(binding: ChatBinding | null | undefined) {
   return useSessionStore((state) => getScopedConversationView(state, binding));
 }
 
-export function useConversationSummary(binding: ChatBinding | null | undefined) {
-  return useSessionStore((state) => getScopedConversationSummary(state, binding));
+export function useConversationSummary(
+  binding: ChatBinding | null | undefined,
+) {
+  return useSessionStore((state) =>
+    getScopedConversationSummary(state, binding),
+  );
 }
 
 export function useHasCurrentWorkspace(): boolean {
@@ -218,7 +228,10 @@ export function useConversationSession(binding?: ChatBinding | null) {
           meta.runtimeStatus?.configurationError ??
           currentWorkspace?.configurationError ??
           null,
-        activeWorkspaceConfigured: isWorkspaceConfigured(meta, currentWorkspace),
+        activeWorkspaceConfigured: isWorkspaceConfigured(
+          meta,
+          currentWorkspace,
+        ),
         activeWorkspaceLabel: getUiWorkspaceLabel(
           currentWorkspacePath,
           meta.runtimeStatus,
@@ -234,7 +247,8 @@ export function useConversationSession(binding?: ChatBinding | null) {
           currentConversationId != null && currentView == null,
         isOpeningProject: state.isOpeningProject,
         messages: currentView?.messages ?? EMPTY_MESSAGES,
-        requestAgentIds: currentView?.requestAgentIds ?? EMPTY_REQUEST_AGENT_IDS,
+        requestAgentIds:
+          currentView?.requestAgentIds ?? EMPTY_REQUEST_AGENT_IDS,
         requestTimingsById:
           currentConversationId == null
             ? EMPTY_REQUEST_TIMINGS
@@ -353,6 +367,11 @@ export function usePromptDraft(binding?: ChatBinding | null) {
         isUltraMode: draftEntry?.isUltraMode ?? false,
         isSendingPrompt: draftEntry?.isPending ?? false,
         promptDraft: draftEntry?.value ?? "",
+        queuedPrompts:
+          scopedPromptDraftKey == null
+            ? EMPTY_QUEUED_PROMPTS
+            : (state.queuedPromptsByKey[scopedPromptDraftKey] ??
+              EMPTY_QUEUED_PROMPTS),
         promptSettings: meta.promptSettings,
       };
     }),
