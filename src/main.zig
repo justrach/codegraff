@@ -38,6 +38,17 @@ const mcp = @import("mcp.zig");
 
 const builtin = @import("builtin");
 
+/// Silence Zig std's "unexpected errno: N" + stack-trace dump for errors we
+/// already handle. Transient network errnos std has no named error for — e.g.
+/// Darwin EADDRNOTAVAIL (49), when the local address vanishes mid-connection
+/// on a Wi-Fi/VPN switch or sleep/wake — reach posix.unexpectedErrno, which
+/// dumps a full trace to stderr (corrupting the TUI) before our HTTP retry
+/// loop catches the error and recovers. We own retry + reporting, so the raw
+/// trace is just noise. Tracing defaults on in Debug builds; force it off.
+pub const std_options: std.Options = .{
+    .unexpected_error_tracing = false,
+};
+
 const anthropic_version = "2023-06-01";
 const max_tokens = 16000;
 const mcp_config_path = ".mcp.json";
