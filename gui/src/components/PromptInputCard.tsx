@@ -3,6 +3,7 @@ import {
   ArrowUpIcon,
   ChevronDownIcon,
   MapIcon,
+  SparklesIcon,
   SquareIcon,
   ZapIcon,
 } from "lucide-react";
@@ -64,6 +65,7 @@ export function PromptInputCard({
   isRequestActive,
   isSendingPrompt,
   isPlanningMode,
+  isUltraMode,
   placeholder = "Ask about this workspace…",
   promptSettings,
   promptDraft,
@@ -74,6 +76,7 @@ export function PromptInputCard({
   workspacePath,
   onCommandSelect,
   setPlanningMode,
+  setUltraMode,
   setPromptDraft,
   stopPrompt,
   submitPrompt,
@@ -143,9 +146,14 @@ export function PromptInputCard({
     setFastEnabled(promptSettings?.fastEnabled ?? false);
   }, [promptSettings?.fastEnabled]);
 
-  const isCodexModel = selectedModel?.providerId === "codex";
+  // Whether /fast actually changes harness behavior. The harness only applies
+  // the priority service tier on the codex provider (the `responses` kind); it
+  // is a no-op everywhere else. The runtime reports this authoritatively via
+  // `fastApplies`, so the toggle stays active only when it's true.
+  const fastApplies = promptSettings?.fastApplies ?? false;
 
   function handleFastToggle() {
+    if (!fastApplies) return;
     const next = !fastEnabled;
     setFastEnabled(next);
     void setFast(next);
@@ -334,6 +342,7 @@ export function PromptInputCard({
           "relative gap-0 rounded-2xl border border-foreground/5 bg-background/50 p-2 transition-colors transition-shadow ring-0",
           isPlanningMode &&
             "border-[color:var(--accent)] ring-5 ring-[color:color-mix(in_oklab,var(--accent)_14%,transparent)] border-dashed",
+          isUltraMode && "cg-ultra-shine border-transparent",
         )}
       >
         <CardHeader className="sr-only">
@@ -369,7 +378,13 @@ export function PromptInputCard({
                 commandMatch &&
                   "text-transparent caret-[color:var(--foreground)]",
               )}
-              placeholder={isWorking ? "Queue a follow-up…" : placeholder}
+              placeholder={
+                isWorking
+                  ? "Queue a follow-up…"
+                  : isUltraMode
+                    ? "Describe the job — Ultra fans out parallel agents"
+                    : placeholder
+              }
               value={promptDraft}
               onChange={(event) => handleDraftChange(event.target.value)}
               onPaste={handlePaste}
@@ -533,26 +548,50 @@ export function PromptInputCard({
               <MapIcon data-icon="inline-start" />
               <span className="text-xs">Plan</span>
             </Button>
-            {isCodexModel ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                aria-label="Toggle fast mode"
-                aria-pressed={fastEnabled}
-                className={cn(
-                  "text-muted-foreground hover:bg-transparent hover:text-foreground",
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label="Toggle fast mode"
+              aria-pressed={fastApplies && fastEnabled}
+              className={cn(
+                "text-muted-foreground hover:bg-transparent hover:text-foreground",
+                fastApplies &&
                   fastEnabled &&
-                    "border-[color:var(--accent)] bg-[color:color-mix(in_oklab,var(--accent)_10%,transparent)] text-foreground hover:bg-[color:color-mix(in_oklab,var(--accent)_14%,transparent)]",
-                )}
-                disabled={isControlDisabled}
-                onClick={handleFastToggle}
-                title="Codex priority service tier — lower latency"
-              >
-                <ZapIcon data-icon="inline-start" />
-                <span className="text-xs">Fast</span>
-              </Button>
-            ) : null}
+                  "border-[color:var(--accent)] bg-[color:color-mix(in_oklab,var(--accent)_10%,transparent)] text-foreground hover:bg-[color:color-mix(in_oklab,var(--accent)_14%,transparent)]",
+              )}
+              disabled={isControlDisabled || !fastApplies}
+              onClick={handleFastToggle}
+              title={
+                fastApplies
+                  ? "Codex priority service tier — lower latency"
+                  : "Fast (priority) — codex only"
+              }
+            >
+              <ZapIcon data-icon="inline-start" />
+              <span className="text-xs">Fast</span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label="Toggle Ultra mode"
+              aria-pressed={isUltraMode}
+              className={cn(
+                "text-muted-foreground hover:bg-transparent hover:text-foreground",
+                isUltraMode &&
+                  "border-[color:var(--accent)] bg-[color:color-mix(in_oklab,var(--accent)_12%,transparent)] text-foreground shadow-[0_0_12px_-3px_color-mix(in_oklab,var(--accent)_75%,transparent)] hover:bg-[color:color-mix(in_oklab,var(--accent)_16%,transparent)]",
+              )}
+              disabled={isControlDisabled}
+              onClick={() => setUltraMode(!isUltraMode)}
+              title="Ultra — engage the ultracode codeword: fan out parallel agents for this turn"
+            >
+              <SparklesIcon
+                data-icon="inline-start"
+                className={cn(isUltraMode && "text-[color:var(--accent)]")}
+              />
+              <span className="text-xs">Ultra</span>
+            </Button>
             {isPlanningMode ? (
               <span
                 className="inline-flex h-8 items-center gap-2 px-1.5 text-xs font-medium text-muted-foreground"
@@ -569,7 +608,11 @@ export function PromptInputCard({
           <Button
             type="button"
             size="icon-lg"
-            className="rounded-full"
+            className={cn(
+              "rounded-full transition-shadow",
+              isUltraMode &&
+                "shadow-[0_0_18px_-2px_color-mix(in_oklab,var(--accent)_70%,transparent)] ring-2 ring-[color:color-mix(in_oklab,var(--accent)_45%,transparent)]",
+            )}
             aria-label={isWorking && isSubmitDisabled ? "Stop" : "Send"}
             onClick={handlePrimaryAction}
             disabled={isWorking ? false : isSubmitDisabled}

@@ -294,8 +294,9 @@ impl RuntimeManager {
                     &conversation_id,
                     serde_json::json!({
                         "type": "set_model",
+                        // Bare model only: let the harness prefer-direct (same as
+                        // the spawn-time --model), instead of pinning the gateway.
                         "model": selected_model.name.as_str(),
-                        "provider": selected_model.provider.as_str(),
                     }),
                 )
                 .await?;
@@ -2181,6 +2182,7 @@ impl RuntimeManager {
                 .as_ref()
                 .map(|c| c.todos.clone())
                 .unwrap_or_default(),
+            visible_goal: visible.as_ref().and_then(|c| c.goal.clone()),
             visible_followup,
             conversation_views,
             ui_error: None,
@@ -2515,6 +2517,7 @@ fn conversation_view(
         active_request_ids: conversation.active_request_ids.clone(),
         request_agent_ids: conversation.request_agent_ids.clone(),
         todos: conversation.todos.clone(),
+        goal: conversation.goal.clone(),
         followup,
     }
 }
@@ -2788,15 +2791,17 @@ fn filtered_catalog_models<'a>(
 }
 
 fn prompt_model_option(model: &ModelOption) -> PromptModelOptionDto {
-    // Effort-capable providers (mirrors the binary's effortApplies):
-    // codex takes reasoning.effort via the Responses API; codegraff and
-    // deepseek take a top-level reasoning_effort. But the gateway's gpt-*
-    // models go through /v1/chat/completions, which rejects reasoning_effort.
-    let effort_capable = match model.provider.as_str() {
-        "codex" => true,
-        "codegraff" | "deepseek" => !model.name.starts_with("gpt-"),
-        "kimi" => true,
-        _ => false,
+    // Effort applies exactly per the binary's providerTakesEffort: a grok-* model
+    // never takes effort (any provider); otherwise codex/codegraff/deepseek/kimi
+    // do. (No gpt- carve-out - the gateway honors reasoning_effort for gpt-* too;
+    // and grok must be excluded even on the codegraff provider.)
+    let effort_capable = if model.name.starts_with("grok") {
+        false
+    } else {
+        matches!(
+            model.provider.as_str(),
+            "codex" | "codegraff" | "deepseek" | "kimi"
+        )
     };
     let reasoning_efforts: Vec<String> = if effort_capable {
         vec!["low".into(), "medium".into(), "high".into()]
@@ -2826,16 +2831,14 @@ fn selected_prompt_model_pair(
 ) -> Option<(String, String)> {
     let available_catalog = filtered_catalog_models(catalog, configured_provider_ids);
 
+    // No codegraff-first bias: mirror the harness, which defaults to the first
+    // configured provider in spec/schema order and routes bare model names
+    // prefer-direct. Forcing codegraff here biased users onto the metered
+    // gateway even when a cheaper direct provider was keyed.
     let default_model = available_catalog
         .iter()
-        .find(|model| model.provider == "codegraff" && model.is_default)
+        .find(|model| model.is_default)
         .copied()
-        .or_else(|| {
-            available_catalog
-                .iter()
-                .find(|model| model.is_default)
-                .copied()
-        })
         .or_else(|| available_catalog.first().copied());
 
     selected_provider
@@ -2849,8 +2852,15 @@ fn selected_prompt_model_pair(
         .or_else(|| default_model.map(|model| (model.provider.clone(), model.name.clone())))
 }
 
-fn prompt_model_arg(provider: &str, model: &str) -> String {
-    format!("{provider} {model}")
+fn prompt_model_arg(_provider: &str, model: &str) -> String {
+    // Pass the BARE model name and let the harness route it to a provider via the
+    // same prefer-direct resolution the TUI uses (`/model <name>`). Prefixing the
+    // provider ("kimi kimi-k2.7" or "kimi/kimi-k2.7") is NOT understood by
+    // `--model`: it falls back to the codegraff gateway, which then rejects the
+    // unknown model. The harness picks the right provider for a bare model name
+    // (kimi-k2.7 -> kimi when keyed; only falling back to codegraff if no direct
+    // provider is configured), so the GUI must call it exactly like the terminal.
+    model.to_string()
 }
 
 fn selected_pair_exists(
@@ -2891,6 +2901,8 @@ fn build_prompt_settings_from_catalog(
                 selected_model_id: Some("default".into()),
                 selected_reasoning_effort: None,
                 fast_enabled,
+                // codegraff is the `chat` kind, not `responses`: /fast is a no-op.
+                fast_applies: false,
             };
         }
 
@@ -2900,6 +2912,7 @@ fn build_prompt_settings_from_catalog(
             selected_model_id: None,
             selected_reasoning_effort: None,
             fast_enabled,
+            fast_applies: false,
         };
     }
 
@@ -2926,12 +2939,22 @@ fn build_prompt_settings_from_catalog(
         None
     };
 
+    // /fast only changes behavior on the codex provider (the harness `responses`
+    // kind, which emits `service_tier:"priority"`); it reports `applies:false`
+    // for every other provider. Gate on the *resolved* provider so the GUI
+    // matches what the harness will actually do for the active selection.
+    let fast_applies = selected_pair
+        .as_ref()
+        .map(|(provider, _)| provider == "codex")
+        .unwrap_or(false);
+
     PromptSettingsDto {
         available_models,
         selected_provider_id: selected_pair.as_ref().map(|(provider, _)| provider.clone()),
         selected_model_id: selected_pair.as_ref().map(|(_, model)| model.clone()),
         selected_reasoning_effort: selected_pair.and(selected_effort),
         fast_enabled,
+        fast_applies,
     }
 }
 
@@ -3391,11 +3414,9 @@ fn validate_provider_auth_completion(
 /// locating where it's defined so the UI can offer to open that file.
 fn provider_env_override(provider: &CodegraffProvider) -> Option<ProviderEnvOverrideDto> {
     let env_key = provider.env_key.as_deref()?;
-    let is_set = std::env::var(env_key)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .is_some();
-    if !is_set {
+    // Same env the spawned session sees (process env + login_shell_env), so the
+    // override hint matches what the harness actually uses.
+    if !env_has_provider_key(env_key) {
         return None;
     }
     let (file_path, line) = match find_env_definition(env_key) {
@@ -3457,14 +3478,26 @@ fn provider_auth_label(provider: &CodegraffProvider) -> String {
     }
 }
 
-fn provider_configured(provider: &CodegraffProvider, key_list: &str) -> bool {
-    if provider
-        .env_key
-        .as_deref()
-        .and_then(|env_key| std::env::var(env_key).ok())
-        .filter(|value| !value.trim().is_empty())
-        .is_some()
+/// True if `env_key` has a non-empty value in either the GUI process env OR the
+/// login-shell env the spawned harness session inherits (`login_shell_env`). On a
+/// Finder/Dock launch the GUI's own env is minimal, but the session is spawned
+/// with `command.envs(login_shell_env())`, so a provider keyed only via a shell
+/// export (e.g. KIMI_API_KEY in .zshrc) must still count as configured here -
+/// otherwise its models vanish from the picker yet the session can run them.
+fn env_has_provider_key(env_key: &str) -> bool {
+    if std::env::var(env_key)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
     {
+        return true;
+    }
+    login_shell_env()
+        .iter()
+        .any(|(key, value)| key.as_str() == env_key && !value.trim().is_empty())
+}
+
+fn provider_configured(provider: &CodegraffProvider, key_list: &str) -> bool {
+    if provider.env_key.as_deref().is_some_and(env_has_provider_key) {
         return true;
     }
 
@@ -4173,12 +4206,12 @@ mod tests {
     }
 
     #[test]
-    fn prompt_model_arg_includes_provider_to_disambiguate_duplicate_names() {
-        assert_eq!(prompt_model_arg("codex", "gpt-5.5"), "codex gpt-5.5");
-        assert_eq!(
-            prompt_model_arg("codegraff", "gpt-5.5"),
-            "codegraff gpt-5.5"
-        );
+    fn prompt_model_arg_uses_bare_model_name() {
+        // The harness only recognizes bare model names (routed to a provider by
+        // prefer-direct, like the TUI's `/model`); a "provider model" prefix is
+        // not understood by --model and falls back to the codegraff gateway.
+        assert_eq!(prompt_model_arg("codex", "gpt-5.5"), "gpt-5.5");
+        assert_eq!(prompt_model_arg("kimi", "kimi-k2.7"), "kimi-k2.7");
     }
 
     #[test]

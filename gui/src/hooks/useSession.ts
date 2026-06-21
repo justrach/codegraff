@@ -224,6 +224,7 @@ export function useConversationSession(binding?: ChatBinding | null) {
           meta.runtimeStatus,
         ),
         followupRequest: currentView?.followup ?? null,
+        goal: currentView?.goal ?? null,
         hasCurrentWorkspace: currentWorkspacePath != null,
         // An existing conversation is selected but its view (messages) has not
         // streamed in yet. Used to show a loading placeholder instead of
@@ -303,6 +304,12 @@ export function usePromptDraft(binding?: ChatBinding | null) {
     },
     [promptDraftKey],
   );
+  const setUltraMode = useCallback(
+    (value: boolean) => {
+      sessionStore.getState().setPromptDraftUltraMode(promptDraftKey, value);
+    },
+    [promptDraftKey],
+  );
 
   const draftState = useSessionStore(
     useShallow((state) => {
@@ -335,6 +342,7 @@ export function usePromptDraft(binding?: ChatBinding | null) {
           !isConversationRunning,
         followupRequest,
         isPlanningMode: draftEntry?.isPlanningMode ?? false,
+        isUltraMode: draftEntry?.isUltraMode ?? false,
         isSendingPrompt: draftEntry?.isPending ?? false,
         promptDraft: draftEntry?.value ?? "",
         promptSettings: meta.promptSettings,
@@ -347,7 +355,8 @@ export function usePromptDraft(binding?: ChatBinding | null) {
       ...draftState,
       setPlanningMode,
       setPromptDraft,
+      setUltraMode,
     }),
-    [draftState, setPlanningMode, setPromptDraft],
+    [draftState, setPlanningMode, setPromptDraft, setUltraMode],
   );
 }

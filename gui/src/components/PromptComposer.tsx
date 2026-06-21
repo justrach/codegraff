@@ -5,6 +5,7 @@ import { usePrompt } from "../hooks/usePrompt";
 import { useCommandRouter } from "../hooks/useCommandRouter";
 import { CommandResultDialog } from "./CommandResultDialog";
 import { FollowupComposer } from "./FollowupComposer";
+import { GoalChip } from "./GoalChip";
 import { PromptActionAlert } from "./PromptActionAlert";
 import { PromptInputCard } from "./PromptInputCard";
 import { InterruptContinuePrompt } from "./conversation-panel/InterruptContinuePrompt";
@@ -26,15 +27,18 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
     isPlanningMode,
     isRequestActive,
     isSendingPrompt,
+    isUltraMode,
     promptSettings,
     promptDraft,
     setPlanningMode,
     setPromptDraft,
+    setUltraMode,
     stopPrompt,
     submitPrompt,
     updatePromptSettings,
   } = usePrompt(binding);
-  const { messages, requestAgentIds, todos } = useConversationSession(binding);
+  const { goal, messages, requestAgentIds, todos } =
+    useConversationSession(binding);
   const { openProviderSettings } = useSettingsNavigation();
   const [dismissedInterruptId, setDismissedInterruptId] = useState<string | null>(
     null,
@@ -72,6 +76,39 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
     }
     await submitPrompt();
   }, [promptDraft, submitPrompt, trySubmitAsCommand]);
+
+  // The goal chip mutates `/goal` directly (set/clear). The backend persists
+  // it on the conversation and returns a fresh snapshot, which we apply so the
+  // chip reflects the new state without a round-trip through the composer draft.
+  const runGoalCommand = useCallback(
+    (args: string[]) => {
+      if (workspacePath == null || binding == null) {
+        return;
+      }
+      void desktopClient
+        .runSlashCommand({
+          name: "goal",
+          args,
+          workspacePath,
+          conversationId: binding.conversationId,
+        })
+        .then((result) => {
+          if (result.snapshot != null) {
+            sessionStore.getState().applySessionSnapshot(result.snapshot);
+          }
+        })
+        .catch(() => null);
+    },
+    [binding, workspacePath],
+  );
+  const handleGoalEdit = useCallback(
+    (next: string) => runGoalCommand([next]),
+    [runGoalCommand],
+  );
+  const handleGoalClear = useCallback(
+    () => runGoalCommand(["clear"]),
+    [runGoalCommand],
+  );
 
   const handleApproveWorkflow = useCallback(
     async (prompt: string) => {
@@ -163,11 +200,17 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
               onAction={openProviderSettings}
             />
           ) : null}
+          <GoalChip
+            goal={goal}
+            onEdit={handleGoalEdit}
+            onClear={handleGoalClear}
+          />
           <PromptInputCard
             canCompose={canCompose}
             isRequestActive={isRequestActive}
             isSendingPrompt={isSendingPrompt}
             isPlanningMode={isPlanningMode}
+            isUltraMode={isUltraMode}
             promptSettings={promptSettings}
             promptDraft={promptDraft}
             promptHistory={promptHistory}
@@ -176,6 +219,7 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
             workspacePath={workspacePath}
             onCommandSelect={handleCommandSelect}
             setPlanningMode={setPlanningMode}
+            setUltraMode={setUltraMode}
             setPromptDraft={setPromptDraft}
             stopPrompt={stopPrompt}
             submitPrompt={handleSubmit}

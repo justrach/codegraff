@@ -189,6 +189,7 @@ function qaPromptSettings(): PromptSettings {
     selectedProviderId: "anthropic",
     selectedReasoningEffort: qaReasoningEffort,
     fastEnabled: false,
+    fastApplies: false,
   };
 }
 
