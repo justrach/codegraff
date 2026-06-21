@@ -8509,15 +8509,24 @@ const Agent = struct {
         const usage = response.get("usage") orelse return;
         if (usage != .object) return;
         const u = usage.object;
-        if (u.get("total_tokens")) |v| {
-            if (v == .integer and v.integer > 0) self.last_context_tokens = @intCast(v.integer);
+        const in_tokens = usageInt(u, "input_tokens");
+        const out_tokens = usageInt(u, "output_tokens");
+        const total_tokens = usageInt(u, "total_tokens");
+        if (total_tokens > 0) {
+            self.last_context_tokens = @intCast(total_tokens);
+        } else {
+            // Some Codex/Responses builds report only input/output counts.
+            // Still surface the prompt token counter instead of leaving the
+            // prompt stuck at "model · sub" with no context usage.
+            const computed_total = in_tokens + out_tokens;
+            if (computed_total > 0) self.last_context_tokens = @intCast(computed_total);
         }
         var cached: i64 = 0;
         if (u.get("input_tokens_details")) |d| if (d == .object) {
             cached = usageInt(d.object, "cached_tokens");
             if (cached > 0) self.last_cache_read = @intCast(cached);
         };
-        self.recordCost(usageInt(u, "input_tokens") - cached, cached, usageInt(u, "output_tokens"));
+        self.recordCost(in_tokens - cached, cached, out_tokens);
     }
 
     /// Consume a Codex `response` object: append its output items to history
