@@ -71,6 +71,8 @@ var use_color = false; // stdout is a TTY and NO_COLOR unset → enables color +
 var show_timing = false;
 var show_cost = false;
 var json_mode = false; // --json: structured JSONL events on stdout instead of human text
+var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
+var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
 var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes
 var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
 
@@ -84,10 +86,17 @@ const schema_protocol_json =
     \\  "events": [
     \\    {"type": "text", "text": "assistant text delta"},
     \\    {"type": "reasoning", "text": "reasoning/thinking delta (GUI shows a collapsible Thinking block)"},
+    \\    {"type": "started", "provider": "provider", "model": "model"},
+    \\    {"type": "model_call_started", "provider": "provider", "model": "model"},
+    \\    {"type": "model_call_finished", "provider": "provider", "model": "model", "ok": true, "ms": 0},
     \\    {"type": "tool_call", "name": "tool", "input": {}},
+    \\    {"type": "tool_call_started", "name": "tool", "input": {}},
+    \\    {"type": "tool_rejected", "name": "tool", "reason": "budget|duplicate", "input": {}, "message": "..."},
     \\    {"type": "ask_user", "call_id": "...", "question": "...", "input": {"question": "...", "options": ["..."]}},
     \\    {"type": "tool_result", "name": "tool", "is_error": false, "text": "..."},
-    \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0},
+    \\    {"type": "tool_call_finished", "name": "tool", "is_error": false, "ms": 0},
+    \\    {"type": "finalizing"},
+    \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0, "complete": true, "metadata_complete": true},
     \\    {"type": "system_prompt", "ok": true, "append": false, "chars": 0},
     \\    {"type": "model", "ok": true, "provider": "provider", "model": "model", "context": 0, "note": "context kept"},
     \\    {"type": "compact", "ok": true, "chars": 0},
@@ -111,7 +120,7 @@ const schema_serve_json =
     \\  "endpoints": [
     \\    {"method": "GET", "path": "/healthz", "description": "liveness + version, no auth"},
     \\    {"method": "GET", "path": "/v1/schema", "description": "this schema document"},
-    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
+    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
     \\    {"method": "POST", "path": "/v1/sessions/{id}", "description": "body is ONE stdio-protocol request object (user / set_system_prompt / set_model / compact / set_mode / set_agent / score / answer); non-answer requests stream application/x-ndjson events until the request's terminal event (turn/error, or the request-specific ack); answer requests return JSON ack while the original user stream continues; one non-answer request in flight per session at a time"},
     \\    {"method": "DELETE", "path": "/v1/sessions/{id}", "description": "graceful close: waits for any in-flight request, then EOFs the child's stdin"}
     \\  ]
@@ -127,6 +136,8 @@ const schema_flags_json =
     \\  {"flag": "--system-prompt", "arg": "text", "description": "replace the built-in system prompt (cwd project-instructions file is still appended)"},
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
     \\  {"flag": "--json", "arg": null, "description": "structured stdio protocol (JSON in, JSONL events out)"},
+    \\  {"flag": "--max-tool-calls", "arg": "N", "description": "hard per-turn root tool-call budget; rejected calls emit tool_rejected/tool_result"},
+    \\  {"flag": "--dedupe-tool-calls", "arg": null, "description": "reject duplicate root tool name+normalized-input calls per turn"},
     \\  {"flag": "--no-telemetry", "arg": null, "description": "disable anonymous OTEL usage telemetry for this run"}
     \\]
 ;
@@ -365,11 +376,33 @@ fn contextFor(provider_id: []const u8, model: []const u8) u64 {
 /// a key/login available so `/model sonnet` lands on a usable provider. Returns
 /// null when nothing matches (caller falls back to the query verbatim so the
 /// providerFor claude*/gateway fallback still applies).
+fn normalizeModelAlias(dst: *[128]u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    for (s) |c| {
+        if (c == '-' or c == '_' or c == ' ') continue;
+        if (n >= dst.len) break;
+        dst[n] = std.ascii.toLower(c);
+        n += 1;
+    }
+    return dst[0..n];
+}
+
+fn modelAliasEquals(name: []const u8, query: []const u8) bool {
+    var nb: [128]u8 = undefined;
+    var qb: [128]u8 = undefined;
+    return std.mem.eql(u8, normalizeModelAlias(&nb, name), normalizeModelAlias(&qb, query));
+}
+
 fn resolveModelName(keys: Keys, query: []const u8) ?[]const u8 {
     for (model_table) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
+    for (model_table) |m| if (modelAliasEquals(m.name, query)) return m.name;
+    var qbuf: [128]u8 = undefined;
+    const qnorm = normalizeModelAlias(&qbuf, query);
     var fallback: ?[]const u8 = null;
     for (model_table) |m| {
-        if (std.ascii.indexOfIgnoreCase(m.name, query) == null) continue;
+        var nbuf: [128]u8 = undefined;
+        const nnorm = normalizeModelAlias(&nbuf, m.name);
+        if (std.ascii.indexOfIgnoreCase(m.name, query) == null and std.mem.indexOf(u8, nnorm, qnorm) == null) continue;
         if (keys.get(m.provider) != null) return m.name;
         if (fallback == null) fallback = m.name;
     }
@@ -4059,6 +4092,8 @@ const usage_text =
     \\  --timing         show per-tool wall-clock on result lines
     \\  --cost           show running session spend in the prompt
     \\  --json           structured stdio protocol (JSON in, JSONL events out)
+    \\  --max-tool-calls N  reject root tool calls after N per turn (JSON-safe budget)
+    \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn
     \\  --no-telemetry   disable anonymous usage telemetry for this run
     \\  -h, --help       this help
     \\  -V, --version    print version
@@ -4313,6 +4348,11 @@ pub fn main(init: std.process.Init) !void {
                     show_cost = true;
                 } else if (std.mem.eql(u8, arg, "--json")) {
                     json_mode = true;
+                } else if (std.mem.eql(u8, arg, "--max-tool-calls")) {
+                    const mv = it.next() orelse std.process.fatal("--max-tool-calls needs a non-negative integer — harness --help", .{});
+                    max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-tool-calls needs a non-negative integer, got '{s}'", .{mv});
+                } else if (std.mem.eql(u8, arg, "--dedupe-tool-calls")) {
+                    dedupe_tool_calls = true;
                 } else if (std.mem.eql(u8, arg, "--schema")) {
                     schema_flag = true;
                 } else if (std.mem.eql(u8, arg, "--refresh")) {
@@ -5081,6 +5121,14 @@ pub fn main(init: std.process.Init) !void {
                 root.emit(.{ .type = "system_prompt", .ok = true, .append = append, .chars = root.sys_normal.len });
                 continue;
             }
+            if (parsed.object.get("maxToolCalls") orelse parsed.object.get("max_tool_calls")) |v| switch (v) {
+                .integer => |n| max_tool_calls = if (n >= 0) @intCast(n) else null,
+                .null => max_tool_calls = null,
+                else => {},
+            };
+            if (parsed.object.get("dedupeToolCalls") orelse parsed.object.get("dedupe_tool_calls")) |v| {
+                if (v == .bool) dedupe_tool_calls = v.bool;
+            }
             break :blk text;
         } else line;
 
@@ -5160,6 +5208,9 @@ pub fn main(init: std.process.Init) !void {
             break :blk id;
         } else 0;
         root.tools_used.clear(io); // per-turn tool log for the turn's node
+        root.tool_calls_this_turn = 0;
+        root.seen_tool_keys.clearRetainingCapacity();
+        if (json_mode) root.emit(.{ .type = "started", .provider = root.provider.id, .model = root.provider.model });
         const turn_started = Io.Timestamp.now(io, .awake);
         // A failed turn must never kill the session: ApiError is already
         // reported inside request(); anything else is surfaced here. Either
@@ -5209,7 +5260,14 @@ pub fn main(init: std.process.Init) !void {
             },
             error.ApiError => {
                 if (g_telem) |t| t.errorEvent("api", root.last_api_error orelse "api error");
-                if (json_mode) root.emit(.{ .type = "error", .message = root.last_api_error orelse "api error" });
+                if (json_mode) {
+                    root.emit(.{ .type = "error", .message = root.last_api_error orelse "api error" });
+                    const partial = std.mem.trim(u8, root.partial_text.items, " \t\r\n");
+                    if (partial.len > 0) {
+                        root.emit(.{ .type = "finalizing" });
+                        root.emit(.{ .type = "turn", .text = partial, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = false, .metadata_complete = root.last_context_tokens > 0 });
+                    }
+                }
                 saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
@@ -5224,7 +5282,14 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             },
         };
-        if (json_mode) root.emit(.{ .type = "turn", .text = final_text, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd });
+        if (json_mode) {
+            const emitted_text = if (final_text.len == 0 and root.partial_text.items.len > 0)
+                std.mem.trim(u8, root.partial_text.items, " \t\r\n")
+            else
+                final_text;
+            root.emit(.{ .type = "finalizing" });
+            root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = true, .metadata_complete = root.last_context_tokens > 0 });
+        }
 
         // turn_end lifecycle hooks (best-effort; interrupted/errored turns
         // `continue` above and never reach here, so ok is always true).
@@ -7408,6 +7473,8 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
     var yolo = st.cfg.yolo;
     var sys = st.cfg.system_prompt;
     var append_sys = st.cfg.append_system_prompt;
+    var max_tools: ?u64 = null;
+    var dedupe_tools = false;
     if (std.mem.trim(u8, body, " \t\r\n").len > 0) {
         const v = std.json.parseFromSliceLeaky(Value, arena, body, .{ .allocate = .alloc_always }) catch
             return respondJson(st, req, .bad_request, "{\"error\":\"body must be a JSON object\"}");
@@ -7424,12 +7491,20 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
         if (v.object.get("append_system_prompt")) |s| if (s == .string) {
             append_sys = s.string;
         };
+        if (v.object.get("maxToolCalls") orelse v.object.get("max_tool_calls")) |m| if (m == .integer and m.integer >= 0) {
+            max_tools = @intCast(m.integer);
+        };
+        if (v.object.get("dedupeToolCalls") orelse v.object.get("dedupe_tool_calls")) |d| if (d == .bool) {
+            dedupe_tools = d.bool;
+        };
     }
 
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{ st.exe, "--json" });
     if (yolo) try argv.append(arena, "--yolo");
     if (model) |m| try argv.appendSlice(arena, &.{ "--model", m });
+    if (max_tools) |n| try argv.appendSlice(arena, &.{ "--max-tool-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
+    if (dedupe_tools) try argv.append(arena, "--dedupe-tool-calls");
     if (sys) |s| try argv.appendSlice(arena, &.{ "--system-prompt", s });
     if (append_sys) |s| try argv.appendSlice(arena, &.{ "--append-system-prompt", s });
 
@@ -8081,6 +8156,8 @@ const Agent = struct {
     sys_normal: []const u8 = main_system_prompt, // root system prompt (+ project instructions)
     sys_override: ?[]const u8 = null, // subagent-only: per-child system prompt (swarm prompt variants)
     tools_used: ToolSink = .{}, // external tool calls this agent made (per turn for the root)
+    tool_calls_this_turn: u64 = 0, // root-only hard budget counter (--max-tool-calls)
+    seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
     md_buf: std.ArrayList(u8) = .empty, // current incomplete streamed line (markdown rendering)
     md_fence: bool = false, // inside a ``` code fence while streaming
     md_kind: MdKind = .classify, // incremental renderer: current line's classification
@@ -8247,6 +8324,7 @@ const Agent = struct {
             const body = try self.buildBody(tools, force, live, stream_usage);
             defer self.gpa.free(body);
             const t0: Io.Timestamp = .now(self.io, .awake);
+            if (json_mode and !self.sub) self.emit(.{ .type = "model_call_started", .provider = self.provider.id, .model = self.provider.model });
             // HTTP calls are flaky: a kept-alive connection the server closed
             // (HttpConnectionClosing), a reset, a truncated TLS read. Retry a
             // few times with a fresh connection; on persistent failure surface
@@ -8317,6 +8395,7 @@ const Agent = struct {
                     .ok => |obj| {
                         self.recordUsageResponses(obj);
                         if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+                        if (json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                         return obj;
                     },
                     .err => |msg| {
@@ -8343,6 +8422,7 @@ const Agent = struct {
                     };
                     self.recordUsage(root);
                     if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+                    if (json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                     return root;
                 }
             }
@@ -8387,6 +8467,7 @@ const Agent = struct {
 
             self.recordUsage(root);
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+            if (json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
             return root;
         }
     }
@@ -8703,6 +8784,10 @@ const Agent = struct {
         var ext_idx: std.ArrayList(usize) = .empty;
         defer ext_idx.deinit(self.gpa);
         for (calls, 0..) |call, i| {
+            if (try self.rejectToolCall(call)) |denied| {
+                results[i] = denied;
+                continue;
+            }
             try self.sayToolUse(call);
             if (isMetaName(call.name)) {
                 results[i] = try self.handleMeta(call);
@@ -8763,6 +8848,50 @@ const Agent = struct {
         // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
         for (calls, results) |call, r| self.sayToolResult(call.name, r);
         return results;
+    }
+
+    fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
+        if (self.sub) return null;
+        if (std.mem.eql(u8, call.name, "attempt_completion")) return null;
+        if (max_tool_calls) |max| {
+            if (self.tool_calls_this_turn >= max) {
+                const message = try std.fmt.allocPrint(self.arena, "tool call budget exhausted ({d}/{d}) — answer with what you have or ask for a higher --max-tool-calls", .{ self.tool_calls_this_turn, max });
+                self.emitToolRejected(call, "budget", message);
+                return .{ .text = message, .is_error = true };
+            }
+        }
+        if (dedupe_tool_calls) {
+            const key = try self.toolDedupeKey(call);
+            for (self.seen_tool_keys.items) |seen| {
+                if (std.mem.eql(u8, seen, key)) {
+                    const message = try std.fmt.allocPrint(self.arena, "duplicate tool call rejected: {s} with the same normalized input already ran this turn", .{call.name});
+                    self.emitToolRejected(call, "duplicate", message);
+                    return .{ .text = message, .is_error = true };
+                }
+            }
+            try self.seen_tool_keys.append(self.arena, key);
+        }
+        self.tool_calls_this_turn += 1;
+        return null;
+    }
+
+    fn toolDedupeKey(self: *Agent, call: ToolCall) ![]const u8 {
+        var aw: Io.Writer.Allocating = .init(self.arena);
+        const w = &aw.writer;
+        try w.writeAll(call.name);
+        try w.writeByte('\n');
+        var s: std.json.Stringify = .{ .writer = w };
+        try s.write(call.input);
+        const key = aw.writer.buffered();
+        for (key) |*c| {
+            c.* = if (std.ascii.isWhitespace(c.*)) ' ' else std.ascii.toLower(c.*);
+        }
+        return key;
+    }
+
+    fn emitToolRejected(self: *Agent, call: ToolCall, reason: []const u8, message: []const u8) void {
+        if (!json_mode) return;
+        self.emit(.{ .type = "tool_rejected", .name = call.name, .reason = reason, .input = call.input, .message = message });
     }
 
     /// The permission gate, root side: an unapproved bash command prompts
@@ -8980,6 +9109,7 @@ const Agent = struct {
         if (json_mode) {
             if (std.mem.eql(u8, call.name, "ask_user")) return;
             self.emit(.{ .type = "tool_call", .name = call.name, .input = call.input });
+            self.emit(.{ .type = "tool_call_started", .name = call.name, .input = call.input });
             return;
         }
         // The ⚙ line would just repeat prose that already streamed live.
@@ -9006,6 +9136,7 @@ const Agent = struct {
         if (json_mode) {
             if (isMetaName(name) and !std.mem.eql(u8, name, "ask_user")) return;
             self.emit(.{ .type = "tool_result", .name = name, .is_error = r.is_error, .text = r.text });
+            self.emit(.{ .type = "tool_call_finished", .name = name, .is_error = r.is_error, .ms = r.ms });
             return;
         }
         if (isMetaName(name)) return;
@@ -12914,9 +13045,10 @@ test "codex catalog excludes unsupported codex-suffixed models" {
     try std.testing.expect(providerModelInTable("openai", "gpt-5.2"));
 }
 
-test "resolveModelName exact match and miss" {
+test "resolveModelName exact aliases and miss" {
     const keys = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
     try std.testing.expect(resolveModelName(keys, "gpt-5.5") != null); // exact name
+    try std.testing.expectEqualStrings("glm-5.2", resolveModelName(keys, "glm5.2").?); // natural alias
     try std.testing.expect(resolveModelName(keys, "totally-unknown-zzz") == null);
 }
 

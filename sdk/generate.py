@@ -71,10 +71,18 @@ export type ProviderId = {provider_union};
  *  to ignore in consumer code too. */
 export type Event =
   | {{ type: "text"; text: string }}
+  | {{ type: "reasoning"; text: string }}
+  | {{ type: "started"; provider: string; model: string }}
+  | {{ type: "model_call_started"; provider: string; model: string }}
+  | {{ type: "model_call_finished"; provider: string; model: string; ok: boolean; ms: number }}
   | {{ type: "tool_call"; name: string; input: Record<string, unknown> }}
+  | {{ type: "tool_call_started"; name: string; input: Record<string, unknown> }}
+  | {{ type: "tool_rejected"; name: string; reason: "budget" | "duplicate" | string; input: Record<string, unknown>; message: string }}
   | {{ type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }}
   | {{ type: "tool_result"; name: string; is_error: boolean; text: string }}
-  | {{ type: "turn"; text: string; context_tokens: number; cost_usd: number }}
+  | {{ type: "tool_call_finished"; name: string; is_error: boolean; ms: number }}
+  | {{ type: "finalizing" }}
+  | {{ type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }}
   | {{ type: "system_prompt"; ok: boolean; append: boolean; chars: number }}
   | {{ type: "score"; ok: boolean; prompt_sha: string }}
   | {{ type: "error"; message: string }};
@@ -103,6 +111,10 @@ export interface HarnessOptions {{
   systemPrompt?: string;
   /** Append extra text to the end of the system prompt. */
   appendSystemPrompt?: string;
+  /** Hard per-turn root tool-call budget. */
+  maxToolCalls?: number;
+  /** Reject duplicate root tool name+normalized-input calls per turn. */
+  dedupeToolCalls?: boolean;
   /** Extra raw flags. `--json` is always added. */
   args?: string[];
 }}
@@ -127,6 +139,8 @@ function spawnArgs(o: HarnessOptions): string[] {{
   const a = ["--json"];
   if (o.yolo) a.push("--yolo");
   if (o.model) a.push("--model", o.model);
+  if (o.maxToolCalls !== undefined) a.push("--max-tool-calls", String(o.maxToolCalls));
+  if (o.dedupeToolCalls) a.push("--dedupe-tool-calls");
   if (o.systemPrompt) a.push("--system-prompt", o.systemPrompt);
   if (o.appendSystemPrompt) a.push("--append-system-prompt", o.appendSystemPrompt);
   if (o.args) a.push(...o.args);
@@ -475,10 +489,18 @@ export type ProviderId = {provider_union};
  *  event, so unknown events pass through and are safe to ignore. */
 export type Event =
   | {{ type: "text"; text: string }}
+  | {{ type: "reasoning"; text: string }}
+  | {{ type: "started"; provider: string; model: string }}
+  | {{ type: "model_call_started"; provider: string; model: string }}
+  | {{ type: "model_call_finished"; provider: string; model: string; ok: boolean; ms: number }}
   | {{ type: "tool_call"; name: string; input: Record<string, unknown> }}
+  | {{ type: "tool_call_started"; name: string; input: Record<string, unknown> }}
+  | {{ type: "tool_rejected"; name: string; reason: "budget" | "duplicate" | string; input: Record<string, unknown>; message: string }}
   | {{ type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }}
   | {{ type: "tool_result"; name: string; is_error: boolean; text: string }}
-  | {{ type: "turn"; text: string; context_tokens: number; cost_usd: number }}
+  | {{ type: "tool_call_finished"; name: string; is_error: boolean; ms: number }}
+  | {{ type: "finalizing" }}
+  | {{ type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }}
   | {{ type: "system_prompt"; ok: boolean; append: boolean; chars: number }}
   | {{ type: "score"; ok: boolean; prompt_sha: string }}
   | {{ type: "error"; message: string }};
@@ -504,6 +526,10 @@ export interface RemoteOptions {{
   systemPrompt?: string;
   /** Append extra text to the system prompt. */
   appendSystemPrompt?: string;
+  /** Hard per-turn root tool-call budget for the child session. */
+  maxToolCalls?: number;
+  /** Reject duplicate root tool name+normalized-input calls per turn. */
+  dedupeToolCalls?: boolean;
   /** Attach to an existing session instead of creating one. */
   sessionId?: string;
 }}
@@ -590,6 +616,8 @@ export class RemoteHarness {{
     if (opts.yolo !== undefined) body.yolo = opts.yolo;
     if (opts.systemPrompt) body.system_prompt = opts.systemPrompt;
     if (opts.appendSystemPrompt) body.append_system_prompt = opts.appendSystemPrompt;
+    if (opts.maxToolCalls !== undefined) body.maxToolCalls = opts.maxToolCalls;
+    if (opts.dedupeToolCalls !== undefined) body.dedupeToolCalls = opts.dedupeToolCalls;
     const res = await this.req("POST", "/v1/sessions", body);
     const data = (await res.json()) as {{ session_id: string }};
     return data.session_id;
@@ -877,13 +905,19 @@ class Harness:
                  cwd: Optional[str] = None, env: Optional[dict] = None,
                  model: Optional[str] = None, yolo: bool = False,
                  system_prompt: Optional[str] = None,
-                 append_system_prompt: Optional[str] = None):
+                 append_system_prompt: Optional[str] = None,
+                 max_tool_calls: Optional[int] = None,
+                 dedupe_tool_calls: bool = False):
         binary = binary or _default_binary()
         argv = [binary, "--json"]
         if yolo:
             argv.append("--yolo")
         if model:
             argv += ["--model", model]
+        if max_tool_calls is not None:
+            argv += ["--max-tool-calls", str(max_tool_calls)]
+        if dedupe_tool_calls:
+            argv.append("--dedupe-tool-calls")
         if system_prompt:
             argv += ["--system-prompt", system_prompt]
         if append_system_prompt:
@@ -1093,6 +1127,8 @@ class RemoteHarness:
                  model: Optional[str] = None, yolo: bool = False,
                  system_prompt: Optional[str] = None,
                  append_system_prompt: Optional[str] = None,
+                 max_tool_calls: Optional[int] = None,
+                 dedupe_tool_calls: bool = False,
                  session_id: Optional[str] = None):
         self.base = url.rstrip("/")
         self.token = token
@@ -1108,6 +1144,10 @@ class RemoteHarness:
             opts["system_prompt"] = system_prompt
         if append_system_prompt:
             opts["append_system_prompt"] = append_system_prompt
+        if max_tool_calls is not None:
+            opts["maxToolCalls"] = max_tool_calls
+        if dedupe_tool_calls:
+            opts["dedupeToolCalls"] = True
         resp = self._request("POST", "/v1/sessions", opts)
         self.session_id = json.loads(resp.read())["session_id"]
 
