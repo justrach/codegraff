@@ -4315,6 +4315,172 @@ fn updateCommand(
         std.process.fatal("update: installer failed — try again or download manually from https://github.com/justrach/codegraff/releases/latest", .{});
 }
 
+/// The tag + publish time of a GitHub release, as returned by fetchLatestRelease.
+const ReleaseInfo = struct { tag: []const u8, published_at: ?[]const u8 };
+
+/// The latest published GitHub release for justrach/codegraff: the tag and, when
+/// present, the `published_at` timestamp (ISO 8601, UTC). Best-effort — any
+/// failure (offline, rate-limited, non-200, oversized, unparseable) yields null.
+fn fetchLatestRelease(io: Io, gpa: Allocator, arena: Allocator) ?ReleaseInfo {
+    const repo_api = "https://api.github.com/repos/justrach/codegraff/releases/latest";
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
+    defer aw.deinit();
+    const extra = [_]std.http.Header{.{ .name = "Accept", .value = "application/vnd.github+json" }};
+    const res = client.fetch(.{
+        .location = .{ .url = repo_api },
+        .method = .GET,
+        .response_writer = &aw.writer,
+        .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
+        .extra_headers = &extra,
+    }) catch return null;
+    if (@intFromEnum(res.status) != 200) return null;
+    // Cap before parsing: a captive-portal redirect or TLS MITM could stream an
+    // unbounded body. 64 KiB is far above any real /releases/latest payload.
+    if (aw.writer.buffered().len > 64 * 1024) return null;
+    const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch return null;
+    if (v != .object) return null;
+    const t = v.object.get("tag_name") orelse return null;
+    if (t != .string) return null;
+    const published_at: ?[]const u8 = if (v.object.get("published_at")) |p|
+        (if (p == .string) p.string else null)
+    else
+        null;
+    return .{ .tag = t.string, .published_at = published_at };
+}
+
+/// Parse a GitHub `published_at` ("YYYY-MM-DDTHH:MM:SSZ", always UTC) to Unix
+/// seconds. Returns null on any malformed field. Uses Howard Hinnant's
+/// days-from-civil algorithm, so no time-zone tables or libc are needed.
+fn parseGithubTimeToUnix(s: []const u8) ?i64 {
+    if (s.len < 19) return null;
+    if (s[4] != '-' or s[7] != '-' or (s[10] != 'T' and s[10] != ' ') or s[13] != ':' or s[16] != ':') return null;
+    const year = std.fmt.parseInt(i64, s[0..4], 10) catch return null;
+    const month = std.fmt.parseInt(i64, s[5..7], 10) catch return null;
+    const day = std.fmt.parseInt(i64, s[8..10], 10) catch return null;
+    const hour = std.fmt.parseInt(i64, s[11..13], 10) catch return null;
+    const minute = std.fmt.parseInt(i64, s[14..16], 10) catch return null;
+    const second = std.fmt.parseInt(i64, s[17..19], 10) catch return null;
+    if (month < 1 or month > 12 or day < 1 or day > 31) return null;
+    if (hour > 23 or minute > 59 or second > 60) return null; // 60 tolerates a leap second
+    const y = if (month <= 2) year - 1 else year;
+    const era = @divTrunc(if (y >= 0) y else y - 399, 400);
+    const yoe = y - era * 400; // [0, 399]
+    const mp = @mod(month + 9, 12); // Mar=0 … Feb=11
+    const doy = @divTrunc(153 * mp + 2, 5) + day - 1; // [0, 365]
+    const doe = yoe * 365 + @divTrunc(yoe, 4) - @divTrunc(yoe, 100) + doy; // [0, 146096]
+    const days = era * 146097 + doe - 719468; // days since 1970-01-01
+    return days * 86400 + hour * 3600 + minute * 60 + second;
+}
+
+test "parseGithubTimeToUnix: known epochs and rejects garbage" {
+    try std.testing.expectEqual(@as(?i64, 0), parseGithubTimeToUnix("1970-01-01T00:00:00Z"));
+    try std.testing.expectEqual(@as(?i64, 3723), parseGithubTimeToUnix("1970-01-01T01:02:03Z"));
+    try std.testing.expectEqual(@as(?i64, 86400), parseGithubTimeToUnix("1970-01-02T00:00:00Z"));
+    try std.testing.expectEqual(@as(?i64, 946684800), parseGithubTimeToUnix("2000-01-01T00:00:00Z"));
+    try std.testing.expectEqual(@as(?i64, 1609459200), parseGithubTimeToUnix("2021-01-01T00:00:00Z"));
+    try std.testing.expectEqual(@as(?i64, null), parseGithubTimeToUnix("not-a-date-at-all"));
+    try std.testing.expectEqual(@as(?i64, null), parseGithubTimeToUnix("2021-13-01T00:00:00Z"));
+    try std.testing.expectEqual(@as(?i64, null), parseGithubTimeToUnix("short"));
+}
+
+// Startup auto-update tunables: probe GitHub at most once a day, and only adopt
+// a release that has been public for more than a day (soak window — a freshly
+// cut, obviously-broken release gets a chance to be yanked first).
+const auto_update_interval_s: i64 = 24 * 60 * 60;
+const auto_update_soak_s: i64 = 24 * 60 * 60;
+
+/// Persist the last auto-update check time (Unix seconds) to `path`. Best-effort.
+fn writeUpdateStamp(io: Io, arena: Allocator, path: []const u8, now_s: i64) void {
+    const txt = std.fmt.allocPrint(arena, "{d}\n", .{now_s}) catch return;
+    const f = Io.Dir.cwd().createFile(io, path, .{}) catch return;
+    defer f.close(io);
+    var wbuf: [64]u8 = undefined;
+    var fw = f.writer(io, &wbuf);
+    fw.interface.writeAll(txt) catch return;
+    fw.interface.flush() catch return;
+}
+
+/// Kick off `install.sh` fully detached, logging to ~/.graff-update.log. The
+/// shell backgrounds the whole `curl | sh` pipeline (`{ …; } >log 2>&1 &`) and
+/// returns immediately, so the install — download, codesign, atomic swap, all in
+/// install.sh — runs reparented to init while graff carries on. We wait only on
+/// the outer shell, which exits in milliseconds. install.sh drops the new binary
+/// on a FRESH inode, so the running graff is untouched and the new version is
+/// live on the next launch. HARNESS_NO_GRAFF=1 keeps it from also reinstalling
+/// the companion suite — an auto-update touches only graff itself.
+fn spawnDetachedUpdate(io: Io, arena: Allocator, environ: *const std.process.Environ.Map, home: []const u8) void {
+    const install_url = environ.get("GRAFF_INSTALL_URL") orelse environ.get("HARNESS_INSTALL_URL") orelse
+        "https://github.com/justrach/codegraff/releases/latest/download/install.sh";
+    const log_path = std.fmt.allocPrint(arena, "{s}/.graff-update.log", .{home}) catch return;
+    // `install_url`/`log_path` are passed as positional $1/$2 — never spliced
+    // into the script string — so neither can smuggle shell syntax.
+    var child = std.process.spawn(io, .{
+        .argv = &.{
+            "/bin/sh",
+            "-c",
+            "{ curl -fsSL \"$1\" | HARNESS_NO_GRAFF=1 sh; } > \"$2\" 2>&1 &",
+            "sh",
+            install_url,
+            log_path,
+        },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return;
+    _ = child.wait(io) catch {}; // the outer sh returns at once after backgrounding
+}
+
+/// Best-effort startup self-update. Throttled to once per day via a stamp file;
+/// only ever acts on a clean release build (never a dev/dirty/source checkout),
+/// only when the latest release is strictly newer AND has been public longer than
+/// the soak window, and only in interactive mode (the caller skips --json and
+/// one-shot -p). When every gate passes it launches the installer detached and
+/// prints a single line; the new binary is live on the next launch. Opt out with
+/// GRAFF_NO_AUTO_UPDATE=1. Any error is silent.
+fn autoUpdateCheck(io: Io, gpa: Allocator, arena: Allocator, environ: *const std.process.Environ.Map) void {
+    if (environ.get("GRAFF_NO_AUTO_UPDATE") != null) return;
+    const home = environ.get("HOME") orelse return;
+
+    const cur_raw = if (std.mem.startsWith(u8, harness_version, "v")) harness_version[1..] else harness_version;
+    // Never auto-update a dev/dirty/source build — only a bare release tag.
+    if (!isCleanReleaseVersion(cur_raw)) return;
+    const cur = parseVersion(cur_raw) orelse return;
+
+    const now_s = @divTrunc(unixMs(io), 1000);
+
+    // Throttle on a plain-int stamp file so most launches do zero network work.
+    const stamp_path = std.fmt.allocPrint(arena, "{s}/.graff-update-check", .{home}) catch return;
+    if (Io.Dir.cwd().readFileAlloc(io, stamp_path, arena, .limited(64))) |data| {
+        const trimmed = std.mem.trim(u8, data, " \t\r\n");
+        if (std.fmt.parseInt(i64, trimmed, 10)) |last| {
+            if (now_s -| last < auto_update_interval_s) return;
+        } else |_| {}
+    } else |_| {}
+
+    // About to hit the network: stamp first, so an offline/slow run (or a burst
+    // of relaunches) re-probes at most once per interval, not every launch.
+    writeUpdateStamp(io, arena, stamp_path, now_s);
+
+    const latest_rel = fetchLatestRelease(io, gpa, arena) orelse return;
+    const latest_raw = if (std.mem.startsWith(u8, latest_rel.tag, "v")) latest_rel.tag[1..] else latest_rel.tag;
+    const latest = parseVersion(latest_raw) orelse return;
+    if (cur.order(latest) != .lt) return; // only ever move forward
+
+    // Soak gate: require the release to have been public for > the soak window.
+    const pub_at = latest_rel.published_at orelse return;
+    const pub_unix = parseGithubTimeToUnix(pub_at) orelse return;
+    if (now_s -| pub_unix < auto_update_soak_s) return;
+
+    spawnDetachedUpdate(io, arena, environ, home);
+
+    var obuf: [256]u8 = undefined;
+    var ow = Io.File.stdout().writer(io, &obuf);
+    ow.interface.print("graff v{s} → v{s} is out — updating in the background (restart to apply)\n", .{ cur_raw, latest_raw }) catch {};
+    ow.interface.flush() catch {};
+}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -4493,6 +4659,13 @@ pub fn main(init: std.process.Init) !void {
         try emitSchema(&sw.interface);
         return;
     }
+
+    // Best-effort, throttled self-update check — interactive only (the guard
+    // skips --json and one-shot -p so scripted/protocol use never triggers a
+    // surprise network probe or output). Dev builds and GRAFF_NO_AUTO_UPDATE
+    // opt out inside autoUpdateCheck.
+    if (!json_mode and oneshot_prompt == null)
+        autoUpdateCheck(io, gpa, arena, init.environ_map);
     var keys: Keys = .{ .values = undefined };
     for (provider_specs, &keys.values) |spec, *value| {
         value.* = init.environ_map.get(spec.env_key);
