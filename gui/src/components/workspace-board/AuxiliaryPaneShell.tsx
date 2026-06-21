@@ -14,7 +14,7 @@ interface AuxiliaryPaneShellProps {
 // Fallback close delay (ms) used if the exit animation never reports completion
 // (e.g. under `prefers-reduced-motion`, where the animation may not run). Kept a
 // touch above the exit fade duration in index.css.
-const EXIT_FALLBACK_MS = 220;
+const EXIT_FALLBACK_MS = 340;
 
 /**
  * Wraps an auxiliary dock pane (preview / changes / terminal) so its content

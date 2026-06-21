@@ -5,6 +5,7 @@ const mer_runtime = @import("runtime");
 
 const log = std.log.scoped(.backend);
 const Value = std.json.Value;
+const default_reasoning_effort = "medium";
 
 pub var instance: ?*Runtime = null;
 
@@ -66,6 +67,21 @@ const PromptSettings = struct {
     fast_enabled: bool = false,
 };
 
+const TerminalSessionState = struct {
+    terminal_id: []const u8,
+    workspace_path: []const u8,
+    shell: []const u8,
+    cols: u16,
+    rows: u16,
+    input: std.ArrayList(u8) = .empty,
+};
+
+const SseEvent = struct {
+    seq: u64,
+    name: []const u8,
+    data: []const u8,
+};
+
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     arena_state: std.heap.ArenaAllocator,
@@ -75,9 +91,14 @@ pub const Runtime = struct {
     workspaces: std.ArrayList(Workspace) = .empty,
     conversations: std.StringHashMap(*Conversation),
     selected_by_workspace: std.StringHashMap([]const u8),
+    terminals: std.StringHashMap(*TerminalSessionState),
+    event_mutex: std.Io.Mutex = .init,
+    events: std.ArrayList(SseEvent) = .empty,
+    next_event_seq: u64 = 1,
     active_workspace_path: ?[]const u8 = null,
     active_conversation_id: ?[]const u8 = null,
     active_agent_id: []const u8 = "forge",
+    settings_loaded: bool = false,
     settings: PromptSettings = .{},
 
     pub fn init(allocator: std.mem.Allocator) !*Runtime {
@@ -88,15 +109,17 @@ pub const Runtime = struct {
             .arena = undefined,
             .conversations = std.StringHashMap(*Conversation).init(allocator),
             .selected_by_workspace = std.StringHashMap([]const u8).init(allocator),
+            .terminals = std.StringHashMap(*TerminalSessionState).init(allocator),
         };
         rt.arena = rt.arena_state.allocator();
-        rt.loadPromptSettings();
         instance = rt;
         log.info("backend runtime initialized", .{});
         return rt;
     }
 
     pub fn deinit(self: *Runtime) void {
+        self.terminals.deinit();
+        self.events.deinit(self.allocator);
         self.conversations.deinit();
         self.selected_by_workspace.deinit();
         self.arena_state.deinit();
@@ -147,7 +170,10 @@ pub const Runtime = struct {
         if (std.mem.eql(u8, cmd, "read_workspace_file")) return self.readWorkspaceFile(req);
         if (std.mem.eql(u8, cmd, "save_pasted_image")) return self.savePastedImage(req);
         if (std.mem.eql(u8, cmd, "image_thumbnail")) return mer.Response.init(.bad_request, .json, "{\"error\":\"image thumbnails are not supported by the Zig backend yet\"}");
-        if (std.mem.eql(u8, cmd, "terminal_open") or std.mem.eql(u8, cmd, "terminal_write") or std.mem.eql(u8, cmd, "terminal_resize") or std.mem.eql(u8, cmd, "terminal_close")) return mer.Response.init(.bad_request, .json, "{\"error\":\"terminal sessions are not supported by the Zig backend yet\"}");
+        if (std.mem.eql(u8, cmd, "terminal_open")) return self.terminalOpen(req);
+        if (std.mem.eql(u8, cmd, "terminal_write")) return self.terminalWrite(req);
+        if (std.mem.eql(u8, cmd, "terminal_resize")) return self.terminalResize(req);
+        if (std.mem.eql(u8, cmd, "terminal_close")) return self.terminalClose(req);
         if (std.mem.eql(u8, cmd, "save_conversation_layout")) return self.saveConversationLayout(req);
         if (std.mem.eql(u8, cmd, "get_conversation_layout")) return mer.json("null");
         if (std.mem.eql(u8, cmd, "create_saved_workspace")) return self.createSavedWorkspace(req);
@@ -202,18 +228,20 @@ pub const Runtime = struct {
     }
 
     fn getPromptSettings(self: *Runtime, req: mer.Request) mer.Response {
+        self.ensurePromptSettingsLoaded();
         return self.jsonResponse(req, self.promptSettingsJson(req.allocator) catch return oom());
     }
 
     fn updatePromptSettings(self: *Runtime, req: mer.Request) mer.Response {
         const root = parse(req) catch return badJson(req);
         const input = objectField(root, "input") orelse root;
+        self.ensurePromptSettingsLoaded();
         self.mutex.lockUncancelable(mer_runtime.io);
         if (stringField(input, "providerId")) |v| self.settings.selected_provider = self.dupe(v);
         if (stringField(input, "modelId")) |v| self.settings.selected_model = self.dupe(v);
         if (input == .object) {
             if (input.object.get("reasoningEffort")) |v| switch (v) {
-                .string => |s| self.settings.selected_effort = self.dupe(s),
+                .string => |s| self.settings.selected_effort = if (validReasoningEffort(s)) self.dupe(s) else null,
                 .null => self.settings.selected_effort = null,
                 else => {},
             };
@@ -596,6 +624,8 @@ pub const Runtime = struct {
     fn setEffort(self: *Runtime, req: mer.Request) mer.Response {
         const root = parse(req) catch return badJson(req);
         const level = stringField(root, "level") orelse return bad(req, "missing level");
+        if (!validReasoningEffort(level)) return bad(req, "invalid reasoning effort");
+        self.ensurePromptSettingsLoaded();
         self.mutex.lockUncancelable(mer_runtime.io);
         self.settings.selected_effort = self.dupe(level);
         self.savePromptSettingsLocked();
@@ -606,6 +636,7 @@ pub const Runtime = struct {
 
     fn setFast(self: *Runtime, req: mer.Request) mer.Response {
         const root = parse(req) catch return badJson(req);
+        self.ensurePromptSettingsLoaded();
         self.mutex.lockUncancelable(mer_runtime.io);
         self.settings.fast_enabled = boolField(root, "on") orelse false;
         self.savePromptSettingsLocked();
@@ -794,6 +825,171 @@ pub const Runtime = struct {
         return mer.json("null");
     }
 
+    fn terminalOpen(self: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch return badJson(req);
+        const input = objectField(root, "input") orelse root;
+        const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
+        const workspace = stringField(input, "workspacePath") orelse return bad(req, "missing workspacePath");
+        const cols = intField(input, "cols", 80);
+        const rows = intField(input, "rows", 24);
+        const shell = "/bin/zsh";
+
+        self.mutex.lockUncancelable(mer_runtime.io);
+        if (self.terminals.get(terminal_id)) |existing| {
+            existing.cols = clampTerminalSize(cols, 80);
+            existing.rows = clampTerminalSize(rows, 24);
+            existing.workspace_path = self.dupe(workspace);
+        } else {
+            const session = self.arena.create(TerminalSessionState) catch {
+                self.mutex.unlock(mer_runtime.io);
+                return oom();
+            };
+            session.* = .{
+                .terminal_id = self.dupe(terminal_id),
+                .workspace_path = self.dupe(workspace),
+                .shell = shell,
+                .cols = clampTerminalSize(cols, 80),
+                .rows = clampTerminalSize(rows, 24),
+            };
+            self.terminals.put(session.terminal_id, session) catch {};
+        }
+        const session = self.terminals.get(terminal_id).?;
+        self.mutex.unlock(mer_runtime.io);
+
+        self.emitTerminalOutput(terminal_id, tryPromptText(req.allocator, session.workspace_path));
+
+        var out: std.Io.Writer.Allocating = .init(req.allocator);
+        out.writer.writeAll("{\"terminalId\":") catch return oom();
+        writeString(&out.writer, terminal_id) catch return oom();
+        out.writer.writeAll(",\"workspacePath\":") catch return oom();
+        writeString(&out.writer, workspace) catch return oom();
+        out.writer.writeAll(",\"shell\":") catch return oom();
+        writeString(&out.writer, shell) catch return oom();
+        out.writer.writeAll(",\"cols\":") catch return oom();
+        out.writer.print("{d}", .{session.cols}) catch return oom();
+        out.writer.writeAll(",\"rows\":") catch return oom();
+        out.writer.print("{d}", .{session.rows}) catch return oom();
+        out.writer.writeAll("}") catch return oom();
+        return mer.json(out.written());
+    }
+
+    fn terminalWrite(self: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch return badJson(req);
+        const input = objectField(root, "input") orelse root;
+        const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
+        const data = stringField(input, "data") orelse "";
+
+        var command_to_run: ?[]const u8 = null;
+        var workspace: ?[]const u8 = null;
+        self.mutex.lockUncancelable(mer_runtime.io);
+        const session = self.terminals.get(terminal_id) orelse {
+            self.mutex.unlock(mer_runtime.io);
+            return bad(req, "terminal session not found");
+        };
+        workspace = session.workspace_path;
+        for (data) |byte| {
+            switch (byte) {
+                '\r', '\n' => {
+                    if (command_to_run == null) {
+                        command_to_run = self.arena.dupe(u8, std.mem.trim(u8, session.input.items, " \t\r\n")) catch "";
+                        session.input.items.len = 0;
+                    }
+                },
+                0x7f, 0x08 => {
+                    if (session.input.items.len > 0) session.input.items.len -= 1;
+                },
+                0x1b => {},
+                else => session.input.append(self.arena, byte) catch {},
+            }
+        }
+        self.mutex.unlock(mer_runtime.io);
+
+        self.emitTerminalOutput(terminal_id, data);
+        if (command_to_run) |command| {
+            self.emitTerminalOutput(terminal_id, "\r\n");
+            if (command.len > 0) {
+                const output = terminalCommandOutput(req.allocator, workspace orelse ".", command) catch blk: {
+                    self.emitTerminalError(terminal_id, "command failed");
+                    break :blk "";
+                };
+                if (output.len > 0) {
+                    self.emitTerminalOutput(terminal_id, output);
+                    if (!std.mem.endsWith(u8, output, "\n")) self.emitTerminalOutput(terminal_id, "\r\n");
+                }
+            }
+            self.emitTerminalOutput(terminal_id, tryPromptText(req.allocator, workspace orelse "."));
+        }
+        return mer.json("null");
+    }
+
+    fn terminalResize(self: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch return badJson(req);
+        const input = objectField(root, "input") orelse root;
+        const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
+        const cols = intField(input, "cols", 80);
+        const rows = intField(input, "rows", 24);
+        self.mutex.lockUncancelable(mer_runtime.io);
+        if (self.terminals.get(terminal_id)) |session| {
+            session.cols = clampTerminalSize(cols, 80);
+            session.rows = clampTerminalSize(rows, 24);
+        }
+        self.mutex.unlock(mer_runtime.io);
+        return mer.json("null");
+    }
+
+    fn terminalClose(self: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch return badJson(req);
+        const input = objectField(root, "input") orelse root;
+        const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
+        self.mutex.lockUncancelable(mer_runtime.io);
+        _ = self.terminals.remove(terminal_id);
+        self.mutex.unlock(mer_runtime.io);
+        self.emitTerminalExit(terminal_id, 0);
+        return mer.json("null");
+    }
+
+    fn emitTerminalOutput(self: *Runtime, terminal_id: []const u8, data: []const u8) void {
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        out.writer.writeAll("{\"terminalId\":") catch return;
+        writeString(&out.writer, terminal_id) catch return;
+        out.writer.writeAll(",\"data\":") catch return;
+        writeString(&out.writer, data) catch return;
+        out.writer.writeAll("}") catch return;
+        self.emitSseEvent("terminal-output", out.written());
+    }
+
+    fn emitTerminalExit(self: *Runtime, terminal_id: []const u8, exit_code: i64) void {
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        out.writer.writeAll("{\"terminalId\":") catch return;
+        writeString(&out.writer, terminal_id) catch return;
+        out.writer.print(",\"exitCode\":{d},\"signal\":null}}", .{exit_code}) catch return;
+        self.emitSseEvent("terminal-exit", out.written());
+    }
+
+    fn emitTerminalError(self: *Runtime, terminal_id: []const u8, message: []const u8) void {
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        out.writer.writeAll("{\"terminalId\":") catch return;
+        writeString(&out.writer, terminal_id) catch return;
+        out.writer.writeAll(",\"message\":") catch return;
+        writeString(&out.writer, message) catch return;
+        out.writer.writeAll("}") catch return;
+        self.emitSseEvent("terminal-error", out.written());
+    }
+
+    fn emitSseEvent(self: *Runtime, name: []const u8, data: []const u8) void {
+        self.event_mutex.lockUncancelable(mer_runtime.io);
+        defer self.event_mutex.unlock(mer_runtime.io);
+        self.events.append(self.allocator, .{
+            .seq = self.next_event_seq,
+            .name = self.arena.dupe(u8, name) catch return,
+            .data = self.arena.dupe(u8, data) catch return,
+        }) catch return;
+        self.next_event_seq += 1;
+    }
+
     fn workspaceStatusCommand(self: *Runtime, req: mer.Request, root: Value) mer.Response {
         _ = self;
         const workspace = stringField(root, "workspacePath") orelse "";
@@ -817,8 +1013,10 @@ pub const Runtime = struct {
     fn streamGraffTurn(self: *Runtime, conversation_id: []const u8, request_id: []const u8, workspace: []const u8, prompt: []const u8) !void {
         const io = mer_runtime.io;
         const bin = self.codegraffBinary();
+        self.ensurePromptSettingsLoaded();
         const model = self.selectedModelLocked();
         const provider = self.selectedProviderLocked();
+        const effort = self.selectedEffortFor(provider, model);
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.append(self.allocator, "/usr/bin/env");
         try argv.append(self.allocator, try std.fmt.allocPrint(self.allocator, "HOME={s}", .{homeDir()}));
@@ -854,6 +1052,11 @@ pub const Runtime = struct {
                 try req_buf.writer.writeAll("}\n");
             }
         };
+        if (effort) |level| {
+            try req_buf.writer.writeAll("{\"type\":\"set_effort\",\"level\":");
+            try writeString(&req_buf.writer, level);
+            try req_buf.writer.writeAll("}\n");
+        }
         try req_buf.writer.writeAll("{\"type\":\"user\",\"text\":");
         try writeString(&req_buf.writer, prompt);
         try req_buf.writer.writeAll("}");
@@ -1200,7 +1403,7 @@ pub const Runtime = struct {
         try out.writer.writeAll(",\"selectedModelId\":");
         try writeNullableString(&out.writer, selected.model);
         try out.writer.writeAll(",\"selectedReasoningEffort\":");
-        try writeNullableString(&out.writer, self.settings.selected_effort);
+        try writeNullableString(&out.writer, effectiveReasoningEffort(selected.provider, selected.model, self.settings.selected_effort));
         try out.writer.writeAll(",\"fastEnabled\":");
         try out.writer.writeAll(if (self.settings.fast_enabled) "true" else "false");
         try out.writer.writeAll(",\"fastApplies\":");
@@ -1245,6 +1448,12 @@ pub const Runtime = struct {
         return self.settings.selected_provider;
     }
 
+    fn selectedEffortFor(self: *Runtime, provider: ?[]const u8, model: ?[]const u8) ?[]const u8 {
+        self.mutex.lockUncancelable(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        return effectiveReasoningEffort(provider, model, self.settings.selected_effort);
+    }
+
     fn codegraffBinary(_: *Runtime) []const u8 {
         const home = homeDir();
         const p1 = std.fmt.allocPrint(std.heap.page_allocator, "{s}/bin/graff", .{home}) catch return "graff";
@@ -1264,10 +1473,39 @@ pub const Runtime = struct {
     }
 
     fn loadPromptSettings(self: *Runtime) void {
-        _ = self;
+        const path = promptSettingsPath(self.allocator) catch return;
+        defer self.allocator.free(path);
+        const data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, path, self.allocator, .limited(64 * 1024)) catch return;
+        defer self.allocator.free(data);
+        const parsed = std.json.parseFromSliceLeaky(Value, self.arena, data, .{ .allocate = .alloc_always }) catch return;
+        if (parsed != .object) return;
+        if (stringField(parsed, "selected_provider")) |provider| {
+            self.settings.selected_provider = self.dupe(provider);
+        }
+        if (stringField(parsed, "selected_model")) |model| {
+            self.settings.selected_model = self.dupe(model);
+        }
+        if (stringField(parsed, "selected_effort")) |effort| {
+            if (validReasoningEffort(effort)) self.settings.selected_effort = self.dupe(effort);
+        }
+        if (boolField(parsed, "fast_enabled")) |fast| {
+            self.settings.fast_enabled = fast;
+        }
+    }
+
+    fn ensurePromptSettingsLoaded(self: *Runtime) void {
+        self.mutex.lockUncancelable(mer_runtime.io);
+        if (self.settings_loaded) {
+            self.mutex.unlock(mer_runtime.io);
+            return;
+        }
+        self.settings_loaded = true;
+        self.mutex.unlock(mer_runtime.io);
+        self.loadPromptSettings();
     }
 
     fn savePromptSettingsLocked(self: *Runtime) void {
+        ensureSettingsDir(self.allocator);
         const path = promptSettingsPath(self.allocator) catch return;
         defer self.allocator.free(path);
         var out: std.Io.Writer.Allocating = .init(self.allocator);
@@ -1328,6 +1566,16 @@ fn boolField(v: Value, key: []const u8) ?bool {
     return switch (item) {
         .bool => |b| b,
         else => null,
+    };
+}
+
+fn intField(v: Value, key: []const u8, default: i64) i64 {
+    if (v != .object) return default;
+    const item = v.object.get(key) orelse return default;
+    return switch (item) {
+        .integer => |n| n,
+        .float => |n| @intFromFloat(n),
+        else => default,
     };
 }
 
@@ -1524,6 +1772,56 @@ fn promptModelSupportsReasoning(provider_id: []const u8, model: []const u8) bool
         std.mem.eql(u8, provider_id, "deepseek") or
         std.mem.eql(u8, provider_id, "kimi") or
         std.mem.eql(u8, provider_id, "codex");
+}
+
+fn clampTerminalSize(value: i64, default: u16) u16 {
+    if (value < 1 or value > 500) return default;
+    return @intCast(value);
+}
+
+fn tryPromptText(alloc: std.mem.Allocator, workspace: []const u8) []const u8 {
+    return std.fmt.allocPrint(alloc, "{s} $ ", .{workspaceName(workspace)}) catch "$ ";
+}
+
+fn terminalCommandOutput(alloc: std.mem.Allocator, cwd: []const u8, command: []const u8) ![]const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(alloc);
+    try argv.append(alloc, "/usr/bin/env");
+    try argv.append(alloc, try std.fmt.allocPrint(alloc, "HOME={s}", .{homeDir()}));
+    try argv.append(alloc, try std.fmt.allocPrint(alloc, "PATH={s}/bin:{s}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", .{ homeDir(), homeDir() }));
+    try argv.append(alloc, "/bin/zsh");
+    try argv.append(alloc, "-lc");
+    try argv.append(alloc, command);
+    var child = try std.process.spawn(mer_runtime.io, .{
+        .argv = argv.items,
+        .cwd = .{ .path = cwd },
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
+    const out_file = child.stdout orelse return error.CommandFailed;
+    var rbuf: [8 * 1024]u8 = undefined;
+    var reader = out_file.readerStreaming(mer_runtime.io, &rbuf);
+    const output = try reader.interface.allocRemaining(alloc, .limited(512 * 1024));
+    const term = try child.wait(mer_runtime.io);
+    if (term != .exited or term.exited != 0) return error.CommandFailed;
+    return output;
+}
+
+fn validReasoningEffort(level: []const u8) bool {
+    return std.mem.eql(u8, level, "low") or
+        std.mem.eql(u8, level, "medium") or
+        std.mem.eql(u8, level, "high");
+}
+
+fn effectiveReasoningEffort(provider: ?[]const u8, model: ?[]const u8, selected: ?[]const u8) ?[]const u8 {
+    if (selected) |level| {
+        if (validReasoningEffort(level)) return level;
+    }
+    const provider_id = provider orelse return null;
+    const model_id = model orelse return null;
+    if (!promptModelSupportsReasoning(provider_id, model_id)) return null;
+    return default_reasoning_effort;
 }
 
 fn titleFromPrompt(alloc: std.mem.Allocator, prompt: []const u8) []const u8 {
@@ -1895,11 +2193,16 @@ fn homeDir() []const u8 {
     if (mer_runtime.threaded.environString("HOME")) |home| {
         if (home.len > 0 and !std.mem.eql(u8, home, "/tmp")) return home;
     }
+    const alloc = std.heap.page_allocator;
+    if (std.c.getenv("HOME")) |home_z| {
+        const home = std.mem.span(home_z);
+        if (home.len > 0 and !std.mem.eql(u8, home, "/tmp")) return home;
+    }
     if (builtin.os.tag == .macos) {
-        const alloc = std.heap.page_allocator;
-        const user_raw = commandOutput(alloc, &.{ "/usr/bin/id", "-un" }) catch return "/tmp";
-        const user = std.mem.trim(u8, user_raw, " \t\r\n");
-        if (user.len > 0) return std.fmt.allocPrint(alloc, "/Users/{s}", .{user}) catch "/tmp";
+        if (std.c.getenv("USER")) |user_z| {
+            const user = std.mem.span(user_z);
+            if (user.len > 0) return std.fmt.allocPrint(alloc, "/Users/{s}", .{user}) catch "/tmp";
+        }
     }
     return "/tmp";
 }
@@ -2167,8 +2470,23 @@ pub fn handleEvents(
 
     writeFrame(&bw, ": connected\n\n");
     var seen = self.version.load(.acquire);
+    var seen_event_seq: u64 = 0;
     while (true) {
-        _ = io.sleep(.fromMilliseconds(250), .awake) catch break;
+        _ = io.sleep(.fromMilliseconds(100), .awake) catch break;
+        var event_alloc_failed = false;
+        self.event_mutex.lockUncancelable(io);
+        for (self.events.items) |ev| {
+            if (ev.seq <= seen_event_seq) continue;
+            const frame = std.fmt.allocPrint(alloc, "event: {s}\ndata: {s}\n\n", .{ ev.name, ev.data }) catch {
+                event_alloc_failed = true;
+                break;
+            };
+            writeFrame(&bw, frame);
+            seen_event_seq = ev.seq;
+        }
+        self.event_mutex.unlock(io);
+        if (event_alloc_failed) break;
+
         const current = self.version.load(.acquire);
         if (current == seen) continue;
         seen = current;

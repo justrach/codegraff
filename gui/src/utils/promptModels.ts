@@ -3,6 +3,8 @@ import type {
   PromptSettings,
 } from "@/services/desktop/types/contracts";
 
+export const DEFAULT_REASONING_EFFORT = "medium";
+
 export function getPromptModelValue(
   model: Pick<PromptModelOption, "providerId" | "modelId">,
 ): string {
@@ -29,13 +31,18 @@ export function resolveSelectedPromptReasoning(
   model: PromptModelOption | null,
   selectedReasoningEffort: string | null | undefined,
 ): string | null {
-  if (model == null || selectedReasoningEffort == null) {
+  if (model == null) {
     return null;
   }
 
-  return model.reasoningEfforts.includes(selectedReasoningEffort)
-    ? selectedReasoningEffort
-    : null;
+  if (
+    selectedReasoningEffort != null &&
+    model.reasoningEfforts.includes(selectedReasoningEffort)
+  ) {
+    return selectedReasoningEffort;
+  }
+
+  return getDefaultPromptReasoningEffort(model);
 }
 
 export function filterPromptModels(
@@ -82,5 +89,17 @@ export function getNextPromptReasoningEffort(
   return selectedReasoning != null &&
     model.reasoningEfforts.includes(selectedReasoning)
     ? selectedReasoning
-    : (model.reasoningEfforts[0] ?? null);
+    : getDefaultPromptReasoningEffort(model);
+}
+
+export function getDefaultPromptReasoningEffort(
+  model: PromptModelOption,
+): string | null {
+  if (model.reasoningEfforts.length === 0) {
+    return null;
+  }
+
+  return model.reasoningEfforts.includes(DEFAULT_REASONING_EFFORT)
+    ? DEFAULT_REASONING_EFFORT
+    : model.reasoningEfforts[0];
 }

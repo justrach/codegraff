@@ -401,6 +401,37 @@ async function invokeCommand<T>(
 
 let sessionEventSource: EventSource | null = null;
 const sessionUpdatedHandlers = new Set<(payload: unknown) => void>();
+const nativeEventHandlers = new Map<string, Set<(payload: unknown) => void>>();
+
+function nativeEventType(eventName: string): string {
+  if (eventName === SESSION_UPDATED_EVENT_NAME) return "session-updated";
+  if (eventName === TERMINAL_OUTPUT_EVENT_NAME) return "terminal-output";
+  if (eventName === TERMINAL_EXIT_EVENT_NAME) return "terminal-exit";
+  if (eventName === TERMINAL_ERROR_EVENT_NAME) return "terminal-error";
+  if (eventName === PROVIDER_OAUTH_CALLBACK_EVENT_NAME) {
+    return "provider-oauth-callback";
+  }
+  return eventName.replace(/^codegraff:\/\//, "");
+}
+
+function dispatchNativeEvent(eventName: string, event: MessageEvent) {
+  try {
+    const payload = JSON.parse(event.data);
+    const handlers = nativeEventHandlers.get(eventName);
+    if (handlers != null) {
+      for (const handler of handlers) {
+        handler(payload);
+      }
+    }
+    if (eventName === SESSION_UPDATED_EVENT_NAME) {
+      for (const handler of sessionUpdatedHandlers) {
+        handler(payload);
+      }
+    }
+  } catch {
+    // Ignore malformed frames; EventSource will continue reconnecting.
+  }
+}
 
 function ensureSessionEventSource(): EventSource {
   if (sessionEventSource) {
@@ -408,17 +439,29 @@ function ensureSessionEventSource(): EventSource {
   }
   const es = new EventSource("/events");
   sessionEventSource = es;
-  es.addEventListener("session-updated", (event: MessageEvent) => {
-    try {
-      const payload = JSON.parse(event.data);
-      for (const handler of sessionUpdatedHandlers) {
-        handler(payload);
-      }
-    } catch {
-      // Ignore malformed frames; EventSource will continue reconnecting.
-    }
-  });
+  for (const eventName of [
+    SESSION_UPDATED_EVENT_NAME,
+    TERMINAL_OUTPUT_EVENT_NAME,
+    TERMINAL_EXIT_EVENT_NAME,
+    TERMINAL_ERROR_EVENT_NAME,
+    PROVIDER_OAUTH_CALLBACK_EVENT_NAME,
+  ]) {
+    es.addEventListener(nativeEventType(eventName), (event: MessageEvent) => {
+      dispatchNativeEvent(eventName, event);
+    });
+  }
   return es;
+}
+
+function closeNativeEventSourceIfIdle() {
+  if (
+    sessionUpdatedHandlers.size === 0 &&
+    nativeEventHandlers.size === 0 &&
+    sessionEventSource != null
+  ) {
+    sessionEventSource.close();
+    sessionEventSource = null;
+  }
 }
 
 async function listenEvent<T>(
@@ -439,15 +482,26 @@ async function listenEvent<T>(
     sessionUpdatedHandlers.add(wrapped);
     return () => {
       sessionUpdatedHandlers.delete(wrapped);
-      if (sessionUpdatedHandlers.size === 0 && sessionEventSource != null) {
-        sessionEventSource.close();
-        sessionEventSource = null;
-      }
+      closeNativeEventSourceIfIdle();
     };
   }
 
-  void handler;
-  return () => undefined;
+  ensureSessionEventSource();
+  const wrapped = (payload: unknown) => handler(payload as T);
+  const handlers = nativeEventHandlers.get(eventName) ?? new Set();
+  handlers.add(wrapped);
+  nativeEventHandlers.set(eventName, handlers);
+  return () => {
+    const current = nativeEventHandlers.get(eventName);
+    if (current == null) {
+      return;
+    }
+    current.delete(wrapped);
+    if (current.size === 0) {
+      nativeEventHandlers.delete(eventName);
+    }
+    closeNativeEventSourceIfIdle();
+  };
 }
 
 export function pickWorkspace(): Promise<string | null> {

@@ -14,6 +14,7 @@ import type {
 import type { WorkspaceBoardSelection } from "./types/sessionContext";
 import type {
   PromptDraftEntry,
+  QueuedPromptEntry,
   SessionStoreSetter,
   SessionStoreState,
   WorkspaceMetaState,
@@ -182,6 +183,28 @@ function movePromptDraftEntry(
   return nextDrafts;
 }
 
+function shiftQueuedPromptEntry(
+  queue: Record<string, QueuedPromptEntry[]>,
+  key: string,
+): {
+  entry: QueuedPromptEntry | null;
+  nextQueue: Record<string, QueuedPromptEntry[]>;
+} {
+  const existing = queue[key] ?? [];
+  if (existing.length === 0) {
+    return { entry: null, nextQueue: queue };
+  }
+
+  const [entry, ...remaining] = existing;
+  const nextQueue = { ...queue };
+  if (remaining.length === 0) {
+    delete nextQueue[key];
+  } else {
+    nextQueue[key] = remaining;
+  }
+  return { entry, nextQueue };
+}
+
 export function getSelectionFromSnapshot(
   snapshot: SessionSnapshot,
 ): WorkspaceBoardSelection {
@@ -345,6 +368,7 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
     isBootstrapped: false,
     isOpeningProject: false,
     promptDraftsByKey: {},
+    queuedPromptsByKey: {},
     requestTimingsByConversationId: {},
     savedWorkspaces: [],
     selection: { kind: "empty" },
@@ -515,6 +539,37 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
           key,
           "",
         ),
+      }));
+    },
+    dequeuePrompt: (key) => {
+      if (key == null) {
+        return null;
+      }
+
+      let dequeued: QueuedPromptEntry | null = null;
+      set((current) => {
+        const { entry, nextQueue } = shiftQueuedPromptEntry(
+          current.queuedPromptsByKey,
+          key,
+        );
+        dequeued = entry;
+        if (entry == null) {
+          return current;
+        }
+        return { queuedPromptsByKey: nextQueue };
+      });
+      return dequeued;
+    },
+    enqueuePrompt: (key, entry) => {
+      if (key == null) {
+        return;
+      }
+
+      set((current) => ({
+        queuedPromptsByKey: {
+          ...current.queuedPromptsByKey,
+          [key]: [...(current.queuedPromptsByKey[key] ?? []), entry],
+        },
       }));
     },
     movePromptDraft: (fromKey, toKey) => {

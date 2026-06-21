@@ -8,9 +8,9 @@ function easeOutExpo(t: number): number {
 }
 
 const OPEN_DURATION_MS = 300;
-// Slightly shorter than the open glide and tuned to land as the pane's exit fade
-// (180ms in index.css) finishes, so the close reads as a single motion.
-const CLOSE_DURATION_MS = 180;
+// Match the open glide so close animations have the same weight instead of
+// snapping away faster than the pane content fade.
+const CLOSE_DURATION_MS = 300;
 // Start width/height the opening pane grows *from*. A few px (not 0) keeps the
 // pane's own content mounted/measurable while still reading as "slides open".
 const OPEN_START_PX = 8;
