@@ -1153,20 +1153,13 @@
 }
 
 /* --- Ultra mode shine (the `ultracode` codeword opt-in) ---
-   When Ultra is engaged on the composer, the card wears a slowly rotating
-   rainbow border, mirroring the harness TUI's `ultracodeShine`. The border is
-   painted into a masked ::before so the conic gradient only shows as a ring,
-   and the hue sweep is driven by animating a registered --cg-ultra-angle
-   custom property (smooth, GPU-cheap — no layout, no repaint of children). */
-@property --cg-ultra-angle {
-    syntax: "<angle>";
-    inherits: false;
-    initial-value: 0deg;
-}
-
-@keyframes cg-ultra-spin {
+   When Ultra is engaged on the composer, the card wears a rainbow that travels
+   left→right as a WAVE (a flowing linear gradient), rather than a conic gradient
+   pinwheeling around the centre. The border is painted into a masked ::before so
+   the gradient only shows as a ring; a soft blurred ::after gives the lit bloom. */
+@keyframes cg-ultra-wave {
     to {
-        --cg-ultra-angle: 360deg;
+        background-position: -200% 0;
     }
 }
 
@@ -1192,8 +1185,8 @@
     padding: 1.5px;
     content: "";
     border-radius: inherit;
-    background: conic-gradient(
-        from var(--cg-ultra-angle),
+    background: linear-gradient(
+        90deg,
         #ff5f6d,
         #ffb347,
         #ffe66d,
@@ -1204,6 +1197,7 @@
         #ff5fa2,
         #ff5f6d
     );
+    background-size: 200% 100%;
     /* Show the gradient only as a ring: fill minus content box. */
     -webkit-mask:
         linear-gradient(#000 0 0) content-box,
@@ -1214,19 +1208,19 @@
         linear-gradient(#000 0 0);
     mask-composite: exclude;
     animation:
-        cg-ultra-spin 4s linear infinite,
+        cg-ultra-wave 6s linear infinite,
         cg-ultra-glow 2.4s ease-in-out infinite;
 }
 
-/* Soft outer bloom so the card reads as "lit" against the dark surface. */
+/* Soft outer bloom so the card reads as "lit". */
 .cg-ultra-shine::after {
     position: absolute;
     inset: 0;
     z-index: -2;
     content: "";
     border-radius: inherit;
-    background: conic-gradient(
-        from var(--cg-ultra-angle),
+    background: linear-gradient(
+        90deg,
         #ff5f6d,
         #ffb347,
         #ffe66d,
@@ -1237,9 +1231,10 @@
         #ff5fa2,
         #ff5f6d
     );
+    background-size: 200% 100%;
     filter: blur(6px);
     opacity: 0.22;
-    animation: cg-ultra-spin 4s linear infinite;
+    animation: cg-ultra-wave 6s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
