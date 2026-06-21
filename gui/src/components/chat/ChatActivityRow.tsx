@@ -43,12 +43,12 @@ import { ActivityResultRenderer } from "./activity-results/ActivityResultRendere
 import { getActivityResultModel } from "./utils/getActivityResultModel";
 
 const activityTriggerClassName = cn(
-  "group inline-flex min-w-0 items-center gap-1.5 text-left transition hover:text-foreground",
+  "group flex min-w-0 items-center gap-1.5 text-left transition hover:text-foreground",
   CHAT_MUTED_TEXT_CLASS,
 );
 
 const activityTextClassName = cn(
-  "inline-flex min-w-0 items-center",
+  "flex min-w-0 items-center",
   CHAT_MUTED_TEXT_CLASS,
 );
 
@@ -134,9 +134,9 @@ function ActivityOperationRow({
   const content = (
     <>
       {icon}
-      <span className="min-w-0">
+      <span className="min-w-0 flex-1">
         {isCommand ? (
-          <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+          <code className="inline-block max-w-full truncate align-middle rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
             {label}
           </code>
         ) : (
