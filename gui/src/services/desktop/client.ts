@@ -2,8 +2,6 @@
 // the native shell. Commands go over fetch POST /api/<command>; OS-level shell
 // ops go through window.mer.invoke when that bridge exists. Push events arrive
 // over a single SSE EventSource on /events.
-import type { UnlistenFn } from "@tauri-apps/api/event";
-
 import {
   SESSION_UPDATED_EVENT_NAME,
   TERMINAL_ERROR_EVENT_NAME,
@@ -56,9 +54,11 @@ import type {
   WorkspaceSyncPayload,
 } from "./types/contracts";
 
+type UnlistenFn = () => void;
+
 const QA_WORKSPACE_PATH = "/Users/pranavp/projects/harness/codegraff/gui";
 const QA_CONVERSATION_ID = "qa-existing-chat";
-// Browser-based visual QA cannot call Tauri commands, so this flag swaps the
+// Browser-based visual QA cannot call native commands, so this flag swaps the
 // desktop boundary for deterministic fixtures while leaving production calls untouched.
 const isQaMockMode = import.meta.env.VITE_CODEGRAFF_QA_MOCK === "1";
 
@@ -423,7 +423,7 @@ async function listenEvent<T>(
   handler: (payload: T) => void,
 ): Promise<UnlistenFn> {
   if (isQaMockMode) {
-    // Event streams are Tauri-only; visual QA drives state through mock command
+    // Native event streams are unavailable in visual QA; tests drive state through mock command
     // responses instead, so listeners become no-op unlisteners in browser mode.
     void eventName;
     void handler;

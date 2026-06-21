@@ -161,7 +161,7 @@ export function SessionProvider({ children }: SessionProviderProps) {
           void openWorkspaceByPath(pending);
         }
       } catch {
-        // No pending path (or not running under Tauri) — ignore.
+        // No pending path (or native bridge unavailable) — ignore.
       }
       try {
         unlisten = await desktopClient.onOpenWorkspacePath((path) => {
