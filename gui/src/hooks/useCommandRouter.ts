@@ -24,6 +24,9 @@ const ARG_COMMANDS = new Set([
   "reasoning-effort",
 ]);
 
+/** Commands whose only effect is a setting toggle — no persistent result card. */
+const SILENT_RESULT_COMMANDS = new Set(["ultracode"]);
+
 interface ParsedCommand {
   name: string;
   args: string[];
@@ -95,9 +98,10 @@ export function useCommandRouter(
             sessionStore.getState().applySessionSnapshot(result.snapshot);
           }
           if (
-            result.body != null ||
-            result.savedPath != null ||
-            result.payload != null
+            !SILENT_RESULT_COMMANDS.has(name) &&
+            (result.body != null ||
+              result.savedPath != null ||
+              result.payload != null)
           ) {
             publishCommandResult(result);
           }
