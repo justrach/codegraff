@@ -12545,13 +12545,16 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
     subagentLaunchCard(arena, sub_id, sprite, label, kind, prompt);
     // Live agent tree: surface workflow_task children as their own GUI rows.
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
-    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label } });
+    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .call_id = sub_id });
     try agent.messages.append(try textMessage(arena, "user", prompt));
     defer agent.tools_used.deinit(gpa);
     const report = agent.runTurn();
     const run_ms: i64 = @intCast(@max(0, sub_start.untilNow(ctx.io, .awake).toMilliseconds()));
     const run_ok = if (report) |r| r.len > 0 else |_| false;
-    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_result", .name = "subagent", .is_error = !run_ok });
+    if (wf_task) {
+        const sub_report: []const u8 = if (report) |r| (if (r.len > 0) r else "subagent returned no report") else |_| "subagent failed";
+        guiEmit(ctx.io, .{ .type = "tool_result", .name = "subagent", .is_error = !run_ok, .text = utf8Prefix(sub_report, 600), .call_id = sub_id });
+    }
     const tools = agent.tools_used.render(arena);
     const fp = promptFingerprint(agent.systemPrompt());
     if (g_traj) |tj| {
