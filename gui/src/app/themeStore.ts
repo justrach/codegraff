@@ -1,13 +1,21 @@
 import { create } from "zustand";
 
 export type ThemeMode = "light" | "dark";
-export type ThemePresetId = "warm-graphite" | "slate" | "nord" | "forest";
+export type ThemePresetId =
+  | "warm-graphite"
+  | "slate"
+  | "nord"
+  | "forest"
+  | "mono"
+  | "rose";
 
 export const THEME_PRESET_IDS: ThemePresetId[] = [
   "warm-graphite",
   "slate",
   "nord",
   "forest",
+  "mono",
+  "rose",
 ];
 
 const MODE_STORAGE_KEY = "codegraff:theme";
