@@ -312,8 +312,6 @@ function mockInvokeCommand<T>(
 }
 
 const NATIVE_COMMANDS: Record<string, string> = {
-  pick_workspace: "dialog.pickDirectory",
-  pick_directory: "dialog.pickDirectory",
   drain_pending_open: "drainPendingOpen",
   open_path_default: "open.path",
   open_path_for_edit: "open.path",
@@ -382,12 +380,21 @@ async function merInvoke<T>(
   return null as T;
 }
 
-function invokeCommand<T>(
+async function invokeCommand<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
   if (isQaMockMode) {
     return mockInvokeCommand<T>(command, args);
+  }
+  if (command === "pick_workspace" || command === "pick_directory") {
+    const picked = await merInvoke<T | null>("dialog.pickDirectory", args).catch(
+      () => null,
+    );
+    if (picked != null) {
+      return picked as T;
+    }
+    return httpInvoke<T>(command, args);
   }
   const nativeName = NATIVE_COMMANDS[command];
   if (nativeName) {
