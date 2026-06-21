@@ -98,18 +98,21 @@ export function PromptInputCard({
       .filter((item): item is NonNullable<typeof item> => item != null);
     addAttachments(accepted);
   });
+  const canQueueFollowup = isRequestActive && !isInputDisabled;
+  const canEditPrompt = canCompose || canQueueFollowup;
   const isControlDisabled =
     isSendingPrompt || isRequestActive || !canCompose || isInputDisabled;
   // Keep the composer editable while a request streams so the user can draft
   // and queue the next message. While streaming, a non-empty draft turns the
   // primary button back into Send; an empty draft keeps it as Stop.
-  const isTextareaDisabled = isSendingPrompt || !canCompose || isInputDisabled;
+  const isTextareaDisabled = !canEditPrompt || isInputDisabled;
   const isWorking = isRequestActive;
   const isQueueSubmit = isWorking;
   const isSubmitDisabled =
-    !canCompose ||
     isInputDisabled ||
+    (!canCompose && !isQueueSubmit) ||
     (!isQueueSubmit && isSendingPrompt) ||
+    (isQueueSubmit && !canQueueFollowup) ||
     promptDraft.trim().length === 0;
   const {
     handleModelChange,
@@ -176,7 +179,7 @@ export function PromptInputCard({
     promptDraft,
     setPromptDraft,
     workspacePath,
-    enabled: canCompose && !isInputDisabled,
+    enabled: canEditPrompt && !isInputDisabled,
     onSelect: handleAutocompleteSelect,
   });
 

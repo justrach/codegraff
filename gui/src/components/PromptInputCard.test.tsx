@@ -72,6 +72,18 @@ describe("PromptInputCard", () => {
     expect(html).not.toContain("<textarea disabled");
   });
 
+  test("keeps queued follow-up input editable while the current draft is pending", () => {
+    const html = renderPromptInputCard({
+      canCompose: false,
+      isRequestActive: true,
+      isSendingPrompt: true,
+    });
+
+    expect(html).toContain("Queue a follow-up…");
+    expect(html).toContain('aria-label="Send"');
+    expect(html).not.toContain("<textarea disabled");
+  });
+
   test("keeps stop available while running with an empty draft", () => {
     const html = renderPromptInputCard({
       isRequestActive: true,

@@ -212,7 +212,7 @@ pub const Runtime = struct {
         const path = stringField(root, "path") orelse return bad(req, "missing path");
         self.mutex.lockUncancelable(mer_runtime.io);
         const owned = self.dupe(path);
-        self.setActiveWorkspaceLocked(owned);
+        self.activateWorkspaceLocked(owned);
         self.bumpLocked();
         self.mutex.unlock(mer_runtime.io);
         return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
@@ -326,7 +326,7 @@ pub const Runtime = struct {
         ensureDirectory(req.allocator, path) catch return bad(req, "failed to create managed chat workspace");
         self.mutex.lockUncancelable(mer_runtime.io);
         const owned = self.dupe(path);
-        self.setActiveWorkspaceLocked(owned);
+        self.activateWorkspaceLocked(owned);
         if (self.workspaceIndexLocked(owned)) |idx| {
             self.workspaces.items[idx].kind = "managed_chat";
             self.workspaces.items[idx].display_name = "New chat";
@@ -1429,6 +1429,11 @@ pub const Runtime = struct {
         }
     }
 
+    fn activateWorkspaceLocked(self: *Runtime, path: []const u8) void {
+        self.setActiveWorkspaceLocked(path);
+        self.active_conversation_id = self.selected_by_workspace.get(path);
+    }
+
     fn workspaceIndexLocked(self: *Runtime, path: []const u8) ?usize {
         for (self.workspaces.items, 0..) |workspace, i| {
             if (std.mem.eql(u8, workspace.path, path)) return i;
@@ -2502,4 +2507,23 @@ fn writeFrame(bw: *std.http.BodyWriter, frame: []const u8) void {
     bw.writer.writeAll(frame) catch return;
     bw.writer.flush() catch return;
     bw.http_protocol_output.flush() catch return;
+}
+
+test "activateWorkspaceLocked clears stale conversation and restores workspace selection" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const first_workspace = "/tmp/codegraff-gui-test-one";
+    const second_workspace = "/tmp/codegraff-gui-test-two";
+    const conv = rt.createConversationLocked(first_workspace, "chat-one", "First chat");
+    rt.active_conversation_id = conv.conversation_id;
+    try rt.selected_by_workspace.put(conv.workspace_path, conv.conversation_id);
+
+    rt.activateWorkspaceLocked(rt.dupe(second_workspace));
+    try std.testing.expectEqualStrings(second_workspace, rt.active_workspace_path.?);
+    try std.testing.expect(rt.active_conversation_id == null);
+
+    rt.activateWorkspaceLocked(conv.workspace_path);
+    try std.testing.expectEqualStrings(first_workspace, rt.active_workspace_path.?);
+    try std.testing.expectEqualStrings("chat-one", rt.active_conversation_id.?);
 }
