@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useConversationSession } from "../hooks/useSession";
 import { usePrompt } from "../hooks/usePrompt";
@@ -69,6 +69,24 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
   const promptHistory = messages
     .filter((message) => message.kind === "user")
     .map((message) => message.text);
+
+  // Esc cancels a running turn — kills the graff session, same as the stop
+  // button. A dialog/menu that wants Escape handles it first (preventDefault);
+  // otherwise Escape stops the in-flight request.
+  useEffect(() => {
+    if (!isRequestActive) {
+      return undefined;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) {
+        return;
+      }
+      event.preventDefault();
+      void stopPrompt();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isRequestActive, stopPrompt]);
 
   const handleSubmit = useCallback(async () => {
     if (trySubmitAsCommand(promptDraft)) {
