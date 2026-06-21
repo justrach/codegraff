@@ -79,7 +79,15 @@ export function ChatWorkRow({
 
   return (
     <div className="grid min-w-0 gap-1">
-      {!item.isRunning && canExpand ? (
+      {item.isRunning ? (
+        canExpand ? null : (
+          <span
+            className={`shimmer shimmer-invert shimmer-repeat-delay-0 ${CHAT_MUTED_TEXT_CLASS}`}
+          >
+            Thinking
+          </span>
+        )
+      ) : canExpand ? (
         <button
           type="button"
           onClick={() => setOpen((current) => !current)}
@@ -88,7 +96,7 @@ export function ChatWorkRow({
           {header}
         </button>
       ) : (
-        <div className={`inline-flex min-w-0 items-center justify-between gap-2 border-b border-border pb-1 ${CHAT_MUTED_TEXT_CLASS}`}>
+        <div className={`inline-flex min-w-0 items-center justify-between gap-2 ${CHAT_MUTED_TEXT_CLASS}`}>
           {header}
         </div>
       )}
