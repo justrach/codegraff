@@ -109,6 +109,7 @@ pub const Runtime = struct {
         const cmd = commandName(req.path);
 
         if (std.mem.eql(u8, cmd, "get_session_snapshot")) return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
+        if (std.mem.eql(u8, cmd, "pick_workspace") or std.mem.eql(u8, cmd, "pick_directory")) return self.pickDirectory(req);
         if (std.mem.eql(u8, cmd, "open_workspace")) return self.openWorkspace(req);
         if (std.mem.eql(u8, cmd, "get_runtime_status")) return self.getRuntimeStatus(req);
         if (std.mem.eql(u8, cmd, "get_prompt_settings")) return self.getPromptSettings(req);
@@ -164,6 +165,22 @@ pub const Runtime = struct {
         return mer.Response.init(.ok, .json, body);
     }
 
+    fn pickDirectory(_: *Runtime, req: mer.Request) mer.Response {
+        if (builtin.os.tag != .macos) return mer.json("null");
+        const root = parse(req) catch Value{ .object = .empty };
+        const title = stringField(root, "title") orelse "Choose a folder";
+        var quoted_title: std.Io.Writer.Allocating = .init(req.allocator);
+        writeString(&quoted_title.writer, title) catch return oom();
+        const script = std.fmt.allocPrint(req.allocator, "POSIX path of (choose folder with prompt {s})", .{quoted_title.written()}) catch return oom();
+        const raw = commandOutput(req.allocator, &.{ "osascript", "-e", script }) catch return mer.json("null");
+        var path = std.mem.trim(u8, raw, " \t\r\n");
+        if (path.len == 0) return mer.json("null");
+        while (path.len > 1 and path[path.len - 1] == '/') path = path[0 .. path.len - 1];
+        var out: std.Io.Writer.Allocating = .init(req.allocator);
+        writeString(&out.writer, path) catch return oom();
+        return mer.json(out.written());
+    }
+
     fn openWorkspace(self: *Runtime, req: mer.Request) mer.Response {
         const root = parse(req) catch return badJson(req);
         const path = stringField(root, "path") orelse return bad(req, "missing path");
@@ -194,7 +211,13 @@ pub const Runtime = struct {
         self.mutex.lockUncancelable(mer_runtime.io);
         if (stringField(input, "providerId")) |v| self.settings.selected_provider = self.dupe(v);
         if (stringField(input, "modelId")) |v| self.settings.selected_model = self.dupe(v);
-        if (stringField(input, "reasoningEffort")) |v| self.settings.selected_effort = self.dupe(v);
+        if (input == .object) {
+            if (input.object.get("reasoningEffort")) |v| switch (v) {
+                .string => |s| self.settings.selected_effort = self.dupe(s),
+                .null => self.settings.selected_effort = null,
+                else => {},
+            };
+        }
         self.bumpLocked();
         self.savePromptSettingsLocked();
         self.mutex.unlock(mer_runtime.io);
@@ -272,6 +295,7 @@ pub const Runtime = struct {
 
     fn createManagedChat(self: *Runtime, req: mer.Request) mer.Response {
         const path = self.createManagedChatPath();
+        ensureDirectory(req.allocator, path) catch return bad(req, "failed to create managed chat workspace");
         self.mutex.lockUncancelable(mer_runtime.io);
         const owned = self.dupe(path);
         self.setActiveWorkspaceLocked(owned);
@@ -786,10 +810,11 @@ pub const Runtime = struct {
         const io = mer_runtime.io;
         const bin = self.codegraffBinary();
         const model = self.selectedModelLocked();
+        const provider = self.selectedProviderLocked();
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.append(self.allocator, "/usr/bin/env");
-        try argv.append(self.allocator, "HOME=/Users/pranavp");
-        try argv.append(self.allocator, "PATH=/Users/pranavp/bin:/Users/pranavp/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+        try argv.append(self.allocator, try std.fmt.allocPrint(self.allocator, "HOME={s}", .{homeDir()}));
+        try argv.append(self.allocator, try std.fmt.allocPrint(self.allocator, "PATH={s}/bin:{s}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", .{ homeDir(), homeDir() }));
         try argv.append(self.allocator, bin);
         try argv.append(self.allocator, "--json");
         try argv.append(self.allocator, "--yolo");
@@ -814,6 +839,13 @@ pub const Runtime = struct {
         var cw = child.stdin.?.writerStreaming(io, &wbuf);
         var req_buf: std.Io.Writer.Allocating = .init(self.allocator);
         defer req_buf.deinit();
+        if (provider) |p| if (model) |m| {
+            if (p.len > 0 and m.len > 0 and !std.mem.eql(u8, m, "default")) {
+                try req_buf.writer.writeAll("{\"type\":\"set_model\",\"name\":");
+                try writeString(&req_buf.writer, try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ p, m }));
+                try req_buf.writer.writeAll("}\n");
+            }
+        };
         try req_buf.writer.writeAll("{\"type\":\"user\",\"text\":");
         try writeString(&req_buf.writer, prompt);
         try req_buf.writer.writeAll("}");
@@ -1148,19 +1180,23 @@ pub const Runtime = struct {
     }
 
     fn promptSettingsJson(self: *Runtime, alloc: std.mem.Allocator) ![]const u8 {
+        const schema = schemaValue(alloc, self.codegraffBinary()) catch null;
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
+        const selected = resolvePromptSelection(schema, self.settings.selected_provider, self.settings.selected_model);
         var out: std.Io.Writer.Allocating = .init(alloc);
-        try out.writer.writeAll("{\"availableModels\":[{\"providerId\":\"codegraff\",\"providerName\":\"Codegraff\",\"modelId\":\"default\",\"modelName\":\"Default\",\"contextLength\":null,\"supportsReasoning\":false,\"reasoningEfforts\":[]}],\"selectedProviderId\":");
-        try writeNullableString(&out.writer, self.settings.selected_provider orelse "codegraff");
+        try out.writer.writeAll("{\"availableModels\":");
+        try writePromptModels(&out.writer, schema);
+        try out.writer.writeAll(",\"selectedProviderId\":");
+        try writeNullableString(&out.writer, selected.provider);
         try out.writer.writeAll(",\"selectedModelId\":");
-        try writeNullableString(&out.writer, self.settings.selected_model orelse "default");
+        try writeNullableString(&out.writer, selected.model);
         try out.writer.writeAll(",\"selectedReasoningEffort\":");
         try writeNullableString(&out.writer, self.settings.selected_effort);
         try out.writer.writeAll(",\"fastEnabled\":");
         try out.writer.writeAll(if (self.settings.fast_enabled) "true" else "false");
         try out.writer.writeAll(",\"fastApplies\":");
-        try out.writer.writeAll(if (self.settings.selected_provider != null and std.mem.eql(u8, self.settings.selected_provider.?, "codex")) "true" else "false");
+        try out.writer.writeAll(if (selected.provider != null and std.mem.eql(u8, selected.provider.?, "codex")) "true" else "false");
         try out.writer.writeAll("}");
         return out.written();
     }
@@ -1195,21 +1231,26 @@ pub const Runtime = struct {
         return self.settings.selected_model;
     }
 
+    fn selectedProviderLocked(self: *Runtime) ?[]const u8 {
+        self.mutex.lockUncancelable(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        return self.settings.selected_provider;
+    }
+
     fn codegraffBinary(_: *Runtime) []const u8 {
-        if (mer_runtime.threaded.environString("HOME")) |home| {
-            const p1 = std.fmt.allocPrint(std.heap.page_allocator, "{s}/bin/graff", .{home}) catch return "graff";
-            if (fileExists(p1)) return p1;
-            const p2 = std.fmt.allocPrint(std.heap.page_allocator, "{s}/.local/bin/graff", .{home}) catch return "graff";
-            if (fileExists(p2)) return p2;
-        }
-        inline for (.{ "/Users/pranavp/bin/graff", "/Users/pranavp/.local/bin/graff", "/opt/homebrew/bin/graff", "/usr/local/bin/graff", "/usr/bin/graff" }) |p| {
+        const home = homeDir();
+        const p1 = std.fmt.allocPrint(std.heap.page_allocator, "{s}/bin/graff", .{home}) catch return "graff";
+        if (fileExists(p1)) return p1;
+        const p2 = std.fmt.allocPrint(std.heap.page_allocator, "{s}/.local/bin/graff", .{home}) catch return "graff";
+        if (fileExists(p2)) return p2;
+        inline for (.{ "/opt/homebrew/bin/graff", "/usr/local/bin/graff", "/usr/bin/graff" }) |p| {
             if (fileExists(p)) return p;
         }
         return "graff";
     }
 
     fn createManagedChatPath(self: *Runtime) []const u8 {
-        const home = mer_runtime.threaded.environString("HOME") orelse "/tmp";
+        const home = homeDir();
         const path = self.fmt("{s}/Library/Application Support/dev.codegraff.gui/managed-chats/chat_{d}", .{ home, nowMillis() });
         return path;
     }
@@ -1331,6 +1372,150 @@ fn writeStringArray(w: *std.Io.Writer, values: []const []const u8) !void {
         try writeString(w, value);
     }
     try w.writeByte(']');
+}
+
+const PromptSelection = struct {
+    provider: ?[]const u8,
+    model: ?[]const u8,
+};
+
+fn schemaValue(alloc: std.mem.Allocator, graff_bin: []const u8) !Value {
+    const raw = try commandOutput(alloc, &.{ graff_bin, "--schema" });
+    return try std.json.parseFromSliceLeaky(Value, alloc, raw, .{ .allocate = .alloc_always });
+}
+
+fn writePromptModels(w: *std.Io.Writer, schema: ?Value) !void {
+    const s = schema orelse {
+        try w.writeAll("[{\"providerId\":\"codegraff\",\"providerName\":\"Codegraff\",\"modelId\":\"default\",\"modelName\":\"Default\",\"contextLength\":null,\"supportsReasoning\":false,\"reasoningEfforts\":[]}]");
+        return;
+    };
+    const providers = arrayField(s, "providers") orelse {
+        try w.writeAll("[]");
+        return;
+    };
+    const models = arrayField(s, "models") orelse {
+        try w.writeAll("[]");
+        return;
+    };
+
+    try w.writeByte('[');
+    var first = true;
+    for (0..2) |pass| {
+        for (providers.items) |provider_value| {
+            if (provider_value != .object) continue;
+            const provider_id = strFieldObj(provider_value.object, "id") orelse continue;
+            if ((pass == 0) != std.mem.eql(u8, provider_id, "codegraff")) continue;
+            const env_key = strFieldObj(provider_value.object, "env_key");
+            if (!providerConfiguredById(provider_id, env_key)) continue;
+            const provider_name = strFieldObj(provider_value.object, "name") orelse provider_id;
+            for (models.items) |model_value| {
+                if (model_value != .object) continue;
+                const model_provider = strFieldObj(model_value.object, "provider") orelse continue;
+                if (!std.mem.eql(u8, model_provider, provider_id)) continue;
+                const model_name = strFieldObj(model_value.object, "name") orelse continue;
+                if (!first) try w.writeByte(',');
+                first = false;
+                try w.writeAll("{\"providerId\":");
+                try writeString(w, provider_id);
+                try w.writeAll(",\"providerName\":");
+                try writeString(w, provider_name);
+                try w.writeAll(",\"modelId\":");
+                try writeString(w, model_name);
+                try w.writeAll(",\"modelName\":");
+                try writeString(w, model_name);
+                try w.writeAll(",\"contextLength\":");
+                if (model_value.object.get("context")) |context| {
+                    if (context == .integer) try w.print("{d}", .{context.integer}) else try w.writeAll("null");
+                } else try w.writeAll("null");
+                const reasoning = promptModelSupportsReasoning(provider_id, model_name);
+                try w.writeAll(",\"supportsReasoning\":");
+                try w.writeAll(if (reasoning) "true" else "false");
+                try w.writeAll(",\"reasoningEfforts\":");
+                try w.writeAll(if (reasoning) "[\"low\",\"medium\",\"high\"]" else "[]");
+                try w.writeAll("}");
+            }
+        }
+    }
+    try w.writeByte(']');
+}
+
+fn resolvePromptSelection(schema: ?Value, selected_provider: ?[]const u8, selected_model: ?[]const u8) PromptSelection {
+    const s = schema orelse return .{ .provider = selected_provider orelse "codegraff", .model = selected_model orelse "default" };
+    if (selected_provider) |provider| {
+        const model = selected_model orelse providerDefaultModel(s, provider);
+        if (model) |m| {
+            if (configuredModelExists(s, provider, m)) return .{ .provider = provider, .model = m };
+        }
+    }
+    if (firstConfiguredProviderSelection(s, "codegraff")) |sel| return sel;
+    const providers = arrayField(s, "providers") orelse return .{ .provider = "codegraff", .model = "default" };
+    for (providers.items) |provider_value| {
+        if (provider_value != .object) continue;
+        const provider_id = strFieldObj(provider_value.object, "id") orelse continue;
+        if (firstConfiguredProviderSelection(s, provider_id)) |sel| return sel;
+    }
+    return .{ .provider = "codegraff", .model = "default" };
+}
+
+fn firstConfiguredProviderSelection(schema: Value, provider_id: []const u8) ?PromptSelection {
+    const env_key = schemaProviderEnvKey(schema, provider_id);
+    if (!providerConfiguredById(provider_id, env_key)) return null;
+    if (providerDefaultModel(schema, provider_id)) |default_model| {
+        if (modelExists(schema, provider_id, default_model)) return .{ .provider = provider_id, .model = default_model };
+    }
+    const models = arrayField(schema, "models") orelse return null;
+    for (models.items) |model_value| {
+        if (model_value != .object) continue;
+        const model_provider = strFieldObj(model_value.object, "provider") orelse continue;
+        if (!std.mem.eql(u8, model_provider, provider_id)) continue;
+        const model_name = strFieldObj(model_value.object, "name") orelse continue;
+        return .{ .provider = provider_id, .model = model_name };
+    }
+    return null;
+}
+
+fn configuredModelExists(schema: Value, provider_id: []const u8, model: []const u8) bool {
+    const env_key = schemaProviderEnvKey(schema, provider_id);
+    return providerConfiguredById(provider_id, env_key) and modelExists(schema, provider_id, model);
+}
+
+fn modelExists(schema: Value, provider_id: []const u8, model: []const u8) bool {
+    const models = arrayField(schema, "models") orelse return false;
+    for (models.items) |model_value| {
+        if (model_value != .object) continue;
+        const model_provider = strFieldObj(model_value.object, "provider") orelse continue;
+        const model_name = strFieldObj(model_value.object, "name") orelse continue;
+        if (std.mem.eql(u8, model_provider, provider_id) and std.mem.eql(u8, model_name, model)) return true;
+    }
+    return false;
+}
+
+fn providerDefaultModel(schema: Value, provider_id: []const u8) ?[]const u8 {
+    const providers = arrayField(schema, "providers") orelse return null;
+    for (providers.items) |provider_value| {
+        if (provider_value != .object) continue;
+        const id = strFieldObj(provider_value.object, "id") orelse continue;
+        if (std.mem.eql(u8, id, provider_id)) return strFieldObj(provider_value.object, "default_model");
+    }
+    return null;
+}
+
+fn schemaProviderEnvKey(schema: Value, provider_id: []const u8) ?[]const u8 {
+    const providers = arrayField(schema, "providers") orelse return providerInfo(provider_id).env_key;
+    for (providers.items) |provider_value| {
+        if (provider_value != .object) continue;
+        const id = strFieldObj(provider_value.object, "id") orelse continue;
+        if (std.mem.eql(u8, id, provider_id)) return strFieldObj(provider_value.object, "env_key");
+    }
+    return providerInfo(provider_id).env_key;
+}
+
+fn promptModelSupportsReasoning(provider_id: []const u8, model: []const u8) bool {
+    if (std.mem.startsWith(u8, model, "grok")) return false;
+    return std.mem.eql(u8, provider_id, "codegraff") or
+        std.mem.eql(u8, provider_id, "deepseek") or
+        std.mem.eql(u8, provider_id, "kimi") or
+        std.mem.eql(u8, provider_id, "codex");
 }
 
 fn titleFromPrompt(alloc: std.mem.Allocator, prompt: []const u8) []const u8 {
@@ -1474,18 +1659,19 @@ fn removeString(list: *std.ArrayList([]const u8), value: []const u8) void {
 }
 
 fn promptSettingsPath(alloc: std.mem.Allocator) ![]const u8 {
-    const home = mer_runtime.threaded.environString("HOME") orelse "/tmp";
-    return std.fmt.allocPrint(alloc, "{s}/.codegraff-gui/prompt-settings.json", .{home});
+    return std.fmt.allocPrint(alloc, "{s}/.codegraff-gui/prompt-settings.json", .{homeDir()});
 }
 
 fn themeSettingsPath(alloc: std.mem.Allocator) ![]const u8 {
-    const home = mer_runtime.threaded.environString("HOME") orelse "/tmp";
-    return std.fmt.allocPrint(alloc, "{s}/.codegraff-gui/theme-settings.json", .{home});
+    return std.fmt.allocPrint(alloc, "{s}/.codegraff-gui/theme-settings.json", .{homeDir()});
 }
 
 fn ensureSettingsDir(alloc: std.mem.Allocator) void {
-    const home = mer_runtime.threaded.environString("HOME") orelse "/tmp";
-    std.Io.Dir.cwd().createDir(mer_runtime.io, std.fmt.allocPrint(alloc, "{s}/.codegraff-gui", .{home}) catch return, .default_dir) catch {};
+    ensureDirectory(alloc, std.fmt.allocPrint(alloc, "{s}/.codegraff-gui", .{homeDir()}) catch return) catch {};
+}
+
+fn ensureDirectory(_: std.mem.Allocator, path: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(mer_runtime.io, path);
 }
 
 fn validThemeMode(mode: []const u8) bool {

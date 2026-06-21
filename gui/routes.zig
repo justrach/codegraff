@@ -7,6 +7,8 @@ const mer = @import("mer");
 const stub = @import("api/stub");
 
 pub const routes: []const mer.Route = &.{
+    .{ .path = "/api/pick_workspace", .render = stub.render },
+    .{ .path = "/api/pick_directory", .render = stub.render },
     .{ .path = "/api/open_workspace", .render = stub.render },
     .{ .path = "/api/get_runtime_status", .render = stub.render },
     .{ .path = "/api/get_session_snapshot", .render = stub.render },
