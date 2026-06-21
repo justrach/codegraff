@@ -1099,7 +1099,7 @@
     animation: cg-pane-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 .cg-pane-exit {
-    animation: cg-pane-fade-out 180ms ease-out both;
+    animation: cg-pane-fade-out 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @media (prefers-reduced-motion: reduce) {

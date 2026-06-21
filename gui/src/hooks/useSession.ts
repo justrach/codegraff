@@ -341,16 +341,13 @@ export function usePromptDraft(binding?: ChatBinding | null) {
         meta,
         currentWorkspace,
       );
-      const isConversationRunning =
-        getScopedConversationSummary(state, binding)?.isRunning ?? false;
 
       return {
         canCompose:
           currentWorkspacePath != null &&
           activeWorkspaceConfigured &&
           followupRequest == null &&
-          (draftEntry?.isPending ?? false) === false &&
-          !isConversationRunning,
+          (draftEntry?.isPending ?? false) === false,
         followupRequest,
         isPlanningMode: draftEntry?.isPlanningMode ?? false,
         isUltraMode: draftEntry?.isUltraMode ?? false,

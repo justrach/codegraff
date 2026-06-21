@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import {
   openWorkspaceInTarget,
@@ -21,13 +21,73 @@ import { useSessionActions } from "./useSession";
 
 export function useConversationActions(binding?: ChatBinding | null) {
   const rootActions = useSessionActions();
+  const queuedDrainRunningRef = useRef(false);
 
-  return useMemo(() => {
+  const actions = useMemo(() => {
     if (binding == null) {
       return rootActions;
     }
 
     const { conversationId, workspacePath } = binding;
+    const promptDraftKey = getPromptDraftKey(workspacePath, conversationId);
+
+    const restorePromptDraft = (
+      value: string,
+      isPlanningMode: boolean,
+      isUltraMode: boolean,
+      attachments: ReturnType<typeof getAttachments>,
+    ) => {
+      if (promptDraftKey == null) {
+        return;
+      }
+      const store = sessionStore.getState();
+      store.setPromptDraftValue(promptDraftKey, value);
+      store.setPromptDraftPlanningMode(promptDraftKey, isPlanningMode);
+      store.setPromptDraftUltraMode(promptDraftKey, isUltraMode);
+      store.clearAttachments(promptDraftKey);
+      store.addAttachments(promptDraftKey, attachments);
+    };
+
+    const submitCapturedPrompt = async (
+      value: string,
+      isPlanningMode: boolean,
+      isUltraMode: boolean,
+      attachments: ReturnType<typeof getAttachments>,
+    ) => {
+      if (promptDraftKey == null) {
+        return;
+      }
+
+      let prompt = appendAttachmentsToPrompt(value.trim(), attachments);
+
+      // Ultra mode: inject the `ultracode` codeword the harness watches for
+      // (case-insensitive substring -> multi-agent workflow turn). Skip it if
+      // the user already typed it. The toggle is a per-turn opt-in, so it is
+      // reset below once the prompt has been captured.
+      if (isUltraMode && !/ultracode/i.test(prompt)) {
+        prompt = `${prompt}\n\nultracode`;
+      }
+
+      const store = sessionStore.getState();
+      store.clearPromptDraft(promptDraftKey);
+      store.setPromptDraftUltraMode(promptDraftKey, false);
+      store.clearAttachments(promptDraftKey);
+      store.setPromptDraftPending(promptDraftKey, true);
+      try {
+        const snapshot = await desktopClient.sendPrompt({
+          agentId: isPlanningMode ? "muse" : "forge",
+          conversationId,
+          prompt,
+          workspacePath,
+        });
+        sessionStore.getState().applySessionSnapshot(snapshot);
+      } catch {
+        restorePromptDraft(value, isPlanningMode, isUltraMode, attachments);
+        return;
+      } finally {
+        sessionStore.getState().setPromptDraftPending(promptDraftKey, false);
+      }
+    };
 
     return {
       ...rootActions,
@@ -89,7 +149,6 @@ export function useConversationActions(binding?: ChatBinding | null) {
           .catch(() => null);
       },
       submitPrompt: async () => {
-        const promptDraftKey = getPromptDraftKey(workspacePath, conversationId);
         if (promptDraftKey == null) {
           return;
         }
@@ -101,51 +160,28 @@ export function useConversationActions(binding?: ChatBinding | null) {
         }
 
         const attachments = getAttachments(promptDraftKey);
-        let prompt = appendAttachmentsToPrompt(trimmedPrompt, attachments);
-
-        // Ultra mode: inject the `ultracode` codeword the harness watches for
-        // (case-insensitive substring → multi-agent workflow turn). Skip it if
-        // the user already typed it. The toggle is a per-turn opt-in, so it is
-        // reset below once the prompt has been captured.
-        if (draftState.isUltraMode && !/ultracode/i.test(prompt)) {
-          prompt = `${prompt}\n\nultracode`;
-        }
-
-        const restorePromptDraft = () => {
+        const activeRequestCount =
+          getConversationView(binding)?.activeRequestIds.length ?? 0;
+        if (activeRequestCount > 0) {
           const store = sessionStore.getState();
-          store.setPromptDraftValue(promptDraftKey, draftState.value);
-          store.setPromptDraftPlanningMode(
-            promptDraftKey,
-            draftState.isPlanningMode,
-          );
-          store.setPromptDraftUltraMode(promptDraftKey, draftState.isUltraMode);
-          store.clearAttachments(promptDraftKey);
-          store.addAttachments(promptDraftKey, attachments);
-        };
-
-        // Clear the composer immediately on send so the draft + any attachment
-        // don't linger in the bar while the turn runs (the prompt is already
-        // captured above). Reset Ultra explicitly: clearing only blanks the
-        // value, which on its own would leave the Ultra flag (and the lit
-        // toggle) stuck on for the next turn.
-        sessionStore.getState().clearPromptDraft(promptDraftKey);
-        sessionStore.getState().setPromptDraftUltraMode(promptDraftKey, false);
-        sessionStore.getState().clearAttachments(promptDraftKey);
-        sessionStore.getState().setPromptDraftPending(promptDraftKey, true);
-        try {
-          const snapshot = await desktopClient.sendPrompt({
-            agentId: draftState.isPlanningMode ? "muse" : "forge",
-            conversationId,
-            prompt,
-            workspacePath,
+          store.enqueuePrompt(promptDraftKey, {
+            attachments,
+            isPlanningMode: draftState.isPlanningMode,
+            isUltraMode: draftState.isUltraMode,
+            value: trimmedPrompt,
           });
-          sessionStore.getState().applySessionSnapshot(snapshot);
-        } catch {
-          restorePromptDraft();
+          store.clearPromptDraft(promptDraftKey);
+          store.setPromptDraftUltraMode(promptDraftKey, false);
+          store.clearAttachments(promptDraftKey);
           return;
-        } finally {
-          sessionStore.getState().setPromptDraftPending(promptDraftKey, false);
         }
+
+        await submitCapturedPrompt(
+          trimmedPrompt,
+          draftState.isPlanningMode,
+          draftState.isUltraMode,
+          attachments,
+        );
       },
       updatePromptSettings: async (input: {
         providerId: string;
@@ -156,4 +192,55 @@ export function useConversationActions(binding?: ChatBinding | null) {
       },
     };
   }, [binding, rootActions]);
+
+  useEffect(() => {
+    if (binding == null) {
+      return;
+    }
+
+    const { conversationId, workspacePath } = binding;
+    const promptDraftKey = getPromptDraftKey(workspacePath, conversationId);
+    if (promptDraftKey == null) {
+      return;
+    }
+
+    return sessionStore.subscribe((state) => {
+      if (queuedDrainRunningRef.current) {
+        return;
+      }
+
+      const view = getConversationView(binding);
+      const activeRequestCount = view?.activeRequestIds.length ?? 0;
+      const draft = state.promptDraftsByKey[promptDraftKey] ?? null;
+      const queue = state.queuedPromptsByKey[promptDraftKey] ?? [];
+      if (
+        activeRequestCount > 0 ||
+        queue.length === 0 ||
+        (draft?.isPending ?? false) ||
+        (draft?.value ?? "").trim().length > 0
+      ) {
+        return;
+      }
+
+      const next = sessionStore.getState().dequeuePrompt(promptDraftKey);
+      if (next == null) {
+        return;
+      }
+
+      const store = sessionStore.getState();
+      store.setPromptDraftValue(promptDraftKey, next.value);
+      store.setPromptDraftPlanningMode(promptDraftKey, next.isPlanningMode);
+      store.setPromptDraftUltraMode(promptDraftKey, next.isUltraMode);
+      store.clearAttachments(promptDraftKey);
+      store.addAttachments(promptDraftKey, next.attachments);
+      queuedDrainRunningRef.current = true;
+      queueMicrotask(() => {
+        void actions.submitPrompt().finally(() => {
+          queuedDrainRunningRef.current = false;
+        });
+      });
+    });
+  }, [actions, binding]);
+
+  return actions;
 }
