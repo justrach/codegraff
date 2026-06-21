@@ -126,9 +126,21 @@ function ActivityOperationRow({
   const isExpandable = result != null;
   const label = formatOperationLabel(operation, workspacePath);
   const isCommand = operation.detail.kind === "shell";
+  // Per-node live status, from what the stream gives us today: a node is
+  // running until its tool_result lands, then done or errored.
+  const status = !operation.completed
+    ? "running"
+    : operation.isError
+      ? "error"
+      : "done";
   const icon = renderOperationIcon(
     operation,
-    "size-3.5 shrink-0 text-muted-foreground/60",
+    cn(
+      "size-3.5 shrink-0",
+      status === "running" && "animate-pulse text-[color:var(--accent)]",
+      status === "error" && "text-destructive",
+      status === "done" && "text-muted-foreground/60",
+    ),
   );
 
   const content = (
