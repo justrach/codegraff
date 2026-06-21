@@ -2704,6 +2704,7 @@ const SteerEntry = struct { text: []const u8, force: bool };
 var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
 var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
 var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
+var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + Agent.emit)
 var g_force_interrupt = false; // Ctrl-F force caused the last interrupt
 var g_5xx_body_buf: [600]u8 = undefined; // snippet of the last 5xx/429 error body
 var g_5xx_body_len: usize = 0; // 0 = no body captured
@@ -8279,6 +8280,11 @@ const Agent = struct {
     /// field, e.g. tool input, serializes correctly). Best-effort.
     fn emit(self: *Agent, ev: anytype) void {
         const w = self.out orelse return;
+        // --json: the GUI stream is shared with pool-thread subagent emits
+        // (guiEmit), so serialize + flush under the lock — a raw line must never
+        // land mid-buffer and two writers must never interleave on stdout.
+        if (json_mode) g_gui_mu.lockUncancelable(self.io);
+        defer if (json_mode) g_gui_mu.unlock(self.io);
         var s: std.json.Stringify = .{ .writer = w };
         s.write(ev) catch return;
         w.writeByte('\n') catch return;
@@ -12487,6 +12493,22 @@ fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     return runSub(ctx, "subagent", label, prompt, sys_override);
 }
 
+/// Surface a workflow subagent as a synthetic `tool_call` / `tool_result` on the
+/// --json GUI stream so each parallel worker shows as its own live row — the
+/// orchestrator's children otherwise run detached (out=null), so the GUI only
+/// ever saw the single `workflow` op. Pool-thread safe: serializes on g_gui_mu
+/// with Agent.emit (same json stdout writer, g_out). No-op outside --json mode.
+fn guiEmit(io: Io, ev: anytype) void {
+    if (!json_mode) return;
+    const w = g_out orelse return;
+    g_gui_mu.lockUncancelable(io);
+    defer g_gui_mu.unlock(io);
+    var s: std.json.Stringify = .{ .writer = w };
+    s.write(ev) catch return;
+    w.writeByte('\n') catch return;
+    w.flush() catch return;
+}
+
 /// Run one isolated subagent to completion: fresh arena, fresh history,
 /// same shared http client and provider. Runs entirely on this pool thread;
 /// its own tool calls fan out further via io.async. `sys_override` swaps the
@@ -12521,11 +12543,15 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
     const sub_id = subagentId(&id_buf, ordinal, label, prompt);
     const sprite = subagentSprite(ordinal);
     subagentLaunchCard(arena, sub_id, sprite, label, kind, prompt);
+    // Live agent tree: surface workflow_task children as their own GUI rows.
+    const wf_task = std.mem.eql(u8, kind, "workflow_task");
+    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label } });
     try agent.messages.append(try textMessage(arena, "user", prompt));
     defer agent.tools_used.deinit(gpa);
     const report = agent.runTurn();
     const run_ms: i64 = @intCast(@max(0, sub_start.untilNow(ctx.io, .awake).toMilliseconds()));
     const run_ok = if (report) |r| r.len > 0 else |_| false;
+    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_result", .name = "subagent", .is_error = !run_ok });
     const tools = agent.tools_used.render(arena);
     const fp = promptFingerprint(agent.systemPrompt());
     if (g_traj) |tj| {
