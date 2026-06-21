@@ -1706,7 +1706,14 @@ fn signScore(
 /// Read the signing key from GRAFF_SCORE_KEY_FILE (a path outside cwd) into
 /// `arena`. Whitespace-trimmed; null when unset, unreadable, or empty.
 fn loadScoreKey(io: Io, arena: Allocator, environ: anytype) ?[]const u8 {
-    const path = environ.get("GRAFF_SCORE_KEY_FILE") orelse return null;
+    // GRAFF_SCORE_KEY_FILE wins; otherwise fall back to the harness's standard
+    // key location (~/.simple-harness/score.key), so a Finder-launched GUI —
+    // which never inherits the shell's env — still signs DGM scores. Missing
+    // file → null (unsigned), unchanged for anyone without a key.
+    const path = environ.get("GRAFF_SCORE_KEY_FILE") orelse blk: {
+        const home = environ.get("HOME") orelse return null;
+        break :blk std.fmt.allocPrint(arena, "{s}/.simple-harness/score.key", .{home}) catch return null;
+    };
     const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return null;
     const trimmed = std.mem.trim(u8, data, " \t\r\n");
     return if (trimmed.len == 0) null else trimmed;
