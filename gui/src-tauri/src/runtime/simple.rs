@@ -870,6 +870,11 @@ impl RuntimeManager {
                     };
                     let id = format!("{request_id}-tool-{}", Uuid::new_v4().simple());
                     let rid = request_id.to_string();
+                    let call_id = event
+                        .get("call_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .filter(|value| !value.is_empty());
                     self.mutate_conversation(conversation_id, move |conversation| {
                         if let Some(todos) = todos {
                             conversation.todos = todos;
@@ -878,7 +883,7 @@ impl RuntimeManager {
                             id,
                             request_id: rid,
                             name,
-                            call_id: None,
+                            call_id,
                             detail,
                         });
                     })
@@ -945,12 +950,17 @@ impl RuntimeManager {
                     };
                     let id = format!("{request_id}-toolend-{}", Uuid::new_v4().simple());
                     let rid = request_id.to_string();
+                    let call_id = event
+                        .get("call_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .filter(|value| !value.is_empty());
                     self.mutate_conversation(conversation_id, move |conversation| {
                         conversation.messages.push(SessionMessageDto::ToolEnd {
                             id,
                             request_id: rid,
                             name,
-                            call_id: None,
+                            call_id,
                             summary,
                             is_error,
                             detail,

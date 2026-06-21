@@ -571,7 +571,10 @@ function summarizeActivityGroup(operations: ActivityOperation[]): string {
         fetches += 1;
         break;
       case "task":
-        subagents += 1;
+        // The workflow orchestrator is itself a "task" op — count only real workers.
+        if (operation.detail.label !== "workflow") {
+          subagents += 1;
+        }
         break;
       default:
         others += 1;
