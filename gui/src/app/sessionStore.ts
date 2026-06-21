@@ -226,6 +226,7 @@ function deriveConversationViews(snapshot: SessionSnapshot) {
         requestAgentIds: snapshot.visibleRequestAgentIds,
         todos: snapshot.visibleTodos,
         workspacePath: snapshot.activeWorkspacePath,
+        ultracodeEnabled: false,
       } satisfies ConversationViewSnapshot,
     ];
   }

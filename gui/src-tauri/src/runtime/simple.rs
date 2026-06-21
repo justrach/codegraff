@@ -1270,7 +1270,7 @@ impl RuntimeManager {
                 Ok(CommandRunResultDto {
                     title: "/ultracode".into(),
                     body: Some(body.into()),
-                    snapshot: None,
+                    snapshot: Some(self.snapshot().await?),
                     saved_path: None,
                     result_kind: CommandResultKindDto::Text,
                     payload: None,
@@ -2534,6 +2534,7 @@ fn conversation_view(
         active_request_ids: conversation.active_request_ids.clone(),
         request_agent_ids: conversation.request_agent_ids.clone(),
         todos: conversation.todos.clone(),
+        ultracode_enabled: Some(conversation.ultracode_enabled),
         goal: conversation.goal.clone(),
         followup,
     }

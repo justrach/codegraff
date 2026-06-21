@@ -66,6 +66,7 @@ export function PromptInputCard({
   isSendingPrompt,
   isPlanningMode,
   isUltraMode,
+  ultracodeEnabled = false,
   placeholder = "Ask about this workspace…",
   promptSettings,
   promptDraft,
@@ -105,6 +106,7 @@ export function PromptInputCard({
   // primary button back into Send; an empty draft keeps it as Stop.
   const isTextareaDisabled = isSendingPrompt || !canCompose || isInputDisabled;
   const isWorking = isRequestActive;
+  const ultraActive = isUltraMode || ultracodeEnabled;
   const isQueueSubmit = isWorking;
   const isSubmitDisabled =
     !canCompose ||
@@ -342,7 +344,7 @@ export function PromptInputCard({
           "relative gap-0 rounded-2xl border border-foreground/5 bg-background/50 p-2 transition-colors transition-shadow ring-0",
           isPlanningMode &&
             "border-[color:var(--accent)] ring-5 ring-[color:color-mix(in_oklab,var(--accent)_14%,transparent)] border-dashed",
-          isUltraMode && "cg-ultra-shine border-transparent",
+          ultraActive && "cg-ultra-shine border-transparent",
         )}
       >
         <CardHeader className="sr-only">
@@ -381,7 +383,7 @@ export function PromptInputCard({
               placeholder={
                 isWorking
                   ? "Queue a follow-up…"
-                  : isUltraMode
+                  : ultraActive
                     ? "Describe the job — Ultra fans out parallel agents"
                     : placeholder
               }
@@ -610,7 +612,7 @@ export function PromptInputCard({
             size="icon-lg"
             className={cn(
               "rounded-full transition-shadow",
-              isUltraMode &&
+              ultraActive &&
                 "shadow-[0_0_18px_-2px_color-mix(in_oklab,var(--accent)_70%,transparent)] ring-2 ring-[color:color-mix(in_oklab,var(--accent)_45%,transparent)]",
             )}
             aria-label={isWorking && isSubmitDisabled ? "Stop" : "Send"}

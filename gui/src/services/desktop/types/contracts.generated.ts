@@ -31,6 +31,11 @@ export type ChatBinding = { workspacePath: string, conversationId: string, };
 
 export type ConversationViewSnapshot = { workspacePath: string, conversationId: string, messages: Array<SessionMessage>, activeRequestIds: Array<string>, requestAgentIds: { [key in string]: string }, todos: Array<SessionTodo>,
 /**
+ * Persistent ultracode (multi-agent workflow) mode for this chat (`/ultracode`),
+ * surfaced so the composer can show the Ultra shine as a live indicator.
+ */
+ultracodeEnabled?: boolean,
+/**
  * Steering objective for this chat, set via `/goal`. Surfaced in the UI as
  * the goal chip above the composer. Omitted from the payload when unset.
  */

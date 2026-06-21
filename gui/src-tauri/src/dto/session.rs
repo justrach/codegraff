@@ -127,6 +127,11 @@ pub struct ConversationViewSnapshotDto {
     pub active_request_ids: Vec<String>,
     pub request_agent_ids: HashMap<String, String>,
     pub todos: Vec<SessionTodoDto>,
+    /// Persistent ultracode (multi-agent workflow) mode for this chat (`/ultracode`),
+    /// surfaced so the composer can show the Ultra shine as a live indicator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ultracode_enabled: Option<bool>,
     /// Steering objective for this chat, set via `/goal`. Surfaced in the UI as
     /// the goal chip above the composer. Omitted from the payload when unset.
     #[serde(skip_serializing_if = "Option::is_none")]

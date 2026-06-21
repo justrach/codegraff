@@ -31,6 +31,7 @@ export interface PromptInputCardProps {
   isSendingPrompt: boolean;
   isPlanningMode: boolean;
   isUltraMode: boolean;
+  ultracodeEnabled?: boolean;
   placeholder?: string;
   promptSettings: PromptSettings | null;
   promptDraft: string;

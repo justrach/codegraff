@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { useConversationSession } from "../hooks/useSession";
+import { useConversationSession, useConversationView } from "../hooks/useSession";
 import { usePrompt } from "../hooks/usePrompt";
 import { useCommandRouter } from "../hooks/useCommandRouter";
 import { CommandResultDialog } from "./CommandResultDialog";
@@ -39,6 +39,8 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
   } = usePrompt(binding);
   const { goal, messages, requestAgentIds, todos } =
     useConversationSession(binding);
+  const conversationView = useConversationView(binding);
+  const ultracodeEnabled = conversationView?.ultracodeEnabled ?? false;
   const { openProviderSettings } = useSettingsNavigation();
   const [dismissedInterruptId, setDismissedInterruptId] = useState<string | null>(
     null,
@@ -229,6 +231,7 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
             isSendingPrompt={isSendingPrompt}
             isPlanningMode={isPlanningMode}
             isUltraMode={isUltraMode}
+            ultracodeEnabled={ultracodeEnabled}
             promptSettings={promptSettings}
             promptDraft={promptDraft}
             promptHistory={promptHistory}

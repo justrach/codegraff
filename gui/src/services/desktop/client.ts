@@ -140,6 +140,7 @@ function createQaSnapshot(
         requestAgentIds: {},
         todos: [],
         workspacePath: QA_WORKSPACE_PATH,
+        ultracodeEnabled: false,
       },
     ],
     savedWorkspaces: [],
