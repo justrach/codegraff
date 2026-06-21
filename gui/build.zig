@@ -80,6 +80,11 @@ pub fn build(b: *std.Build) void {
     const build_step = b.step("native-build", "Build the native shell binary (prod)");
     build_step.dependOn(b.getInstallStep());
 
+    const backend_tests = b.addTest(.{ .root_module = backend_mod });
+    const run_backend_tests = b.addRunArtifact(backend_tests);
+    const test_step = b.step("test", "Run GUI backend unit tests");
+    test_step.dependOn(&run_backend_tests.step);
+
     // `package` — .app bundle with manifest-driven Info.plist.
     const app_zon = @import("mer.app.zon");
     const pkg_name = b.fmt("{s}.app", .{app_zon.display_name});
