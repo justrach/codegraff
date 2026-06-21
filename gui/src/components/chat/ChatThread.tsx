@@ -132,10 +132,24 @@ export function ChatThread({
   }, [items.length]);
 
   // The thread re-renders on every streaming update, so keep locked chats pinned
-  // after both React commit and LegendList's follow-up layout measurements.
+  // after both React commit and LegendList's follow-up layout measurements. When
+  // we're NOT following, re-measure the real scroll node instead: if a content or
+  // layout change has settled us at the physical bottom (e.g. a long turn just
+  // finished with nothing below it), recover the follow state so the
+  // jump-to-latest pill doesn't linger. The DOM read only runs while the pill is
+  // actually showing, so it never taxes the streaming-follow path.
   useEffect(() => {
     if (isFollowingRef.current) {
       scheduleFollowToBottom();
+      return;
+    }
+    const node = listRef.current?.getScrollableNode();
+    if (
+      node != null &&
+      node.scrollHeight - node.clientHeight - node.scrollTop <=
+        BOTTOM_LOCK_THRESHOLD
+    ) {
+      setFollowing(true);
     }
   });
 
@@ -169,8 +183,15 @@ export function ChatThread({
         event.nativeEvent;
       const offset = contentOffset.y;
       const previousOffset = lastScrollOffsetRef.current;
+      // LegendList virtualizes with estimated item sizes, so the event's
+      // contentSize can disagree with the real scroll height — measure the
+      // actual scrollable node so "at the bottom" is exact and the pill doesn't
+      // linger while you're parked at the end.
+      const node = listRef.current?.getScrollableNode() ?? null;
       const distanceFromBottom =
-        contentSize.height - layoutMeasurement.height - offset;
+        node != null
+          ? node.scrollHeight - node.clientHeight - node.scrollTop
+          : contentSize.height - layoutMeasurement.height - offset;
       const isAtBottom = distanceFromBottom <= BOTTOM_LOCK_THRESHOLD;
 
       if (
@@ -186,7 +207,10 @@ export function ChatThread({
         userWantsFollowRef.current = true;
       }
 
-      if (isAtBottom && userWantsFollowRef.current && !isFollowingRef.current) {
+      // Physically at the bottom ⇒ following again, regardless of recent scroll
+      // intent — this is what clears a pill left lingering after you return.
+      if (isAtBottom && !isFollowingRef.current) {
+        userWantsFollowRef.current = true;
         setFollowing(true);
         scheduleFollowToBottom();
       }
@@ -205,6 +229,16 @@ export function ChatThread({
     }
     if (event.deltaY > 0) {
       userWantsFollowRef.current = true;
+      // A downward flick while already pinned emits no scroll event, so
+      // recover the follow state here too.
+      const node = listRef.current?.getScrollableNode() ?? null;
+      if (
+        node != null &&
+        node.scrollHeight - node.clientHeight - node.scrollTop <=
+          BOTTOM_LOCK_THRESHOLD
+      ) {
+        setFollowing(true);
+      }
     }
   }, [setFollowing]);
 
