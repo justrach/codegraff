@@ -292,9 +292,16 @@ impl RuntimeManager {
                     &conversation_id,
                     serde_json::json!({
                         "type": "set_model",
-                        // Bare model only: let the harness prefer-direct (same as
-                        // the spawn-time --model), instead of pinning the gateway.
+                        // Send BOTH model and provider so the harness routes to the
+                        // exact provider the user picked in the menu (gpt-5.5 from
+                        // Codex vs the Codegraff gateway). A bare model can't be
+                        // pinned to a provider, so an explicit Codex pick was dropped
+                        // and models that exist under two providers (the two gpt-5.5
+                        // entries) failed to switch at all — the engine emits an
+                        // `error` event, send_control surfaces it, and the whole
+                        // update aborts (then the UI swallows it).
                         "model": selected_model.name.as_str(),
+                        "provider": selected_model.provider.as_str(),
                     }),
                 )
                 .await?;
@@ -3103,24 +3110,54 @@ fn followup_answer_line(request: &FollowupRequestDto, response: &FollowupRespons
 /// `current_dir` set to the workspace, and a relative program path would be
 /// resolved against that workspace (not the repo) — so a relative override like
 /// `CODEGRAFF_GUI_BINARY=../zig-out/bin/graff` must be canonicalized here.
+/// True only for a real, non-empty, executable file. A path that exists but is
+/// empty or not executable (e.g. an `externalBin` sidecar copy a `cargo build`
+/// left half-written, or a clobbered 0-byte binary) must NOT be returned as the
+/// engine path — a bare `is_file()` check would hand it back and shadow the
+/// working fallbacks below, and the spawn then dies with EACCES on exec.
+fn is_usable_binary(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn codegraff_binary() -> String {
-    // 1. Explicit override, canonicalized to absolute when it resolves to a file.
+    // 1. Explicit override, canonicalized to absolute when it resolves to a
+    //    usable file. A broken override falls through to the built-in rather
+    //    than failing the launch outright.
     if let Some(value) = std::env::var("CODEGRAFF_GUI_BINARY")
         .ok()
         .filter(|value| !value.trim().is_empty())
     {
         if let Ok(absolute) = std::fs::canonicalize(&value) {
-            return absolute.to_string_lossy().into_owned();
+            if is_usable_binary(&absolute) {
+                return absolute.to_string_lossy().into_owned();
+            }
         }
-        // Doesn't resolve from the current dir — fall through to the built-in.
+        // Doesn't resolve to a usable file — fall through to the built-in.
     }
     // 2. Bundled sidecar: Tauri's externalBin lands next to the app executable
     //    (Contents/MacOS/graff on macOS), so a packaged .app is self-contained —
     //    no separate CLI install needed. This is what fixes GUI-only users.
+    //    Guard on is_usable_binary: an interrupted `cargo build` can leave a
+    //    0-byte sidecar here, and a bare is_file() check would return it and
+    //    shadow the working binaries below (the EACCES-at-exec failure).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let p = dir.join("graff");
-            if p.is_file() {
+            if is_usable_binary(&p) {
                 return p.to_string_lossy().into_owned();
             }
         }
@@ -3128,7 +3165,9 @@ fn codegraff_binary() -> String {
     // 3. Dev build: <crate>/../../zig-out/bin/graff (only exists on a dev machine).
     let candidate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zig-out/bin/graff");
     if let Ok(absolute) = std::fs::canonicalize(&candidate) {
-        return absolute.to_string_lossy().into_owned();
+        if is_usable_binary(&absolute) {
+            return absolute.to_string_lossy().into_owned();
+        }
     }
     // 4. Known install locations. A Finder/Dock-launched .app inherits launchd's
     //    minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), which excludes ~/bin,
@@ -3139,7 +3178,7 @@ fn codegraff_binary() -> String {
     if let Ok(home) = std::env::var("HOME") {
         for rel in ["bin/graff", ".local/bin/graff"] {
             let p = Path::new(&home).join(rel);
-            if p.is_file() {
+            if is_usable_binary(&p) {
                 return p.to_string_lossy().into_owned();
             }
         }
@@ -3149,7 +3188,7 @@ fn codegraff_binary() -> String {
         "/usr/local/bin/graff",
         "/usr/bin/graff",
     ] {
-        if Path::new(abs).is_file() {
+        if is_usable_binary(Path::new(abs)) {
             return abs.to_string();
         }
     }
