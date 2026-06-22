@@ -2559,6 +2559,68 @@ var g_path_env: []const u8 = "";
 /// Human-facing current workspace folder shown in the REPL prompt.
 var g_cwd_display: []const u8 = ".";
 
+/// Short task label for terminal/TUI headers. Mirrors the GUI's first-prompt
+/// fallback: use the user's first message as a compact tab/session title.
+fn titleFromPrompt(prompt: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
+    if (trimmed.len == 0) return "Chat";
+    var end: usize = 0;
+    var codepoints: usize = 0;
+    while (end < trimmed.len and codepoints < 64) {
+        if (trimmed[end] == '\n' or trimmed[end] == '\r' or trimmed[end] == '\t') break;
+        const cp_len = std.unicode.utf8ByteSequenceLength(trimmed[end]) catch 1;
+        end += cp_len;
+        codepoints += 1;
+    }
+    var out = std.mem.trim(u8, trimmed[0..@min(end, trimmed.len)], " \t\r\n");
+    if (out.len == 0) return "Chat";
+    if (codepoints >= 64 and end < trimmed.len) {
+        if (std.mem.lastIndexOfScalar(u8, out, ' ')) |sp| {
+            if (sp >= 12) out = std.mem.trim(u8, out[0..sp], " ");
+        }
+    }
+    return out;
+}
+
+fn folderBasename(path: []const u8) []const u8 {
+    var end = path.len;
+    while (end > 1 and path[end - 1] == '/') end -= 1;
+    const trimmed = path[0..end];
+    if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |idx| return trimmed[idx + 1 ..];
+    return trimmed;
+}
+
+fn firstUserTitle(arena: Allocator, msgs: std.json.Array) []const u8 {
+    for (msgs.items) |m| {
+        if (m != .object) continue;
+        const role = if (m.object.get("role")) |r| (if (r == .string) r.string else "") else "";
+        if (!std.mem.eql(u8, role, "user")) continue;
+        return titleFromPrompt(extractText(arena, m));
+    }
+    return "Chat";
+}
+
+fn setTerminalTitle(w: *Io.Writer, title: []const u8, folder: []const u8) void {
+    if (!use_color or json_mode) return;
+    const folder_name = folderBasename(folder);
+    // OSC 0 is conventional xterm title; OSC 1/2 make iTerm/Ghostty-style tab
+    // and window titles update too instead of leaving the launch command there.
+    w.print("\x1b]0;Codegraff: {s} — {s}\x07\x1b]1;Codegraff: {s} — {s}\x07\x1b]2;Codegraff: {s} — {s}\x07", .{ title, folder_name, title, folder_name, title, folder_name }) catch return;
+    w.flush() catch return;
+}
+
+fn printSessionHeader(w: *Io.Writer, title: []const u8, folder: []const u8) !void {
+    if (json_mode) return;
+    try w.print("\n{s}╭─ Codegraff{s}\n{s}│ Working on:{s} {s}\n{s}│ Folder:{s} {s}\n{s}╰────────────────────────────{s}\n", .{
+        style.dim,   style.reset,
+        style.dim,   style.reset,
+        title,       style.dim,
+        style.reset, folder,
+        style.dim,   style.reset,
+    });
+    try w.flush();
+}
+
 fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, g_path_env, ':');
     var buf: [1024]u8 = undefined;
@@ -4908,8 +4970,14 @@ pub fn main(init: std.process.Init) !void {
                 // Estimate the restored context from the file size (~4 bytes/token).
                 const est_path = try std.fmt.allocPrint(arena, "{s}{s}", .{ root.session_name, session_ext });
                 const est: u64 = if (Io.Dir.cwd().statFile(io, est_path, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
-                if (!json_mode) try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ root.session_name, session_ext, root.messages.items.len, root.provider.model });
-                if (!json_mode) try out.flush();
+                if (!json_mode) {
+                    const restored_title = firstUserTitle(arena, root.messages);
+                    setTerminalTitle(out, restored_title, g_cwd_display);
+                    try printSessionHeader(out, restored_title, g_cwd_display);
+                    root.tui_header_shown = true;
+                    try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ root.session_name, session_ext, root.messages.items.len, root.provider.model });
+                    try out.flush();
+                }
                 // Cold cache: if the restored context is as large as what would
                 // trigger live compaction, the first turn would re-bill the whole
                 // thing — summarize up front instead.
@@ -5186,6 +5254,19 @@ pub fn main(init: std.process.Init) !void {
         // Promote a GUI `@[image]` attachment to a native vision block when the
         // model can see (otherwise it only gets the path and resorts to OCR).
         stageGuiImageAttachment(&root, msg);
+
+        // TUI/session header: once the first real prompt materializes the chat,
+        // show what this terminal tab is working on and the exact folder, like
+        // the GUI conversation header. Keep the terminal/window title in sync
+        // at the start of each user turn.
+        if (!json_mode) {
+            const turn_title = titleFromPrompt(base_msg);
+            setTerminalTitle(out, turn_title, g_cwd_display);
+            if (!root.tui_header_shown) {
+                try printSessionHeader(out, turn_title, g_cwd_display);
+                root.tui_header_shown = true;
+            }
+        }
 
         // "ultracode" codeword or persistent /ultracode mode: opt turns into multi-agent workflow mode.
         const ultracode_msg = try applyUltracodeSteering(arena, msg, root.ultracode_mode);
@@ -5904,8 +5985,10 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.messages = std.json.Array.init(arena);
         root.last_context_tokens = 0;
         root.last_cache_read = 0;
+        root.tui_header_shown = false;
         root.todos.clearRetainingCapacity();
         saveSession(root, arena, root.session_name) catch {};
+        setTerminalTitle(out, "Chat", g_cwd_display);
         try out.writeAll("context cleared — fresh conversation\n");
         try out.flush();
         return;
@@ -6908,6 +6991,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /goal [text]    set/show persistent objective steering; /goal clear clears
         \\  /loop <prompt>  run an autonomous plan→act→verify pass
         \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
+        \\  /ultracode      toggle persistent workflow mode; bare opens on/off picker, or /ultracode on|off
         \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
         \\  /login [tgt]    OAuth sign-in (no key to paste): codegraff | codex (alias oai) | kimi; bare → picker
         \\  /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
@@ -6937,8 +7021,8 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\
         \\esc during a response interrupts the turn (what streamed stays in history).
         \\"always allow" answers persist to .harness/settings.json in the cwd.
-        \\codeword: include "ultracode" in any message to force a multi-agent
-        \\workflow turn (phases of parallel subagents, then synthesis).
+        \\codeword: include "ultracode" in any message to force one multi-agent
+        \\workflow turn; /ultracode on persists that behavior for future prompts.
         \\
         \\launch flags: --model <name> · --yolo (skip prompts) · -p "prompt" (one-shot) · --system-prompt/--append-system-prompt · --timing · --cost · --json (SDK protocol) · --help · --version
         \\subcommands: `graff login [codex]` (OAuth) · `graff key set <provider> <key>` (Keychain) · `graff --schema`
@@ -8313,6 +8397,7 @@ const Agent = struct {
     cap_new: bool = false, // provider rejected max_tokens → use max_completion_tokens
     effort_rejected: bool = false, // model rejected reasoning_effort → drop it (e.g. gpt-5.5 on chat/completions wants /v1/responses)
     next_ask_id: u64 = 1,
+    tui_header_shown: bool = false,
 
     fn prompt(self: *Agent) !void {
         if (json_mode) return; // SDK drives turns; no human prompt
@@ -13776,6 +13861,13 @@ test "priceFor: known model priced, unknown is null" {
     try std.testing.expect(priceFor("no-such-model") == null);
 }
 
+test "titleFromPrompt and folderBasename format TUI headers" {
+    try std.testing.expectEqualStrings("Chat", titleFromPrompt(" \n\t "));
+    try std.testing.expectEqualStrings("Refactor the auth middleware", titleFromPrompt("  Refactor the auth middleware\nwith tests"));
+    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/rach/src/codegraff"));
+    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/rach/src/codegraff/"));
+}
+
 test "ultracode toggle choices put the opposite state first" {
     try std.testing.expectEqualStrings("on", ultracodeToggleItems(false)[0].name);
     try std.testing.expectEqualStrings("off", ultracodeToggleItems(false)[1].name);
@@ -13800,6 +13892,17 @@ test "applyUltracodeSteering handles explicit and persistent modes" {
     try std.testing.expect(explicit.explicit);
     try std.testing.expect(std.mem.indexOf(u8, explicit.text, "user invoked the \"ultracode\" codeword") != null);
     try std.testing.expect(std.mem.indexOf(u8, explicit.text, "ultracode mode is enabled") == null);
+}
+
+test "fillCompletions includes ultracode slash command" {
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    _ = fillCompletions(std.testing.allocator, "/ult", &out);
+    var found = false;
+    for (out.items) |item| {
+        if (std.mem.eql(u8, item, "/ultracode")) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "visionModel: vision-capable model families only" {
