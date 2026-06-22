@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { useContext } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -110,7 +110,7 @@ function createSnapshot(
 }
 
 const runtimeStatusFixture: RuntimeStatus = {
-  availableOpenTargets: ["cursor"],
+  availableOpenTargets: ["file-manager"],
   configurationError: null,
   configured: true,
   gitBranchName: "main",
@@ -139,9 +139,17 @@ mock.module("../services/desktop/client", () => ({
   setFast: async () => {},
   saveAttachmentFile: async (input: { name: string }) => `/tmp/${input.name}`,
   savePastedImage: async () => "/tmp/pasted-image.png",
+  readClipboardText: async () => "",
+  writeClipboardText: async () => {},
+  pickDirectory: async () => "/workspace/codegraff-gui",
+  drainPendingOpen: async () => null,
   imageThumbnail: async () => "data:image/jpeg;base64,",
   openExternalUrl: async () => {},
+  openInTarget: async () => {},
+  openPathDefault: async () => {},
+  openPathForEdit: async () => {},
   openPathInTarget: async () => {},
+  setWindowTitle: async () => {},
   ensureConversationView: async () => {
     ensureConversationViewCallCount += 1;
     return createSnapshot("/workspace/unused", "unused");
@@ -204,6 +212,10 @@ const { SessionActionsContext } = await import("./SessionContext");
 const { SessionProvider } = await import("./SessionProvider");
 const { getPromptDraftKey } = await import("./sessionSnapshot");
 const { resetSessionStore, sessionStore } = await import("./sessionStore");
+
+afterAll(() => {
+  mock.restore();
+});
 
 describe("SessionProvider", () => {
   beforeEach(() => {

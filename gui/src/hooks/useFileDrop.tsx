@@ -14,11 +14,17 @@ import {
   extractAttachmentTransferItems,
   type AttachmentTransferItem,
 } from "@/components/attachments/attachmentTransfer";
+import { resolveDropZoneCandidateId } from "./fileDropResolution";
 
 interface DropZone {
   id: string;
   ref: RefObject<HTMLElement | null>;
   onDrop: (items: AttachmentTransferItem[]) => void;
+  isActiveTarget: () => boolean;
+}
+
+interface DropZoneOptions {
+  isActiveTarget?: boolean;
 }
 
 interface DragDropContextValue {
@@ -67,37 +73,28 @@ export function DragDropProvider({ children }: { children: ReactNode }) {
 
       const candidates = visibleZones.length > 0 ? visibleZones : zones;
 
-      // A single visible composer (landing / single chat) is unambiguous — route
-      // to it without depending on coordinate mapping, which differs across
-      // platforms and titlebar styles.
-      if (candidates.length === 1) {
-        return candidates[0].id;
-      }
-
       // Multiple panes visible: hit-test the cursor. Native bridges may report
       // physical pixels; DOM drag events report CSS pixels.
       const dpr = window.devicePixelRatio || 1;
       const x = position.cssPixels ? position.x : position.x / dpr;
       const y = position.cssPixels ? position.y : position.y / dpr;
 
-      for (const zone of candidates) {
-        const element = zone.ref.current;
-        if (element == null) {
-          continue;
-        }
-
-        const rect = element.getBoundingClientRect();
-        if (
-          x >= rect.left &&
-          x <= rect.right &&
-          y >= rect.top &&
-          y <= rect.bottom
-        ) {
-          return zone.id;
-        }
-      }
-
-      return null;
+      return resolveDropZoneCandidateId(
+        candidates.flatMap((zone) => {
+          const element = zone.ref.current;
+          if (element == null) {
+            return [];
+          }
+          return [
+            {
+              id: zone.id,
+              rect: element.getBoundingClientRect(),
+              isActiveTarget: zone.isActiveTarget(),
+            },
+          ];
+        }),
+        { x, y },
+      );
     },
     [],
   );
@@ -228,6 +225,7 @@ export function DragDropProvider({ children }: { children: ReactNode }) {
 export function useDropZone(
   ref: RefObject<HTMLElement | null>,
   onDrop: (items: AttachmentTransferItem[]) => void,
+  options: DropZoneOptions = {},
 ) {
   const context = useContext(DragDropContext);
   const zoneId = `drop-zone-${useId()}`;
@@ -236,6 +234,10 @@ export function useDropZone(
   useEffect(() => {
     onDropRef.current = onDrop;
   }, [onDrop]);
+  const isActiveTargetRef = useRef(options.isActiveTarget ?? false);
+  useEffect(() => {
+    isActiveTargetRef.current = options.isActiveTarget ?? false;
+  }, [options.isActiveTarget]);
 
   // `register` is referentially stable, so this effect runs once per mount —
   // depending on the whole `context` would re-register on every drag update.
@@ -249,6 +251,7 @@ export function useDropZone(
       id: zoneId,
       ref,
       onDrop: (paths) => onDropRef.current(paths),
+      isActiveTarget: () => isActiveTargetRef.current,
     });
   }, [register, ref, zoneId]);
 

@@ -9,13 +9,9 @@ export async function openFilePathFromChat(
   }
 
   try {
-    await openPathInTarget(workspacePath, "cursor", path);
-  } catch (ideError) {
-    try {
-      await openPathInTarget(workspacePath, "file-manager", path);
-    } catch (fileManagerError) {
-      console.error("Failed to open file path", { ideError, fileManagerError });
-    }
+    await openPathInTarget(workspacePath, "file-manager", path);
+  } catch (error) {
+    console.error("Failed to open file path", error);
   }
 }
 

@@ -39,6 +39,10 @@ import { CommandAutocomplete } from "@/components/CommandAutocomplete";
 import { AttachmentTray } from "@/components/attachments/AttachmentTray";
 import { DropOverlay } from "@/components/attachments/DropOverlay";
 import {
+  areChatBindingsEqual,
+  getUiActiveBinding,
+} from "@/app/sessionStore";
+import {
   extractAttachmentTransferItems,
   filterSupportedAttachmentTransferItems,
   getAttachmentTransferFileName,
@@ -51,11 +55,15 @@ import {
 } from "@/components/attachments/attachmentTypes";
 import { parseChoiceCommand } from "@/components/commandChoices";
 import { useAutosizeTextarea } from "@/hooks/useAutosizeTextarea";
-import { useAttachments } from "@/hooks/useSession";
+import { useAttachments, useSessionStore } from "@/hooks/useSession";
 import { useCommandAutocomplete } from "@/hooks/useCommandAutocomplete";
 import { useDropZone } from "@/hooks/useFileDrop";
 import { usePromptModelPicker } from "@/hooks/usePromptModelPicker";
-import { saveAttachmentFile, setFast } from "@/services/desktop/client";
+import {
+  readClipboardText,
+  saveAttachmentFile,
+  setFast,
+} from "@/services/desktop/client";
 import { cn } from "@/utils/cn";
 import {
   getPromptHistoryNavigationResult,
@@ -109,6 +117,10 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
+async function readClipboardTextWithFallback(): Promise<string> {
+  return readClipboardText();
+}
+
 export function PromptInputCard({
   canCompose,
   isRequestActive,
@@ -143,8 +155,16 @@ export function PromptInputCard({
   const handledPasteAtRef = useRef(0);
   const { attachments, addAttachments, removeAttachment, replaceAttachments } =
     useAttachments(binding);
+  const isActiveDropTarget = useSessionStore((state) => {
+    if (binding == null) {
+      return true;
+    }
+    return areChatBindingsEqual(binding, getUiActiveBinding(state));
+  });
   const { isActive: isDropActive } = useDropZone(dropZoneRef, (items) => {
     void attachTransferItems(items);
+  }, {
+    isActiveTarget: isActiveDropTarget,
   });
   const canQueueFollowup = isRequestActive && !isInputDisabled;
   const canEditPrompt = canCompose || canQueueFollowup;
@@ -448,8 +468,7 @@ export function PromptInputCard({
       event.nativeEvent.isComposing ||
       event.altKey ||
       (!event.metaKey && !event.ctrlKey) ||
-      event.key.toLowerCase() !== "v" ||
-      navigator.clipboard?.readText == null
+      event.key.toLowerCase() !== "v"
     ) {
       return;
     }
@@ -468,8 +487,7 @@ export function PromptInputCard({
         return;
       }
 
-      void navigator.clipboard
-        .readText()
+      void readClipboardTextWithFallback()
         .then((text) => {
           if (
             text.length === 0 ||

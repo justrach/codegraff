@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { writeClipboardText } from "@/services/desktop/client";
 import type { UseCopyToClipboardOptions } from "./types/copy";
 
 const DEFAULT_COPY_RESET_DELAY_MS = 1200;
@@ -22,16 +23,12 @@ export function useCopyToClipboard(
 
   const copy = useCallback(
     async (value: string | null | undefined): Promise<boolean> => {
-      if (
-        value == null ||
-        value.length === 0 ||
-        navigator.clipboard?.writeText == null
-      ) {
+      if (value == null || value.length === 0) {
         return false;
       }
 
       try {
-        await navigator.clipboard.writeText(value);
+        await writeClipboardText(value);
         setCopied(true);
         clearResetTimeout();
         resetCopyTimeoutRef.current = window.setTimeout(() => {

@@ -136,7 +136,6 @@ pub const Runtime = struct {
         const cmd = commandName(req.path);
 
         if (std.mem.eql(u8, cmd, "get_session_snapshot")) return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
-        if (std.mem.eql(u8, cmd, "pick_workspace") or std.mem.eql(u8, cmd, "pick_directory")) return self.pickDirectory(req);
         if (std.mem.eql(u8, cmd, "open_workspace")) return self.openWorkspace(req);
         if (std.mem.eql(u8, cmd, "get_runtime_status")) return self.getRuntimeStatus(req);
         if (std.mem.eql(u8, cmd, "get_prompt_settings")) return self.getPromptSettings(req);
@@ -185,7 +184,6 @@ pub const Runtime = struct {
         if (std.mem.eql(u8, cmd, "update_saved_workspace_layout")) return self.createSavedWorkspace(req);
         if (std.mem.eql(u8, cmd, "get_saved_workspace")) return mer.json("null");
         if (std.mem.eql(u8, cmd, "rename_saved_workspace") or std.mem.eql(u8, cmd, "delete_saved_workspace")) return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
-        if (std.mem.eql(u8, cmd, "open_external_url")) return self.openExternalUrl(req);
         if (std.mem.eql(u8, cmd, "checkout_git_branch") or std.mem.eql(u8, cmd, "create_git_branch") or std.mem.eql(u8, cmd, "commit_git_changes") or std.mem.eql(u8, cmd, "push_git_branch")) return self.gitMutation(req, cmd);
         if (std.mem.eql(u8, cmd, "clone_repository") or std.mem.eql(u8, cmd, "quick_start_project")) return mer.Response.init(.bad_request, .json, "{\"error\":\"repository creation is not implemented in the Zig backend yet\"}");
 
@@ -194,22 +192,6 @@ pub const Runtime = struct {
 
     fn jsonResponse(_: *Runtime, _: mer.Request, body: []const u8) mer.Response {
         return mer.Response.init(.ok, .json, body);
-    }
-
-    fn pickDirectory(_: *Runtime, req: mer.Request) mer.Response {
-        if (builtin.os.tag != .macos) return mer.json("null");
-        const root = parse(req) catch Value{ .object = .empty };
-        const title = stringField(root, "title") orelse "Choose a folder";
-        var quoted_title: std.Io.Writer.Allocating = .init(req.allocator);
-        writeString(&quoted_title.writer, title) catch return oom();
-        const script = std.fmt.allocPrint(req.allocator, "POSIX path of (choose folder with prompt {s})", .{quoted_title.written()}) catch return oom();
-        const raw = commandOutput(req.allocator, &.{ "osascript", "-e", script }) catch return mer.json("null");
-        var path = std.mem.trim(u8, raw, " \t\r\n");
-        if (path.len == 0) return mer.json("null");
-        while (path.len > 1 and path[path.len - 1] == '/') path = path[0 .. path.len - 1];
-        var out: std.Io.Writer.Allocating = .init(req.allocator);
-        writeString(&out.writer, path) catch return oom();
-        return mer.json(out.written());
     }
 
     fn openWorkspace(self: *Runtime, req: mer.Request) mer.Response {
@@ -855,21 +837,6 @@ pub const Runtime = struct {
         return self.runtimeStatusJson(req.allocator, workspace) catch oom();
     }
 
-    fn openExternalUrl(_: *Runtime, req: mer.Request) mer.Response {
-        const root = parse(req) catch return badJson(req);
-        const url = stringField(root, "url") orelse return bad(req, "missing url");
-        if (!std.mem.startsWith(u8, url, "https://") and !std.mem.startsWith(u8, url, "http://")) return bad(req, "unsupported URL scheme");
-        var child = std.process.spawn(mer_runtime.io, .{
-            .argv = &.{ "open", url },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        }) catch return bad(req, "failed to open browser");
-        const term = child.wait(mer_runtime.io) catch return bad(req, "failed to open browser");
-        if (term != .exited or term.exited != 0) return bad(req, "failed to open browser");
-        return mer.json("null");
-    }
-
     fn terminalOpen(self: *Runtime, req: mer.Request) mer.Response {
         const root = parse(req) catch return badJson(req);
         const input = objectField(root, "input") orelse root;
@@ -1077,12 +1044,6 @@ pub const Runtime = struct {
         try argv.append(self.allocator, "--yolo");
         try argv.append(self.allocator, "--resume");
         try argv.append(self.allocator, session_name);
-        if (model) |m| {
-            if (m.len > 0 and !std.mem.eql(u8, m, "default")) {
-                try argv.append(self.allocator, "--model");
-                try argv.append(self.allocator, m);
-            }
-        }
         defer argv.deinit(self.allocator);
 
         var child = try std.process.spawn(io, .{
@@ -1090,7 +1051,7 @@ pub const Runtime = struct {
             .cwd = .{ .path = workspace },
             .stdin = .pipe,
             .stdout = .pipe,
-            .stderr = .ignore,
+            .stderr = .pipe,
         });
         defer child.kill(io);
 
@@ -1100,8 +1061,10 @@ pub const Runtime = struct {
         defer req_buf.deinit();
         if (provider) |p| if (model) |m| {
             if (p.len > 0 and m.len > 0 and !std.mem.eql(u8, m, "default")) {
-                try req_buf.writer.writeAll("{\"type\":\"set_model\",\"name\":");
-                try writeString(&req_buf.writer, try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ p, m }));
+                try req_buf.writer.writeAll("{\"type\":\"set_model\",\"provider\":");
+                try writeString(&req_buf.writer, p);
+                try req_buf.writer.writeAll(",\"model\":");
+                try writeString(&req_buf.writer, m);
                 try req_buf.writer.writeAll("}\n");
             }
         };
@@ -1125,6 +1088,8 @@ pub const Runtime = struct {
         var current_assistant: ?[]const u8 = null;
         var current_reasoning: ?[]const u8 = null;
         var event_count: usize = 0;
+        var first_unparsed_line: ?[]const u8 = null;
+        defer if (first_unparsed_line) |line| self.allocator.free(line);
         while (true) {
             const ev_line = rdr.interface.takeDelimiter('\n') catch |err| {
                 log.warn("graff read ended with {}", .{err});
@@ -1139,10 +1104,16 @@ pub const Runtime = struct {
             defer turn_arena.deinit();
             const event = std.json.parseFromSliceLeaky(Value, turn_arena.allocator(), line, .{}) catch |err| {
                 log.warn("graff event parse failed: {}", .{err});
+                if (first_unparsed_line == null) {
+                    first_unparsed_line = try self.allocator.dupe(u8, line);
+                }
                 continue;
             };
             const ty = stringField(event, "type") orelse {
                 log.warn("graff event missing type", .{});
+                if (first_unparsed_line == null) {
+                    first_unparsed_line = try self.allocator.dupe(u8, line);
+                }
                 continue;
             };
             event_count += 1;
@@ -1192,7 +1163,21 @@ pub const Runtime = struct {
             }
         }
         if (event_count == 0) {
-            self.appendError(conversation_id, request_id, "graff exited before producing a response");
+            var stderr_output: ?[]const u8 = null;
+            defer if (stderr_output) |buf| self.allocator.free(buf);
+            if (child.stderr) |stderr_file| {
+                var errbuf: [8 * 1024]u8 = undefined;
+                var err_reader = stderr_file.readerStreaming(io, &errbuf);
+                stderr_output = err_reader.interface.allocRemaining(self.allocator, .limited(64 * 1024)) catch null;
+            }
+            const stderr_detail = if (stderr_output) |buf| std.mem.trim(u8, buf, " \t\r\n") else "";
+            const stdout_detail = if (first_unparsed_line) |line| std.mem.trim(u8, line, " \t\r\n") else "";
+            const detail = if (stderr_detail.len > 0) stderr_detail else stdout_detail;
+            if (detail.len > 0) {
+                self.appendError(conversation_id, request_id, self.fmt("graff exited before producing a response: {s}", .{detail}));
+            } else {
+                self.appendError(conversation_id, request_id, "graff exited before producing a response");
+            }
         }
     }
 
@@ -1439,7 +1424,7 @@ pub const Runtime = struct {
         try writeNullableString(&out.writer, if (git.repo_name != null) "main" else null);
         try out.writer.writeAll(",\"gitMainWorkspacePath\":");
         try writeNullableString(&out.writer, git.root_path);
-        try out.writer.writeAll(",\"availableOpenTargets\":[\"terminal\"],\"configured\":true,\"configurationError\":null}");
+        try out.writer.writeAll(",\"availableOpenTargets\":[\"file-manager\"],\"configured\":true,\"configurationError\":null}");
         return mer.json(out.written());
     }
 
@@ -2747,9 +2732,20 @@ fn providerConfiguredById(id: []const u8, env_key: ?[]const u8) bool {
     if (providerConfigured(env_key)) return true;
     const alloc = std.heap.page_allocator;
     if (std.mem.eql(u8, id, "codegraff")) return codegraffStored(alloc);
-    if (std.mem.eql(u8, id, "codex")) return fileExists(std.fmt.allocPrint(alloc, "{s}/.codex/auth.json", .{homeDir()}) catch return false);
+    if (std.mem.eql(u8, id, "codex")) return codexStored(alloc);
     if (std.mem.eql(u8, id, "kimi")) return fileExists(std.fmt.allocPrint(alloc, "{s}/.kimi/credentials/graff-oauth.json", .{homeDir()}) catch return false) or storedKeyExists(alloc, id);
     return storedKeyExists(alloc, id);
+}
+
+fn codexStored(alloc: std.mem.Allocator) bool {
+    const path = std.fmt.allocPrint(alloc, "{s}/.codex/auth.json", .{homeDir()}) catch return false;
+    const data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, path, alloc, .limited(256 * 1024)) catch return false;
+    const v = std.json.parseFromSliceLeaky(Value, alloc, data, .{ .allocate = .alloc_always }) catch return false;
+    if (v != .object) return false;
+    const tokens = v.object.get("tokens") orelse return false;
+    if (tokens != .object) return false;
+    const access = tokens.object.get("access_token") orelse return false;
+    return access == .string and access.string.len > 0;
 }
 
 fn codegraffStored(alloc: std.mem.Allocator) bool {

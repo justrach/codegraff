@@ -37,6 +37,12 @@ import { useSessionStore } from "../hooks/useSession";
 import { DragDropProvider } from "../hooks/useFileDrop";
 import { SessionProvider } from "./SessionProvider";
 import { SettingsNavigationProvider } from "./settingsNavigation";
+import { setWindowTitle } from "../services/desktop/client";
+import {
+  getUiActiveWorkspacePath,
+  getUiWorkspaceLabel,
+  getWorkspaceMetaStoreKey,
+} from "./sessionStore";
 import {
   DEFAULT_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
@@ -125,6 +131,16 @@ function AppShell() {
   const isSessionBootstrapped = useSessionStore(
     (state) => state.isBootstrapped,
   );
+  const windowTitle = useSessionStore((state) => {
+    const workspacePath = getUiActiveWorkspacePath(state);
+    if (workspacePath == null) {
+      return "Codegraff";
+    }
+    const runtimeStatus =
+      state.workspaceMetaByKey[getWorkspaceMetaStoreKey(workspacePath)]
+        ?.runtimeStatus ?? null;
+    return `${getUiWorkspaceLabel(workspacePath, runtimeStatus)} - Codegraff`;
+  });
   const isFullscreen = false;
   const [isDesktopSidebarVisible, setIsDesktopSidebarVisible] = useState(true);
   const [isSettingsViewOpen, setIsSettingsViewOpen] = useState(false);
@@ -164,6 +180,10 @@ function AppShell() {
   useEffect(() => {
     void hydrateThemeSettings();
   }, []);
+
+  useEffect(() => {
+    void setWindowTitle(windowTitle).catch(() => undefined);
+  }, [windowTitle]);
   const settingsNavigation = useMemo(
     () => ({
       openProviderSettings: openProvidersSettings,
