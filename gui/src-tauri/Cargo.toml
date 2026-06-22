@@ -6,7 +6,7 @@
 
 [package]
 name = "codegraff-gui"
-version = "0.0.13"
+version = "0.0.162"
 description = "Desktop coding agent interface powered by Codegraff"
 authors = ["Codegraff contributors"]
 license = "Apache-2.0"
@@ -40,6 +40,8 @@ tauri = { version = "2.10.3", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-log = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 tokio = { version = "1.51.0", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tonic = { version = "0.14.5", features = ["tls-webpki-roots"] }
 ts-rs = "12.0.1"

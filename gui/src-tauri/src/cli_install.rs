@@ -50,12 +50,20 @@ pub fn ensure_cli_symlink(app: &tauri::App) {
         targets.push(home.join(".local").join("bin"));
     }
 
+    // The bundled agent CLI ships beside the app binary (externalBin →
+    // Contents/MacOS/graff). We link it onto PATH so installing the app also
+    // installs the `graff` terminal command.
+    let bundled_graff = exe.parent().map(|d| d.join("graff"));
+
     for dir in targets {
         let link = dir.join("codegraff");
         // Already current (handles app moves and the prior symlink form)?
         if let Ok(existing) = std::fs::read_to_string(&link) {
             if existing == script {
                 log::info!("codegraff launcher already current at {}", link.display());
+                if let Some(ref g) = bundled_graff {
+                    ensure_graff_on_path(&dir, g);
+                }
                 return;
             }
         }
@@ -73,12 +81,52 @@ pub fn ensure_cli_symlink(app: &tauri::App) {
         match written {
             Ok(()) => {
                 log::info!("codegraff launcher installed at {}", link.display());
+                if let Some(ref g) = bundled_graff {
+                    ensure_graff_on_path(&dir, g);
+                }
                 return;
             }
             Err(err) => {
                 log::warn!("could not write codegraff launcher into {}: {err}", dir.display());
             }
         }
+    }
+}
+
+/// Put the bundled `graff` agent CLI on PATH (next to the `codegraff` launcher),
+/// so installing the desktop app also gives you the terminal command. It's a
+/// symlink into the app bundle, so `graff` tracks the app's auto-updates.
+///
+/// Never clobbers a real `graff` — e.g. one installed by `install.sh` into ~/bin
+/// or a Homebrew copy. Only creates the link when nothing is there, or refreshes
+/// a symlink we previously made (one pointing into a .app bundle, e.g. after the
+/// app was moved or updated).
+#[cfg(target_os = "macos")]
+fn ensure_graff_on_path(dir: &std::path::Path, bundled_graff: &std::path::Path) {
+    use std::os::unix::fs::symlink;
+    if !bundled_graff.is_file() {
+        return;
+    }
+    let link = dir.join("graff");
+    match std::fs::symlink_metadata(&link) {
+        Ok(meta) => {
+            if !meta.file_type().is_symlink() {
+                // A regular file is a real install — never overwrite it.
+                return;
+            }
+            let current = std::fs::read_link(&link).unwrap_or_default();
+            if current == bundled_graff {
+                return; // already correct
+            }
+            if !current.to_string_lossy().contains(".app/Contents/MacOS/") {
+                return; // a symlink to something that isn't ours — leave it
+            }
+            let _ = std::fs::remove_file(&link);
+        }
+        Err(_) => {} // absent — fall through and create it
+    }
+    if symlink(bundled_graff, &link).is_ok() {
+        log::info!("graff CLI linked at {}", link.display());
     }
 }
 

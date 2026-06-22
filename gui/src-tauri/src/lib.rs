@@ -61,7 +61,9 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
     #[cfg(debug_assertions)]
     let builder = builder.plugin(
         tauri_plugin_log::Builder::default()
