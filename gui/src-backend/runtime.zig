@@ -72,6 +72,7 @@ const PromptSettings = struct {
 const TerminalSessionState = struct {
     terminal_id: []const u8,
     workspace_path: []const u8,
+    cwd: []const u8,
     shell: []const u8,
     cols: u16,
     rows: u16,
@@ -851,6 +852,7 @@ pub const Runtime = struct {
             existing.cols = clampTerminalSize(cols, 80);
             existing.rows = clampTerminalSize(rows, 24);
             existing.workspace_path = self.dupe(workspace);
+            if (existing.cwd.len == 0) existing.cwd = existing.workspace_path;
         } else {
             const session = self.arena.create(TerminalSessionState) catch {
                 self.mutex.unlock(mer_runtime.io);
@@ -859,6 +861,7 @@ pub const Runtime = struct {
             session.* = .{
                 .terminal_id = self.dupe(terminal_id),
                 .workspace_path = self.dupe(workspace),
+                .cwd = self.dupe(workspace),
                 .shell = shell,
                 .cols = clampTerminalSize(cols, 80),
                 .rows = clampTerminalSize(rows, 24),
@@ -868,7 +871,7 @@ pub const Runtime = struct {
         const session = self.terminals.get(terminal_id).?;
         self.mutex.unlock(mer_runtime.io);
 
-        self.emitTerminalOutput(terminal_id, tryPromptText(req.allocator, session.workspace_path));
+        self.emitTerminalOutput(terminal_id, tryPromptText(req.allocator, session.cwd));
 
         var out: std.Io.Writer.Allocating = .init(req.allocator);
         out.writer.writeAll("{\"terminalId\":") catch return oom();
@@ -892,14 +895,21 @@ pub const Runtime = struct {
         const data = stringField(input, "data") orelse "";
 
         var command_to_run: ?[]const u8 = null;
-        var workspace: ?[]const u8 = null;
+        var cwd: ?[]const u8 = null;
         self.mutex.lockUncancelable(mer_runtime.io);
         const session = self.terminals.get(terminal_id) orelse {
             self.mutex.unlock(mer_runtime.io);
             return bad(req, "terminal session not found");
         };
-        workspace = session.workspace_path;
+        cwd = session.cwd;
+        var in_escape = false;
         for (data) |byte| {
+            if (in_escape) {
+                if ((byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z') or byte == '~') {
+                    in_escape = false;
+                }
+                continue;
+            }
             switch (byte) {
                 '\r', '\n' => {
                     if (command_to_run == null) {
@@ -907,10 +917,18 @@ pub const Runtime = struct {
                         session.input.items.len = 0;
                     }
                 },
+                0x03 => {
+                    session.input.items.len = 0;
+                    command_to_run = self.arena.dupe(u8, "") catch "";
+                },
+                0x0c => {
+                    session.input.items.len = 0;
+                    command_to_run = self.arena.dupe(u8, "clear") catch "clear";
+                },
                 0x7f, 0x08 => {
                     if (session.input.items.len > 0) session.input.items.len -= 1;
                 },
-                0x1b => {},
+                0x1b => in_escape = true,
                 else => session.input.append(self.arena, byte) catch {},
             }
         }
@@ -919,17 +937,29 @@ pub const Runtime = struct {
         self.emitTerminalOutput(terminal_id, data);
         if (command_to_run) |command| {
             self.emitTerminalOutput(terminal_id, "\r\n");
-            if (command.len > 0) {
-                const output = terminalCommandOutput(req.allocator, workspace orelse ".", command) catch blk: {
+            if (std.mem.eql(u8, command, "clear")) {
+                self.emitTerminalOutput(terminal_id, "\x1b[2J\x1b[H");
+            } else if (std.mem.eql(u8, command, "exit")) {
+                self.mutex.lockUncancelable(mer_runtime.io);
+                _ = self.terminals.remove(terminal_id);
+                self.mutex.unlock(mer_runtime.io);
+                self.emitTerminalExit(terminal_id, 0);
+                return mer.json("null");
+            } else if (command.len > 0) {
+                const result = terminalCommandResult(req.allocator, cwd orelse ".", command) catch blk: {
                     self.emitTerminalError(terminal_id, "command failed");
-                    break :blk "";
+                    break :blk TerminalCommandResult{ .output = "", .cwd = cwd orelse ".", .exit_code = 1 };
                 };
-                if (output.len > 0) {
-                    self.emitTerminalOutput(terminal_id, output);
-                    if (!std.mem.endsWith(u8, output, "\n")) self.emitTerminalOutput(terminal_id, "\r\n");
+                if (result.output.len > 0) {
+                    self.emitTerminalOutput(terminal_id, result.output);
+                    if (!std.mem.endsWith(u8, result.output, "\n")) self.emitTerminalOutput(terminal_id, "\r\n");
                 }
+                self.mutex.lockUncancelable(mer_runtime.io);
+                if (self.terminals.get(terminal_id)) |current| current.cwd = self.dupe(result.cwd);
+                self.mutex.unlock(mer_runtime.io);
+                cwd = result.cwd;
             }
-            self.emitTerminalOutput(terminal_id, tryPromptText(req.allocator, workspace orelse "."));
+            self.emitTerminalOutput(terminal_id, tryPromptText(req.allocator, cwd orelse "."));
         }
         return mer.json("null");
     }
@@ -2161,7 +2191,13 @@ fn tryPromptText(alloc: std.mem.Allocator, workspace: []const u8) []const u8 {
     return std.fmt.allocPrint(alloc, "{s} $ ", .{workspaceName(workspace)}) catch "$ ";
 }
 
-fn terminalCommandOutput(alloc: std.mem.Allocator, cwd: []const u8, command: []const u8) ![]const u8 {
+const TerminalCommandResult = struct {
+    output: []const u8,
+    cwd: []const u8,
+    exit_code: i64,
+};
+
+fn terminalCommandResult(alloc: std.mem.Allocator, cwd: []const u8, command: []const u8) !TerminalCommandResult {
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(alloc);
     try argv.append(alloc, "/usr/bin/env");
@@ -2169,7 +2205,8 @@ fn terminalCommandOutput(alloc: std.mem.Allocator, cwd: []const u8, command: []c
     try argv.append(alloc, try std.fmt.allocPrint(alloc, "PATH={s}/bin:{s}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", .{ homeDir(), homeDir() }));
     try argv.append(alloc, "/bin/zsh");
     try argv.append(alloc, "-lc");
-    try argv.append(alloc, command);
+    const script = try std.fmt.allocPrint(alloc, "{{ {s}\n}} 2>&1\n__codegraff_status=$?\nprintf '\n__CODEGRAFF_STATUS__%d\n__CODEGRAFF_CWD__%s\n' $__codegraff_status \"$PWD\"", .{command});
+    try argv.append(alloc, script);
     var child = try std.process.spawn(mer_runtime.io, .{
         .argv = argv.items,
         .cwd = .{ .path = cwd },
@@ -2180,10 +2217,26 @@ fn terminalCommandOutput(alloc: std.mem.Allocator, cwd: []const u8, command: []c
     const out_file = child.stdout orelse return error.CommandFailed;
     var rbuf: [8 * 1024]u8 = undefined;
     var reader = out_file.readerStreaming(mer_runtime.io, &rbuf);
-    const output = try reader.interface.allocRemaining(alloc, .limited(512 * 1024));
+    const raw_output = try reader.interface.allocRemaining(alloc, .limited(1024 * 1024));
     const term = try child.wait(mer_runtime.io);
-    if (term != .exited or term.exited != 0) return error.CommandFailed;
-    return output;
+    if (term != .exited) return error.CommandFailed;
+    return parseTerminalCommandResult(alloc, raw_output, cwd);
+}
+
+fn parseTerminalCommandResult(alloc: std.mem.Allocator, raw_output: []const u8, fallback_cwd: []const u8) !TerminalCommandResult {
+    const status_marker = "\n__CODEGRAFF_STATUS__";
+    const cwd_marker = "\n__CODEGRAFF_CWD__";
+    const status_idx = std.mem.lastIndexOf(u8, raw_output, status_marker) orelse {
+        return .{ .output = raw_output, .cwd = fallback_cwd, .exit_code = 0 };
+    };
+    const cwd_idx = std.mem.lastIndexOf(u8, raw_output, cwd_marker) orelse {
+        return .{ .output = raw_output[0..status_idx], .cwd = fallback_cwd, .exit_code = 0 };
+    };
+    const status_text = std.mem.trim(u8, raw_output[status_idx + status_marker.len .. cwd_idx], " \t\r\n");
+    const cwd_text = std.mem.trim(u8, raw_output[cwd_idx + cwd_marker.len ..], " \t\r\n");
+    const exit_code = std.fmt.parseInt(i64, status_text, 10) catch 0;
+    const parsed_cwd = if (cwd_text.len > 0) try alloc.dupe(u8, cwd_text) else fallback_cwd;
+    return .{ .output = raw_output[0..status_idx], .cwd = parsed_cwd, .exit_code = exit_code };
 }
 
 fn validReasoningEffort(level: []const u8) bool {
