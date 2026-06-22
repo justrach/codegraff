@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { WTerm } from "@wterm/dom";
 
 import * as desktopClient from "@/services/desktop/client";
@@ -26,22 +20,6 @@ import {
   normalizeTerminalSize,
   waitForStableTerminalSize,
 } from "../utils/terminal";
-
-function normalizeTerminalOutput(data: string): string {
-  // Terminal emulators treat LF as "move down" and CR as "return to column 0".
-  // Shell command output usually contains bare LF, so convert only those bare
-  // newlines to CRLF. Without this, `ls` renders diagonally/stair-stepped.
-  let normalized = "";
-  for (let index = 0; index < data.length; index += 1) {
-    const char = data[index];
-    if (char === "\n" && data[index - 1] !== "\r") {
-      normalized += "\r\n";
-    } else {
-      normalized += char;
-    }
-  }
-  return normalized;
-}
 
 export function useTerminalSession(
   params: TerminalPaneParams,
@@ -184,7 +162,7 @@ export function useTerminalSession(
 
       cleanupListeners = await Promise.all([
         desktopClient.listenTerminalOutput(terminalId, (event) => {
-          terminal?.write(normalizeTerminalOutput(event.data));
+          terminal?.write(event.data);
         }),
         desktopClient.listenTerminalExit(terminalId, (event) => {
           const suffix =

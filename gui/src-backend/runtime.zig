@@ -2152,7 +2152,7 @@ fn promptModelSupportsReasoning(provider_id: []const u8, model: []const u8) bool
 }
 
 fn clampTerminalSize(value: i64, default: u16) u16 {
-    if (value < 1 or value > 500) return default;
+    if (value < 20 or value > 500) return default;
     return @intCast(value);
 }
 
