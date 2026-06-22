@@ -310,12 +310,14 @@ pub const Runtime = struct {
         const conv_id = stringField(root, "conversationId") orelse return bad(req, "missing conversationId");
         self.mutex.lockUncancelable(mer_runtime.io);
         const wpath = self.dupe(workspace);
-        self.setActiveWorkspaceLocked(wpath);
         if (self.conversations.get(conv_id)) |conversation| {
             if (!std.mem.eql(u8, conversation.workspace_path, wpath)) {
                 self.mutex.unlock(mer_runtime.io);
                 return bad(req, "conversation does not belong to workspace");
             }
+        }
+        self.setActiveWorkspaceLocked(wpath);
+        if (self.conversations.get(conv_id)) |conversation| {
             self.active_conversation_id = conversation.conversation_id;
             self.selected_by_workspace.put(wpath, conversation.conversation_id) catch {};
         }
