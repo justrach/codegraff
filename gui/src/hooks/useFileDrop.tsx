@@ -6,13 +6,19 @@ import {
   useId,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import type { ReactNode, RefObject } from "react";
+import {
+  dataTransferHasAttachmentPayload,
+  extractAttachmentTransferItems,
+  type AttachmentTransferItem,
+} from "@/components/attachments/attachmentTransfer";
 
 interface DropZone {
   id: string;
   ref: RefObject<HTMLElement | null>;
-  onDrop: (paths: string[]) => void;
+  onDrop: (items: AttachmentTransferItem[]) => void;
 }
 
 interface DragDropContextValue {
@@ -25,11 +31,16 @@ const DragDropContext = createContext<DragDropContextValue | null>(null);
 
 export function DragDropProvider({ children }: { children: ReactNode }) {
   const zonesRef = useRef<Map<string, DropZone>>(new Map());
-  const isDragging = false;
-  const activeZoneId: string | null = null;
+  const dragDepthRef = useRef(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [activeZoneId, setActiveZoneId] = useState<string | null>(null);
 
   const resolveZoneId = useCallback(
-    (position: { x: number; y: number }): string | null => {
+    (position: {
+      x: number;
+      y: number;
+      cssPixels?: boolean;
+    }): string | null => {
       const zones = Array.from(zonesRef.current.values());
       if (zones.length === 0) {
         return null;
@@ -63,11 +74,11 @@ export function DragDropProvider({ children }: { children: ReactNode }) {
         return candidates[0].id;
       }
 
-      // Multiple panes visible: hit-test the cursor. Native drops report
-      // physical pixels; the DOM works in CSS pixels.
+      // Multiple panes visible: hit-test the cursor. Native bridges may report
+      // physical pixels; DOM drag events report CSS pixels.
       const dpr = window.devicePixelRatio || 1;
-      const x = position.x / dpr;
-      const y = position.y / dpr;
+      const x = position.cssPixels ? position.x : position.x / dpr;
+      const y = position.cssPixels ? position.y : position.y / dpr;
 
       for (const zone of candidates) {
         const element = zone.ref.current;
@@ -92,9 +103,102 @@ export function DragDropProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    // The Mer native shell does not expose a file-drop bridge yet, so keep the
-    // registration state intact and make native drop delivery a no-op for now.
-    void resolveZoneId;
+    function clearDragState() {
+      dragDepthRef.current = 0;
+      setIsDragging(false);
+      setActiveZoneId(null);
+    }
+
+    function resolveDomZoneId(event: DragEvent) {
+      return resolveZoneId({
+        x: event.clientX,
+        y: event.clientY,
+        cssPixels: true,
+      });
+    }
+
+    function handleDragEnter(event: DragEvent) {
+      if (!dataTransferHasAttachmentPayload(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      dragDepthRef.current += 1;
+      setIsDragging(true);
+      setActiveZoneId(resolveDomZoneId(event));
+    }
+
+    function handleDragOver(event: DragEvent) {
+      if (!dataTransferHasAttachmentPayload(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer != null) {
+        event.dataTransfer.dropEffect = "copy";
+      }
+      setIsDragging(true);
+      setActiveZoneId(resolveDomZoneId(event));
+    }
+
+    function handleDragLeave(event: DragEvent) {
+      if (!dataTransferHasAttachmentPayload(event.dataTransfer)) {
+        return;
+      }
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (
+        dragDepthRef.current === 0 ||
+        event.clientX <= 0 ||
+        event.clientY <= 0 ||
+        event.clientX >= window.innerWidth ||
+        event.clientY >= window.innerHeight
+      ) {
+        clearDragState();
+      }
+    }
+
+    function handleDrop(event: DragEvent) {
+      if (!dataTransferHasAttachmentPayload(event.dataTransfer)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const zoneId = resolveDomZoneId(event);
+      const items = extractAttachmentTransferItems(event.dataTransfer);
+      if (zoneId != null && items.length > 0) {
+        zonesRef.current.get(zoneId)?.onDrop(items);
+      }
+      clearDragState();
+    }
+
+    const listenerOptions = { capture: true };
+    document.addEventListener("dragenter", handleDragEnter, listenerOptions);
+    document.addEventListener("dragover", handleDragOver, listenerOptions);
+    document.addEventListener("dragleave", handleDragLeave, listenerOptions);
+    document.addEventListener("drop", handleDrop, listenerOptions);
+    window.addEventListener("blur", clearDragState);
+    window.addEventListener("dragend", clearDragState);
+
+    return () => {
+      document.removeEventListener(
+        "dragenter",
+        handleDragEnter,
+        listenerOptions,
+      );
+      document.removeEventListener(
+        "dragover",
+        handleDragOver,
+        listenerOptions,
+      );
+      document.removeEventListener(
+        "dragleave",
+        handleDragLeave,
+        listenerOptions,
+      );
+      document.removeEventListener("drop", handleDrop, listenerOptions);
+      window.removeEventListener("blur", clearDragState);
+      window.removeEventListener("dragend", clearDragState);
+    };
   }, [resolveZoneId]);
 
   const register = useCallback((zone: DropZone) => {
@@ -123,7 +227,7 @@ export function DragDropProvider({ children }: { children: ReactNode }) {
 // eslint-disable-next-line react-refresh/only-export-components
 export function useDropZone(
   ref: RefObject<HTMLElement | null>,
-  onDrop: (paths: string[]) => void,
+  onDrop: (items: AttachmentTransferItem[]) => void,
 ) {
   const context = useContext(DragDropContext);
   const zoneId = `drop-zone-${useId()}`;

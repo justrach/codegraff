@@ -100,6 +100,7 @@ function createSnapshot(
 
 mock.module("../services/desktop/client", () => ({
   setFast: async () => {},
+  saveAttachmentFile: async (input: { name: string }) => `/tmp/${input.name}`,
   savePastedImage: async () => "/tmp/pasted-image.png",
   imageThumbnail: async () => "data:image/jpeg;base64,",
   openExternalUrl: async () => {},

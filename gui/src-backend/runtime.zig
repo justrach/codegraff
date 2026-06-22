@@ -173,6 +173,7 @@ pub const Runtime = struct {
         if (std.mem.eql(u8, cmd, "remove_provider")) return self.removeProvider(req);
         if (std.mem.eql(u8, cmd, "read_workspace_file")) return self.readWorkspaceFile(req);
         if (std.mem.eql(u8, cmd, "save_pasted_image")) return self.savePastedImage(req);
+        if (std.mem.eql(u8, cmd, "save_attachment_file")) return self.saveAttachmentFile(req);
         if (std.mem.eql(u8, cmd, "image_thumbnail")) return mer.Response.init(.bad_request, .json, "{\"error\":\"image thumbnails are not supported by the Zig backend yet\"}");
         if (std.mem.eql(u8, cmd, "terminal_open")) return self.terminalOpen(req);
         if (std.mem.eql(u8, cmd, "terminal_write")) return self.terminalWrite(req);
@@ -801,6 +802,30 @@ pub const Runtime = struct {
             for (arr.items, 0..) |item, i| bytes[i] = if (item == .integer) @intCast(@max(0, @min(255, item.integer))) else 0;
             std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = bytes }) catch return bad(req, "failed to write image");
         }
+        var out: std.Io.Writer.Allocating = .init(req.allocator);
+        writeString(&out.writer, path) catch return oom();
+        return mer.json(out.written());
+    }
+
+    fn saveAttachmentFile(_: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch return badJson(req);
+        const input = objectField(root, "input") orelse root;
+        const name = stringField(input, "name") orelse "attachment.txt";
+        const raw_data = stringField(input, "dataBase64") orelse return bad(req, "missing dataBase64");
+        const data = stripDataUrlBase64(raw_data);
+        if (data.len > 96 * 1024 * 1024) return bad(req, "attachment is too large");
+
+        const decoder = std.base64.standard.Decoder;
+        const decoded_len = decoder.calcSizeForSlice(data) catch return bad(req, "invalid attachment data");
+        if (decoded_len > 64 * 1024 * 1024) return bad(req, "attachment is too large");
+
+        const bytes = req.allocator.alloc(u8, decoded_len) catch return oom();
+        decoder.decode(bytes, data) catch return bad(req, "invalid attachment data");
+
+        const safe_name = safeAttachmentFileName(req.allocator, name) catch return oom();
+        const path = std.fmt.allocPrint(req.allocator, "/tmp/codegraff-attachment-{d}-{s}", .{ nowMillis(), safe_name }) catch return oom();
+        std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = bytes }) catch return bad(req, "failed to write attachment");
+
         var out: std.Io.Writer.Allocating = .init(req.allocator);
         writeString(&out.writer, path) catch return oom();
         return mer.json(out.written());
@@ -1925,6 +1950,38 @@ fn arrayField(v: Value, key: []const u8) ?std.json.Array {
     if (v != .object) return null;
     const item = v.object.get(key) orelse return null;
     return if (item == .array) item.array else null;
+}
+
+fn stripDataUrlBase64(value: []const u8) []const u8 {
+    if (!std.mem.startsWith(u8, value, "data:")) return value;
+    const comma = std.mem.indexOfScalar(u8, value, ',') orelse return value;
+    return value[comma + 1 ..];
+}
+
+fn isSafeAttachmentNameByte(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or
+        c == '.' or
+        c == '-' or
+        c == '_';
+}
+
+fn safeAttachmentFileName(alloc: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var start: usize = 0;
+    if (std.mem.lastIndexOfScalar(u8, name, '/')) |idx| start = @max(start, idx + 1);
+    if (std.mem.lastIndexOfScalar(u8, name, '\\')) |idx| start = @max(start, idx + 1);
+    const base = name[start..];
+
+    var out: std.ArrayList(u8) = .empty;
+    for (base) |c| {
+        if (out.items.len >= 180) break;
+        try out.append(alloc, if (isSafeAttachmentNameByte(c)) c else '_');
+    }
+
+    const result = std.mem.trim(u8, out.items, "._-");
+    if (result.len == 0) return try alloc.dupe(u8, "attachment");
+    return try alloc.dupe(u8, result);
 }
 
 fn joinArgs(alloc: std.mem.Allocator, v: Value) ![]const u8 {
