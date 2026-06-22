@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const mer = @import("mer");
 const mer_runtime = @import("runtime");
+const pty = @import("pty");
 
 const log = std.log.scoped(.backend);
 const Value = std.json.Value;
@@ -76,7 +77,9 @@ const TerminalSessionState = struct {
     shell: []const u8,
     cols: u16,
     rows: u16,
-    input: std.ArrayList(u8) = .empty,
+    proc: pty.PtyProcess,
+    closing: std.atomic.Value(bool) = .init(false),
+    exited: std.atomic.Value(bool) = .init(false),
 };
 
 const SseEvent = struct {
@@ -122,6 +125,8 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
+        var it = self.terminals.valueIterator();
+        while (it.next()) |session| closeTerminalSession(session.*);
         self.terminals.deinit();
         self.events.deinit(self.allocator);
         self.conversations.deinit();
@@ -843,49 +848,61 @@ pub const Runtime = struct {
         const input = objectField(root, "input") orelse root;
         const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
         const workspace = stringField(input, "workspacePath") orelse return bad(req, "missing workspacePath");
-        const cols = intField(input, "cols", 80);
-        const rows = intField(input, "rows", 24);
-        const shell = "/bin/zsh";
+        const cols = clampTerminalSize(intField(input, "cols", 80), 80);
+        const rows = clampTerminalSize(intField(input, "rows", 24), 24);
 
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.terminals.get(terminal_id)) |existing| {
-            existing.cols = clampTerminalSize(cols, 80);
-            existing.rows = clampTerminalSize(rows, 24);
-            existing.workspace_path = self.dupe(workspace);
-            if (existing.cwd.len == 0) existing.cwd = existing.workspace_path;
-        } else {
-            const session = self.arena.create(TerminalSessionState) catch {
-                self.mutex.unlock(mer_runtime.io);
-                return oom();
-            };
-            session.* = .{
-                .terminal_id = self.dupe(terminal_id),
-                .workspace_path = self.dupe(workspace),
-                .cwd = self.dupe(workspace),
-                .shell = shell,
-                .cols = clampTerminalSize(cols, 80),
-                .rows = clampTerminalSize(rows, 24),
-            };
-            self.terminals.put(session.terminal_id, session) catch {};
+            existing.cols = cols;
+            existing.rows = rows;
+            existing.proc.resize(cols, rows) catch {};
+            const shell = existing.shell;
+            self.mutex.unlock(mer_runtime.io);
+            return terminalSessionJson(req.allocator, terminal_id, workspace, shell, cols, rows);
         }
-        const session = self.terminals.get(terminal_id).?;
         self.mutex.unlock(mer_runtime.io);
 
-        self.emitTerminalOutput(terminal_id, tryPromptText(req.allocator, session.cwd));
+        const shell = resolveShell();
+        const proc = pty.spawnShell(self.arena, .{
+            .shell = shell,
+            .cwd = workspace,
+            .cols = cols,
+            .rows = rows,
+        }) catch |err| {
+            log.err("failed to spawn PTY shell for terminal {s}: {}", .{ terminal_id, err });
+            return mer.Response.init(.internal_server_error, .json, "{\"error\":\"failed to open terminal PTY\"}");
+        };
 
-        var out: std.Io.Writer.Allocating = .init(req.allocator);
-        out.writer.writeAll("{\"terminalId\":") catch return oom();
-        writeString(&out.writer, terminal_id) catch return oom();
-        out.writer.writeAll(",\"workspacePath\":") catch return oom();
-        writeString(&out.writer, workspace) catch return oom();
-        out.writer.writeAll(",\"shell\":") catch return oom();
-        writeString(&out.writer, shell) catch return oom();
-        out.writer.writeAll(",\"cols\":") catch return oom();
-        out.writer.print("{d}", .{session.cols}) catch return oom();
-        out.writer.writeAll(",\"rows\":") catch return oom();
-        out.writer.print("{d}", .{session.rows}) catch return oom();
-        out.writer.writeAll("}") catch return oom();
-        return mer.json(out.written());
+        const session = self.arena.create(TerminalSessionState) catch return oom();
+        session.* = .{
+            .terminal_id = self.dupe(terminal_id),
+            .workspace_path = self.dupe(workspace),
+            .cwd = self.dupe(workspace),
+            .shell = shell,
+            .cols = cols,
+            .rows = rows,
+            .proc = proc,
+        };
+
+        self.mutex.lockUncancelable(mer_runtime.io);
+        self.terminals.put(session.terminal_id, session) catch {
+            self.mutex.unlock(mer_runtime.io);
+            closeTerminalSession(session);
+            return oom();
+        };
+        self.mutex.unlock(mer_runtime.io);
+
+        const thread = std.Thread.spawn(.{}, terminalReaderMain, .{ self, session }) catch |err| {
+            log.err("failed to start PTY reader for terminal {s}: {}", .{ terminal_id, err });
+            self.mutex.lockUncancelable(mer_runtime.io);
+            _ = self.terminals.remove(session.terminal_id);
+            self.mutex.unlock(mer_runtime.io);
+            closeTerminalSession(session);
+            return mer.Response.init(.internal_server_error, .json, "{\"error\":\"failed to start terminal reader\"}");
+        };
+        thread.detach();
+
+        return terminalSessionJson(req.allocator, terminal_id, workspace, shell, cols, rows);
     }
 
     fn terminalWrite(self: *Runtime, req: mer.Request) mer.Response {
@@ -894,73 +911,17 @@ pub const Runtime = struct {
         const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
         const data = stringField(input, "data") orelse "";
 
-        var command_to_run: ?[]const u8 = null;
-        var cwd: ?[]const u8 = null;
         self.mutex.lockUncancelable(mer_runtime.io);
         const session = self.terminals.get(terminal_id) orelse {
             self.mutex.unlock(mer_runtime.io);
             return bad(req, "terminal session not found");
         };
-        cwd = session.cwd;
-        var in_escape = false;
-        for (data) |byte| {
-            if (in_escape) {
-                if ((byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z') or byte == '~') {
-                    in_escape = false;
-                }
-                continue;
-            }
-            switch (byte) {
-                '\r', '\n' => {
-                    if (command_to_run == null) {
-                        command_to_run = self.arena.dupe(u8, std.mem.trim(u8, session.input.items, " \t\r\n")) catch "";
-                        session.input.items.len = 0;
-                    }
-                },
-                0x03 => {
-                    session.input.items.len = 0;
-                    command_to_run = self.arena.dupe(u8, "") catch "";
-                },
-                0x0c => {
-                    session.input.items.len = 0;
-                    command_to_run = self.arena.dupe(u8, "clear") catch "clear";
-                },
-                0x7f, 0x08 => {
-                    if (session.input.items.len > 0) session.input.items.len -= 1;
-                },
-                0x1b => in_escape = true,
-                else => session.input.append(self.arena, byte) catch {},
-            }
-        }
+        _ = session.proc.write(data) catch {
+            self.mutex.unlock(mer_runtime.io);
+            self.emitTerminalError(terminal_id, "terminal write failed");
+            return mer.Response.init(.internal_server_error, .json, "{\"error\":\"terminal write failed\"}");
+        };
         self.mutex.unlock(mer_runtime.io);
-
-        self.emitTerminalOutput(terminal_id, data);
-        if (command_to_run) |command| {
-            self.emitTerminalOutput(terminal_id, "\r\n");
-            if (std.mem.eql(u8, command, "clear")) {
-                self.emitTerminalOutput(terminal_id, "\x1b[2J\x1b[H");
-            } else if (std.mem.eql(u8, command, "exit")) {
-                self.mutex.lockUncancelable(mer_runtime.io);
-                _ = self.terminals.remove(terminal_id);
-                self.mutex.unlock(mer_runtime.io);
-                self.emitTerminalExit(terminal_id, 0);
-                return mer.json("null");
-            } else if (command.len > 0) {
-                const result = terminalCommandResult(req.allocator, cwd orelse ".", command) catch blk: {
-                    self.emitTerminalError(terminal_id, "command failed");
-                    break :blk TerminalCommandResult{ .output = "", .cwd = cwd orelse ".", .exit_code = 1 };
-                };
-                if (result.output.len > 0) {
-                    self.emitTerminalOutput(terminal_id, result.output);
-                    if (!std.mem.endsWith(u8, result.output, "\n")) self.emitTerminalOutput(terminal_id, "\r\n");
-                }
-                self.mutex.lockUncancelable(mer_runtime.io);
-                if (self.terminals.get(terminal_id)) |current| current.cwd = self.dupe(result.cwd);
-                self.mutex.unlock(mer_runtime.io);
-                cwd = result.cwd;
-            }
-            self.emitTerminalOutput(terminal_id, tryPromptText(req.allocator, cwd orelse "."));
-        }
         return mer.json("null");
     }
 
@@ -968,12 +929,13 @@ pub const Runtime = struct {
         const root = parse(req) catch return badJson(req);
         const input = objectField(root, "input") orelse root;
         const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
-        const cols = intField(input, "cols", 80);
-        const rows = intField(input, "rows", 24);
+        const cols = clampTerminalSize(intField(input, "cols", 80), 80);
+        const rows = clampTerminalSize(intField(input, "rows", 24), 24);
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.terminals.get(terminal_id)) |session| {
-            session.cols = clampTerminalSize(cols, 80);
-            session.rows = clampTerminalSize(rows, 24);
+            session.cols = cols;
+            session.rows = rows;
+            session.proc.resize(cols, rows) catch self.emitTerminalError(terminal_id, "terminal resize failed");
         }
         self.mutex.unlock(mer_runtime.io);
         return mer.json("null");
@@ -984,9 +946,10 @@ pub const Runtime = struct {
         const input = objectField(root, "input") orelse root;
         const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
         self.mutex.lockUncancelable(mer_runtime.io);
+        const session = self.terminals.get(terminal_id);
         _ = self.terminals.remove(terminal_id);
         self.mutex.unlock(mer_runtime.io);
-        self.emitTerminalExit(terminal_id, 0);
+        if (session) |s| closeTerminalSession(s);
         return mer.json("null");
     }
 
@@ -1030,6 +993,12 @@ pub const Runtime = struct {
             .data = self.arena.dupe(u8, data) catch return,
         }) catch return;
         self.next_event_seq += 1;
+        const max_events = 1000;
+        if (self.events.items.len > max_events) {
+            const drop = self.events.items.len - max_events;
+            std.mem.copyForwards(SseEvent, self.events.items[0..max_events], self.events.items[drop..]);
+            self.events.items.len = max_events;
+        }
     }
 
     fn workspaceStatusCommand(self: *Runtime, req: mer.Request, root: Value) mer.Response {
@@ -2187,56 +2156,76 @@ fn clampTerminalSize(value: i64, default: u16) u16 {
     return @intCast(value);
 }
 
-fn tryPromptText(alloc: std.mem.Allocator, workspace: []const u8) []const u8 {
-    return std.fmt.allocPrint(alloc, "{s} $ ", .{workspaceName(workspace)}) catch "$ ";
+fn terminalSessionJson(alloc: std.mem.Allocator, terminal_id: []const u8, workspace: []const u8, shell: []const u8, cols: u16, rows: u16) mer.Response {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    out.writer.writeAll("{\"terminalId\":") catch return oom();
+    writeString(&out.writer, terminal_id) catch return oom();
+    out.writer.writeAll(",\"workspacePath\":") catch return oom();
+    writeString(&out.writer, workspace) catch return oom();
+    out.writer.writeAll(",\"shell\":") catch return oom();
+    writeString(&out.writer, shell) catch return oom();
+    out.writer.writeAll(",\"cols\":") catch return oom();
+    out.writer.print("{d}", .{cols}) catch return oom();
+    out.writer.writeAll(",\"rows\":") catch return oom();
+    out.writer.print("{d}", .{rows}) catch return oom();
+    out.writer.writeAll("}") catch return oom();
+    return mer.json(out.written());
 }
 
-const TerminalCommandResult = struct {
-    output: []const u8,
-    cwd: []const u8,
-    exit_code: i64,
-};
-
-fn terminalCommandResult(alloc: std.mem.Allocator, cwd: []const u8, command: []const u8) !TerminalCommandResult {
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(alloc);
-    try argv.append(alloc, "/usr/bin/env");
-    try argv.append(alloc, try std.fmt.allocPrint(alloc, "HOME={s}", .{homeDir()}));
-    try argv.append(alloc, try std.fmt.allocPrint(alloc, "PATH={s}/bin:{s}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", .{ homeDir(), homeDir() }));
-    try argv.append(alloc, "/bin/zsh");
-    try argv.append(alloc, "-lc");
-    const script = try std.fmt.allocPrint(alloc, "{{ {s}\n}} 2>&1\n__codegraff_status=$?\nprintf '\n__CODEGRAFF_STATUS__%d\n__CODEGRAFF_CWD__%s\n' $__codegraff_status \"$PWD\"", .{command});
-    try argv.append(alloc, script);
-    var child = try std.process.spawn(mer_runtime.io, .{
-        .argv = argv.items,
-        .cwd = .{ .path = cwd },
-        .stdin = .ignore,
-        .stdout = .pipe,
-        .stderr = .ignore,
-    });
-    const out_file = child.stdout orelse return error.CommandFailed;
-    var rbuf: [8 * 1024]u8 = undefined;
-    var reader = out_file.readerStreaming(mer_runtime.io, &rbuf);
-    const raw_output = try reader.interface.allocRemaining(alloc, .limited(1024 * 1024));
-    const term = try child.wait(mer_runtime.io);
-    if (term != .exited) return error.CommandFailed;
-    return parseTerminalCommandResult(alloc, raw_output, cwd);
+fn resolveShell() []const u8 {
+    if (std.c.getenv("SHELL")) |ptr| {
+        const shell = std.mem.span(ptr);
+        if (shell.len > 0 and std.mem.startsWith(u8, shell, "/")) return shell;
+    }
+    if (builtin.os.tag == .macos) return "/bin/zsh";
+    return "/bin/sh";
 }
 
-fn parseTerminalCommandResult(alloc: std.mem.Allocator, raw_output: []const u8, fallback_cwd: []const u8) !TerminalCommandResult {
-    const status_marker = "\n__CODEGRAFF_STATUS__";
-    const cwd_marker = "\n__CODEGRAFF_CWD__";
-    const status_idx = std.mem.lastIndexOf(u8, raw_output, status_marker) orelse {
-        return .{ .output = raw_output, .cwd = fallback_cwd, .exit_code = 0 };
-    };
-    const cwd_idx = std.mem.lastIndexOf(u8, raw_output, cwd_marker) orelse {
-        return .{ .output = raw_output[0..status_idx], .cwd = fallback_cwd, .exit_code = 0 };
-    };
-    const status_text = std.mem.trim(u8, raw_output[status_idx + status_marker.len .. cwd_idx], " \t\r\n");
-    const cwd_text = std.mem.trim(u8, raw_output[cwd_idx + cwd_marker.len ..], " \t\r\n");
-    const exit_code = std.fmt.parseInt(i64, status_text, 10) catch 0;
-    const parsed_cwd = if (cwd_text.len > 0) try alloc.dupe(u8, cwd_text) else fallback_cwd;
-    return .{ .output = raw_output[0..status_idx], .cwd = parsed_cwd, .exit_code = exit_code };
+fn closeTerminalSession(session: *TerminalSessionState) void {
+    if (session.closing.swap(true, .acq_rel)) return;
+    session.proc.terminate();
+    session.proc.close();
+}
+
+fn terminalReaderMain(rt: *Runtime, session: *TerminalSessionState) void {
+    var buffer: [8192]u8 = undefined;
+    while (!session.closing.load(.acquire)) {
+        const n = session.proc.read(&buffer) catch break;
+        if (n == 0) break;
+        rt.emitTerminalOutput(session.terminal_id, sanitizeTerminalOutput(rt.allocator, buffer[0..n]) catch buffer[0..n]);
+    }
+
+    const exit_code = session.proc.wait() orelse 0;
+    if (!session.exited.swap(true, .acq_rel)) {
+        rt.emitTerminalExit(session.terminal_id, exit_code);
+    }
+    rt.mutex.lockUncancelable(mer_runtime.io);
+    if (rt.terminals.get(session.terminal_id) == session) {
+        _ = rt.terminals.remove(session.terminal_id);
+    }
+    rt.mutex.unlock(mer_runtime.io);
+}
+
+fn sanitizeTerminalOutput(alloc: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    if (std.unicode.utf8ValidateSlice(bytes)) return bytes;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const len = std.unicode.utf8ByteSequenceLength(bytes[i]) catch {
+            try out.appendSlice(alloc, "�");
+            i += 1;
+            continue;
+        };
+        if (i + len <= bytes.len and std.unicode.utf8ValidateSlice(bytes[i .. i + len])) {
+            try out.appendSlice(alloc, bytes[i .. i + len]);
+            i += len;
+        } else {
+            try out.appendSlice(alloc, "�");
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice(alloc);
 }
 
 fn validReasoningEffort(level: []const u8) bool {

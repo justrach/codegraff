@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { WTerm } from "@wterm/dom";
 
 import * as desktopClient from "@/services/desktop/client";
@@ -27,27 +21,17 @@ import {
   waitForStableTerminalSize,
 } from "../utils/terminal";
 
-type UseTerminalSessionOptions = {
-  onSelectionCopied?: () => void;
-};
-
 export function useTerminalSession(
   params: TerminalPaneParams,
   containerRef: RefObject<HTMLDivElement | null>,
-  options: UseTerminalSessionOptions = {},
 ) {
   const terminalRef = useRef<WTerm | null>(null);
   const openedRef = useRef(false);
-  const onSelectionCopiedRef = useRef(options.onSelectionCopied);
   const [restartNonce, setRestartNonce] = useState(0);
   const [status, setStatus] = useState<TerminalStatus>({
     kind: "connecting",
     message: TERMINAL_CONNECTING_MESSAGE,
   });
-  useEffect(() => {
-    onSelectionCopiedRef.current = options.onSelectionCopied;
-  }, [options.onSelectionCopied]);
-
   const terminalId = useMemo(() => {
     return createTerminalSessionId(
       {
@@ -92,109 +76,12 @@ export function useTerminalSession(
     let resizeObserver: ResizeObserver | null = null;
     let resizeFrameId: number | null = null;
     let syncedBackendSize: TerminalGridSize | null = null;
-    let selectionDragStart: { x: number; y: number } | null = null;
-    let selectionDragMoved = false;
-
-    const selectionBelongsToContainer = (selection: Selection) => {
-      const nodeBelongsToContainer = (node: Node | null) => {
-        if (node == null) {
-          return false;
-        }
-
-        return container.contains(
-          node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement,
-        );
-      };
-
-      if (
-        nodeBelongsToContainer(selection.anchorNode) ||
-        nodeBelongsToContainer(selection.focusNode)
-      ) {
-        return true;
-      }
-
-      for (let index = 0; index < selection.rangeCount; index += 1) {
-        const range = selection.getRangeAt(index);
-        if (nodeBelongsToContainer(range.commonAncestorContainer)) {
-          return true;
-        }
-      }
-
-      return false;
-    };
-
-    const copyTerminalSelection = async () => {
-      const selection = window.getSelection();
-      if (
-        selection == null ||
-        selection.isCollapsed ||
-        !selectionBelongsToContainer(selection)
-      ) {
-        return;
-      }
-
-      const selectedText = selection.toString();
-      if (selectedText.length === 0) {
-        return;
-      }
-
-      if (navigator.clipboard == null) {
-        return;
-      }
-
-      try {
-        await navigator.clipboard.writeText(selectedText);
-        onSelectionCopiedRef.current?.();
-      } catch {
-        // Clipboard writes require browser permission/activation. Ignore failures
-        // so terminal input and native selection behavior are unaffected.
-      }
-    };
-
-    const handleSelectionMouseDown = (event: MouseEvent) => {
-      if (event.button !== 0) {
-        return;
-      }
-
-      selectionDragStart = {
-        x: event.clientX,
-        y: event.clientY,
-      };
-      selectionDragMoved = false;
-    };
-
-    const handleSelectionMouseMove = (event: MouseEvent) => {
-      if (selectionDragStart == null) {
-        return;
-      }
-
-      if (
-        Math.abs(event.clientX - selectionDragStart.x) >= 3 ||
-        Math.abs(event.clientY - selectionDragStart.y) >= 3
-      ) {
-        selectionDragMoved = true;
-      }
-    };
-
-    const handleSelectionMouseUp = () => {
-      if (selectionDragStart == null) {
-        return;
-      }
-
-      const wasSelectionDrag = selectionDragMoved;
-      selectionDragStart = null;
-      selectionDragMoved = false;
-
-      if (!wasSelectionDrag) {
-        return;
-      }
-
-      void copyTerminalSelection();
-    };
-
-    container.addEventListener("mousedown", handleSelectionMouseDown);
-    window.addEventListener("mousemove", handleSelectionMouseMove);
-    window.addEventListener("mouseup", handleSelectionMouseUp);
+    let didOpenSession = false;
+    let activeTerminalInstanceId: string | null = null;
+    let activeScrollbackSeq = 0;
+    const pendingOutputEvents: Array<Parameters<Parameters<typeof desktopClient.listenTerminalOutput>[1]>[0]> = [];
+    const pendingExitEvents: Array<Parameters<Parameters<typeof desktopClient.listenTerminalExit>[1]>[0]> = [];
+    const pendingErrorEvents: Array<Parameters<Parameters<typeof desktopClient.listenTerminalErrors>[1]>[0]> = [];
 
     const syncTerminalSize = async (
       nextSize: TerminalGridSize,
@@ -229,6 +116,7 @@ export function useTerminalSession(
       try {
         await desktopClient.resizeTerminal({
           terminalId,
+          terminalInstanceId: activeTerminalInstanceId,
           cols: nextSize.cols,
           rows: nextSize.rows,
         });
@@ -271,6 +159,7 @@ export function useTerminalSession(
 
           void desktopClient.writeTerminal({
             terminalId,
+            terminalInstanceId: activeTerminalInstanceId,
             data,
           });
         },
@@ -280,9 +169,21 @@ export function useTerminalSession(
 
       cleanupListeners = await Promise.all([
         desktopClient.listenTerminalOutput(terminalId, (event) => {
+          if (activeTerminalInstanceId == null) {
+            pendingOutputEvents.push(event);
+            return;
+          }
+          if (event.terminalInstanceId !== activeTerminalInstanceId) return;
+          if ((event.terminalOutputSeq ?? 0) <= activeScrollbackSeq) return;
+          activeScrollbackSeq = event.terminalOutputSeq ?? activeScrollbackSeq;
           terminal?.write(event.data);
         }),
         desktopClient.listenTerminalExit(terminalId, (event) => {
+          if (activeTerminalInstanceId == null) {
+            pendingExitEvents.push(event);
+            return;
+          }
+          if (event.terminalInstanceId !== activeTerminalInstanceId) return;
           const suffix =
             event.signal != null
               ? `terminated by ${event.signal}`
@@ -293,6 +194,11 @@ export function useTerminalSession(
           });
         }),
         desktopClient.listenTerminalErrors(terminalId, (event) => {
+          if (activeTerminalInstanceId == null) {
+            pendingErrorEvents.push(event);
+            return;
+          }
+          if (event.terminalInstanceId !== activeTerminalInstanceId) return;
           setStatus({
             kind: "error",
             message: event.message,
@@ -317,13 +223,56 @@ export function useTerminalSession(
         cols: initialSize.cols,
         rows: initialSize.rows,
       });
+      didOpenSession = true;
 
       if (disposed) {
         cleanupListeners.forEach((cleanup) => {
           cleanup();
         });
         cleanupListeners = [];
-        void desktopClient.closeTerminal({ terminalId });
+        void desktopClient.closeTerminal({ terminalId, terminalInstanceId: session.terminalInstanceId ?? null });
+        return;
+      }
+
+      if (session.scrollback != null && session.scrollback.length > 0) {
+        terminal.write(session.scrollback);
+      }
+
+      activeTerminalInstanceId = session.terminalInstanceId ?? null;
+      activeScrollbackSeq = session.scrollbackSeq ?? 0;
+      for (const event of pendingOutputEvents.splice(0)) {
+        if (
+          event.terminalInstanceId === activeTerminalInstanceId &&
+          (event.terminalOutputSeq ?? 0) > activeScrollbackSeq
+        ) {
+          activeScrollbackSeq = event.terminalOutputSeq ?? activeScrollbackSeq;
+          terminal.write(event.data);
+        }
+      }
+      for (const event of pendingErrorEvents.splice(0)) {
+        if (event.terminalInstanceId === activeTerminalInstanceId) {
+          setStatus({ kind: "error", message: event.message });
+        }
+      }
+      for (const event of pendingExitEvents.splice(0)) {
+        if (event.terminalInstanceId === activeTerminalInstanceId) {
+          const suffix =
+            event.signal != null
+              ? `terminated by ${event.signal}`
+              : `exited with code ${event.exitCode ?? 0}`;
+          setStatus({
+            kind: "exited",
+            message: `Shell ${suffix}. Close and reopen the pane to start a new session.`,
+          });
+        }
+      }
+
+      if (disposed) {
+        cleanupListeners.forEach((cleanup) => {
+          cleanup();
+        });
+        cleanupListeners = [];
+        void desktopClient.closeTerminal({ terminalId, terminalInstanceId: activeTerminalInstanceId });
         return;
       }
 
@@ -367,10 +316,6 @@ export function useTerminalSession(
       disposed = true;
       openedRef.current = false;
 
-      container.removeEventListener("mousedown", handleSelectionMouseDown);
-      window.removeEventListener("mousemove", handleSelectionMouseMove);
-      window.removeEventListener("mouseup", handleSelectionMouseUp);
-
       if (delayedResizeObserverId != null) {
         window.clearTimeout(delayedResizeObserverId);
       }
@@ -383,7 +328,9 @@ export function useTerminalSession(
         cleanup();
       }
 
-      void desktopClient.closeTerminal({ terminalId });
+      if (didOpenSession) {
+        void desktopClient.closeTerminal({ terminalId, terminalInstanceId: activeTerminalInstanceId });
+      }
       terminal?.destroy();
       terminalRef.current = null;
     };
