@@ -6,6 +6,11 @@ UX = how it behaves. Add an entry whenever a change alters what the user
 sees or how an interaction flows — small entries are fine; the point is
 that "why does it work this way?" always has an answer here.
 
+## 2026-06-22
+
+### TUI `/ultracode` opens an on/off picker (UX)
+The terminal slash command now opens a two-row on/off picker instead of only toggling blindly. The opposite of the persisted ultracode state is listed first, so pressing Enter flips the mode; Up/Down moves between `on` and `off`. `/ultracode on|off` still works directly, persists to `.harness/settings.json`, and future prompts get workflow/codedb-first steering unless they already contain the explicit `ultracode` codeword.
+
 ## 2026-06-12 (branch: swarm-trajectories)
 
 ### Lifecycle hooks — pre_tool / post_tool / turn_end (UX)
