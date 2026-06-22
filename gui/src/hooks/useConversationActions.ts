@@ -101,12 +101,23 @@ export function useConversationActions(binding?: ChatBinding | null) {
         }
 
         const attachments = getAttachments(promptDraftKey);
-        const prompt = appendAttachmentsToPrompt(trimmedPrompt, attachments);
+        let prompt = appendAttachmentsToPrompt(trimmedPrompt, attachments);
+
+        // Ultra mode: inject the `ultracode` codeword the harness watches for
+        // (case-insensitive substring → multi-agent workflow turn). Skip it if
+        // the user already typed it. The toggle is a per-turn opt-in, so it is
+        // reset below once the prompt has been captured.
+        if (draftState.isUltraMode && !/ultracode/i.test(prompt)) {
+          prompt = `${prompt}\n\nultracode`;
+        }
 
         // Clear the composer immediately on send so the draft + any attachment
         // don't linger in the bar while the turn runs (the prompt is already
-        // captured above).
+        // captured above). Reset Ultra explicitly: clearing only blanks the
+        // value, which on its own would leave the Ultra flag (and the lit
+        // toggle) stuck on for the next turn.
         sessionStore.getState().clearPromptDraft(promptDraftKey);
+        sessionStore.getState().setPromptDraftUltraMode(promptDraftKey, false);
         sessionStore.getState().clearAttachments(promptDraftKey);
         sessionStore.getState().setPromptDraftPending(promptDraftKey, true);
         try {

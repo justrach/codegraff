@@ -6,6 +6,7 @@ use crate::{
     terminal::TerminalManager,
 };
 use anyhow::{Context, Result};
+use base64::Engine;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -42,6 +43,8 @@ struct ConversationState {
     /// (harness semantics). Surfaced to the GUI's task-progress dock.
     todos: Vec<SessionTodoDto>,
     goal: Option<String>,
+    /// Persistent ultracode (multi-agent workflow) mode, scoped to this chat.
+    ultracode_enabled: bool,
     updated_at: i64,
 }
 
@@ -292,6 +295,14 @@ impl RuntimeManager {
                     &conversation_id,
                     serde_json::json!({
                         "type": "set_model",
+                        // Send BOTH model and provider so the harness routes to the
+                        // exact provider the user picked in the menu (gpt-5.5 from
+                        // Codex vs the Codegraff gateway). A bare model can't be
+                        // pinned to a provider, so an explicit Codex pick was dropped
+                        // and models that exist under two providers (the two gpt-5.5
+                        // entries) failed to switch at all — the engine emits an
+                        // `error` event, send_control surfaces it, and the whole
+                        // update aborts (then the UI swallows it).
                         "model": selected_model.name.as_str(),
                         "provider": selected_model.provider.as_str(),
                     }),
@@ -445,6 +456,11 @@ impl RuntimeManager {
             bash_command(),
             command("compact", "Compact current conversation.", true),
             command("workspace-status", "Show git status.", true),
+            command(
+                "ultracode",
+                "Toggle persistent ultracode (multi-agent workflow) mode.",
+                true,
+            ),
         ])
     }
 
@@ -484,6 +500,7 @@ impl RuntimeManager {
                     queued_prompts: VecDeque::new(),
                     active_agent_id,
                     plan_mode,
+                    ultracode_enabled: false,
                     todos: Vec::new(),
                     goal: None,
                     updated_at: now_millis(),
@@ -516,7 +533,10 @@ impl RuntimeManager {
             // after a planning-mode turn completes (gate keys off "muse").
             conversation.request_agent_ids.insert(
                 request_id.clone(),
-                input.agent_id.clone().unwrap_or_else(|| "forge".to_string()),
+                input
+                    .agent_id
+                    .clone()
+                    .unwrap_or_else(|| "forge".to_string()),
             );
             should_queue = !conversation.active_request_ids.is_empty();
             if should_queue {
@@ -942,11 +962,17 @@ impl RuntimeManager {
                 }
                 Some("turn") => break,
                 Some("error") => {
-                    let message = event
+                    let raw_message = event
                         .get("message")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("graff error")
                         .to_string();
+                    let auth_error = is_provider_auth_error_message(&raw_message);
+                    let message = if auth_error {
+                        provider_auth_error_message(&raw_message)
+                    } else {
+                        raw_message
+                    };
                     let id = format!("{request_id}-error-{}", Uuid::new_v4().simple());
                     let rid = request_id.to_string();
                     self.mutate_conversation(conversation_id, move |conversation| {
@@ -957,6 +983,15 @@ impl RuntimeManager {
                         });
                     })
                     .await;
+                    if auth_error {
+                        // A rejected/expired credential can leave the long-lived
+                        // child in a bad state. Drop it so retrying after the
+                        // user reconnects spawns a fresh graff process instead
+                        // of reusing a session that already failed auth.
+                        self.drop_session(conversation_id).await;
+                        self.emit().await?;
+                        return Ok(());
+                    }
                     break;
                 }
                 // system_prompt / score acks and anything unrecognized: ignore.
@@ -1017,7 +1052,9 @@ impl RuntimeManager {
                 continue;
             };
             match event.get("type").and_then(serde_json::Value::as_str) {
-                Some("model" | "compact" | "mode" | "agent" | "effort" | "fast") => break event,
+                Some("model" | "compact" | "mode" | "agent" | "effort" | "fast" | "ultracode") => {
+                    break event;
+                }
                 Some("error") => {
                     let message = event
                         .get("message")
@@ -1057,6 +1094,7 @@ impl RuntimeManager {
                     messages: conversation.messages.clone(),
                     active_agent_id: conversation.active_agent_id.clone(),
                     plan_mode: conversation.plan_mode,
+                    ultracode_enabled: conversation.ultracode_enabled,
                     goal: conversation.goal.clone(),
                     updated_at: conversation.updated_at,
                 })
@@ -1095,7 +1133,7 @@ impl RuntimeManager {
         let model_arg = self.selected_model_arg().await;
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(conversation_id) {
-            let (active_agent_id, plan_mode, effort, fast) = {
+            let (active_agent_id, plan_mode, effort, fast, ultracode) = {
                 let state = self.state.lock().await;
                 let conversation = state.conversations.get(conversation_id);
                 (
@@ -1107,9 +1145,11 @@ impl RuntimeManager {
                         .unwrap_or(false),
                     state.selected_effort.clone(),
                     state.fast_enabled,
+                    conversation.map(|c| c.ultracode_enabled).unwrap_or(false),
                 )
             };
-            let session = spawn_graff_session(workspace_path, model_arg.as_deref())?;
+            let session =
+                spawn_graff_session(workspace_path, model_arg.as_deref(), conversation_id)?;
             sessions.insert(conversation_id.to_string(), session);
             drop(sessions);
             if let Some(agent_id) = active_agent_id.filter(|id| id != "forge") {
@@ -1137,6 +1177,13 @@ impl RuntimeManager {
                 self.send_control(
                     conversation_id,
                     serde_json::json!({ "type": "set_fast", "on": true }),
+                )
+                .await?;
+            }
+            if ultracode {
+                self.send_control(
+                    conversation_id,
+                    serde_json::json!({ "type": "set_ultracode", "on": true }),
                 )
                 .await?;
             }
@@ -1202,6 +1249,39 @@ impl RuntimeManager {
                 result_kind: CommandResultKindDto::Agents,
                 payload: Some(CommandPayloadDto::Agents(self.agents_payload().await)),
             }),
+            "ultracode" => {
+                let conversation_id = conversation_id.context("Missing conversation")?;
+                let now_on = {
+                    let mut state = self.state.lock().await;
+                    let conversation = state
+                        .conversations
+                        .get_mut(&conversation_id)
+                        .context("Conversation not found")?;
+                    conversation.ultracode_enabled = !conversation.ultracode_enabled;
+                    conversation.ultracode_enabled
+                };
+                self.persist_conversations().await;
+                if self.session_exists(&conversation_id).await {
+                    self.send_control(
+                        &conversation_id,
+                        serde_json::json!({ "type": "set_ultracode", "on": now_on }),
+                    )
+                    .await?;
+                }
+                let body = if now_on {
+                    "Ultracode mode enabled for this chat."
+                } else {
+                    "Ultracode mode disabled for this chat."
+                };
+                Ok(CommandRunResultDto {
+                    title: "/ultracode".into(),
+                    body: Some(body.into()),
+                    snapshot: None,
+                    saved_path: None,
+                    result_kind: CommandResultKindDto::Text,
+                    payload: None,
+                })
+            }
             "goal" => {
                 let _workspace = workspace_path.context("Missing workspace")?;
                 let conversation_id = conversation_id.context("Missing conversation")?;
@@ -1679,6 +1759,7 @@ impl RuntimeManager {
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
                 updated_at: now_millis(),
@@ -2124,6 +2205,7 @@ impl RuntimeManager {
                 .as_ref()
                 .map(|c| c.todos.clone())
                 .unwrap_or_default(),
+            visible_goal: visible.as_ref().and_then(|c| c.goal.clone()),
             visible_followup,
             conversation_views,
             ui_error: None,
@@ -2163,6 +2245,25 @@ pub(crate) fn format_error_chain(error: &anyhow::Error) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(": ")
+}
+
+fn is_provider_auth_error_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("invalid_api_key")
+        || lower.contains("unauthorized")
+        || (lower.contains("api key")
+            && (lower.contains("invalid")
+                || lower.contains("expired")
+                || lower.contains("incorrect")))
+        || (lower.contains("token") && lower.contains("expired"))
+        || (lower.contains("authentication")
+            && (lower.contains("failed") || lower.contains("invalid")))
+}
+
+fn provider_auth_error_message(raw: &str) -> String {
+    format!(
+        "Provider authentication failed before the turn could run. The selected API key/login was rejected or expired. Re-open Settings → Providers and reconnect the provider, then retry.\n\nThe GUI dropped the live graff session so the next retry starts fresh.\n\n{raw}"
+    )
 }
 
 /// Runs a literal substring search over the workspace. Tries ripgrep first
@@ -2267,6 +2368,8 @@ struct PersistedConversation {
     #[serde(default)]
     plan_mode: bool,
     #[serde(default)]
+    ultracode_enabled: bool,
+    #[serde(default)]
     goal: Option<String>,
     #[serde(default)]
     updated_at: i64,
@@ -2325,9 +2428,9 @@ fn conversations_store_path() -> Option<PathBuf> {
     })
 }
 
-/// Loads persisted transcripts so past chats survive a restart. Live `graff`
-/// sessions are not restored — continuing a loaded chat starts a fresh session
-/// without the model's prior context (true resume needs a CLI protocol change).
+/// Loads persisted transcripts so past chats survive a restart. Continuing a
+/// chat now spawns `graff --json --resume <conversation_id>`, so new/updated
+/// chats also regain engine-side model context when their session file exists.
 fn load_persisted_conversations() -> HashMap<String, ConversationState> {
     let Some(path) = conversations_store_path() else {
         return HashMap::new();
@@ -2354,6 +2457,7 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
                     queued_prompts: VecDeque::new(),
                     active_agent_id: conversation.active_agent_id,
                     plan_mode: conversation.plan_mode,
+                    ultracode_enabled: conversation.ultracode_enabled,
                     todos: Vec::new(),
                     goal: conversation.goal,
                     updated_at: conversation.updated_at,
@@ -2455,6 +2559,7 @@ fn conversation_view(
         active_request_ids: conversation.active_request_ids.clone(),
         request_agent_ids: conversation.request_agent_ids.clone(),
         todos: conversation.todos.clone(),
+        goal: conversation.goal.clone(),
         followup,
     }
 }
@@ -2469,7 +2574,7 @@ fn command(name: &str, usage: &str, requires_workspace: bool) -> CommandDescript
         is_agent_switch: false,
         execution_kind: CommandExecutionKindDto::Runnable,
         requires_workspace,
-        requires_conversation: matches!(name, "compact" | "goal" | "loop"),
+        requires_conversation: matches!(name, "compact" | "goal" | "loop" | "ultracode"),
         argument_hint: None,
         result_kind: CommandResultKindDto::Text,
     }
@@ -2489,7 +2594,9 @@ fn login_shell_env() -> &'static std::collections::HashMap<String, String> {
         std::thread::spawn(move || {
             // -il = interactive login shell: sources the login profile AND
             // .zshrc/.bashrc, where most users export their *_API_KEY.
-            let out = std::process::Command::new(&shell).args(["-ilc", "env"]).output();
+            let out = std::process::Command::new(&shell)
+                .args(["-ilc", "env"])
+                .output();
             let _ = tx.send(out);
         });
         let mut map = std::collections::HashMap::new();
@@ -2511,16 +2618,23 @@ fn bash_command() -> CommandDescriptorDto {
         argument_hint: Some("<command>".into()),
         ..command("bash", "Run a shell command in the workspace.", true)
     }
-
 }
 
 /// Spawns a persistent `graff --json` child for a conversation. `--yolo` skips
 /// permission prompts (the GUI has no approval surface yet); stderr is discarded
 /// since the protocol carries errors as `error` events on stdout.
-fn spawn_graff_session(workspace_path: &str, model: Option<&str>) -> Result<GraffSession> {
+fn spawn_graff_session(
+    workspace_path: &str,
+    model: Option<&str>,
+    conversation_id: &str,
+) -> Result<GraffSession> {
     let bin = codegraff_binary();
     let mut command = tokio::process::Command::new(&bin);
-    command.arg("--json").arg("--yolo");
+    command
+        .arg("--json")
+        .arg("--yolo")
+        .arg("--resume")
+        .arg(conversation_id);
     if let Some(model) = model.filter(|model| !model.is_empty() && *model != "default") {
         command.arg("--model").arg(model);
     }
@@ -2719,15 +2833,17 @@ fn filtered_catalog_models<'a>(
 }
 
 fn prompt_model_option(model: &ModelOption) -> PromptModelOptionDto {
-    // Effort-capable providers (mirrors the binary's effortApplies):
-    // codex takes reasoning.effort via the Responses API; codegraff and
-    // deepseek take a top-level reasoning_effort. But the gateway's gpt-*
-    // models go through /v1/chat/completions, which rejects reasoning_effort.
-    let effort_capable = match model.provider.as_str() {
-        "codex" => true,
-        "codegraff" | "deepseek" => !model.name.starts_with("gpt-"),
-        "kimi" => true,
-        _ => false,
+    // Effort applies exactly per the binary's providerTakesEffort: a grok-* model
+    // never takes effort (any provider); otherwise codex/codegraff/deepseek/kimi
+    // do. (No gpt- carve-out - the gateway honors reasoning_effort for gpt-* too;
+    // and grok must be excluded even on the codegraff provider.)
+    let effort_capable = if model.name.starts_with("grok") {
+        false
+    } else {
+        matches!(
+            model.provider.as_str(),
+            "codex" | "codegraff" | "deepseek" | "kimi"
+        )
     };
     let reasoning_efforts: Vec<String> = if effort_capable {
         vec!["low".into(), "medium".into(), "high".into()]
@@ -2757,16 +2873,14 @@ fn selected_prompt_model_pair(
 ) -> Option<(String, String)> {
     let available_catalog = filtered_catalog_models(catalog, configured_provider_ids);
 
+    // No codegraff-first bias: mirror the harness, which defaults to the first
+    // configured provider in spec/schema order and routes bare model names
+    // prefer-direct. Forcing codegraff here biased users onto the metered
+    // gateway even when a cheaper direct provider was keyed.
     let default_model = available_catalog
         .iter()
-        .find(|model| model.provider == "codegraff" && model.is_default)
+        .find(|model| model.is_default)
         .copied()
-        .or_else(|| {
-            available_catalog
-                .iter()
-                .find(|model| model.is_default)
-                .copied()
-        })
         .or_else(|| available_catalog.first().copied());
 
     selected_provider
@@ -2780,8 +2894,15 @@ fn selected_prompt_model_pair(
         .or_else(|| default_model.map(|model| (model.provider.clone(), model.name.clone())))
 }
 
-fn prompt_model_arg(provider: &str, model: &str) -> String {
-    format!("{provider} {model}")
+fn prompt_model_arg(_provider: &str, model: &str) -> String {
+    // Pass the BARE model name and let the harness route it to a provider via the
+    // same prefer-direct resolution the TUI uses (`/model <name>`). Prefixing the
+    // provider ("kimi kimi-k2.7" or "kimi/kimi-k2.7") is NOT understood by
+    // `--model`: it falls back to the codegraff gateway, which then rejects the
+    // unknown model. The harness picks the right provider for a bare model name
+    // (kimi-k2.7 -> kimi when keyed; only falling back to codegraff if no direct
+    // provider is configured), so the GUI must call it exactly like the terminal.
+    model.to_string()
 }
 
 fn selected_pair_exists(
@@ -2822,6 +2943,8 @@ fn build_prompt_settings_from_catalog(
                 selected_model_id: Some("default".into()),
                 selected_reasoning_effort: None,
                 fast_enabled,
+                // codegraff is the `chat` kind, not `responses`: /fast is a no-op.
+                fast_applies: false,
             };
         }
 
@@ -2831,6 +2954,7 @@ fn build_prompt_settings_from_catalog(
             selected_model_id: None,
             selected_reasoning_effort: None,
             fast_enabled,
+            fast_applies: false,
         };
     }
 
@@ -2857,12 +2981,22 @@ fn build_prompt_settings_from_catalog(
         None
     };
 
+    // /fast only changes behavior on the codex provider (the harness `responses`
+    // kind, which emits `service_tier:"priority"`); it reports `applies:false`
+    // for every other provider. Gate on the *resolved* provider so the GUI
+    // matches what the harness will actually do for the active selection.
+    let fast_applies = selected_pair
+        .as_ref()
+        .map(|(provider, _)| provider == "codex")
+        .unwrap_or(false);
+
     PromptSettingsDto {
         available_models,
         selected_provider_id: selected_pair.as_ref().map(|(provider, _)| provider.clone()),
         selected_model_id: selected_pair.as_ref().map(|(_, model)| model.clone()),
         selected_reasoning_effort: selected_pair.and(selected_effort),
         fast_enabled,
+        fast_applies,
     }
 }
 
@@ -3080,24 +3214,54 @@ fn followup_answer_line(request: &FollowupRequestDto, response: &FollowupRespons
 /// `current_dir` set to the workspace, and a relative program path would be
 /// resolved against that workspace (not the repo) — so a relative override like
 /// `CODEGRAFF_GUI_BINARY=../zig-out/bin/graff` must be canonicalized here.
+/// True only for a real, non-empty, executable file. A path that exists but is
+/// empty or not executable (e.g. an `externalBin` sidecar copy a `cargo build`
+/// left half-written, or a clobbered 0-byte binary) must NOT be returned as the
+/// engine path — a bare `is_file()` check would hand it back and shadow the
+/// working fallbacks below, and the spawn then dies with EACCES on exec.
+fn is_usable_binary(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn codegraff_binary() -> String {
-    // 1. Explicit override, canonicalized to absolute when it resolves to a file.
+    // 1. Explicit override, canonicalized to absolute when it resolves to a
+    //    usable file. A broken override falls through to the built-in rather
+    //    than failing the launch outright.
     if let Some(value) = std::env::var("CODEGRAFF_GUI_BINARY")
         .ok()
         .filter(|value| !value.trim().is_empty())
     {
         if let Ok(absolute) = std::fs::canonicalize(&value) {
-            return absolute.to_string_lossy().into_owned();
+            if is_usable_binary(&absolute) {
+                return absolute.to_string_lossy().into_owned();
+            }
         }
-        // Doesn't resolve from the current dir — fall through to the built-in.
+        // Doesn't resolve to a usable file — fall through to the built-in.
     }
     // 2. Bundled sidecar: Tauri's externalBin lands next to the app executable
     //    (Contents/MacOS/graff on macOS), so a packaged .app is self-contained —
     //    no separate CLI install needed. This is what fixes GUI-only users.
+    //    Guard on is_usable_binary: an interrupted `cargo build` can leave a
+    //    0-byte sidecar here, and a bare is_file() check would return it and
+    //    shadow the working binaries below (the EACCES-at-exec failure).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let p = dir.join("graff");
-            if p.is_file() {
+            if is_usable_binary(&p) {
                 return p.to_string_lossy().into_owned();
             }
         }
@@ -3105,7 +3269,9 @@ fn codegraff_binary() -> String {
     // 3. Dev build: <crate>/../../zig-out/bin/graff (only exists on a dev machine).
     let candidate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zig-out/bin/graff");
     if let Ok(absolute) = std::fs::canonicalize(&candidate) {
-        return absolute.to_string_lossy().into_owned();
+        if is_usable_binary(&absolute) {
+            return absolute.to_string_lossy().into_owned();
+        }
     }
     // 4. Known install locations. A Finder/Dock-launched .app inherits launchd's
     //    minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), which excludes ~/bin,
@@ -3116,7 +3282,7 @@ fn codegraff_binary() -> String {
     if let Ok(home) = std::env::var("HOME") {
         for rel in ["bin/graff", ".local/bin/graff"] {
             let p = Path::new(&home).join(rel);
-            if p.is_file() {
+            if is_usable_binary(&p) {
                 return p.to_string_lossy().into_owned();
             }
         }
@@ -3126,7 +3292,7 @@ fn codegraff_binary() -> String {
         "/usr/local/bin/graff",
         "/usr/bin/graff",
     ] {
-        if Path::new(abs).is_file() {
+        if is_usable_binary(Path::new(abs)) {
             return abs.to_string();
         }
     }
@@ -3322,11 +3488,9 @@ fn validate_provider_auth_completion(
 /// locating where it's defined so the UI can offer to open that file.
 fn provider_env_override(provider: &CodegraffProvider) -> Option<ProviderEnvOverrideDto> {
     let env_key = provider.env_key.as_deref()?;
-    let is_set = std::env::var(env_key)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .is_some();
-    if !is_set {
+    // Same env the spawned session sees (process env + login_shell_env), so the
+    // override hint matches what the harness actually uses.
+    if !env_has_provider_key(env_key) {
         return None;
     }
     let (file_path, line) = match find_env_definition(env_key) {
@@ -3388,13 +3552,29 @@ fn provider_auth_label(provider: &CodegraffProvider) -> String {
     }
 }
 
+/// True if `env_key` has a non-empty value in either the GUI process env OR the
+/// login-shell env the spawned harness session inherits (`login_shell_env`). On a
+/// Finder/Dock launch the GUI's own env is minimal, but the session is spawned
+/// with `command.envs(login_shell_env())`, so a provider keyed only via a shell
+/// export (e.g. KIMI_API_KEY in .zshrc) must still count as configured here -
+/// otherwise its models vanish from the picker yet the session can run them.
+fn env_has_provider_key(env_key: &str) -> bool {
+    if std::env::var(env_key)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    login_shell_env()
+        .iter()
+        .any(|(key, value)| key.as_str() == env_key && !value.trim().is_empty())
+}
+
 fn provider_configured(provider: &CodegraffProvider, key_list: &str) -> bool {
     if provider
         .env_key
         .as_deref()
-        .and_then(|env_key| std::env::var(env_key).ok())
-        .filter(|value| !value.trim().is_empty())
-        .is_some()
+        .is_some_and(env_has_provider_key)
     {
         return true;
     }
@@ -3444,8 +3624,8 @@ fn home_codex_auth_has_valid_token(home: Option<&Path>) -> bool {
 }
 
 /// Kimi OAuth login (`graff login kimi`) writes a JSON token file to
-/// `~/.kimi/credentials/graff-oauth.json`. The CLI auto-refreshes the
-/// access token when near expiry, so a non-empty access_token means logged in.
+/// `~/.kimi/credentials/graff-oauth.json`. Treat an expired token file as not
+/// configured so the GUI asks the user to reconnect before starting a run.
 fn kimi_auth_has_valid_token(home: Option<&Path>) -> bool {
     home.map(|home| {
         let path = home.join(".kimi/credentials/graff-oauth.json");
@@ -3455,10 +3635,17 @@ fn kimi_auth_has_valid_token(home: Option<&Path>) -> bool {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
             return false;
         };
+        if value
+            .get("expires_at")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|expires_at| unix_seconds() >= expires_at.saturating_sub(60))
+        {
+            return false;
+        }
         value
             .get("access_token")
             .and_then(|token| token.as_str())
-            .map(|token| !token.trim().is_empty())
+            .map(|token| !token.trim().is_empty() && jwt_token_not_expired(token))
             .unwrap_or(false)
     })
     .unwrap_or(false)
@@ -3480,8 +3667,33 @@ fn codex_auth_text_has_valid_token(text: &str) -> bool {
         .and_then(|tokens| tokens.get("access_token"))
         .or_else(|| value.get("access_token"))
         .and_then(|token| token.as_str())
-        .map(|token| !token.trim().is_empty())
+        .map(|token| !token.trim().is_empty() && jwt_token_not_expired(token))
         .unwrap_or(false)
+}
+
+fn jwt_token_not_expired(token: &str) -> bool {
+    let Some(payload) = token.split('.').nth(1) else {
+        // API keys and opaque OAuth tokens do not expose an expiry locally; they
+        // still need the runtime auth-error handling above.
+        return true;
+    };
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
+        return true;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return true;
+    };
+    let Some(exp) = value.get("exp").and_then(serde_json::Value::as_i64) else {
+        return true;
+    };
+    unix_seconds() < exp.saturating_sub(60)
+}
+
+fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn provider_env_key(provider_id: &str) -> Option<String> {
@@ -3803,13 +4015,19 @@ mod tests {
     #[cfg(unix)]
     fn format_command_output_empty_is_no_output() {
         // stdout+stderr empty, exit 0 -> the "(no output)" placeholder.
-        assert_eq!(format_command_output(&mk_output(b"", b"", 0)), "(no output)");
+        assert_eq!(
+            format_command_output(&mk_output(b"", b"", 0)),
+            "(no output)"
+        );
     }
 
     #[test]
     #[cfg(unix)]
     fn format_command_output_stdout_only_unchanged() {
-        assert_eq!(format_command_output(&mk_output(b"hello\n", b"", 0)), "hello\n");
+        assert_eq!(
+            format_command_output(&mk_output(b"hello\n", b"", 0)),
+            "hello\n"
+        );
     }
 
     #[test]
@@ -3837,7 +4055,6 @@ mod tests {
         // raw status 2 -> WIFSIGNALED -> status.code() is None.
         assert!(format_command_output(&mk_output(b"", b"", 2)).contains("[terminated abnormally]"));
     }
-
 
     fn followup(
         id: &str,
@@ -3956,6 +4173,7 @@ mod tests {
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
                 updated_at: 10,
@@ -4017,6 +4235,24 @@ mod tests {
         ));
         assert!(!codex_auth_text_has_valid_token("{}"));
         assert!(!codex_auth_text_has_valid_token("not json"));
+    }
+
+    #[test]
+    fn codex_auth_text_rejects_expired_jwt_token() {
+        let expired_payload =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"exp":1}"#);
+        let token = format!("header.{expired_payload}.signature");
+        let auth = serde_json::json!({ "tokens": { "access_token": token } }).to_string();
+
+        assert!(!codex_auth_text_has_valid_token(&auth));
+    }
+
+    #[test]
+    fn provider_auth_error_detection_matches_invalid_api_key() {
+        assert!(is_provider_auth_error_message(
+            "api error: The API Key appears to be invalid or may have expired. Please verify your credentials and try again."
+        ));
+        assert!(provider_auth_error_message("invalid_api_key").contains("reconnect"));
     }
 
     #[test]
@@ -4098,12 +4334,12 @@ mod tests {
     }
 
     #[test]
-    fn prompt_model_arg_includes_provider_to_disambiguate_duplicate_names() {
-        assert_eq!(prompt_model_arg("codex", "gpt-5.5"), "codex gpt-5.5");
-        assert_eq!(
-            prompt_model_arg("codegraff", "gpt-5.5"),
-            "codegraff gpt-5.5"
-        );
+    fn prompt_model_arg_uses_bare_model_name() {
+        // The harness only recognizes bare model names (routed to a provider by
+        // prefer-direct, like the TUI's `/model`); a "provider model" prefix is
+        // not understood by --model and falls back to the codegraff gateway.
+        assert_eq!(prompt_model_arg("codex", "gpt-5.5"), "gpt-5.5");
+        assert_eq!(prompt_model_arg("kimi", "kimi-k2.7"), "kimi-k2.7");
     }
 
     #[test]
@@ -4226,6 +4462,7 @@ mod tests {
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
                 updated_at: 10,
@@ -4243,6 +4480,7 @@ mod tests {
                 queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
                 todos: Vec::new(),
                 goal: None,
                 updated_at: 20,

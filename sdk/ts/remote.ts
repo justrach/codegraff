@@ -19,10 +19,18 @@ export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "mi
  *  event, so unknown events pass through and are safe to ignore. */
 export type Event =
   | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
+  | { type: "started"; provider: string; model: string }
+  | { type: "model_call_started"; provider: string; model: string }
+  | { type: "model_call_finished"; provider: string; model: string; ok: boolean; ms: number }
   | { type: "tool_call"; name: string; input: Record<string, unknown> }
+  | { type: "tool_call_started"; name: string; input: Record<string, unknown> }
+  | { type: "tool_rejected"; name: string; reason: "budget" | "duplicate" | string; input: Record<string, unknown>; message: string }
   | { type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
   | { type: "tool_result"; name: string; is_error: boolean; text: string }
-  | { type: "turn"; text: string; context_tokens: number; cost_usd: number }
+  | { type: "tool_call_finished"; name: string; is_error: boolean; ms: number }
+  | { type: "finalizing" }
+  | { type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }
   | { type: "system_prompt"; ok: boolean; append: boolean; chars: number }
   | { type: "score"; ok: boolean; prompt_sha: string }
   | { type: "error"; message: string };
@@ -48,6 +56,10 @@ export interface RemoteOptions {
   systemPrompt?: string;
   /** Append extra text to the system prompt. */
   appendSystemPrompt?: string;
+  /** Hard per-turn root tool-call budget for the child session. */
+  maxToolCalls?: number;
+  /** Reject duplicate root tool name+normalized-input calls per turn. */
+  dedupeToolCalls?: boolean;
   /** Attach to an existing session instead of creating one. */
   sessionId?: string;
 }
@@ -134,6 +146,8 @@ export class RemoteHarness {
     if (opts.yolo !== undefined) body.yolo = opts.yolo;
     if (opts.systemPrompt) body.system_prompt = opts.systemPrompt;
     if (opts.appendSystemPrompt) body.append_system_prompt = opts.appendSystemPrompt;
+    if (opts.maxToolCalls !== undefined) body.maxToolCalls = opts.maxToolCalls;
+    if (opts.dedupeToolCalls !== undefined) body.dedupeToolCalls = opts.dedupeToolCalls;
     const res = await this.req("POST", "/v1/sessions", body);
     const data = (await res.json()) as { session_id: string };
     return data.session_id;

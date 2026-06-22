@@ -27,6 +27,7 @@ const promptSettings: PromptSettings = {
   selectedProviderId: "anthropic",
   selectedReasoningEffort: "medium",
   fastEnabled: false,
+  fastApplies: false,
 };
 
 function renderPromptInputCard(
@@ -36,12 +37,14 @@ function renderPromptInputCard(
     <PromptInputCard
       canCompose
       isPlanningMode={false}
+      isUltraMode={false}
       isRequestActive={false}
       isSendingPrompt={false}
       onCommandSelect={(_: CommandDescriptor) => {}}
       promptDraft="Describe this repo"
       promptSettings={promptSettings}
       setPlanningMode={() => {}}
+      setUltraMode={() => {}}
       setPromptDraft={() => {}}
       stopPrompt={async () => {}}
       submitPrompt={async () => {}}

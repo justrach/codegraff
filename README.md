@@ -47,10 +47,12 @@ context when the conversation gets long.
 
 ### Desktop app — macOS (Apple Silicon)
 
-Prefer a window over a terminal? Download the latest signed, notarized build, drag it to Applications, and open it. On first launch it installs a `codegraff` launcher on your PATH, so `codegraff <path>` opens that folder in the app (`code`-style). For the `graff` agent CLI itself, use the command-line install below — the desktop app runs whatever `graff` is on your PATH.
+Prefer a window over a terminal? Download the latest signed, notarized build, drag it to Applications, and open it. The desktop app is **fully self-contained** — it bundles the `graff` agent, so there's nothing else to install to start coding, and it keeps itself up to date automatically. On first launch it drops two commands on your PATH: `codegraff <path>` (opens that folder in the app, `code`-style) and `graff` itself (the agent CLI, in your terminal) — so the one install covers both the window and the command line. The terminal `graff` is symlinked into the app, so it auto-updates along with it. Not on Apple Silicon, or want a standalone CLI? Use the command-line install below.
 
 <p align="center">
-  <a href="https://github.com/justrach/codegraff/releases/latest"><img alt="Download Codegraff for macOS" src="https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
+  <a href="https://github.com/justrach/codegraff/releases/latest/download/Codegraff.dmg"><img alt="Download Codegraff for macOS" src="https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
+  <br/>
+  <sub><a href="https://github.com/justrach/codegraff/releases/latest">or browse all releases</a></sub>
 </p>
 
 ### Command line — macOS · Linux

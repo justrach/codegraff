@@ -22,10 +22,18 @@ export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "mi
  *  to ignore in consumer code too. */
 export type Event =
   | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
+  | { type: "started"; provider: string; model: string }
+  | { type: "model_call_started"; provider: string; model: string }
+  | { type: "model_call_finished"; provider: string; model: string; ok: boolean; ms: number }
   | { type: "tool_call"; name: string; input: Record<string, unknown> }
+  | { type: "tool_call_started"; name: string; input: Record<string, unknown> }
+  | { type: "tool_rejected"; name: string; reason: "budget" | "duplicate" | string; input: Record<string, unknown>; message: string }
   | { type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
   | { type: "tool_result"; name: string; is_error: boolean; text: string }
-  | { type: "turn"; text: string; context_tokens: number; cost_usd: number }
+  | { type: "tool_call_finished"; name: string; is_error: boolean; ms: number }
+  | { type: "finalizing" }
+  | { type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }
   | { type: "system_prompt"; ok: boolean; append: boolean; chars: number }
   | { type: "score"; ok: boolean; prompt_sha: string }
   | { type: "error"; message: string };
@@ -54,6 +62,10 @@ export interface HarnessOptions {
   systemPrompt?: string;
   /** Append extra text to the end of the system prompt. */
   appendSystemPrompt?: string;
+  /** Hard per-turn root tool-call budget. */
+  maxToolCalls?: number;
+  /** Reject duplicate root tool name+normalized-input calls per turn. */
+  dedupeToolCalls?: boolean;
   /** Extra raw flags. `--json` is always added. */
   args?: string[];
 }
@@ -78,6 +90,8 @@ function spawnArgs(o: HarnessOptions): string[] {
   const a = ["--json"];
   if (o.yolo) a.push("--yolo");
   if (o.model) a.push("--model", o.model);
+  if (o.maxToolCalls !== undefined) a.push("--max-tool-calls", String(o.maxToolCalls));
+  if (o.dedupeToolCalls) a.push("--dedupe-tool-calls");
   if (o.systemPrompt) a.push("--system-prompt", o.systemPrompt);
   if (o.appendSystemPrompt) a.push("--append-system-prompt", o.appendSystemPrompt);
   if (o.args) a.push(...o.args);

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# simple-harness installer. Prefers a prebuilt binary from the latest GitHub
+# graff-harness installer. Prefers a prebuilt binary from the latest GitHub
 # release; falls back to building from source with Zig. Styled after the
 # codedb/codegraff installers.
 #
@@ -164,7 +164,7 @@ main() {
   local platform
   platform="$(detect_platform)"
 
-  printf "\n  ${W}simple-harness${N} ${D}installer${N}\n\n"
+  printf "\n  ${W}graff-harness${N} ${D}installer${N}\n\n"
   printf "  ${D}platform${N}  $platform\n"
   printf "  ${D}install${N}   $INSTALL_DIR\n\n"
 

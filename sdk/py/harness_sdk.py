@@ -184,13 +184,19 @@ class Harness:
                  cwd: Optional[str] = None, env: Optional[dict] = None,
                  model: Optional[str] = None, yolo: bool = False,
                  system_prompt: Optional[str] = None,
-                 append_system_prompt: Optional[str] = None):
+                 append_system_prompt: Optional[str] = None,
+                 max_tool_calls: Optional[int] = None,
+                 dedupe_tool_calls: bool = False):
         binary = binary or _default_binary()
         argv = [binary, "--json"]
         if yolo:
             argv.append("--yolo")
         if model:
             argv += ["--model", model]
+        if max_tool_calls is not None:
+            argv += ["--max-tool-calls", str(max_tool_calls)]
+        if dedupe_tool_calls:
+            argv.append("--dedupe-tool-calls")
         if system_prompt:
             argv += ["--system-prompt", system_prompt]
         if append_system_prompt:
@@ -400,6 +406,8 @@ class RemoteHarness:
                  model: Optional[str] = None, yolo: bool = False,
                  system_prompt: Optional[str] = None,
                  append_system_prompt: Optional[str] = None,
+                 max_tool_calls: Optional[int] = None,
+                 dedupe_tool_calls: bool = False,
                  session_id: Optional[str] = None):
         self.base = url.rstrip("/")
         self.token = token
@@ -415,6 +423,10 @@ class RemoteHarness:
             opts["system_prompt"] = system_prompt
         if append_system_prompt:
             opts["append_system_prompt"] = append_system_prompt
+        if max_tool_calls is not None:
+            opts["maxToolCalls"] = max_tool_calls
+        if dedupe_tool_calls:
+            opts["dedupeToolCalls"] = True
         resp = self._request("POST", "/v1/sessions", opts)
         self.session_id = json.loads(resp.read())["session_id"]
 

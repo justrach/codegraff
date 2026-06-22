@@ -43,12 +43,12 @@ import { ActivityResultRenderer } from "./activity-results/ActivityResultRendere
 import { getActivityResultModel } from "./utils/getActivityResultModel";
 
 const activityTriggerClassName = cn(
-  "group inline-flex min-w-0 items-center gap-1.5 text-left transition hover:text-foreground",
+  "group flex min-w-0 items-center gap-1.5 text-left transition hover:text-foreground",
   CHAT_MUTED_TEXT_CLASS,
 );
 
 const activityTextClassName = cn(
-  "inline-flex min-w-0 items-center",
+  "flex min-w-0 items-center",
   CHAT_MUTED_TEXT_CLASS,
 );
 
@@ -126,17 +126,29 @@ function ActivityOperationRow({
   const isExpandable = result != null;
   const label = formatOperationLabel(operation, workspacePath);
   const isCommand = operation.detail.kind === "shell";
+  // Per-node live status, from what the stream gives us today: a node is
+  // running until its tool_result lands, then done or errored.
+  const status = !operation.completed
+    ? "running"
+    : operation.isError
+      ? "error"
+      : "done";
   const icon = renderOperationIcon(
     operation,
-    "size-3.5 shrink-0 text-muted-foreground/60",
+    cn(
+      "size-3.5 shrink-0",
+      status === "running" && "animate-pulse text-[color:var(--accent)]",
+      status === "error" && "text-destructive",
+      status === "done" && "text-muted-foreground/60",
+    ),
   );
 
   const content = (
     <>
       {icon}
-      <span className="min-w-0">
+      <span className="min-w-0 flex-1">
         {isCommand ? (
-          <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+          <code className="inline-block max-w-full truncate align-middle rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
             {label}
           </code>
         ) : (

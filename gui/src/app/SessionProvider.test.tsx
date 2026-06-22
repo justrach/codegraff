@@ -128,6 +128,7 @@ const promptSettingsFixture: PromptSettings = {
   selectedProviderId: "openai",
   selectedReasoningEffort: "medium",
   fastEnabled: false,
+  fastApplies: false,
 };
 
 mock.module("../hooks/useSessionBootstrap", () => ({

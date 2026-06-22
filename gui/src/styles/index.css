@@ -1,3 +1,160 @@
+
+:root[data-theme="mono"] {
+    --background: #ffffff;
+    --foreground: #0a0a0a;
+    --card: #f4f4f5;
+    --card-foreground: #0a0a0a;
+    --popover: #f4f4f5;
+    --popover-foreground: #0a0a0a;
+    --primary: #0a0a0a;
+    --primary-foreground: #ffffff;
+    --secondary: #e8e8ea;
+    --secondary-foreground: #0a0a0a;
+    --muted: #ececee;
+    --muted-foreground: #5f5f66;
+    --accent: #18181b;
+    --accent-foreground: #ffffff;
+    --destructive: #b42318;
+    --border: #e1e1e4;
+    --input: #e1e1e4;
+    --ring: #18181b;
+    --chart-1: #18181b;
+    --chart-2: #3f3f46;
+    --chart-3: #71717a;
+    --chart-4: #a1a1aa;
+    --chart-5: #d4d4d8;
+    --sidebar: #f4f4f5;
+    --sidebar-foreground: #0a0a0a;
+    --sidebar-primary: #18181b;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #e8e8ea;
+    --sidebar-accent-foreground: #0a0a0a;
+    --sidebar-border: #e1e1e4;
+    --sidebar-ring: #18181b;
+    --accent-dim: #3f3f46;
+    --success: #3f7d4f;
+    --warn: #9a6e1b;
+    --faint: #b6b6bb;
+    --diff-add-bg: #eaf2ea;
+    --diff-del-bg: #f7e9e9;
+}
+[data-theme="mono"].dark {
+    --background: #0a0a0a;
+    --foreground: #fafafa;
+    --card: #161618;
+    --card-foreground: #fafafa;
+    --popover: #161618;
+    --popover-foreground: #fafafa;
+    --primary: #fafafa;
+    --primary-foreground: #0a0a0a;
+    --secondary: #242427;
+    --secondary-foreground: #fafafa;
+    --muted: #242427;
+    --muted-foreground: #a1a1aa;
+    --accent: #fafafa;
+    --accent-foreground: #0a0a0a;
+    --destructive: #f0654a;
+    --border: #2a2a2e;
+    --input: #2a2a2e;
+    --ring: #fafafa;
+    --chart-1: #fafafa;
+    --chart-2: #d4d4d8;
+    --chart-3: #a1a1aa;
+    --chart-4: #71717a;
+    --chart-5: #52525b;
+    --sidebar: #161618;
+    --sidebar-foreground: #fafafa;
+    --sidebar-primary: #fafafa;
+    --sidebar-primary-foreground: #0a0a0a;
+    --sidebar-accent: #242427;
+    --sidebar-accent-foreground: #fafafa;
+    --sidebar-border: #2a2a2e;
+    --sidebar-ring: #fafafa;
+    --accent-dim: #d4d4d8;
+    --success: #6abf7f;
+    --warn: #d9a441;
+    --faint: #52525b;
+    --diff-add-bg: #16241a;
+    --diff-del-bg: #2a1818;
+}
+:root[data-theme="rose"] {
+    --background: #fff5f8;
+    --foreground: #43162a;
+    --card: #ffe9f0;
+    --card-foreground: #43162a;
+    --popover: #ffe9f0;
+    --popover-foreground: #43162a;
+    --primary: #43162a;
+    --primary-foreground: #fff5f8;
+    --secondary: #ffd6e4;
+    --secondary-foreground: #43162a;
+    --muted: #ffdae7;
+    --muted-foreground: #985570;
+    --accent: #e23e72;
+    --accent-foreground: #fff5f8;
+    --destructive: #c4304a;
+    --border: #f7c6d8;
+    --input: #f7c6d8;
+    --ring: #e23e72;
+    --chart-1: #e23e72;
+    --chart-2: #d96a98;
+    --chart-3: #b5487a;
+    --chart-4: #e88aa8;
+    --chart-5: #985570;
+    --sidebar: #ffe9f0;
+    --sidebar-foreground: #43162a;
+    --sidebar-primary: #e23e72;
+    --sidebar-primary-foreground: #fff5f8;
+    --sidebar-accent: #ffd6e4;
+    --sidebar-accent-foreground: #43162a;
+    --sidebar-border: #f7c6d8;
+    --sidebar-ring: #e23e72;
+    --accent-dim: #c22f60;
+    --success: #4f9d7a;
+    --warn: #c98a2b;
+    --faint: #dbabbd;
+    --diff-add-bg: #e9f1e6;
+    --diff-del-bg: #ffdde7;
+}
+[data-theme="rose"].dark {
+    --background: #1a0e14;
+    --foreground: #f7dde7;
+    --card: #251521;
+    --card-foreground: #f7dde7;
+    --popover: #251521;
+    --popover-foreground: #f7dde7;
+    --primary: #f7dde7;
+    --primary-foreground: #1a0e14;
+    --secondary: #341f2c;
+    --secondary-foreground: #f7dde7;
+    --muted: #341f2c;
+    --muted-foreground: #c79aac;
+    --accent: #ff6b9d;
+    --accent-foreground: #1a0e14;
+    --destructive: #e8617a;
+    --border: #3e2533;
+    --input: #3e2533;
+    --ring: #ff6b9d;
+    --chart-1: #ff6b9d;
+    --chart-2: #ff9bbd;
+    --chart-3: #d96a98;
+    --chart-4: #b5487a;
+    --chart-5: #c79aac;
+    --sidebar: #251521;
+    --sidebar-foreground: #f7dde7;
+    --sidebar-primary: #ff6b9d;
+    --sidebar-primary-foreground: #1a0e14;
+    --sidebar-accent: #341f2c;
+    --sidebar-accent-foreground: #f7dde7;
+    --sidebar-border: #3e2533;
+    --sidebar-ring: #ff6b9d;
+    --accent-dim: #e85b8d;
+    --success: #6abf9f;
+    --warn: #d9a441;
+    --faint: #5c3d4c;
+    --diff-add-bg: #182619;
+    --diff-del-bg: #2e1820;
+}
 @import "tailwindcss";
 @import "tw-shimmer";
 @import "tw-animate-css";
@@ -992,5 +1149,134 @@
     .cg-message-in,
     .cg-stream-in > * {
         animation: none;
+    }
+}
+
+/* --- Ultra mode shine (the `ultracode` codeword opt-in) ---
+   When Ultra is engaged on the composer, the card wears a rainbow that travels
+   left→right as a WAVE (a flowing linear gradient), rather than a conic gradient
+   pinwheeling around the centre. The border is painted into a masked ::before so
+   the gradient only shows as a ring; a soft blurred ::after gives the lit bloom. */
+@keyframes cg-ultra-wave {
+    to {
+        background-position: -200% 0;
+    }
+}
+
+@keyframes cg-ultra-glow {
+    0%,
+    100% {
+        opacity: 0.85;
+    }
+    50% {
+        opacity: 1;
+    }
+}
+
+.cg-ultra-shine {
+    position: relative;
+    isolation: isolate;
+}
+
+.cg-ultra-shine::before {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    padding: 1.5px;
+    content: "";
+    border-radius: inherit;
+    background: linear-gradient(
+        90deg in oklab,
+        #ff5f6d,
+        #ffb347,
+        #ffe66d,
+        #5cd68a,
+        #36c5d6,
+        #5b7cff,
+        #b06aff,
+        #ff5fa2,
+        #ff5f6d
+    );
+    background-size: 200% 100%;
+    /* Show the gradient only as a ring: fill minus content box. */
+    -webkit-mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    animation:
+        cg-ultra-wave 6s linear infinite,
+        cg-ultra-glow 2.4s ease-in-out infinite;
+}
+
+/* Soft outer bloom so the card reads as "lit". */
+.cg-ultra-shine::after {
+    position: absolute;
+    inset: 0;
+    z-index: -2;
+    content: "";
+    border-radius: inherit;
+    background: linear-gradient(
+        90deg in oklab,
+        #ff5f6d,
+        #ffb347,
+        #ffe66d,
+        #5cd68a,
+        #36c5d6,
+        #5b7cff,
+        #b06aff,
+        #ff5fa2,
+        #ff5f6d
+    );
+    background-size: 200% 100%;
+    filter: blur(6px);
+    opacity: 0.22;
+    animation: cg-ultra-wave 6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cg-ultra-shine::before,
+    .cg-ultra-shine::after {
+        animation: none;
+    }
+}
+
+/* --- Inset content pane + sidebar spotlight ---
+   macOS detail-pane layout: the content sits flush against the sidebar and the
+   window edges, rounded only on the corners that face the sidebar so the sidebar
+   surface shows through the rounded notch. The whole window wears the sidebar
+   colour (bg-sidebar on .app-shell); the content pane is the brighter --background
+   surface laid over it. The sidebar still recedes while you work in the content —
+   dimming so the active side reads as "lit" — then lights back up on hover. */
+.cg-content-region {
+    padding: 0;
+}
+
+.cg-content-card {
+    border-radius: 0.75rem 0 0 0.75rem;
+    background: var(--pane-surface);
+}
+
+.cg-sidebar-region {
+    transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: opacity;
+}
+
+/* Working in the content (composer focused, a control active) dims the sidebar. */
+.app-shell:has(.cg-content-card:focus-within) .cg-sidebar-region {
+    opacity: 0.48;
+}
+
+/* …but hovering the sidebar lights it back up, even while the composer holds focus. */
+.app-shell:has(.cg-content-card:focus-within) .cg-sidebar-region:hover {
+    opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cg-sidebar-region {
+        transition: none;
     }
 }

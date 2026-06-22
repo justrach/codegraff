@@ -265,7 +265,7 @@ function AppShell() {
   return (
     <TooltipProvider>
       <SidebarProvider className="min-h-screen bg-background">
-        <main className="app-shell relative flex h-screen w-full overflow-hidden bg-background">
+        <main className="app-shell relative flex h-screen w-full overflow-hidden bg-sidebar">
           <AppThemeToggle
             isDarkTheme={isDarkTheme}
             onToggleTheme={toggleTheme}
@@ -319,7 +319,7 @@ function AppShell() {
               collapsible
               collapsedSize={0}
               groupResizeBehavior="preserve-pixel-size"
-              className={`overflow-hidden${isSidebarAnimating ? " transition-[flex-grow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]" : ""}`}
+              className={`cg-sidebar-region overflow-hidden${isSidebarAnimating ? " transition-[flex-grow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]" : ""}`}
               onResize={(size) => {
                 const nextIsVisible = size.inPixels > 0;
                 if (!nextIsVisible) {
@@ -349,13 +349,13 @@ function AppShell() {
             />
             <ResizablePanel
               id="chat-panel"
-              className={
+              className={`cg-content-region${
                 isSidebarAnimating
-                  ? "transition-[flex-grow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]"
-                  : undefined
-              }
+                  ? " transition-[flex-grow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]"
+                  : ""
+              }`}
             >
-              <section className="flex h-full min-w-0 flex-1 overflow-hidden">
+              <section className="cg-content-card flex h-full min-w-0 flex-1 overflow-hidden">
                 {isSettingsViewOpen ? (
                   selectedSettingsSection === "providers" ? (
                     <ProvidersSettingsPane />

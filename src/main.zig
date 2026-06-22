@@ -71,6 +71,8 @@ var use_color = false; // stdout is a TTY and NO_COLOR unset → enables color +
 var show_timing = false;
 var show_cost = false;
 var json_mode = false; // --json: structured JSONL events on stdout instead of human text
+var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
+var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
 var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes
 var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
 
@@ -79,15 +81,22 @@ var unattended = false; // -p one-shot: no human to prompt; unapproved tool call
 const schema_protocol_json =
     \\{
     \\  "transport": "newline-delimited JSON over stdin/stdout (--json)",
-    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"model\":\"gpt-5.5\",\"provider\":\"codex\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"}, {\"type\":\"set_effort\",\"level\":\"low|medium|high\"}, and {\"type\":\"set_fast\",\"on\":true} are live control requests acked by model/compact/mode/agent/effort/fast events. For compatibility, set_model also accepts legacy {\"name\":\"provider model|model\"}. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
+    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"model\":\"gpt-5.5\",\"provider\":\"codex\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"}, {\"type\":\"set_effort\",\"level\":\"low|medium|high\"}, and {\"type\":\"set_fast\",\"on\":true} are live control requests acked by model/compact/mode/agent/effort/fast/ultracode events. For compatibility, set_model also accepts legacy {\"name\":\"provider model|model\"}. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
     \\  "score_request": "{\"type\":\"score\",\"prompt_sha\":\"<16 hex>\",\"score\":0.7,\"notes\":\"...\",\"parent_sha\":\"<16 hex, optional>\"} appends an evaluation record for an agent/prompt variant to harness.trajectory.jsonl (the append-only DGM-style archive; prompt_sha = first 8 bytes of SHA-256 of the system prompt, hex; parent_sha records which prompt this variant was mutated from — the lineage edge DGM parent selection counts children with) and acks with a score event",
     \\  "events": [
     \\    {"type": "text", "text": "assistant text delta"},
     \\    {"type": "reasoning", "text": "reasoning/thinking delta (GUI shows a collapsible Thinking block)"},
+    \\    {"type": "started", "provider": "provider", "model": "model"},
+    \\    {"type": "model_call_started", "provider": "provider", "model": "model"},
+    \\    {"type": "model_call_finished", "provider": "provider", "model": "model", "ok": true, "ms": 0},
     \\    {"type": "tool_call", "name": "tool", "input": {}},
+    \\    {"type": "tool_call_started", "name": "tool", "input": {}},
+    \\    {"type": "tool_rejected", "name": "tool", "reason": "budget|duplicate", "input": {}, "message": "..."},
     \\    {"type": "ask_user", "call_id": "...", "question": "...", "input": {"question": "...", "options": ["..."]}},
     \\    {"type": "tool_result", "name": "tool", "is_error": false, "text": "..."},
-    \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0},
+    \\    {"type": "tool_call_finished", "name": "tool", "is_error": false, "ms": 0},
+    \\    {"type": "finalizing"},
+    \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0, "complete": true, "metadata_complete": true},
     \\    {"type": "system_prompt", "ok": true, "append": false, "chars": 0},
     \\    {"type": "model", "ok": true, "provider": "provider", "model": "model", "context": 0, "note": "context kept"},
     \\    {"type": "compact", "ok": true, "chars": 0},
@@ -111,7 +120,7 @@ const schema_serve_json =
     \\  "endpoints": [
     \\    {"method": "GET", "path": "/healthz", "description": "liveness + version, no auth"},
     \\    {"method": "GET", "path": "/v1/schema", "description": "this schema document"},
-    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
+    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
     \\    {"method": "POST", "path": "/v1/sessions/{id}", "description": "body is ONE stdio-protocol request object (user / set_system_prompt / set_model / compact / set_mode / set_agent / score / answer); non-answer requests stream application/x-ndjson events until the request's terminal event (turn/error, or the request-specific ack); answer requests return JSON ack while the original user stream continues; one non-answer request in flight per session at a time"},
     \\    {"method": "DELETE", "path": "/v1/sessions/{id}", "description": "graceful close: waits for any in-flight request, then EOFs the child's stdin"}
     \\  ]
@@ -127,6 +136,8 @@ const schema_flags_json =
     \\  {"flag": "--system-prompt", "arg": "text", "description": "replace the built-in system prompt (cwd project-instructions file is still appended)"},
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
     \\  {"flag": "--json", "arg": null, "description": "structured stdio protocol (JSON in, JSONL events out)"},
+    \\  {"flag": "--max-tool-calls", "arg": "N", "description": "hard per-turn root tool-call budget; rejected calls emit tool_rejected/tool_result"},
+    \\  {"flag": "--dedupe-tool-calls", "arg": null, "description": "reject duplicate root tool name+normalized-input calls per turn"},
     \\  {"flag": "--no-telemetry", "arg": null, "description": "disable anonymous OTEL usage telemetry for this run"}
     \\]
 ;
@@ -365,11 +376,33 @@ fn contextFor(provider_id: []const u8, model: []const u8) u64 {
 /// a key/login available so `/model sonnet` lands on a usable provider. Returns
 /// null when nothing matches (caller falls back to the query verbatim so the
 /// providerFor claude*/gateway fallback still applies).
+fn normalizeModelAlias(dst: *[128]u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    for (s) |c| {
+        if (c == '-' or c == '_' or c == ' ') continue;
+        if (n >= dst.len) break;
+        dst[n] = std.ascii.toLower(c);
+        n += 1;
+    }
+    return dst[0..n];
+}
+
+fn modelAliasEquals(name: []const u8, query: []const u8) bool {
+    var nb: [128]u8 = undefined;
+    var qb: [128]u8 = undefined;
+    return std.mem.eql(u8, normalizeModelAlias(&nb, name), normalizeModelAlias(&qb, query));
+}
+
 fn resolveModelName(keys: Keys, query: []const u8) ?[]const u8 {
     for (model_table) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
+    for (model_table) |m| if (modelAliasEquals(m.name, query)) return m.name;
+    var qbuf: [128]u8 = undefined;
+    const qnorm = normalizeModelAlias(&qbuf, query);
     var fallback: ?[]const u8 = null;
     for (model_table) |m| {
-        if (std.ascii.indexOfIgnoreCase(m.name, query) == null) continue;
+        var nbuf: [128]u8 = undefined;
+        const nnorm = normalizeModelAlias(&nbuf, m.name);
+        if (std.ascii.indexOfIgnoreCase(m.name, query) == null and std.mem.indexOf(u8, nnorm, qnorm) == null) continue;
         if (keys.get(m.provider) != null) return m.name;
         if (fallback == null) fallback = m.name;
     }
@@ -2224,7 +2257,7 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -2671,7 +2704,10 @@ const SteerEntry = struct { text: []const u8, force: bool };
 var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
 var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
 var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
+var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + Agent.emit)
 var g_force_interrupt = false; // Ctrl-F force caused the last interrupt
+var g_5xx_body_buf: [600]u8 = undefined; // snippet of the last 5xx/429 error body
+var g_5xx_body_len: usize = 0; // 0 = no body captured
 
 /// Pops the next queued steering prompt (FIFO), or null if none.
 fn popSteer() ?SteerEntry {
@@ -3996,6 +4032,32 @@ fn writeAnthropicMessages(s: *std.json.Stringify, messages: std.json.Array, cach
     try s.endArray();
 }
 
+fn writeOpenAIMessageNormalized(s: *std.json.Stringify, m: Value) !void {
+    if (m != .object) return s.write(m);
+    const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
+    const is_assistant_tool_call = std.mem.eql(u8, role, "assistant") and m.object.get("tool_calls") != null;
+    const null_content = if (m.object.get("content")) |v| v == .null else false;
+    if (!is_assistant_tool_call or !null_content) return s.write(m);
+
+    try s.beginObject();
+    var it = m.object.iterator();
+    var wrote_content = false;
+    while (it.next()) |kv| {
+        try s.objectField(kv.key_ptr.*);
+        if (std.mem.eql(u8, kv.key_ptr.*, "content")) {
+            try s.write("");
+            wrote_content = true;
+        } else {
+            try s.write(kv.value_ptr.*);
+        }
+    }
+    if (!wrote_content) {
+        try s.objectField("content");
+        try s.write("");
+    }
+    try s.endObject();
+}
+
 const harness_version: []const u8 = @import("build_options").version;
 
 /// OTLP endpoint baked into release builds (-Dtelemetry-endpoint); "" in dev
@@ -4004,7 +4066,7 @@ const harness_version: []const u8 = @import("build_options").version;
 const default_telemetry_endpoint: []const u8 = @import("build_options").telemetry_endpoint;
 
 const usage_text =
-    \\simple-harness — a minimal agentic coding harness in Zig (zero deps)
+    \\graff — a minimal agentic coding harness in Zig (zero deps)
     \\
     \\usage:
     \\  graff [flags]                    start the REPL
@@ -4021,6 +4083,9 @@ const usage_text =
     \\
     \\flags:
     \\  --model <name>   start on this model (same fuzzy resolution as /model)
+    \\  --resume <name>  resume/autosave <name>.session.json
+    \\  --new            start a fresh autosaved session (default)
+    \\  --no-resume      ignore --resume and start fresh
     \\  --system-prompt <text>          replace the built-in system prompt
     \\  --append-system-prompt <text>   append extra text to the system prompt
     \\  --yolo           skip all permission prompts for the session
@@ -4028,6 +4093,8 @@ const usage_text =
     \\  --timing         show per-tool wall-clock on result lines
     \\  --cost           show running session spend in the prompt
     \\  --json           structured stdio protocol (JSON in, JSONL events out)
+    \\  --max-tool-calls N  reject root tool calls after N per turn (JSON-safe budget)
+    \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn
     \\  --no-telemetry   disable anonymous usage telemetry for this run
     \\  -h, --help       this help
     \\  -V, --version    print version
@@ -4262,6 +4329,9 @@ pub fn main(init: std.process.Init) !void {
     var host_flag: []const u8 = "127.0.0.1"; // harness serve
     var port_flag: u16 = 8787; // harness serve
     var token_flag: ?[]const u8 = null; // harness serve
+    var resume_flag: ?[]const u8 = null; // restore/save this named session
+    var no_resume_flag = false; // start without auto-loading last.session.json
+    var new_session_flag = false; // start a fresh autosaved session
     var positionals: std.ArrayList([]const u8) = .empty;
     {
         var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
@@ -4279,6 +4349,11 @@ pub fn main(init: std.process.Init) !void {
                     show_cost = true;
                 } else if (std.mem.eql(u8, arg, "--json")) {
                     json_mode = true;
+                } else if (std.mem.eql(u8, arg, "--max-tool-calls")) {
+                    const mv = it.next() orelse std.process.fatal("--max-tool-calls needs a non-negative integer — harness --help", .{});
+                    max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-tool-calls needs a non-negative integer, got '{s}'", .{mv});
+                } else if (std.mem.eql(u8, arg, "--dedupe-tool-calls")) {
+                    dedupe_tool_calls = true;
                 } else if (std.mem.eql(u8, arg, "--schema")) {
                     schema_flag = true;
                 } else if (std.mem.eql(u8, arg, "--refresh")) {
@@ -4293,6 +4368,13 @@ pub fn main(init: std.process.Init) !void {
                     update_force = true;
                 } else if (std.mem.eql(u8, arg, "--check")) {
                     update_check = true;
+                } else if (std.mem.eql(u8, arg, "--resume")) {
+                    const rv = it.next() orelse std.process.fatal("--resume needs a session name — harness --help", .{});
+                    resume_flag = try arena.dupe(u8, rv);
+                } else if (std.mem.eql(u8, arg, "--no-resume")) {
+                    no_resume_flag = true;
+                } else if (std.mem.eql(u8, arg, "--new")) {
+                    new_session_flag = true;
                 } else if (std.mem.eql(u8, arg, "--model")) {
                     const mv = it.next() orelse std.process.fatal("--model needs a value — harness --help", .{});
                     model_flag = try arena.dupe(u8, mv);
@@ -4339,7 +4421,7 @@ pub fn main(init: std.process.Init) !void {
     if (help_flag or version_flag) {
         var hbuf: [4096]u8 = undefined;
         var hw = Io.File.stdout().writer(io, &hbuf);
-        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("simple-harness {s}\n", .{harness_version});
+        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("graff {s}\n", .{harness_version});
         try hw.interface.flush();
         return;
     }
@@ -4734,8 +4816,14 @@ pub fn main(init: std.process.Init) !void {
         .tools_openai = try renderRootTools(arena, .openai, &root_specs, mcp_tools),
         .tools_responses = try renderRootTools(arena, .responses, &root_specs, mcp_tools),
     };
+    const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(io)});
+    root.session_name = if (resume_flag) |name| (if (!new_session_flag and !no_resume_flag) name else fresh_session_name) else fresh_session_name;
     loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
     tracer.note("session", root.provider.model);
+
+    if (oneshot_prompt != null and resume_flag != null and !new_session_flag and !no_resume_flag) {
+        loadSession(&root, keys, arena, root.session_name) catch {};
+    }
 
     // One-shot print mode: run the single prompt to completion, print the
     // final text to stdout, exit. Tool progress goes to stderr (say() with no
@@ -4760,6 +4848,9 @@ pub fn main(init: std.process.Init) !void {
         if (CostTally.render(g_cost.snap(io), &uw)) {
             std.debug.print("[usage] {s}\n", .{uw.buffered()});
         } else |_| {}
+        saveSession(&root, arena, root.session_name) catch |err| {
+            std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
+        };
         return;
     }
 
@@ -4785,17 +4876,17 @@ pub fn main(init: std.process.Init) !void {
     var prev_turn_id: u64 = 0;
     var prev_prompt_fp: [16]u8 = promptFingerprint(root.systemPrompt());
 
-    // opencode-style auto-resume: a fresh process has a cold provider prompt
-    // cache, but last.session.json on disk survives — restore it so the
-    // conversation just continues. Best-effort: a missing/keyless/corrupt file
-    // silently starts fresh.
-    if (interactive and oneshot_prompt == null) {
-        if (loadSession(&root, keys, arena, "last")) |_| {
+    // Explicit resume only: bare `graff` starts fresh, while `--resume <name>`
+    // restores that autosave target. Best-effort: a missing/keyless/corrupt
+    // file silently starts fresh.
+    if (oneshot_prompt == null and resume_flag != null and !new_session_flag and !no_resume_flag) {
+        if (loadSession(&root, keys, arena, root.session_name)) |_| {
             if (root.messages.items.len > 0) {
                 // Estimate the restored context from the file size (~4 bytes/token).
-                const est: u64 = if (Io.Dir.cwd().statFile(io, "last" ++ session_ext, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
-                try out.print("↩ resumed last session — {d} message(s) on {s} · /clear for a fresh start\n", .{ root.messages.items.len, root.provider.model });
-                try out.flush();
+                const est_path = try std.fmt.allocPrint(arena, "{s}{s}", .{ root.session_name, session_ext });
+                const est: u64 = if (Io.Dir.cwd().statFile(io, est_path, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
+                if (!json_mode) try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ root.session_name, session_ext, root.messages.items.len, root.provider.model });
+                if (!json_mode) try out.flush();
                 // Cold cache: if the restored context is as large as what would
                 // trigger live compaction, the first turn would re-bill the whole
                 // thing — summarize up front instead.
@@ -4826,18 +4917,22 @@ pub fn main(init: std.process.Init) !void {
             }
             try out.flush();
             break :blk e.text;
-        } else if (interactive)
-            (try readLine(&root, in, out, gpa, &history, &linebuf)) orelse break
-        else
-            (try in.takeDelimiter('\n')) orelse break;
+        } else if (interactive) blk: {
+            try root.prompt();
+            break :blk (try readLine(&root, in, out, gpa, &history, &linebuf)) orelse break;
+        } else (try in.takeDelimiter('\n')) orelse break;
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
+        const loop_prompt: ?[]const u8 = if (!json_mode and std.mem.startsWith(u8, line, "/loop "))
+            std.mem.trim(u8, line["/loop".len..], " \t")
+        else
+            null;
         if (!json_mode) {
             const l = if (line.len > 0 and line[0] == '/') line[1..] else line;
             if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
         }
 
-        if (!json_mode and line[0] == '/') {
+        if (!json_mode and line[0] == '/' and loop_prompt == null) {
             // Bare "/" on a TTY: open the filterable command menu.
             if (interactive and line.len == 1) {
                 if (listPicker(&root, arena, out, "Command ›", &command_menu)) |idx| {
@@ -4857,7 +4952,7 @@ pub fn main(init: std.process.Init) !void {
         // {"type":"score","prompt_sha":"...","score":0.7,"notes":"..."}
         // appends an evaluation record for an agent variant to the
         // trajectory archive (the DGM evaluation phase writing back).
-        const base_msg: []const u8 = if (json_mode) blk: {
+        const base_msg: []const u8 = if (loop_prompt) |lp| lp else if (json_mode) blk: {
             const parsed = std.json.parseFromSliceLeaky(Value, arena, line, .{ .allocate = .alloc_always }) catch {
                 root.emit(.{ .type = "error", .message = "invalid JSON (expect {\"type\":\"user\",\"text\":\"...\"})" });
                 continue;
@@ -4950,6 +5045,12 @@ pub fn main(init: std.process.Init) !void {
                 root.emit(.{ .type = "fast", .ok = true, .on = on, .applies = root.provider.kind == .responses });
                 continue;
             }
+            if (std.mem.eql(u8, rtype, "set_ultracode")) {
+                const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
+                root.ultracode_mode = on;
+                root.emit(.{ .type = "ultracode", .ok = true, .on = on });
+                continue;
+            }
             if (std.mem.eql(u8, rtype, "score")) {
                 const sha = if (parsed.object.get("prompt_sha")) |v| (if (v == .string) v.string else "") else "";
                 const sc: f64 = if (parsed.object.get("score")) |v| switch (v) {
@@ -5021,12 +5122,34 @@ pub fn main(init: std.process.Init) !void {
                 root.emit(.{ .type = "system_prompt", .ok = true, .append = append, .chars = root.sys_normal.len });
                 continue;
             }
+            if (parsed.object.get("maxToolCalls") orelse parsed.object.get("max_tool_calls")) |v| switch (v) {
+                .integer => |n| max_tool_calls = if (n >= 0) @intCast(n) else null,
+                .null => max_tool_calls = null,
+                else => {},
+            };
+            if (parsed.object.get("dedupeToolCalls") orelse parsed.object.get("dedupe_tool_calls")) |v| {
+                if (v == .bool) dedupe_tool_calls = v.bool;
+            }
             break :blk text;
         } else line;
 
+        // Persistent goal steering is prepended to every normal/loop turn.
+        const goal_msg: []const u8 = if (root.goal) |goal| try std.fmt.allocPrint(arena,
+            \\{s}
+            \\
+            \\[harness goal: {s}]
+        , .{ base_msg, goal }) else base_msg;
+
+        // /loop asks the model to work autonomously through plan→act→verify.
+        const loop_msg: []const u8 = if (loop_prompt != null) try std.fmt.allocPrint(arena,
+            \\{s}
+            \\
+            \\[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps.]
+        , .{goal_msg}) else goal_msg;
+
         // Plan mode: steer the model to explore read-only and present a plan
         // (the gate enforces the read-only part regardless).
-        const msg: []const u8 = if (!plan_mode) base_msg else try std.fmt.allocPrint(arena,
+        const msg: []const u8 = if (!plan_mode) loop_msg else try std.fmt.allocPrint(arena,
             \\{s}
             \\
             \\[harness note: plan mode is ON — read-only. Explore with read-only
@@ -5034,14 +5157,14 @@ pub fn main(init: std.process.Init) !void {
             \\the changes themselves, sequence, risks) and ask the user to
             \\approve it. Do not write files or run mutating commands — the
             \\gate will deny them. The user toggles execution back on with /plan.]
-        , .{base_msg});
+        , .{loop_msg});
 
         // Promote a GUI `@[image]` attachment to a native vision block when the
         // model can see (otherwise it only gets the path and resorts to OCR).
         stageGuiImageAttachment(&root, msg);
 
         // "ultracode" codeword: opt this turn into multi-agent workflow mode.
-        if (std.ascii.indexOfIgnoreCase(msg, "ultracode") != null) {
+        if (std.ascii.indexOfIgnoreCase(msg, "ultracode") != null or root.ultracode_mode) {
             if (!json_mode) {
                 if (interactive) {
                     ultracodeShine(out, io);
@@ -5086,6 +5209,9 @@ pub fn main(init: std.process.Init) !void {
             break :blk id;
         } else 0;
         root.tools_used.clear(io); // per-turn tool log for the turn's node
+        root.tool_calls_this_turn = 0;
+        root.seen_tool_keys.clearRetainingCapacity();
+        if (json_mode) root.emit(.{ .type = "started", .provider = root.provider.id, .model = root.provider.model });
         const turn_started = Io.Timestamp.now(io, .awake);
         // A failed turn must never kill the session: ApiError is already
         // reported inside request(); anything else is surfaced here. Either
@@ -5130,11 +5256,20 @@ pub fn main(init: std.process.Init) !void {
                 g_force_interrupt = false;
                 try out.print("{s}{s}{s}\n", .{ style.yellow, int_msg, style.reset });
                 try out.flush();
+                saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
             error.ApiError => {
                 if (g_telem) |t| t.errorEvent("api", root.last_api_error orelse "api error");
-                if (json_mode) root.emit(.{ .type = "error", .message = root.last_api_error orelse "api error" });
+                if (json_mode) {
+                    root.emit(.{ .type = "error", .message = root.last_api_error orelse "api error" });
+                    const partial = std.mem.trim(u8, root.partial_text.items, " \t\r\n");
+                    if (partial.len > 0) {
+                        root.emit(.{ .type = "finalizing" });
+                        root.emit(.{ .type = "turn", .text = partial, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = false, .metadata_complete = root.last_context_tokens > 0 });
+                    }
+                }
+                saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
             else => |e| {
@@ -5144,10 +5279,18 @@ pub fn main(init: std.process.Init) !void {
                 } else {
                     root.say("[turn aborted: {t}]\n", .{e}) catch {};
                 }
+                saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
         };
-        if (json_mode) root.emit(.{ .type = "turn", .text = final_text, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd });
+        if (json_mode) {
+            const emitted_text = if (final_text.len == 0 and root.partial_text.items.len > 0)
+                std.mem.trim(u8, root.partial_text.items, " \t\r\n")
+            else
+                final_text;
+            root.emit(.{ .type = "finalizing" });
+            root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = true, .metadata_complete = root.last_context_tokens > 0 });
+        }
 
         // turn_end lifecycle hooks (best-effort; interrupted/errored turns
         // `continue` above and never reach here, so ok is always true).
@@ -5167,11 +5310,20 @@ pub fn main(init: std.process.Init) !void {
         // opencode-style continuous autosave: persist after every turn so a
         // crash or quit never loses the thread — last.session.json, the same
         // file /resume reads. Best-effort; a write failure never breaks the loop.
-        saveSession(&root, arena, "last") catch {};
+        saveSession(&root, arena, root.session_name) catch {};
     }
     // Final save on exit also captures command-driven edits since the last turn
     // (/clear, /rewind) so the next start resumes the true end state.
-    saveSession(&root, arena, "last") catch {};
+    if (!json_mode and root.messages.items.len > 0) {
+        saveSession(&root, arena, root.session_name) catch |err| {
+            out.print("{s}⚠ session save failed: {t}{s}\n", .{ style.yellow, err, style.reset }) catch {};
+            out.flush() catch {};
+        };
+        out.print("{s}↩ session saved → {s}{s}{s}\n", .{ style.dim, root.session_name, style.reset, session_ext }) catch {};
+        out.flush() catch {};
+    } else {
+        saveSession(&root, arena, root.session_name) catch {};
+    }
     try out.writeAll("\n");
     try out.flush();
 }
@@ -5627,6 +5779,10 @@ const command_menu = [_]PickItem{
     .{ .name = "/model", .desc = "switch model/provider (picker)" },
     .{ .name = "/models", .desc = "list known models, context windows" },
     .{ .name = "/clear", .desc = "wipe the conversation, start fresh" },
+    .{ .name = "/new", .desc = "start a new autosaved session" },
+    .{ .name = "/rename", .desc = "rename the current session title" },
+    .{ .name = "/goal", .desc = "set/show persistent objective steering" },
+    .{ .name = "/loop", .desc = "run an autonomous plan→act→verify prompt" },
     .{ .name = "/bash", .desc = "run a shell command in the current workspace" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
     .{ .name = "/plan", .desc = "toggle plan mode (read-only, propose first)" },
@@ -5642,6 +5798,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/effort", .desc = "thinking depth: low|medium|high (codex, deepseek, codegraff)" },
     .{ .name = "/reasoning", .desc = "alias for /effort" },
     .{ .name = "/fast", .desc = "codex priority service tier — lower latency (gpt-5.5)" },
+    .{ .name = "/ultracode", .desc = "toggle persistent ultracode (multi-agent workflow) mode" },
     .{ .name = "/image", .desc = "attach an image to the next message" },
     .{ .name = "/paste", .desc = "attach the clipboard image" },
     .{ .name = "/trace", .desc = "toggle the JSONL event trace" },
@@ -5683,7 +5840,55 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.last_context_tokens = 0;
         root.last_cache_read = 0;
         root.todos.clearRetainingCapacity();
+        saveSession(root, arena, root.session_name) catch {};
         try out.writeAll("context cleared — fresh conversation\n");
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/new")) {
+        root.messages = std.json.Array.init(arena);
+        root.last_context_tokens = 0;
+        root.last_cache_read = 0;
+        root.todos.clearRetainingCapacity();
+        root.goal = null;
+        root.ultracode_mode = false;
+        root.session_title = null;
+        root.session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(root.io)});
+        saveSession(root, arena, root.session_name) catch {};
+        try out.print("new session → {s}{s}\n", .{ root.session_name, session_ext });
+        try out.flush();
+        return;
+    }
+    if (std.mem.startsWith(u8, line, "/rename")) {
+        const title = std.mem.trim(u8, line["/rename".len..], " \t");
+        if (title.len == 0) {
+            try out.writeAll("usage: /rename <title>\n");
+        } else {
+            root.session_title = try arena.dupe(u8, title);
+            saveSession(root, arena, root.session_name) catch {};
+            try out.print("session title → {s}\n", .{title});
+        }
+        try out.flush();
+        return;
+    }
+    if (std.mem.startsWith(u8, line, "/goal")) {
+        const text = std.mem.trim(u8, line["/goal".len..], " \t");
+        if (text.len == 0) {
+            if (root.goal) |goal| try out.print("Current goal: {s}\nClear it with /goal clear.\n", .{goal}) else try out.writeAll("No active goal. Set one with /goal <objective>.\n");
+        } else if (std.ascii.eqlIgnoreCase(text, "clear") or std.ascii.eqlIgnoreCase(text, "off")) {
+            root.goal = null;
+            saveSession(root, arena, root.session_name) catch {};
+            try out.writeAll("Goal cleared. Future turns will not get goal steering.\n");
+        } else {
+            root.goal = try arena.dupe(u8, text);
+            saveSession(root, arena, root.session_name) catch {};
+            try out.print("Goal set: {s}\nFuture turns in this session will include this objective as steering.\n", .{text});
+        }
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/loop")) {
+        try out.writeAll("usage: /loop <prompt> — run an autonomous plan→act→verify pass.\n");
         try out.flush();
         return;
     }
@@ -6139,6 +6344,17 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return;
     }
+    if (std.mem.eql(u8, line, "/ultracode") or std.mem.eql(u8, line, "/ultracode on") or std.mem.eql(u8, line, "/ultracode off")) {
+        root.ultracode_mode = if (std.mem.eql(u8, line, "/ultracode on")) true else if (std.mem.eql(u8, line, "/ultracode off")) false else !root.ultracode_mode;
+        if (root.ultracode_mode) {
+            ultracodeShine(out, root.io);
+            try out.writeAll("\xe2\x9a\xa1 multi-agent workflow mode engaged\n");
+        } else {
+            try out.writeAll("ultracode mode: off\n");
+        }
+        try out.flush();
+        return;
+    }
     if (std.mem.startsWith(u8, line, "/effort") or std.mem.startsWith(u8, line, "/reasoning")) {
         const prefix: []const u8 = if (std.mem.startsWith(u8, line, "/effort")) "/effort" else "/reasoning";
         const arg = std.mem.trim(u8, line[prefix.len..], " \t");
@@ -6514,12 +6730,13 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.startsWith(u8, line, "/save")) {
         const arg = std.mem.trim(u8, line["/save".len..], " \t");
-        const name = if (arg.len == 0) "last" else arg;
+        const name = if (arg.len == 0) root.session_name else arg;
         saveSession(root, arena, name) catch |err| {
             try out.print("save failed: {t}\n", .{err});
             try out.flush();
             return;
         };
+        root.session_name = name;
         try out.print("saved session → {s}{s}\n", .{ name, session_ext });
         try out.flush();
         return;
@@ -6558,6 +6775,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return;
         };
+        root.session_name = name;
         try out.print("resumed {s}{s} — {d} message(s), {s} via {s}{s}\n", .{
             name,                                 session_ext, root.messages.items.len, root.provider.model, root.provider.id,
             if (root.strict) " (strict)" else "",
@@ -6578,7 +6796,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
             const base = entry.name[0 .. entry.name.len - session_ext.len];
-            try out.print("  {s}\n", .{base});
+            try out.print("  {s}{s}\n", .{ base, if (std.mem.eql(u8, base, root.session_name)) "  ← current" else "" });
             n += 1;
         }
         if (n == 0) try out.writeAll("(no saved sessions in cwd)\n");
@@ -6596,6 +6814,10 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /model <name>   switch model/provider, fuzzy match (e.g. "sonnet", "opus")
         \\  /models         list known models, context windows, compaction points
         \\  /clear          wipe the conversation and start fresh
+        \\  /new            start a fresh autosaved session
+        \\  /rename <title> set the current session title
+        \\  /goal [text]    set/show persistent objective steering; /goal clear clears
+        \\  /loop <prompt>  run an autonomous plan→act→verify pass
         \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
         \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
         \\  /login [tgt]    OAuth sign-in (no key to paste): codegraff | codex (alias oai) | kimi; bare → picker
@@ -6615,7 +6837,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
         \\  /image <path>   attach an image to your next message (vision models only)
         \\  /paste          attach the clipboard image — macOS; also Ctrl-V (⌘V can't be captured)
-        \\  /save [name]    write the conversation to <name>.session.json (default: last)
+        \\  /save [name]    write the conversation to <name>.session.json (default: current)
         \\  /resume [name]  restore a saved conversation (no arg → interactive picker)
         \\  /sessions       list saved sessions in the cwd
         \\  /todo           show the current task list
@@ -7252,6 +7474,8 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
     var yolo = st.cfg.yolo;
     var sys = st.cfg.system_prompt;
     var append_sys = st.cfg.append_system_prompt;
+    var max_tools: ?u64 = null;
+    var dedupe_tools = false;
     if (std.mem.trim(u8, body, " \t\r\n").len > 0) {
         const v = std.json.parseFromSliceLeaky(Value, arena, body, .{ .allocate = .alloc_always }) catch
             return respondJson(st, req, .bad_request, "{\"error\":\"body must be a JSON object\"}");
@@ -7268,12 +7492,20 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
         if (v.object.get("append_system_prompt")) |s| if (s == .string) {
             append_sys = s.string;
         };
+        if (v.object.get("maxToolCalls") orelse v.object.get("max_tool_calls")) |m| if (m == .integer and m.integer >= 0) {
+            max_tools = @intCast(m.integer);
+        };
+        if (v.object.get("dedupeToolCalls") orelse v.object.get("dedupe_tool_calls")) |d| if (d == .bool) {
+            dedupe_tools = d.bool;
+        };
     }
 
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{ st.exe, "--json" });
     if (yolo) try argv.append(arena, "--yolo");
     if (model) |m| try argv.appendSlice(arena, &.{ "--model", m });
+    if (max_tools) |n| try argv.appendSlice(arena, &.{ "--max-tool-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
+    if (dedupe_tools) try argv.append(arena, "--dedupe-tool-calls");
     if (sys) |s| try argv.appendSlice(arena, &.{ "--system-prompt", s });
     if (append_sys) |s| try argv.appendSlice(arena, &.{ "--append-system-prompt", s });
 
@@ -7777,6 +8009,29 @@ fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, args: 
     try out.writeAll("usage: graff key set <provider> <key>  |  graff key list\n");
     try out.flush();
 }
+
+fn sessionTitle(root: *Agent) []const u8 {
+    if (root.session_title) |title| return title;
+    for (root.messages.items) |m| {
+        if (m != .object) continue;
+        const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
+        if (!std.mem.eql(u8, role, "user")) continue;
+        if (m.object.get("content")) |c| switch (c) {
+            .string => |text| return utf8Prefix(std.mem.trim(u8, text, " \t\r\n"), 80),
+            .array => |arr| for (arr.items) |part| {
+                if (part == .object) {
+                    const typ = if (part.object.get("type")) |v| (if (v == .string) v.string else "") else "";
+                    if (std.mem.eql(u8, typ, "text")) {
+                        if (part.object.get("text")) |tv| if (tv == .string) return utf8Prefix(std.mem.trim(u8, tv.string, " \t\r\n"), 80);
+                    }
+                }
+            },
+            else => {},
+        };
+    }
+    return "Untitled session";
+}
+
 /// Save the conversation (messages + provider id/model + strict flag) to
 /// <name>.session.json in the cwd. The JSON message array is already the
 /// provider-native wire shape, so resume is a verbatim restore.
@@ -7791,6 +8046,14 @@ fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     try s.write(root.provider.model);
     try s.objectField("strict");
     try s.write(root.strict);
+    try s.objectField("ultracode_mode");
+    try s.write(root.ultracode_mode);
+    try s.objectField("goal");
+    if (root.goal) |goal| try s.write(goal) else try s.write(null);
+    try s.objectField("title");
+    if (root.session_title) |title| try s.write(title) else try s.write(sessionTitle(root));
+    try s.objectField("updated_ms");
+    try s.write(unixMs(root.io));
     try s.objectField("messages");
     try s.write(Value{ .array = root.messages });
     try s.endObject();
@@ -7812,10 +8075,37 @@ fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !vo
     const model = if (obj.get("model")) |v| v.string else return error.BadSession;
     const msgs = if (obj.get("messages")) |v| (if (v == .array) v.array else return error.BadSession) else return error.BadSession;
     const strict = if (obj.get("strict")) |v| (v == .bool and v.bool) else false;
+    const ultracode_mode = if (obj.get("ultracode_mode")) |v| (v == .bool and v.bool) else false;
+    const goal = if (obj.get("goal")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
+    const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
 
     root.provider = try keys.providerById(pid, model);
     root.messages = msgs;
+    // Repair histories written by older builds where a Responses
+    // `function_call_output.output` was persisted as a byte array instead of a
+    // string. The Responses API rejects that ("input[N].output[0]: expected an
+    // object, got an integer instead"), and we restore messages verbatim — so a
+    // poisoned last.session.json would otherwise re-break every resume.
+    for (root.messages.items) |*m| {
+        if (m.* != .object) continue;
+        const mtype = if (m.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+        if (!std.mem.eql(u8, mtype, "function_call_output")) continue;
+        const out = m.object.get("output") orelse continue;
+        if (out == .string) continue; // already correct
+        var repaired: std.ArrayList(u8) = .empty;
+        if (out == .array) {
+            for (out.array.items) |el| {
+                if (el == .integer and el.integer >= 0 and el.integer <= 255) {
+                    try repaired.append(arena, @intCast(el.integer));
+                }
+            }
+        }
+        try m.object.put(arena, "output", .{ .string = repaired.items });
+    }
     root.strict = strict;
+    root.ultracode_mode = ultracode_mode;
+    root.goal = goal;
+    root.session_title = title;
     root.last_context_tokens = 0;
     root.cap_new = false; // per-provider; relearn on rejection
     root.effort_rejected = false;
@@ -7888,6 +8178,8 @@ const Agent = struct {
     sys_normal: []const u8 = main_system_prompt, // root system prompt (+ project instructions)
     sys_override: ?[]const u8 = null, // subagent-only: per-child system prompt (swarm prompt variants)
     tools_used: ToolSink = .{}, // external tool calls this agent made (per turn for the root)
+    tool_calls_this_turn: u64 = 0, // root-only hard budget counter (--max-tool-calls)
+    seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
     md_buf: std.ArrayList(u8) = .empty, // current incomplete streamed line (markdown rendering)
     md_fence: bool = false, // inside a ``` code fence while streaming
     md_kind: MdKind = .classify, // incremental renderer: current line's classification
@@ -7904,6 +8196,10 @@ const Agent = struct {
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
+    ultracode_mode: bool = false, // persistent ultracode (multi-agent workflow) mode (/ultracode)
+    goal: ?[]const u8 = null, // persistent objective steering (/goal)
+    session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
+    session_title: ?[]const u8 = null, // human-readable title/rename metadata
     sys_strict: []const u8 = main_system_prompt_strict,
     tools_anthropic: []const u8 = tools_anthropic_sub,
     tools_openai: []const u8 = tools_openai_sub,
@@ -7948,13 +8244,13 @@ const Agent = struct {
             const threshold = self.provider.compactAt();
             // % of the compaction budget already used — glanceable headroom.
             const pct = if (threshold > 0) self.last_context_tokens * 100 / threshold else 0;
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · {s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
+            try w.print("\n{s}[{s}{s}{s}{s}{s} · cwd {s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
                 style.dim,   style.reset,   style.cyan,  self.provider.model,      flag,             style.dim,
                 style.reset, g_cwd_display, style.dim,   self.last_context_tokens, threshold / 1000, pct,
                 cached,      cost,          style.reset, style.bold,               style.reset,
             });
         } else {
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · {s}{s}{s}{s}]{s} {s}›{s} ", .{
+            try w.print("\n{s}[{s}{s}{s}{s}{s} · cwd {s}{s}{s}{s}]{s} {s}›{s} ", .{
                 style.dim,   style.reset,   style.cyan, self.provider.model, flag,        style.dim,
                 style.reset, g_cwd_display, style.dim,  cost,                style.reset, style.bold,
                 style.reset,
@@ -7984,6 +8280,11 @@ const Agent = struct {
     /// field, e.g. tool input, serializes correctly). Best-effort.
     fn emit(self: *Agent, ev: anytype) void {
         const w = self.out orelse return;
+        // --json: the GUI stream is shared with pool-thread subagent emits
+        // (guiEmit), so serialize + flush under the lock — a raw line must never
+        // land mid-buffer and two writers must never interleave on stdout.
+        if (json_mode) g_gui_mu.lockUncancelable(self.io);
+        defer if (json_mode) g_gui_mu.unlock(self.io);
         var s: std.json.Stringify = .{ .writer = w };
         s.write(ev) catch return;
         w.writeByte('\n') catch return;
@@ -8050,6 +8351,7 @@ const Agent = struct {
             const body = try self.buildBody(tools, force, live, stream_usage);
             defer self.gpa.free(body);
             const t0: Io.Timestamp = .now(self.io, .awake);
+            if (json_mode and !self.sub) self.emit(.{ .type = "model_call_started", .provider = self.provider.id, .model = self.provider.model });
             // HTTP calls are flaky: a kept-alive connection the server closed
             // (HttpConnectionClosing), a reset, a truncated TLS read. Retry a
             // few times with a fresh connection; on persistent failure surface
@@ -8079,15 +8381,23 @@ const Agent = struct {
                             if (throttled) {
                                 const delay_ms = @min(@as(u64, 1000) << @intCast(@min(attempt, 3)), 8000);
                                 const what: []const u8 = if (err == error.RateLimited) "rate limited (429)" else "server error (5xx)";
-                                try self.say("[{s} — retrying in {d}s ({d}/{d})]\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts });
-                                if (self.tracer) |tr| tr.note("retry", what);
+                                if (g_5xx_body_len > 0) {
+                                    try self.say("[{s} — retrying in {d}s ({d}/{d})] {s}\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts, g_5xx_body_buf[0..g_5xx_body_len] });
+                                } else {
+                                    try self.say("[{s} — retrying in {d}s ({d}/{d})]\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts });
+                                }
+                                if (self.tracer) |tr| tr.note("retry", if (g_5xx_body_len > 0) g_5xx_body_buf[0..g_5xx_body_len] else what);
                                 self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                             } else {
                                 try self.say("[network error: {t} — retrying ({d}/{d})]\n", .{ err, attempt + 1, max_attempts });
                             }
                             continue;
                         }
-                        try self.say("[request failed: {t} — giving up this turn]\n", .{err});
+                        if (g_5xx_body_len > 0) {
+                            try self.say("[request failed: {t} — giving up this turn] {s}\n", .{ err, g_5xx_body_buf[0..g_5xx_body_len] });
+                        } else {
+                            try self.say("[request failed: {t} — giving up this turn]\n", .{err});
+                        }
                         // Network give-up is its own error kind: the ApiError
                         // handler's last_api_error is an API envelope, stale
                         // or null on a pure transport failure.
@@ -8112,6 +8422,7 @@ const Agent = struct {
                     .ok => |obj| {
                         self.recordUsageResponses(obj);
                         if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+                        if (json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                         return obj;
                     },
                     .err => |msg| {
@@ -8138,6 +8449,7 @@ const Agent = struct {
                     };
                     self.recordUsage(root);
                     if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+                    if (json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                     return root;
                 }
             }
@@ -8182,6 +8494,7 @@ const Agent = struct {
 
             self.recordUsage(root);
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+            if (json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
             return root;
         }
     }
@@ -8304,15 +8617,24 @@ const Agent = struct {
         const usage = response.get("usage") orelse return;
         if (usage != .object) return;
         const u = usage.object;
-        if (u.get("total_tokens")) |v| {
-            if (v == .integer and v.integer > 0) self.last_context_tokens = @intCast(v.integer);
+        const in_tokens = usageInt(u, "input_tokens");
+        const out_tokens = usageInt(u, "output_tokens");
+        const total_tokens = usageInt(u, "total_tokens");
+        if (total_tokens > 0) {
+            self.last_context_tokens = @intCast(total_tokens);
+        } else {
+            // Some Codex/Responses builds report only input/output counts.
+            // Still surface the prompt token counter instead of leaving the
+            // prompt stuck at "model · sub" with no context usage.
+            const computed_total = in_tokens + out_tokens;
+            if (computed_total > 0) self.last_context_tokens = @intCast(computed_total);
         }
         var cached: i64 = 0;
         if (u.get("input_tokens_details")) |d| if (d == .object) {
             cached = usageInt(d.object, "cached_tokens");
             if (cached > 0) self.last_cache_read = @intCast(cached);
         };
-        self.recordCost(usageInt(u, "input_tokens") - cached, cached, usageInt(u, "output_tokens"));
+        self.recordCost(in_tokens - cached, cached, out_tokens);
     }
 
     /// Consume a Codex `response` object: append its output items to history
@@ -8489,6 +8811,10 @@ const Agent = struct {
         var ext_idx: std.ArrayList(usize) = .empty;
         defer ext_idx.deinit(self.gpa);
         for (calls, 0..) |call, i| {
+            if (try self.rejectToolCall(call)) |denied| {
+                results[i] = denied;
+                continue;
+            }
             try self.sayToolUse(call);
             if (isMetaName(call.name)) {
                 results[i] = try self.handleMeta(call);
@@ -8549,6 +8875,50 @@ const Agent = struct {
         // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
         for (calls, results) |call, r| self.sayToolResult(call.name, r);
         return results;
+    }
+
+    fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
+        if (self.sub) return null;
+        if (std.mem.eql(u8, call.name, "attempt_completion")) return null;
+        if (max_tool_calls) |max| {
+            if (self.tool_calls_this_turn >= max) {
+                const message = try std.fmt.allocPrint(self.arena, "tool call budget exhausted ({d}/{d}) — answer with what you have or ask for a higher --max-tool-calls", .{ self.tool_calls_this_turn, max });
+                self.emitToolRejected(call, "budget", message);
+                return .{ .text = message, .is_error = true };
+            }
+        }
+        if (dedupe_tool_calls) {
+            const key = try self.toolDedupeKey(call);
+            for (self.seen_tool_keys.items) |seen| {
+                if (std.mem.eql(u8, seen, key)) {
+                    const message = try std.fmt.allocPrint(self.arena, "duplicate tool call rejected: {s} with the same normalized input already ran this turn", .{call.name});
+                    self.emitToolRejected(call, "duplicate", message);
+                    return .{ .text = message, .is_error = true };
+                }
+            }
+            try self.seen_tool_keys.append(self.arena, key);
+        }
+        self.tool_calls_this_turn += 1;
+        return null;
+    }
+
+    fn toolDedupeKey(self: *Agent, call: ToolCall) ![]const u8 {
+        var aw: Io.Writer.Allocating = .init(self.arena);
+        const w = &aw.writer;
+        try w.writeAll(call.name);
+        try w.writeByte('\n');
+        var s: std.json.Stringify = .{ .writer = w };
+        try s.write(call.input);
+        const key = aw.writer.buffered();
+        for (key) |*c| {
+            c.* = if (std.ascii.isWhitespace(c.*)) ' ' else std.ascii.toLower(c.*);
+        }
+        return key;
+    }
+
+    fn emitToolRejected(self: *Agent, call: ToolCall, reason: []const u8, message: []const u8) void {
+        if (!json_mode) return;
+        self.emit(.{ .type = "tool_rejected", .name = call.name, .reason = reason, .input = call.input, .message = message });
     }
 
     /// The permission gate, root side: an unapproved bash command prompts
@@ -8766,6 +9136,7 @@ const Agent = struct {
         if (json_mode) {
             if (std.mem.eql(u8, call.name, "ask_user")) return;
             self.emit(.{ .type = "tool_call", .name = call.name, .input = call.input });
+            self.emit(.{ .type = "tool_call_started", .name = call.name, .input = call.input });
             return;
         }
         // The ⚙ line would just repeat prose that already streamed live.
@@ -8792,6 +9163,7 @@ const Agent = struct {
         if (json_mode) {
             if (isMetaName(name) and !std.mem.eql(u8, name, "ask_user")) return;
             self.emit(.{ .type = "tool_result", .name = name, .is_error = r.is_error, .text = r.text });
+            self.emit(.{ .type = "tool_call_finished", .name = name, .is_error = r.is_error, .ms = r.ms });
             return;
         }
         if (isMetaName(name)) return;
@@ -8990,7 +9362,7 @@ const Agent = struct {
                 try s.objectField("content");
                 try s.write(self.systemPrompt());
                 try s.endObject();
-                for (self.messages.items) |m| try s.write(m);
+                for (self.messages.items) |m| try writeOpenAIMessageNormalized(&s, m);
                 try s.endArray();
                 // Reasoning-effort hint for OpenAI-compatible providers that
                 // honor it (codegraff gateway, deepseek). Mirrors the
@@ -9224,6 +9596,10 @@ const Agent = struct {
         // off and retries (surfaced in the trace as a "retry" note).
         const status_code = @intFromEnum(response.head.status);
         if (status_code == 429 or status_code >= 500) {
+            // Drain a snippet of the error body so the retry message can
+            // surface the gateway's diagnostic (e.g. "upstream timeout")
+            // instead of a bare "server error (5xx)".
+            capture5xxBodyStream(self.gpa, &response);
             if (req.connection) |conn| conn.closing = true;
             return if (status_code == 429) error.RateLimited else error.ServerError;
         }
@@ -10955,6 +11331,44 @@ fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[6]std.http.Hea
     return buf[0..n];
 }
 
+/// Copy up to g_5xx_body_buf.len bytes of an error response body into the
+/// global buffer so request()'s retry message can surface the gateway's
+/// diagnostic (e.g. "upstream timeout connecting to anthropic") instead of a
+/// bare "server error (5xx)".
+fn capture5xxBody(src: []const u8) void {
+    const n = @min(src.len, g_5xx_body_buf.len);
+    if (n > 0) @memcpy(g_5xx_body_buf[0..n], src[0..n]);
+    g_5xx_body_len = n;
+}
+
+/// Same, but drains from a streaming Response whose head has been received but
+/// whose body hasn't been read yet. Best-effort: a read failure just leaves
+/// g_5xx_body_len at 0.
+fn capture5xxBodyStream(gpa: Allocator, response: *std.http.Client.Response) void {
+    g_5xx_body_len = 0;
+    const dbuf: []u8 = switch (response.head.content_encoding) {
+        .identity => &.{},
+        .zstd => gpa.alloc(u8, std.compress.zstd.default_window_len) catch return,
+        .deflate, .gzip => gpa.alloc(u8, std.compress.flate.max_window_len) catch return,
+        .compress => return,
+    };
+    defer if (dbuf.len > 0) gpa.free(dbuf);
+    var tbuf: [64]u8 = undefined;
+    var dec: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&tbuf, &dec, dbuf);
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    while (g_5xx_body_len < g_5xx_body_buf.len) {
+        _ = reader.streamDelimiterEnding(&aw.writer, '\n') catch break;
+        const chunk = aw.writer.buffered();
+        if (chunk.len == 0) break;
+        const n = @min(chunk.len, g_5xx_body_buf.len - g_5xx_body_len);
+        @memcpy(g_5xx_body_buf[g_5xx_body_len..][0..n], chunk[0..n]);
+        g_5xx_body_len += n;
+        aw.clearRetainingCapacity();
+    }
+}
+
 /// POST the request body; returns the raw response body (caller frees).
 /// std.http.Client.fetch is thread-safe, so subagents on pool threads share
 /// this client (and its connection pool).
@@ -10983,7 +11397,10 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
         .extra_headers = extra,
     });
     const code = @intFromEnum(res.status);
-    if (code == 429 or code >= 500) return if (code == 429) error.RateLimited else error.ServerError;
+    if (code == 429 or code >= 500) {
+        capture5xxBody(aw.writer.buffered());
+        return if (code == 429) error.RateLimited else error.ServerError;
+    }
     return aw.toOwnedSlice();
 }
 
@@ -12076,6 +12493,22 @@ fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     return runSub(ctx, "subagent", label, prompt, sys_override);
 }
 
+/// Surface a workflow subagent as a synthetic `tool_call` / `tool_result` on the
+/// --json GUI stream so each parallel worker shows as its own live row — the
+/// orchestrator's children otherwise run detached (out=null), so the GUI only
+/// ever saw the single `workflow` op. Pool-thread safe: serializes on g_gui_mu
+/// with Agent.emit (same json stdout writer, g_out). No-op outside --json mode.
+fn guiEmit(io: Io, ev: anytype) void {
+    if (!json_mode) return;
+    const w = g_out orelse return;
+    g_gui_mu.lockUncancelable(io);
+    defer g_gui_mu.unlock(io);
+    var s: std.json.Stringify = .{ .writer = w };
+    s.write(ev) catch return;
+    w.writeByte('\n') catch return;
+    w.flush() catch return;
+}
+
 /// Run one isolated subagent to completion: fresh arena, fresh history,
 /// same shared http client and provider. Runs entirely on this pool thread;
 /// its own tool calls fan out further via io.async. `sys_override` swaps the
@@ -12110,11 +12543,15 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
     const sub_id = subagentId(&id_buf, ordinal, label, prompt);
     const sprite = subagentSprite(ordinal);
     subagentLaunchCard(arena, sub_id, sprite, label, kind, prompt);
+    // Live agent tree: surface workflow_task children as their own GUI rows.
+    const wf_task = std.mem.eql(u8, kind, "workflow_task");
+    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label } });
     try agent.messages.append(try textMessage(arena, "user", prompt));
     defer agent.tools_used.deinit(gpa);
     const report = agent.runTurn();
     const run_ms: i64 = @intCast(@max(0, sub_start.untilNow(ctx.io, .awake).toMilliseconds()));
     const run_ok = if (report) |r| r.len > 0 else |_| false;
+    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_result", .name = "subagent", .is_error = !run_ok });
     const tools = agent.tools_used.render(arena);
     const fp = promptFingerprint(agent.systemPrompt());
     if (g_traj) |tj| {
@@ -12655,9 +13092,10 @@ test "codex catalog excludes unsupported codex-suffixed models" {
     try std.testing.expect(providerModelInTable("openai", "gpt-5.2"));
 }
 
-test "resolveModelName exact match and miss" {
+test "resolveModelName exact aliases and miss" {
     const keys = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
     try std.testing.expect(resolveModelName(keys, "gpt-5.5") != null); // exact name
+    try std.testing.expectEqualStrings("glm-5.2", resolveModelName(keys, "glm5.2").?); // natural alias
     try std.testing.expect(resolveModelName(keys, "totally-unknown-zzz") == null);
 }
 

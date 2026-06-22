@@ -1,6 +1,20 @@
 import type { ActivityOperation } from "../types/chatThread";
 import { classifyUnknownToolName } from "./classifyActivityResult";
 
+// MCP tools arrive as `mcp__<server>__<tool>`; show a readable "server · tool"
+// instead of the raw double-underscore name.
+function prettifyToolName(name: string): string {
+  if (name.startsWith("mcp__")) {
+    const parts = name.slice(5).split("__").filter(Boolean);
+    if (parts.length >= 2) {
+      const [server, ...rest] = parts;
+      return `${server} · ${rest.join(" ").replace(/_/g, " ")}`;
+    }
+    return parts.join(" ").replace(/_/g, " ");
+  }
+  return name;
+}
+
 // Turn a raw tool name like "webfetch" / "web_fetch" into a readable verb
 // phrase, e.g. "Fetched web content".
 function formatUnknownToolLabel(name: string): string {
@@ -8,9 +22,9 @@ function formatUnknownToolLabel(name: string): string {
     case "web":
       return "Fetched web content";
     case "github":
-      return `Ran ${name} on GitHub`;
+      return `Ran ${prettifyToolName(name)} on GitHub`;
     default:
-      return `Ran ${name}`;
+      return `Ran ${prettifyToolName(name)}`;
   }
 }
 
