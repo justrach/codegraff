@@ -2696,16 +2696,17 @@ var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 // run as the next turn — so you can line up follow-ups one after the
 // other without waiting for the current turn to finish. TTY-only (the
 // raw-stdin esc-watch path is gated off in --json/GUI mode), so the queue
-// stays empty there. Single-threaded access: streaming reads run on the
-// main thread, tool-join reads on the esc watch task — never concurrently
-// (the task is stopped and awaited before the main thread resumes).
+// stays empty there. Watchdog/select arms may drain and echo stdin while the
+// stream reader is blocked; g_steer_visible pauses spinner redraws so the live
+// steering row is not cleared out from under the user.
 var g_steer_buf: std.ArrayList(u8) = .empty; // in-progress line (page-alloc)
 const SteerEntry = struct { text: []const u8, force: bool };
 var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
 var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
+var g_steer_visible: std.atomic.Value(bool) = .init(false); // visible live steering row; pauses spinner redraws
 var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
 var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + Agent.emit)
-var g_force_interrupt = false; // Ctrl-F force caused the last interrupt
+var g_force_interrupt = false; // Force-prompt path caused the last interrupt (Ctrl-F/double-enter).
 var g_5xx_body_buf: [600]u8 = undefined; // snippet of the last 5xx/429 error body
 var g_5xx_body_len: usize = 0; // 0 = no body captured
 
@@ -2721,6 +2722,7 @@ fn popSteer() ?SteerEntry {
 fn resetSteerPartial() void {
     g_steer_buf.clearRetainingCapacity();
     g_steer_echoed = false;
+    g_steer_visible.store(false, .release);
 }
 
 /// Writes steering echo to the stdout writer (the same buffered writer the
@@ -9537,17 +9539,25 @@ const Agent = struct {
         var buf: [512]u8 = undefined;
         var w = Io.File.stdout().writer(io, &buf);
         while (!g_spin_stop.load(.acquire)) {
+            if (g_steer_visible.load(.acquire)) {
+                io.sleep(.fromMilliseconds(20), .awake) catch break;
+                continue;
+            }
             // Clear-then-draw each frame: animations may vary in width.
             w.interface.writeAll("\r\x1b[2K") catch return;
             anims[g_anim_current].frame(&w.interface, i) catch return;
             w.interface.flush() catch return;
             i += 1;
             var t: usize = 0;
-            while (t < 4 and !g_spin_stop.load(.acquire)) : (t += 1)
+            while (t < 4 and !g_spin_stop.load(.acquire)) : (t += 1) {
+                if (g_steer_visible.load(.acquire)) break;
                 io.sleep(.fromMilliseconds(20), .awake) catch break;
+            }
         }
-        w.interface.writeAll("\r\x1b[2K") catch return;
-        w.interface.flush() catch {};
+        if (!g_steer_visible.load(.acquire)) {
+            w.interface.writeAll("\r\x1b[2K") catch return;
+            w.interface.flush() catch {};
+        }
     }
 
     fn spinnerStart(self: *Agent) void {
@@ -9640,7 +9650,7 @@ const Agent = struct {
         var orig_tio: ?std.posix.termios = null;
         if (watch_esc) orig_tio = rawNonblockStdin();
         defer if (orig_tio) |o| {
-            drainStdin();
+            _ = drainSteerStdin(true);
             std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, o) catch {};
         };
         var req = try self.client.request(.POST, try std.Uri.parse(provider.url), .{
@@ -9682,7 +9692,7 @@ const Agent = struct {
                 response = try req.receiveHead(&.{});
                 break :head;
             };
-            hsel.concurrent(.stall, headStallTask, .{self.io}) catch {
+            hsel.concurrent(.stall, headStallTask, .{ self.io, orig_tio != null }) catch {
                 const r = hsel.await() catch |e| {
                     hsel.cancelDiscard();
                     return e;
@@ -9755,7 +9765,7 @@ const Agent = struct {
                     _ = try reader.streamDelimiterEnding(&line.writer, '\n'); // no spare concurrency
                     break :read;
                 };
-                rsel.concurrent(.stall, streamStallTask, .{self.io}) catch {
+                rsel.concurrent(.stall, streamStallTask, .{ self.io, orig_tio != null }) catch {
                     const r = rsel.await() catch |e| {
                         rsel.cancelDiscard();
                         return e;
@@ -9847,11 +9857,26 @@ const Agent = struct {
         while (i < n) : (i += 1) {
             const c = buf[i];
             if (c == 0x1b) {
-                if (i + 1 >= n or (buf[i + 1] != '[' and buf[i + 1] != 'O')) {
+                if (i + 1 < n and buf[i + 1] == '[') {
+                    // CSI escape sequence (arrows, Home/End, Delete, etc.).
+                    // Consume through the final byte (0x40..0x7e) so bytes like
+                    // "[A" never get captured as steering prompt text.
+                    var j = i + 2;
+                    while (j < n) : (j += 1) {
+                        if (buf[j] >= 0x40 and buf[j] <= 0x7e) break;
+                    }
+                    i = if (j < n) j else n - 1;
+                    continue;
+                } else if (i + 1 < n and buf[i + 1] == 'O') {
+                    // SS3 escape sequence (common for function/cursor keys):
+                    // ESC O <final>. Swallow the whole sequence.
+                    i = @min(i + 2, n - 1);
+                    continue;
+                } else {
                     esc_found = true;
                     g_force_interrupt = false;
                 }
-                continue; // the '[' / 'O' is non-printable and ignored below
+                continue;
             } else if (c == '\n' or c == '\r') {
                 if (g_steer_buf.items.len > 0) {
                     // Flush the typed line to the queue as a regular
@@ -9877,6 +9902,7 @@ const Agent = struct {
                     }
                 }
                 g_steer_echoed = false;
+                g_steer_visible.store(false, .release);
                 continue;
             } else if (c == 0x7f or c == 0x08) { // backspace / Ctrl-H
                 if (g_steer_buf.items.len > 0) {
@@ -9890,6 +9916,7 @@ const Agent = struct {
             g_steer_buf.append(std.heap.page_allocator, c) catch continue;
             if (echo) {
                 if (!g_steer_echoed) {
+                    g_steer_visible.store(true, .release);
                     steerEcho("\n\x1b[36m↳ steer ›\x1b[0m ");
                     g_steer_echoed = true;
                 }
@@ -9899,14 +9926,22 @@ const Agent = struct {
         return esc_found;
     }
 
-    /// Discard any bytes queued on stdin (terminal must be in VMIN=0 raw
-    /// mode) so typed-ahead keys from mid-turn don't leak into the prompt.
-    fn drainStdin() void {
-        var buf: [256]u8 = undefined;
+    /// Process any bytes queued on stdin (terminal must be in VMIN=0 raw
+    /// mode) so typed-ahead steering text is preserved instead of leaking into
+    /// the next prompt or being blindly discarded. Returns true if Esc/force
+    /// was seen while draining.
+    fn drainSteerStdin(echo: bool) bool {
+        var esc_found = false;
         while (true) {
-            const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return;
-            if (n == 0) return;
+            var fds = [_]std.posix.pollfd{.{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 }};
+            const n = std.posix.poll(&fds, 0) catch return esc_found;
+            if (n <= 0 or (fds[0].revents & std.posix.POLL.IN) == 0) return esc_found;
+            if (escPressed(echo)) esc_found = true;
         }
+    }
+
+    fn drainStdin() void {
+        _ = drainSteerStdin(false);
     }
 
     /// Put stdin into raw non-blocking no-echo mode (VMIN=0) for Esc
@@ -11578,11 +11613,15 @@ fn streamLineTask(reader: *Io.Reader, w: *Io.Writer) anyerror!usize {
 
 /// Select-arm wrapper: fires after stream_stall_ms of no line (idle stall), or
 /// early on Esc — resets each line, so it measures the gap between lines.
-fn streamStallTask(io: Io) WatchdogFired {
+fn streamStallTask(io: Io, poll_stdin: bool) WatchdogFired {
     var waited: u64 = 0;
     while (waited < stream_stall_ms) {
-        io.sleep(.fromMilliseconds(200), .awake) catch return .deadline; // canceled: a line arrived
-        waited += 200;
+        io.sleep(.fromMilliseconds(50), .awake) catch return .deadline; // canceled: a line arrived
+        waited += 50;
+        if (poll_stdin and Agent.drainSteerStdin(true)) {
+            Agent.esc_cancel.store(true, .release);
+            return .esc;
+        }
         if (Agent.esc_cancel.load(.acquire)) return .esc;
     }
     return .deadline;
@@ -11592,11 +11631,15 @@ fn streamStallTask(io: Io) WatchdogFired {
 /// early on Esc. Races postStream's send + receiveHead so a freshly-redialed
 /// connection that the server accepts but never answers can't hang the turn
 /// (the root cause of the "retrying (1/3)" → "thinking… forever" bug).
-fn headStallTask(io: Io) WatchdogFired {
+fn headStallTask(io: Io, poll_stdin: bool) WatchdogFired {
     var waited: u64 = 0;
     while (waited < head_stall_ms) {
-        io.sleep(.fromMilliseconds(200), .awake) catch return .deadline;
-        waited += 200;
+        io.sleep(.fromMilliseconds(50), .awake) catch return .deadline;
+        waited += 50;
+        if (poll_stdin and Agent.drainSteerStdin(true)) {
+            Agent.esc_cancel.store(true, .release);
+            return .esc;
+        }
         if (Agent.esc_cancel.load(.acquire)) return .esc;
     }
     return .deadline;
