@@ -95,6 +95,11 @@ const SseEvent = struct {
     data: []const u8,
 };
 
+const RuntimeStatusCacheEntry = struct {
+    json: []const u8,
+    expires_ms: i64,
+};
+
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     arena_state: std.heap.ArenaAllocator,
@@ -106,6 +111,7 @@ pub const Runtime = struct {
     selected_by_workspace: std.StringHashMap([]const u8),
     terminals: std.StringHashMap(*TerminalSessionState),
     active_children: std.StringHashMap(*std.process.Child),
+    runtime_status_cache: std.StringHashMap(RuntimeStatusCacheEntry),
     event_mutex: std.Io.Mutex = .init,
     events: std.ArrayList(SseEvent) = .empty,
     next_event_seq: u64 = 1,
@@ -115,6 +121,8 @@ pub const Runtime = struct {
     gui_state_loaded: bool = false,
     settings_loaded: bool = false,
     settings: PromptSettings = .{},
+    schema_loaded: bool = false,
+    schema_raw: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator) !*Runtime {
         const rt = try allocator.create(Runtime);
@@ -126,6 +134,7 @@ pub const Runtime = struct {
             .selected_by_workspace = std.StringHashMap([]const u8).init(allocator),
             .terminals = std.StringHashMap(*TerminalSessionState).init(allocator),
             .active_children = std.StringHashMap(*std.process.Child).init(allocator),
+            .runtime_status_cache = std.StringHashMap(RuntimeStatusCacheEntry).init(allocator),
         };
         rt.arena = rt.arena_state.allocator();
         instance = rt;
@@ -138,6 +147,12 @@ pub const Runtime = struct {
         while (it.next()) |session| closeTerminalSession(session.*);
         self.terminals.deinit();
         self.active_children.deinit();
+        var cache_it = self.runtime_status_cache.iterator();
+        while (cache_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.json);
+        }
+        self.runtime_status_cache.deinit();
         self.events.deinit(self.allocator);
         self.conversations.deinit();
         self.selected_by_workspace.deinit();
@@ -1695,13 +1710,7 @@ pub const Runtime = struct {
         try w.writeAll(",\"visibleFollowup\":");
         if (visible) |v| try self.writeFollowup(w, v.followup) else try w.writeAll("null");
         try w.writeAll(",\"conversationViews\":[");
-        var it = self.conversations.iterator();
-        var first = true;
-        while (it.next()) |entry| {
-            if (!first) try w.writeByte(',');
-            first = false;
-            try self.writeConversationView(w, entry.value_ptr.*);
-        }
+        if (visible) |v| try self.writeConversationView(w, v);
         try w.writeAll("],\"uiError\":null,\"workspaces\":[");
         for (self.workspaces.items, 0..) |workspace, idx| {
             if (idx > 0) try w.writeByte(',');
@@ -1852,30 +1861,43 @@ pub const Runtime = struct {
     }
 
     fn runtimeStatusJson(self: *Runtime, alloc: std.mem.Allocator, path: ?[]const u8) !mer.Response {
-        _ = self;
-        var out: std.Io.Writer.Allocating = .init(alloc);
         const p = path orelse "";
-        const git = gitRuntimeStatus(alloc, p);
-        try out.writer.writeAll("{\"workspacePath\":");
-        try writeNullableString(&out.writer, if (p.len == 0) null else p);
-        try out.writer.writeAll(",\"workspaceName\":");
-        try writeNullableString(&out.writer, if (p.len == 0) null else workspaceName(p));
-        try out.writer.writeAll(",\"gitRepoName\":");
-        try writeNullableString(&out.writer, git.repo_name);
-        try out.writer.writeAll(",\"gitBranchName\":");
-        try writeNullableString(&out.writer, git.branch_name);
-        try out.writer.writeAll(",\"gitBranches\":");
-        try writeStringArray(&out.writer, git.branches);
-        try out.writer.writeAll(",\"gitWorkspaceKind\":");
-        try writeNullableString(&out.writer, git.workspace_kind);
-        try out.writer.writeAll(",\"gitMainWorkspacePath\":");
-        try writeNullableString(&out.writer, git.root_path);
-        try out.writer.writeAll(",\"availableOpenTargets\":[\"file-manager\"],\"configured\":true,\"configurationError\":null}");
-        return mer.json(out.written());
+        const now = nowMillis();
+        self.mutex.lockUncancelable(mer_runtime.io);
+        if (self.runtime_status_cache.get(p)) |entry| {
+            if (entry.expires_ms > now) {
+                const cached = alloc.dupe(u8, entry.json) catch {
+                    self.mutex.unlock(mer_runtime.io);
+                    return error.OutOfMemory;
+                };
+                self.mutex.unlock(mer_runtime.io);
+                return mer.json(cached);
+            }
+        }
+        self.mutex.unlock(mer_runtime.io);
+
+        const rendered = try renderRuntimeStatusJson(alloc, p);
+        const key = try self.allocator.dupe(u8, p);
+        errdefer self.allocator.free(key);
+        const value = try self.allocator.dupe(u8, rendered);
+        errdefer self.allocator.free(value);
+
+        self.mutex.lockUncancelable(mer_runtime.io);
+        if (self.runtime_status_cache.fetchRemove(p)) |old| {
+            self.allocator.free(old.key);
+            self.allocator.free(old.value.json);
+        }
+        self.runtime_status_cache.put(key, .{ .json = value, .expires_ms = now + 2000 }) catch {
+            self.mutex.unlock(mer_runtime.io);
+            return mer.json(rendered);
+        };
+        self.mutex.unlock(mer_runtime.io);
+
+        return mer.json(rendered);
     }
 
     fn promptSettingsJson(self: *Runtime, alloc: std.mem.Allocator) ![]const u8 {
-        const schema = schemaValue(alloc, self.codegraffBinary()) catch null;
+        const schema = self.cachedSchemaValue(alloc);
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
         const selected = resolvePromptSelection(schema, self.settings.selected_provider, self.settings.selected_model);
@@ -1894,6 +1916,31 @@ pub const Runtime = struct {
         try out.writer.writeAll(if (selected.provider != null and std.mem.eql(u8, selected.provider.?, "codex")) "true" else "false");
         try out.writer.writeAll("}");
         return out.written();
+    }
+
+    fn cachedSchemaValue(self: *Runtime, alloc: std.mem.Allocator) ?Value {
+        self.mutex.lockUncancelable(mer_runtime.io);
+        if (self.schema_loaded) {
+            const raw = self.schema_raw;
+            self.mutex.unlock(mer_runtime.io);
+            if (raw) |data| return std.json.parseFromSliceLeaky(Value, alloc, data, .{ .allocate = .alloc_always }) catch null;
+            return null;
+        }
+        self.mutex.unlock(mer_runtime.io);
+
+        const raw_loaded = commandOutput(alloc, &.{ self.codegraffBinary(), "--schema" }) catch null;
+
+        self.mutex.lockUncancelable(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        if (!self.schema_loaded) {
+            if (raw_loaded) |raw| {
+                self.schema_raw = self.arena.dupe(u8, raw) catch null;
+                self.schema_loaded = self.schema_raw != null;
+            }
+        }
+        const raw = self.schema_raw;
+        if (raw) |data| return std.json.parseFromSliceLeaky(Value, alloc, data, .{ .allocate = .alloc_always }) catch null;
+        return null;
     }
 
     fn createConversationLocked(self: *Runtime, workspace: []const u8, cid_raw: []const u8, title_raw: []const u8) *Conversation {
@@ -2853,6 +2900,27 @@ const GitFileStatus = struct {
     status: []const u8,
 };
 
+fn renderRuntimeStatusJson(alloc: std.mem.Allocator, p: []const u8) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    const git = gitRuntimeStatus(alloc, p);
+    try out.writer.writeAll("{\"workspacePath\":");
+    try writeNullableString(&out.writer, if (p.len == 0) null else p);
+    try out.writer.writeAll(",\"workspaceName\":");
+    try writeNullableString(&out.writer, if (p.len == 0) null else workspaceName(p));
+    try out.writer.writeAll(",\"gitRepoName\":");
+    try writeNullableString(&out.writer, git.repo_name);
+    try out.writer.writeAll(",\"gitBranchName\":");
+    try writeNullableString(&out.writer, git.branch_name);
+    try out.writer.writeAll(",\"gitBranches\":");
+    try writeStringArray(&out.writer, git.branches);
+    try out.writer.writeAll(",\"gitWorkspaceKind\":");
+    try writeNullableString(&out.writer, git.workspace_kind);
+    try out.writer.writeAll(",\"gitMainWorkspacePath\":");
+    try writeNullableString(&out.writer, git.root_path);
+    try out.writer.writeAll(",\"availableOpenTargets\":[\"file-manager\"],\"configured\":true,\"configurationError\":null}");
+    return out.written();
+}
+
 fn gitRuntimeStatus(alloc: std.mem.Allocator, workspace: []const u8) GitRuntimeStatus {
     if (workspace.len == 0) return .{};
     const root_raw = gitOutput(alloc, workspace, &.{ "git", "rev-parse", "--show-toplevel" }) catch return .{};
@@ -3550,40 +3618,94 @@ pub fn handleEvents(
         },
     }) catch return true;
 
-    writeFrame(&bw, ": connected\n\n");
+    if (!writeFrame(&bw, ": connected\n\n")) return true;
     var seen = self.version.load(.acquire);
-    var seen_event_seq: u64 = 0;
+    var force_snapshot = false;
+    var seen_event_seq: u64 = if (requestHeaderValue(std_req.head_buffer, "last-event-id")) |last_id| blk: {
+        const requested = std.fmt.parseInt(u64, std.mem.trim(u8, last_id, " \t\r\n"), 10) catch 0;
+        // Any reconnect may have missed version-only snapshot changes (tool_start,
+        // followup, errors), because only native events carry SSE ids.
+        force_snapshot = true;
+        self.event_mutex.lockUncancelable(io);
+        defer self.event_mutex.unlock(io);
+        if (self.events.items.len > 0) {
+            const oldest = self.events.items[0].seq;
+            if (oldest > 0 and requested < oldest - 1) {
+                break :blk oldest - 1;
+            }
+        }
+        break :blk requested;
+    } else blk: {
+        self.event_mutex.lockUncancelable(io);
+        defer self.event_mutex.unlock(io);
+        break :blk if (self.next_event_seq > 0) self.next_event_seq - 1 else 0;
+    };
     while (true) {
         _ = io.sleep(.fromMilliseconds(100), .awake) catch break;
-        var event_alloc_failed = false;
+
+        var pending: std.ArrayList(SseEvent) = .empty;
+        defer pending.deinit(alloc);
         self.event_mutex.lockUncancelable(io);
         for (self.events.items) |ev| {
             if (ev.seq <= seen_event_seq) continue;
-            const frame = std.fmt.allocPrint(alloc, "event: {s}\ndata: {s}\n\n", .{ ev.name, ev.data }) catch {
-                event_alloc_failed = true;
-                break;
-            };
-            writeFrame(&bw, frame);
-            seen_event_seq = ev.seq;
+            pending.append(alloc, ev) catch break;
         }
         self.event_mutex.unlock(io);
-        if (event_alloc_failed) break;
+        var write_ok = true;
+        for (pending.items) |ev| {
+            if (!writeSseEventFrame(&bw, ev)) {
+                write_ok = false;
+                break;
+            }
+            seen_event_seq = ev.seq;
+        }
+        if (!write_ok) break;
 
         const current = self.version.load(.acquire);
-        if (current == seen) continue;
+        if (current == seen and !force_snapshot) continue;
         seen = current;
-        const json = self.snapshotJson(alloc) catch break;
-        const frame = std.fmt.allocPrint(alloc, "event: session-updated\ndata: {s}\n\n", .{json}) catch break;
-        writeFrame(&bw, frame);
+        force_snapshot = false;
+        var snapshot_arena = std.heap.ArenaAllocator.init(alloc);
+        defer snapshot_arena.deinit();
+        const json = self.snapshotJson(snapshot_arena.allocator()) catch break;
+        if (!writeSseNamedDataFrame(&bw, "session-updated", json)) break;
     }
     bw.end() catch {};
     return true;
 }
 
-fn writeFrame(bw: *std.http.BodyWriter, frame: []const u8) void {
-    bw.writer.writeAll(frame) catch return;
-    bw.writer.flush() catch return;
-    bw.http_protocol_output.flush() catch return;
+fn requestHeaderValue(head_buffer: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitSequence(u8, head_buffer, "\r\n");
+    _ = lines.next();
+    while (lines.next()) |line| {
+        if (line.len == 0) break;
+        const sep = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const key = std.mem.trim(u8, line[0..sep], " \t");
+        if (!std.ascii.eqlIgnoreCase(key, name)) continue;
+        return std.mem.trim(u8, line[sep + 1 ..], " \t");
+    }
+    return null;
+}
+
+fn writeSseEventFrame(bw: *std.http.BodyWriter, ev: SseEvent) bool {
+    bw.writer.print("id: {d}\nevent: {s}\ndata: {s}\n\n", .{ ev.seq, ev.name, ev.data }) catch return false;
+    bw.writer.flush() catch return false;
+    bw.http_protocol_output.flush() catch return false;
+    return true;
+}
+
+fn writeSseNamedDataFrame(bw: *std.http.BodyWriter, name: []const u8, data: []const u8) bool {
+    bw.writer.print("event: {s}\ndata: {s}\n\n", .{ name, data }) catch return false;
+    bw.writer.flush() catch return false;
+    bw.http_protocol_output.flush() catch return false;
+    return true;
+}
+
+fn writeFrame(bw: *std.http.BodyWriter, frame: []const u8) bool {
+    bw.writer.writeAll(frame) catch return false;
+    bw.writer.flush() catch return false;
+    bw.http_protocol_output.flush() catch return false;
+    return true;
 }
 
 test "activateWorkspaceLocked clears stale conversation and restores workspace selection" {
