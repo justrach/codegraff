@@ -2224,7 +2224,7 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/bash", "/plan", "/ultracode", "/key", "/keepcontext", "/effort", "/fast", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -2525,6 +2525,68 @@ fn mcpServerConnected(tools: []const mcp.Tool, server: []const u8) bool {
 var g_path_env: []const u8 = "";
 /// Human-facing current workspace folder shown in the REPL prompt.
 var g_cwd_display: []const u8 = ".";
+
+/// Short task label for terminal/TUI headers. Mirrors the GUI's first-prompt
+/// fallback: use the user's first message as a compact tab/session title.
+fn titleFromPrompt(prompt: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
+    if (trimmed.len == 0) return "Chat";
+    var end: usize = 0;
+    var codepoints: usize = 0;
+    while (end < trimmed.len and codepoints < 64) {
+        if (trimmed[end] == '\n' or trimmed[end] == '\r' or trimmed[end] == '\t') break;
+        const cp_len = std.unicode.utf8ByteSequenceLength(trimmed[end]) catch 1;
+        end += cp_len;
+        codepoints += 1;
+    }
+    var out = std.mem.trim(u8, trimmed[0..@min(end, trimmed.len)], " \t\r\n");
+    if (out.len == 0) return "Chat";
+    if (codepoints >= 64 and end < trimmed.len) {
+        if (std.mem.lastIndexOfScalar(u8, out, ' ')) |sp| {
+            if (sp >= 12) out = std.mem.trim(u8, out[0..sp], " ");
+        }
+    }
+    return out;
+}
+
+fn folderBasename(path: []const u8) []const u8 {
+    var end = path.len;
+    while (end > 1 and path[end - 1] == '/') end -= 1;
+    const trimmed = path[0..end];
+    if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |idx| return trimmed[idx + 1 ..];
+    return trimmed;
+}
+
+fn firstUserTitle(arena: Allocator, msgs: std.json.Array) []const u8 {
+    for (msgs.items) |m| {
+        if (m != .object) continue;
+        const role = if (m.object.get("role")) |r| (if (r == .string) r.string else "") else "";
+        if (!std.mem.eql(u8, role, "user")) continue;
+        return titleFromPrompt(extractText(arena, m));
+    }
+    return "Chat";
+}
+
+fn setTerminalTitle(w: *Io.Writer, title: []const u8, folder: []const u8) void {
+    if (!use_color or json_mode) return;
+    const folder_name = folderBasename(folder);
+    // OSC 0 is conventional xterm title; OSC 1/2 make iTerm/Ghostty-style tab
+    // and window titles update too instead of leaving the launch command there.
+    w.print("\x1b]0;Codegraff: {s} — {s}\x07\x1b]1;Codegraff: {s} — {s}\x07\x1b]2;Codegraff: {s} — {s}\x07", .{ title, folder_name, title, folder_name, title, folder_name }) catch return;
+    w.flush() catch return;
+}
+
+fn printSessionHeader(w: *Io.Writer, title: []const u8, folder: []const u8) !void {
+    if (json_mode) return;
+    try w.print("\n{s}╭─ Codegraff{s}\n{s}│ Working on:{s} {s}\n{s}│ Folder:{s} {s}\n{s}╰────────────────────────────{s}\n", .{
+        style.dim,   style.reset,
+        style.dim,   style.reset,
+        title,       style.dim,
+        style.reset, folder,
+        style.dim,   style.reset,
+    });
+    try w.flush();
+}
 
 fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, g_path_env, ':');
@@ -2923,7 +2985,7 @@ fn saveSkillSetting(io: Io, gpa: Allocator, name: []const u8, enabled: bool) boo
 /// Persist the thinking controls (/effort, /fast) to .harness/settings.json,
 /// preserving every other key. Default values (medium effort, fast off) are
 /// removed rather than written so the file stays clean. Best-effort.
-fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool) bool {
+fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool, ultracode: bool) bool {
     Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {}; // already-exists is fine
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -2943,6 +3005,11 @@ fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: b
         _ = root_obj.orderedRemove("fast");
     } else {
         root_obj.put(a, "fast", .{ .bool = true }) catch return false;
+    }
+    if (!ultracode) {
+        _ = root_obj.orderedRemove("ultracode");
+    } else {
+        root_obj.put(a, "ultracode", .{ .bool = true }) catch return false;
     }
     var aw: Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
@@ -2976,6 +3043,9 @@ fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
     };
     if (v.object.get("fast")) |fv| if (fv == .bool) {
         root.fast = fv.bool;
+    };
+    if (v.object.get("ultracode")) |uv| if (uv == .bool) {
+        root.ultracode = uv.bool;
     };
 }
 
@@ -4794,6 +4864,10 @@ pub fn main(init: std.process.Init) !void {
             if (root.messages.items.len > 0) {
                 // Estimate the restored context from the file size (~4 bytes/token).
                 const est: u64 = if (Io.Dir.cwd().statFile(io, "last" ++ session_ext, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
+                const restored_title = firstUserTitle(arena, root.messages);
+                setTerminalTitle(out, restored_title, g_cwd_display);
+                try printSessionHeader(out, restored_title, g_cwd_display);
+                root.tui_header_shown = true;
                 try out.print("↩ resumed last session — {d} message(s) on {s} · /clear for a fresh start\n", .{ root.messages.items.len, root.provider.model });
                 try out.flush();
                 // Cold cache: if the restored context is as large as what would
@@ -4939,14 +5013,14 @@ pub fn main(init: std.process.Init) !void {
                     root.emit(.{ .type = "error", .message = "set_effort needs level 'low', 'medium', or 'high'" });
                     continue;
                 }
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode);
                 root.emit(.{ .type = "effort", .ok = true, .level = level, .applies = root.effortApplies() });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "set_fast")) {
                 const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
                 root.fast = on;
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode);
                 root.emit(.{ .type = "fast", .ok = true, .on = on, .applies = root.provider.kind == .responses });
                 continue;
             }
@@ -5040,8 +5114,22 @@ pub fn main(init: std.process.Init) !void {
         // model can see (otherwise it only gets the path and resorts to OCR).
         stageGuiImageAttachment(&root, msg);
 
-        // "ultracode" codeword: opt this turn into multi-agent workflow mode.
-        if (std.ascii.indexOfIgnoreCase(msg, "ultracode") != null) {
+        // TUI/session header: once the first real prompt materializes the chat,
+        // show what this terminal tab is working on and the exact folder, like
+        // the GUI conversation header. Keep the terminal/window title in sync
+        // at the start of each user turn.
+        if (!json_mode) {
+            const turn_title = titleFromPrompt(base_msg);
+            setTerminalTitle(out, turn_title, g_cwd_display);
+            if (!root.tui_header_shown) {
+                try printSessionHeader(out, turn_title, g_cwd_display);
+                root.tui_header_shown = true;
+            }
+        }
+
+        // "ultracode" codeword or persistent /ultracode mode: opt turns into multi-agent workflow mode.
+        const ultracode_msg = try applyUltracodeSteering(arena, msg, root.ultracode);
+        if (ultracode_msg.explicit) {
             if (!json_mode) {
                 if (interactive) {
                     ultracodeShine(out, io);
@@ -5053,29 +5141,11 @@ pub fn main(init: std.process.Init) !void {
             }
             tracer.note("ultracode", msg[0..@min(msg.len, 120)]);
             if (g_telem) |t| t.ultracode();
-            const augmented = try std.fmt.allocPrint(arena,
-                \\{s}
-                \\
-                \\[harness note: the user invoked the "ultracode" codeword, opting
-                \\this turn into multi-agent orchestration. Fulfill the request with
-                \\the workflow tool: decompose it into sequential phases of parallel
-                \\subagents — fan out for coverage first, then a synthesis phase.
-                \\Tell code-exploration subagents to go through the repo with the
-                \\codedb tool (search / symbol / callers / outline / context) before
-                \\reaching for bash grep — it is indexed and structural.
-                \\Use the workflow even if you could do the work solo; skip it only
-                \\if the message needs a purely conversational reply.]
-            , .{msg});
-            if (root.pending_image) |img| {
-                try root.messages.append(try imageMessage(arena, root.provider.kind, augmented, img));
-                root.pending_image = null;
-            } else try root.messages.append(try textMessage(arena, "user", augmented));
-        } else {
-            if (root.pending_image) |img| {
-                try root.messages.append(try imageMessage(arena, root.provider.kind, msg, img));
-                root.pending_image = null;
-            } else try root.messages.append(try textMessage(arena, "user", msg));
         }
+        if (root.pending_image) |img| {
+            try root.messages.append(try imageMessage(arena, root.provider.kind, ultracode_msg.text, img));
+            root.pending_image = null;
+        } else try root.messages.append(try textMessage(arena, "user", ultracode_msg.text));
         snaps.turn += 1; // tag file edits in this turn (matches /rewind numbering)
         if (g_telem) |t| t.countTurn();
         // Trajectory: claim this turn's node id up front so subagents spawned
@@ -5621,6 +5691,63 @@ fn listPicker(root: *Agent, arena: Allocator, out: *Io.Writer, title: []const u8
     }
 }
 
+const UltracodeMessage = struct {
+    text: []const u8,
+    explicit: bool,
+};
+
+const ultracode_explicit_note =
+    \\[harness note: the user invoked the "ultracode" codeword, opting
+    \\this turn into multi-agent orchestration. Fulfill the request with
+    \\the workflow tool: decompose it into sequential phases of parallel
+    \\subagents — fan out for coverage first, then a synthesis phase.
+    \\Tell code-exploration subagents to go through the repo with the
+    \\codedb tool (search / symbol / callers / outline / context) before
+    \\reaching for bash grep — it is indexed and structural.
+    \\Use the workflow even if you could do the work solo; skip it only
+    \\if the message needs a purely conversational reply.]
+;
+
+const ultracode_persistent_note =
+    \\[harness note: ultracode mode is enabled for this session. Use the
+    \\workflow tool for coding tasks: decompose the work into sequential
+    \\phases with parallel subagents for exploration/review where helpful,
+    \\then synthesize and implement. Tell code-exploration subagents to go
+    \\through the repo with the codedb tool (search / symbol / callers /
+    \\outline / context) before reaching for bash grep — it is indexed and
+    \\structural.]
+;
+
+fn applyUltracodeSteering(arena: Allocator, msg: []const u8, persistent_enabled: bool) !UltracodeMessage {
+    const explicit = std.ascii.indexOfIgnoreCase(msg, "ultracode") != null;
+    if (explicit) {
+        return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_explicit_note }), .explicit = true };
+    }
+    if (persistent_enabled) {
+        return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_persistent_note }), .explicit = false };
+    }
+    return .{ .text = msg, .explicit = false };
+}
+
+const ultracode_on_first = [_]PickItem{
+    .{ .name = "on", .desc = "Enable ultracode orchestration" },
+    .{ .name = "off", .desc = "Disable ultracode orchestration" },
+};
+const ultracode_off_first = [_]PickItem{
+    .{ .name = "off", .desc = "Disable ultracode orchestration" },
+    .{ .name = "on", .desc = "Enable ultracode orchestration" },
+};
+
+fn ultracodeToggleItems(enabled: bool) []const PickItem {
+    return if (enabled) &ultracode_off_first else &ultracode_on_first;
+}
+
+fn pickUltracodeMode(root: *Agent, arena: Allocator, out: *Io.Writer) ?bool {
+    const items = ultracodeToggleItems(root.ultracode);
+    const idx = listPicker(root, arena, out, "Ultracode ›", items) orelse return null;
+    return std.mem.eql(u8, items[idx].name, "on");
+}
+
 /// The slash-command menu shown for a bare "/": every REPL command with a
 /// one-line description, picked via listPicker. Returns the command to run.
 const command_menu = [_]PickItem{
@@ -5630,6 +5757,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/bash", .desc = "run a shell command in the current workspace" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
     .{ .name = "/plan", .desc = "toggle plan mode (read-only, propose first)" },
+    .{ .name = "/ultracode", .desc = "toggle persistent ultracode workflow mode" },
     .{ .name = "/resume", .desc = "restore a saved session (picker)" },
     .{ .name = "/save", .desc = "save the conversation" },
     .{ .name = "/sessions", .desc = "list saved sessions" },
@@ -5682,7 +5810,9 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.messages = std.json.Array.init(arena);
         root.last_context_tokens = 0;
         root.last_cache_read = 0;
+        root.tui_header_shown = false;
         root.todos.clearRetainingCapacity();
+        setTerminalTitle(out, "Chat", g_cwd_display);
         try out.writeAll("context cleared — fresh conversation\n");
         try out.flush();
         return;
@@ -5988,6 +6118,30 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return;
     }
+    if (std.mem.eql(u8, line, "/ultracode") or std.mem.startsWith(u8, line, "/ultracode ")) {
+        const arg = std.mem.trim(u8, line["/ultracode".len..], " \t\r\n");
+        const next = if (arg.len == 0) blk: {
+            if (use_color and root.in != null) {
+                break :blk pickUltracodeMode(root, arena, out) orelse return;
+            }
+            try out.writeAll("usage: /ultracode on|off\n");
+            try out.flush();
+            return;
+        } else if (std.mem.eql(u8, arg, "on"))
+            true
+        else if (std.mem.eql(u8, arg, "off"))
+            false
+        else {
+            try out.writeAll("usage: /ultracode on|off\n");
+            try out.flush();
+            return;
+        };
+        root.ultracode = next;
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode);
+        try out.print("ultracode mode: {s}{s}\n", .{ if (root.ultracode) "on" else "off", if (saved) "" else " (not persisted)" });
+        try out.flush();
+        return;
+    }
     if (std.mem.startsWith(u8, line, "/model") and !std.mem.startsWith(u8, line, "/models")) {
         const arg = std.mem.trim(u8, line["/model".len..], " \t");
         if (arg.len == 0) {
@@ -6131,7 +6285,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/fast") or std.mem.eql(u8, line, "/fast on") or std.mem.eql(u8, line, "/fast off")) {
         root.fast = if (std.mem.eql(u8, line, "/fast on")) true else if (std.mem.eql(u8, line, "/fast off")) false else !root.fast;
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode);
         try out.print("fast mode: {s}{s}\n", .{
             if (root.fast) "on" else "off",
             if (root.provider.kind != .responses) " (codex only — current model ignores it)" else "",
@@ -6153,7 +6307,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return;
         }
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode);
         try out.print("reasoning effort: {s}{s}\n", .{
             @tagName(root.reasoning),
             if (!root.effortApplies()) " (current model ignores it — applies to codex, deepseek, codegraff)" else "",
@@ -6597,6 +6751,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /models         list known models, context windows, compaction points
         \\  /clear          wipe the conversation and start fresh
         \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
+        \\  /ultracode      toggle persistent workflow mode; bare opens on/off picker, or /ultracode on|off
         \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
         \\  /login [tgt]    OAuth sign-in (no key to paste): codegraff | codex (alias oai) | kimi; bare → picker
         \\  /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
@@ -6626,8 +6781,8 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\
         \\esc during a response interrupts the turn (what streamed stays in history).
         \\"always allow" answers persist to .harness/settings.json in the cwd.
-        \\codeword: include "ultracode" in any message to force a multi-agent
-        \\workflow turn (phases of parallel subagents, then synthesis).
+        \\codeword: include "ultracode" in any message to force one multi-agent
+        \\workflow turn; /ultracode on persists that behavior for future prompts.
         \\
         \\launch flags: --model <name> · --yolo (skip prompts) · -p "prompt" (one-shot) · --system-prompt/--append-system-prompt · --timing · --cost · --json (SDK protocol) · --help · --version
         \\subcommands: `graff login [codex]` (OAuth) · `graff key set <provider> <key>` (Keychain) · `graff --schema`
@@ -7926,6 +8081,8 @@ const Agent = struct {
     cap_new: bool = false, // provider rejected max_tokens → use max_completion_tokens
     effort_rejected: bool = false, // model rejected reasoning_effort → drop it (e.g. gpt-5.5 on chat/completions wants /v1/responses)
     next_ask_id: u64 = 1,
+    ultracode: bool = false,
+    tui_header_shown: bool = false,
 
     fn prompt(self: *Agent) !void {
         if (json_mode) return; // SDK drives turns; no human prompt
@@ -13170,6 +13327,50 @@ test "priceFor: known model priced, unknown is null" {
     try std.testing.expect(priceFor("gpt-5.5") != null);
     try std.testing.expect(priceFor("claude-opus-4-8") != null);
     try std.testing.expect(priceFor("no-such-model") == null);
+}
+
+test "titleFromPrompt and folderBasename format TUI headers" {
+    try std.testing.expectEqualStrings("Chat", titleFromPrompt(" \n\t "));
+    try std.testing.expectEqualStrings("Refactor the auth middleware", titleFromPrompt("  Refactor the auth middleware\nwith tests"));
+    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/rach/src/codegraff"));
+    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/rach/src/codegraff/"));
+}
+
+test "ultracode toggle choices put the opposite state first" {
+    try std.testing.expectEqualStrings("on", ultracodeToggleItems(false)[0].name);
+    try std.testing.expectEqualStrings("off", ultracodeToggleItems(false)[1].name);
+    try std.testing.expectEqualStrings("off", ultracodeToggleItems(true)[0].name);
+    try std.testing.expectEqualStrings("on", ultracodeToggleItems(true)[1].name);
+}
+
+test "applyUltracodeSteering handles explicit and persistent modes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const plain = try applyUltracodeSteering(a, "fix this", false);
+    try std.testing.expect(!plain.explicit);
+    try std.testing.expectEqualStrings("fix this", plain.text);
+
+    const persistent = try applyUltracodeSteering(a, "fix this", true);
+    try std.testing.expect(!persistent.explicit);
+    try std.testing.expect(std.mem.indexOf(u8, persistent.text, "ultracode mode is enabled") != null);
+
+    const explicit = try applyUltracodeSteering(a, "ultracode fix this", true);
+    try std.testing.expect(explicit.explicit);
+    try std.testing.expect(std.mem.indexOf(u8, explicit.text, "user invoked the \"ultracode\" codeword") != null);
+    try std.testing.expect(std.mem.indexOf(u8, explicit.text, "ultracode mode is enabled") == null);
+}
+
+test "fillCompletions includes ultracode slash command" {
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    _ = fillCompletions(std.testing.allocator, "/ult", &out);
+    var found = false;
+    for (out.items) |item| {
+        if (std.mem.eql(u8, item, "/ultracode")) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "visionModel: vision-capable model families only" {
