@@ -184,6 +184,8 @@ export interface RenderChatThreadItemOptions {
   requestTimingsById: Record<string, RequestTimingInfo>;
   workspacePath: string | null;
   itemCount: number;
+  /** Dismiss a command-result card (e.g. a `/goal` echo) by its thread key. */
+  onDismissCommandResult?: (key: string) => void;
 }
 
 export interface StatusOutputRowProps {

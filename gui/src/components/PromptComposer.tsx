@@ -46,6 +46,13 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
   const [dismissedPlanDecisionId, setDismissedPlanDecisionId] = useState<
     string | null
   >(null);
+  const [dismissedTodoSignature, setDismissedTodoSignature] = useState<
+    string | null
+  >(null);
+  // Identify the current plan by its task ids; dismissing hides this plan but a
+  // genuinely new one (different ids) re-shows the dock.
+  const todoSignature = todos.map((todo) => todo.id).join("|");
+  const showTodos = todos.length > 0 && todoSignature !== dismissedTodoSignature;
   const interrupt = getActiveInterrupt(messages);
   const lastAssistant = getPlanDecisionAssistant({
     messages,
@@ -166,7 +173,13 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
 
   return (
     <div className="px-6 pb-6">
-      <SessionTodoDock isRequestActive={isRequestActive} todos={todos} />
+      {showTodos ? (
+        <SessionTodoDock
+          isRequestActive={isRequestActive}
+          todos={todos}
+          onDismiss={() => setDismissedTodoSignature(todoSignature)}
+        />
+      ) : null}
       {interrupt != null &&
       !isRequestActive &&
       interrupt.id !== dismissedInterruptId ? (

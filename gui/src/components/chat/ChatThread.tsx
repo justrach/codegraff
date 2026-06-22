@@ -45,13 +45,25 @@ export function ChatThread({
     }
     return null;
   })();
+  const [dismissedCommandKeys, setDismissedCommandKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const handleDismissCommandResult = useCallback((key: string) => {
+    setDismissedCommandKeys((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+  }, []);
   const items = [
     ...buildChatThreadItems(messages, activeRequestIds),
-    ...commandResults.map((result, index) => ({
-      kind: "command_result" as const,
-      key: `command-result:${index}:${result.title}`,
-      result,
-    })),
+    ...commandResults
+      .map((result, index) => ({
+        kind: "command_result" as const,
+        key: `command-result:${index}:${result.title}`,
+        result,
+      }))
+      .filter((item) => !dismissedCommandKeys.has(item.key)),
   ];
 
   const setFollowing = useCallback((next: boolean) => {
@@ -247,7 +259,6 @@ export function ChatThread({
     setFollowing(true);
     scrollToBottom();
   }, [scrollToBottom, setFollowing]);
-
   return (
     <div className="relative h-full">
       <LegendList
@@ -258,6 +269,7 @@ export function ChatThread({
             requestTimingsById,
             workspacePath,
             itemCount: items.length,
+            onDismissCommandResult: handleDismissCommandResult,
           })
         }
         keyExtractor={(item) => item.key}

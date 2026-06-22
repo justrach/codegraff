@@ -136,6 +136,8 @@ export interface ProjectSwitcherMenuProps {
 export interface SessionTodoDockProps {
   isRequestActive: boolean;
   todos: SessionTodo[];
+  /** Dismiss the current task-plan card. A new plan re-shows it. */
+  onDismiss?: () => void;
 }
 
 export interface SessionTodoDockCardProps {
@@ -143,6 +145,7 @@ export interface SessionTodoDockCardProps {
   isRequestActive: boolean;
   summary: string;
   todos: SessionTodo[];
+  onDismiss?: () => void;
 }
 
 export type TodoStatus = SessionTodo["status"];

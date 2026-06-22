@@ -3,6 +3,7 @@ import {
   GitBranchIcon,
   SearchIcon,
   ServerIcon,
+  XIcon,
 } from "lucide-react";
 
 import { ChatMarkdown } from "./ChatMarkdown";
@@ -11,13 +12,29 @@ import type {
   CommandPayload,
   CommandRunResult,
 } from "@/services/desktop/types/contracts";
-
-export function ChatCommandResultRow({ result }: { result: CommandRunResult }) {
+export function ChatCommandResultRow({
+  result,
+  onDismiss,
+}: {
+  result: CommandRunResult;
+  onDismiss?: () => void;
+}) {
   return (
-    <article className="w-full min-w-0 max-w-3xl overflow-hidden rounded-xl border border-border/60 bg-foreground/[0.02] px-3.5 py-3">
+    <article className="group w-full min-w-0 max-w-3xl overflow-hidden rounded-xl border border-border/60 bg-foreground/[0.02] px-3.5 py-3">
       <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
-        <CheckCircle2Icon className="size-3.5 text-[color:var(--accent)]" />
-        <span>{result.title}</span>
+        <CheckCircle2Icon className="size-3.5 shrink-0 text-[color:var(--accent)]" />
+        <span className="min-w-0 flex-1 truncate">{result.title}</span>
+        {onDismiss != null ? (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Dismiss"
+            title="Dismiss"
+            className="-mr-1 shrink-0 rounded-md p-0.5 text-muted-foreground/60 opacity-0 transition hover:bg-foreground/5 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        ) : null}
       </div>
       {result.savedPath != null ? (
         <p className="mb-2 text-sm text-muted-foreground">
