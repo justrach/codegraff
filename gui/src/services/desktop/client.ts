@@ -198,7 +198,7 @@ function qaPromptSettings(): PromptSettings {
 
 function qaRuntimeStatus(): RuntimeStatus {
   return {
-    availableOpenTargets: ["vscode", "terminal"],
+    availableOpenTargets: ["file-manager"],
     configurationError: null,
     configured: true,
     gitBranchName: "qa/mock-browser",
@@ -307,21 +307,29 @@ function mockInvokeCommand<T>(
     }
     case "list_mcp_servers":
       return Promise.resolve({ servers: [] } as T);
-    case "pick_workspace":
-    case "pick_directory":
-      return Promise.resolve(QA_WORKSPACE_PATH as T);
     default:
       return Promise.resolve(undefined as T);
   }
 }
 
-const NATIVE_COMMANDS: Record<string, string> = {
-  drain_pending_open: "drainPendingOpen",
-  open_path_default: "open.path",
-  open_path_for_edit: "open.path",
-  open_in_target: "open.path",
-  open_path_in_target: "open.path",
-};
+const FILE_MANAGER_TARGET_ID = "file-manager";
+
+type MerInvokeFunction = <T>(name: string, args: unknown) => Promise<T>;
+
+function getMerInvoke(): MerInvokeFunction | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const w = window as unknown as {
+    mer?: { invoke?: (name: string, args: unknown) => Promise<unknown> };
+  };
+  if (typeof w.mer?.invoke !== "function") {
+    return null;
+  }
+  const invoke = w.mer.invoke;
+  return async <T>(name: string, args: unknown): Promise<T> =>
+    (await invoke(name, args)) as T;
+}
 
 async function httpInvoke<T>(
   command: string,
@@ -355,33 +363,52 @@ async function merInvoke<T>(
   name: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  const w = window as unknown as {
-    mer?: { invoke?: (n: string, a: unknown) => Promise<T> };
-  };
-  if (w.mer?.invoke) {
-    try {
-      return await w.mer.invoke(name, args ?? {});
-    } catch (error) {
-      if (name === "open.external") {
-        const url = typeof args?.url === "string" ? args.url : null;
-        if (url != null) {
-          window.open(url, "_blank", "noopener,noreferrer");
-        }
-        return null as T;
-      }
-      if (name.startsWith("open.") || name === "drainPendingOpen") {
-        return null as T;
-      }
-      throw error;
-    }
+  const invoke = getMerInvoke();
+  if (invoke == null) {
+    throw new Error("Native bridge is unavailable");
   }
-  if (name === "open.external") {
-    const url = typeof args?.url === "string" ? args.url : null;
-    if (url != null) {
-      window.open(url, "_blank", "noopener,noreferrer");
-    }
+  return invoke<T>(name, args ?? {});
+}
+
+function hasMerInvoke(): boolean {
+  return getMerInvoke() != null;
+}
+
+function openExternalInBrowser(url: string): void {
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+function getBrowserClipboard(): Clipboard | null {
+  if (typeof navigator === "undefined") {
+    return null;
   }
-  return null as T;
+  return navigator.clipboard ?? null;
+}
+
+function isAbsoluteNativePath(path: string): boolean {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+}
+
+function resolveWorkspacePath(workspacePath: string, path: string): string {
+  if (path.length === 0) {
+    throw new Error("Path is required");
+  }
+  if (isAbsoluteNativePath(path)) {
+    return path;
+  }
+  const relative = path.replace(/^\.\/+/, "");
+  const root = workspacePath.replace(/\/+$/, "");
+  if (root.length === 0) {
+    throw new Error("Workspace path is required");
+  }
+  if (relative.length === 0 || relative === ".") {
+    return root;
+  }
+  return `${root}/${relative}`;
+}
+
+function unsupportedOpenTargetError(targetId: string): Error {
+  return new Error(`Open target is not supported by this build: ${targetId}`);
 }
 
 async function invokeCommand<T>(
@@ -390,15 +417,6 @@ async function invokeCommand<T>(
 ): Promise<T> {
   if (isQaMockMode) {
     return mockInvokeCommand<T>(command, args);
-  }
-  if (command === "pick_workspace" || command === "pick_directory") {
-    // Mer's folder dialog bridge is currently a stub in this shell. Calling it
-    // first adds a failing round trip before the working backend picker opens.
-    return httpInvoke<T>(command, args);
-  }
-  const nativeName = NATIVE_COMMANDS[command];
-  if (nativeName) {
-    return merInvoke<T>(nativeName, args);
   }
   return httpInvoke<T>(command, args);
 }
@@ -509,11 +527,27 @@ async function listenEvent<T>(
 }
 
 export function pickWorkspace(): Promise<string | null> {
-  return invokeCommand("pick_workspace");
+  if (isQaMockMode) {
+    return Promise.resolve(QA_WORKSPACE_PATH);
+  }
+  if (!hasMerInvoke()) {
+    return Promise.resolve(null);
+  }
+  return merInvoke("dialog.pickDirectory", { title: "Open project" });
 }
 
 export function pickDirectory(title?: string): Promise<string | null> {
-  return invokeCommand("pick_directory", { title });
+  if (isQaMockMode) {
+    void title;
+    return Promise.resolve(QA_WORKSPACE_PATH);
+  }
+  if (!hasMerInvoke()) {
+    return Promise.resolve(null);
+  }
+  return merInvoke(
+    "dialog.pickDirectory",
+    title != null && title.length > 0 ? { title } : {},
+  );
 }
 
 export function openWorkspace(path: string): Promise<SessionSnapshot> {
@@ -522,7 +556,13 @@ export function openWorkspace(path: string): Promise<SessionSnapshot> {
 
 // Drains a path passed to `codegraff <path>` before the app launched (cold start).
 export function drainPendingOpen(): Promise<string | null> {
-  return invokeCommand("drain_pending_open");
+  if (isQaMockMode) {
+    return invokeCommand("drain_pending_open");
+  }
+  if (!hasMerInvoke()) {
+    return Promise.resolve(null);
+  }
+  return merInvoke<string | null>("drainPendingOpen").catch(() => null);
 }
 
 // Fires when a second `codegraff <path>` invocation forwards a path to this
@@ -698,6 +738,35 @@ export function saveAttachmentFile(input: {
   return invokeCommand("save_attachment_file", { input });
 }
 
+export function readClipboardText(): Promise<string> {
+  if (isQaMockMode) {
+    return Promise.resolve("");
+  }
+  if (hasMerInvoke()) {
+    return merInvoke("clipboard.read");
+  }
+  const clipboard = getBrowserClipboard();
+  if (clipboard?.readText != null) {
+    return clipboard.readText();
+  }
+  return Promise.reject(new Error("Clipboard read is unavailable"));
+}
+
+export function writeClipboardText(text: string): Promise<void> {
+  if (isQaMockMode) {
+    void text;
+    return Promise.resolve();
+  }
+  if (hasMerInvoke()) {
+    return merInvoke("clipboard.write", { text });
+  }
+  const clipboard = getBrowserClipboard();
+  if (clipboard?.writeText != null) {
+    return clipboard.writeText(text);
+  }
+  return Promise.reject(new Error("Clipboard write is unavailable"));
+}
+
 /** Returns a compressed JPEG thumbnail of an image file as a data URL. */
 export function imageThumbnail(
   path: string,
@@ -838,7 +907,14 @@ export function openInTarget(
   workspacePath: string,
   targetId: string,
 ): Promise<void> {
-  return invokeCommand("open_in_target", { workspacePath, targetId });
+  if (targetId !== FILE_MANAGER_TARGET_ID) {
+    return Promise.reject(unsupportedOpenTargetError(targetId));
+  }
+  if (isQaMockMode) {
+    void workspacePath;
+    return Promise.resolve();
+  }
+  return merInvoke("open.path", { path: workspacePath });
 }
 
 export function openPathInTarget(
@@ -846,19 +922,59 @@ export function openPathInTarget(
   targetId: string,
   path: string,
 ): Promise<void> {
-  return invokeCommand("open_path_in_target", { workspacePath, targetId, path });
+  if (targetId !== FILE_MANAGER_TARGET_ID) {
+    return Promise.reject(unsupportedOpenTargetError(targetId));
+  }
+  const resolvedPath = resolveWorkspacePath(workspacePath, path);
+  if (isQaMockMode) {
+    void resolvedPath;
+    return Promise.resolve();
+  }
+  return merInvoke("open.path", { path: resolvedPath });
 }
 
 export function openExternalUrl(url: string): Promise<void> {
-  return invokeCommand("open_external_url", { url });
+  if (isQaMockMode) {
+    void url;
+    return Promise.resolve();
+  }
+  if (!hasMerInvoke()) {
+    openExternalInBrowser(url);
+    return Promise.resolve();
+  }
+  return merInvoke("open.external", { url });
 }
 
 export function openPathDefault(path: string): Promise<void> {
-  return invokeCommand("open_path_default", { path });
+  if (isQaMockMode) {
+    void path;
+    return Promise.resolve();
+  }
+  return merInvoke("open.path", { path });
 }
 
 export function openPathForEdit(path: string): Promise<void> {
-  return invokeCommand("open_path_for_edit", { path });
+  if (isQaMockMode) {
+    void path;
+    return Promise.resolve();
+  }
+  return merInvoke("open.path", { path });
+}
+
+export function setWindowTitle(title: string): Promise<void> {
+  if (isQaMockMode) {
+    if (typeof document !== "undefined") {
+      document.title = title;
+    }
+    return Promise.resolve();
+  }
+  if (!hasMerInvoke()) {
+    if (typeof document !== "undefined") {
+      document.title = title;
+    }
+    return Promise.resolve();
+  }
+  return merInvoke("window.setTitle", { title });
 }
 
 export function readWorkspaceFile(

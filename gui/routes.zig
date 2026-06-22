@@ -1,14 +1,12 @@
 // routes.zig — codegraff-gui backend route table (Phase 1 stubs).
 //
-// Each non-native command is POST /api/<command> → api/stub.render.
-// Native OS ops (pick_*, open_*, drain_pending_open) use window.mer.invoke,
-// not HTTP. Terminal routes are stubs (v2). SSE /events is the raw_handler.
+// Each backend command is POST /api/<command> -> api/stub.render.
+// Native OS operations (dialogs, clipboard, open path/URL) use window.mer.invoke,
+// not HTTP. SSE /events is the raw_handler.
 const mer = @import("mer");
 const stub = @import("api/stub");
 
 pub const routes: []const mer.Route = &.{
-    .{ .path = "/api/pick_workspace", .render = stub.render },
-    .{ .path = "/api/pick_directory", .render = stub.render },
     .{ .path = "/api/open_workspace", .render = stub.render },
     .{ .path = "/api/get_runtime_status", .render = stub.render },
     .{ .path = "/api/get_session_snapshot", .render = stub.render },
@@ -34,6 +32,7 @@ pub const routes: []const mer.Route = &.{
     .{ .path = "/api/set_effort", .render = stub.render },
     .{ .path = "/api/set_fast", .render = stub.render },
     .{ .path = "/api/save_pasted_image", .render = stub.render },
+    .{ .path = "/api/save_attachment_file", .render = stub.render },
     .{ .path = "/api/image_thumbnail", .render = stub.render },
     .{ .path = "/api/terminal_open", .render = stub.render },
     .{ .path = "/api/terminal_write", .render = stub.render },
@@ -67,5 +66,4 @@ pub const routes: []const mer.Route = &.{
     .{ .path = "/api/get_saved_workspace", .render = stub.render },
     .{ .path = "/api/rename_saved_workspace", .render = stub.render },
     .{ .path = "/api/delete_saved_workspace", .render = stub.render },
-    .{ .path = "/api/open_external_url", .render = stub.render },
 };

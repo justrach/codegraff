@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Build and run the real Codegraff desktop GUI for manual smoke testing.
+#
+# Usage:
+#   scripts/run-gui-eyeball
+#   scripts/run-gui-eyeball --skip-frontend
+#   scripts/run-gui-eyeball -- --some-native-arg
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GUI_DIR="$ROOT/gui"
+ZIG="${ZIG:-$HOME/.local/zig/0.16.0/zig}"
+SKIP_FRONTEND=0
+NATIVE_ARGS=()
+
+usage() {
+  sed -n '2,8p' "$0"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --skip-frontend)
+      SKIP_FRONTEND=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      NATIVE_ARGS=("$@")
+      break
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ ! -x "$ZIG" ]; then
+  echo "Zig 0.16 not found at: $ZIG" >&2
+  echo "Set ZIG=/path/to/zig-0.16.0/zig and retry." >&2
+  exit 1
+fi
+
+echo "Using Zig: $ZIG"
+echo "Building graff CLI..."
+(cd "$ROOT" && "$ZIG" build)
+
+if [ "$SKIP_FRONTEND" -eq 0 ]; then
+  echo "Building GUI frontend..."
+  (cd "$GUI_DIR" && bun run build)
+else
+  echo "Skipping GUI frontend build; using existing gui/dist."
+fi
+
+echo "Launching Codegraff GUI..."
+echo "Tip: quit any already-open Codegraff window first so you eyeball this build."
+cd "$GUI_DIR"
+if [ "${#NATIVE_ARGS[@]}" -gt 0 ]; then
+  exec env PATH="$ROOT/zig-out/bin:$PATH" "$ZIG" build native -- "${NATIVE_ARGS[@]}"
+else
+  exec env PATH="$ROOT/zig-out/bin:$PATH" "$ZIG" build native
+fi

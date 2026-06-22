@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import type {
   PromptSettings,
@@ -29,7 +29,7 @@ function deferred<T>() {
 }
 
 const runtimeStatusFixture: RuntimeStatus = {
-  availableOpenTargets: ["cursor"],
+  availableOpenTargets: ["file-manager"],
   configurationError: null,
   configured: true,
   gitBranchName: "main",
@@ -102,9 +102,17 @@ mock.module("../services/desktop/client", () => ({
   setFast: async () => {},
   saveAttachmentFile: async (input: { name: string }) => `/tmp/${input.name}`,
   savePastedImage: async () => "/tmp/pasted-image.png",
+  readClipboardText: async () => "",
+  writeClipboardText: async () => {},
+  pickDirectory: async () => "/workspace/codegraff-gui",
+  drainPendingOpen: async () => null,
   imageThumbnail: async () => "data:image/jpeg;base64,",
   openExternalUrl: async () => {},
+  openInTarget: async () => {},
+  openPathDefault: async () => {},
+  openPathForEdit: async () => {},
   openPathInTarget: async () => {},
+  setWindowTitle: async () => {},
   ensureConversationView: async (workspacePath: string, conversationId: string) => {
     conversationViewCallCount += 1;
     return await conversationViewImpl(workspacePath, conversationId);
@@ -131,6 +139,10 @@ const {
   resetSessionStore,
   sessionStore,
 } = await import("./sessionStore");
+
+afterAll(() => {
+  mock.restore();
+});
 
 describe("sessionStore", () => {
   beforeEach(() => {
