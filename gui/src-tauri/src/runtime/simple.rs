@@ -6,10 +6,11 @@ use crate::{
     terminal::TerminalManager,
 };
 use anyhow::{Context, Result};
+use base64::Engine;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
@@ -18,6 +19,13 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[derive(Clone)]
+struct QueuedPrompt {
+    agent_id: Option<String>,
+    engine_prompt: String,
+    request_id: String,
+}
+
 #[derive(Clone, Default)]
 struct ConversationState {
     workspace_path: String,
@@ -25,8 +33,18 @@ struct ConversationState {
     title: String,
     messages: Vec<SessionMessageDto>,
     active_request_ids: Vec<String>,
+    /// Maps a request id to the agent label ("muse"/"forge") it was sent under,
+    /// so the GUI's plan-decision card can key off the planning-mode request.
+    request_agent_ids: HashMap<String, String>,
+    queued_prompts: VecDeque<QueuedPrompt>,
     active_agent_id: Option<String>,
     plan_mode: bool,
+    /// Live task list, replaced wholesale on every `todo_write` tool call
+    /// (harness semantics). Surfaced to the GUI's task-progress dock.
+    todos: Vec<SessionTodoDto>,
+    goal: Option<String>,
+    /// Persistent ultracode (multi-agent workflow) mode, scoped to this chat.
+    ultracode_enabled: bool,
     updated_at: i64,
 }
 
@@ -45,7 +63,11 @@ struct RuntimeState {
     /// forwarded live to running sessions. None effort = the binary default.
     selected_effort: Option<String>,
     fast_enabled: bool,
-    /// Cached `graff --schema` model list (populated lazily).
+    /// Per-user model usage counters used to rank the model picker.
+    model_usage: ModelUsageByProvider,
+    /// Last successful `graff --schema` model list. Refreshed when the prompt
+    /// settings endpoint is read so the GUI picks up newly shipped models
+    /// without an app restart.
     model_catalog: Option<Vec<ModelOption>>,
     /// Live `ask_user` prompts awaiting a GUI answer, keyed by conversation.
     /// Surfaced as the conversation's `followup` so the FollowupComposer renders.
@@ -56,8 +78,10 @@ struct RuntimeState {
 #[derive(Clone)]
 struct ModelOption {
     provider: String,
+    provider_name: Option<String>,
     name: String,
     context: Option<u64>,
+    is_default: bool,
 }
 
 /// A persistent `graff --json` child bound to one conversation. Keeping the
@@ -102,6 +126,7 @@ impl RuntimeManager {
                 selected_model: persisted_prompt.selected_model,
                 selected_effort: persisted_prompt.selected_effort,
                 fast_enabled: persisted_prompt.fast_enabled,
+                model_usage: persisted_prompt.model_usage,
                 ..RuntimeState::default()
             })),
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -143,15 +168,16 @@ impl RuntimeManager {
 
     /// Returns the model picker, populated from `graff --schema`.
     pub async fn get_prompt_settings(&self, _: Option<String>) -> Result<PromptSettingsDto> {
-        let catalog = self.ensure_model_catalog().await;
+        let catalog = self.refresh_model_catalog().await;
         let configured_provider_ids = configured_provider_ids().await;
-        let (selected_provider, selected_model, selected_effort, fast_enabled) = {
+        let (selected_provider, selected_model, selected_effort, fast_enabled, model_usage) = {
             let state = self.state.lock().await;
             (
                 state.selected_provider.clone(),
                 state.selected_model.clone(),
                 state.selected_effort.clone(),
                 state.fast_enabled,
+                state.model_usage.clone(),
             )
         };
 
@@ -162,10 +188,11 @@ impl RuntimeManager {
             selected_model.as_deref(),
             selected_effort,
             fast_enabled,
+            &model_usage,
         ))
     }
 
-    async fn selected_model_name(&self) -> Option<String> {
+    async fn selected_model_pair(&self) -> Option<(String, String)> {
         let catalog = self.ensure_model_catalog().await;
         let configured_provider_ids = configured_provider_ids().await;
         let (selected_provider, selected_model) = {
@@ -181,7 +208,12 @@ impl RuntimeManager {
             selected_provider.as_deref(),
             selected_model.as_deref(),
         )
-        .map(|(_, model)| model)
+    }
+
+    async fn selected_model_arg(&self) -> Option<String> {
+        self.selected_model_pair()
+            .await
+            .map(|(provider, model)| prompt_model_arg(&provider, &model))
     }
 
     /// Generates a short chat title with the active model (a one-shot graff run)
@@ -235,9 +267,18 @@ impl RuntimeManager {
                 selected_model: state.selected_model.clone(),
                 selected_effort: state.selected_effort.clone(),
                 fast_enabled: state.fast_enabled,
+                model_usage: state.model_usage.clone(),
             }
         };
         save_prompt_settings(&settings);
+    }
+
+    async fn record_model_usage(&self, provider_id: &str, model_id: &str) {
+        {
+            let mut state = self.state.lock().await;
+            increment_model_usage(&mut state.model_usage, provider_id, model_id, now_millis());
+        }
+        self.persist_prompt_settings().await;
     }
 
     /// Persists the model selection and applies it to the live session when possible.
@@ -245,7 +286,7 @@ impl RuntimeManager {
         &self,
         input: UpdatePromptSettingsInput,
     ) -> Result<PromptSettingsDto> {
-        let catalog = self.ensure_model_catalog().await;
+        let catalog = self.refresh_model_catalog().await;
         let configured_provider_ids = configured_provider_ids().await;
         let available_catalog = filtered_catalog_models(&catalog, &configured_provider_ids);
         let selected_model = available_catalog
@@ -273,7 +314,16 @@ impl RuntimeManager {
                     &conversation_id,
                     serde_json::json!({
                         "type": "set_model",
-                        "name": selected_model.name,
+                        // Send BOTH model and provider so the harness routes to the
+                        // exact provider the user picked in the menu (gpt-5.5 from
+                        // Codex vs the Codegraff gateway). A bare model can't be
+                        // pinned to a provider, so an explicit Codex pick was dropped
+                        // and models that exist under two providers (the two gpt-5.5
+                        // entries) failed to switch at all — the engine emits an
+                        // `error` event, send_control surfaces it, and the whole
+                        // update aborts (then the UI swallows it).
+                        "model": selected_model.name.as_str(),
+                        "provider": selected_model.provider.as_str(),
                     }),
                 )
                 .await?;
@@ -298,8 +348,18 @@ impl RuntimeManager {
                 return catalog.clone();
             }
         }
+        self.refresh_model_catalog().await
+    }
+
+    /// Re-reads `graff --schema` so prompt-settings reflects the current binary's
+    /// provider/model list. If the schema read fails after a successful earlier
+    /// read, keep showing the last known catalog rather than blanking the picker.
+    async fn refresh_model_catalog(&self) -> Vec<ModelOption> {
         let catalog = codegraff_schema_models().await;
         let mut state = self.state.lock().await;
+        if catalog.is_empty() {
+            return state.model_catalog.clone().unwrap_or_default();
+        }
         state.model_catalog = Some(catalog.clone());
         catalog
     }
@@ -341,6 +401,13 @@ impl RuntimeManager {
                 Ok(cli_login_session(
                     &input.provider_id,
                     "Codex login launched in Terminal. Complete the browser OAuth flow there, then finish setup here.",
+                ))
+            }
+            ProviderAuthMethodKindDto::KimiDevice => {
+                launch_codegraff_login(Some("kimi")).await?;
+                Ok(cli_login_session(
+                    &input.provider_id,
+                    "Kimi login launched in Terminal. Complete the device-code flow there, then finish setup here.",
                 ))
             }
             _ => anyhow::bail!("Unsupported auth method for {}", input.provider_id),
@@ -403,8 +470,17 @@ impl RuntimeManager {
         Ok(vec![
             command("help", "Show available commands.", false),
             command("agent", "Show active agent.", false),
+            command("model", "Open the model picker.", false),
+            command("goal", "Set/show the current objective.", true),
+            command("loop", "Run an autonomous plan→act→verify pass.", true),
+            bash_command(),
             command("compact", "Compact current conversation.", true),
             command("workspace-status", "Show git status.", true),
+            command(
+                "ultracode",
+                "Toggle persistent ultracode (multi-agent workflow) mode.",
+                true,
+            ),
         ])
     }
 
@@ -418,8 +494,14 @@ impl RuntimeManager {
             .unwrap_or_else(|| format!("chat-{}", Uuid::new_v4().simple()));
         let request_id = format!("request-{}", Uuid::new_v4().simple());
         let plan_mode = input.agent_id.as_deref() == Some("muse");
-        let title_model_arg = self.selected_model_name().await;
+        let loop_mode = input.agent_id.as_deref() == Some("loop");
+        let usage_model_pair = self.selected_model_pair().await;
+        let title_model_arg = usage_model_pair
+            .as_ref()
+            .map(|(provider, model)| prompt_model_arg(provider, model));
         let is_first_turn;
+        let engine_prompt;
+        let should_queue;
         {
             let mut state = self.state.lock().await;
             set_active_workspace(&mut state, &input.workspace_path);
@@ -437,12 +519,29 @@ impl RuntimeManager {
                     title: title_from_prompt(&input.prompt),
                     messages: vec![],
                     active_request_ids: vec![],
+                    request_agent_ids: HashMap::new(),
+                    queued_prompts: VecDeque::new(),
                     active_agent_id,
                     plan_mode,
+                    ultracode_enabled: false,
+                    todos: Vec::new(),
+                    goal: None,
                     updated_at: now_millis(),
                 });
             conversation.plan_mode = plan_mode;
             conversation.updated_at = now_millis();
+            let goal_prompt = conversation
+                .goal
+                .as_ref()
+                .map(|goal| format!("{}\n\n[harness goal: {}]", input.prompt, goal))
+                .unwrap_or_else(|| input.prompt.clone());
+            engine_prompt = if loop_mode {
+                format!(
+                    "{goal_prompt}\n\n[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps.]"
+                )
+            } else {
+                goal_prompt
+            };
             is_first_turn = conversation.messages.is_empty();
             if is_first_turn && is_placeholder_title(&conversation.title) {
                 conversation.title = title_from_prompt(&input.prompt);
@@ -452,7 +551,30 @@ impl RuntimeManager {
                 request_id: request_id.clone(),
                 text: input.prompt.clone(),
             });
-            conversation.active_request_ids.push(request_id.clone());
+            // Remember which agent ("muse" planning / "forge" normal) this
+            // request ran under so the GUI's plan-decision card can light up
+            // after a planning-mode turn completes (gate keys off "muse").
+            conversation.request_agent_ids.insert(
+                request_id.clone(),
+                input
+                    .agent_id
+                    .clone()
+                    .unwrap_or_else(|| "forge".to_string()),
+            );
+            should_queue = !conversation.active_request_ids.is_empty();
+            if should_queue {
+                conversation.queued_prompts.push_back(QueuedPrompt {
+                    agent_id: input.agent_id.clone(),
+                    engine_prompt: engine_prompt.clone(),
+                    request_id: request_id.clone(),
+                });
+            } else {
+                conversation.active_request_ids.push(request_id.clone());
+            }
+        }
+
+        if let Some((provider_id, model_id)) = usage_model_pair.as_ref() {
+            self.record_model_usage(provider_id, model_id).await;
         }
 
         // Managed chats are auto-created `chat_<id>` folders; once a chat has a
@@ -473,6 +595,10 @@ impl RuntimeManager {
         }
 
         self.emit().await?;
+
+        if should_queue {
+            return self.snapshot().await;
+        }
 
         if is_first_turn {
             let manager = self.clone();
@@ -501,7 +627,7 @@ impl RuntimeManager {
                 &conversation_id,
                 &request_id,
                 &input.workspace_path,
-                &input.prompt,
+                &engine_prompt,
             )
             .await
         {
@@ -518,11 +644,69 @@ impl RuntimeManager {
             .await;
         }
 
-        let rid = request_id.clone();
-        self.mutate_conversation(&conversation_id, move |conversation| {
-            conversation.active_request_ids.retain(|id| id != &rid);
-        })
-        .await;
+        let mut completed_request_id = request_id;
+        loop {
+            let next_prompt = {
+                let mut state = self.state.lock().await;
+                let Some(conversation) = state.conversations.get_mut(&conversation_id) else {
+                    break;
+                };
+                conversation
+                    .active_request_ids
+                    .retain(|id| id != &completed_request_id);
+                let next = conversation.queued_prompts.pop_front();
+                if let Some(next) = &next {
+                    conversation.plan_mode = next.agent_id.as_deref() == Some("muse");
+                    conversation.updated_at = now_millis();
+                    conversation
+                        .active_request_ids
+                        .push(next.request_id.clone());
+                }
+                next
+            };
+
+            let Some(next_prompt) = next_prompt else {
+                break;
+            };
+
+            self.emit().await?;
+
+            let next_plan_mode = next_prompt.agent_id.as_deref() == Some("muse");
+            if self.session_exists(&conversation_id).await {
+                self.send_control(
+                    &conversation_id,
+                    serde_json::json!({
+                        "type": "set_mode",
+                        "mode": if next_plan_mode { "plan" } else { "normal" },
+                    }),
+                )
+                .await?;
+            }
+
+            if let Err(error) = self
+                .stream_turn(
+                    &conversation_id,
+                    &next_prompt.request_id,
+                    &input.workspace_path,
+                    &next_prompt.engine_prompt,
+                )
+                .await
+            {
+                let message = format_error_chain(&error);
+                let id = format!("{}-error", next_prompt.request_id);
+                let rid = next_prompt.request_id.clone();
+                self.mutate_conversation(&conversation_id, move |conversation| {
+                    conversation.messages.push(SessionMessageDto::Error {
+                        id,
+                        request_id: rid,
+                        message,
+                    });
+                })
+                .await;
+            }
+
+            completed_request_id = next_prompt.request_id;
+        }
 
         let snapshot = self.snapshot().await?;
         let _ = self.emitter.emit_session_updated(snapshot.clone());
@@ -704,9 +888,20 @@ impl RuntimeManager {
                         continue;
                     }
                     let detail = tool_call_detail(&name, input);
+                    // A `todo_write` replaces the whole task list (harness
+                    // semantics). Capture the items so the task-progress dock
+                    // can render them; the op itself stays hidden in the feed.
+                    let todos = if name == "todo_write" {
+                        Some(parse_todo_items(input))
+                    } else {
+                        None
+                    };
                     let id = format!("{request_id}-tool-{}", Uuid::new_v4().simple());
                     let rid = request_id.to_string();
                     self.mutate_conversation(conversation_id, move |conversation| {
+                        if let Some(todos) = todos {
+                            conversation.todos = todos;
+                        }
                         conversation.messages.push(SessionMessageDto::ToolStart {
                             id,
                             request_id: rid,
@@ -794,11 +989,17 @@ impl RuntimeManager {
                 }
                 Some("turn") => break,
                 Some("error") => {
-                    let message = event
+                    let raw_message = event
                         .get("message")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("graff error")
                         .to_string();
+                    let auth_error = is_provider_auth_error_message(&raw_message);
+                    let message = if auth_error {
+                        provider_auth_error_message(&raw_message)
+                    } else {
+                        raw_message
+                    };
                     let id = format!("{request_id}-error-{}", Uuid::new_v4().simple());
                     let rid = request_id.to_string();
                     self.mutate_conversation(conversation_id, move |conversation| {
@@ -809,6 +1010,15 @@ impl RuntimeManager {
                         });
                     })
                     .await;
+                    if auth_error {
+                        // A rejected/expired credential can leave the long-lived
+                        // child in a bad state. Drop it so retrying after the
+                        // user reconnects spawns a fresh graff process instead
+                        // of reusing a session that already failed auth.
+                        self.drop_session(conversation_id).await;
+                        self.emit().await?;
+                        return Ok(());
+                    }
                     break;
                 }
                 // system_prompt / score acks and anything unrecognized: ignore.
@@ -869,7 +1079,9 @@ impl RuntimeManager {
                 continue;
             };
             match event.get("type").and_then(serde_json::Value::as_str) {
-                Some("model" | "compact" | "mode" | "agent" | "effort" | "fast") => break event,
+                Some("model" | "compact" | "mode" | "agent" | "effort" | "fast" | "ultracode") => {
+                    break event;
+                }
                 Some("error") => {
                     let message = event
                         .get("message")
@@ -909,6 +1121,8 @@ impl RuntimeManager {
                     messages: conversation.messages.clone(),
                     active_agent_id: conversation.active_agent_id.clone(),
                     plan_mode: conversation.plan_mode,
+                    ultracode_enabled: conversation.ultracode_enabled,
+                    goal: conversation.goal.clone(),
                     updated_at: conversation.updated_at,
                 })
                 .collect()
@@ -943,10 +1157,10 @@ impl RuntimeManager {
         conversation_id: &str,
         workspace_path: &str,
     ) -> Result<GraffSessionIo> {
-        let model_arg = self.selected_model_name().await;
+        let model_arg = self.selected_model_arg().await;
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(conversation_id) {
-            let (active_agent_id, plan_mode, effort, fast) = {
+            let (active_agent_id, plan_mode, effort, fast, ultracode) = {
                 let state = self.state.lock().await;
                 let conversation = state.conversations.get(conversation_id);
                 (
@@ -958,9 +1172,11 @@ impl RuntimeManager {
                         .unwrap_or(false),
                     state.selected_effort.clone(),
                     state.fast_enabled,
+                    conversation.map(|c| c.ultracode_enabled).unwrap_or(false),
                 )
             };
-            let session = spawn_graff_session(workspace_path, model_arg.as_deref())?;
+            let session =
+                spawn_graff_session(workspace_path, model_arg.as_deref(), conversation_id)?;
             sessions.insert(conversation_id.to_string(), session);
             drop(sessions);
             if let Some(agent_id) = active_agent_id.filter(|id| id != "forge") {
@@ -988,6 +1204,13 @@ impl RuntimeManager {
                 self.send_control(
                     conversation_id,
                     serde_json::json!({ "type": "set_fast", "on": true }),
+                )
+                .await?;
+            }
+            if ultracode {
+                self.send_control(
+                    conversation_id,
+                    serde_json::json!({ "type": "set_ultracode", "on": true }),
                 )
                 .await?;
             }
@@ -1053,6 +1276,116 @@ impl RuntimeManager {
                 result_kind: CommandResultKindDto::Agents,
                 payload: Some(CommandPayloadDto::Agents(self.agents_payload().await)),
             }),
+            "ultracode" => {
+                let conversation_id = conversation_id.context("Missing conversation")?;
+                let now_on = {
+                    let mut state = self.state.lock().await;
+                    let conversation = state
+                        .conversations
+                        .get_mut(&conversation_id)
+                        .context("Conversation not found")?;
+                    conversation.ultracode_enabled = !conversation.ultracode_enabled;
+                    conversation.ultracode_enabled
+                };
+                self.persist_conversations().await;
+                if self.session_exists(&conversation_id).await {
+                    self.send_control(
+                        &conversation_id,
+                        serde_json::json!({ "type": "set_ultracode", "on": now_on }),
+                    )
+                    .await?;
+                }
+                let body = if now_on {
+                    "Ultracode mode enabled for this chat."
+                } else {
+                    "Ultracode mode disabled for this chat."
+                };
+                Ok(CommandRunResultDto {
+                    title: "/ultracode".into(),
+                    body: Some(body.into()),
+                    snapshot: None,
+                    saved_path: None,
+                    result_kind: CommandResultKindDto::Text,
+                    payload: None,
+                })
+            }
+            "goal" => {
+                let _workspace = workspace_path.context("Missing workspace")?;
+                let conversation_id = conversation_id.context("Missing conversation")?;
+                let text = args.join(" ").trim().to_string();
+                let body = if text.is_empty() {
+                    let current = {
+                        let state = self.state.lock().await;
+                        state
+                            .conversations
+                            .get(&conversation_id)
+                            .and_then(|conversation| conversation.goal.clone())
+                    };
+                    current
+                        .map(|goal| format!("Current goal: {goal}\n\nClear it with /goal clear."))
+                        .unwrap_or_else(|| "No active goal. Set one with /goal <objective>.".into())
+                } else if text.eq_ignore_ascii_case("clear") || text.eq_ignore_ascii_case("off") {
+                    self.mutate_conversation(&conversation_id, |conversation| {
+                        conversation.goal = None;
+                    })
+                    .await;
+                    self.persist_conversations().await;
+                    "Goal cleared. Future turns will not get goal steering.".into()
+                } else {
+                    let goal = text.clone();
+                    self.mutate_conversation(&conversation_id, move |conversation| {
+                        conversation.goal = Some(goal);
+                    })
+                    .await;
+                    self.persist_conversations().await;
+                    format!(
+                        "Goal set: {text}\n\nFuture turns in this chat will include this objective as steering."
+                    )
+                };
+                let snapshot = self.snapshot().await?;
+                let _ = self.emitter.emit_session_updated(snapshot.clone());
+                Ok(CommandRunResultDto {
+                    title: "/goal".into(),
+                    body: Some(body),
+                    snapshot: Some(snapshot),
+                    saved_path: None,
+                    result_kind: CommandResultKindDto::Text,
+                    payload: None,
+                })
+            }
+            "loop" => {
+                let prompt = args.join(" ").trim().to_string();
+                if prompt.is_empty() {
+                    return Ok(CommandRunResultDto {
+                        title: "/loop".into(),
+                        body: Some(
+                            "Usage: /loop <prompt> — run an autonomous plan→act→verify pass."
+                                .into(),
+                        ),
+                        snapshot: None,
+                        saved_path: None,
+                        result_kind: CommandResultKindDto::Text,
+                        payload: None,
+                    });
+                }
+                let workspace = workspace_path.context("Missing workspace")?;
+                let snapshot = self
+                    .send_prompt(SendPromptInput {
+                        workspace_path: workspace,
+                        conversation_id,
+                        prompt,
+                        agent_id: Some("loop".into()),
+                    })
+                    .await?;
+                Ok(CommandRunResultDto {
+                    title: "/loop".into(),
+                    body: None,
+                    snapshot: Some(snapshot),
+                    saved_path: None,
+                    result_kind: CommandResultKindDto::Snapshot,
+                    payload: None,
+                })
+            }
             "compact" => Ok(CommandRunResultDto {
                 title: "/compact".into(),
                 body: None,
@@ -1067,6 +1400,31 @@ impl RuntimeManager {
                 result_kind: CommandResultKindDto::Snapshot,
                 payload: None,
             }),
+            "bash" => {
+                let workspace = self
+                    .resolve_workspace(workspace_path)
+                    .await
+                    .context("Missing workspace")?;
+                let shell_command = args.join(" ").trim().to_string();
+                if shell_command.is_empty() {
+                    return Ok(CommandRunResultDto {
+                        title: "/bash".into(),
+                        body: Some("usage: /bash <command>".into()),
+                        snapshot: None,
+                        saved_path: None,
+                        result_kind: CommandResultKindDto::Text,
+                        payload: None,
+                    });
+                }
+                Ok(CommandRunResultDto {
+                    title: format!("/bash {shell_command}"),
+                    body: Some(run_shell_command(&workspace, &shell_command)?),
+                    snapshot: None,
+                    saved_path: None,
+                    result_kind: CommandResultKindDto::Text,
+                    payload: None,
+                })
+            }
             "workspace-status" => {
                 let workspace = workspace_path.unwrap_or_default();
                 Ok(CommandRunResultDto {
@@ -1086,7 +1444,7 @@ impl RuntimeManager {
             _ => Ok(CommandRunResultDto {
                 title: format!("/{name}"),
                 body: Some(format!(
-                    "Available MVP commands: /help, /agent, /compact, /workspace-status. Args: {}",
+                    "Available MVP commands: /help, /agent, /goal, /loop, /bash <command>, /compact, /workspace-status. Args: {}",
                     args.join(" ")
                 )),
                 snapshot: None,
@@ -1364,6 +1722,7 @@ impl RuntimeManager {
         self.drop_session(&input.conversation_id).await;
         self.mutate_conversation(&input.conversation_id, |conversation| {
             conversation.active_request_ids.clear();
+            conversation.queued_prompts.clear();
         })
         .await;
         let _ = self.emit().await;
@@ -1423,8 +1782,13 @@ impl RuntimeManager {
                 title: "New chat".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                request_agent_ids: HashMap::new(),
+                queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
+                todos: Vec::new(),
+                goal: None,
                 updated_at: now_millis(),
             },
         );
@@ -1545,11 +1909,46 @@ impl RuntimeManager {
     pub async fn archive_workspace(&self, workspace_path: String) -> Result<SessionSnapshotDto> {
         self.projects
             .archive_workspace(Path::new(&workspace_path))?;
-        self.state
-            .lock()
-            .await
-            .workspaces
-            .retain(|path| path != &workspace_path);
+        let conversation_ids: Vec<String> = {
+            let state = self.state.lock().await;
+            state
+                .conversations
+                .values()
+                .filter(|conversation| conversation.workspace_path == workspace_path)
+                .map(|conversation| conversation.conversation_id.clone())
+                .collect()
+        };
+        for conversation_id in &conversation_ids {
+            self.drop_session(conversation_id).await;
+        }
+        let removed_conversation_ids: HashSet<String> = conversation_ids.into_iter().collect();
+        let mut state = self.state.lock().await;
+        state.workspaces.retain(|path| path != &workspace_path);
+        state
+            .conversations
+            .retain(|_, conversation| conversation.workspace_path != workspace_path);
+        state.selected_by_workspace.remove(&workspace_path);
+        state
+            .selected_by_workspace
+            .retain(|_, conversation_id| !removed_conversation_ids.contains(conversation_id));
+        if state.active_workspace_path.as_deref() == Some(&workspace_path) {
+            state.active_workspace_path = state.workspaces.first().cloned();
+            state.active_conversation_id = state
+                .active_workspace_path
+                .clone()
+                .and_then(|path| first_workspace_conversation_id(&state, &path));
+        } else if state
+            .active_conversation_id
+            .as_ref()
+            .is_some_and(|conversation_id| removed_conversation_ids.contains(conversation_id))
+        {
+            state.active_conversation_id = state
+                .active_workspace_path
+                .clone()
+                .and_then(|path| first_workspace_conversation_id(&state, &path));
+        }
+        drop(state);
+        self.persist_conversations().await;
         self.snapshot().await
     }
 
@@ -1825,8 +2224,15 @@ impl RuntimeManager {
                 .as_ref()
                 .map(|c| c.active_request_ids.clone())
                 .unwrap_or_default(),
-            visible_request_agent_ids: HashMap::new(),
-            visible_todos: vec![],
+            visible_request_agent_ids: visible
+                .as_ref()
+                .map(|c| c.request_agent_ids.clone())
+                .unwrap_or_default(),
+            visible_todos: visible
+                .as_ref()
+                .map(|c| c.todos.clone())
+                .unwrap_or_default(),
+            visible_goal: visible.as_ref().and_then(|c| c.goal.clone()),
             visible_followup,
             conversation_views,
             ui_error: None,
@@ -1866,6 +2272,25 @@ pub(crate) fn format_error_chain(error: &anyhow::Error) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(": ")
+}
+
+fn is_provider_auth_error_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("invalid_api_key")
+        || lower.contains("unauthorized")
+        || (lower.contains("api key")
+            && (lower.contains("invalid")
+                || lower.contains("expired")
+                || lower.contains("incorrect")))
+        || (lower.contains("token") && lower.contains("expired"))
+        || (lower.contains("authentication")
+            && (lower.contains("failed") || lower.contains("invalid")))
+}
+
+fn provider_auth_error_message(raw: &str) -> String {
+    format!(
+        "Provider authentication failed before the turn could run. The selected API key/login was rejected or expired. Re-open Settings → Providers and reconnect the provider, then retry.\n\nThe GUI dropped the live graff session so the next retry starts fresh.\n\n{raw}"
+    )
 }
 
 /// Runs a literal substring search over the workspace. Tries ripgrep first
@@ -1970,7 +2395,21 @@ struct PersistedConversation {
     #[serde(default)]
     plan_mode: bool,
     #[serde(default)]
+    ultracode_enabled: bool,
+    #[serde(default)]
+    goal: Option<String>,
+    #[serde(default)]
     updated_at: i64,
+}
+
+type ModelUsageByProvider = HashMap<String, HashMap<String, PersistedModelUsage>>;
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct PersistedModelUsage {
+    #[serde(default)]
+    prompt_count: u64,
+    #[serde(default)]
+    last_used_at: i64,
 }
 
 /// Path to the transcript store (`~/.codegraff-gui/conversations.json`).
@@ -1984,6 +2423,8 @@ struct PersistedPromptSettings {
     selected_effort: Option<String>,
     #[serde(default)]
     fast_enabled: bool,
+    #[serde(default)]
+    model_usage: ModelUsageByProvider,
 }
 
 /// Path to the persisted prompt selection (`~/.codegraff-gui/prompt-settings.json`).
@@ -2026,9 +2467,9 @@ fn conversations_store_path() -> Option<PathBuf> {
     })
 }
 
-/// Loads persisted transcripts so past chats survive a restart. Live `graff`
-/// sessions are not restored — continuing a loaded chat starts a fresh session
-/// without the model's prior context (true resume needs a CLI protocol change).
+/// Loads persisted transcripts so past chats survive a restart. Continuing a
+/// chat now spawns `graff --json --resume <conversation_id>`, so new/updated
+/// chats also regain engine-side model context when their session file exists.
 fn load_persisted_conversations() -> HashMap<String, ConversationState> {
     let Some(path) = conversations_store_path() else {
         return HashMap::new();
@@ -2051,8 +2492,13 @@ fn load_persisted_conversations() -> HashMap<String, ConversationState> {
                     title,
                     messages: conversation.messages,
                     active_request_ids: vec![],
+                    request_agent_ids: HashMap::new(),
+                    queued_prompts: VecDeque::new(),
                     active_agent_id: conversation.active_agent_id,
                     plan_mode: conversation.plan_mode,
+                    ultracode_enabled: conversation.ultracode_enabled,
+                    todos: Vec::new(),
+                    goal: conversation.goal,
                     updated_at: conversation.updated_at,
                 },
             )
@@ -2150,8 +2596,9 @@ fn conversation_view(
         conversation_id: conversation.conversation_id.clone(),
         messages: conversation.messages.clone(),
         active_request_ids: conversation.active_request_ids.clone(),
-        request_agent_ids: HashMap::new(),
-        todos: vec![],
+        request_agent_ids: conversation.request_agent_ids.clone(),
+        todos: conversation.todos.clone(),
+        goal: conversation.goal.clone(),
         followup,
     }
 }
@@ -2166,28 +2613,87 @@ fn command(name: &str, usage: &str, requires_workspace: bool) -> CommandDescript
         is_agent_switch: false,
         execution_kind: CommandExecutionKindDto::Runnable,
         requires_workspace,
-        requires_conversation: name == "compact",
+        requires_conversation: matches!(name, "compact" | "goal" | "loop" | "ultracode"),
         argument_hint: None,
         result_kind: CommandResultKindDto::Text,
+    }
+}
+
+/// macOS GUI processes launched from Finder/Dock get launchd's minimal
+/// environment, not the user's shell — so `export OPENAI_API_KEY=…` (and any
+/// other `*_API_KEY`) from .zshrc/.zprofile is invisible to children we spawn.
+/// Capture the login shell's environment once (best-effort, time-bounded) so a
+/// GUI-spawned `graff` sees the same provider keys the terminal `graff` does.
+fn login_shell_env() -> &'static std::collections::HashMap<String, String> {
+    static ENV: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+        std::sync::OnceLock::new();
+    ENV.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // -il = interactive login shell: sources the login profile AND
+            // .zshrc/.bashrc, where most users export their *_API_KEY.
+            let out = std::process::Command::new(&shell)
+                .args(["-ilc", "env"])
+                .output();
+            let _ = tx.send(out);
+        });
+        let mut map = std::collections::HashMap::new();
+        if let Ok(Ok(out)) = rx.recv_timeout(std::time::Duration::from_secs(4)) {
+            if out.status.success() {
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    if let Some((k, v)) = line.split_once('=') {
+                        map.insert(k.to_string(), v.to_string());
+                    }
+                }
+            }
+        }
+        map
+    })
+}
+
+fn bash_command() -> CommandDescriptorDto {
+    CommandDescriptorDto {
+        argument_hint: Some("<command>".into()),
+        ..command("bash", "Run a shell command in the workspace.", true)
     }
 }
 
 /// Spawns a persistent `graff --json` child for a conversation. `--yolo` skips
 /// permission prompts (the GUI has no approval surface yet); stderr is discarded
 /// since the protocol carries errors as `error` events on stdout.
-fn spawn_graff_session(workspace_path: &str, model: Option<&str>) -> Result<GraffSession> {
-    let mut command = tokio::process::Command::new(codegraff_binary());
-    command.arg("--json").arg("--yolo");
+fn spawn_graff_session(
+    workspace_path: &str,
+    model: Option<&str>,
+    conversation_id: &str,
+) -> Result<GraffSession> {
+    let bin = codegraff_binary();
+    let mut command = tokio::process::Command::new(&bin);
+    command
+        .arg("--json")
+        .arg("--yolo")
+        .arg("--resume")
+        .arg(conversation_id);
     if let Some(model) = model.filter(|model| !model.is_empty() && *model != "default") {
         command.arg("--model").arg(model);
     }
+    // macOS GUI apps (Finder/Dock) inherit launchd's minimal env, not the user's
+    // shell — so OPENAI_API_KEY & co. exported in .zshrc are invisible to graff,
+    // which then silently falls back to a file-based login (e.g. an empty
+    // codegraff account). Pass the login shell's env so the GUI sees the same
+    // provider keys the terminal does.
+    command.envs(login_shell_env());
     let mut child = command
         .current_dir(workspace_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .context("Failed to launch Zig-native codegraff --json session")?;
+        .with_context(|| {
+            format!(
+                "Failed to launch the codegraff engine ('{bin}'). Install the CLI (curl -fsSL https://codegraff.com/install.sh | sh) or set CODEGRAFF_GUI_BINARY to the graff binary path."
+            )
+        })?;
     let stdin = child.stdin.take().context("graff session missing stdin")?;
     let stdout = child
         .stdout
@@ -2216,6 +2722,41 @@ async fn codegraff_schema_models() -> Vec<ModelOption> {
         Ok(schema) => schema,
         Err(_) => return vec![],
     };
+    let provider_names: HashMap<String, String> = schema
+        .get("providers")
+        .and_then(serde_json::Value::as_array)
+        .map(|providers| {
+            providers
+                .iter()
+                .filter_map(|provider| {
+                    Some((
+                        provider.get("id")?.as_str()?.to_string(),
+                        provider
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(provider.get("id")?.as_str()?)
+                            .to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let provider_defaults: HashMap<String, String> = schema
+        .get("providers")
+        .and_then(serde_json::Value::as_array)
+        .map(|providers| {
+            providers
+                .iter()
+                .filter_map(|provider| {
+                    Some((
+                        provider.get("id")?.as_str()?.to_string(),
+                        provider.get("default_model")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     schema
         .get("models")
         .and_then(serde_json::Value::as_array)
@@ -2223,9 +2764,15 @@ async fn codegraff_schema_models() -> Vec<ModelOption> {
             models
                 .iter()
                 .filter_map(|model| {
+                    let provider = model.get("provider")?.as_str()?.to_string();
+                    let name = model.get("name")?.as_str()?.to_string();
                     Some(ModelOption {
-                        provider: model.get("provider")?.as_str()?.to_string(),
-                        name: model.get("name")?.as_str()?.to_string(),
+                        provider_name: provider_names.get(&provider).cloned(),
+                        is_default: provider_defaults
+                            .get(&provider)
+                            .is_some_and(|default_model| default_model == &name),
+                        provider,
+                        name,
                         context: model.get("context").and_then(serde_json::Value::as_u64),
                     })
                 })
@@ -2325,15 +2872,17 @@ fn filtered_catalog_models<'a>(
 }
 
 fn prompt_model_option(model: &ModelOption) -> PromptModelOptionDto {
-    // Effort-capable providers (mirrors the binary's effortApplies):
-    // codex takes reasoning.effort via the Responses API; codegraff and
-    // deepseek take a top-level reasoning_effort. But the gateway's gpt-*
-    // models go through /v1/chat/completions, which rejects reasoning_effort.
-    let effort_capable = match model.provider.as_str() {
-        "codex" => true,
-        "codegraff" | "deepseek" => !model.name.starts_with("gpt-"),
-        "kimi" => true,
-        _ => false,
+    // Effort applies exactly per the binary's providerTakesEffort: a grok-* model
+    // never takes effort (any provider); otherwise codex/codegraff/deepseek/kimi
+    // do. (No gpt- carve-out - the gateway honors reasoning_effort for gpt-* too;
+    // and grok must be excluded even on the codegraff provider.)
+    let effort_capable = if model.name.starts_with("grok") {
+        false
+    } else {
+        matches!(
+            model.provider.as_str(),
+            "codex" | "codegraff" | "deepseek" | "kimi"
+        )
     };
     let reasoning_efforts: Vec<String> = if effort_capable {
         vec!["low".into(), "medium".into(), "high".into()]
@@ -2343,7 +2892,10 @@ fn prompt_model_option(model: &ModelOption) -> PromptModelOptionDto {
 
     PromptModelOptionDto {
         provider_id: model.provider.clone(),
-        provider_name: provider_display_name(&model.provider),
+        provider_name: model
+            .provider_name
+            .clone()
+            .unwrap_or_else(|| provider_display_name(&model.provider)),
         model_id: model.name.clone(),
         model_name: Some(model.name.clone()),
         context_length: model.context,
@@ -2360,9 +2912,13 @@ fn selected_prompt_model_pair(
 ) -> Option<(String, String)> {
     let available_catalog = filtered_catalog_models(catalog, configured_provider_ids);
 
+    // No codegraff-first bias: mirror the harness, which defaults to the first
+    // configured provider in spec/schema order and routes bare model names
+    // prefer-direct. Forcing codegraff here biased users onto the metered
+    // gateway even when a cheaper direct provider was keyed.
     let default_model = available_catalog
         .iter()
-        .find(|model| model.name == "deepseek-v4-pro")
+        .find(|model| model.is_default)
         .copied()
         .or_else(|| available_catalog.first().copied());
 
@@ -2375,6 +2931,17 @@ fn selected_prompt_model_pair(
                 .map(|candidate| (candidate.provider.clone(), candidate.name.clone()))
         })
         .or_else(|| default_model.map(|model| (model.provider.clone(), model.name.clone())))
+}
+
+fn prompt_model_arg(_provider: &str, model: &str) -> String {
+    // Pass the BARE model name and let the harness route it to a provider via the
+    // same prefer-direct resolution the TUI uses (`/model <name>`). Prefixing the
+    // provider ("kimi kimi-k2.7" or "kimi/kimi-k2.7") is NOT understood by
+    // `--model`: it falls back to the codegraff gateway, which then rejects the
+    // unknown model. The harness picks the right provider for a bare model name
+    // (kimi-k2.7 -> kimi when keyed; only falling back to codegraff if no direct
+    // provider is configured), so the GUI must call it exactly like the terminal.
+    model.to_string()
 }
 
 fn selected_pair_exists(
@@ -2391,6 +2958,65 @@ fn selected_pair_exists(
         .any(|candidate| candidate.provider == provider && candidate.name == model)
 }
 
+fn increment_model_usage(
+    usage: &mut ModelUsageByProvider,
+    provider_id: &str,
+    model_id: &str,
+    now: i64,
+) {
+    let entry = usage
+        .entry(provider_id.to_string())
+        .or_default()
+        .entry(model_id.to_string())
+        .or_default();
+    entry.prompt_count = entry.prompt_count.saturating_add(1);
+    entry.last_used_at = now;
+}
+
+fn model_usage_for<'a>(
+    usage: &'a ModelUsageByProvider,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<&'a PersistedModelUsage> {
+    usage
+        .get(provider_id)
+        .and_then(|models| models.get(model_id))
+}
+
+fn model_sort_name(model: &ModelOption) -> String {
+    format!(
+        "{}\u{0}{}\u{0}{}",
+        model.name.to_lowercase(),
+        model
+            .provider_name
+            .as_deref()
+            .unwrap_or(&model.provider)
+            .to_lowercase(),
+        model.provider.to_lowercase()
+    )
+}
+
+fn usage_ranked_catalog_models<'a>(
+    catalog: &'a [ModelOption],
+    configured_provider_ids: &HashSet<String>,
+    model_usage: &ModelUsageByProvider,
+) -> Vec<&'a ModelOption> {
+    let mut models = filtered_catalog_models(catalog, configured_provider_ids);
+    models.sort_by(|left, right| {
+        let left_count = model_usage_for(model_usage, &left.provider, &left.name)
+            .map(|usage| usage.prompt_count)
+            .unwrap_or(0);
+        let right_count = model_usage_for(model_usage, &right.provider, &right.name)
+            .map(|usage| usage.prompt_count)
+            .unwrap_or(0);
+
+        right_count
+            .cmp(&left_count)
+            .then_with(|| model_sort_name(left).cmp(&model_sort_name(right)))
+    });
+    models
+}
+
 fn build_prompt_settings_from_catalog(
     catalog: &[ModelOption],
     configured_provider_ids: &HashSet<String>,
@@ -2398,6 +3024,7 @@ fn build_prompt_settings_from_catalog(
     selected_model: Option<&str>,
     selected_effort: Option<String>,
     fast_enabled: bool,
+    model_usage: &ModelUsageByProvider,
 ) -> PromptSettingsDto {
     if catalog.is_empty() {
         if configured_provider_ids.contains("codegraff") {
@@ -2415,6 +3042,8 @@ fn build_prompt_settings_from_catalog(
                 selected_model_id: Some("default".into()),
                 selected_reasoning_effort: None,
                 fast_enabled,
+                // codegraff is the `chat` kind, not `responses`: /fast is a no-op.
+                fast_applies: false,
             };
         }
 
@@ -2424,10 +3053,12 @@ fn build_prompt_settings_from_catalog(
             selected_model_id: None,
             selected_reasoning_effort: None,
             fast_enabled,
+            fast_applies: false,
         };
     }
 
-    let available_catalog = filtered_catalog_models(catalog, configured_provider_ids);
+    let available_catalog =
+        usage_ranked_catalog_models(catalog, configured_provider_ids, model_usage);
     let available_models = available_catalog
         .iter()
         .map(|model| prompt_model_option(model))
@@ -2450,12 +3081,22 @@ fn build_prompt_settings_from_catalog(
         None
     };
 
+    // /fast only changes behavior on the codex provider (the harness `responses`
+    // kind, which emits `service_tier:"priority"`); it reports `applies:false`
+    // for every other provider. Gate on the *resolved* provider so the GUI
+    // matches what the harness will actually do for the active selection.
+    let fast_applies = selected_pair
+        .as_ref()
+        .map(|(provider, _)| provider == "codex")
+        .unwrap_or(false);
+
     PromptSettingsDto {
         available_models,
         selected_provider_id: selected_pair.as_ref().map(|(provider, _)| provider.clone()),
         selected_model_id: selected_pair.as_ref().map(|(_, model)| model.clone()),
         selected_reasoning_effort: selected_pair.and(selected_effort),
         fast_enabled,
+        fast_applies,
     }
 }
 
@@ -2487,6 +3128,41 @@ fn tool_result_summary(text: &str) -> Option<String> {
     } else {
         Some(first_line.to_string())
     }
+}
+
+/// Parses the `todos` array from a `todo_write` tool call's input into typed
+/// items. The harness sends `{"todos":[{"content":string,"status":string}]}`
+/// with replace-the-whole-list semantics and no ids, so a stable id is derived
+/// from the item's index. Unknown/missing statuses default to `Pending`.
+fn parse_todo_items(input: Option<&serde_json::Value>) -> Vec<SessionTodoDto> {
+    input
+        .and_then(|value| value.get("todos"))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let content = item
+                        .get("content")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let status = match item.get("status").and_then(serde_json::Value::as_str) {
+                        Some("in_progress") => SessionTodoStatusDto::InProgress,
+                        Some("completed") => SessionTodoStatusDto::Completed,
+                        Some("cancelled") => SessionTodoStatusDto::Cancelled,
+                        _ => SessionTodoStatusDto::Pending,
+                    };
+                    SessionTodoDto {
+                        id: format!("todo-{index:04}"),
+                        content,
+                        status,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Maps a `tool_call` event's name + input JSON to a typed UI detail. Known
@@ -2522,6 +3198,16 @@ fn tool_call_detail(name: &str, input: Option<&serde_json::Value>) -> ToolCallDe
             agent_id: str_field("agent").unwrap_or_default(),
             label: str_field("description").unwrap_or_else(|| "subagent".to_string()),
         },
+        // Todos render in the dedicated task-progress dock, not the activity
+        // feed; the GUI hides these ops, but only when the detail kind matches.
+        "todo_write" => ToolCallDetailDto::TodoWrite {
+            count: input
+                .and_then(|value| value.get("todos"))
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0),
+        },
+        "todo_read" => ToolCallDetailDto::TodoRead,
         "workflow" => ToolCallDetailDto::Task {
             agent_id: String::new(),
             label: "workflow".to_string(),
@@ -2628,23 +3314,89 @@ fn followup_answer_line(request: &FollowupRequestDto, response: &FollowupRespons
 /// `current_dir` set to the workspace, and a relative program path would be
 /// resolved against that workspace (not the repo) — so a relative override like
 /// `CODEGRAFF_GUI_BINARY=../zig-out/bin/graff` must be canonicalized here.
+/// True only for a real, non-empty, executable file. A path that exists but is
+/// empty or not executable (e.g. an `externalBin` sidecar copy a `cargo build`
+/// left half-written, or a clobbered 0-byte binary) must NOT be returned as the
+/// engine path — a bare `is_file()` check would hand it back and shadow the
+/// working fallbacks below, and the spawn then dies with EACCES on exec.
+fn is_usable_binary(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn codegraff_binary() -> String {
-    // 1. Explicit override, canonicalized to absolute when it resolves to a file.
+    // 1. Explicit override, canonicalized to absolute when it resolves to a
+    //    usable file. A broken override falls through to the built-in rather
+    //    than failing the launch outright.
     if let Some(value) = std::env::var("CODEGRAFF_GUI_BINARY")
         .ok()
         .filter(|value| !value.trim().is_empty())
     {
         if let Ok(absolute) = std::fs::canonicalize(&value) {
-            return absolute.to_string_lossy().into_owned();
+            if is_usable_binary(&absolute) {
+                return absolute.to_string_lossy().into_owned();
+            }
         }
-        // Doesn't resolve from the current dir — fall through to the built-in.
+        // Doesn't resolve to a usable file — fall through to the built-in.
     }
-    // 2. Built-in: <crate>/../../zig-out/bin/graff (absolute via CARGO_MANIFEST_DIR).
+    // 2. Bundled sidecar: Tauri's externalBin lands next to the app executable
+    //    (Contents/MacOS/graff on macOS), so a packaged .app is self-contained —
+    //    no separate CLI install needed. This is what fixes GUI-only users.
+    //    Guard on is_usable_binary: an interrupted `cargo build` can leave a
+    //    0-byte sidecar here, and a bare is_file() check would return it and
+    //    shadow the working binaries below (the EACCES-at-exec failure).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("graff");
+            if is_usable_binary(&p) {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    // 3. Dev build: <crate>/../../zig-out/bin/graff (only exists on a dev machine).
     let candidate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zig-out/bin/graff");
     if let Ok(absolute) = std::fs::canonicalize(&candidate) {
-        return absolute.to_string_lossy().into_owned();
+        if is_usable_binary(&absolute) {
+            return absolute.to_string_lossy().into_owned();
+        }
     }
-    // 3. Bare name: let the OS resolve it on PATH.
+    // 4. Known install locations. A Finder/Dock-launched .app inherits launchd's
+    //    minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), which excludes ~/bin,
+    //    /usr/local/bin and /opt/homebrew/bin — exactly where the CLI installer
+    //    puts `graff`. So a bare PATH lookup (step 5) misses an installed binary
+    //    and the session spawn fails with ENOENT. Probe the standard spots by
+    //    absolute path first.
+    if let Ok(home) = std::env::var("HOME") {
+        for rel in ["bin/graff", ".local/bin/graff"] {
+            let p = Path::new(&home).join(rel);
+            if is_usable_binary(&p) {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    for abs in [
+        "/opt/homebrew/bin/graff",
+        "/usr/local/bin/graff",
+        "/usr/bin/graff",
+    ] {
+        if is_usable_binary(Path::new(abs)) {
+            return abs.to_string();
+        }
+    }
+    // 5. Last resort: bare name, resolved against whatever PATH we inherited.
     "graff".into()
 }
 
@@ -2797,14 +3549,24 @@ fn provider_summary_with_key_list(
     provider: &CodegraffProvider,
     key_list: &str,
 ) -> ProviderSummaryDto {
+    let mut auth_methods = vec![ProviderAuthMethodDto {
+        kind: provider.auth_method.clone(),
+        label: provider_auth_label(provider),
+    }];
+    // Kimi accepts both an API key and a device-code OAuth login (`graff login
+    // kimi`). Offer both so users can re-auth via the CLI's OAuth flow when
+    // their key is removed or expires — mirroring codegraff/codex.
+    if provider.id == "kimi" {
+        auth_methods.push(ProviderAuthMethodDto {
+            kind: ProviderAuthMethodKindDto::KimiDevice,
+            label: "Kimi Code device login".into(),
+        });
+    }
     ProviderSummaryDto {
         id: provider.id.clone(),
         name: provider.name.clone(),
         configured: provider_configured(provider, key_list),
-        auth_methods: vec![ProviderAuthMethodDto {
-            kind: provider.auth_method.clone(),
-            label: provider_auth_label(provider),
-        }],
+        auth_methods,
         env_override: provider_env_override(provider),
     }
 }
@@ -2826,11 +3588,9 @@ fn validate_provider_auth_completion(
 /// locating where it's defined so the UI can offer to open that file.
 fn provider_env_override(provider: &CodegraffProvider) -> Option<ProviderEnvOverrideDto> {
     let env_key = provider.env_key.as_deref()?;
-    let is_set = std::env::var(env_key)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .is_some();
-    if !is_set {
+    // Same env the spawned session sees (process env + login_shell_env), so the
+    // override hint matches what the harness actually uses.
+    if !env_has_provider_key(env_key) {
         return None;
     }
     let (file_path, line) = match find_env_definition(env_key) {
@@ -2887,17 +3647,34 @@ fn provider_auth_label(provider: &CodegraffProvider) -> String {
             .unwrap_or_else(|| "API key".into()),
         ProviderAuthMethodKindDto::CodegraffDevice => "Codegraff device login".into(),
         ProviderAuthMethodKindDto::CodexDevice => "Codex browser login".into(),
+        ProviderAuthMethodKindDto::KimiDevice => "Kimi Code device login".into(),
         _ => "Unsupported".into(),
     }
+}
+
+/// True if `env_key` has a non-empty value in either the GUI process env OR the
+/// login-shell env the spawned harness session inherits (`login_shell_env`). On a
+/// Finder/Dock launch the GUI's own env is minimal, but the session is spawned
+/// with `command.envs(login_shell_env())`, so a provider keyed only via a shell
+/// export (e.g. KIMI_API_KEY in .zshrc) must still count as configured here -
+/// otherwise its models vanish from the picker yet the session can run them.
+fn env_has_provider_key(env_key: &str) -> bool {
+    if std::env::var(env_key)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    login_shell_env()
+        .iter()
+        .any(|(key, value)| key.as_str() == env_key && !value.trim().is_empty())
 }
 
 fn provider_configured(provider: &CodegraffProvider, key_list: &str) -> bool {
     if provider
         .env_key
         .as_deref()
-        .and_then(|env_key| std::env::var(env_key).ok())
-        .filter(|value| !value.trim().is_empty())
-        .is_some()
+        .is_some_and(env_has_provider_key)
     {
         return true;
     }
@@ -2917,6 +3694,9 @@ fn provider_login_configured(
                 || key_list_mentions_provider(key_list, &provider.id)
         }
         "codex" => home_codex_auth_has_valid_token(home),
+        "kimi" => {
+            key_list_mentions_provider(key_list, &provider.id) || kimi_auth_has_valid_token(home)
+        }
         _ => key_list_mentions_provider(key_list, &provider.id),
     }
 }
@@ -2943,6 +3723,34 @@ fn home_codex_auth_has_valid_token(home: Option<&Path>) -> bool {
         .unwrap_or(false)
 }
 
+/// Kimi OAuth login (`graff login kimi`) writes a JSON token file to
+/// `~/.kimi/credentials/graff-oauth.json`. Treat an expired token file as not
+/// configured so the GUI asks the user to reconnect before starting a run.
+fn kimi_auth_has_valid_token(home: Option<&Path>) -> bool {
+    home.map(|home| {
+        let path = home.join(".kimi/credentials/graff-oauth.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return false;
+        };
+        if value
+            .get("expires_at")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|expires_at| unix_seconds() >= expires_at.saturating_sub(60))
+        {
+            return false;
+        }
+        value
+            .get("access_token")
+            .and_then(|token| token.as_str())
+            .map(|token| !token.trim().is_empty() && jwt_token_not_expired(token))
+            .unwrap_or(false)
+    })
+    .unwrap_or(false)
+}
+
 fn codex_auth_file_has_valid_token(path: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
@@ -2959,8 +3767,33 @@ fn codex_auth_text_has_valid_token(text: &str) -> bool {
         .and_then(|tokens| tokens.get("access_token"))
         .or_else(|| value.get("access_token"))
         .and_then(|token| token.as_str())
-        .map(|token| !token.trim().is_empty())
+        .map(|token| !token.trim().is_empty() && jwt_token_not_expired(token))
         .unwrap_or(false)
+}
+
+fn jwt_token_not_expired(token: &str) -> bool {
+    let Some(payload) = token.split('.').nth(1) else {
+        // API keys and opaque OAuth tokens do not expose an expiry locally; they
+        // still need the runtime auth-error handling above.
+        return true;
+    };
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
+        return true;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return true;
+    };
+    let Some(exp) = value.get("exp").and_then(serde_json::Value::as_i64) else {
+        return true;
+    };
+    unix_seconds() < exp.saturating_sub(60)
+}
+
+fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn provider_env_key(provider_id: &str) -> Option<String> {
@@ -3055,6 +3888,9 @@ fn remove_stored_credential(provider_id: &str) -> Result<()> {
             }
             "codex" => {
                 let _ = std::fs::remove_file(home.join(".codex/auth.json"));
+            }
+            "kimi" => {
+                let _ = std::fs::remove_file(home.join(".kimi/credentials/graff-oauth.json"));
             }
             _ => {}
         }
@@ -3166,6 +4002,51 @@ fn is_placeholder_title(title: &str) -> bool {
     title.is_empty() || title.eq_ignore_ascii_case("New chat")
 }
 
+fn run_shell_command(workspace_path: &str, shell_command: &str) -> Result<String> {
+    let output = Command::new("/bin/sh")
+        .args(["-c", shell_command])
+        .current_dir(workspace_path)
+        .output()
+        .with_context(|| format!("Failed to run shell command in {workspace_path}"))?;
+    Ok(format_command_output(&output))
+}
+
+fn format_command_output(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut text = String::new();
+    if !stdout.is_empty() {
+        text.push_str(&stdout);
+    }
+    if !stderr.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str("[stderr]\n");
+        text.push_str(&stderr);
+    }
+    match output.status.code() {
+        Some(0) => {}
+        Some(code) => {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&format!("[exit code {code}]"));
+        }
+        None => {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str("[terminated abnormally]");
+        }
+    }
+    if text.is_empty() {
+        "(no output)".into()
+    } else {
+        text
+    }
+}
+
 fn git_status_files(workspace_path: &str) -> Result<Vec<WorkspaceFileStatusDto>> {
     let output = Command::new("git")
         .args(["status", "--short"])
@@ -3219,6 +4100,61 @@ fn saved_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn mk_output(stdout: &[u8], stderr: &[u8], raw_status: i32) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(raw_status),
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_empty_is_no_output() {
+        // stdout+stderr empty, exit 0 -> the "(no output)" placeholder.
+        assert_eq!(
+            format_command_output(&mk_output(b"", b"", 0)),
+            "(no output)"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_stdout_only_unchanged() {
+        assert_eq!(
+            format_command_output(&mk_output(b"hello\n", b"", 0)),
+            "hello\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_stderr_only_gets_label() {
+        // No stdout, so no leading newline; "[stderr]" label prefixes stderr.
+        assert_eq!(
+            format_command_output(&mk_output(b"", b"oops\n", 0)),
+            "[stderr]\noops\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_stderr_separator_and_nonzero_exit() {
+        // stdout present -> "[stderr]" goes on its own line after a separator.
+        let out = format_command_output(&mk_output(b"out\n", b"err\n", 1 << 8));
+        assert!(out.contains("out\n[stderr]\nerr\n"));
+        assert!(out.ends_with("[exit code 1]"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn format_command_output_signal_terminated_is_abnormal() {
+        // raw status 2 -> WIFSIGNALED -> status.code() is None.
+        assert!(format_command_output(&mk_output(b"", b"", 2)).contains("[terminated abnormally]"));
+    }
 
     fn followup(
         id: &str,
@@ -3333,8 +4269,13 @@ mod tests {
                 title: "Existing".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                request_agent_ids: HashMap::new(),
+                queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
+                todos: Vec::new(),
+                goal: None,
                 updated_at: 10,
             },
         );
@@ -3394,6 +4335,24 @@ mod tests {
         ));
         assert!(!codex_auth_text_has_valid_token("{}"));
         assert!(!codex_auth_text_has_valid_token("not json"));
+    }
+
+    #[test]
+    fn codex_auth_text_rejects_expired_jwt_token() {
+        let expired_payload =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"exp":1}"#);
+        let token = format!("header.{expired_payload}.signature");
+        let auth = serde_json::json!({ "tokens": { "access_token": token } }).to_string();
+
+        assert!(!codex_auth_text_has_valid_token(&auth));
+    }
+
+    #[test]
+    fn provider_auth_error_detection_matches_invalid_api_key() {
+        assert!(is_provider_auth_error_message(
+            "api error: The API Key appears to be invalid or may have expired. Please verify your credentials and try again."
+        ));
+        assert!(provider_auth_error_message("invalid_api_key").contains("reconnect"));
     }
 
     #[test]
@@ -3463,13 +4422,24 @@ mod tests {
     fn model(provider: &str, name: &str) -> ModelOption {
         ModelOption {
             provider: provider.into(),
+            provider_name: None,
             name: name.into(),
             context: None,
+            is_default: provider == "codegraff" && name == "deepseek-v4-pro",
         }
     }
 
     fn provider_ids(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    #[test]
+    fn prompt_model_arg_uses_bare_model_name() {
+        // The harness only recognizes bare model names (routed to a provider by
+        // prefer-direct, like the TUI's `/model`); a "provider model" prefix is
+        // not understood by --model and falls back to the codegraff gateway.
+        assert_eq!(prompt_model_arg("codex", "gpt-5.5"), "gpt-5.5");
+        assert_eq!(prompt_model_arg("kimi", "kimi-k2.7"), "kimi-k2.7");
     }
 
     #[test]
@@ -3484,6 +4454,7 @@ mod tests {
             None,
             Some("high".into()),
             true,
+            &HashMap::new(),
         );
 
         assert!(settings.available_models.is_empty());
@@ -3506,6 +4477,7 @@ mod tests {
             None,
             None,
             false,
+            &HashMap::new(),
         );
 
         assert_eq!(settings.available_models.len(), 1);
@@ -3527,6 +4499,7 @@ mod tests {
             Some("gpt-5.5"),
             Some("medium".into()),
             false,
+            &HashMap::new(),
         );
 
         assert_eq!(settings.available_models.len(), 1);
@@ -3536,6 +4509,113 @@ mod tests {
             Some("deepseek-v4-pro")
         );
         assert_eq!(settings.selected_reasoning_effort, None);
+    }
+
+    fn usage_counts(entries: &[(&str, &str, u64)]) -> ModelUsageByProvider {
+        let mut usage = HashMap::new();
+        for (provider, model, count) in entries {
+            usage
+                .entry((*provider).to_string())
+                .or_insert_with(HashMap::new)
+                .insert(
+                    (*model).to_string(),
+                    PersistedModelUsage {
+                        prompt_count: *count,
+                        last_used_at: 0,
+                    },
+                );
+        }
+        usage
+    }
+
+    #[test]
+    fn prompt_settings_orders_models_alphabetically_without_usage() {
+        let settings = build_prompt_settings_from_catalog(
+            &[
+                model("codegraff", "zeta"),
+                model("codegraff", "alpha"),
+                model("codex", "beta"),
+            ],
+            &provider_ids(&["codegraff", "codex"]),
+            None,
+            None,
+            None,
+            false,
+            &HashMap::new(),
+        );
+
+        let ordered: Vec<_> = settings
+            .available_models
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["alpha", "beta", "zeta"]);
+    }
+
+    #[test]
+    fn prompt_settings_ranks_models_by_user_usage_then_alphabetically() {
+        let usage = usage_counts(&[
+            ("codegraff", "zeta", 2),
+            ("codex", "beta", 5),
+            ("openai", "removed", 99),
+        ]);
+        let settings = build_prompt_settings_from_catalog(
+            &[
+                model("codegraff", "zeta"),
+                model("codegraff", "alpha"),
+                model("codex", "beta"),
+                model("codex", "gamma"),
+            ],
+            &provider_ids(&["codegraff", "codex"]),
+            None,
+            None,
+            None,
+            false,
+            &usage,
+        );
+
+        let ordered: Vec<_> = settings
+            .available_models
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["beta", "zeta", "alpha", "gamma"]);
+    }
+
+    #[test]
+    fn prompt_settings_usage_ranking_does_not_change_default_selection() {
+        let usage = usage_counts(&[("codex", "popular", 100)]);
+        let settings = build_prompt_settings_from_catalog(
+            &[
+                model("codegraff", "deepseek-v4-pro"),
+                model("codex", "popular"),
+            ],
+            &provider_ids(&["codegraff", "codex"]),
+            None,
+            None,
+            None,
+            false,
+            &usage,
+        );
+
+        assert_eq!(settings.available_models[0].provider_id, "codex");
+        assert_eq!(settings.available_models[0].model_id, "popular");
+        assert_eq!(settings.selected_provider_id.as_deref(), Some("codegraff"));
+        assert_eq!(
+            settings.selected_model_id.as_deref(),
+            Some("deepseek-v4-pro")
+        );
+    }
+
+    #[test]
+    fn increment_model_usage_updates_count_and_timestamp() {
+        let mut usage = ModelUsageByProvider::new();
+        increment_model_usage(&mut usage, "codex", "gpt-5", 10);
+        increment_model_usage(&mut usage, "codex", "gpt-5", 20);
+
+        let entry = model_usage_for(&usage, "codex", "gpt-5").expect("usage entry");
+        assert_eq!(entry.prompt_count, 2);
+        assert_eq!(entry.last_used_at, 20);
     }
 
     #[test]
@@ -3555,8 +4635,15 @@ mod tests {
 
     #[test]
     fn prompt_settings_schema_fallback_requires_configured_codegraff() {
-        let unavailable =
-            build_prompt_settings_from_catalog(&[], &HashSet::new(), None, None, None, false);
+        let unavailable = build_prompt_settings_from_catalog(
+            &[],
+            &HashSet::new(),
+            None,
+            None,
+            None,
+            false,
+            &HashMap::new(),
+        );
         assert!(unavailable.available_models.is_empty());
 
         let available = build_prompt_settings_from_catalog(
@@ -3566,6 +4653,7 @@ mod tests {
             None,
             None,
             true,
+            &HashMap::new(),
         );
         assert_eq!(available.available_models.len(), 1);
         assert_eq!(available.selected_provider_id.as_deref(), Some("codegraff"));
@@ -3588,8 +4676,13 @@ mod tests {
                 title: "Old".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                request_agent_ids: HashMap::new(),
+                queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
+                todos: Vec::new(),
+                goal: None,
                 updated_at: 10,
             },
         );
@@ -3601,8 +4694,13 @@ mod tests {
                 title: "New".into(),
                 messages: vec![],
                 active_request_ids: vec![],
+                request_agent_ids: HashMap::new(),
+                queued_prompts: VecDeque::new(),
                 active_agent_id: None,
                 plan_mode: false,
+                ultracode_enabled: false,
+                todos: Vec::new(),
+                goal: None,
                 updated_at: 20,
             },
         );

@@ -1,0 +1,70 @@
+/* Bind @codegraff/diffs to the app's theme tokens so diffs adapt to light/dark
+   and every `data-theme` preset automatically. Imported after the package's base
+   stylesheet so these overrides win. */
+
+.cgd-root,
+.cgd-fc-row {
+  --cgd-font: var(--font-mono);
+  --cgd-fg: var(--foreground);
+  --cgd-muted: var(--muted-foreground);
+  --cgd-border: var(--border);
+  /* Subtle, theme-derived line tints (crisper than a flat saturated block). */
+  --cgd-add-bg: color-mix(in oklab, var(--success) 13%, var(--background));
+  --cgd-del-bg: color-mix(in oklab, var(--destructive) 13%, var(--background));
+  --cgd-add-word: color-mix(in oklab, var(--success) 30%, transparent);
+  --cgd-del-word: color-mix(in oklab, var(--destructive) 30%, transparent);
+  --cgd-add-accent: color-mix(in oklab, var(--success) 80%, var(--background));
+  --cgd-del-accent: color-mix(in oklab, var(--destructive) 80%, var(--background));
+  --cgd-hunk-bg: color-mix(in oklab, var(--muted) 45%, transparent);
+  --cgd-hunk-fg: var(--muted-foreground);
+  --cgd-stat-add: var(--success);
+  --cgd-stat-del: var(--destructive);
+  --cgd-tok-keyword: var(--sh-keyword);
+  --cgd-tok-string: var(--sh-string);
+  --cgd-tok-comment: var(--sh-comment);
+  --cgd-tok-number: var(--sh-class);
+  --cgd-tok-punct: var(--sh-sign);
+}
+
+/* Crispness refinements for the per-file diff body (line numbers, hunk band, and
+   line rhythm) so the Changes pane reads cleaner. */
+.cgd-root {
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.cgd-root .cgd-gutter {
+  opacity: 0.4;
+}
+
+.cgd-root .cgd-sign {
+  opacity: 0.5;
+}
+
+.cgd-root .cgd-line--hunk {
+  padding-block: 3px;
+}
+
+.cgd-root .cgd-line--hunk .cgd-content {
+  opacity: 0.6;
+}
+
+/* Smooth expand/collapse for the per-file diff cards in the Changes pane.
+   Scoped to `.cgd-collapse` so it doesn't affect other Collapsible usages.
+   Drives height off base-ui's `--collapsible-panel-height` variable. */
+.cgd-collapse {
+  overflow: hidden;
+  height: var(--collapsible-panel-height);
+  transition: height 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.cgd-collapse[data-starting-style],
+.cgd-collapse[data-ending-style] {
+  height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cgd-collapse {
+    transition: none;
+  }
+}

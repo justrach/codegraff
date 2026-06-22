@@ -10,9 +10,9 @@ import { createInterface } from "node:readline";
 
 export const HARNESS_VERSION = "0.4";
 
-export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "glm-4.5" | "glm-4.7" | "glm-5" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.4" | "gpt-5.4-pro" | "gpt-5.5" | "grok-4.3" | "grok-build" | "kimi-k2.6" | "kimi-k2.7" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3";
+export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5.2" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.4" | "gpt-5.4-pro" | "gpt-5.5" | "grok-4.3" | "grok-build" | "kimi-k2.6" | "kimi-k2.7" | "kimi-latest" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3";
 export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "ask_user" | "attempt_completion" | "subagent" | "workflow";
-export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "xai" | "zai" | "codex";
+export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "moonshot" | "xai" | "zai" | "codex";
 
 /** Events streamed by `harness --json` (one JSON object per stdout line), each
  *  discriminated by `type` — the analogue of codegraff's AgentEvent stream.
@@ -22,10 +22,18 @@ export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "mi
  *  to ignore in consumer code too. */
 export type Event =
   | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
+  | { type: "started"; provider: string; model: string }
+  | { type: "model_call_started"; provider: string; model: string }
+  | { type: "model_call_finished"; provider: string; model: string; ok: boolean; ms: number }
   | { type: "tool_call"; name: string; input: Record<string, unknown> }
+  | { type: "tool_call_started"; name: string; input: Record<string, unknown> }
+  | { type: "tool_rejected"; name: string; reason: "budget" | "duplicate" | string; input: Record<string, unknown>; message: string }
   | { type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
   | { type: "tool_result"; name: string; is_error: boolean; text: string }
-  | { type: "turn"; text: string; context_tokens: number; cost_usd: number }
+  | { type: "tool_call_finished"; name: string; is_error: boolean; ms: number }
+  | { type: "finalizing" }
+  | { type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }
   | { type: "system_prompt"; ok: boolean; append: boolean; chars: number }
   | { type: "score"; ok: boolean; prompt_sha: string }
   | { type: "error"; message: string };
@@ -54,6 +62,10 @@ export interface HarnessOptions {
   systemPrompt?: string;
   /** Append extra text to the end of the system prompt. */
   appendSystemPrompt?: string;
+  /** Hard per-turn root tool-call budget. */
+  maxToolCalls?: number;
+  /** Reject duplicate root tool name+normalized-input calls per turn. */
+  dedupeToolCalls?: boolean;
   /** Extra raw flags. `--json` is always added. */
   args?: string[];
 }
@@ -78,6 +90,8 @@ function spawnArgs(o: HarnessOptions): string[] {
   const a = ["--json"];
   if (o.yolo) a.push("--yolo");
   if (o.model) a.push("--model", o.model);
+  if (o.maxToolCalls !== undefined) a.push("--max-tool-calls", String(o.maxToolCalls));
+  if (o.dedupeToolCalls) a.push("--dedupe-tool-calls");
   if (o.systemPrompt) a.push("--system-prompt", o.systemPrompt);
   if (o.appendSystemPrompt) a.push("--append-system-prompt", o.appendSystemPrompt);
   if (o.args) a.push(...o.args);
@@ -387,5 +401,5 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<Event> {
   }
 }
 
-export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "glm-4.5", "glm-4.7", "glm-5", "gpt-5-codex", "gpt-5.2", "gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "grok-4.3", "grok-build", "kimi-k2.6", "kimi-k2.7", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3"];
+export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "grok-4.3", "grok-build", "kimi-k2.6", "kimi-k2.7", "kimi-latest", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3"];
 export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "ask_user", "attempt_completion", "subagent", "workflow"];

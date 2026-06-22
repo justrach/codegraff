@@ -33,4 +33,16 @@ export const THEME_PRESETS: ThemePresetMeta[] = [
     description: "Warm-neutral base with a sage-green accent.",
     swatch: { bg: "#14160f", surface: "#1d2018", accent: "#82b06a", text: "#e8ebe0" },
   },
+  {
+    id: "mono",
+    name: "Mono",
+    description: "Pure black & white — monochrome, no hue.",
+    swatch: { bg: "#0a0a0a", surface: "#161618", accent: "#fafafa", text: "#fafafa" },
+  },
+  {
+    id: "rose",
+    name: "Rose",
+    description: "Soft pinks with a bright rose accent.",
+    swatch: { bg: "#1a0e14", surface: "#251521", accent: "#ff6b9d", text: "#f7dde7" },
+  },
 ];

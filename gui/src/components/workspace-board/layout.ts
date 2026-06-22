@@ -12,7 +12,9 @@ export const INNER_PLACEHOLDER_COMPONENT = "placeholder-pane";
 export const CHAT_PANE_ID = "chat";
 export const PREVIEW_PANE_ID = "preview";
 export const TERMINAL_PANE_ID = "terminal";
+export const CHANGES_PANE_ID = "changes";
 export const TERMINAL_RESTART_EVENT_NAME = "codegraff://terminal-restart-request";
+export const PANE_CLOSE_REQUEST_EVENT_NAME = "codegraff://pane-close-request";
 
 let activeDraggedChatBinding: ChatBinding | null = null;
 
@@ -34,14 +36,44 @@ export function createChatPanelId(binding: ChatBinding): string {
   return `chat:${encodeURIComponent(binding.workspacePath)}::${binding.conversationId}`;
 }
 
-export function createTerminalSessionId(binding: ChatBinding): string {
-  return `terminal:${encodeURIComponent(binding.workspacePath)}::${binding.conversationId}`;
+export function createTerminalSessionId(
+  binding: ChatBinding,
+  terminalKey?: string,
+): string {
+  const base = `terminal:${encodeURIComponent(binding.workspacePath)}::${binding.conversationId}`;
+  // Suffix the per-tab key so each terminal tab maps to its own PTY. Legacy panes
+  // without a key fall back to "1" (matches the first tab's default key).
+  return `${base}::${terminalKey ?? "1"}`;
+}
+
+// Dockview panel id for a terminal tab. The first/legacy terminal keeps the bare
+// `TERMINAL_PANE_ID`; additional tabs are namespaced by their key.
+export function createTerminalPanelId(terminalKey: string): string {
+  return terminalKey === "1"
+    ? TERMINAL_PANE_ID
+    : `${TERMINAL_PANE_ID}:${terminalKey}`;
+}
+
+export function isTerminalPanelId(panelId: string): boolean {
+  return panelId === TERMINAL_PANE_ID || panelId.startsWith(`${TERMINAL_PANE_ID}:`);
 }
 
 export function dispatchTerminalRestartRequest(terminalId: string): void {
   window.dispatchEvent(
     new CustomEvent(TERMINAL_RESTART_EVENT_NAME, {
       detail: { terminalId },
+    }),
+  );
+}
+
+/**
+ * Request that an auxiliary pane close. The pane component listens for this so it
+ * can play a slide-out animation before actually removing itself from the layout.
+ */
+export function dispatchPaneCloseRequest(paneId: string): void {
+  window.dispatchEvent(
+    new CustomEvent(PANE_CLOSE_REQUEST_EVENT_NAME, {
+      detail: { paneId },
     }),
   );
 }

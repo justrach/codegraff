@@ -7,8 +7,13 @@ import { buildRenderableFileDiffPatch } from "../activity-results/utils/fileDiff
 import type {
   ActivityResultFooter,
   ActivityResultModel,
+  ActivityResultTone,
 } from "../activity-results/types/activityResult";
 import type { ActivityOperation } from "../types/chatThread";
+import {
+  detectContentFormat,
+  resolvePresentation,
+} from "./classifyActivityResult";
 
 function buildShellPreviewText(
   command: string,
@@ -55,15 +60,20 @@ export function getActivityResultModel(
     return null;
   }
 
+  const tone: ActivityResultTone = operation.isError ? "error" : "default";
   const detail = operation.resultDetail;
+
   if (detail?.kind === "shell_output") {
     const text = buildShellPreviewText(detail.command, detail.stdout, detail.stderr);
 
     return text.length === 0
       ? null
       : {
-          kind: "shell",
-          title: "Shell",
+          kind: "content",
+          format: "terminal",
+          tone,
+          presentation: "card",
+          title: "Terminal",
           text,
           copyText: text,
           footer: buildResultFooter(operation, detail),
@@ -96,6 +106,7 @@ export function getActivityResultModel(
           path: operation.detail.path,
           patch,
           copyText: patch,
+          operation: operation.detail.operation,
         }
       : null;
   }
@@ -106,13 +117,33 @@ export function getActivityResultModel(
     operation.summary;
   const trimmedText = text?.trim();
 
-  return trimmedText
-    ? {
-        kind: "text",
-        title: "Output",
-        text: trimmedText,
-        copyText: trimmedText,
-        footer: buildResultFooter(operation),
-      }
-    : null;
+  if (!trimmedText) {
+    return null;
+  }
+
+  const { format, language } = detectContentFormat({
+    detailKind: operation.detail.kind,
+    name: operation.name,
+    isShellOutput: false,
+    text: trimmedText,
+  });
+  const presentation = resolvePresentation({ text: trimmedText, tone, format });
+  const title =
+    tone === "error"
+      ? "Error"
+      : format === "code"
+        ? (language ?? "Output")
+        : "Output";
+
+  return {
+    kind: "content",
+    format,
+    tone,
+    presentation,
+    language,
+    title,
+    text: trimmedText,
+    copyText: trimmedText,
+    footer: buildResultFooter(operation),
+  };
 }

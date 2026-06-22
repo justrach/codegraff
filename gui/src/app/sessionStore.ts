@@ -68,7 +68,11 @@ function writePromptDraftEntry(
 ): Record<string, PromptDraftEntry> {
   const current = drafts[key] ?? null;
   const nextEntry =
-    entry == null || (entry.value === "" && !entry.isPending && !entry.isPlanningMode)
+    entry == null ||
+    (entry.value === "" &&
+      !entry.isPending &&
+      !entry.isPlanningMode &&
+      !entry.isUltraMode)
       ? null
       : entry;
 
@@ -85,7 +89,8 @@ function writePromptDraftEntry(
   if (
     current?.value === nextEntry.value &&
     current?.isPending === nextEntry.isPending &&
-    current?.isPlanningMode === nextEntry.isPlanningMode
+    current?.isPlanningMode === nextEntry.isPlanningMode &&
+    current?.isUltraMode === nextEntry.isUltraMode
   ) {
     return drafts;
   }
@@ -104,6 +109,7 @@ function setPromptDraftEntryValue(
   const current = getConversationDraftEntry(drafts, key) ?? {
     isPending: false,
     isPlanningMode: false,
+    isUltraMode: false,
     value: "",
   };
 
@@ -118,6 +124,7 @@ function setPromptDraftEntryPending(
   const current = getConversationDraftEntry(drafts, key) ?? {
     isPending: false,
     isPlanningMode: false,
+    isUltraMode: false,
     value: "",
   };
 
@@ -132,10 +139,26 @@ function setPromptDraftEntryPlanningMode(
   const current = getConversationDraftEntry(drafts, key) ?? {
     isPending: false,
     isPlanningMode: false,
+    isUltraMode: false,
     value: "",
   };
 
   return writePromptDraftEntry(drafts, key, { ...current, isPlanningMode });
+}
+
+function setPromptDraftEntryUltraMode(
+  drafts: Record<string, PromptDraftEntry>,
+  key: string,
+  isUltraMode: boolean,
+): Record<string, PromptDraftEntry> {
+  const current = getConversationDraftEntry(drafts, key) ?? {
+    isPending: false,
+    isPlanningMode: false,
+    isUltraMode: false,
+    value: "",
+  };
+
+  return writePromptDraftEntry(drafts, key, { ...current, isUltraMode });
 }
 
 function movePromptDraftEntry(
@@ -235,7 +258,7 @@ function buildConversationSummariesByKey(workspaces: WorkspaceSession[]) {
   return byKey;
 }
 
-function areSelectionsEqual(
+export function areSelectionsEqual(
   left: WorkspaceBoardSelection,
   right: WorkspaceBoardSelection,
 ): boolean {
@@ -570,6 +593,19 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
         ),
       }));
     },
+    setPromptDraftUltraMode: (key, isUltraMode) => {
+      if (key == null) {
+        return;
+      }
+
+      set((current) => ({
+        promptDraftsByKey: setPromptDraftEntryUltraMode(
+          current.promptDraftsByKey,
+          key,
+          isUltraMode,
+        ),
+      }));
+    },
     setPromptDraftValue: (key, value) => {
       if (key == null) {
         return;
@@ -677,6 +713,7 @@ export function getPromptDraftState(promptDraftKey: string | null) {
     return {
       isPending: false,
       isPlanningMode: false,
+      isUltraMode: false,
       value: "",
     };
   }
@@ -685,6 +722,7 @@ export function getPromptDraftState(promptDraftKey: string | null) {
     sessionStore.getState().promptDraftsByKey[promptDraftKey] ?? {
       isPending: false,
       isPlanningMode: false,
+      isUltraMode: false,
       value: "",
     }
   );

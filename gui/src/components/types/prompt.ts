@@ -30,15 +30,18 @@ export interface PromptInputCardProps {
   isRequestActive: boolean;
   isSendingPrompt: boolean;
   isPlanningMode: boolean;
+  isUltraMode: boolean;
   placeholder?: string;
   promptSettings: PromptSettings | null;
   promptDraft: string;
+  promptHistory?: string[];
   focusSignal?: number;
   isInputDisabled?: boolean;
   binding?: ChatBinding | null;
   workspacePath?: string | null;
   onCommandSelect: (command: CommandDescriptor) => void;
   setPlanningMode: (value: boolean) => void;
+  setUltraMode: (value: boolean) => void;
   setPromptDraft: (value: string) => void;
   stopPrompt: () => Promise<void>;
   submitPrompt: () => Promise<void>;

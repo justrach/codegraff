@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { Attachment } from "./attachmentTypes";
 import {
   appendAttachmentsToPrompt,
+  classifyPath,
   parseAttachmentBlock,
 } from "./attachmentTypes";
 
@@ -49,5 +50,33 @@ describe("round-trip", () => {
     const parsed = parseAttachmentBlock("just a normal message");
     expect(parsed.body).toBe("just a normal message");
     expect(parsed.paths).toEqual([]);
+  });
+});
+
+// Regression guard for #78: navigating prompt history restored a sent prompt as
+// raw `Attached files:` text and dropped the image card. The history handler now
+// runs this exact pipeline — parseAttachmentBlock → classifyPath → rehydrate tray.
+describe("prompt-history restore pipeline (#78)", () => {
+  test("splits a sent prompt back into body + a restorable image attachment", () => {
+    const sent = appendAttachmentsToPrompt("describe this", [
+      { id: "/x/shot.png", path: "/x/shot.png", name: "shot.png", ext: "png", kind: "image" },
+    ]);
+
+    const { body, paths } = parseAttachmentBlock(sent);
+    expect(body).toBe("describe this");
+    expect(paths).toEqual(["/x/shot.png"]);
+
+    const restored = paths
+      .map((p) => classifyPath(p))
+      .filter((a): a is NonNullable<typeof a> => a != null);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.kind).toBe("image");
+    expect(restored[0]?.name).toBe("shot.png");
+  });
+
+  test("a text-only history entry restores no attachments", () => {
+    const { body, paths } = parseAttachmentBlock("just a question");
+    expect(body).toBe("just a question");
+    expect(paths).toEqual([]);
   });
 });

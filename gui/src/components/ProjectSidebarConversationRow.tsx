@@ -53,18 +53,22 @@ export function ProjectSidebarConversationRow({
             <span className="rounded-full bg-sidebar-accent px-1.5 py-0.5 font-medium text-sidebar-accent-foreground">
               Running
             </span>
+          ) : updatedAt ? (
+            <span className="whitespace-nowrap">{updatedAt}</span>
           ) : null}
-          {updatedAt ? <span className="whitespace-nowrap">{updatedAt}</span> : null}
         </span>
       </SidebarMenuSubButton>
-      <SidebarArchiveAction
-        ariaLabel={`Archive ${conversation.title}`}
-        className="right-0.5 group-hover/menu-sub-item:opacity-100 group-focus-within/menu-sub-item:opacity-100"
-        disabled={conversation.isRunning}
-        onClick={() =>
-          onArchiveConversation(workspacePath, conversation.conversationId)
-        }
-      />
+      {/* Archiving a running conversation is disabled; omit the action entirely so
+          its disabled state can't overlay the "Running" badge. */}
+      {conversation.isRunning ? null : (
+        <SidebarArchiveAction
+          ariaLabel={`Archive ${conversation.title}`}
+          className="right-0.5 group-hover/menu-sub-item:opacity-100 group-focus-within/menu-sub-item:opacity-100"
+          onClick={() =>
+            onArchiveConversation(workspacePath, conversation.conversationId)
+          }
+        />
+      )}
     </SidebarMenuSubItem>
   );
 }

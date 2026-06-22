@@ -1,13 +1,21 @@
 import { create } from "zustand";
 
 export type ThemeMode = "light" | "dark";
-export type ThemePresetId = "warm-graphite" | "slate" | "nord" | "forest";
+export type ThemePresetId =
+  | "warm-graphite"
+  | "slate"
+  | "nord"
+  | "forest"
+  | "mono"
+  | "rose";
 
 export const THEME_PRESET_IDS: ThemePresetId[] = [
   "warm-graphite",
   "slate",
   "nord",
   "forest",
+  "mono",
+  "rose",
 ];
 
 const MODE_STORAGE_KEY = "codegraff:theme";
@@ -65,7 +73,11 @@ const initialMode = readInitialMode();
 const initialPreset = readStoredPreset() ?? "warm-graphite";
 
 // Apply immediately at module import (before React renders) to avoid a flash.
-applyTheme(initialMode, initialPreset);
+// Guarded so the module is import-safe in non-DOM environments (SSR / unit tests
+// that render to static markup); applyTheme touches document.documentElement.
+if (typeof document !== "undefined") {
+  applyTheme(initialMode, initialPreset);
+}
 
 type ThemeStore = {
   mode: ThemeMode;

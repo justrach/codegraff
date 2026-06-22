@@ -1,7 +1,7 @@
 {
-  "name": "@graff-new/sdk",
-  "version": "0.1.0",
-  "description": "TypeScript / Node SDK for the simple-harness agent (drives `harness --json`). API mirrors @codegraff/sdk; types auto-generated from `harness --schema`.",
+  "name": "@codegraff/sdk",
+  "version": "0.3.1",
+  "description": "TypeScript / Node SDK for the codegraff agent — drives `graff --json` over stdio. Types auto-generated from `graff --schema`.",
   "type": "module",
   "main": "harness.ts",
   "types": "harness.ts",
@@ -20,10 +20,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/justrach/graff-new.git",
+    "url": "git+https://github.com/justrach/codegraff.git",
     "directory": "sdk/ts"
   },
-  "files": ["harness.ts", "remote.ts"],
+  "homepage": "https://codegraff.com",
+  "keywords": ["codegraff", "graff", "agent", "llm", "harness", "sdk"],
+  "files": ["harness.ts", "remote.ts", "README.md"],
   "engines": { "node": ">=18" },
   "license": "BSD-3-Clause"
 }

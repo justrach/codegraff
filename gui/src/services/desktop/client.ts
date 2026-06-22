@@ -70,8 +70,11 @@ const qaCommandRows: Array<[
 ]> = [
   ["help", "Show available slash commands.", null, "text"],
   ["agent", "Show active agent and available agents.", null, "agents"],
+  ["bash", "Run a shell command in the workspace.", "<command>", "text"],
   ["sage", "Switch to Sage.", null, "agents"],
   ["reasoning-effort", "Update reasoning effort.", "<low|medium|high>", "text"],
+  ["goal", "Set/show the current objective.", "<objective|clear>", "text"],
+  ["loop", "Run an autonomous plan→act→verify pass.", "<prompt>", "snapshot"],
   ["workspace-info", "Show indexed workspace metadata.", null, "workspaceInfo"],
   ["workspace-status", "Show workspace file status.", null, "workspaceStatus"],
   ["workspace-query", "Search the workspace semantically.", "<query>", "workspaceSearch"],
@@ -99,7 +102,7 @@ const qaCommands: CommandDescriptor[] = qaCommandRows.map(
             : "builtin",
       name,
       requiresConversation: false,
-      requiresWorkspace: name.startsWith("workspace-"),
+      requiresWorkspace: name === "bash" || name.startsWith("workspace-"),
       resultKind,
       usage,
       value: name === "sage" ? "sage" : null,
@@ -186,6 +189,7 @@ function qaPromptSettings(): PromptSettings {
     selectedProviderId: "anthropic",
     selectedReasoningEffort: qaReasoningEffort,
     fastEnabled: false,
+    fastApplies: false,
   };
 }
 
@@ -227,15 +231,23 @@ function qaCommandResult(input: {
 
   switch (input.name) {
     case "help":
-      return { body: "| Command | What it does | UI expectation |\n|---|---|---|\n| `/help` | Lists commands | Inline table |\n| `/agent` | Shows current agent | Inline cards |\n| `/workspace-info` | Shows metadata | Inline markdown/table |\n| `/workflow <goal>` | Builds a workflow draft | Review modal |", payload: null, resultKind: "text", savedPath: null, snapshot: null, title: "/help" };
+      return { body: "| Command | What it does | UI expectation |\n|---|---|---|\n| `/help` | Lists commands | Inline table |\n| `/agent` | Shows current agent | Inline cards |\n| `/bash <command>` | Runs a workspace shell command | Inline text |\n| `/workspace-info` | Shows metadata | Inline markdown/table |\n| `/workflow <goal>` | Builds a workflow draft | Review modal |", payload: null, resultKind: "text", savedPath: null, snapshot: null, title: "/help" };
     case "agent":
       return { body: "Current agent status.", payload: { kind: "agents", ...qaAgentsPayload() }, resultKind: "agents", savedPath: null, snapshot: null, title };
+    case "bash": {
+      const command = input.args.join(" ").trim();
+      return { body: command.length > 0 ? `QA mock did not execute shell command:\n\n$ ${command}` : "usage: /bash <command>", payload: null, resultKind: "text", savedPath: null, snapshot: null, title: command.length > 0 ? `/bash ${command}` : "/bash" };
+    }
     case "sage":
       qaActiveAgentId = "sage";
       return { body: "Switched active agent to Sage.", payload: { kind: "agents", ...qaAgentsPayload() }, resultKind: "agents", savedPath: null, snapshot: null, title };
     case "reasoning-effort":
       qaReasoningEffort = input.args[0] ?? qaReasoningEffort;
       return { body: `Reasoning effort is now **${qaReasoningEffort ?? "default"}**.`, payload: null, resultKind: "text", savedPath: null, snapshot: null, title };
+    case "goal":
+      return { body: input.args.length > 0 ? `Goal set: **${input.args.join(" ")}**.` : "No active goal. Set one with `/goal <objective>`.", payload: null, resultKind: "text", savedPath: null, snapshot: null, title };
+    case "loop":
+      return { body: "Started an autonomous plan→act→verify pass.", payload: null, resultKind: "snapshot", savedPath: null, snapshot: createQaSnapshot(input.conversationId ?? QA_CONVERSATION_ID, [{ id: "qa-loop-user", kind: "user", requestId: "qa-loop-request", text: `/loop ${input.args.join(" ")}` }, { id: "qa-loop-assistant", kind: "assistant", requestId: "qa-loop-request", text: "Loop pass complete: planned, acted, and verified the requested change." }]), title };
     case "workspace-info":
       return { body: "| Field | Value |\n|---|---|\n| Workspace | Codegraff GUI |\n| Branch | qa/mock-browser |\n| Indexed nodes | 1,284 |", payload: { createdAt: "2026-06-03T00:00:00Z", kind: "workspaceInfo", lastUpdated: "2026-06-03T12:00:00Z", nodeCount: 1284n, relationCount: 642n, workingDir: QA_WORKSPACE_PATH, workspaceId: "qa-codegraff-gui", workspacePath: QA_WORKSPACE_PATH }, resultKind: "workspaceInfo", savedPath: null, snapshot: null, title };
     case "workspace-status":
@@ -284,6 +296,8 @@ function mockInvokeCommand<T>(
         { id: `${conversationId}-assistant`, kind: "assistant", requestId: `${conversationId}-request`, text: "QA mock response with a bullet list:\n\n- Markdown bullets align correctly.\n- `inline code` stays readable.\n\n```ts\nconst theme = 'clean-modern';\n```\n\n[Codegraff](https://github.com/justrach/codegraff)" },
       ]) as T);
     }
+    case "read_workspace_file":
+      return Promise.resolve("// QA mock file contents\nexport const value = 1;\n" as T);
     case "list_mcp_servers":
       return Promise.resolve({ servers: [] } as T);
     case "pick_workspace":
@@ -665,6 +679,13 @@ export function openPathDefault(path: string): Promise<void> {
 
 export function openPathForEdit(path: string): Promise<void> {
   return invokeCommand("open_path_for_edit", { path });
+}
+
+export function readWorkspaceFile(
+  workspacePath: string,
+  path: string,
+): Promise<string> {
+  return invokeCommand("read_workspace_file", { workspacePath, path });
 }
 
 export function saveConversationLayout(

@@ -277,6 +277,12 @@ pub struct PromptSettingsDto {
     pub selected_model_id: Option<String>,
     pub selected_reasoning_effort: Option<String>,
     pub fast_enabled: bool,
+    /// Whether toggling fast actually changes harness behavior for the selected
+    /// provider. The harness only applies /fast on the codex provider (the
+    /// `responses` kind): it emits `service_tier:"priority"` there and reports
+    /// `applies:false` everywhere else. True only when the selected provider is
+    /// codex; the GUI greys out the toggle when this is false.
+    pub fast_applies: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -300,6 +306,9 @@ pub enum ProviderAuthMethodKindDto {
     AwsProfile,
     CodexDevice,
     CodegraffDevice,
+    /// Kimi Code device-code OAuth (`graff login kimi`). Kimi also accepts an
+    /// API key, so this is offered as a second auth method alongside `ApiKey`.
+    KimiDevice,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]

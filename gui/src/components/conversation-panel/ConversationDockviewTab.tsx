@@ -5,11 +5,11 @@ import {
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbList,
-  BreadcrumbPage,
 } from "@/components/ui/Breadcrumb";
 import { cn } from "@/utils/cn";
 
 import { BranchSwitcherMenu } from "./BranchSwitcherMenu";
+import { ProjectSwitcherMenu } from "./ProjectSwitcherMenu";
 import { useConversationHeaderState } from "./hooks/useConversationHeaderState";
 import type { ConversationDockviewTabProps } from "./types/conversationHeader";
 
@@ -23,15 +23,20 @@ export function ConversationDockviewTab({
     branchSearchInputRef,
     canCreateBranch,
     conversationTitle,
+    currentProjectLabel,
     filteredBranches,
     isBranchMenuOpen,
     isGitActionPending,
     isManagedChat,
+    isProjectChangePending,
+    projects,
     repoName,
+    selectedProjectPath,
     setBranchQuery,
     handleBranchCreate,
     handleBranchMenuOpenChange,
     handleBranchSelect,
+    handleProjectSelect,
   } = useConversationHeaderState(binding);
   const isSidebarVisible = useSidebarVisible();
   // When the sidebar is collapsed the tile sits flush against the window's
@@ -58,13 +63,28 @@ export function ConversationDockviewTab({
           <Breadcrumb className="min-w-0">
             <BreadcrumbList className="min-w-0 flex-nowrap">
               <BreadcrumbItem className="min-w-0">
-                <BreadcrumbPage className="pointer-events-none inline-flex min-w-0 items-center gap-1.5 text-xs font-medium text-foreground">
+                <div
+                  className="flex min-w-0 shrink items-center gap-1.5"
+                  onPointerDownCapture={(event) => {
+                    event.stopPropagation();
+                  }}
+                  onDragStartCapture={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                >
                   <GitFork
                     strokeWidth={2}
                     className="size-3 shrink-0 text-muted-foreground"
                   />
-                  <span className="truncate">{repoName}</span>
-                </BreadcrumbPage>
+                  <ProjectSwitcherMenu
+                    currentProjectLabel={repoName ?? currentProjectLabel}
+                    isBusy={isProjectChangePending}
+                    projects={projects}
+                    selectedProjectPath={selectedProjectPath}
+                    onSelectProject={handleProjectSelect}
+                  />
+                </div>
               </BreadcrumbItem>
 
               {branchName ? (

@@ -1,71 +1,44 @@
 name: sdk
 
-# Regenerate the TS + Python SDKs from `harness --schema` on every release tag,
-# so the SDKs never drift from the binary. Publishes to npm/PyPI when the
-# matching token secret is set; otherwise just uploads the generated SDKs as
-# build artifacts.
+# Publish the committed SDKs to npm + PyPI via OIDC trusted publishing (no
+# tokens) on every sdk-v* tag. Regenerate locally (python3 sdk/generate.py)
+# before tagging — this ships sdk/ as committed.
 on:
   push:
-    tags: ["v*"]
-  workflow_dispatch: {}
+    tags: ["sdk-v*"]
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
-  generate:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.16.0
-
-      - name: Build harness
-        run: zig build
-
-      - name: Generate SDKs from --schema
-        run: |
-          ./zig-out/bin/harness --schema > schema.json
-          python3 sdk/generate.py --schema schema.json
-
-      - name: Verify nothing drifted (generated == committed)
-        run: git diff --exit-code sdk/ || (echo "::error::SDKs are stale — run sdk/generate.py and commit" && exit 1)
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sdks
-          path: |
-            sdk/ts
-            sdk/py
-            schema.json
-
-      # --- Publish (only fires when the token secret exists) ---
-      - uses: actions/setup-node@v4
-        if: ${{ secrets.NPM_TOKEN != '' }}
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
-      - name: Publish TS SDK to npm
-        if: ${{ secrets.NPM_TOKEN != '' }}
-        working-directory: sdk/ts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
-          npm publish --access public
-
+      # PyPI first: if its trusted publisher isn't live, npm won't have shipped.
       - uses: actions/setup-python@v5
-        if: ${{ secrets.PYPI_TOKEN != '' }}
         with:
           python-version: "3.12"
-      - name: Publish Python SDK to PyPI
-        if: ${{ secrets.PYPI_TOKEN != '' }}
+      - name: Build + publish codegraff (PyPI, OIDC)
         working-directory: sdk/py
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
         run: |
-          python3 -m pip install build twine
-          sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#v}\"/" pyproject.toml
+          sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#sdk-v}\"/" pyproject.toml
+          python3 -m pip install --quiet build
           python3 -m build
-          python3 -m twine upload dist/*
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdk/py/dist
+          skip-existing: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Publish @codegraff/sdk (npm, OIDC + provenance)
+        working-directory: sdk/ts
+        run: |
+          npm install -g npm@latest
+          npm version "${GITHUB_REF_NAME#sdk-v}" --no-git-tag-version --allow-same-version
+          npm publish --access public

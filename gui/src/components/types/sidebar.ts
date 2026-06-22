@@ -54,13 +54,15 @@ export interface SidebarItemActionsMenuProps {
   dialogDescription: string;
   dialogTitle: string;
   menuAriaLabel: string;
-  onRemove: () => void;
+  onRemove: () => void | Promise<void>;
   onRename: (name: string | null) => Promise<void>;
   placeholder?: string;
   removeIcon: LucideIcon;
   removeLabel?: string;
   renameLabel?: string;
   allowEmptyName?: boolean;
+  removeConfirmTitle?: string;
+  removeConfirmDescription?: string;
 }
 
 export interface SidebarSettingsControlProps {

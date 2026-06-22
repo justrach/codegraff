@@ -7,7 +7,6 @@ import {
 } from "react";
 import { WTerm } from "@wterm/dom";
 
-import { useIsDarkTheme } from "@/hooks/useIsDarkTheme";
 import * as desktopClient from "@/services/desktop/client";
 
 import {
@@ -23,7 +22,6 @@ import {
 import type { TerminalPaneParams } from "../types/layout";
 import type { TerminalGridSize, TerminalStatus } from "../types/workspaceBoard";
 import {
-  applyTerminalAppearance,
   measureTerminalGridSize,
   normalizeTerminalSize,
   waitForStableTerminalSize,
@@ -33,7 +31,6 @@ export function useTerminalSession(
   params: TerminalPaneParams,
   containerRef: RefObject<HTMLDivElement | null>,
 ) {
-  const isDarkTheme = useIsDarkTheme();
   const terminalRef = useRef<WTerm | null>(null);
   const openedRef = useRef(false);
   const [restartNonce, setRestartNonce] = useState(0);
@@ -42,11 +39,14 @@ export function useTerminalSession(
     message: TERMINAL_CONNECTING_MESSAGE,
   });
   const terminalId = useMemo(() => {
-    return createTerminalSessionId({
-      workspacePath: params.workspacePath,
-      conversationId: params.conversationId,
-    });
-  }, [params.conversationId, params.workspacePath]);
+    return createTerminalSessionId(
+      {
+        workspacePath: params.workspacePath,
+        conversationId: params.conversationId,
+      },
+      params.terminalKey,
+    );
+  }, [params.conversationId, params.terminalKey, params.workspacePath]);
 
   useEffect(() => {
     const handleRestart = (event: Event) => {
@@ -163,10 +163,6 @@ export function useTerminalSession(
         },
       });
       terminalRef.current = terminal;
-      applyTerminalAppearance(
-        terminal.element,
-        document.documentElement.classList.contains("dark"),
-      );
       await terminal.init();
 
       cleanupListeners = await Promise.all([
@@ -275,15 +271,6 @@ export function useTerminalSession(
       terminalRef.current = null;
     };
   }, [containerRef, params.workspacePath, restartNonce, terminalId]);
-
-  useEffect(() => {
-    const element = terminalRef.current?.element;
-    if (element == null) {
-      return;
-    }
-
-    applyTerminalAppearance(element, isDarkTheme);
-  }, [isDarkTheme]);
 
   return { status };
 }

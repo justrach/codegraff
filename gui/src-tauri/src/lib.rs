@@ -1,5 +1,6 @@
 mod commands;
 mod cli_install;
+mod debug_bridge;
 mod desktop_open;
 pub mod dto;
 mod forge_config_home;
@@ -33,7 +34,8 @@ use commands::{
     list_commands, list_mcp_servers, list_providers, login_mcp_server, logout_mcp_server,
     open_external_url, open_in_target, open_path_default, open_path_for_edit, open_path_in_target,
     open_workspace,
-    pick_directory, pick_workspace, push_git_branch, quick_start_project, reload_mcp_servers,
+    pick_directory, pick_workspace, push_git_branch, quick_start_project, read_workspace_file,
+    reload_mcp_servers,
     remove_mcp_server, remove_provider, rename_saved_workspace, rename_workspace, respond_followup,
     run_slash_command, save_conversation_layout, select_conversation, send_prompt,
     image_thumbnail, save_pasted_image, set_active_agent, set_effort, set_fast, start_new_chat, start_provider_auth, stop_prompt, terminal_close,
@@ -59,7 +61,9 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
     #[cfg(debug_assertions)]
     let builder = builder.plugin(
         tauri_plugin_log::Builder::default()
@@ -87,6 +91,12 @@ pub fn run() {
             ))));
             // First run: install the `codegraff` launcher command on PATH (macOS).
             cli_install::ensure_cli_symlink(app);
+            #[cfg(debug_assertions)]
+            {
+                let bridge = debug_bridge::DebugBridge::new(app.handle().clone());
+                app.manage(bridge.clone());
+                bridge.start();
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -149,6 +159,7 @@ pub fn run() {
             open_external_url,
             open_path_default,
             open_path_for_edit,
+            read_workspace_file,
             save_conversation_layout,
             get_conversation_layout,
             create_saved_workspace,
@@ -160,7 +171,8 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_close,
-            drain_pending_open
+            drain_pending_open,
+            debug_bridge::cg_debug_eval_result
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

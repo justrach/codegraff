@@ -127,6 +127,11 @@ pub struct ConversationViewSnapshotDto {
     pub active_request_ids: Vec<String>,
     pub request_agent_ids: HashMap<String, String>,
     pub todos: Vec<SessionTodoDto>,
+    /// Steering objective for this chat, set via `/goal`. Surfaced in the UI as
+    /// the goal chip above the composer. Omitted from the payload when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub goal: Option<String>,
     pub followup: Option<super::followup::FollowupRequestDto>,
 }
 
@@ -180,6 +185,12 @@ pub struct SessionSnapshotDto {
     pub visible_active_request_ids: Vec<String>,
     pub visible_request_agent_ids: HashMap<String, String>,
     pub visible_todos: Vec<SessionTodoDto>,
+    /// Steering objective of the active chat, set via `/goal`. Mirrors
+    /// `ConversationViewSnapshotDto::goal` for the visible conversation. Omitted
+    /// from the payload when no goal is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub visible_goal: Option<String>,
     pub visible_followup: Option<super::followup::FollowupRequestDto>,
     pub conversation_views: Vec<ConversationViewSnapshotDto>,
     pub ui_error: Option<String>,

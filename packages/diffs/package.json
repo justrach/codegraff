@@ -1,0 +1,46 @@
+{
+  "name": "@codegraff/diffs",
+  "version": "0.1.0",
+  "description": "Lightweight diff and file-change rendering for codegraff (no Shiki).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "bun@1.3.10",
+  "files": [
+    "dist",
+    "src/style.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
+    },
+    "./style.css": "./src/style.css"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "typescript": "~6.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

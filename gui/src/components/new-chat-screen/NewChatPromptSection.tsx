@@ -39,10 +39,12 @@ export function NewChatPromptSection({
     isPlanningMode,
     isRequestActive,
     isSendingPrompt,
+    isUltraMode,
     promptSettings,
     promptDraft,
     setPlanningMode,
     setPromptDraft,
+    setUltraMode,
     stopPrompt,
     submitPrompt,
     updatePromptSettings,
@@ -68,6 +70,9 @@ export function NewChatPromptSection({
     followupRequest == null &&
     interrupt == null &&
     lastAssistant != null;
+  const promptHistory = messages
+    .filter((message) => message.kind === "user")
+    .map((message) => message.text);
   const handleSubmit = useCallback(async () => {
     if (trySubmitAsCommand(promptDraft)) {
       return;
@@ -130,13 +135,16 @@ export function NewChatPromptSection({
               : "Ask anything…"
         }
         isPlanningMode={isPlanningMode}
+        isUltraMode={isUltraMode}
         promptDraft={promptDraft}
+        promptHistory={promptHistory}
         promptSettings={promptSettings}
         isInputDisabled={!hasCurrentWorkspace}
         binding={binding}
         workspacePath={workspacePath}
         onCommandSelect={handleCommandSelect}
         setPlanningMode={setPlanningMode}
+        setUltraMode={setUltraMode}
         setPromptDraft={setPromptDraft}
         stopPrompt={stopPrompt}
         submitPrompt={handleSubmit}

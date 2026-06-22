@@ -2,6 +2,12 @@
   background: var(--pane-surface);
 }
 
+/* The open/close size glide is driven imperatively from ChatTile via dockview's
+   group `setSize` API (see ./paneResizeAnimation.ts), tweening the real grid
+   layout per frame so chat and the new pane reach their final sizes together.
+   A CSS transition on `.dv-view` is intentionally NOT used: dockview frequently
+   recreates those view elements on layout changes (so there is no baseline to
+   transition from), and a transition would also fight the per-frame size writes. */
 .chat-tile-inner-dock {
   --chat-tile-header-height: 2.375rem;
   --chat-tile-header-padding-x: 0.375rem;

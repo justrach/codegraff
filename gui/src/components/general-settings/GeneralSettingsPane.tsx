@@ -8,6 +8,7 @@ import { PaneSurface } from "@/components/ui/PaneSurface";
 import { cn } from "@/utils/cn";
 
 import { THEME_PRESETS } from "./constants/themePresets";
+import { UpdatesCard } from "./UpdatesCard";
 
 const MODE_OPTIONS: { value: ThemeMode; label: string; icon: typeof SunIcon }[] =
   [
@@ -77,6 +78,8 @@ export function GeneralSettingsPane() {
             </div>
           </CardContent>
         </Card>
+
+        <UpdatesCard />
       </div>
     </PaneSurface>
   );

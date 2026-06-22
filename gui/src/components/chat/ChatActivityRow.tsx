@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState, type ComponentType } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   Bot,
   ChevronDown,
   ChevronRight,
   FileText,
+  GitPullRequest,
   Globe,
   ListTodo,
-  Loader2,
   Map,
   MessageCircle,
   Pencil,
@@ -21,6 +21,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "../ui/Collapsible";
+import { ThinkingGlyph } from "@/components/ui/ThinkingGlyph";
 import { cn } from "@/utils/cn";
 
 import {
@@ -32,49 +33,67 @@ import type {
   ActivityOperationRowProps,
   ChatActivityRowProps,
 } from "./types/chatComponents";
+import type { ActivityOperation } from "./types/chatThread";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { formatOperationLabel } from "./utils/chatActivity";
+import { classifyUnknownToolName } from "./utils/classifyActivityResult";
 import { ChatInlineText } from "./ChatInlineText";
 import { ChatStatusLabel } from "./ChatStatusLabel";
 import { ActivityResultRenderer } from "./activity-results/ActivityResultRenderer";
 import { getActivityResultModel } from "./utils/getActivityResultModel";
 
 const activityTriggerClassName = cn(
-  "group inline-flex min-w-0 items-center gap-1.5 text-left transition hover:text-foreground",
+  "group flex min-w-0 items-center gap-1.5 text-left transition hover:text-foreground",
   CHAT_MUTED_TEXT_CLASS,
 );
 
 const activityTextClassName = cn(
-  "inline-flex min-w-0 items-center",
+  "flex min-w-0 items-center",
   CHAT_MUTED_TEXT_CLASS,
 );
 
-function operationIcon(kind: string): ComponentType<{ className?: string }> {
-  switch (kind) {
+function renderUnknownToolIcon(name: string, className: string): ReactNode {
+  switch (classifyUnknownToolName(name)) {
+    case "web":
+      return <Globe className={className} />;
+    case "github":
+      return <GitPullRequest className={className} />;
+    default:
+      return <Activity className={className} />;
+  }
+}
+
+function renderOperationIcon(
+  operation: ActivityOperation,
+  className: string,
+): ReactNode {
+  switch (operation.detail.kind) {
     case "file_read":
-      return FileText;
+      return <FileText className={className} />;
     case "file_update":
-      return Pencil;
+      return <Pencil className={className} />;
     case "shell":
-      return Terminal;
+      return <Terminal className={className} />;
     case "search":
     case "codebase_search":
-      return Search;
+      return <Search className={className} />;
     case "fetch":
-      return Globe;
+      return <Globe className={className} />;
     case "followup":
-      return MessageCircle;
+      return <MessageCircle className={className} />;
     case "plan":
-      return Map;
+      return <Map className={className} />;
     case "skill":
-      return Sparkles;
+      return <Sparkles className={className} />;
     case "task":
-      return Bot;
+      return <Bot className={className} />;
     case "todo_read":
     case "todo_write":
-      return ListTodo;
+      return <ListTodo className={className} />;
+    case "unknown":
+      return renderUnknownToolIcon(operation.name, className);
     default:
-      return Activity;
+      return <Activity className={className} />;
   }
 }
 
@@ -107,14 +126,29 @@ function ActivityOperationRow({
   const isExpandable = result != null;
   const label = formatOperationLabel(operation, workspacePath);
   const isCommand = operation.detail.kind === "shell";
-  const Icon = operationIcon(operation.detail.kind);
+  // Per-node live status, from what the stream gives us today: a node is
+  // running until its tool_result lands, then done or errored.
+  const status = !operation.completed
+    ? "running"
+    : operation.isError
+      ? "error"
+      : "done";
+  const icon = renderOperationIcon(
+    operation,
+    cn(
+      "size-3.5 shrink-0",
+      status === "running" && "animate-pulse text-[color:var(--accent)]",
+      status === "error" && "text-destructive",
+      status === "done" && "text-muted-foreground/60",
+    ),
+  );
 
   const content = (
     <>
-      <Icon className="size-3.5 shrink-0 text-muted-foreground/60" />
-      <span className="min-w-0">
+      {icon}
+      <span className="min-w-0 flex-1">
         {isCommand ? (
-          <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+          <code className="inline-block max-w-full truncate align-middle rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
             {label}
           </code>
         ) : (
@@ -161,18 +195,25 @@ export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
   );
   const previousRunningRef = useRef(item.isRunning);
 
+  // With stable keys (ChatWorkRow) this effect now actually fires on the
+  // running→idle transition instead of being wiped by a remount. On completion
+  // we preserve the user's view — keep the activity open (don't yank the results
+  // they were reading) and force-open on error so failures stay visible. A
+  // step starting to run auto-expands to show live progress.
   useEffect(() => {
+    const wasRunning = previousRunningRef.current;
+    previousRunningRef.current = item.isRunning;
     if (item.isThinking) {
       return;
     }
 
-    if (previousRunningRef.current && item.isRunning === false) {
-      setOpen(item.hasError);
-    } else if (previousRunningRef.current === false && item.isRunning) {
+    if (wasRunning && !item.isRunning) {
+      if (item.hasError) {
+        setOpen(true);
+      }
+    } else if (!wasRunning && item.isRunning) {
       setOpen(true);
     }
-
-    previousRunningRef.current = item.isRunning;
   }, [item.hasError, item.isRunning, item.isThinking]);
 
   if (item.isThinking) {
@@ -181,7 +222,7 @@ export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
         <article className="grid min-w-0 max-w-3xl gap-1">
           <CollapsibleTrigger className={activityTriggerClassName}>
             {item.isRunning ? (
-              <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+              <ThinkingGlyph className="shrink-0 text-xs text-muted-foreground" />
             ) : null}
             <ChatStatusLabel text={item.summary} />
             <ActivityChevron
@@ -206,7 +247,7 @@ export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
       <article className="grid min-w-0 max-w-3xl gap-1">
         <CollapsibleTrigger className={activityTriggerClassName}>
           {item.isRunning ? (
-            <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+            <ThinkingGlyph className="shrink-0 text-xs text-muted-foreground" />
           ) : null}
           <ChatStatusLabel text={item.summary} />
           <ActivityChevron

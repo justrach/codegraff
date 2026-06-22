@@ -71,6 +71,8 @@ var use_color = false; // stdout is a TTY and NO_COLOR unset → enables color +
 var show_timing = false;
 var show_cost = false;
 var json_mode = false; // --json: structured JSONL events on stdout instead of human text
+var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
+var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
 var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes
 var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
 
@@ -79,17 +81,24 @@ var unattended = false; // -p one-shot: no human to prompt; unapproved tool call
 const schema_protocol_json =
     \\{
     \\  "transport": "newline-delimited JSON over stdin/stdout (--json)",
-    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"name\":\"provider|provider/model|model\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"}, {\"type\":\"set_effort\",\"level\":\"low|medium|high\"}, and {\"type\":\"set_fast\",\"on\":true} are live control requests acked by model/compact/mode/agent/effort/fast events. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
+    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"model\":\"gpt-5.5\",\"provider\":\"codex\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"}, {\"type\":\"set_effort\",\"level\":\"low|medium|high\"}, and {\"type\":\"set_fast\",\"on\":true} are live control requests acked by model/compact/mode/agent/effort/fast/ultracode events. For compatibility, set_model also accepts legacy {\"name\":\"provider model|model\"}. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
     \\  "score_request": "{\"type\":\"score\",\"prompt_sha\":\"<16 hex>\",\"score\":0.7,\"notes\":\"...\",\"parent_sha\":\"<16 hex, optional>\"} appends an evaluation record for an agent/prompt variant to harness.trajectory.jsonl (the append-only DGM-style archive; prompt_sha = first 8 bytes of SHA-256 of the system prompt, hex; parent_sha records which prompt this variant was mutated from — the lineage edge DGM parent selection counts children with) and acks with a score event",
     \\  "events": [
     \\    {"type": "text", "text": "assistant text delta"},
     \\    {"type": "reasoning", "text": "reasoning/thinking delta (GUI shows a collapsible Thinking block)"},
+    \\    {"type": "started", "provider": "provider", "model": "model"},
+    \\    {"type": "model_call_started", "provider": "provider", "model": "model"},
+    \\    {"type": "model_call_finished", "provider": "provider", "model": "model", "ok": true, "ms": 0},
     \\    {"type": "tool_call", "name": "tool", "input": {}},
+    \\    {"type": "tool_call_started", "name": "tool", "input": {}},
+    \\    {"type": "tool_rejected", "name": "tool", "reason": "budget|duplicate", "input": {}, "message": "..."},
     \\    {"type": "ask_user", "call_id": "...", "question": "...", "input": {"question": "...", "options": ["..."]}},
     \\    {"type": "tool_result", "name": "tool", "is_error": false, "text": "..."},
-    \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0},
+    \\    {"type": "tool_call_finished", "name": "tool", "is_error": false, "ms": 0},
+    \\    {"type": "finalizing"},
+    \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0, "complete": true, "metadata_complete": true},
     \\    {"type": "system_prompt", "ok": true, "append": false, "chars": 0},
-    \\    {"type": "model", "ok": true, "id": "provider", "name": "model", "context": 0, "note": "context kept"},
+    \\    {"type": "model", "ok": true, "provider": "provider", "model": "model", "context": 0, "note": "context kept"},
     \\    {"type": "compact", "ok": true, "chars": 0},
     \\    {"type": "mode", "ok": true, "mode": "plan"},
     \\    {"type": "agent", "ok": true, "id": "reviewer", "chars": 0},
@@ -111,7 +120,7 @@ const schema_serve_json =
     \\  "endpoints": [
     \\    {"method": "GET", "path": "/healthz", "description": "liveness + version, no auth"},
     \\    {"method": "GET", "path": "/v1/schema", "description": "this schema document"},
-    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
+    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
     \\    {"method": "POST", "path": "/v1/sessions/{id}", "description": "body is ONE stdio-protocol request object (user / set_system_prompt / set_model / compact / set_mode / set_agent / score / answer); non-answer requests stream application/x-ndjson events until the request's terminal event (turn/error, or the request-specific ack); answer requests return JSON ack while the original user stream continues; one non-answer request in flight per session at a time"},
     \\    {"method": "DELETE", "path": "/v1/sessions/{id}", "description": "graceful close: waits for any in-flight request, then EOFs the child's stdin"}
     \\  ]
@@ -127,6 +136,8 @@ const schema_flags_json =
     \\  {"flag": "--system-prompt", "arg": "text", "description": "replace the built-in system prompt (cwd project-instructions file is still appended)"},
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
     \\  {"flag": "--json", "arg": null, "description": "structured stdio protocol (JSON in, JSONL events out)"},
+    \\  {"flag": "--max-tool-calls", "arg": "N", "description": "hard per-turn root tool-call budget; rejected calls emit tool_rejected/tool_result"},
+    \\  {"flag": "--dedupe-tool-calls", "arg": null, "description": "reject duplicate root tool name+normalized-input calls per turn"},
     \\  {"flag": "--no-telemetry", "arg": null, "description": "disable anonymous OTEL usage telemetry for this run"}
     \\]
 ;
@@ -158,6 +169,7 @@ const price_table = [_]ModelPrice{
     .{ .name = "kimi-k2.5", .in = 0.6, .out = 3, .cache = 0.06 },
     .{ .name = "grok-4.3", .in = 1.25, .out = 2.5, .cache = 0.3 },
     .{ .name = "grok-build", .in = 1, .out = 2, .cache = 0.1 },
+    .{ .name = "glm-5.2", .in = 1, .out = 3.2, .cache = 0.1 },
     .{ .name = "glm-5", .in = 1, .out = 3.2, .cache = 0.1 },
     .{ .name = "glm-4.7", .in = 0.6, .out = 2.2, .cache = 0.06 },
     .{ .name = "glm-4.5", .in = 0.6, .out = 2.2, .cache = 0.06 },
@@ -260,8 +272,12 @@ const provider_specs = [_]ProviderSpec{
     .{ .id = "xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
     // OpenAI-format direct providers (matched to graff's provider.json).
     .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/chat/completions", .env_key = "KIMI_API_KEY", .default_model = "kimi-k2.7" },
+    // moonshot: the regular Kimi Open Platform (pay-as-you-go API key, not the
+    // Coding plan). OpenAI-compatible; .cn host for China. kimi-latest tracks
+    // the newest Kimi. Same /v1/models discovery applies if wired later.
+    .{ .id = "moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
     .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
-    .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5" },
+    .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
     // — it's the OAuth access token read from ~/.codex/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
@@ -280,6 +296,11 @@ const ModelInfo = struct {
     name: []const u8,
     context: u64,
 };
+
+// Codex/ChatGPT backend: gpt-5.x window is 272k (codex-rs models.json); budget
+// 270k so compaction (80% -> 216k) fires just under the hard cap and absorbs our
+// token under-count (a turn displaying 270k still 400'd). Not the API's 1.05M.
+const codex_context_window: u64 = 270_000;
 
 const model_table = [_]ModelInfo{
     .{ .provider = "anthropic", .name = "claude-fable-5", .context = 1_000_000 },
@@ -306,7 +327,7 @@ const model_table = [_]ModelInfo{
     .{ .provider = "xiaomi", .name = "mimo-v2.5", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2.5-pro-ultraspeed", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2-flash", .context = 262_144 },
-    .{ .provider = "codex", .name = "gpt-5.5", .context = 400_000 },
+    .{ .provider = "codex", .name = "gpt-5.5", .context = codex_context_window },
     // codegraff gateway (its claude aliases use dots, so they don't collide
     // with the anthropic rows above)
     .{ .provider = "codegraff", .name = "claude-opus-4.8", .context = 1_000_000 },
@@ -316,14 +337,17 @@ const model_table = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "gpt-5.5", .context = 400_000 },
     .{ .provider = "codegraff", .name = "kimi-k2.6", .context = 262_144 },
     .{ .provider = "codegraff", .name = "grok-build", .context = 256_000 },
+    .{ .provider = "codegraff", .name = "glm-5.2", .context = 204_800 },
     .{ .provider = "codegraff", .name = "mimo-v2.5", .context = 128_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5-pro", .context = 128_000 },
     // kimi: the Kimi for Coding plan endpoint accepts versioned ids (and the
     // `kimi-for-coding` alias), all routed to the latest coding model. We expose
     // `kimi-k2.7` — its current release. Verified via /coding/v1 2026-06-16.
     .{ .provider = "kimi", .name = "kimi-k2.7", .context = 262_144 },
+    .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
+    .{ .provider = "zai", .name = "glm-5.2", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-5", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.7", .context = 204_800 },
     .{ .provider = "zai", .name = "glm-4.5", .context = 131_072 },
@@ -334,11 +358,15 @@ const default_context = 200_000;
 /// Context window for a model as served by a specific provider; falls back
 /// to any provider's row for the name, then to the conservative default.
 fn contextFor(provider_id: []const u8, model: []const u8) u64 {
+    const is_codex = std.mem.eql(u8, provider_id, "codex");
     for (model_table) |m| {
         if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model)) return m.context;
     }
+    // Name-only fallback: another provider's row may advertise a far larger
+    // window (e.g. the OpenAI API's gpt-5.5 = 1.05M) that the Codex backend
+    // can't honor — cap codex routes at codex_context_window.
     for (model_table) |m| {
-        if (std.mem.eql(u8, m.name, model)) return m.context;
+        if (std.mem.eql(u8, m.name, model)) return if (is_codex) @min(m.context, codex_context_window) else m.context;
     }
     return default_context;
 }
@@ -348,11 +376,33 @@ fn contextFor(provider_id: []const u8, model: []const u8) u64 {
 /// a key/login available so `/model sonnet` lands on a usable provider. Returns
 /// null when nothing matches (caller falls back to the query verbatim so the
 /// providerFor claude*/gateway fallback still applies).
+fn normalizeModelAlias(dst: *[128]u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    for (s) |c| {
+        if (c == '-' or c == '_' or c == ' ') continue;
+        if (n >= dst.len) break;
+        dst[n] = std.ascii.toLower(c);
+        n += 1;
+    }
+    return dst[0..n];
+}
+
+fn modelAliasEquals(name: []const u8, query: []const u8) bool {
+    var nb: [128]u8 = undefined;
+    var qb: [128]u8 = undefined;
+    return std.mem.eql(u8, normalizeModelAlias(&nb, name), normalizeModelAlias(&qb, query));
+}
+
 fn resolveModelName(keys: Keys, query: []const u8) ?[]const u8 {
     for (model_table) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
+    for (model_table) |m| if (modelAliasEquals(m.name, query)) return m.name;
+    var qbuf: [128]u8 = undefined;
+    const qnorm = normalizeModelAlias(&qbuf, query);
     var fallback: ?[]const u8 = null;
     for (model_table) |m| {
-        if (std.ascii.indexOfIgnoreCase(m.name, query) == null) continue;
+        var nbuf: [128]u8 = undefined;
+        const nnorm = normalizeModelAlias(&nbuf, m.name);
+        if (std.ascii.indexOfIgnoreCase(m.name, query) == null and std.mem.indexOf(u8, nnorm, qnorm) == null) continue;
         if (keys.get(m.provider) != null) return m.name;
         if (fallback == null) fallback = m.name;
     }
@@ -684,11 +734,12 @@ const schema_version = "0.4";
 /// the GUI settings page so its provider list stays tied to the harness).
 fn providerDisplayName(id: []const u8) []const u8 {
     const names = .{
-        .{ "codegraff", "Codegraff" }, .{ "anthropic", "Anthropic" },
-        .{ "deepseek", "DeepSeek" },   .{ "openai", "OpenAI" },
-        .{ "minimax", "MiniMax" },     .{ "xiaomi", "Xiaomi" },
-        .{ "kimi", "Kimi" },           .{ "xai", "xAI" },
-        .{ "zai", "Z.AI" },            .{ "codex", "Codex (ChatGPT)" },
+        .{ "codegraff", "Codegraff" },   .{ "anthropic", "Anthropic" },
+        .{ "deepseek", "DeepSeek" },     .{ "openai", "OpenAI" },
+        .{ "minimax", "MiniMax" },       .{ "xiaomi", "Xiaomi" },
+        .{ "kimi", "Kimi" },             .{ "xai", "xAI" },
+        .{ "moonshot", "Moonshot" },     .{ "zai", "Z.AI" },
+        .{ "codex", "Codex (ChatGPT)" },
     };
     inline for (names) |n| {
         if (std.mem.eql(u8, id, n[0])) return n[1];
@@ -703,6 +754,21 @@ fn providerLoginKind(id: []const u8) []const u8 {
     if (std.mem.eql(u8, id, "codegraff")) return "codegraff_device";
     if (std.mem.eql(u8, id, "codex")) return "codex_device";
     return "api_key";
+}
+
+/// Whether a (kind,id,model) combo should carry a top-level reasoning_effort
+/// hint. Effort-honoring providers: the Responses API (codex) and the
+/// OpenAI-compatible gateways we know normalize it (codegraff, deepseek, kimi).
+/// Grok models reject the hint even through the codegraff gateway, so they are
+/// excluded up front (mirrors how opencode gates effort per-model) — the
+/// reactive drop-and-retry in request() still covers any other model that
+/// turns out to reject it.
+fn providerTakesEffort(kind: Provider.Kind, id: []const u8, model: []const u8) bool {
+    if (std.mem.startsWith(u8, model, "grok")) return false;
+    return kind == .responses or
+        std.mem.eql(u8, id, "codegraff") or
+        std.mem.eql(u8, id, "deepseek") or
+        std.mem.eql(u8, id, "kimi");
 }
 
 fn emitSchema(w: *Io.Writer) !void {
@@ -821,11 +887,18 @@ const Keys = struct {
     /// a key wins (spec order breaks ties). Unknown claude* models go to
     /// Anthropic; any other unknown model goes to the codegraff gateway.
     fn providerFor(keys: Keys, model: []const u8) error{MissingKey}!Provider {
-        for (provider_specs, keys.values) |spec, value| {
-            const key = value orelse continue;
-            for (model_table) |m| {
-                if (std.mem.eql(u8, m.provider, spec.id) and std.mem.eql(u8, m.name, model))
-                    return keys.build(spec, key, model);
+        // Prefer a direct provider the user keyed over the codegraff gateway: the
+        // gateway proxies almost every model, so a low gateway balance would
+        // otherwise block models the user can serve with their own key. Pass 1
+        // skips the gateway (direct keys win); pass 2 lets it back in as fallback.
+        for ([_]bool{ false, true }) |allow_gateway| {
+            for (provider_specs, keys.values) |spec, value| {
+                const key = value orelse continue;
+                if (std.mem.eql(u8, spec.id, "codegraff") != allow_gateway) continue;
+                for (model_table) |m| {
+                    if (std.mem.eql(u8, m.provider, spec.id) and std.mem.eql(u8, m.name, model))
+                        return keys.build(spec, key, model);
+                }
             }
         }
         const fallback_id: []const u8 = if (std.mem.startsWith(u8, model, "claude")) "anthropic" else "codegraff";
@@ -1361,6 +1434,203 @@ fn promptFingerprint(prompt: []const u8) [16]u8 {
     var d: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(prompt, &d, .{});
     return std.fmt.bytesToHex(d[0..8].*, .lower);
+}
+
+// ── Subagent cards (#51) ───────────────────────────────────────────────────
+//
+// When the model fans out parallel subagents (several `subagent` calls in one
+// response, or a `workflow` phase), each child runs on a pool thread with no
+// stdout of its own (Agent.out == null). Instead of the old bare
+// "[label] started/done" lines, every subagent now renders a compact card —
+// a sprite, a stable id, the agent label, and a one-line activity — and on
+// completion persists its full report under .graff/subagents/<id>.md so the
+// run can be inspected from the terminal (the card prints the inspect: path).
+//
+// The cards are append-only and each card is built as one string then handed
+// to a single std.debug.print (std serializes the stderr mutex), so parallel
+// children never interleave mid-card. Box width is clamped to the terminal so
+// narrow terminals degrade to a readable column. Execution is unchanged.
+
+/// Monotonic counter feeding the per-subagent ordinal in its stable id.
+var g_subagent_seq: std.atomic.Value(u32) = .init(0);
+
+const subagents_dir = ".graff/subagents";
+
+/// A short pool of distinct sprites, picked by id hash so sibling subagents in
+/// a fan-out tend to get different faces. Plain text when color is off (no
+/// emoji width games to lose in a redirected/CI log).
+fn subagentSprite(id_seq: u32) []const u8 {
+    if (!use_color) return "*";
+    const faces = [_][]const u8{ "🐢", "🦊", "🐙", "🦉", "🐝", "🦀", "🐬", "🦫" };
+    return faces[id_seq % faces.len];
+}
+
+/// Stable identifier for a subagent run: "sa-<ordinal>-<8 hex of label+prompt>".
+/// Stable across a session for a given (label, prompt) at a given ordinal, and
+/// unique because the ordinal is monotonic — usable as the detail filename.
+fn subagentId(buf: []u8, ordinal: u32, label: []const u8, prompt: []const u8) []const u8 {
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    h.update(label);
+    h.update("\x00");
+    h.update(prompt);
+    var d: [32]u8 = undefined;
+    h.final(&d);
+    const hex = std.fmt.bytesToHex(d[0..4].*, .lower);
+    return std.fmt.bufPrint(buf, "sa-{d:0>3}-{s}", .{ ordinal, hex }) catch buf[0..0];
+}
+
+/// Render the launch card for a subagent to stderr as one block. `kind` is
+/// "subagent" or "workflow_task"; `activity` is the one-line task preview.
+fn subagentLaunchCard(arena: Allocator, id: []const u8, sprite: []const u8, label: []const u8, kind: []const u8, activity: []const u8) void {
+    if (json_mode) return; // SDK consumers get structured events, not TUI cards
+    const cols = termCols();
+    // Inner width: clamp to the terminal, but keep cards readable and never
+    // wider than a comfortable card. -2 leaves room for the box borders.
+    const inner: usize = @min(@max(cols, 24) - 2, 58);
+    const tag = if (std.mem.eql(u8, kind, "workflow_task")) "workflow" else "subagent";
+    var aw: Io.Writer.Allocating = .init(arena);
+    const w = &aw.writer;
+    // Header line carries the sprite (kept outside the box so emoji width can't
+    // skew the borders) plus the agent label and its stable id.
+    const sep = if (use_color) "·" else "-";
+    w.print("  {s} {s}{s}{s} {s}{s} {s} [{s}]{s}\n", .{
+        sprite, style.bold, label, style.reset, style.dim, sep, tag, id, style.reset,
+    }) catch return;
+    boxRule(w, inner, .top);
+    boxLine(w, inner, if (use_color) "▸ " else "> ", activity);
+    boxRule(w, inner, .bottom);
+    std.debug.print("{s}", .{aw.writer.buffered()});
+}
+
+/// Render the completion card: status, elapsed, tools, and the inspect: path.
+fn subagentDoneCard(arena: Allocator, id: []const u8, sprite: []const u8, label: []const u8, ok: bool, run_ms: i64, tools: []const u8, detail_path: ?[]const u8) void {
+    if (json_mode) return;
+    const cols = termCols();
+    const inner: usize = @min(@max(cols, 24) - 2, 58);
+    const mark = if (ok) (if (use_color) "✓ done" else "done") else (if (use_color) "✗ failed" else "failed");
+    const mark_style = if (ok) style.green else style.red;
+    var aw: Io.Writer.Allocating = .init(arena);
+    const w = &aw.writer;
+    const sep = if (use_color) "·" else "-";
+    w.print("  {s} {s}{s}{s} {s}{s}{s} {s}{s} {d}ms [{s}]{s}\n", .{
+        sprite,     style.bold, label,       style.reset,
+        mark_style, mark,       style.reset, style.dim,
+        sep,        run_ms,     id,          style.reset,
+    }) catch return;
+    boxRule(w, inner, .top);
+    const tool_line = if (tools.len > 0)
+        std.fmt.allocPrint(arena, "tools: {s}", .{tools}) catch "tools: (n/a)"
+    else
+        "tools: (none)";
+    const bullet = if (use_color) "· " else "- ";
+    boxLine(w, inner, bullet, tool_line);
+    if (detail_path) |p|
+        boxLine(w, inner, bullet, std.fmt.allocPrint(arena, "inspect: {s}", .{p}) catch p);
+    boxRule(w, inner, .bottom);
+    std.debug.print("{s}", .{aw.writer.buffered()});
+}
+
+const BoxEdge = enum { top, bottom };
+
+/// One horizontal box rule of `inner` light box-drawing dashes. ASCII '+---+'
+/// when color (and thus likely Unicode-friendly rendering) is off.
+fn boxRule(w: *Io.Writer, inner: usize, edge: BoxEdge) void {
+    const corners = if (use_color)
+        (if (edge == .top) [2][]const u8{ "╭", "╮" } else [2][]const u8{ "╰", "╯" })
+    else
+        [2][]const u8{ "+", "+" };
+    const dash = if (use_color) "─" else "-";
+    w.print("  {s}{s}", .{ style.dim, corners[0] }) catch return;
+    var i: usize = 0;
+    while (i < inner) : (i += 1) w.writeAll(dash) catch return;
+    w.print("{s}{s}\n", .{ corners[1], style.reset }) catch return;
+}
+
+/// One box content row: "│ <prefix><text…> │", text clamped (UTF-8 safe) to the
+/// inner width so the right border lands in the same column every row. The
+/// closing border is omitted when the text was truncated (a trailing ellipsis
+/// reads cleaner than a misaligned border under variable-width glyphs).
+fn boxLine(w: *Io.Writer, inner: usize, prefix: []const u8, text: []const u8) void {
+    const bar = if (use_color) "│" else "|";
+    // One column of padding inside each border.
+    const budget = if (inner >= 2) inner - 2 else 0;
+    const flat = collapseWs(text);
+    const want = if (prefix.len + flat.len <= budget) flat else utf8Prefix(flat, if (budget > prefix.len + 1) budget - prefix.len - 1 else 0);
+    const truncated = want.len != flat.len;
+    w.print("  {s}{s}{s} {s}{s}", .{ style.dim, bar, style.reset, prefix, want }) catch return;
+    if (truncated) w.writeAll(if (use_color) "…" else "~") catch return;
+    // Pad to the right border using the byte length as an approximation; the
+    // border is decorative, so a few off columns under wide glyphs are benign.
+    const used = prefix.len + want.len + (if (truncated) @as(usize, 1) else 0);
+    if (used < budget) {
+        var i: usize = used;
+        while (i < budget) : (i += 1) w.writeByte(' ') catch return;
+    }
+    w.print(" {s}{s}{s}\n", .{ style.dim, bar, style.reset }) catch return;
+}
+
+/// Collapse every run of whitespace (spaces, newlines, tabs) to a single space
+/// and trim the ends, for a tidy one-line activity preview. Copies into a small
+/// thread-local buffer (activity lines are short, and each subagent renders on
+/// its own pool thread, so the threadlocal keeps siblings from racing).
+fn collapseWs(s: []const u8) []const u8 {
+    const S = struct {
+        threadlocal var buf: [512]u8 = undefined;
+    };
+    var n: usize = 0;
+    var prev_space = false;
+    for (s) |c| {
+        const is_ws = c == ' ' or c == '\n' or c == '\r' or c == '\t';
+        if (is_ws) {
+            if (!prev_space and n > 0 and n < S.buf.len) {
+                S.buf[n] = ' ';
+                n += 1;
+            }
+            prev_space = true;
+        } else {
+            if (n < S.buf.len) {
+                S.buf[n] = c;
+                n += 1;
+            }
+            prev_space = false;
+        }
+    }
+    return std.mem.trimEnd(u8, S.buf[0..n], " ");
+}
+
+/// Persist a subagent's final report + metadata under .graff/subagents/<id>.md
+/// and return the relative path (arena-owned) for the inspect: link, or null
+/// if the write failed (best-effort — never blocks the run).
+fn writeSubagentDetail(
+    io: Io,
+    arena: Allocator,
+    id: []const u8,
+    label: []const u8,
+    kind: []const u8,
+    prompt: []const u8,
+    report: []const u8,
+    ok: bool,
+    run_ms: i64,
+    tools: []const u8,
+) ?[]const u8 {
+    Io.Dir.cwd().createDir(io, ".graff", .default_dir) catch {}; // exists is fine
+    Io.Dir.cwd().createDir(io, subagents_dir, .default_dir) catch {};
+    const path = std.fmt.allocPrint(arena, "{s}/{s}.md", .{ subagents_dir, id }) catch return null;
+    var aw: Io.Writer.Allocating = .init(arena);
+    const w = &aw.writer;
+    w.print("# subagent {s}\n\n", .{id}) catch return null;
+    w.print("- label: {s}\n", .{label}) catch return null;
+    w.print("- kind: {s}\n", .{kind}) catch return null;
+    w.print("- status: {s}\n", .{if (ok) "ok" else "failed"}) catch return null;
+    w.print("- elapsed_ms: {d}\n", .{run_ms}) catch return null;
+    w.print("- tools: {s}\n", .{if (tools.len > 0) tools else "(none)"}) catch return null;
+    w.writeAll("\n## task\n\n") catch return null;
+    w.writeAll(prompt) catch return null;
+    w.writeAll("\n\n## report\n\n") catch return null;
+    w.writeAll(report) catch return null;
+    w.writeByte('\n') catch return null;
+    Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = aw.writer.buffered() }) catch return null;
+    return path;
 }
 
 // ── Score-channel signing (DGM fitness integrity, Step 0) ──────────────────
@@ -1987,7 +2257,7 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/thinking", "/title", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -2039,6 +2309,43 @@ var g_hooks: Hooks = .{};
 /// records whether `codedb` is actually on PATH (no redirect if it isn't).
 var g_codedb_guard = true;
 var g_codedb_present: ?bool = null;
+
+/// Per-file cache for the codedb guard: `codedb outline <path>` is run once
+/// per source file to check whether codedb actually indexed it (large files
+/// are silently skipped — e.g. a 13K-line main.zig). Entries are page-alloc
+/// and never freed; the set is small (only files the agent greps). A mutex
+/// guards concurrent tool-thread access; a miss is benign (duplicate probe).
+const CodedbFileCheck = struct { path: []const u8, indexed: bool };
+var g_codedb_file_checks: std.ArrayList(CodedbFileCheck) = .empty;
+var g_codedb_file_mu: Io.Mutex = .init;
+
+/// True when `path` is in codedb's symbol index. Runs `codedb outline <path>`
+/// (cached): returns "not indexed: <path>" when the file is too large or
+/// otherwise skipped, so the guard knows to let bash through instead of
+/// trapping the agent between a blocked grep and an empty codedb result.
+fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
+    g_codedb_file_mu.lockUncancelable(io);
+    for (g_codedb_file_checks.items) |e| {
+        if (std.mem.eql(u8, e.path, path)) {
+            g_codedb_file_mu.unlock(io);
+            return e.indexed;
+        }
+    }
+    g_codedb_file_mu.unlock(io);
+    // Cache miss: probe once, then store. On error, assume indexed (safe:
+    // the guard still redirects to codedb, which is the status-quo behavior).
+    const run = runCapped(gpa, io, &.{ "codedb", "outline", path }, 512, 256) catch return true;
+    defer gpa.free(run.stdout);
+    defer gpa.free(run.stderr);
+    const not_indexed = std.mem.indexOf(u8, run.stdout, "not indexed") != null or
+        std.mem.indexOf(u8, run.stderr, "not indexed") != null;
+    const result: bool = !not_indexed;
+    g_codedb_file_mu.lockUncancelable(io);
+    defer g_codedb_file_mu.unlock(io);
+    const dup = gpa.dupe(u8, path) catch return result;
+    g_codedb_file_checks.append(gpa, .{ .path = dup, .indexed = result }) catch gpa.free(dup);
+    return result;
+}
 
 fn parseHookList(arena: Allocator, v: ?Value) []const Hook {
     const arr = v orelse return &.{};
@@ -2163,6 +2470,13 @@ const skills_registry = [_]SkillDef{
 /// model knows when to reach for its tools. The native tools stay registered
 /// regardless — they are the fallback whenever an MCP call fails, is denied,
 /// or the server is disconnected/skipped.
+/// Licensed-aware variant of the codedbpro note. When `codedb-pro probe`
+/// succeeds (paid + usable) we inject THIS instead of the conservative
+/// "prefer free codedb" note below — leaning into the tools the user pays for.
+/// Edits still stay native: edit_file/write_file are /rewind-snapshotted and
+/// already splice via zigpatch, whereas codedb-pro edit/patch/replace bypass /rewind.
+const codedbpro_note_licensed = "The codedb-pro MCP server is connected and LICENSED (mcp__codedbpro__* tools) — prefer it, you are paying for it. Use mcp__codedbpro__read (mode=outline first, then symbol/lines) instead of read_file for navigating code, mcp__codedbpro__faster_search / meta_search for content and fuzzy search (the native codedb tool stays a fine fast path for indexed symbol/outline/callers/find lookups), and mcp__codedbpro__batch to run several independent reads/searches in one round-trip. KEEP EDITS on the native edit_file/write_file tools — they are snapshot-tracked for /rewind and already splice via zigpatch; codedb-pro edit/patch/replace bypass /rewind, so do not route edits through it. Whenever an mcp__codedbpro__ call fails, fall back to read_file/codedb/bash.";
+
 const McpNote = struct { server: []const u8, note: []const u8 };
 const mcp_notes = [_]McpNote{
     .{
@@ -2242,7 +2556,223 @@ fn mcpServerConnected(tools: []const mcp.Tool, server: []const u8) bool {
 
 /// PATH captured at startup for skill detection (PATH won't change mid-run).
 var g_path_env: []const u8 = "";
+/// Human-facing current workspace folder shown in the REPL prompt.
+var g_cwd_display: []const u8 = ".";
 
+/// Short task label for terminal/TUI headers. Mirrors the GUI's first-prompt
+/// fallback: use the user's first message as a compact tab/session title.
+fn titleFromPrompt(prompt: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
+    if (trimmed.len == 0) return "Chat";
+    var end: usize = 0;
+    var codepoints: usize = 0;
+    while (end < trimmed.len and codepoints < 64) {
+        if (trimmed[end] == '\n' or trimmed[end] == '\r' or trimmed[end] == '\t') break;
+        const cp_len = std.unicode.utf8ByteSequenceLength(trimmed[end]) catch 1;
+        end += cp_len;
+        codepoints += 1;
+    }
+    var out = std.mem.trim(u8, trimmed[0..@min(end, trimmed.len)], " \t\r\n");
+    if (out.len == 0) return "Chat";
+    if (codepoints >= 64 and end < trimmed.len) {
+        if (std.mem.lastIndexOfScalar(u8, out, ' ')) |sp| {
+            if (sp >= 12) out = std.mem.trim(u8, out[0..sp], " ");
+        }
+    }
+    return out;
+}
+
+fn folderBasename(path: []const u8) []const u8 {
+    var end = path.len;
+    while (end > 1 and path[end - 1] == '/') end -= 1;
+    const trimmed = path[0..end];
+    if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |idx| return trimmed[idx + 1 ..];
+    return trimmed;
+}
+
+fn firstUserTitle(arena: Allocator, msgs: std.json.Array) []const u8 {
+    for (msgs.items) |m| {
+        if (m != .object) continue;
+        const role = if (m.object.get("role")) |r| (if (r == .string) r.string else "") else "";
+        if (!std.mem.eql(u8, role, "user")) continue;
+        return titleFromPrompt(extractText(arena, m));
+    }
+    return "Chat";
+}
+
+fn setTerminalTitle(w: *Io.Writer, title: []const u8, folder: []const u8) void {
+    if (!use_color or json_mode) return;
+    const folder_name = folderBasename(folder);
+    // OSC 0 is conventional xterm title; OSC 1/2 make iTerm/Ghostty-style tab
+    // and window titles update too instead of leaving the launch command there.
+    w.print("\x1b]0;Codegraff: {s} — {s}\x07\x1b]1;Codegraff: {s} — {s}\x07\x1b]2;Codegraff: {s} — {s}\x07", .{ title, folder_name, title, folder_name, title, folder_name }) catch return;
+    w.flush() catch return;
+}
+
+fn printSessionHeader(w: *Io.Writer, title: []const u8, folder: []const u8) !void {
+    if (json_mode) return;
+    try w.print("\n{s}╭─ Codegraff{s}\n{s}│ Working on:{s} {s}\n{s}│ Folder:{s} {s}\n{s}╰────────────────────────────{s}\n", .{
+        style.dim,   style.reset,
+        style.dim,   style.reset,
+        title,       style.dim,
+        style.reset, folder,
+        style.dim,   style.reset,
+    });
+    try w.flush();
+}
+
+/// Extracts the reasoning/thinking text from one streamed SSE delta object for
+/// the given provider wire format, or "" when this delta carries no reasoning.
+/// deepseek/openai stream `reasoning_content`, anthropic a `thinking_delta`,
+/// codex/responses a `response.reasoning_summary_text.delta`.
+fn reasoningDelta(kind: Provider.Kind, obj: std.json.ObjectMap) []const u8 {
+    return switch (kind) {
+        .anthropic => blk: {
+            const d = obj.get("delta") orelse break :blk "";
+            if (d != .object) break :blk "";
+            const dt = d.object.get("type") orelse break :blk "";
+            if (dt != .string or !std.mem.eql(u8, dt.string, "thinking_delta")) break :blk "";
+            const x = d.object.get("thinking") orelse break :blk "";
+            break :blk if (x == .string) x.string else "";
+        },
+        .openai => blk: {
+            const choices = obj.get("choices") orelse break :blk "";
+            if (choices != .array or choices.array.items.len == 0) break :blk "";
+            const c0 = choices.array.items[0];
+            if (c0 != .object) break :blk "";
+            const d = c0.object.get("delta") orelse break :blk "";
+            if (d != .object) break :blk "";
+            const x = d.object.get("reasoning_content") orelse d.object.get("reasoning") orelse break :blk "";
+            break :blk if (x == .string) x.string else "";
+        },
+        .responses => blk: {
+            const t = obj.get("type") orelse break :blk "";
+            if (t != .string or !std.mem.eql(u8, t.string, "response.reasoning_summary_text.delta")) break :blk "";
+            const x = obj.get("delta") orelse break :blk "";
+            break :blk if (x == .string) x.string else "";
+        },
+    };
+}
+
+
+/// Pulls the assistant's text out of a non-streamed completion response for the
+/// given provider wire format — the shape both compaction and AI title naming
+/// read back.
+fn assistantText(kind: Provider.Kind, root: std.json.ObjectMap) []const u8 {
+    return switch (kind) {
+        .anthropic => blk: {
+            const content = root.get("content") orelse break :blk "";
+            if (content != .array) break :blk "";
+            for (content.array.items) |block| {
+                if (block != .object) continue;
+                const bt = if (block.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+                if (std.mem.eql(u8, bt, "text"))
+                    if (block.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
+            }
+            break :blk "";
+        },
+        .openai => blk: {
+            const choices = root.get("choices") orelse break :blk "";
+            if (choices != .array or choices.array.items.len == 0) break :blk "";
+            const c0 = choices.array.items[0];
+            if (c0 != .object) break :blk "";
+            const message = c0.object.get("message") orelse break :blk "";
+            if (message != .object) break :blk "";
+            const c = message.object.get("content") orelse break :blk "";
+            break :blk if (c == .string) c.string else "";
+        },
+        .responses => blk: {
+            const output = root.get("output") orelse break :blk "";
+            if (output != .array) break :blk "";
+            for (output.array.items) |item| {
+                if (item != .object) continue;
+                const it = if (item.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+                if (!std.mem.eql(u8, it, "message")) continue;
+                if (item.object.get("content")) |c| if (c == .array) {
+                    for (c.array.items) |b| {
+                        if (b != .object) continue;
+                        const bt = if (b.object.get("type")) |x| (if (x == .string) x.string else "") else "";
+                        if (std.mem.eql(u8, bt, "output_text")) {
+                            if (b.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
+                        }
+                    }
+                };
+            }
+            break :blk "";
+        },
+    };
+}
+
+/// Strips matched wrapping quotes/backticks (ASCII and curly), repeatedly, that a
+/// model may add around a one-line title — `"'Fix bug'"` becomes `Fix bug`.
+fn stripWrappingQuotes(s_in: []const u8) []const u8 {
+    var s = s_in;
+    const pairs = [_][2][]const u8{
+        .{ "\"", "\"" },
+        .{ "'", "'" },
+        .{ "`", "`" },
+        .{ "“", "”" },
+        .{ "‘", "’" },
+    };
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (pairs) |p| {
+            if (s.len >= p[0].len + p[1].len and std.mem.startsWith(u8, s, p[0]) and std.mem.endsWith(u8, s, p[1])) {
+                s = std.mem.trim(u8, s[p[0].len .. s.len - p[1].len], " \t");
+                changed = true;
+            }
+        }
+    }
+    return s;
+}
+
+/// Normalizes a model's raw reply into a tab-label title: first line only, drop a
+/// leading "Title:" label and wrapping quotes, trim trailing sentence punctuation,
+/// then cap to one line at a word boundary (via titleFromPrompt). Returns null
+/// when nothing usable remains, so the caller keeps the mechanical title.
+fn cleanTitle(raw: []const u8) ?[]const u8 {
+    var s = std.mem.trim(u8, raw, " \t\r\n");
+    if (std.mem.indexOfScalar(u8, s, '\n')) |nl| s = std.mem.trim(u8, s[0..nl], " \t\r");
+    if (s.len >= 6 and std.ascii.eqlIgnoreCase(s[0..6], "title:")) s = std.mem.trim(u8, s[6..], " \t");
+    s = stripWrappingQuotes(s);
+    while (s.len > 0 and (s[s.len - 1] == '.' or s[s.len - 1] == '!' or s[s.len - 1] == '?')) s = s[0 .. s.len - 1];
+    s = std.mem.trim(u8, s, " \t");
+    if (s.len == 0) return null;
+    return titleFromPrompt(s);
+}
+
+/// Asks the model the user is on for a terse tab-label title summarizing the
+/// session's first prompt, on a throwaway one-message list so the real
+/// conversation (and its token/compaction accounting) is left untouched. Returns
+/// an arena-owned title, or null on any failure (caller keeps the mechanical one).
+fn generateSessionTitle(self: *Agent, prompt: []const u8) ?[]const u8 {
+    const saved_msgs = self.messages;
+    const saved_quiet = self.stream_quiet;
+    const saved_strict = self.strict;
+    const saved_ctx = self.last_context_tokens;
+    defer {
+        self.messages = saved_msgs;
+        self.stream_quiet = saved_quiet;
+        self.strict = saved_strict;
+        self.last_context_tokens = saved_ctx;
+    }
+    self.stream_quiet = true; // internal call: never stream to the terminal
+    self.strict = false; // plain text reply, no meta-tool wrapping
+    const instr = std.fmt.allocPrint(self.arena,
+        \\Write a terse tab-label title for this task: 3-6 words, Title Case, no
+        \\quotes, no trailing punctuation, no preamble. Reply with ONLY the title.
+        \\
+        \\Task:
+        \\{s}
+    , .{prompt}) catch return null;
+    var tmp = std.json.Array.init(self.arena);
+    tmp.append(textMessage(self.arena, "user", instr) catch return null) catch return null;
+    self.messages = tmp;
+    const root = self.request(null) catch return null;
+    const cleaned = cleanTitle(assistantText(self.provider.kind, root)) orelse return null;
+    return self.arena.dupe(u8, cleaned) catch null;
+}
 fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, g_path_env, ':');
     var buf: [1024]u8 = undefined;
@@ -2266,6 +2796,12 @@ fn skillInstalled(io: Io, sk: SkillDef) bool {
 /// webfetch never shells out to it — even when its binaries are on PATH.
 var g_skill_disabled = [_]bool{false} ** skills_registry.len;
 
+/// Same opt-out, for the metered companion MCP servers (codedb-pro). They live
+/// in companion_servers, NOT skills_registry, so they need their own flags —
+/// this is the bug fix: {"skills": {"codedbpro": false}} now actually disables
+/// the auto-connect (skillDisabled() never matched a companion server name).
+var g_companion_disabled = [_]bool{false} ** companion_servers.len;
+
 fn skillIndex(name: []const u8) ?usize {
     for (skills_registry, 0..) |sk, i| if (std.mem.eql(u8, sk.name, name)) return i;
     return null;
@@ -2276,23 +2812,67 @@ fn skillDisabled(name: []const u8) bool {
     return g_skill_disabled[i];
 }
 
+/// Companion-server opt-out (e.g. codedb-pro): {"skills": {"codedbpro": false}}.
+/// Server names aren't in skills_registry, so skillDisabled() can't see them —
+/// the companion auto-connect gate uses this instead.
+fn companionDisabled(server: []const u8) bool {
+    for (companion_servers, 0..) |c, i| if (std.mem.eql(u8, c.server, server)) return g_companion_disabled[i];
+    return false;
+}
+
+/// True when `codedb-pro probe` exits 0 (paid + usable). Set once at startup
+/// after the companion connects; selects the licensed vs conservative note.
+var g_codedbpro_licensed: bool = false;
+
+/// Run the companion's `probe` — its own harness-gating capability check, the
+/// same gate the codedb-pro CLI hooks use. Exit 0 == licensed and usable.
+fn probeCodedbproLicensed(gpa: Allocator, io: Io) bool {
+    const run = runCapped(gpa, io, &.{ "codedb-pro", "probe" }, 256, 256) catch return false;
+    defer {
+        gpa.free(run.stdout);
+        gpa.free(run.stderr);
+    }
+    return switch (run.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+/// Pick the codedbpro system-prompt note: the lean-in note when licensed, else
+/// the conservative free-codedb fallback (`conservative`, from mcp_notes).
+fn codedbproNote(server: []const u8, licensed: bool, conservative: []const u8) []const u8 {
+    if (licensed and std.mem.eql(u8, server, "codedbpro")) return codedbpro_note_licensed;
+    return conservative;
+}
+
 /// Installed AND not user-disabled — the only check callers should use.
 fn skillActive(io: Io, sk: SkillDef) bool {
     return !skillDisabled(sk.name) and skillInstalled(io, sk);
 }
 
-/// Parse the "skills" section of .harness/settings.json into
-/// g_skill_disabled (call once at startup): {"skills": {"<name>": false}}
-/// disables; anything else leaves the skill enabled.
+/// Parse the "skills" section of .harness/settings.json into the disabled
+/// flags (call once at startup): {"skills": {"<name>": false}} disables;
+/// anything else leaves it enabled. Covers skills_registry AND companion
+/// servers (codedb-pro).
 fn loadSkillSettings(io: Io, arena: Allocator) void {
     const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
     if (v != .object) return;
     const skills = v.object.get("skills") orelse return;
+    applySkillSettings(skills);
+}
+
+/// Pure half of loadSkillSettings (no disk I/O), so the opt-out wiring is
+/// unit-testable: maps {"skills": {"<name>": false}} onto the disabled flags.
+fn applySkillSettings(skills: Value) void {
     if (skills != .object) return;
     for (skills_registry, 0..) |sk, i| {
         const entry = skills.object.get(sk.name) orelse continue;
         if (entry == .bool and !entry.bool) g_skill_disabled[i] = true;
+    }
+    for (companion_servers, 0..) |c, i| {
+        const entry = skills.object.get(c.server) orelse continue;
+        if (entry == .bool and !entry.bool) g_companion_disabled[i] = true;
     }
 }
 
@@ -2317,12 +2897,94 @@ const anims = [_]Anim{
     .{ .name = "matrix", .desc = "matrix rain strip", .frame = animMatrix },
     .{ .name = "pacman", .desc = "pac-man eating dots", .frame = animPacman },
     .{ .name = "starfield", .desc = "parallax stars", .frame = animStarfield },
+    .{ .name = "dragon", .desc = "a yellow dragon breathing fire", .frame = animDragon }, // PRANK: limyuxi_dragon_prank
 };
 
 var g_anim_index: usize = 0; // /animation selection (index into anims)
 var g_anim_random = false; // pick a fresh one per request
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
+// PRANK — remove in a future release. Gives limyuxi a yellow-dragon thinking
+// spinner when graff runs from their home dir (/Users/limyuxi). To remove:
+// flip this to false (or delete the flag, animDragon, the "dragon" anims entry,
+// and the cwd hook in main). Tracked in memory: prank_limyuxi_dragon.
+const limyuxi_dragon_prank = true;
+var g_shine_phase: usize = 0; // ultracode input-wave animation frame
+
+// Steering (Codex-style): bytes typed while a turn streams are captured
+// instead of discarded, echoed live in dim cyan, and on Enter queued to
+// run as the next turn — so you can line up follow-ups one after the
+// other without waiting for the current turn to finish. TTY-only (the
+// raw-stdin esc-watch path is gated off in --json/GUI mode), so the queue
+// stays empty there. Watchdog/select arms may drain and echo stdin while the
+// stream reader is blocked; g_steer_visible pauses spinner redraws so the live
+// steering row is not cleared out from under the user.
+var g_steer_buf: std.ArrayList(u8) = .empty; // in-progress line (page-alloc)
+const SteerEntry = struct { text: []const u8, force: bool };
+var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
+var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
+var g_steer_visible: std.atomic.Value(bool) = .init(false); // visible live steering row; pauses spinner redraws
+var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
+var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + Agent.emit)
+var g_force_interrupt = false; // Force-prompt path caused the last interrupt (Ctrl-F/double-enter).
+var g_5xx_body_buf: [600]u8 = undefined; // snippet of the last 5xx/429 error body
+var g_5xx_body_len: usize = 0; // 0 = no body captured
+
+/// Pops the next queued steering prompt (FIFO), or null if none.
+fn popSteer() ?SteerEntry {
+    if (g_steer_queue.items.len == 0) return null;
+    return g_steer_queue.orderedRemove(0);
+}
+
+/// Drops any half-typed steering line (no Enter yet) — called at the top
+/// of each REPL iteration so a partial mid-turn draft never leaks into the
+/// next prompt.
+fn resetSteerPartial() void {
+    g_steer_buf.clearRetainingCapacity();
+    g_steer_echoed = false;
+    g_steer_visible.store(false, .release);
+}
+
+/// Writes steering echo to the stdout writer (the same buffered writer the
+/// streaming text uses, already flushed before escPressed runs, so ordering
+/// stays correct) and flushes so the user sees queued keystrokes live.
+fn steerEcho(bytes: []const u8) void {
+    if (g_out) |w| {
+        w.writeAll(bytes) catch {};
+        w.flush() catch {};
+    }
+}
+
+/// 9-stop truecolor rainbow for the `ultracode` shine (banner + live input).
+const ultracode_rainbow = [_][]const u8{
+    "\x1b[38;2;255;87;51m",  "\x1b[38;2;255;159;28m", "\x1b[38;2;255;222;51m",
+    "\x1b[38;2;120;255;51m", "\x1b[38;2;51;255;170m", "\x1b[38;2;51;170;255m",
+    "\x1b[38;2;120;51;255m", "\x1b[38;2;210;51;255m", "\x1b[38;2;255;51;159m",
+};
+
+/// `ultracode` codeword banner: a rainbow shine sweeps across the word in
+/// interactive (color) mode when the codeword engages multi-agent workflow
+/// mode. Truecolor ANSI; best-effort (any write failure aborts silently).
+fn ultracodeShine(w: *Io.Writer, io: Io) void {
+    const word = "ULTRACODE";
+    const gold = "\x1b[38;2;255;215;0m";
+    const frames = 14;
+    var f: usize = 0;
+    while (f < frames) : (f += 1) {
+        w.writeAll("\r\x1b[2K") catch return;
+        w.writeAll(style.bold) catch return;
+        w.print("{s}✦ ", .{gold}) catch return;
+        for (word, 0..) |c, i| {
+            w.writeAll(ultracode_rainbow[(i + f) % ultracode_rainbow.len]) catch return;
+            w.print("{c}", .{c}) catch return;
+        }
+        w.print("{s} ✦{s}", .{ gold, style.reset }) catch return;
+        w.flush() catch return;
+        io.sleep(.fromMilliseconds(70), .awake) catch {};
+    }
+    w.writeAll("\n") catch {};
+    w.flush() catch {};
+}
 
 fn animIndex(name: []const u8) ?usize {
     for (anims, 0..) |a, i| if (std.mem.eql(u8, a.name, name)) return i;
@@ -2331,6 +2993,20 @@ fn animIndex(name: []const u8) ?usize {
 
 fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
     try w.print(" {s}thinking…{s}", .{ style.dim, style.reset });
+}
+
+fn animDragon(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    // PRANK (limyuxi_dragon_prank): a wee yellow dragon — undulating tail, the
+    // dragon, and a flickering flame.
+    const tail = [_][]const u8{ "∿", "～" };
+    const spark = [_][]const u8{ "✦", "✺", "✸", "✶", "✷", "✵" };
+    try w.print("{s}{s}", .{ style.bold, style.yellow });
+    var j: usize = 0;
+    while (j < 5) : (j += 1) try w.writeAll(tail[(i + j) % tail.len]);
+    try w.writeAll(style.reset);
+    try w.writeAll("🐉");
+    try w.print("{s}{s}{s}{s}", .{ style.bold, style.yellow, spark[i % spark.len], style.reset });
+    try animThinking(w);
 }
 
 fn animBraille(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -2519,7 +3195,7 @@ fn saveSkillSetting(io: Io, gpa: Allocator, name: []const u8, enabled: bool) boo
 /// Persist the thinking controls (/effort, /fast) to .harness/settings.json,
 /// preserving every other key. Default values (medium effort, fast off) are
 /// removed rather than written so the file stays clean. Best-effort.
-fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool) bool {
+fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool, ultracode: bool, show_thinking: bool, ai_title: bool) bool {
     Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {}; // already-exists is fine
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -2539,6 +3215,21 @@ fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: b
         _ = root_obj.orderedRemove("fast");
     } else {
         root_obj.put(a, "fast", .{ .bool = true }) catch return false;
+    }
+    if (!ultracode) {
+        _ = root_obj.orderedRemove("ultracode");
+    } else {
+        root_obj.put(a, "ultracode", .{ .bool = true }) catch return false;
+    }
+    if (show_thinking) {
+        _ = root_obj.orderedRemove("show_thinking");
+    } else {
+        root_obj.put(a, "show_thinking", .{ .bool = false }) catch return false;
+    }
+    if (ai_title) {
+        _ = root_obj.orderedRemove("ai_title");
+    } else {
+        root_obj.put(a, "ai_title", .{ .bool = false }) catch return false;
     }
     var aw: Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
@@ -2572,6 +3263,15 @@ fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
     };
     if (v.object.get("fast")) |fv| if (fv == .bool) {
         root.fast = fv.bool;
+    };
+    if (v.object.get("ultracode")) |uv| if (uv == .bool) {
+        root.ultracode_mode = uv.bool;
+    };
+    if (v.object.get("show_thinking")) |sv| if (sv == .bool) {
+        root.show_thinking = sv.bool;
+    };
+    if (v.object.get("ai_title")) |tv| if (tv == .bool) {
+        root.ai_title = tv.bool;
     };
 }
 
@@ -2645,6 +3345,75 @@ fn inputPending(fd: std.posix.fd_t) bool {
     var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
     const n = std.posix.poll(&fds, 50) catch return false;
     return n > 0;
+}
+
+/// Like inputPending but with a configurable poll timeout (ms). Used by the
+/// ultracode wave to tick at a slower, calmer cadence than the 50ms default.
+fn inputPendingTimed(fd: std.posix.fd_t, timeout_ms: i32) bool {
+    var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+    const n = std.posix.poll(&fds, timeout_ms) catch return false;
+    return n > 0;
+}
+
+/// Raw RGB stops for the ultracode wave (mirrors ultracode_rainbow's hues).
+const ultracode_rgb = [_]struct { r: u8, g: u8, b: u8 }{
+    .{ .r = 255, .g = 87, .b = 51 },
+    .{ .r = 255, .g = 159, .b = 28 },
+    .{ .r = 255, .g = 222, .b = 51 },
+    .{ .r = 120, .g = 255, .b = 51 },
+    .{ .r = 51, .g = 255, .b = 170 },
+    .{ .r = 51, .g = 170, .b = 255 },
+    .{ .r = 120, .g = 51, .b = 255 },
+    .{ .r = 210, .g = 51, .b = 255 },
+    .{ .r = 255, .g = 51, .b = 159 },
+};
+
+/// Smoothly interpolated rainbow hue for the ultracode wave. `pos_q8` is a
+/// 0..2048 fraction across the 9-stop palette (8 bits index + 8 bits blend),
+/// so the wave glides between colors instead of snapping. A sine brightness
+/// breath (period ~2.2s at 110ms/tick) gives a rhythmic pulse rather than a
+/// mechanical scroll. Writes the SGR escape straight to the writer.
+fn ultracodeWaveHue(w: *Io.Writer, pos_q8: u16, phase: usize) void {
+    const pal = &ultracode_rgb;
+    const len: u16 = pal.len;
+    const p: u16 = pos_q8 + @as(u16, @intCast(phase * 32));
+    const idx: u16 = (p >> 8) % len;
+    const frac: u16 = p & 0xff;
+    const a = pal[idx];
+    const b = pal[(idx + 1) % len];
+    // Interpolate in signed space (b-a may be negative) then clamp to 0..255.
+    const r: i32 = @as(i32, a.r) + @divTrunc((@as(i32, b.r) - @as(i32, a.r)) * @as(i32, frac), 256);
+    const g: i32 = @as(i32, a.g) + @divTrunc((@as(i32, b.g) - @as(i32, a.g)) * @as(i32, frac), 256);
+    const bl: i32 = @as(i32, a.b) + @divTrunc((@as(i32, b.b) - @as(i32, a.b)) * @as(i32, frac), 256);
+    // Breath: a gentle sine over phase, period 20 ticks (~2.2s @ 110ms),
+    // modulating brightness between ~81% and ~94% — a soft, subtle pulse.
+    const breath: u16 = switch (phase % 20) {
+        0 => 120,
+        1 => 120,
+        2 => 118,
+        3 => 117,
+        4 => 114,
+        5 => 112,
+        6 => 110,
+        7 => 107,
+        8 => 106,
+        9 => 104,
+        10 => 104,
+        11 => 104,
+        12 => 106,
+        13 => 107,
+        14 => 110,
+        15 => 112,
+        16 => 114,
+        17 => 117,
+        18 => 118,
+        else => 120,
+    };
+    const sc: i32 = @as(i32, breath);
+    const cr: u8 = @intCast(@max(0, @min(255, @divTrunc(r * sc, 128))));
+    const cg: u8 = @intCast(@max(0, @min(255, @divTrunc(g * sc, 128))));
+    const cb: u8 = @intCast(@max(0, @min(255, @divTrunc(bl * sc, 128))));
+    w.print("\x1b[38;2;{d};{d};{d}m", .{ cr, cg, cb }) catch {};
 }
 
 /// Directories the `@` file picker never descends into (every dot-dir is
@@ -2904,6 +3673,24 @@ fn readLine(
             var vcol: usize = plen;
             var mark_end: usize = 0;
             var mark_open = false;
+            // `ultracode` shines the input itself: each letter of every
+            // (case-insensitive) occurrence renders in a rotating rainbow hue.
+            var shine_starts: [8]usize = undefined;
+            var shine_ends: [8]usize = undefined;
+            var nshine: usize = 0;
+            {
+                var si: usize = 0;
+                while (si + 9 <= items.len) : (si += 1) {
+                    if (std.ascii.eqlIgnoreCase(items[si .. si + 9], "ultracode")) {
+                        if (nshine < shine_starts.len) {
+                            shine_starts[nshine] = si;
+                            shine_ends[nshine] = si + 9;
+                            nshine += 1;
+                        }
+                    }
+                }
+            }
+            var shine_active = false;
             while (i < items.len) {
                 if (vcol >= cols) { // row full → wrap to the next
                     o.writeAll("\r\n") catch {};
@@ -2917,9 +3704,33 @@ fn readLine(
                         if (std.mem.eql(u8, items[i .. i + m.len], m) and m.len > best) best = m.len;
                     }
                     if (best > 0) {
+                        if (shine_active) {
+                            o.writeAll("\x1b[0m") catch {};
+                            shine_active = false;
+                        }
                         o.writeAll("\x1b[7;36m") catch {};
                         mark_end = i + best;
                         mark_open = true;
+                    }
+                }
+                // Rainbow shine for an `ultracode` span (skipped inside a chip).
+                if (!mark_open) {
+                    var in_shine = false;
+                    for (shine_starts[0..nshine], shine_ends[0..nshine]) |sstart, send| {
+                        if (i >= sstart and i < send) {
+                            // Smooth interpolated hue + rhythmic brightness
+                            // breath; pos_q8 spreads the 9 letters across a
+                            // full palette pass so the wave glides.
+                            ultracodeWaveHue(o, @intCast((i - sstart) * 256), g_shine_phase);
+                            in_shine = true;
+                            break;
+                        }
+                    }
+                    if (in_shine) {
+                        shine_active = true;
+                    } else if (shine_active) {
+                        o.writeAll("\x1b[0m") catch {};
+                        shine_active = false;
                     }
                 }
                 o.writeByte(items[i]) catch {};
@@ -2928,9 +3739,10 @@ fn readLine(
                 if (mark_open and i == mark_end) {
                     o.writeAll("\x1b[0m") catch {};
                     mark_open = false;
+                    shine_active = false;
                 }
             }
-            if (mark_open) o.writeAll("\x1b[0m") catch {};
+            if (mark_open or shine_active) o.writeAll("\x1b[0m") catch {};
 
             // Place the cursor. wrapAt gives its target row/col; when it sits
             // at the very end of a just-filled row that's a fresh row below the
@@ -3021,7 +3833,19 @@ fn readLine(
             const b = pending.items[pend_i];
             pend_i += 1;
             break :blk b;
-        } else in.takeByte() catch return null;
+        } else blk: {
+            // While the input contains `ultracode`, wave the rainbow shine
+            // across the letters: poll for input with a slower 110ms timeout,
+            // and on each idle tick advance the phase + redraw so the hue
+            // glides and breathes (~9fps, calm + rhythmic rather than a fast
+            // flicker).
+            while (std.ascii.indexOfIgnoreCase(buf.items, "ultracode") != null) {
+                if (inputPendingTimed(fd, 110)) break; // keystroke ready — read it below
+                g_shine_phase +%= 1;
+                redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
+            }
+            break :blk in.takeByte() catch return null;
+        };
         if (c != 0x09) comp_active = false; // any non-Tab key ends the cycle
         switch (c) {
             0x09 => { // Tab: complete, or cycle through matches on repeat
@@ -3468,6 +4292,32 @@ fn writeAnthropicMessages(s: *std.json.Stringify, messages: std.json.Array, cach
     try s.endArray();
 }
 
+fn writeOpenAIMessageNormalized(s: *std.json.Stringify, m: Value) !void {
+    if (m != .object) return s.write(m);
+    const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
+    const is_assistant_tool_call = std.mem.eql(u8, role, "assistant") and m.object.get("tool_calls") != null;
+    const null_content = if (m.object.get("content")) |v| v == .null else false;
+    if (!is_assistant_tool_call or !null_content) return s.write(m);
+
+    try s.beginObject();
+    var it = m.object.iterator();
+    var wrote_content = false;
+    while (it.next()) |kv| {
+        try s.objectField(kv.key_ptr.*);
+        if (std.mem.eql(u8, kv.key_ptr.*, "content")) {
+            try s.write("");
+            wrote_content = true;
+        } else {
+            try s.write(kv.value_ptr.*);
+        }
+    }
+    if (!wrote_content) {
+        try s.objectField("content");
+        try s.write("");
+    }
+    try s.endObject();
+}
+
 const harness_version: []const u8 = @import("build_options").version;
 
 /// OTLP endpoint baked into release builds (-Dtelemetry-endpoint); "" in dev
@@ -3476,7 +4326,7 @@ const harness_version: []const u8 = @import("build_options").version;
 const default_telemetry_endpoint: []const u8 = @import("build_options").telemetry_endpoint;
 
 const usage_text =
-    \\simple-harness — a minimal agentic coding harness in Zig (zero deps)
+    \\graff — a minimal agentic coding harness in Zig (zero deps)
     \\
     \\usage:
     \\  graff [flags]                    start the REPL
@@ -3489,9 +4339,13 @@ const usage_text =
     \\  graff --schema                   print the machine-readable interface (SDK codegen)
     \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
     \\                                   (--host/--port/--token; sessions are --json children)
+    \\  graff update [--force|--check]   update graff to the latest GitHub release
     \\
     \\flags:
     \\  --model <name>   start on this model (same fuzzy resolution as /model)
+    \\  --resume <name>  resume/autosave <name>.session.json
+    \\  --new            start a fresh autosaved session (default)
+    \\  --no-resume      ignore --resume and start fresh
     \\  --system-prompt <text>          replace the built-in system prompt
     \\  --append-system-prompt <text>   append extra text to the system prompt
     \\  --yolo           skip all permission prompts for the session
@@ -3499,6 +4353,8 @@ const usage_text =
     \\  --timing         show per-tool wall-clock on result lines
     \\  --cost           show running session spend in the prompt
     \\  --json           structured stdio protocol (JSON in, JSONL events out)
+    \\  --max-tool-calls N  reject root tool calls after N per turn (JSON-safe budget)
+    \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn
     \\  --no-telemetry   disable anonymous usage telemetry for this run
     \\  -h, --help       this help
     \\  -V, --version    print version
@@ -3514,6 +4370,199 @@ const usage_text =
     \\with --no-telemetry or GRAFF_NO_TELEMETRY=1.
     \\
 ;
+
+/// A parsed `MAJOR.MINOR.PATCH` (no pre-release/build suffix). Used to compare
+/// the running version against a GitHub release tag without the exact-string
+/// mismatch that `git describe` suffixes ("-3-gabc", "-dirty", "-dev") cause.
+const Version = struct {
+    major: u32,
+    minor: u32,
+    patch: u32,
+
+    fn eql(self: Version, other: Version) bool {
+        return self.major == other.major and self.minor == other.minor and self.patch == other.patch;
+    }
+
+    fn order(self: Version, other: Version) std.math.Order {
+        if (self.major != other.major) return std.math.order(self.major, other.major);
+        if (self.minor != other.minor) return std.math.order(self.minor, other.minor);
+        return std.math.order(self.patch, other.patch);
+    }
+};
+
+/// Parse a leading `MAJOR.MINOR.PATCH` from `s` (after any leading 'v' is
+/// stripped by the caller). Returns null if the numeric triple isn't present.
+fn parseVersion(s: []const u8) ?Version {
+    var it = std.mem.splitScalar(u8, s, '.');
+    const major_s = it.next() orelse return null;
+    const minor_s = it.next() orelse return null;
+    const patch_s = it.next() orelse return null;
+    // Each component must be all digits up to the next '.' (or end). `patch`
+    // may trail a pre-release suffix ("-3-gabc", "-dev"); take only the leading
+    // digits so "0.0.14-3-gabc" parses as 0.0.14.
+    const major = std.fmt.parseInt(u32, major_s, 10) catch return null;
+    const minor = std.fmt.parseInt(u32, minor_s, 10) catch return null;
+    const patch_digits = std.mem.indexOfAny(u8, patch_s, "-+") orelse patch_s.len;
+    const patch = std.fmt.parseInt(u32, patch_s[0..patch_digits], 10) catch return null;
+    return .{ .major = major, .minor = minor, .patch = patch };
+}
+
+/// True when `s` is a bare release version with no `git describe` suffix — i.e.
+/// exactly `MAJOR.MINOR.PATCH` (optionally 'v'-prefixed), no "-N-gHASH",
+/// "-dirty", "-dev", or "+build". A dev/dirty/commit-ahead build is not a clean
+/// release and shouldn't be silently "updated" (downgraded) to an older tag.
+fn isCleanReleaseVersion(s: []const u8) bool {
+    if (s.len == 0) return false;
+    var dots: u8 = 0;
+    for (s) |c| {
+        switch (c) {
+            '0'...'9' => {},
+            '.' => dots += 1,
+            else => return false, // any '-','+','g',... means it's not a bare tag
+        }
+    }
+    return dots == 2;
+}
+
+/// `graff update [--force|--check]` — bring the installed binary up to the
+/// latest GitHub release. Checks the release tag first and skips when already
+/// current (unless --force); --check only reports, never installs. The actual
+/// download, codesign, and atomic binary swap are delegated to install.sh
+/// (curl | sh) — that platform-specific logic already lives there, so we don't
+/// reimplement it. HARNESS_NO_GRAFF=1 keeps the installer from also pulling in
+/// the companion suite: an update touches only graff itself.
+fn updateCommand(
+    io: Io,
+    gpa: Allocator,
+    arena: Allocator,
+    environ: *const std.process.Environ.Map,
+    force: bool,
+    check_only: bool,
+) !void {
+    const repo_api = "https://api.github.com/repos/justrach/codegraff/releases/latest";
+    const install_url = environ.get("GRAFF_INSTALL_URL") orelse environ.get("HARNESS_INSTALL_URL") orelse
+        "https://github.com/justrach/codegraff/releases/latest/download/install.sh";
+
+    var obuf: [4096]u8 = undefined;
+    var ow = Io.File.stdout().writer(io, &obuf);
+    const out = &ow.interface;
+
+    // current version, leading 'v' stripped so the comparison ignores tag style.
+    const cur_raw = if (std.mem.startsWith(u8, harness_version, "v")) harness_version[1..] else harness_version;
+
+    // A release tag is a bare "MAJOR.MINOR.PATCH". A dev/dirty/commit-ahead
+    // build (from `git describe --tags --always --dirty`) carries a suffix
+    // ("-3-gabc", "-dirty", "-dev+hash", "0.1.0-dev") and is NOT a clean
+    // release version. Comparing such a string against a release tag with exact
+    // equality always mismatched, so `graff update` would "update" (downgrade)
+    // a newer dev build to an older release, and `--check` always reported an
+    // update available. Parse the leading numeric triple instead, and refuse to
+    // act on a non-release local build rather than silently downgrading it.
+    const cur = parseVersion(cur_raw);
+    const cur_is_release = cur != null and isCleanReleaseVersion(cur_raw);
+
+    // Query the latest release tag. GitHub's API requires a User-Agent; the
+    // Accept header pins the v3 JSON response. Any failure → null, handled below.
+    const latest_tag: ?[]const u8 = blk: {
+        var client: std.http.Client = .{ .allocator = gpa, .io = io };
+        defer client.deinit();
+        var aw: Io.Writer.Allocating = .init(arena);
+        defer aw.deinit();
+        const extra = [_]std.http.Header{.{ .name = "Accept", .value = "application/vnd.github+json" }};
+        const res = client.fetch(.{
+            .location = .{ .url = repo_api },
+            .method = .GET,
+            .response_writer = &aw.writer,
+            .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
+            .extra_headers = &extra,
+        }) catch break :blk null;
+        if (@intFromEnum(res.status) != 200) break :blk null;
+        // Cap the response before parsing: the endpoint is pinned to GitHub's
+        // API (normally a small JSON blob), but a captive-portal redirect or a
+        // TLS MITM could stream an unbounded body and exhaust memory. 64 KiB is
+        // far above any legitimate /releases/latest payload.
+        if (aw.writer.buffered().len > 64 * 1024) break :blk null;
+        const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch break :blk null;
+        if (v != .object) break :blk null;
+        const t = v.object.get("tag_name") orelse break :blk null;
+        break :blk if (t == .string) t.string else null;
+    };
+
+    // `latest` is a release tag from GitHub, so it parses to a clean triple.
+    const latest_raw = if (latest_tag) |tag| (if (std.mem.startsWith(u8, tag, "v")) tag[1..] else tag) else null;
+    const latest = if (latest_raw) |r| parseVersion(r) else null;
+
+    if (latest_tag != null and latest == null) {
+        // The release endpoint returned a tag we couldn't parse — treat like a
+        // failed check rather than guessing.
+        if (check_only) std.process.fatal("update check failed — unparseable release tag '{s}'", .{latest_tag.?});
+        try out.print("could not parse latest release tag '{s}'; running installer anyway…\n", .{latest_tag.?});
+    } else if (latest != null) {
+        const up_to_date = cur != null and cur.?.eql(latest.?);
+        const cur_newer = cur != null and cur.?.order(latest.?) == .gt;
+
+        if (check_only) {
+            if (cur_is_release and up_to_date) {
+                try out.print("graff is up to date (v{s})\n", .{cur_raw});
+            } else if (cur_is_release and cur_newer) {
+                try out.print("graff v{s} is newer than latest release v{s} — not downgrading\n", .{ cur_raw, latest_raw.? });
+            } else if (cur_is_release) {
+                // Release build older than latest.
+                try out.print("update available: v{s} → v{s}  (run `graff update`)\n", .{ cur_raw, latest_raw.? });
+            } else if (cur_newer) {
+                // Dev/dirty build whose base version is ahead of the latest release.
+                try out.print("local build v{s} is newer than latest release v{s} — not a release build; no update needed\n", .{ cur_raw, latest_raw.? });
+            } else {
+                // Dev/dirty build at or below the release version: installing the
+                // release is reasonable if the user wants it.
+                try out.print("update available: v{s} → v{s}  (local build {s} is not a release; run `graff update` to install the release)\n", .{ cur_raw, latest_raw.?, cur_raw });
+            }
+            try out.flush();
+            return;
+        }
+
+        // Install path.
+        if (up_to_date and cur_is_release and !force) {
+            try out.print("graff is already up to date (v{s})\n", .{cur_raw});
+            try out.flush();
+            return;
+        }
+        // Refuse to downgrade a build whose version is strictly ahead of the
+        // latest release without --force (applies to both release and dev builds
+        // — installing would replace a newer version with an older one).
+        if (cur_newer and !force) {
+            try out.print("graff v{s} is newer than latest release v{s} — not downgrading (use --force to override)\n", .{ cur_raw, latest_raw.? });
+            try out.flush();
+            return;
+        }
+        try out.print("updating graff v{s} → v{s}…\n", .{ cur_raw, latest_raw.? });
+    } else {
+        // Version check failed (offline / rate-limited / bad response). For
+        // --check that's a hard error; otherwise fall through to the installer,
+        // which fetches the latest release on its own.
+        if (check_only) std.process.fatal("update check failed — could not reach GitHub", .{});
+        try out.writeAll("could not determine latest version; running installer anyway…\n");
+    }
+    try out.flush();
+
+    // Delegate download/codesign/atomic swap to install.sh. Inherit our stdio
+    // so its progress (and any sudo prompt) reaches the terminal directly.
+    // "set -o pipefail" is required: without it, a failed "curl" is masked
+    // by the right-hand "sh" exiting 0 on EOF, and the pipeline reports
+    // success while installing nothing — silently.
+    //
+    // `install_url` is user-controllable via GRAFF_INSTALL_URL / HARNESS_INSTALL_URL,
+    // so it MUST NOT be interpolated into the sh -c string (shell injection).
+    // Pass it as positional $1 instead — the shell never re-parses it and curl
+    // receives it verbatim.
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "/bin/sh", "-c", "set -o pipefail; curl -fsSL \"$1\" | HARNESS_NO_GRAFF=1 sh", "sh", install_url },
+    }) catch |err|
+        std.process.fatal("update: could not launch installer: {t}", .{err});
+    const term = child.wait(io) catch std.process.fatal("update: installer did not exit cleanly", .{});
+    if (term != .exited or term.exited != 0)
+        std.process.fatal("update: installer failed — try again or download manually from https://github.com/justrach/codegraff/releases/latest", .{});
+}
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -3532,12 +4581,17 @@ pub fn main(init: std.process.Init) !void {
     var help_flag = false;
     var version_flag = false;
     var print_flag = false;
+    var update_force = false; // graff update --force
+    var update_check = false; // graff update --check
     var model_flag: ?[]const u8 = null;
     var system_prompt_flag: ?[]const u8 = null;
     var append_system_flag: ?[]const u8 = null;
     var host_flag: []const u8 = "127.0.0.1"; // harness serve
     var port_flag: u16 = 8787; // harness serve
     var token_flag: ?[]const u8 = null; // harness serve
+    var resume_flag: ?[]const u8 = null; // restore/save this named session
+    var no_resume_flag = false; // start without auto-loading last.session.json
+    var new_session_flag = false; // start a fresh autosaved session
     var positionals: std.ArrayList([]const u8) = .empty;
     {
         var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
@@ -3555,6 +4609,11 @@ pub fn main(init: std.process.Init) !void {
                     show_cost = true;
                 } else if (std.mem.eql(u8, arg, "--json")) {
                     json_mode = true;
+                } else if (std.mem.eql(u8, arg, "--max-tool-calls")) {
+                    const mv = it.next() orelse std.process.fatal("--max-tool-calls needs a non-negative integer — harness --help", .{});
+                    max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-tool-calls needs a non-negative integer, got '{s}'", .{mv});
+                } else if (std.mem.eql(u8, arg, "--dedupe-tool-calls")) {
+                    dedupe_tool_calls = true;
                 } else if (std.mem.eql(u8, arg, "--schema")) {
                     schema_flag = true;
                 } else if (std.mem.eql(u8, arg, "--refresh")) {
@@ -3565,6 +4624,17 @@ pub fn main(init: std.process.Init) !void {
                     version_flag = true;
                 } else if (std.mem.eql(u8, arg, "--print") or std.mem.eql(u8, arg, "-p")) {
                     print_flag = true;
+                } else if (std.mem.eql(u8, arg, "--force")) {
+                    update_force = true;
+                } else if (std.mem.eql(u8, arg, "--check")) {
+                    update_check = true;
+                } else if (std.mem.eql(u8, arg, "--resume")) {
+                    const rv = it.next() orelse std.process.fatal("--resume needs a session name — harness --help", .{});
+                    resume_flag = try arena.dupe(u8, rv);
+                } else if (std.mem.eql(u8, arg, "--no-resume")) {
+                    no_resume_flag = true;
+                } else if (std.mem.eql(u8, arg, "--new")) {
+                    new_session_flag = true;
                 } else if (std.mem.eql(u8, arg, "--model")) {
                     const mv = it.next() orelse std.process.fatal("--model needs a value — harness --help", .{});
                     model_flag = try arena.dupe(u8, mv);
@@ -3599,7 +4669,7 @@ pub fn main(init: std.process.Init) !void {
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     const is_subcommand = positionals.items.len > 0 and
         (std.mem.eql(u8, positionals.items[0], "login") or std.mem.eql(u8, positionals.items[0], "key") or
-            std.mem.eql(u8, positionals.items[0], "serve"));
+            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update"));
     var oneshot_prompt: ?[]const u8 = null;
     if (!is_subcommand and positionals.items.len > 0) {
         oneshot_prompt = try std.mem.join(arena, " ", positionals.items);
@@ -3611,7 +4681,7 @@ pub fn main(init: std.process.Init) !void {
     if (help_flag or version_flag) {
         var hbuf: [4096]u8 = undefined;
         var hw = Io.File.stdout().writer(io, &hbuf);
-        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("simple-harness {s}\n", .{harness_version});
+        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("graff {s}\n", .{harness_version});
         try hw.interface.flush();
         return;
     }
@@ -3649,6 +4719,18 @@ pub fn main(init: std.process.Init) !void {
             .system_prompt = system_prompt_flag,
             .append_system_prompt = append_system_flag,
         }, exe);
+        return;
+    }
+
+    // `harness update [--force|--check]`: self-update to the latest GitHub
+    // release. Version-checked (skips if already current), reuses install.sh
+    // for the actual download/codesign/atomic swap. Exits after.
+    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "update")) {
+        // --check never installs, so --force has no effect on it — reject the
+        // contradictory combination up front rather than silently ignoring one.
+        if (update_force and update_check)
+            std.process.fatal("--force and --check are mutually exclusive — use `graff update` (without --check) to install", .{});
+        try updateCommand(io, gpa, arena, init.environ_map, update_force, update_check);
         return;
     }
 
@@ -3707,7 +4789,7 @@ pub fn main(init: std.process.Init) !void {
             \\no API key found. quickest fixes:
             \\  graff login                         free codegraff key (device-code OAuth)
             \\  graff key set <provider> <key>      store a key (macOS Keychain, else 0600 file)
-            \\  export ANTHROPIC_API_KEY=sk-ant-…   or CODEGRAFF/DEEPSEEK/OPENAI/MINIMAX/XIAOMI/KIMI/XAI/ZAI _API_KEY
+            \\  export ANTHROPIC_API_KEY=sk-ant-…   or CODEGRAFF/DEEPSEEK/OPENAI/MINIMAX/XIAOMI/KIMI/MOONSHOT/XAI/ZAI _API_KEY
             \\a Codex CLI login (~/.codex/auth.json) is also picked up automatically.
         , .{});
     };
@@ -3741,15 +4823,21 @@ pub fn main(init: std.process.Init) !void {
     var stdout_buf: [4096]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const out = &stdout_writer.interface;
+    g_out = out;
 
     // Color only on an interactive terminal, and honor NO_COLOR.
     if (init.environ_map.get("NO_COLOR") == null and (Io.File.stdout().isTty(io) catch false)) {
         style = Style.ansi;
         use_color = true;
     }
+    var cwd_buf: [4096]u8 = undefined;
+    g_cwd_display = if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
+        try arena.dupe(u8, cwd_buf[0..n])
+    else |_|
+        try arena.dupe(u8, init.environ_map.get("PWD") orelse ".");
 
     if (!json_mode and oneshot_prompt == null) {
-        try out.print("{s}simple-harness{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, trace_path });
+        try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.cyan, g_cwd_display, style.reset, trace_path });
         try out.flush();
         if (codex_account) |acct| {
             try out.print("logged into Codex (ChatGPT account {s}…) — /model gpt-5.5\n", .{acct[0..@min(acct.len, 8)]});
@@ -3885,10 +4973,20 @@ pub fn main(init: std.process.Init) !void {
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
+    // PRANK — remove in a future release (see the limyuxi_dragon_prank flag).
+    // A yellow dragon thinking spinner just for limyuxi, when running from their
+    // home dir. Still overridable at runtime with /animation.
+    if (limyuxi_dragon_prank and (std.mem.eql(u8, g_cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, g_cwd_display, "/Users/limyuxi/"))) {
+        if (animIndex("dragon")) |di| {
+            g_anim_index = di;
+            g_anim_off = false;
+            g_anim_random = false;
+        }
+    }
     connect: {
         for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
         for (companion_servers) |c| {
-            if (skillDisabled(c.server) or !binOnPath(io, c.bin)) continue;
+            if (companionDisabled(c.server) or !binOnPath(io, c.bin)) continue;
             if (registry_storage.addServer(c.server, c.bin, &.{"--mcp"})) |_| {
                 break;
             } else |err| {
@@ -3900,6 +4998,9 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
+    // If the metered companion connected, probe its license once so the note
+    // below can lean into the paid tools (vs the conservative free-codedb note).
+    if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);
 
     var approvals: Approvals = .{ .yolo = yolo_flag };
     defer {
@@ -3954,7 +5055,8 @@ pub fn main(init: std.process.Init) !void {
     // succeeded). Native tools remain the fallback either way.
     for (mcp_notes) |mn| {
         if (!mcpServerConnected(mcp_tools, mn.server)) continue;
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, mn.note });
+        const note = codedbproNote(mn.server, g_codedbpro_licensed, mn.note);
+        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, note });
     }
     const sys_strict: []const u8 = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, strict_note });
 
@@ -3984,8 +5086,14 @@ pub fn main(init: std.process.Init) !void {
         .tools_openai = try renderRootTools(arena, .openai, &root_specs, mcp_tools),
         .tools_responses = try renderRootTools(arena, .responses, &root_specs, mcp_tools),
     };
+    const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(io)});
+    root.session_name = if (resume_flag) |name| (if (!new_session_flag and !no_resume_flag) name else fresh_session_name) else fresh_session_name;
     loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
     tracer.note("session", root.provider.model);
+
+    if (oneshot_prompt != null and resume_flag != null and !new_session_flag and !no_resume_flag) {
+        loadSession(&root, keys, arena, root.session_name) catch {};
+    }
 
     // One-shot print mode: run the single prompt to completion, print the
     // final text to stdout, exit. Tool progress goes to stderr (say() with no
@@ -3996,7 +5104,12 @@ pub fn main(init: std.process.Init) !void {
         root.in = null; // gate: deny instead of prompt; ask_user: self-decide
         root.out = null; // tool progress → stderr; stdout carries only the answer
         root.stream_quiet = true;
-        try root.messages.append(try textMessage(arena, "user", prompt_text));
+        const ultracode_msg = try applyUltracodeSteering(arena, prompt_text, root.ultracode_mode);
+        if (ultracode_msg.explicit) {
+            tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
+            if (g_telem) |t| t.ultracode();
+        }
+        try root.messages.append(try textMessage(arena, "user", ultracode_msg.text));
         if (g_telem) |t| t.countTurn();
         const final_text = root.runTurn() catch |err| switch (err) {
             error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
@@ -4010,6 +5123,9 @@ pub fn main(init: std.process.Init) !void {
         if (CostTally.render(g_cost.snap(io), &uw)) {
             std.debug.print("[usage] {s}\n", .{uw.buffered()});
         } else |_| {}
+        saveSession(&root, arena, root.session_name) catch |err| {
+            std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
+        };
         return;
     }
 
@@ -4035,20 +5151,69 @@ pub fn main(init: std.process.Init) !void {
     var prev_turn_id: u64 = 0;
     var prev_prompt_fp: [16]u8 = promptFingerprint(root.systemPrompt());
 
+    // Explicit resume only: bare `graff` starts fresh, while `--resume <name>`
+    // restores that autosave target. Best-effort: a missing/keyless/corrupt
+    // file silently starts fresh.
+    if (oneshot_prompt == null and resume_flag != null and !new_session_flag and !no_resume_flag) {
+        if (loadSession(&root, keys, arena, root.session_name)) |_| {
+            if (root.messages.items.len > 0) {
+                // Estimate the restored context from the file size (~4 bytes/token).
+                const est_path = try std.fmt.allocPrint(arena, "{s}{s}", .{ root.session_name, session_ext });
+                const est: u64 = if (Io.Dir.cwd().statFile(io, est_path, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
+                if (!json_mode) {
+                    const restored_title = firstUserTitle(arena, root.messages);
+                    setTerminalTitle(out, restored_title, g_cwd_display);
+                    try printSessionHeader(out, restored_title, g_cwd_display);
+                    root.tui_header_shown = true;
+                    try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ root.session_name, session_ext, root.messages.items.len, root.provider.model });
+                    try out.flush();
+                }
+                // Cold cache: if the restored context is as large as what would
+                // trigger live compaction, the first turn would re-bill the whole
+                // thing — summarize up front instead.
+                if (est >= root.provider.compactAt()) {
+                    root.last_context_tokens = est;
+                    _ = root.compact() catch |err| switch (err) {
+                        error.ApiError => {},
+                        else => |e| root.say("[resume compaction skipped: {t}]\n", .{e}) catch {},
+                    };
+                }
+            }
+        } else |_| {}
+    }
+
     while (true) {
-        try root.prompt();
-        const raw_line = if (interactive)
-            (try readLine(&root, in, out, gpa, &history, &linebuf)) orelse break
-        else
-            (try in.takeDelimiter('\n')) orelse break;
+        // Steering drain: prompts typed while the previous turn streamed
+        // were captured into g_steer_queue. Run them now, one after
+        // another, in place of reading a fresh line — Codex-style
+        // follow-up queueing. (Empty in --json/GUI mode: no capture.)
+        resetSteerPartial();
+        const steer_entry: ?SteerEntry = popSteer();
+        defer if (steer_entry) |e| std.heap.page_allocator.free(e.text);
+        const raw_line: []const u8 = if (steer_entry) |e| blk: {
+            if (e.force) {
+                try out.print("{s}↳ force ›{s} {s}\n", .{ style.yellow, style.reset, e.text });
+            } else {
+                try out.print("{s}↳ steer ›{s} {s}\n", .{ style.cyan, style.reset, e.text });
+            }
+            try out.flush();
+            break :blk e.text;
+        } else if (interactive) blk: {
+            try root.prompt();
+            break :blk (try readLine(&root, in, out, gpa, &history, &linebuf)) orelse break;
+        } else (try in.takeDelimiter('\n')) orelse break;
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
+        const loop_prompt: ?[]const u8 = if (!json_mode and std.mem.startsWith(u8, line, "/loop "))
+            std.mem.trim(u8, line["/loop".len..], " \t")
+        else
+            null;
         if (!json_mode) {
             const l = if (line.len > 0 and line[0] == '/') line[1..] else line;
             if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
         }
 
-        if (!json_mode and line[0] == '/') {
+        if (!json_mode and line[0] == '/' and loop_prompt == null) {
             // Bare "/" on a TTY: open the filterable command menu.
             if (interactive and line.len == 1) {
                 if (listPicker(&root, arena, out, "Command ›", &command_menu)) |idx| {
@@ -4068,7 +5233,7 @@ pub fn main(init: std.process.Init) !void {
         // {"type":"score","prompt_sha":"...","score":0.7,"notes":"..."}
         // appends an evaluation record for an agent variant to the
         // trajectory archive (the DGM evaluation phase writing back).
-        const base_msg: []const u8 = if (json_mode) blk: {
+        const base_msg: []const u8 = if (loop_prompt) |lp| lp else if (json_mode) blk: {
             const parsed = std.json.parseFromSliceLeaky(Value, arena, line, .{ .allocate = .alloc_always }) catch {
                 root.emit(.{ .type = "error", .message = "invalid JSON (expect {\"type\":\"user\",\"text\":\"...\"})" });
                 continue;
@@ -4078,22 +5243,21 @@ pub fn main(init: std.process.Init) !void {
             else
                 "";
             if (std.mem.eql(u8, rtype, "set_model")) {
-                const name = if (parsed.object.get("name")) |v| (if (v == .string) v.string else "") else "";
-                if (name.len == 0) {
-                    root.emit(.{ .type = "error", .message = "set_model needs a non-empty name" });
-                    continue;
-                }
-                const provider = resolveProviderRequest(&keys, arena, name) catch |err| {
+                const provider_field = if (parsed.object.get("provider")) |v| (if (v == .string) v.string else "") else "";
+                const model_field = if (parsed.object.get("model")) |v| (if (v == .string) v.string else "") else "";
+                const legacy_name = if (parsed.object.get("name")) |v| (if (v == .string) v.string else "") else "";
+                const provider = resolveProviderControlRequest(&keys, arena, provider_field, model_field, legacy_name) catch |err| {
+                    const label = setModelRequestLabel(arena, provider_field, model_field, legacy_name) catch "<requested model>";
                     const message = switch (err) {
-                        error.MissingKey => try std.fmt.allocPrint(arena, "no key/login for requested model '{s}'", .{name}),
-                        error.InvalidModelRequest => "set_model needs a non-empty name",
-                        else => try std.fmt.allocPrint(arena, "failed to switch model '{s}': {s}", .{ name, @errorName(err) }),
+                        error.MissingKey => try std.fmt.allocPrint(arena, "no key/login for requested model '{s}'", .{label}),
+                        error.InvalidModelRequest => "set_model needs a non-empty provider/model or legacy name",
+                        else => try std.fmt.allocPrint(arena, "failed to switch model '{s}': {s}", .{ label, @errorName(err) }),
                     };
                     root.emit(.{ .type = "error", .message = message });
                     continue;
                 };
                 const note = applyProvider(&root, arena, provider);
-                root.emit(.{ .type = "model", .ok = true, .id = provider.id, .name = provider.model, .context = provider.context, .note = note });
+                root.emit(.{ .type = "model", .ok = true, .provider = provider.id, .model = provider.model, .context = provider.context, .note = note });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "compact")) {
@@ -4151,15 +5315,22 @@ pub fn main(init: std.process.Init) !void {
                     root.emit(.{ .type = "error", .message = "set_effort needs level 'low', 'medium', or 'high'" });
                     continue;
                 }
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
                 root.emit(.{ .type = "effort", .ok = true, .level = level, .applies = root.effortApplies() });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "set_fast")) {
                 const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
                 root.fast = on;
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
                 root.emit(.{ .type = "fast", .ok = true, .on = on, .applies = root.provider.kind == .responses });
+                continue;
+            }
+            if (std.mem.eql(u8, rtype, "set_ultracode")) {
+                const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
+                root.ultracode_mode = on;
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+                root.emit(.{ .type = "ultracode", .ok = true, .on = on });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "score")) {
@@ -4233,12 +5404,34 @@ pub fn main(init: std.process.Init) !void {
                 root.emit(.{ .type = "system_prompt", .ok = true, .append = append, .chars = root.sys_normal.len });
                 continue;
             }
+            if (parsed.object.get("maxToolCalls") orelse parsed.object.get("max_tool_calls")) |v| switch (v) {
+                .integer => |n| max_tool_calls = if (n >= 0) @intCast(n) else null,
+                .null => max_tool_calls = null,
+                else => {},
+            };
+            if (parsed.object.get("dedupeToolCalls") orelse parsed.object.get("dedupe_tool_calls")) |v| {
+                if (v == .bool) dedupe_tool_calls = v.bool;
+            }
             break :blk text;
         } else line;
 
+        // Persistent goal steering is prepended to every normal/loop turn.
+        const goal_msg: []const u8 = if (root.goal) |goal| try std.fmt.allocPrint(arena,
+            \\{s}
+            \\
+            \\[harness goal: {s}]
+        , .{ base_msg, goal }) else base_msg;
+
+        // /loop asks the model to work autonomously through plan→act→verify.
+        const loop_msg: []const u8 = if (loop_prompt != null) try std.fmt.allocPrint(arena,
+            \\{s}
+            \\
+            \\[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps.]
+        , .{goal_msg}) else goal_msg;
+
         // Plan mode: steer the model to explore read-only and present a plan
         // (the gate enforces the read-only part regardless).
-        const msg: []const u8 = if (!plan_mode) base_msg else try std.fmt.allocPrint(arena,
+        const msg: []const u8 = if (!plan_mode) loop_msg else try std.fmt.allocPrint(arena,
             \\{s}
             \\
             \\[harness note: plan mode is ON — read-only. Explore with read-only
@@ -4246,43 +5439,44 @@ pub fn main(init: std.process.Init) !void {
             \\the changes themselves, sequence, risks) and ask the user to
             \\approve it. Do not write files or run mutating commands — the
             \\gate will deny them. The user toggles execution back on with /plan.]
-        , .{base_msg});
+        , .{loop_msg});
 
         // Promote a GUI `@[image]` attachment to a native vision block when the
         // model can see (otherwise it only gets the path and resorts to OCR).
         stageGuiImageAttachment(&root, msg);
 
-        // "ultracode" codeword: opt this turn into multi-agent workflow mode.
-        if (std.ascii.indexOfIgnoreCase(msg, "ultracode") != null) {
+        // TUI/session header: once the first real prompt materializes the chat,
+        // show what this terminal tab is working on and the exact folder, like
+        // the GUI conversation header. Keep the terminal/window title in sync
+        // at the start of each user turn.
+        if (!json_mode) {
+            const turn_title = titleFromPrompt(base_msg);
+            setTerminalTitle(out, turn_title, g_cwd_display);
+            if (!root.tui_header_shown) {
+                try printSessionHeader(out, turn_title, g_cwd_display);
+                root.tui_header_shown = true;
+            }
+        }
+
+        // "ultracode" codeword or persistent /ultracode mode: opt turns into multi-agent workflow mode.
+        const ultracode_msg = try applyUltracodeSteering(arena, msg, root.ultracode_mode);
+        if (ultracode_msg.explicit) {
             if (!json_mode) {
-                try out.writeAll("⚡ ultracode — multi-agent workflow mode engaged\n");
+                if (interactive) {
+                    ultracodeShine(out, io);
+                    try out.writeAll("⚡ multi-agent workflow mode engaged\n");
+                } else {
+                    try out.writeAll("⚡ ultracode — multi-agent workflow mode engaged\n");
+                }
                 try out.flush();
             }
             tracer.note("ultracode", msg[0..@min(msg.len, 120)]);
             if (g_telem) |t| t.ultracode();
-            const augmented = try std.fmt.allocPrint(arena,
-                \\{s}
-                \\
-                \\[harness note: the user invoked the "ultracode" codeword, opting
-                \\this turn into multi-agent orchestration. Fulfill the request with
-                \\the workflow tool: decompose it into sequential phases of parallel
-                \\subagents — fan out for coverage first, then a synthesis phase.
-                \\Tell code-exploration subagents to go through the repo with the
-                \\codedb tool (search / symbol / callers / outline / context) before
-                \\reaching for bash grep — it is indexed and structural.
-                \\Use the workflow even if you could do the work solo; skip it only
-                \\if the message needs a purely conversational reply.]
-            , .{msg});
-            if (root.pending_image) |img| {
-                try root.messages.append(try imageMessage(arena, root.provider.kind, augmented, img));
-                root.pending_image = null;
-            } else try root.messages.append(try textMessage(arena, "user", augmented));
-        } else {
-            if (root.pending_image) |img| {
-                try root.messages.append(try imageMessage(arena, root.provider.kind, msg, img));
-                root.pending_image = null;
-            } else try root.messages.append(try textMessage(arena, "user", msg));
         }
+        if (root.pending_image) |img| {
+            try root.messages.append(try imageMessage(arena, root.provider.kind, ultracode_msg.text, img));
+            root.pending_image = null;
+        } else try root.messages.append(try textMessage(arena, "user", ultracode_msg.text));
         snaps.turn += 1; // tag file edits in this turn (matches /rewind numbering)
         if (g_telem) |t| t.countTurn();
         // Trajectory: claim this turn's node id up front so subagents spawned
@@ -4293,6 +5487,9 @@ pub fn main(init: std.process.Init) !void {
             break :blk id;
         } else 0;
         root.tools_used.clear(io); // per-turn tool log for the turn's node
+        root.tool_calls_this_turn = 0;
+        root.seen_tool_keys.clearRetainingCapacity();
+        if (json_mode) root.emit(.{ .type = "started", .provider = root.provider.id, .model = root.provider.model });
         const turn_started = Io.Timestamp.now(io, .awake);
         // A failed turn must never kill the session: ApiError is already
         // reported inside request(); anything else is surfaced here. Either
@@ -4333,13 +5530,24 @@ pub fn main(init: std.process.Init) !void {
                 else
                     "[response interrupted by user]";
                 try root.messages.append(try textMessage(arena, "assistant", marker));
-                try out.print("{s}✗ interrupted (esc){s}\n", .{ style.yellow, style.reset });
+                const int_msg: []const u8 = if (g_force_interrupt) "✗ interrupted (force)" else "✗ interrupted (esc)";
+                g_force_interrupt = false;
+                try out.print("{s}{s}{s}\n", .{ style.yellow, int_msg, style.reset });
                 try out.flush();
+                saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
             error.ApiError => {
                 if (g_telem) |t| t.errorEvent("api", root.last_api_error orelse "api error");
-                if (json_mode) root.emit(.{ .type = "error", .message = root.last_api_error orelse "api error" });
+                if (json_mode) {
+                    root.emit(.{ .type = "error", .message = root.last_api_error orelse "api error" });
+                    const partial = std.mem.trim(u8, root.partial_text.items, " \t\r\n");
+                    if (partial.len > 0) {
+                        root.emit(.{ .type = "finalizing" });
+                        root.emit(.{ .type = "turn", .text = partial, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = false, .metadata_complete = root.last_context_tokens > 0 });
+                    }
+                }
+                saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
             else => |e| {
@@ -4349,10 +5557,30 @@ pub fn main(init: std.process.Init) !void {
                 } else {
                     root.say("[turn aborted: {t}]\n", .{e}) catch {};
                 }
+                saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
         };
-        if (json_mode) root.emit(.{ .type = "turn", .text = final_text, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd });
+        if (json_mode) {
+            const emitted_text = if (final_text.len == 0 and root.partial_text.items.len > 0)
+                std.mem.trim(u8, root.partial_text.items, " \t\r\n")
+            else
+                final_text;
+            root.emit(.{ .type = "finalizing" });
+            root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = true, .metadata_complete = root.last_context_tokens > 0 });
+        }
+
+        // After the first successful turn, replace the mechanical tab title with
+        // an AI summary of the task (one cheap call on the user's current model).
+        // The answer already streamed, so this resolves while the user reads it;
+        // any failure just keeps the mechanical title. Toggle with /title off.
+        if (!json_mode and root.ai_title and !root.ai_title_done) {
+            root.ai_title_done = true;
+            if (generateSessionTitle(&root, base_msg)) |t| {
+                root.session_title = arena.dupe(u8, t) catch t;
+                setTerminalTitle(out, t, g_cwd_display);
+            }
+        }
 
         // turn_end lifecycle hooks (best-effort; interrupted/errored turns
         // `continue` above and never reach here, so ok is always true).
@@ -4369,6 +5597,22 @@ pub fn main(init: std.process.Init) !void {
                 else => |e| root.say("[compaction skipped: {t}]\n", .{e}) catch {},
             };
         }
+        // opencode-style continuous autosave: persist after every turn so a
+        // crash or quit never loses the thread — last.session.json, the same
+        // file /resume reads. Best-effort; a write failure never breaks the loop.
+        saveSession(&root, arena, root.session_name) catch {};
+    }
+    // Final save on exit also captures command-driven edits since the last turn
+    // (/clear, /rewind) so the next start resumes the true end state.
+    if (!json_mode and root.messages.items.len > 0) {
+        saveSession(&root, arena, root.session_name) catch |err| {
+            out.print("{s}⚠ session save failed: {t}{s}\n", .{ style.yellow, err, style.reset }) catch {};
+            out.flush() catch {};
+        };
+        out.print("{s}↩ session saved → {s}{s}{s}\n", .{ style.dim, root.session_name, style.reset, session_ext }) catch {};
+        out.flush() catch {};
+    } else {
+        saveSession(&root, arena, root.session_name) catch {};
     }
     try out.writeAll("\n");
     try out.flush();
@@ -4501,6 +5745,34 @@ fn applyProvider(root: *Agent, arena: Allocator, p: Provider) []const u8 {
     return note;
 }
 
+fn resolveProviderControlRequest(
+    keys: *Keys,
+    arena: Allocator,
+    provider_query: []const u8,
+    model_query: []const u8,
+    legacy_name: []const u8,
+) !Provider {
+    const provider_id = std.mem.trim(u8, provider_query, " \t");
+    const model = std.mem.trim(u8, model_query, " \t");
+
+    if (provider_id.len != 0) {
+        for (provider_specs) |spec| {
+            if (!std.mem.eql(u8, spec.id, provider_id)) continue;
+            const selected_model = if (model.len == 0) spec.default_model else try arena.dupe(u8, model);
+            return keys.providerById(spec.id, selected_model);
+        }
+        return error.InvalidProvider;
+    }
+
+    if (model.len != 0) {
+        const resolved = resolveModelName(keys.*, model);
+        const name = try arena.dupe(u8, resolved orelse model);
+        return keys.providerFor(name);
+    }
+
+    return resolveProviderRequest(keys, arena, legacy_name);
+}
+
 fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Provider {
     const arg = std.mem.trim(u8, query, " \t");
     if (arg.len == 0) return error.InvalidModelRequest;
@@ -4530,6 +5802,15 @@ fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Pro
 /// (OpenAI↔Anthropic↔Responses) the stored messages don't fit the new shape:
 /// with keep_context on (default) the dialogue is translated to a text-only
 /// history and carried over; off clears it.
+fn setModelRequestLabel(arena: Allocator, provider_query: []const u8, model_query: []const u8, legacy_name: []const u8) ![]const u8 {
+    const provider_id = std.mem.trim(u8, provider_query, " \t");
+    const model = std.mem.trim(u8, model_query, " \t");
+    if (provider_id.len != 0 and model.len != 0) return std.fmt.allocPrint(arena, "{s} {s}", .{ provider_id, model });
+    if (provider_id.len != 0) return arena.dupe(u8, provider_id);
+    if (model.len != 0) return arena.dupe(u8, model);
+    return arena.dupe(u8, std.mem.trim(u8, legacy_name, " \t"));
+}
+
 fn switchProvider(root: *Agent, arena: Allocator, p: Provider, out: *Io.Writer) !void {
     const note = applyProvider(root, arena, p);
     try out.print("switched to {s} via {s} ({t} format, {d}k ctx) — {s}\n", .{
@@ -4782,12 +6063,74 @@ fn listPicker(root: *Agent, arena: Allocator, out: *Io.Writer, title: []const u8
     }
 }
 
+const UltracodeMessage = struct {
+    text: []const u8,
+    explicit: bool,
+};
+
+const ultracode_explicit_note =
+    \\[harness note: the user invoked the "ultracode" codeword, opting
+    \\this turn into multi-agent orchestration. Fulfill the request with
+    \\the workflow tool: decompose it into sequential phases of parallel
+    \\subagents — fan out for coverage first, then a synthesis phase.
+    \\Tell code-exploration subagents to go through the repo with the
+    \\codedb tool (search / symbol / callers / outline / context) before
+    \\reaching for bash grep — it is indexed and structural.
+    \\Use the workflow even if you could do the work solo; skip it only
+    \\if the message needs a purely conversational reply.]
+;
+
+const ultracode_persistent_note =
+    \\[harness note: ultracode mode is enabled for this session. Use the
+    \\workflow tool for coding tasks: decompose the work into sequential
+    \\phases with parallel subagents for exploration/review where helpful,
+    \\then synthesize and implement. Tell code-exploration subagents to go
+    \\through the repo with the codedb tool (search / symbol / callers /
+    \\outline / context) before reaching for bash grep — it is indexed and
+    \\structural.]
+;
+
+fn applyUltracodeSteering(arena: Allocator, msg: []const u8, persistent_enabled: bool) !UltracodeMessage {
+    const explicit = std.ascii.indexOfIgnoreCase(msg, "ultracode") != null;
+    if (explicit) {
+        return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_explicit_note }), .explicit = true };
+    }
+    if (persistent_enabled) {
+        return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_persistent_note }), .explicit = false };
+    }
+    return .{ .text = msg, .explicit = false };
+}
+
+const ultracode_on_first = [_]PickItem{
+    .{ .name = "on", .desc = "Enable ultracode orchestration" },
+    .{ .name = "off", .desc = "Disable ultracode orchestration" },
+};
+const ultracode_off_first = [_]PickItem{
+    .{ .name = "off", .desc = "Disable ultracode orchestration" },
+    .{ .name = "on", .desc = "Enable ultracode orchestration" },
+};
+
+fn ultracodeToggleItems(enabled: bool) []const PickItem {
+    return if (enabled) &ultracode_off_first else &ultracode_on_first;
+}
+
+fn pickUltracodeMode(root: *Agent, arena: Allocator, out: *Io.Writer) ?bool {
+    const items = ultracodeToggleItems(root.ultracode_mode);
+    const idx = listPicker(root, arena, out, "Ultracode ›", items) orelse return null;
+    return std.mem.eql(u8, items[idx].name, "on");
+}
+
 /// The slash-command menu shown for a bare "/": every REPL command with a
 /// one-line description, picked via listPicker. Returns the command to run.
 const command_menu = [_]PickItem{
     .{ .name = "/model", .desc = "switch model/provider (picker)" },
     .{ .name = "/models", .desc = "list known models, context windows" },
     .{ .name = "/clear", .desc = "wipe the conversation, start fresh" },
+    .{ .name = "/new", .desc = "start a new autosaved session" },
+    .{ .name = "/rename", .desc = "rename the current session title" },
+    .{ .name = "/goal", .desc = "set/show persistent objective steering" },
+    .{ .name = "/loop", .desc = "run an autonomous plan→act→verify prompt" },
+    .{ .name = "/bash", .desc = "run a shell command in the current workspace" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
     .{ .name = "/plan", .desc = "toggle plan mode (read-only, propose first)" },
     .{ .name = "/resume", .desc = "restore a saved session (picker)" },
@@ -4802,6 +6145,9 @@ const command_menu = [_]PickItem{
     .{ .name = "/effort", .desc = "thinking depth: low|medium|high (codex, deepseek, codegraff)" },
     .{ .name = "/reasoning", .desc = "alias for /effort" },
     .{ .name = "/fast", .desc = "codex priority service tier — lower latency (gpt-5.5)" },
+    .{ .name = "/ultracode", .desc = "toggle persistent ultracode (multi-agent workflow) mode" },
+    .{ .name = "/thinking", .desc = "show/collapse the model's live reasoning stream" },
+    .{ .name = "/title", .desc = "AI-name the tab from your first prompt (on by default)" },
     .{ .name = "/image", .desc = "attach an image to the next message" },
     .{ .name = "/paste", .desc = "attach the clipboard image" },
     .{ .name = "/trace", .desc = "toggle the JSONL event trace" },
@@ -4842,8 +6188,91 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.messages = std.json.Array.init(arena);
         root.last_context_tokens = 0;
         root.last_cache_read = 0;
+        root.tui_header_shown = false;
         root.todos.clearRetainingCapacity();
+        saveSession(root, arena, root.session_name) catch {};
+        setTerminalTitle(out, "Chat", g_cwd_display);
         try out.writeAll("context cleared — fresh conversation\n");
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/new")) {
+        root.messages = std.json.Array.init(arena);
+        root.last_context_tokens = 0;
+        root.last_cache_read = 0;
+        root.todos.clearRetainingCapacity();
+        root.goal = null;
+        root.ultracode_mode = false;
+        root.session_title = null;
+        root.session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(root.io)});
+        saveSession(root, arena, root.session_name) catch {};
+        try out.print("new session → {s}{s}\n", .{ root.session_name, session_ext });
+        try out.flush();
+        return;
+    }
+    if (std.mem.startsWith(u8, line, "/rename")) {
+        const title = std.mem.trim(u8, line["/rename".len..], " \t");
+        if (title.len == 0) {
+            try out.writeAll("usage: /rename <title>\n");
+        } else {
+            root.session_title = try arena.dupe(u8, title);
+            saveSession(root, arena, root.session_name) catch {};
+            try out.print("session title → {s}\n", .{title});
+        }
+        try out.flush();
+        return;
+    }
+    if (std.mem.startsWith(u8, line, "/goal")) {
+        const text = std.mem.trim(u8, line["/goal".len..], " \t");
+        if (text.len == 0) {
+            if (root.goal) |goal| try out.print("Current goal: {s}\nClear it with /goal clear.\n", .{goal}) else try out.writeAll("No active goal. Set one with /goal <objective>.\n");
+        } else if (std.ascii.eqlIgnoreCase(text, "clear") or std.ascii.eqlIgnoreCase(text, "off")) {
+            root.goal = null;
+            saveSession(root, arena, root.session_name) catch {};
+            try out.writeAll("Goal cleared. Future turns will not get goal steering.\n");
+        } else {
+            root.goal = try arena.dupe(u8, text);
+            saveSession(root, arena, root.session_name) catch {};
+            try out.print("Goal set: {s}\nFuture turns in this session will include this objective as steering.\n", .{text});
+        }
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/loop")) {
+        try out.writeAll("usage: /loop <prompt> — run an autonomous plan→act→verify pass.\n");
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/bash") or std.mem.startsWith(u8, line, "/bash ")) {
+        const cmd = std.mem.trim(u8, line["/bash".len..], " \t\r\n");
+        if (cmd.len == 0) {
+            try out.writeAll("usage: /bash <command>\n");
+            try out.flush();
+            return;
+        }
+        var input_obj: std.json.ObjectMap = .empty;
+        try input_obj.put(arena, "command", .{ .string = cmd });
+        const call: ToolCall = .{ .id = "slash-bash", .name = "bash", .input = .{ .object = input_obj } };
+        if (try root.gateTool(call)) |denied| {
+            try out.print("{s}\n", .{denied.text});
+            try out.flush();
+            return;
+        }
+        const result = execTool(.{
+            .gpa = root.gpa,
+            .io = root.io,
+            .client = root.client,
+            .provider = root.provider,
+            .registry = root.registry,
+            .from_sub = false,
+            .approvals = root.approvals,
+            .tracer = root.tracer,
+            .snapshots = root.snapshots,
+            .tools_used = &root.tools_used,
+        }, call);
+        defer root.gpa.free(result.text);
+        try out.writeAll(result.text);
+        if (result.text.len == 0 or result.text[result.text.len - 1] != '\n') try out.writeAll("\n");
         try out.flush();
         return;
     }
@@ -5258,11 +6687,57 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/fast") or std.mem.eql(u8, line, "/fast on") or std.mem.eql(u8, line, "/fast off")) {
         root.fast = if (std.mem.eql(u8, line, "/fast on")) true else if (std.mem.eql(u8, line, "/fast off")) false else !root.fast;
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("fast mode: {s}{s}\n", .{
             if (root.fast) "on" else "off",
             if (root.provider.kind != .responses) " (codex only — current model ignores it)" else "",
         });
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/thinking") or std.mem.eql(u8, line, "/thinking on") or std.mem.eql(u8, line, "/thinking off")) {
+        root.show_thinking = if (std.mem.eql(u8, line, "/thinking on")) true else if (std.mem.eql(u8, line, "/thinking off")) false else !root.show_thinking;
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        try out.print("thinking: {s} ({s}){s}\n", .{
+            if (root.show_thinking) "shown" else "collapsed",
+            if (root.show_thinking) "stream reasoning live" else "spinner only",
+            if (saved) "" else " (not persisted)",
+        });
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/title") or std.mem.eql(u8, line, "/title on") or std.mem.eql(u8, line, "/title off")) {
+        root.ai_title = if (std.mem.eql(u8, line, "/title on")) true else if (std.mem.eql(u8, line, "/title off")) false else !root.ai_title;
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        try out.print("AI session title: {s} ({s}){s}\n", .{
+            if (root.ai_title) "on" else "off",
+            if (root.ai_title) "name the tab from your first prompt" else "use the prompt text verbatim",
+            if (saved) "" else " (not persisted)",
+        });
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/ultracode") or std.mem.startsWith(u8, line, "/ultracode ")) {
+        const arg = std.mem.trim(u8, line["/ultracode".len..], " \t\r\n");
+        const next = if (arg.len == 0) blk: {
+            if (use_color and root.in != null) {
+                break :blk pickUltracodeMode(root, arena, out) orelse return;
+            }
+            try out.writeAll("usage: /ultracode on|off\n");
+            try out.flush();
+            return;
+        } else if (std.mem.eql(u8, arg, "on"))
+            true
+        else if (std.mem.eql(u8, arg, "off"))
+            false
+        else {
+            try out.writeAll("usage: /ultracode on|off\n");
+            try out.flush();
+            return;
+        };
+        root.ultracode_mode = next;
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        try out.print("ultracode mode: {s}{s}\n", .{ if (root.ultracode_mode) "on" else "off", if (saved) "" else " (not persisted)" });
         try out.flush();
         return;
     }
@@ -5280,7 +6755,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return;
         }
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast);
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("reasoning effort: {s}{s}\n", .{
             @tagName(root.reasoning),
             if (!root.effortApplies()) " (current model ignores it — applies to codex, deepseek, codegraff)" else "",
@@ -5641,12 +7116,13 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.startsWith(u8, line, "/save")) {
         const arg = std.mem.trim(u8, line["/save".len..], " \t");
-        const name = if (arg.len == 0) "last" else arg;
+        const name = if (arg.len == 0) root.session_name else arg;
         saveSession(root, arena, name) catch |err| {
             try out.print("save failed: {t}\n", .{err});
             try out.flush();
             return;
         };
+        root.session_name = name;
         try out.print("saved session → {s}{s}\n", .{ name, session_ext });
         try out.flush();
         return;
@@ -5685,6 +7161,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return;
         };
+        root.session_name = name;
         try out.print("resumed {s}{s} — {d} message(s), {s} via {s}{s}\n", .{
             name,                                 session_ext, root.messages.items.len, root.provider.model, root.provider.id,
             if (root.strict) " (strict)" else "",
@@ -5705,7 +7182,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
             const base = entry.name[0 .. entry.name.len - session_ext.len];
-            try out.print("  {s}\n", .{base});
+            try out.print("  {s}{s}\n", .{ base, if (std.mem.eql(u8, base, root.session_name)) "  ← current" else "" });
             n += 1;
         }
         if (n == 0) try out.writeAll("(no saved sessions in cwd)\n");
@@ -5723,7 +7200,12 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /model <name>   switch model/provider, fuzzy match (e.g. "sonnet", "opus")
         \\  /models         list known models, context windows, compaction points
         \\  /clear          wipe the conversation and start fresh
+        \\  /new            start a fresh autosaved session
+        \\  /rename <title> set the current session title
+        \\  /goal [text]    set/show persistent objective steering; /goal clear clears
+        \\  /loop <prompt>  run an autonomous plan→act→verify pass
         \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
+        \\  /ultracode      toggle persistent workflow mode; bare opens on/off picker, or /ultracode on|off
         \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
         \\  /login [tgt]    OAuth sign-in (no key to paste): codegraff | codex (alias oai) | kimi; bare → picker
         \\  /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
@@ -5742,7 +7224,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
         \\  /image <path>   attach an image to your next message (vision models only)
         \\  /paste          attach the clipboard image — macOS; also Ctrl-V (⌘V can't be captured)
-        \\  /save [name]    write the conversation to <name>.session.json (default: last)
+        \\  /save [name]    write the conversation to <name>.session.json (default: current)
         \\  /resume [name]  restore a saved conversation (no arg → interactive picker)
         \\  /sessions       list saved sessions in the cwd
         \\  /todo           show the current task list
@@ -5753,8 +7235,8 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\
         \\esc during a response interrupts the turn (what streamed stays in history).
         \\"always allow" answers persist to .harness/settings.json in the cwd.
-        \\codeword: include "ultracode" in any message to force a multi-agent
-        \\workflow turn (phases of parallel subagents, then synthesis).
+        \\codeword: include "ultracode" in any message to force one multi-agent
+        \\workflow turn; /ultracode on persists that behavior for future prompts.
         \\
         \\launch flags: --model <name> · --yolo (skip prompts) · -p "prompt" (one-shot) · --system-prompt/--append-system-prompt · --timing · --cost · --json (SDK protocol) · --help · --version
         \\subcommands: `graff login [codex]` (OAuth) · `graff key set <provider> <key>` (Keychain) · `graff --schema`
@@ -6067,7 +7549,10 @@ fn kimiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
             const refresh = strFieldObj(resp, "refresh_token") orelse "";
             const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 900) else 900;
             try writeKimiAuth(io, arena, home, a.string, refresh, @divTrunc(unixMs(io), 1000) + expires_in);
-            try out.print("✓ logged into Kimi — wrote {s}. /model kimi-k2.7\n", .{kimiAuthPath(arena, home)});
+            if (fetchKimiModel(io, gpa, arena, a.string)) |model|
+                try out.print("✓ logged into Kimi — wrote {s}. /model kimi {s}\n", .{ kimiAuthPath(arena, home), model })
+            else
+                try out.print("✓ logged into Kimi — wrote {s}. /model kimi-k2.7\n", .{kimiAuthPath(arena, home)});
             try out.flush();
             return;
         };
@@ -6109,6 +7594,44 @@ fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) ?[]
         }
     }
     return access;
+}
+
+// The Kimi for Coding plan's model-listing endpoint (sibling of the
+// chat/completions URL in provider_specs). The official Kimi Code client reads
+// the served model id from here rather than baking in a version, so login does
+// the same — staying correct when the plan's coding model is bumped.
+const kimi_models_url = "https://api.kimi.com/coding/v1/models";
+
+/// GET the coding-plan /models endpoint and return the first model id it
+/// advertises (arena-owned), or null on any failure — the caller falls back to
+/// the baked-in id so a network hiccup never breaks login. Carries the same
+/// bearer token + claude-code User-Agent the plan gates on.
+fn fetchKimiModel(io: Io, gpa: Allocator, arena: Allocator, access: []const u8) ?[]const u8 {
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
+    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{access}) catch return null;
+    const extra = [_]std.http.Header{
+        .{ .name = "authorization", .value = bearer },
+        .{ .name = "Accept", .value = "application/json" },
+    };
+    const res = client.fetch(.{
+        .location = .{ .url = kimi_models_url },
+        .method = .GET,
+        .response_writer = &aw.writer,
+        .headers = .{ .user_agent = .{ .override = kimi_user_agent } },
+        .extra_headers = &extra,
+    }) catch return null;
+    if (@intFromEnum(res.status) != 200) return null;
+    const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch return null;
+    if (v != .object) return null;
+    const data = v.object.get("data") orelse return null;
+    if (data != .array) return null;
+    for (data.array.items) |item| {
+        if (item != .object) continue;
+        if (strFieldObj(item.object, "id")) |id| if (id.len > 0) return id;
+    }
+    return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -6338,6 +7861,8 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
     var yolo = st.cfg.yolo;
     var sys = st.cfg.system_prompt;
     var append_sys = st.cfg.append_system_prompt;
+    var max_tools: ?u64 = null;
+    var dedupe_tools = false;
     if (std.mem.trim(u8, body, " \t\r\n").len > 0) {
         const v = std.json.parseFromSliceLeaky(Value, arena, body, .{ .allocate = .alloc_always }) catch
             return respondJson(st, req, .bad_request, "{\"error\":\"body must be a JSON object\"}");
@@ -6354,12 +7879,20 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
         if (v.object.get("append_system_prompt")) |s| if (s == .string) {
             append_sys = s.string;
         };
+        if (v.object.get("maxToolCalls") orelse v.object.get("max_tool_calls")) |m| if (m == .integer and m.integer >= 0) {
+            max_tools = @intCast(m.integer);
+        };
+        if (v.object.get("dedupeToolCalls") orelse v.object.get("dedupe_tool_calls")) |d| if (d == .bool) {
+            dedupe_tools = d.bool;
+        };
     }
 
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{ st.exe, "--json" });
     if (yolo) try argv.append(arena, "--yolo");
     if (model) |m| try argv.appendSlice(arena, &.{ "--model", m });
+    if (max_tools) |n| try argv.appendSlice(arena, &.{ "--max-tool-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
+    if (dedupe_tools) try argv.append(arena, "--dedupe-tool-calls");
     if (sys) |s| try argv.appendSlice(arena, &.{ "--system-prompt", s });
     if (append_sys) |s| try argv.appendSlice(arena, &.{ "--append-system-prompt", s });
 
@@ -6863,6 +8396,29 @@ fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, args: 
     try out.writeAll("usage: graff key set <provider> <key>  |  graff key list\n");
     try out.flush();
 }
+
+fn sessionTitle(root: *Agent) []const u8 {
+    if (root.session_title) |title| return title;
+    for (root.messages.items) |m| {
+        if (m != .object) continue;
+        const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
+        if (!std.mem.eql(u8, role, "user")) continue;
+        if (m.object.get("content")) |c| switch (c) {
+            .string => |text| return utf8Prefix(std.mem.trim(u8, text, " \t\r\n"), 80),
+            .array => |arr| for (arr.items) |part| {
+                if (part == .object) {
+                    const typ = if (part.object.get("type")) |v| (if (v == .string) v.string else "") else "";
+                    if (std.mem.eql(u8, typ, "text")) {
+                        if (part.object.get("text")) |tv| if (tv == .string) return utf8Prefix(std.mem.trim(u8, tv.string, " \t\r\n"), 80);
+                    }
+                }
+            },
+            else => {},
+        };
+    }
+    return "Untitled session";
+}
+
 /// Save the conversation (messages + provider id/model + strict flag) to
 /// <name>.session.json in the cwd. The JSON message array is already the
 /// provider-native wire shape, so resume is a verbatim restore.
@@ -6877,6 +8433,14 @@ fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     try s.write(root.provider.model);
     try s.objectField("strict");
     try s.write(root.strict);
+    try s.objectField("ultracode_mode");
+    try s.write(root.ultracode_mode);
+    try s.objectField("goal");
+    if (root.goal) |goal| try s.write(goal) else try s.write(null);
+    try s.objectField("title");
+    if (root.session_title) |title| try s.write(title) else try s.write(sessionTitle(root));
+    try s.objectField("updated_ms");
+    try s.write(unixMs(root.io));
     try s.objectField("messages");
     try s.write(Value{ .array = root.messages });
     try s.endObject();
@@ -6898,10 +8462,37 @@ fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !vo
     const model = if (obj.get("model")) |v| v.string else return error.BadSession;
     const msgs = if (obj.get("messages")) |v| (if (v == .array) v.array else return error.BadSession) else return error.BadSession;
     const strict = if (obj.get("strict")) |v| (v == .bool and v.bool) else false;
+    const ultracode_mode = if (obj.get("ultracode_mode")) |v| (v == .bool and v.bool) else false;
+    const goal = if (obj.get("goal")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
+    const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
 
     root.provider = try keys.providerById(pid, model);
     root.messages = msgs;
+    // Repair histories written by older builds where a Responses
+    // `function_call_output.output` was persisted as a byte array instead of a
+    // string. The Responses API rejects that ("input[N].output[0]: expected an
+    // object, got an integer instead"), and we restore messages verbatim — so a
+    // poisoned last.session.json would otherwise re-break every resume.
+    for (root.messages.items) |*m| {
+        if (m.* != .object) continue;
+        const mtype = if (m.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+        if (!std.mem.eql(u8, mtype, "function_call_output")) continue;
+        const out = m.object.get("output") orelse continue;
+        if (out == .string) continue; // already correct
+        var repaired: std.ArrayList(u8) = .empty;
+        if (out == .array) {
+            for (out.array.items) |el| {
+                if (el == .integer and el.integer >= 0 and el.integer <= 255) {
+                    try repaired.append(arena, @intCast(el.integer));
+                }
+            }
+        }
+        try m.object.put(arena, "output", .{ .string = repaired.items });
+    }
     root.strict = strict;
+    root.ultracode_mode = ultracode_mode;
+    root.goal = goal;
+    root.session_title = title;
     root.last_context_tokens = 0;
     root.cap_new = false; // per-provider; relearn on rejection
     root.effort_rejected = false;
@@ -6974,6 +8565,8 @@ const Agent = struct {
     sys_normal: []const u8 = main_system_prompt, // root system prompt (+ project instructions)
     sys_override: ?[]const u8 = null, // subagent-only: per-child system prompt (swarm prompt variants)
     tools_used: ToolSink = .{}, // external tool calls this agent made (per turn for the root)
+    tool_calls_this_turn: u64 = 0, // root-only hard budget counter (--max-tool-calls)
+    seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
     md_buf: std.ArrayList(u8) = .empty, // current incomplete streamed line (markdown rendering)
     md_fence: bool = false, // inside a ``` code fence while streaming
     md_kind: MdKind = .classify, // incremental renderer: current line's classification
@@ -6990,6 +8583,12 @@ const Agent = struct {
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
+    ultracode_mode: bool = false, // persistent ultracode (multi-agent workflow) mode (/ultracode)
+    show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
+    ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
+    goal: ?[]const u8 = null, // persistent objective steering (/goal)
+    session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
+    session_title: ?[]const u8 = null, // human-readable title/rename metadata
     sys_strict: []const u8 = main_system_prompt_strict,
     tools_anthropic: []const u8 = tools_anthropic_sub,
     tools_openai: []const u8 = tools_openai_sub,
@@ -7006,12 +8605,15 @@ const Agent = struct {
     partial_text: std.ArrayList(u8) = .empty,
     stream_quiet: bool = false, // suppress live streaming (compaction summary)
     streamed_text: bool = false, // the last request printed its text live
+    thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
+    ai_title_done: bool = false, // the one-time AI tab-title call has run this session
     arg_live: ArgLive = .{}, // live attempt_completion/ask_user argument text
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
     streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
     cap_new: bool = false, // provider rejected max_tokens → use max_completion_tokens
     effort_rejected: bool = false, // model rejected reasoning_effort → drop it (e.g. gpt-5.5 on chat/completions wants /v1/responses)
     next_ask_id: u64 = 1,
+    tui_header_shown: bool = false,
 
     fn prompt(self: *Agent) !void {
         if (json_mode) return; // SDK drives turns; no human prompt
@@ -7034,15 +8636,16 @@ const Agent = struct {
             const threshold = self.provider.compactAt();
             // % of the compaction budget already used — glanceable headroom.
             const pct = if (threshold > 0) self.last_context_tokens * 100 / threshold else 0;
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
-                style.dim,                style.reset,      style.cyan, self.provider.model, flag, style.dim,
-                self.last_context_tokens, threshold / 1000, pct,        cached,              cost, style.reset,
-                style.bold,               style.reset,
+            try w.print("\n{s}[{s}{s}{s}{s}{s} · cwd {s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
+                style.dim,   style.reset,   style.cyan,  self.provider.model,      flag,             style.dim,
+                style.reset, g_cwd_display, style.dim,   self.last_context_tokens, threshold / 1000, pct,
+                cached,      cost,          style.reset, style.bold,               style.reset,
             });
         } else {
-            try w.print("\n{s}[{s}{s}{s}{s}{s}{s}]{s} {s}›{s} ", .{
-                style.dim,   style.reset, style.cyan,  self.provider.model, flag, style.dim, cost,
-                style.reset, style.bold,  style.reset,
+            try w.print("\n{s}[{s}{s}{s}{s}{s} · cwd {s}{s}{s}{s}]{s} {s}›{s} ", .{
+                style.dim,   style.reset,   style.cyan, self.provider.model, flag,        style.dim,
+                style.reset, g_cwd_display, style.dim,  cost,                style.reset, style.bold,
+                style.reset,
             });
         }
         try w.flush();
@@ -7069,6 +8672,11 @@ const Agent = struct {
     /// field, e.g. tool input, serializes correctly). Best-effort.
     fn emit(self: *Agent, ev: anytype) void {
         const w = self.out orelse return;
+        // --json: the GUI stream is shared with pool-thread subagent emits
+        // (guiEmit), so serialize + flush under the lock — a raw line must never
+        // land mid-buffer and two writers must never interleave on stdout.
+        if (json_mode) g_gui_mu.lockUncancelable(self.io);
+        defer if (json_mode) g_gui_mu.unlock(self.io);
         var s: std.json.Stringify = .{ .writer = w };
         s.write(ev) catch return;
         w.writeByte('\n') catch return;
@@ -7084,10 +8692,7 @@ const Agent = struct {
     /// providers we know normalize a top-level reasoning_effort — the
     /// codegraff gateway and deepseek. Everything else ignores it.
     fn effortApplies(self: *const Agent) bool {
-        return self.provider.kind == .responses or
-            std.mem.eql(u8, self.provider.id, "codegraff") or
-            std.mem.eql(u8, self.provider.id, "deepseek") or
-            std.mem.eql(u8, self.provider.id, "kimi");
+        return providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
 
     fn toolsJson(self: *const Agent) []const u8 {
@@ -7138,6 +8743,7 @@ const Agent = struct {
             const body = try self.buildBody(tools, force, live, stream_usage);
             defer self.gpa.free(body);
             const t0: Io.Timestamp = .now(self.io, .awake);
+            if (json_mode and !self.sub) self.emit(.{ .type = "model_call_started", .provider = self.provider.id, .model = self.provider.model });
             // HTTP calls are flaky: a kept-alive connection the server closed
             // (HttpConnectionClosing), a reset, a truncated TLS read. Retry a
             // few times with a fresh connection; on persistent failure surface
@@ -7167,15 +8773,23 @@ const Agent = struct {
                             if (throttled) {
                                 const delay_ms = @min(@as(u64, 1000) << @intCast(@min(attempt, 3)), 8000);
                                 const what: []const u8 = if (err == error.RateLimited) "rate limited (429)" else "server error (5xx)";
-                                try self.say("[{s} — retrying in {d}s ({d}/{d})]\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts });
-                                if (self.tracer) |tr| tr.note("retry", what);
+                                if (g_5xx_body_len > 0) {
+                                    try self.say("[{s} — retrying in {d}s ({d}/{d})] {s}\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts, g_5xx_body_buf[0..g_5xx_body_len] });
+                                } else {
+                                    try self.say("[{s} — retrying in {d}s ({d}/{d})]\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts });
+                                }
+                                if (self.tracer) |tr| tr.note("retry", if (g_5xx_body_len > 0) g_5xx_body_buf[0..g_5xx_body_len] else what);
                                 self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                             } else {
                                 try self.say("[network error: {t} — retrying ({d}/{d})]\n", .{ err, attempt + 1, max_attempts });
                             }
                             continue;
                         }
-                        try self.say("[request failed: {t} — giving up this turn]\n", .{err});
+                        if (g_5xx_body_len > 0) {
+                            try self.say("[request failed: {t} — giving up this turn] {s}\n", .{ err, g_5xx_body_buf[0..g_5xx_body_len] });
+                        } else {
+                            try self.say("[request failed: {t} — giving up this turn]\n", .{err});
+                        }
                         // Network give-up is its own error kind: the ApiError
                         // handler's last_api_error is an API envelope, stale
                         // or null on a pure transport failure.
@@ -7200,6 +8814,7 @@ const Agent = struct {
                     .ok => |obj| {
                         self.recordUsageResponses(obj);
                         if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+                        if (json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                         return obj;
                     },
                     .err => |msg| {
@@ -7226,6 +8841,7 @@ const Agent = struct {
                     };
                     self.recordUsage(root);
                     if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+                    if (json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                     return root;
                 }
             }
@@ -7246,8 +8862,7 @@ const Agent = struct {
                 try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                 return error.ApiError;
             };
-            if (root.get("error")) |e| if (e == .object) {
-                const msg = if (e.object.get("message")) |m| m.string else "unknown error";
+            if (apiErrorMessage(root)) |msg| {
                 if (force and std.mem.indexOf(u8, msg, "tool_choice") != null) {
                     force = false; // provider can't force a tool; soft-strict
                     continue;
@@ -7260,17 +8875,18 @@ const Agent = struct {
                     self.cap_new = true; // provider wants the post-deprecation name
                     continue;
                 }
-                if (!self.effort_rejected and std.mem.indexOf(u8, msg, "reasoning_effort") != null) {
-                    self.effort_rejected = true; // model rejects reasoning_effort here (wants /v1/responses); drop + retry
+                if (!self.effort_rejected and mentionsReasoningEffort(msg)) {
+                    self.effort_rejected = true; // model rejects the effort hint here; drop + retry
                     continue;
                 }
                 if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                 try self.sayApiError("api error: {s}", .{msg});
                 return error.ApiError;
-            };
+            }
 
             self.recordUsage(root);
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+            if (json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
             return root;
         }
     }
@@ -7393,15 +9009,24 @@ const Agent = struct {
         const usage = response.get("usage") orelse return;
         if (usage != .object) return;
         const u = usage.object;
-        if (u.get("total_tokens")) |v| {
-            if (v == .integer and v.integer > 0) self.last_context_tokens = @intCast(v.integer);
+        const in_tokens = usageInt(u, "input_tokens");
+        const out_tokens = usageInt(u, "output_tokens");
+        const total_tokens = usageInt(u, "total_tokens");
+        if (total_tokens > 0) {
+            self.last_context_tokens = @intCast(total_tokens);
+        } else {
+            // Some Codex/Responses builds report only input/output counts.
+            // Still surface the prompt token counter instead of leaving the
+            // prompt stuck at "model · sub" with no context usage.
+            const computed_total = in_tokens + out_tokens;
+            if (computed_total > 0) self.last_context_tokens = @intCast(computed_total);
         }
         var cached: i64 = 0;
         if (u.get("input_tokens_details")) |d| if (d == .object) {
             cached = usageInt(d.object, "cached_tokens");
             if (cached > 0) self.last_cache_read = @intCast(cached);
         };
-        self.recordCost(usageInt(u, "input_tokens") - cached, cached, usageInt(u, "output_tokens"));
+        self.recordCost(in_tokens - cached, cached, out_tokens);
     }
 
     /// Consume a Codex `response` object: append its output items to history
@@ -7578,6 +9203,10 @@ const Agent = struct {
         var ext_idx: std.ArrayList(usize) = .empty;
         defer ext_idx.deinit(self.gpa);
         for (calls, 0..) |call, i| {
+            if (try self.rejectToolCall(call)) |denied| {
+                results[i] = denied;
+                continue;
+            }
             try self.sayToolUse(call);
             if (isMetaName(call.name)) {
                 results[i] = try self.handleMeta(call);
@@ -7638,6 +9267,50 @@ const Agent = struct {
         // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
         for (calls, results) |call, r| self.sayToolResult(call.name, r);
         return results;
+    }
+
+    fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
+        if (self.sub) return null;
+        if (std.mem.eql(u8, call.name, "attempt_completion")) return null;
+        if (max_tool_calls) |max| {
+            if (self.tool_calls_this_turn >= max) {
+                const message = try std.fmt.allocPrint(self.arena, "tool call budget exhausted ({d}/{d}) — answer with what you have or ask for a higher --max-tool-calls", .{ self.tool_calls_this_turn, max });
+                self.emitToolRejected(call, "budget", message);
+                return .{ .text = message, .is_error = true };
+            }
+        }
+        if (dedupe_tool_calls) {
+            const key = try self.toolDedupeKey(call);
+            for (self.seen_tool_keys.items) |seen| {
+                if (std.mem.eql(u8, seen, key)) {
+                    const message = try std.fmt.allocPrint(self.arena, "duplicate tool call rejected: {s} with the same normalized input already ran this turn", .{call.name});
+                    self.emitToolRejected(call, "duplicate", message);
+                    return .{ .text = message, .is_error = true };
+                }
+            }
+            try self.seen_tool_keys.append(self.arena, key);
+        }
+        self.tool_calls_this_turn += 1;
+        return null;
+    }
+
+    fn toolDedupeKey(self: *Agent, call: ToolCall) ![]const u8 {
+        var aw: Io.Writer.Allocating = .init(self.arena);
+        const w = &aw.writer;
+        try w.writeAll(call.name);
+        try w.writeByte('\n');
+        var s: std.json.Stringify = .{ .writer = w };
+        try s.write(call.input);
+        const key = aw.writer.buffered();
+        for (key) |*c| {
+            c.* = if (std.ascii.isWhitespace(c.*)) ' ' else std.ascii.toLower(c.*);
+        }
+        return key;
+    }
+
+    fn emitToolRejected(self: *Agent, call: ToolCall, reason: []const u8, message: []const u8) void {
+        if (!json_mode) return;
+        self.emit(.{ .type = "tool_rejected", .name = call.name, .reason = reason, .input = call.input, .message = message });
     }
 
     /// The permission gate, root side: an unapproved bash command prompts
@@ -7855,6 +9528,7 @@ const Agent = struct {
         if (json_mode) {
             if (std.mem.eql(u8, call.name, "ask_user")) return;
             self.emit(.{ .type = "tool_call", .name = call.name, .input = call.input });
+            self.emit(.{ .type = "tool_call_started", .name = call.name, .input = call.input });
             return;
         }
         // The ⚙ line would just repeat prose that already streamed live.
@@ -7881,6 +9555,7 @@ const Agent = struct {
         if (json_mode) {
             if (isMetaName(name) and !std.mem.eql(u8, name, "ask_user")) return;
             self.emit(.{ .type = "tool_result", .name = name, .is_error = r.is_error, .text = r.text });
+            self.emit(.{ .type = "tool_call_finished", .name = name, .is_error = r.is_error, .ms = r.ms });
             return;
         }
         if (isMetaName(name)) return;
@@ -7921,48 +9596,7 @@ const Agent = struct {
         self.stream_quiet = true;
         defer self.stream_quiet = false;
         const root = try self.request(null);
-        const summary = switch (self.provider.kind) {
-            .anthropic => blk: {
-                const content = root.get("content") orelse break :blk "";
-                if (content != .array) break :blk "";
-                for (content.array.items) |block| {
-                    if (block != .object) continue;
-                    const bt = if (block.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-                    if (std.mem.eql(u8, bt, "text"))
-                        if (block.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
-                }
-                break :blk "";
-            },
-            .openai => blk: {
-                const choices = root.get("choices") orelse break :blk "";
-                if (choices != .array or choices.array.items.len == 0) break :blk "";
-                const c0 = choices.array.items[0];
-                if (c0 != .object) break :blk "";
-                const message = c0.object.get("message") orelse break :blk "";
-                if (message != .object) break :blk "";
-                const c = message.object.get("content") orelse break :blk "";
-                break :blk if (c == .string) c.string else "";
-            },
-            .responses => blk: {
-                const output = root.get("output") orelse break :blk "";
-                if (output != .array) break :blk "";
-                for (output.array.items) |item| {
-                    if (item != .object) continue;
-                    const it = if (item.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-                    if (!std.mem.eql(u8, it, "message")) continue;
-                    if (item.object.get("content")) |c| if (c == .array) {
-                        for (c.array.items) |b| {
-                            if (b != .object) continue;
-                            const bt = if (b.object.get("type")) |x| (if (x == .string) x.string else "") else "";
-                            if (std.mem.eql(u8, bt, "output_text")) {
-                                if (b.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
-                            }
-                        }
-                    };
-                }
-                break :blk "";
-            },
-        };
+        const summary = assistantText(self.provider.kind, root);
         if (summary.len == 0) {
             if (!json_mode) try self.say("[compaction failed: empty summary, history unchanged]\n", .{});
             _ = self.messages.pop();
@@ -8079,7 +9713,7 @@ const Agent = struct {
                 try s.objectField("content");
                 try s.write(self.systemPrompt());
                 try s.endObject();
-                for (self.messages.items) |m| try s.write(m);
+                for (self.messages.items) |m| try writeOpenAIMessageNormalized(&s, m);
                 try s.endArray();
                 // Reasoning-effort hint for OpenAI-compatible providers that
                 // honor it (codegraff gateway, deepseek). Mirrors the
@@ -8165,17 +9799,25 @@ const Agent = struct {
         var buf: [512]u8 = undefined;
         var w = Io.File.stdout().writer(io, &buf);
         while (!g_spin_stop.load(.acquire)) {
+            if (g_steer_visible.load(.acquire)) {
+                io.sleep(.fromMilliseconds(20), .awake) catch break;
+                continue;
+            }
             // Clear-then-draw each frame: animations may vary in width.
             w.interface.writeAll("\r\x1b[2K") catch return;
             anims[g_anim_current].frame(&w.interface, i) catch return;
             w.interface.flush() catch return;
             i += 1;
             var t: usize = 0;
-            while (t < 4 and !g_spin_stop.load(.acquire)) : (t += 1)
+            while (t < 4 and !g_spin_stop.load(.acquire)) : (t += 1) {
+                if (g_steer_visible.load(.acquire)) break;
                 io.sleep(.fromMilliseconds(20), .awake) catch break;
+            }
         }
-        w.interface.writeAll("\r\x1b[2K") catch return;
-        w.interface.flush() catch {};
+        if (!g_steer_visible.load(.acquire)) {
+            w.interface.writeAll("\r\x1b[2K") catch return;
+            w.interface.flush() catch {};
+        }
     }
 
     fn spinnerStart(self: *Agent) void {
@@ -8203,9 +9845,37 @@ const Agent = struct {
         }
     }
 
+    /// Stream a chunk of the model's reasoning into a live, dimmed "Thinking"
+    /// block in the terminal, opening the block (and handing the line off from
+    /// the spinner) on the first chunk. Gated by /thinking; when off the block
+    /// is never opened and the spinner stands in for it. Append-only: reasoning
+    /// is shown as it arrives rather than retro-collapsing a printed block.
+    fn streamThinking(self: *Agent, chunk: []const u8) void {
+        const w = self.out orelse return;
+        if (!self.thinking_open) {
+            self.spinnerStop();
+            w.print("{s}Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
+            self.thinking_open = true;
+        }
+        w.writeAll(chunk) catch return;
+        w.flush() catch return;
+    }
+
+    /// Close an open "Thinking" block before normal output (or at stream end).
+    fn closeThinkingBlock(self: *Agent) void {
+        if (!self.thinking_open) return;
+        self.thinking_open = false;
+        const w = self.out orelse return;
+        w.writeAll(style.reset) catch return;
+        w.writeAll("\n\n") catch return;
+        w.flush() catch return;
+    }
+
     fn postStream(self: *Agent, body: []const u8) ![]u8 {
         self.spinnerStart();
         defer self.spinnerStop();
+        self.thinking_open = false; // fresh "Thinking" block state per request
+        defer self.closeThinkingBlock(); // close a reasoning-only turn's block
         const gpa = self.gpa;
         const provider = self.provider;
         const bearer = switch (provider.auth) {
@@ -8240,7 +9910,7 @@ const Agent = struct {
         var orig_tio: ?std.posix.termios = null;
         if (watch_esc) orig_tio = rawNonblockStdin();
         defer if (orig_tio) |o| {
-            drainStdin();
+            _ = drainSteerStdin(true);
             std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, o) catch {};
         };
         var req = try self.client.request(.POST, try std.Uri.parse(provider.url), .{
@@ -8261,23 +9931,68 @@ const Agent = struct {
         errdefer if (req.connection) |conn| {
             conn.closing = true;
         };
-        req.transfer_encoding = .{ .content_length = body.len };
-        var bw = try req.sendBodyUnflushed(&.{});
-        try bw.writer.writeAll(body);
-        try bw.end();
-        try req.connection.?.flush();
-        var response = try req.receiveHead(&.{});
+        // Race the send + head receive against a stall watchdog so a
+        // freshly-redialed connection that the server accepts but never
+        // answers can't hang the turn (issue #54: "retrying (1/3)" then
+        // "thinking… forever"). Mirrors the SSE line-loop and postWatched
+        // patterns. Falls back to a bare send+receiveHead (the old behavior)
+        // when no spare concurrency exists.
+        var response: std.http.Client.Response = undefined;
+        head: {
+            const HeadDone = union(enum) { sent: anyerror!void, stall: WatchdogFired };
+            var hd_buf: [2]HeadDone = undefined;
+            var hsel: Io.Select(HeadDone) = .init(self.io, &hd_buf);
+            hsel.concurrent(.sent, sendHeadTask, .{ &req, body, &response }) catch {
+                // No spare concurrency: accept the hang risk (existing behavior).
+                req.transfer_encoding = .{ .content_length = body.len };
+                var bw = try req.sendBodyUnflushed(&.{});
+                try bw.writer.writeAll(body);
+                try bw.end();
+                try req.connection.?.flush();
+                response = try req.receiveHead(&.{});
+                break :head;
+            };
+            hsel.concurrent(.stall, headStallTask, .{ self.io, orig_tio != null }) catch {
+                const r = hsel.await() catch |e| {
+                    hsel.cancelDiscard();
+                    return e;
+                };
+                hsel.cancelDiscard();
+                r.sent catch |e| {
+                    return e;
+                };
+                break :head;
+            };
+            const first = hsel.await() catch |e| {
+                hsel.cancelDiscard();
+                return e;
+            };
+            hsel.cancelDiscard();
+            switch (first) {
+                .sent => |s| s catch |e| {
+                    return e;
+                },
+                .stall => |w| {
+                    if (req.connection) |conn| conn.closing = true;
+                    return if (w == .esc) error.Interrupted else error.HungRequest;
+                },
+            }
+        }
 
         // 429/5xx before any body: a retryable throttle — request() backs
         // off and retries (surfaced in the trace as a "retry" note).
         const status_code = @intFromEnum(response.head.status);
         if (status_code == 429 or status_code >= 500) {
+            // Drain a snippet of the error body so the retry message can
+            // surface the gateway's diagnostic (e.g. "upstream timeout")
+            // instead of a bare "server error (5xx)".
+            capture5xxBodyStream(self.gpa, &response);
             if (req.connection) |conn| conn.closing = true;
             return if (status_code == 429) error.RateLimited else error.ServerError;
         }
         // Esc pressed while connecting / waiting for headers? Stop before
         // reading any of the body.
-        if (orig_tio != null and escPressed()) {
+        if (orig_tio != null and escPressed(true)) {
             if (req.connection) |conn| conn.closing = true;
             return error.Interrupted;
         }
@@ -8310,7 +10025,7 @@ const Agent = struct {
                     _ = try reader.streamDelimiterEnding(&line.writer, '\n'); // no spare concurrency
                     break :read;
                 };
-                rsel.concurrent(.stall, streamStallTask, .{self.io}) catch {
+                rsel.concurrent(.stall, streamStallTask, .{ self.io, orig_tio != null }) catch {
                     const r = rsel.await() catch |e| {
                         rsel.cancelDiscard();
                         return e;
@@ -8344,7 +10059,7 @@ const Agent = struct {
             try full.writer.writeByte('\n');
             self.printDelta(line.writer.buffered());
             line.clearRetainingCapacity();
-            if ((orig_tio != null and escPressed()) or (self.sub and esc_cancel.load(.acquire))) {
+            if ((orig_tio != null and escPressed(true)) or (self.sub and esc_cancel.load(.acquire))) {
                 self.flushStreamTail();
                 // Mark the connection closing so req.deinit() tears it down
                 // instead of draining the rest of the stream (which would
@@ -8378,36 +10093,115 @@ const Agent = struct {
         while (!esc_watch_done.load(.acquire)) {
             var fds = [_]std.posix.pollfd{.{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 }};
             const n = std.posix.poll(&fds, 100) catch return;
-            if (n > 0 and escPressed()) {
+            if (n > 0 and escPressed(false)) {
                 esc_cancel.store(true, .release);
                 return;
             }
         }
     }
 
-    /// Non-blocking scan of stdin for a bare Esc keypress (terminal must be
-    /// in VMIN=0 raw mode). Escape *sequences* (arrows: ESC [ …) don't count;
-    /// any other typed-ahead bytes are discarded.
-    fn escPressed() bool {
+    /// Non-blocking scan of stdin (terminal must be in VMIN=0 raw mode). A
+    /// lone Esc cancels the turn (returns true); CSI sequences (arrows:
+    /// ESC[…/ESC O…) are swallowed and don't cancel. Printable bytes are
+    /// captured into the steering buffer and echoed when `echo` (main thread
+    /// only — the esc watch task runs on the pool and must not race tool
+    /// output); Enter flushes the line to g_steer_queue, which the REPL
+    /// drains as follow-up turns after the current one finishes. A second
+    /// Enter on an empty line (double-enter) with a non-empty queue
+    /// force-interrupts the current turn so the queue drains immediately.
+    fn escPressed(echo: bool) bool {
         var buf: [64]u8 = undefined;
         const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return false;
+        var esc_found = false;
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            if (buf[i] != 0x1b) continue;
-            if (i + 1 >= n) return true; // lone Esc at the end of the burst
-            if (buf[i + 1] != '[' and buf[i + 1] != 'O') return true;
+            const c = buf[i];
+            if (c == 0x1b) {
+                if (i + 1 < n and buf[i + 1] == '[') {
+                    // CSI escape sequence (arrows, Home/End, Delete, etc.).
+                    // Consume through the final byte (0x40..0x7e) so bytes like
+                    // "[A" never get captured as steering prompt text.
+                    var j = i + 2;
+                    while (j < n) : (j += 1) {
+                        if (buf[j] >= 0x40 and buf[j] <= 0x7e) break;
+                    }
+                    i = if (j < n) j else n - 1;
+                    continue;
+                } else if (i + 1 < n and buf[i + 1] == 'O') {
+                    // SS3 escape sequence (common for function/cursor keys):
+                    // ESC O <final>. Swallow the whole sequence.
+                    i = @min(i + 2, n - 1);
+                    continue;
+                } else {
+                    esc_found = true;
+                    g_force_interrupt = false;
+                }
+                continue;
+            } else if (c == '\n' or c == '\r') {
+                if (g_steer_buf.items.len > 0) {
+                    // Flush the typed line to the queue as a regular
+                    // follow-up (runs after the current turn finishes).
+                    if (g_steer_buf.toOwnedSlice(std.heap.page_allocator)) |dup| {
+                        g_steer_queue.append(std.heap.page_allocator, .{ .text = dup, .force = false }) catch std.heap.page_allocator.free(dup);
+                    } else |_| g_steer_buf.clearRetainingCapacity();
+                    if (echo and g_steer_echoed) {
+                        var qbuf: [64]u8 = undefined;
+                        const qmsg = std.fmt.bufPrint(&qbuf, "  \x1b[2m[queued · {d} waiting]\x1b[0m\n", .{g_steer_queue.items.len}) catch "\n";
+                        steerEcho(qmsg);
+                    }
+                } else if (g_steer_queue.items.len > 0) {
+                    // Double-enter (empty line + queue non-empty): force —
+                    // promote the first queued item and interrupt the
+                    // current turn so the queue drains starting now.
+                    g_steer_queue.items[0].force = true;
+                    esc_found = true;
+                    g_force_interrupt = true;
+                    if (echo) {
+                        if (g_steer_echoed) steerEcho("\n");
+                        steerEcho("\x1b[33m↳ force › interrupting…\x1b[0m\n");
+                    }
+                }
+                g_steer_echoed = false;
+                g_steer_visible.store(false, .release);
+                continue;
+            } else if (c == 0x7f or c == 0x08) { // backspace / Ctrl-H
+                if (g_steer_buf.items.len > 0) {
+                    _ = g_steer_buf.pop();
+                    if (echo) steerEcho("\x08 \x08");
+                }
+                continue;
+            } else if (c < 0x20) {
+                continue; // other control bytes: ignore
+            }
+            g_steer_buf.append(std.heap.page_allocator, c) catch continue;
+            if (echo) {
+                if (!g_steer_echoed) {
+                    g_steer_visible.store(true, .release);
+                    steerEcho("\n\x1b[36m↳ steer ›\x1b[0m ");
+                    g_steer_echoed = true;
+                }
+                steerEcho(buf[i .. i + 1]);
+            }
         }
-        return false;
+        return esc_found;
     }
 
-    /// Discard any bytes queued on stdin (terminal must be in VMIN=0 raw
-    /// mode) so typed-ahead keys from mid-turn don't leak into the prompt.
-    fn drainStdin() void {
-        var buf: [256]u8 = undefined;
+    /// Process any bytes queued on stdin (terminal must be in VMIN=0 raw
+    /// mode) so typed-ahead steering text is preserved instead of leaking into
+    /// the next prompt or being blindly discarded. Returns true if Esc/force
+    /// was seen while draining.
+    fn drainSteerStdin(echo: bool) bool {
+        var esc_found = false;
         while (true) {
-            const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return;
-            if (n == 0) return;
+            var fds = [_]std.posix.pollfd{.{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 }};
+            const n = std.posix.poll(&fds, 0) catch return esc_found;
+            if (n <= 0 or (fds[0].revents & std.posix.POLL.IN) == 0) return esc_found;
+            if (escPressed(echo)) esc_found = true;
         }
+    }
+
+    fn drainStdin() void {
+        _ = drainSteerStdin(false);
     }
 
     /// Put stdin into raw non-blocking no-echo mode (VMIN=0) for Esc
@@ -8435,7 +10229,7 @@ const Agent = struct {
             const chunk = @min(left, 100);
             self.io.sleep(.fromMilliseconds(@intCast(chunk)), .awake) catch {};
             left -= chunk;
-            if (orig_tio != null and escPressed()) return error.Interrupted;
+            if (orig_tio != null and escPressed(true)) return error.Interrupted;
         }
     }
 
@@ -8493,39 +10287,20 @@ const Agent = struct {
                 break :blk if (x == .string) x.string else "";
             },
         };
-        // Reasoning/thinking deltas → a separate `reasoning` event for JSON
-        // clients (terminal mode keeps showing the spinner). deepseek streams
-        // reasoning_content, anthropic a thinking_delta, codex a summary delta.
-        if (json_mode) {
-            const reasoning: []const u8 = switch (self.provider.kind) {
-                .anthropic => blk: {
-                    const d = obj.get("delta") orelse break :blk "";
-                    if (d != .object) break :blk "";
-                    const dt = d.object.get("type") orelse break :blk "";
-                    if (dt != .string or !std.mem.eql(u8, dt.string, "thinking_delta")) break :blk "";
-                    const x = d.object.get("thinking") orelse break :blk "";
-                    break :blk if (x == .string) x.string else "";
-                },
-                .openai => blk: {
-                    const choices = obj.get("choices") orelse break :blk "";
-                    if (choices != .array or choices.array.items.len == 0) break :blk "";
-                    const c0 = choices.array.items[0];
-                    if (c0 != .object) break :blk "";
-                    const d = c0.object.get("delta") orelse break :blk "";
-                    if (d != .object) break :blk "";
-                    const x = d.object.get("reasoning_content") orelse d.object.get("reasoning") orelse break :blk "";
-                    break :blk if (x == .string) x.string else "";
-                },
-                .responses => blk: {
-                    const t = obj.get("type") orelse break :blk "";
-                    if (t != .string or !std.mem.eql(u8, t.string, "response.reasoning_summary_text.delta")) break :blk "";
-                    const x = obj.get("delta") orelse break :blk "";
-                    break :blk if (x == .string) x.string else "";
-                },
-            };
-            if (reasoning.len != 0) self.emit(.{ .type = "reasoning", .text = reasoning });
+        // Reasoning/thinking deltas: deepseek streams reasoning_content, anthropic
+        // a thinking_delta, codex a summary delta. JSON clients get a `reasoning`
+        // event; on a TTY we stream it into a live, dimmed "Thinking" block when
+        // /thinking is enabled, otherwise the spinner stands in for it.
+        const reasoning = reasoningDelta(self.provider.kind, obj);
+        if (reasoning.len != 0) {
+            if (json_mode) {
+                self.emit(.{ .type = "reasoning", .text = reasoning });
+            } else if (self.show_thinking and !self.sub and !self.stream_quiet and use_color) {
+                self.streamThinking(reasoning);
+            }
         }
         if (text.len == 0) return;
+        if (self.thinking_open) self.closeThinkingBlock(); // reasoning → answer transition
         self.spinnerStop(); // first visible byte: clear the thinking line
         self.streamed_text = true;
         self.partial_text.appendSlice(self.arena, text) catch {}; // Esc-interrupt capture
@@ -9949,6 +11724,44 @@ fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[6]std.http.Hea
     return buf[0..n];
 }
 
+/// Copy up to g_5xx_body_buf.len bytes of an error response body into the
+/// global buffer so request()'s retry message can surface the gateway's
+/// diagnostic (e.g. "upstream timeout connecting to anthropic") instead of a
+/// bare "server error (5xx)".
+fn capture5xxBody(src: []const u8) void {
+    const n = @min(src.len, g_5xx_body_buf.len);
+    if (n > 0) @memcpy(g_5xx_body_buf[0..n], src[0..n]);
+    g_5xx_body_len = n;
+}
+
+/// Same, but drains from a streaming Response whose head has been received but
+/// whose body hasn't been read yet. Best-effort: a read failure just leaves
+/// g_5xx_body_len at 0.
+fn capture5xxBodyStream(gpa: Allocator, response: *std.http.Client.Response) void {
+    g_5xx_body_len = 0;
+    const dbuf: []u8 = switch (response.head.content_encoding) {
+        .identity => &.{},
+        .zstd => gpa.alloc(u8, std.compress.zstd.default_window_len) catch return,
+        .deflate, .gzip => gpa.alloc(u8, std.compress.flate.max_window_len) catch return,
+        .compress => return,
+    };
+    defer if (dbuf.len > 0) gpa.free(dbuf);
+    var tbuf: [64]u8 = undefined;
+    var dec: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&tbuf, &dec, dbuf);
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    while (g_5xx_body_len < g_5xx_body_buf.len) {
+        _ = reader.streamDelimiterEnding(&aw.writer, '\n') catch break;
+        const chunk = aw.writer.buffered();
+        if (chunk.len == 0) break;
+        const n = @min(chunk.len, g_5xx_body_buf.len - g_5xx_body_len);
+        @memcpy(g_5xx_body_buf[g_5xx_body_len..][0..n], chunk[0..n]);
+        g_5xx_body_len += n;
+        aw.clearRetainingCapacity();
+    }
+}
+
 /// POST the request body; returns the raw response body (caller frees).
 /// std.http.Client.fetch is thread-safe, so subagents on pool threads share
 /// this client (and its connection pool).
@@ -9977,7 +11790,10 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
         .extra_headers = extra,
     });
     const code = @intFromEnum(res.status);
-    if (code == 429 or code >= 500) return if (code == 429) error.RateLimited else error.ServerError;
+    if (code == 429 or code >= 500) {
+        capture5xxBody(aw.writer.buffered());
+        return if (code == 429) error.RateLimited else error.ServerError;
+    }
     return aw.toOwnedSlice();
 }
 
@@ -10007,6 +11823,24 @@ fn postWatchdog(io: Io) WatchdogFired {
 // doesn't apply to --json/GUI sessions, where this matters most.
 const stream_stall_ms: u64 = 120 * 1000;
 
+/// A response head (HTTP status line + headers) idle this long means the
+/// server accepted the connection but isn't responding — common right
+/// after a keep-alive drop that caused an HttpConnectionClosing retry.
+/// Shorter than stream_stall_ms because the head should arrive in
+/// milliseconds; any delay past this is a stall, not a slow model.
+const head_stall_ms: u64 = 30 * 1000;
+
+/// Select-arm wrapper: send the request body and receive the response head.
+/// Stores the response in `out` for the main thread to use after the select.
+fn sendHeadTask(req: *std.http.Client.Request, body: []const u8, out: *std.http.Client.Response) anyerror!void {
+    req.transfer_encoding = .{ .content_length = body.len };
+    var bw = try req.sendBodyUnflushed(&.{});
+    try bw.writer.writeAll(body);
+    try bw.end();
+    try req.connection.?.flush();
+    out.* = try req.receiveHead(&.{});
+}
+
 /// Select-arm wrapper: read one '\n'-delimited SSE line into `w`.
 fn streamLineTask(reader: *Io.Reader, w: *Io.Writer) anyerror!usize {
     return reader.streamDelimiterEnding(w, '\n');
@@ -10014,11 +11848,33 @@ fn streamLineTask(reader: *Io.Reader, w: *Io.Writer) anyerror!usize {
 
 /// Select-arm wrapper: fires after stream_stall_ms of no line (idle stall), or
 /// early on Esc — resets each line, so it measures the gap between lines.
-fn streamStallTask(io: Io) WatchdogFired {
+fn streamStallTask(io: Io, poll_stdin: bool) WatchdogFired {
     var waited: u64 = 0;
     while (waited < stream_stall_ms) {
-        io.sleep(.fromMilliseconds(200), .awake) catch return .deadline; // canceled: a line arrived
-        waited += 200;
+        io.sleep(.fromMilliseconds(50), .awake) catch return .deadline; // canceled: a line arrived
+        waited += 50;
+        if (poll_stdin and Agent.drainSteerStdin(true)) {
+            Agent.esc_cancel.store(true, .release);
+            return .esc;
+        }
+        if (Agent.esc_cancel.load(.acquire)) return .esc;
+    }
+    return .deadline;
+}
+
+/// Select-arm wrapper: fires after head_stall_ms (head receive stall), or
+/// early on Esc. Races postStream's send + receiveHead so a freshly-redialed
+/// connection that the server accepts but never answers can't hang the turn
+/// (the root cause of the "retrying (1/3)" → "thinking… forever" bug).
+fn headStallTask(io: Io, poll_stdin: bool) WatchdogFired {
+    var waited: u64 = 0;
+    while (waited < head_stall_ms) {
+        io.sleep(.fromMilliseconds(50), .awake) catch return .deadline;
+        waited += 50;
+        if (poll_stdin and Agent.drainSteerStdin(true)) {
+            Agent.esc_cancel.store(true, .release);
+            return .esc;
+        }
         if (Agent.esc_cancel.load(.acquire)) return .esc;
     }
     return .deadline;
@@ -10258,8 +12114,8 @@ fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     const word_end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
     const tool = std.fs.path.basename(trimmed[0..word_end]);
     const scanners = [_][]const u8{
-        "grep", "egrep", "fgrep", "rg",   "ripgrep", "ag", "ack",
-        "sed",  "awk",   "cat",   "head", "tail",    "wc", "nl",
+        "grep", "egrep",  "fgrep", "rg",   "ripgrep", "ag", "ack",
+        "sed",  "awk",    "cat",   "head", "tail",    "wc", "nl",
         "bat",  "batcat",
     };
     var is_scanner = false;
@@ -10269,25 +12125,33 @@ fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     if (!is_scanner) return null;
 
     // …aimed at a concrete source file (not a glob — codedb glob/tree cover that).
-    if (!referencesSourceFile(cmd)) return null;
+    const src_path = extractSourceFilePath(cmd) orelse return null;
 
     // Only redirect when codedb is actually installed (cache the PATH lookup).
     if (g_codedb_present == null) g_codedb_present = binOnPath(ctx.io, "codedb");
     if (g_codedb_present != true) return null;
 
+    // Only redirect when codedb actually indexed this file. Large files
+    // (e.g. a 13K-line main.zig) are silently skipped by codedb; blocking
+    // bash grep on them traps the agent between a blocked grep and an empty
+    // codedb result. Let bash through for un-indexed files (issue #54).
+    if (!codedbFileIndexed(ctx.io, ctx.gpa, src_path)) return null;
+
     const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool (indexed + structural): search <query> · symbol <name> [--body] · callers <name> · deps <path> · outline <path> · read <path> · context <task>. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
     return .{ .text = msg, .is_error = true };
 }
 
-/// True when `cmd` names a concrete source file: a whitespace-separated token
-/// (after the command word) ending in a known code extension, with no `*`/`?`
-/// glob metachars. Used only by codedbGuard.
-fn referencesSourceFile(cmd: []const u8) bool {
+/// Extract the first concrete source file path from a bash command (after
+/// the command word). Returns null for globs or non-source tokens. Used by
+/// the codedb guard to check whether the target file is actually indexed
+/// before redirecting bash to codedb — a file codedb skipped (too large)
+/// must be allowed through bash, or the agent is trapped.
+fn extractSourceFilePath(cmd: []const u8) ?[]const u8 {
     const exts = [_][]const u8{
-        ".zig", ".rs",  ".ts",  ".tsx", ".js",  ".jsx", ".mjs", ".cjs",
-        ".py",  ".go",  ".c",   ".h",   ".cc",  ".cpp", ".hpp", ".cxx",
-        ".java", ".kt", ".rb",  ".php", ".swift", ".scala", ".cs",
-        ".lua", ".ex",  ".exs", ".erl", ".clj", ".dart", ".vue", ".svelte",
+        ".zig",  ".rs",  ".ts",  ".tsx", ".js",    ".jsx",   ".mjs",    ".cjs",
+        ".py",   ".go",  ".c",   ".h",   ".cc",    ".cpp",   ".hpp",    ".cxx",
+        ".java", ".kt",  ".rb",  ".php", ".swift", ".scala", ".cs",     ".lua",
+        ".ex",   ".exs", ".erl", ".clj", ".dart",  ".vue",   ".svelte",
     };
     var it = std.mem.tokenizeAny(u8, cmd, " \t\n");
     var first = true;
@@ -10298,9 +12162,15 @@ fn referencesSourceFile(cmd: []const u8) bool {
         }
         const tok = std.mem.trim(u8, raw, "'\"`()");
         if (std.mem.indexOfAny(u8, tok, "*?") != null) continue; // glob, not a path
-        for (exts) |e| if (std.mem.endsWith(u8, tok, e)) return true;
+        for (exts) |e| if (std.mem.endsWith(u8, tok, e)) return tok;
     }
-    return false;
+    return null;
+}
+
+/// True when `cmd` names a concrete source file (delegates to
+/// extractSourceFilePath). Kept for the /hooks display and tests.
+fn referencesSourceFile(cmd: []const u8) bool {
+    return extractSourceFilePath(cmd) != null;
 }
 
 /// Built-in pre_tool router for the metered companion — the tool-layer twin of
@@ -10369,6 +12239,29 @@ fn failure(gpa: Allocator, err: anyerror) ToolOutput {
 
 /// A required string argument, or null if absent / wrong type. Guards
 /// against malformed model output panicking the process (DoS).
+/// Pull a human-readable message from an OpenAI-style error envelope, handling
+/// both `{"error":{"message":...}}` (OpenAI/Anthropic) and `{"error":"...","code":...}`
+/// where `error` is a bare string (the codegraff gateway's shape, e.g. grok-build
+/// rejecting an unsupported parameter). Returns null when there is no error field
+/// (or it is explicitly null), so a normal response is never mistaken for an error.
+fn apiErrorMessage(root: std.json.ObjectMap) ?[]const u8 {
+    const e = root.get("error") orelse return null;
+    return switch (e) {
+        .null => null,
+        .string => e.string,
+        .object => if (e.object.get("message")) |m| (if (m == .string) m.string else "unknown error") else "unknown error",
+        else => "unknown error",
+    };
+}
+
+/// Does an API error message complain about the reasoning-effort hint? Gateways
+/// word it differently: OpenAI says "reasoning_effort", the codegraff gateway
+/// (e.g. for grok-build) says "reasoningEffort". Either means: drop it and retry.
+fn mentionsReasoningEffort(msg: []const u8) bool {
+    return std.mem.indexOf(u8, msg, "reasoning_effort") != null or
+        std.mem.indexOf(u8, msg, "reasoningEffort") != null;
+}
+
 fn strField(input: Value, name: []const u8) ?[]const u8 {
     if (input != .object) return null;
     const v = input.object.get(name) orelse return null;
@@ -11001,6 +12894,22 @@ fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     return runSub(ctx, "subagent", label, prompt, sys_override);
 }
 
+/// Surface a workflow subagent as a synthetic `tool_call` / `tool_result` on the
+/// --json GUI stream so each parallel worker shows as its own live row — the
+/// orchestrator's children otherwise run detached (out=null), so the GUI only
+/// ever saw the single `workflow` op. Pool-thread safe: serializes on g_gui_mu
+/// with Agent.emit (same json stdout writer, g_out). No-op outside --json mode.
+fn guiEmit(io: Io, ev: anytype) void {
+    if (!json_mode) return;
+    const w = g_out orelse return;
+    g_gui_mu.lockUncancelable(io);
+    defer g_gui_mu.unlock(io);
+    var s: std.json.Stringify = .{ .writer = w };
+    s.write(ev) catch return;
+    w.writeByte('\n') catch return;
+    w.flush() catch return;
+}
+
 /// Run one isolated subagent to completion: fresh arena, fresh history,
 /// same shared http client and provider. Runs entirely on this pool thread;
 /// its own tool calls fan out further via io.async. `sys_override` swaps the
@@ -11029,12 +12938,21 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);
     if (sys_override != null) if (g_telem) |t| t.countVariant();
-    std.debug.print("  [{s}] started\n", .{label});
+    // Stable id + sprite for this child's card and its inspectable detail file.
+    const ordinal = g_subagent_seq.fetchAdd(1, .monotonic);
+    var id_buf: [40]u8 = undefined;
+    const sub_id = subagentId(&id_buf, ordinal, label, prompt);
+    const sprite = subagentSprite(ordinal);
+    subagentLaunchCard(arena, sub_id, sprite, label, kind, prompt);
+    // Live agent tree: surface workflow_task children as their own GUI rows.
+    const wf_task = std.mem.eql(u8, kind, "workflow_task");
+    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label } });
     try agent.messages.append(try textMessage(arena, "user", prompt));
     defer agent.tools_used.deinit(gpa);
     const report = agent.runTurn();
     const run_ms: i64 = @intCast(@max(0, sub_start.untilNow(ctx.io, .awake).toMilliseconds()));
     const run_ok = if (report) |r| r.len > 0 else |_| false;
+    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_result", .name = "subagent", .is_error = !run_ok });
     const tools = agent.tools_used.render(arena);
     const fp = promptFingerprint(agent.systemPrompt());
     if (g_traj) |tj| {
@@ -11056,8 +12974,16 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
     }
     if (g_telem) |t| t.runEvent(&fp, sys_override != null, run_ok, run_ms, tools);
     const text = try report;
-    std.debug.print("  [{s}] done\n", .{label});
-    if (text.len == 0) return .{ .text = try gpa.dupe(u8, "subagent finished without a report"), .is_error = true };
+    const empty = text.len == 0;
+    const report_body = if (empty) "subagent finished without a report" else text;
+    // Persist the full report + metadata so it can be inspected from the
+    // terminal, then render the completion card with the inspect: path.
+    const detail = writeSubagentDetail(ctx.io, arena, sub_id, label, kind, prompt, report_body, !empty, run_ms, tools);
+    subagentDoneCard(arena, sub_id, sprite, label, !empty, run_ms, tools, detail);
+    if (empty) return .{ .text = try gpa.dupe(u8, report_body), .is_error = true };
+    // Append the inspect: path so the orchestrator can cite the detail file.
+    if (detail) |p|
+        return .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[subagent {s} · inspect: {s}]", .{ text, sub_id, p }) };
     return .{ .text = try gpa.dupe(u8, text) };
 }
 
@@ -11472,6 +13398,31 @@ test "utf8Prefix truncates without splitting codepoints" {
     try std.testing.expectEqualStrings("ab\xC3\xA9", utf8Prefix(&s, 4));
 }
 
+test "subagentId: stable shape, ordinal-prefixed, hash-suffixed (#51)" {
+    var a: [40]u8 = undefined;
+    var b: [40]u8 = undefined;
+    const id1 = subagentId(&a, 0, "review auth", "look at the login flow");
+    // sa-<3-digit ordinal>-<8 hex>
+    try std.testing.expectEqualStrings("sa-000-", id1[0..7]);
+    try std.testing.expectEqual(@as(usize, 15), id1.len); // 7 prefix + 8 hex
+    // Same label+prompt+ordinal → identical id (stable for inspection).
+    const id1b = subagentId(&b, 0, "review auth", "look at the login flow");
+    try std.testing.expectEqualStrings(id1, id1b);
+    // Different ordinal → different id even with the same task.
+    const id2 = subagentId(&b, 7, "review auth", "look at the login flow");
+    try std.testing.expectEqualStrings("sa-007-", id2[0..7]);
+    try std.testing.expect(!std.mem.eql(u8, id1, id2));
+    // Hex suffix is lowercase hex only.
+    for (id2[7..]) |c| try std.testing.expect(std.ascii.isHex(c) and !std.ascii.isUpper(c));
+}
+
+test "collapseWs flattens newlines/tabs to single spaces (#51)" {
+    try std.testing.expectEqualStrings("a b c", collapseWs("a b c")); // unchanged
+    try std.testing.expectEqualStrings("hello world", collapseWs("  hello   world  ")); // trimmed + interior run collapsed
+    try std.testing.expectEqualStrings("line one line two", collapseWs("line one\n\nline two"));
+    try std.testing.expectEqualStrings("a b", collapseWs("a\t \n b\n"));
+}
+
 test "telemetry dupDetail never yields invalid UTF-8" {
     var t: Telemetry = .{
         .io = undefined, // dupDetail only touches gpa
@@ -11542,9 +13493,10 @@ test "codex catalog excludes unsupported codex-suffixed models" {
     try std.testing.expect(providerModelInTable("openai", "gpt-5.2"));
 }
 
-test "resolveModelName exact match and miss" {
+test "resolveModelName exact aliases and miss" {
     const keys = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
     try std.testing.expect(resolveModelName(keys, "gpt-5.5") != null); // exact name
+    try std.testing.expectEqualStrings("glm-5.2", resolveModelName(keys, "glm5.2").?); // natural alias
     try std.testing.expect(resolveModelName(keys, "totally-unknown-zzz") == null);
 }
 
@@ -11774,6 +13726,39 @@ test "skillDisabled: registry lookup and toggle" {
     try std.testing.expect(!skillDisabled("not-a-skill"));
 }
 
+test "companion opt-out: {\"skills\":{\"codedbpro\":false}} disables auto-connect" {
+    // applySkillSettings is the pure half of loadSkillSettings; prove the
+    // settings key flips companionDisabled(), the flag the auto-connect reads.
+    const saved_companion = g_companion_disabled;
+    const ki = skillIndex("kuri").?;
+    const saved_kuri = g_skill_disabled[ki];
+    defer {
+        g_companion_disabled = saved_companion;
+        g_skill_disabled[ki] = saved_kuri;
+    }
+    g_companion_disabled = [_]bool{false} ** companion_servers.len;
+    g_skill_disabled[ki] = false;
+
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const json = "{\"skills\":{\"codedbpro\":false,\"kuri\":false}}";
+    const v = try std.json.parseFromSliceLeaky(Value, arena_inst.allocator(), json, .{ .allocate = .alloc_always });
+    applySkillSettings(v.object.get("skills").?);
+
+    try std.testing.expect(companionDisabled("codedbpro")); // the fix: was always false before
+    try std.testing.expect(skillDisabled("kuri")); // existing registry path still works
+    try std.testing.expect(!companionDisabled("not-a-server"));
+}
+
+test "codedbproNote: licensed flips codedbpro to the lean-in note" {
+    const cons = "CONSERVATIVE-NOTE";
+    try std.testing.expectEqualStrings(cons, codedbproNote("codedbpro", false, cons)); // unlicensed -> conservative
+    try std.testing.expectEqualStrings(cons, codedbproNote("muonry", true, cons)); // other servers untouched
+    try std.testing.expectEqualStrings(codedbpro_note_licensed, codedbproNote("codedbpro", true, cons)); // licensed -> lean-in
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "mcp__codedbpro__read") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codedbpro_note_licensed, "/rewind") != null);
+}
+
 test "parseAnswerRequest: preserves multiline text and optional call id" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -11896,4 +13881,554 @@ test "toolResultMessage: result text serializes as a JSON string in every wire f
         const json = try enc(arena, err);
         try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":\"nope\"") != null);
     }
+}
+
+test "Approvals.isSimple: rejects shell metacharacters that could smuggle a second command" {
+    try std.testing.expect(Approvals.isSimple("grep foo src/main.zig"));
+    try std.testing.expect(Approvals.isSimple("ls -la"));
+    try std.testing.expect(!Approvals.isSimple("ls; rm -rf /"));
+    try std.testing.expect(!Approvals.isSimple("cat a | sh"));
+    try std.testing.expect(!Approvals.isSimple("echo $(whoami)"));
+    try std.testing.expect(!Approvals.isSimple("echo `id`"));
+    try std.testing.expect(!Approvals.isSimple("foo > bar"));
+    try std.testing.expect(!Approvals.isSimple("foo < bar"));
+    try std.testing.expect(!Approvals.isSimple("a && b"));
+    try std.testing.expect(!Approvals.isSimple("a\nb"));
+    try std.testing.expect(!Approvals.isSimple("echo $HOME"));
+}
+
+test "Approvals.matchesPrefix: whole-word prefix, never a bare substring" {
+    try std.testing.expect(Approvals.matchesPrefix("git status", "git status"));
+    try std.testing.expect(Approvals.matchesPrefix("git status -s", "git status"));
+    try std.testing.expect(Approvals.matchesPrefix("ls", "ls"));
+    try std.testing.expect(Approvals.matchesPrefix("ls -la", "ls"));
+    try std.testing.expect(!Approvals.matchesPrefix("lsof", "ls")); // not a word boundary
+    try std.testing.expect(!Approvals.matchesPrefix("git statusx", "git status"));
+    try std.testing.expect(!Approvals.matchesPrefix("git", "git status")); // prefix longer than cmd
+}
+
+test "Approvals.escapesCwd: flags tokens that point outside the working directory" {
+    try std.testing.expect(!Approvals.escapesCwd("cat src/main.zig"));
+    try std.testing.expect(!Approvals.escapesCwd("grep foo ./a/b.zig"));
+    try std.testing.expect(!Approvals.escapesCwd("prog --flag=value"));
+    try std.testing.expect(Approvals.escapesCwd("cat /etc/passwd"));
+    try std.testing.expect(Approvals.escapesCwd("cat ~/secrets"));
+    try std.testing.expect(Approvals.escapesCwd("cat ../outside"));
+    try std.testing.expect(Approvals.escapesCwd("grep foo a/../../b"));
+    try std.testing.expect(Approvals.escapesCwd("prog --file=/abs/path"));
+    try std.testing.expect(Approvals.escapesCwd("prog --file=~/x"));
+}
+
+test "Approvals.readOnlyAllowed: only simple, in-cwd, seed-listed commands pass in plan mode" {
+    try std.testing.expect(Approvals.readOnlyAllowed("ls -la"));
+    try std.testing.expect(Approvals.readOnlyAllowed("git status"));
+    try std.testing.expect(Approvals.readOnlyAllowed("cat src/main.zig"));
+    try std.testing.expect(Approvals.readOnlyAllowed("  grep foo bar  ")); // leading/trailing trimmed
+    try std.testing.expect(!Approvals.readOnlyAllowed("rm -rf x")); // not in the seed
+    try std.testing.expect(!Approvals.readOnlyAllowed("cat /etc/passwd")); // escapes cwd
+    try std.testing.expect(!Approvals.readOnlyAllowed("ls; rm x")); // not simple
+    try std.testing.expect(!Approvals.readOnlyAllowed("git push")); // mutating git verb, not seeded
+}
+
+test "Approvals.isInterpreter: flags first words that grant arbitrary code execution" {
+    try std.testing.expect(Approvals.isInterpreter("python3"));
+    try std.testing.expect(Approvals.isInterpreter("node"));
+    try std.testing.expect(Approvals.isInterpreter("bash"));
+    try std.testing.expect(Approvals.isInterpreter("osascript"));
+    try std.testing.expect(!Approvals.isInterpreter("ls"));
+    try std.testing.expect(!Approvals.isInterpreter("git"));
+    try std.testing.expect(!Approvals.isInterpreter("python3x"));
+}
+
+test "Agent.firstWord: splits the command on the first whitespace" {
+    try std.testing.expectEqualStrings("git", Agent.firstWord("git status -s"));
+    try std.testing.expectEqualStrings("ls", Agent.firstWord("ls"));
+    try std.testing.expectEqualStrings("cat", Agent.firstWord("cat\tfile")); // tab delimiter
+    try std.testing.expectEqualStrings("", Agent.firstWord(""));
+    try std.testing.expectEqualStrings("", Agent.firstWord(" leading"));
+}
+
+test "Provider.compactAt: auto-compacts at 80% of the context window (long-horizon trigger)" {
+    const big = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 1_000_000 };
+    try std.testing.expectEqual(@as(u64, 800_000), big.compactAt());
+    const small = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 200_000 };
+    try std.testing.expectEqual(@as(u64, 160_000), small.compactAt());
+    const zero = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 0 };
+    try std.testing.expectEqual(@as(u64, 0), zero.compactAt());
+}
+
+test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
+    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    const none = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    try std.testing.expectEqualStrings("anthropic", (try all.providerFor("claude-does-not-exist")).id);
+    try std.testing.expectEqualStrings("codegraff", (try all.providerFor("totally-made-up-model")).id);
+    try std.testing.expectEqualStrings("gpt-5.5", (try all.providerFor("gpt-5.5")).model);
+    try std.testing.expectError(error.MissingKey, none.providerFor("claude-opus-4-8"));
+}
+
+test "Keys.providerById: exact id wins, unknown id falls back to model routing" {
+    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    const p = try all.providerById("anthropic", "claude-opus-4-8");
+    try std.testing.expectEqualStrings("anthropic", p.id);
+    try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
+    const fb = try all.providerById("no-such-provider", "gpt-5.5");
+    try std.testing.expectEqualStrings("gpt-5.5", fb.model);
+}
+
+test "set_model control resolves explicit provider/model fields" {
+    var all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const codex = try resolveProviderControlRequest(&all, arena, "codex", "gpt-5.5", "");
+    try std.testing.expectEqualStrings("codex", codex.id);
+    try std.testing.expectEqualStrings("gpt-5.5", codex.model);
+
+    const legacy = try resolveProviderControlRequest(&all, arena, "", "", "codegraff gpt-5.5");
+    try std.testing.expectEqualStrings("codegraff", legacy.id);
+    try std.testing.expectEqualStrings("gpt-5.5", legacy.model);
+}
+
+test "Keys.defaultProvider: first keyed provider on its default model" {
+    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    const p = try all.defaultProvider();
+    try std.testing.expectEqualStrings("anthropic", p.id); // anthropic leads provider_specs
+    try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
+    const none = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    try std.testing.expectError(error.MissingKey, none.defaultProvider());
+}
+
+test "modelInTable: known models present, unknown absent" {
+    try std.testing.expect(modelInTable("gpt-5.5"));
+    try std.testing.expect(modelInTable("claude-opus-4-8"));
+    try std.testing.expect(!modelInTable("not-a-real-model"));
+}
+
+test "priceFor: known model priced, unknown is null" {
+    try std.testing.expect(priceFor("gpt-5.5") != null);
+    try std.testing.expect(priceFor("claude-opus-4-8") != null);
+    try std.testing.expect(priceFor("no-such-model") == null);
+}
+
+test "titleFromPrompt and folderBasename format TUI headers" {
+    try std.testing.expectEqualStrings("Chat", titleFromPrompt(" \n\t "));
+    try std.testing.expectEqualStrings("Refactor the auth middleware", titleFromPrompt("  Refactor the auth middleware\nwith tests"));
+    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/rach/src/codegraff"));
+    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/rach/src/codegraff/"));
+}
+
+test "ultracode toggle choices put the opposite state first" {
+    try std.testing.expectEqualStrings("on", ultracodeToggleItems(false)[0].name);
+    try std.testing.expectEqualStrings("off", ultracodeToggleItems(false)[1].name);
+    try std.testing.expectEqualStrings("off", ultracodeToggleItems(true)[0].name);
+    try std.testing.expectEqualStrings("on", ultracodeToggleItems(true)[1].name);
+}
+
+test "applyUltracodeSteering handles explicit and persistent modes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const plain = try applyUltracodeSteering(a, "fix this", false);
+    try std.testing.expect(!plain.explicit);
+    try std.testing.expectEqualStrings("fix this", plain.text);
+
+    const persistent = try applyUltracodeSteering(a, "fix this", true);
+    try std.testing.expect(!persistent.explicit);
+    try std.testing.expect(std.mem.indexOf(u8, persistent.text, "ultracode mode is enabled") != null);
+
+    const explicit = try applyUltracodeSteering(a, "ultracode fix this", true);
+    try std.testing.expect(explicit.explicit);
+    try std.testing.expect(std.mem.indexOf(u8, explicit.text, "user invoked the \"ultracode\" codeword") != null);
+    try std.testing.expect(std.mem.indexOf(u8, explicit.text, "ultracode mode is enabled") == null);
+}
+
+test "fillCompletions includes ultracode slash command" {
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    _ = fillCompletions(std.testing.allocator, "/ult", &out);
+    var found = false;
+    for (out.items) |item| {
+        if (std.mem.eql(u8, item, "/ultracode")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "visionModel: vision-capable model families only" {
+    try std.testing.expect(visionModel("claude-opus-4-8"));
+    try std.testing.expect(visionModel("gpt-5.5"));
+    try std.testing.expect(visionModel("gpt-4o"));
+    try std.testing.expect(visionModel("grok-4.3"));
+    try std.testing.expect(visionModel("kimi-k2.7"));
+    try std.testing.expect(visionModel("gemini-2.0"));
+    try std.testing.expect(!visionModel("deepseek-v4-pro"));
+    try std.testing.expect(!visionModel("mimo-v2.5"));
+    try std.testing.expect(!visionModel("grok-build")); // grok-4 prefix only, not all grok
+}
+
+test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
+    try std.testing.expectEqualStrings("OpenAI", providerDisplayName("openai"));
+    try std.testing.expectEqualStrings("Codex (ChatGPT)", providerDisplayName("codex"));
+    try std.testing.expectEqualStrings("mystery", providerDisplayName("mystery")); // unknown -> echoed id
+    try std.testing.expectEqualStrings("codegraff_device", providerLoginKind("codegraff"));
+    try std.testing.expectEqualStrings("codex_device", providerLoginKind("codex"));
+    try std.testing.expectEqualStrings("api_key", providerLoginKind("openai"));
+}
+
+test "strField/intField: typed JSON field extraction, null on wrong type or non-object" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v = std.json.parseFromSliceLeaky(Value, a, "{\"s\":\"hi\",\"n\":42,\"b\":true}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("hi", strField(v, "s").?);
+    try std.testing.expect(strField(v, "n") == null); // present but not a string
+    try std.testing.expect(strField(v, "missing") == null);
+    try std.testing.expect(strField(Value{ .null = {} }, "s") == null); // non-object input
+    try std.testing.expectEqual(@as(i64, 42), intField(v, "n").?);
+    try std.testing.expect(intField(v, "s") == null); // present but not an integer
+    try std.testing.expect(intField(v, "missing") == null);
+}
+
+test "strFieldObj/intFieldObj: object-map variants with defaults" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v = std.json.parseFromSliceLeaky(Value, a, "{\"s\":\"hi\",\"n\":42}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("hi", strFieldObj(v.object, "s").?);
+    try std.testing.expect(strFieldObj(v.object, "n") == null);
+    try std.testing.expectEqual(@as(i64, 42), intFieldObj(v.object, "n", -1));
+    try std.testing.expectEqual(@as(i64, -1), intFieldObj(v.object, "s", -1)); // wrong type -> default
+    try std.testing.expectEqual(@as(i64, -1), intFieldObj(v.object, "missing", -1));
+}
+
+test "b64url: url-safe base64 without padding" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expectEqualStrings("Zm9v", b64url(a, "foo"));
+    try std.testing.expectEqualStrings("", b64url(a, ""));
+    // bytes that would be '+' and '/' in standard base64 use '-' and '_', no '=' padding
+    try std.testing.expectEqualStrings("-_8", b64url(a, &[_]u8{ 0xfb, 0xff }));
+}
+
+test "missingArg: builds an is_error result naming the argument" {
+    const o = try missingArg(std.testing.allocator, "path");
+    defer std.testing.allocator.free(o.text);
+    try std.testing.expect(o.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, o.text, "path") != null);
+}
+
+test "extractText: string content, joined text blocks, and empties" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const plain = std.json.parseFromSliceLeaky(Value, a, "{\"content\":\"plain\"}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("plain", extractText(a, plain));
+    const blocks = std.json.parseFromSliceLeaky(Value, a, "{\"content\":[{\"type\":\"text\",\"text\":\"a\"},{\"type\":\"text\",\"text\":\"b\"}]}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("a\nb", extractText(a, blocks));
+    const empty = std.json.parseFromSliceLeaky(Value, a, "{}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("", extractText(a, empty));
+    try std.testing.expectEqualStrings("", extractText(a, Value{ .null = {} }));
+}
+
+test "translateHistory: flattens to {role,content:string}, keeps user/assistant, drops the rest" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const mk = struct {
+        fn p(al: Allocator, s: []const u8) Value {
+            return std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable;
+        }
+    }.p;
+    var msgs = std.json.Array.init(a);
+    try msgs.append(mk(a, "{\"role\":\"system\",\"content\":\"sys\"}")); // dropped
+    try msgs.append(mk(a, "{\"role\":\"user\",\"content\":\"hello\"}")); // kept
+    try msgs.append(mk(a, "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}")); // flattened
+    try msgs.append(mk(a, "{\"role\":\"tool\",\"content\":\"result\"}")); // dropped
+    try msgs.append(mk(a, "{\"role\":\"user\",\"content\":\"   \"}")); // whitespace-only -> dropped
+    translateHistory(a, &msgs, .anthropic);
+    try std.testing.expectEqual(@as(usize, 2), msgs.items.len);
+    try std.testing.expectEqualStrings("user", msgs.items[0].object.get("role").?.string);
+    try std.testing.expectEqualStrings("hello", msgs.items[0].object.get("content").?.string);
+    try std.testing.expectEqualStrings("assistant", msgs.items[1].object.get("role").?.string);
+    try std.testing.expectEqualStrings("hi", msgs.items[1].object.get("content").?.string);
+}
+
+test "isImagePath: known image extensions, case-insensitive" {
+    try std.testing.expect(isImagePath("photo.png"));
+    try std.testing.expect(isImagePath("a.JPEG"));
+    try std.testing.expect(isImagePath("x.webp"));
+    try std.testing.expect(isImagePath("dir/sub/pic.gif"));
+    try std.testing.expect(!isImagePath("readme.md"));
+    try std.testing.expect(!isImagePath("noext"));
+    try std.testing.expect(!isImagePath("archive.tar.gz"));
+}
+
+test "isMetaName: the four orchestrator-handled meta tools" {
+    try std.testing.expect(isMetaName("todo_write"));
+    try std.testing.expect(isMetaName("todo_read"));
+    try std.testing.expect(isMetaName("ask_user"));
+    try std.testing.expect(isMetaName("attempt_completion"));
+    try std.testing.expect(!isMetaName("bash"));
+    try std.testing.expect(!isMetaName("subagent"));
+    try std.testing.expect(!isMetaName("codedb"));
+}
+
+test "queryParam: extracts a value from an HTTP request line's query string" {
+    try std.testing.expectEqualStrings("2", queryParam("GET /p?a=1&b=2 HTTP/1.1", "b").?);
+    try std.testing.expectEqualStrings("1", queryParam("GET /p?a=1&b=2 HTTP/1.1", "a").?);
+    try std.testing.expect(queryParam("GET /p?a=1 HTTP/1.1", "z") == null); // key absent
+    try std.testing.expect(queryParam("GET /p HTTP/1.1", "a") == null); // no query string
+}
+
+test "skillIndex: registry lookup" {
+    try std.testing.expect(skillIndex("graff") != null);
+    try std.testing.expect(skillIndex("kuri") != null);
+    try std.testing.expect(skillIndex("nonexistent-skill") == null);
+}
+
+test "confinedPath: rejects absolute, empty, and parent-escaping paths" {
+    try std.testing.expect(confinedPath("src/main.zig"));
+    try std.testing.expect(confinedPath("a/b/c"));
+    try std.testing.expect(!confinedPath(""));
+    try std.testing.expect(!confinedPath("/etc/passwd"));
+    try std.testing.expect(!confinedPath("../outside"));
+    try std.testing.expect(!confinedPath("a/../../b"));
+}
+
+test "Agent.codepointCount: counts UTF-8 codepoints, not bytes" {
+    try std.testing.expectEqual(@as(usize, 5), Agent.codepointCount("hello"));
+    try std.testing.expectEqual(@as(usize, 0), Agent.codepointCount(""));
+    try std.testing.expectEqual(@as(usize, 1), Agent.codepointCount("é")); // 2 bytes, 1 codepoint
+    try std.testing.expectEqual(@as(usize, 3), Agent.codepointCount("a→b")); // arrow is 3 bytes
+}
+
+test "Agent.inlineVisibleLen: matched **bold**/`code` markers drop from the visible width" {
+    try std.testing.expectEqual(@as(usize, 5), Agent.inlineVisibleLen("hello"));
+    try std.testing.expectEqual(@as(usize, 4), Agent.inlineVisibleLen("**bold**"));
+    try std.testing.expectEqual(@as(usize, 4), Agent.inlineVisibleLen("`code`"));
+    try std.testing.expectEqual(@as(usize, 1), Agent.inlineVisibleLen("é")); // wide glyph counts as one column
+    try std.testing.expectEqual(@as(usize, 2), Agent.inlineVisibleLen("**")); // unmatched marker is literal
+}
+
+test "Agent.isTableSeparator: only |, -, :, space and at least one dash" {
+    try std.testing.expect(Agent.isTableSeparator("|---|---|"));
+    try std.testing.expect(Agent.isTableSeparator("| :--- | ---: |"));
+    try std.testing.expect(Agent.isTableSeparator("---"));
+    try std.testing.expect(!Agent.isTableSeparator("| a | b |")); // letters
+    try std.testing.expect(!Agent.isTableSeparator("|   |   |")); // no dash
+    try std.testing.expect(!Agent.isTableSeparator("")); // empty
+}
+
+test "accountFromIdToken: extracts chatgpt_account_id from a JWT payload" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // payload base64url-no-pad encodes
+    // {"https://api.openai.com/auth":{"chatgpt_account_id":"acc_test_123"}}
+    const token = "eyJhbGciOiJub25lIn0." ++
+        "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2NfdGVzdF8xMjMifX0" ++
+        ".sig";
+    try std.testing.expectEqualStrings("acc_test_123", accountFromIdToken(a, token));
+    try std.testing.expectEqualStrings("", accountFromIdToken(a, "not-a-jwt")); // no payload segment
+    try std.testing.expectEqualStrings("", accountFromIdToken(a, "a.b.c")); // payload not valid base64/json
+}
+
+test "apiErrorMessage: object-message, bare-string, and absent envelopes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const mk = struct {
+        fn p(al: Allocator, s: []const u8) Value {
+            return std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable;
+        }
+    }.p;
+    try std.testing.expectEqualStrings("bad thing", apiErrorMessage(mk(a, "{\"error\":{\"message\":\"bad thing\"}}").object).?);
+    // codegraff gateway shape: error is a bare string (the grok-build case)
+    try std.testing.expectEqualStrings(
+        "Model grok-build-0.1 does not support parameter reasoningEffort.",
+        apiErrorMessage(mk(a, "{\"code\":\"invalid-argument\",\"error\":\"Model grok-build-0.1 does not support parameter reasoningEffort.\"}").object).?,
+    );
+    try std.testing.expect(apiErrorMessage(mk(a, "{\"choices\":[]}").object) == null);
+    try std.testing.expect(apiErrorMessage(mk(a, "{\"error\":null}").object) == null);
+}
+
+test "mentionsReasoningEffort: matches snake_case and camelCase wording" {
+    try std.testing.expect(mentionsReasoningEffort("Unknown parameter: reasoning_effort"));
+    try std.testing.expect(mentionsReasoningEffort("Model X does not support parameter reasoningEffort."));
+    try std.testing.expect(!mentionsReasoningEffort("some other error"));
+}
+
+test "providerTakesEffort: effort-honoring providers, but never for grok models" {
+    try std.testing.expect(providerTakesEffort(.responses, "codex", "gpt-5.5"));
+    try std.testing.expect(providerTakesEffort(.openai, "codegraff", "deepseek-v4-pro"));
+    try std.testing.expect(providerTakesEffort(.openai, "deepseek", "deepseek-v4-pro"));
+    try std.testing.expect(providerTakesEffort(.openai, "kimi", "kimi-k2.7"));
+    try std.testing.expect(!providerTakesEffort(.openai, "openai", "gpt-5.5")); // direct openai chat
+    try std.testing.expect(!providerTakesEffort(.openai, "xai", "grok-4.3")); // xai not in the list
+    // grok via the codegraff gateway must NOT get reasoning_effort (grok rejects it)
+    try std.testing.expect(!providerTakesEffort(.openai, "codegraff", "grok-build"));
+}
+
+test "/bash slash command runs the bash tool and frees its gpa-allocated result" {
+    // Regression guard for PR #38: the /bash slash handler routes through
+    // execTool, whose result.text is gpa-owned (NOT arena-owned — every other
+    // caller frees it). Forgetting `defer root.gpa.free(result.text)` in
+    // handleCommand leaks on every /bash invocation; std.testing.allocator
+    // catches that here.
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+
+    var root: Agent = .{
+        .gpa = gpa,
+        .arena = arena,
+        .io = io,
+        .client = &client,
+        .provider = .{
+            .id = "test",
+            .kind = .openai,
+            .auth = .bearer,
+            .url = "",
+            .api_key = "",
+            .model = "m",
+            .context = 100_000,
+        },
+        .messages = std.json.Array.init(arena),
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+    var keys: Keys = .{ .values = [_]?[]const u8{null} ** provider_specs.len };
+
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+
+    defer root.tools_used.deinit(gpa);
+    try handleCommand(&root, &keys, arena, "/bash printf leak-guard-XYZ", &aw.writer);
+
+    const written = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "leak-guard-XYZ") != null);
+}
+
+test "reasoningDelta extracts thinking/reasoning per provider wire format (#75)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const mk = struct {
+        fn p(al: Allocator, s: []const u8) std.json.ObjectMap {
+            return (std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable).object;
+        }
+    }.p;
+
+    // anthropic streams a thinking_delta inside content_block_delta
+    const an = mk(a, "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ponder\"}}");
+    try std.testing.expectEqualStrings("ponder", reasoningDelta(.anthropic, an));
+    // openai/deepseek stream reasoning_content (or reasoning) on choices[0].delta
+    const oa = mk(a, "{\"choices\":[{\"delta\":{\"reasoning_content\":\"hmm\"}}]}");
+    try std.testing.expectEqualStrings("hmm", reasoningDelta(.openai, oa));
+    // codex/responses stream a reasoning summary delta
+    const re = mk(a, "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"plan\"}");
+    try std.testing.expectEqualStrings("plan", reasoningDelta(.responses, re));
+    // a plain answer-text delta carries no reasoning
+    const txt = mk(a, "{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}");
+    try std.testing.expectEqualStrings("", reasoningDelta(.openai, txt));
+}
+
+test "firstUserTitle: first user message becomes the header title, else Chat (#83)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const mk = struct {
+        fn p(al: Allocator, s: []const u8) Value {
+            return std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable;
+        }
+    }.p;
+
+    var msgs = std.json.Array.init(a);
+    try msgs.append(mk(a, "{\"role\":\"assistant\",\"content\":\"hi\"}"));
+    try msgs.append(mk(a, "{\"role\":\"user\",\"content\":\"Fix the parser\\nmore detail\"}"));
+    try std.testing.expectEqualStrings("Fix the parser", firstUserTitle(a, msgs));
+
+    const empty = std.json.Array.init(a);
+    try std.testing.expectEqualStrings("Chat", firstUserTitle(a, empty));
+}
+
+test "titleFromPrompt: truncates long prompts at a word boundary, UTF-8 intact (#83)" {
+    const long = "Refactor the streaming parser and add tests for partial UTF-8 edge cases that panic";
+    const t = titleFromPrompt(long);
+    try std.testing.expect(t.len < long.len); // capped
+    try std.testing.expect(std.mem.startsWith(u8, long, t)); // a clean prefix
+    try std.testing.expect(t[t.len - 1] != ' '); // trailing space trimmed
+    // a short multibyte prompt is returned whole, never split mid-codepoint
+    try std.testing.expectEqualStrings("héllo wörld", titleFromPrompt("héllo wörld"));
+}
+
+test "printSessionHeader renders the working-on title and folder (#83)" {
+    const saved = json_mode;
+    json_mode = false;
+    defer json_mode = saved;
+
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try printSessionHeader(&aw.writer, "Fix the bug", "/tmp/proj");
+    const s = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, s, "Codegraff") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "Fix the bug") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "/tmp/proj") != null);
+
+    // JSON mode emits nothing (the header would corrupt the event stream).
+    json_mode = true;
+    var jw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer jw.deinit();
+    try printSessionHeader(&jw.writer, "x", "/y");
+    try std.testing.expectEqual(@as(usize, 0), jw.writer.buffered().len);
+}
+
+test "setTerminalTitle emits OSC title with folder basename, gated by color/json (#83)" {
+    const sc = use_color;
+    const sj = json_mode;
+    defer {
+        use_color = sc;
+        json_mode = sj;
+    }
+
+    use_color = true;
+    json_mode = false;
+    var on: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer on.deinit();
+    setTerminalTitle(&on.writer, "Add dark mode", "/a/b/myproj");
+    const s = on.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, s, "Codegraff: Add dark mode — myproj") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\x1b]0;") != null); // window title
+    try std.testing.expect(std.mem.indexOf(u8, s, "\x1b]2;") != null); // tab title
+
+    // Gated off in JSON mode (would corrupt the stream) and when color is off.
+    json_mode = true;
+    var off: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer off.deinit();
+    setTerminalTitle(&off.writer, "x", "/y");
+    try std.testing.expectEqual(@as(usize, 0), off.writer.buffered().len);
+}
+
+test "cleanTitle: normalizes a model reply into a tab label, else null (/title)" {
+    // plain title passes through (capped/word-boundaried by titleFromPrompt)
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("Fix The Parser").?);
+    // wrapping quotes, a leading label, and trailing punctuation are stripped
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("  \"Fix The Parser\"  ").?);
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("Title: Fix The Parser.").?);
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("'`Fix The Parser`'").?);
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("“Fix The Parser”").?);
+    // only the first line is used
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("Fix The Parser\nsome rambling").?);
+    // nothing usable → null so the caller keeps the mechanical titleFromPrompt label
+    try std.testing.expect(cleanTitle("   ") == null);
+    try std.testing.expect(cleanTitle("\"\"") == null);
 }

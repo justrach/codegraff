@@ -21,6 +21,7 @@ import { NewChatTrigger } from "../components/NewChatTrigger";
 import { GeneralSettingsPane } from "../components/general-settings/GeneralSettingsPane";
 import { McpSettingsPane } from "../components/mcp-settings/McpSettingsPane";
 import { ProvidersSettingsPane } from "../components/providers-settings/ProvidersSettingsPane";
+import { ProviderSuccessPage } from "../components/providers-settings/ProviderSuccessPage";
 import { ProjectSidebar } from "../components/ProjectSidebar";
 import { WorkspaceBoard } from "../components/workspace-board/WorkspaceBoard";
 import { Button } from "../components/ui/Button";
@@ -133,6 +134,10 @@ function AppShell() {
   const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
   const [isSidebarAnimating, setIsSidebarAnimating] = useState(false);
   const sidebarAnimateTimeoutRef = useRef<number | null>(null);
+  // Holds the latest openNewChat from the always-mounted NewChatTrigger so the
+  // global Cmd/Ctrl+N shortcut can invoke it (including its git-worktree choice
+  // dialog) no matter what's visible.
+  const newChatRef = useRef<(() => void) | null>(null);
   // Briefly enable a width transition on the panels so toggling the sidebar
   // slides smoothly (like the artifacts drawer) instead of snapping. Kept off
   // during drag-resize so dragging stays 1:1 with the cursor.
@@ -144,7 +149,7 @@ function AppShell() {
     sidebarAnimateTimeoutRef.current = window.setTimeout(() => {
       setIsSidebarAnimating(false);
       sidebarAnimateTimeoutRef.current = null;
-    }, 220);
+    }, 340);
   }, []);
   const openProvidersSettings = useCallback(() => {
     setIsDesktopSidebarVisible(true);
@@ -227,6 +232,24 @@ function AppShell() {
     };
   }, []);
 
+  // Global Cmd/Ctrl+N → new chat. Reuses NewChatTrigger's openNewChat (captured
+  // in newChatRef) so the git-worktree choice dialog flows through identically.
+  // Skipped while a settings view or dialog is open or while the session is
+  // mid-bootstrap, and ignores key presses originating inside an input/textarea
+  // so it never fights typing — though Cmd+N is uncommon enough to be safe.
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key !== "n") {
+        return;
+      }
+      event.preventDefault();
+      newChatRef.current?.();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   if (!isSessionBootstrapped) {
     return (
       <main className="app-shell relative flex h-screen w-full items-center justify-center overflow-hidden bg-background">
@@ -242,7 +265,7 @@ function AppShell() {
   return (
     <TooltipProvider>
       <SidebarProvider className="min-h-screen bg-background">
-        <main className="app-shell relative flex h-screen w-full overflow-hidden bg-background">
+        <main className="app-shell relative flex h-screen w-full overflow-hidden bg-sidebar">
           <AppThemeToggle
             isDarkTheme={isDarkTheme}
             onToggleTheme={toggleTheme}
@@ -265,9 +288,13 @@ function AppShell() {
               });
             }}
           />
-          {!isDesktopSidebarVisible && !isSettingsViewOpen ? (
-            <NewChatTrigger>
-              {({ isBusy, openNewChat }) => (
+          <NewChatTrigger>
+            {({ isBusy, openNewChat }) => {
+              newChatRef.current = openNewChat;
+              if (isDesktopSidebarVisible || isSettingsViewOpen) {
+                return null;
+              }
+              return (
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -279,9 +306,9 @@ function AppShell() {
                   <PenSquare strokeWidth={2} className="size-3.5" />
                   <span className="sr-only">New chat</span>
                 </Button>
-              )}
-            </NewChatTrigger>
-          ) : null}
+              );
+            }}
+          </NewChatTrigger>
           <ResizablePanelGroup orientation="horizontal">
             <ResizablePanel
               id="sidebar-panel"
@@ -292,7 +319,7 @@ function AppShell() {
               collapsible
               collapsedSize={0}
               groupResizeBehavior="preserve-pixel-size"
-              className={`overflow-hidden${isSidebarAnimating ? " transition-[flex-grow] duration-200 ease-out" : ""}`}
+              className={`cg-sidebar-region overflow-hidden${isSidebarAnimating ? " transition-[flex-grow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]" : ""}`}
               onResize={(size) => {
                 const nextIsVisible = size.inPixels > 0;
                 if (!nextIsVisible) {
@@ -322,13 +349,13 @@ function AppShell() {
             />
             <ResizablePanel
               id="chat-panel"
-              className={
+              className={`cg-content-region${
                 isSidebarAnimating
-                  ? "transition-[flex-grow] duration-200 ease-out"
-                  : undefined
-              }
+                  ? " transition-[flex-grow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]"
+                  : ""
+              }`}
             >
-              <section className="flex h-full min-w-0 flex-1 overflow-hidden">
+              <section className="cg-content-card flex h-full min-w-0 flex-1 overflow-hidden">
                 {isSettingsViewOpen ? (
                   selectedSettingsSection === "providers" ? (
                     <ProvidersSettingsPane />
@@ -356,6 +383,10 @@ function AppShell() {
 }
 
 function App() {
+  if (window.location.pathname === "/success") {
+    return <ProviderSuccessPage />;
+  }
+
   return (
     <SessionProvider>
       <DragDropProvider>

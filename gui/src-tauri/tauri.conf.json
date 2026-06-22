@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Codegraff",
-  "version": "0.0.13",
+  "version": "0.0.165",
   "identifier": "dev.codegraff.gui",
   "build": {
     "frontendDist": "../dist",
@@ -22,8 +22,8 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": {
-          "x": 15,
-          "y": 13
+          "x": 19,
+          "y": 20
         },
         "backgroundColor": "#16140f"
       }
@@ -34,6 +34,8 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
+    "externalBin": ["binaries/graff"],
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -45,6 +47,14 @@
     "macOS": {
       "signingIdentity": "Developer ID Application: Rachit Pradhan (WWP9DLJ27P)",
       "hardenedRuntime": true
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/justrach/codegraff/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM1RjYxOTJEOEJGQzgzNDUKUldSRmcveUxMUm4yeGJ3aDBQQTdkYU9aa2ppN2Z4dUlCcWxvbFhBbkNyeUFEaGRyNVB0K3c4dVQK"
     }
   }
 }

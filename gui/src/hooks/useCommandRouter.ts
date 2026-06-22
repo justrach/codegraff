@@ -18,6 +18,9 @@ const ARG_COMMANDS = new Set([
   "workspace-query",
   "workspace-search",
   "workflow",
+  "goal",
+  "loop",
+  "bash",
   "reasoning-effort",
 ]);
 
@@ -30,15 +33,16 @@ interface UseCommandRouterOptions {
   onCommandResult?: (result: CommandRunResult) => void;
 }
 
-function parseSlashCommand(draft: string): ParsedCommand | null {
+export function parseSlashCommand(draft: string): ParsedCommand | null {
   const match = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(draft.trim());
   if (match == null) {
     return null;
   }
+  const name = match[1];
   const rest = match[2]?.trim() ?? "";
   return {
-    name: match[1],
-    args: rest.length > 0 ? rest.split(/\s+/) : [],
+    name,
+    args: rest.length > 0 ? (name === "bash" ? [rest] : rest.split(/\s+/)) : [],
   };
 }
 

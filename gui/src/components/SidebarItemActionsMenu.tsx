@@ -36,7 +36,11 @@ export function SidebarItemActionsMenu({
   removeLabel = "Remove",
   renameLabel = "Rename",
   allowEmptyName = false,
+  removeConfirmTitle,
+  removeConfirmDescription,
 }: SidebarItemActionsMenuProps) {
+  const [isRemoveDialogOpen, setIsRemoveDialogOpen] = useState(false);
+  const [isRemovePending, setIsRemovePending] = useState(false);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [isRenamePending, setIsRenamePending] = useState(false);
   const [nameDraft, setNameDraft] = useState(currentName);
@@ -71,6 +75,24 @@ export function SidebarItemActionsMenu({
     }
   }
 
+  function handleRemoveDialogOpenChange(open: boolean) {
+    if (isRemovePending) {
+      return;
+    }
+
+    setIsRemoveDialogOpen(open);
+  }
+
+  async function handleRemoveSubmit() {
+    setIsRemovePending(true);
+    try {
+      await onRemove();
+      setIsRemoveDialogOpen(false);
+    } finally {
+      setIsRemovePending(false);
+    }
+  }
+
   return (
     <>
       <DropdownMenu>
@@ -101,7 +123,10 @@ export function SidebarItemActionsMenu({
               <PencilLineIcon />
               {renameLabel}
             </DropdownMenuItem>
-            <DropdownMenuItem variant="destructive" onClick={onRemove}>
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={() => handleRemoveDialogOpenChange(true)}
+            >
               <RemoveIcon />
               {removeLabel}
             </DropdownMenuItem>
@@ -150,6 +175,39 @@ export function SidebarItemActionsMenu({
                 }}
               >
                 Save
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isRemoveDialogOpen} onOpenChange={handleRemoveDialogOpenChange}>
+        <DialogContent className="max-w-md" showCloseButton={!isRemovePending}>
+          <div className="flex flex-col gap-4">
+            <DialogHeader>
+              <DialogTitle>{removeConfirmTitle ?? `Remove ${currentName}?`}</DialogTitle>
+              <DialogDescription>
+                {removeConfirmDescription ?? "This can't be undone."}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isRemovePending}
+                onClick={() => handleRemoveDialogOpenChange(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={isRemovePending}
+                onClick={() => {
+                  void handleRemoveSubmit();
+                }}
+              >
+                {removeLabel}
               </Button>
             </DialogFooter>
           </div>

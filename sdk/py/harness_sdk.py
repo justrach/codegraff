@@ -13,9 +13,9 @@ import urllib.error
 import urllib.request
 from typing import Iterator, Optional
 
-MODELS = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "glm-4.5", "glm-4.7", "glm-5", "gpt-5-codex", "gpt-5.2", "gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "grok-4.3", "grok-build", "kimi-k2.6", "kimi-k2.7", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3"]
+MODELS = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "grok-4.3", "grok-build", "kimi-k2.6", "kimi-k2.7", "kimi-latest", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3"]
 TOOLS = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "ask_user", "attempt_completion", "subagent", "workflow"]
-PROVIDERS = ["anthropic", "codegraff", "deepseek", "openai", "minimax", "xiaomi", "kimi", "xai", "zai", "codex"]
+PROVIDERS = ["anthropic", "codegraff", "deepseek", "openai", "minimax", "xiaomi", "kimi", "moonshot", "xai", "zai", "codex"]
 
 
 def _sdk_install_id() -> str:
@@ -184,13 +184,19 @@ class Harness:
                  cwd: Optional[str] = None, env: Optional[dict] = None,
                  model: Optional[str] = None, yolo: bool = False,
                  system_prompt: Optional[str] = None,
-                 append_system_prompt: Optional[str] = None):
+                 append_system_prompt: Optional[str] = None,
+                 max_tool_calls: Optional[int] = None,
+                 dedupe_tool_calls: bool = False):
         binary = binary or _default_binary()
         argv = [binary, "--json"]
         if yolo:
             argv.append("--yolo")
         if model:
             argv += ["--model", model]
+        if max_tool_calls is not None:
+            argv += ["--max-tool-calls", str(max_tool_calls)]
+        if dedupe_tool_calls:
+            argv.append("--dedupe-tool-calls")
         if system_prompt:
             argv += ["--system-prompt", system_prompt]
         if append_system_prompt:
@@ -400,6 +406,8 @@ class RemoteHarness:
                  model: Optional[str] = None, yolo: bool = False,
                  system_prompt: Optional[str] = None,
                  append_system_prompt: Optional[str] = None,
+                 max_tool_calls: Optional[int] = None,
+                 dedupe_tool_calls: bool = False,
                  session_id: Optional[str] = None):
         self.base = url.rstrip("/")
         self.token = token
@@ -415,6 +423,10 @@ class RemoteHarness:
             opts["system_prompt"] = system_prompt
         if append_system_prompt:
             opts["append_system_prompt"] = append_system_prompt
+        if max_tool_calls is not None:
+            opts["maxToolCalls"] = max_tool_calls
+        if dedupe_tool_calls:
+            opts["dedupeToolCalls"] = True
         resp = self._request("POST", "/v1/sessions", opts)
         self.session_id = json.loads(resp.read())["session_id"]
 

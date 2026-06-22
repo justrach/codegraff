@@ -1,6 +1,5 @@
 import { FileDiffResult } from "./FileDiffResult";
-import { ShellOutputResult } from "./ShellOutputResult";
-import { TextResult } from "./TextResult";
+import { ContentResult } from "./ContentResult";
 import type { ActivityResultRendererProps } from "../types/chatComponents";
 
 export function ActivityResultRenderer({
@@ -10,10 +9,8 @@ export function ActivityResultRenderer({
   switch (result.kind) {
     case "file_diff":
       return <FileDiffResult result={result} workspacePath={workspacePath} />;
-    case "shell":
-      return <ShellOutputResult result={result} />;
-    case "text":
-      return <TextResult result={result} />;
+    case "content":
+      return <ContentResult result={result} workspacePath={workspacePath} />;
     default:
       return null;
   }

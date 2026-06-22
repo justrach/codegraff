@@ -1,0 +1,232 @@
+/* @codegraff/diffs — dependency-free diff styling.
+   All colors come from `--cgd-*` variables; the values below are neutral
+   fallbacks for standalone use. A host app (e.g. codegraff) overrides them with
+   its own theme tokens, so do NOT add theme-specific (e.g. dark) color blocks
+   here — the host drives color. */
+
+.cgd-root {
+  --cgd-fg: #1f2328;
+  --cgd-muted: #8a8f98;
+  --cgd-border: #e4e4e7;
+  --cgd-add-bg: #e6ffec;
+  --cgd-del-bg: #ffebe9;
+  --cgd-add-word: rgba(46, 160, 67, 0.32);
+  --cgd-del-word: rgba(248, 81, 73, 0.32);
+  --cgd-add-accent: #2ea043;
+  --cgd-del-accent: #f85149;
+  --cgd-hunk-bg: #f3f4f6;
+  --cgd-hunk-fg: #6b7280;
+  --cgd-stat-add: #1a7f37;
+  --cgd-stat-del: #cf222e;
+  --cgd-tok-keyword: #cf222e;
+  --cgd-tok-string: #0a3069;
+  --cgd-tok-comment: #6e7781;
+  --cgd-tok-number: #0550ae;
+  --cgd-tok-punct: #6b7280;
+  --cgd-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  display: block;
+  color: var(--cgd-fg);
+  font-family: var(--cgd-font);
+  font-size: 12px;
+  line-height: 1.45;
+  -moz-tab-size: 2;
+  tab-size: 2;
+}
+
+.cgd-file + .cgd-file {
+  margin-top: 10px;
+}
+
+.cgd-file-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  color: var(--cgd-muted);
+}
+
+.cgd-file-path {
+  font-weight: 600;
+  color: var(--cgd-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cgd-file-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--cgd-border);
+}
+
+.cgd-file-stats,
+.cgd-fc-stats {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cgd-stat--add {
+  color: var(--cgd-stat-add);
+}
+
+.cgd-stat--del {
+  color: var(--cgd-stat-del);
+}
+
+.cgd-body {
+  overflow-x: auto;
+}
+
+.cgd-line {
+  display: grid;
+  grid-template-columns: 40px 40px 18px 1fr;
+  width: max-content;
+  min-width: 100%;
+  white-space: pre;
+}
+
+.cgd-gutter {
+  text-align: right;
+  padding: 0 8px;
+  color: var(--cgd-muted);
+  opacity: 0.55;
+  user-select: none;
+}
+
+.cgd-sign {
+  text-align: center;
+  user-select: none;
+  opacity: 0.65;
+}
+
+.cgd-content {
+  padding-right: 16px;
+}
+
+.cgd-line--addition {
+  background: var(--cgd-add-bg);
+  box-shadow: inset 2px 0 0 var(--cgd-add-accent);
+}
+
+.cgd-line--deletion {
+  background: var(--cgd-del-bg);
+  box-shadow: inset 2px 0 0 var(--cgd-del-accent);
+}
+
+.cgd-line--hunk {
+  background: var(--cgd-hunk-bg);
+  color: var(--cgd-hunk-fg);
+  padding-block: 2px;
+}
+
+.cgd-line--hunk + .cgd-line--hunk,
+.cgd-line:not(.cgd-line--hunk) + .cgd-line--hunk {
+  margin-top: 4px;
+}
+
+.cgd-line--hunk .cgd-content {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  opacity: 0.75;
+}
+
+.cgd-word--added {
+  background: var(--cgd-add-word);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px var(--cgd-add-word);
+}
+
+.cgd-word--removed {
+  background: var(--cgd-del-word);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px var(--cgd-del-word);
+}
+
+.cgd-tok--keyword {
+  color: var(--cgd-tok-keyword);
+}
+
+.cgd-tok--string {
+  color: var(--cgd-tok-string);
+}
+
+.cgd-tok--comment {
+  color: var(--cgd-tok-comment);
+  font-style: italic;
+}
+
+.cgd-tok--number {
+  color: var(--cgd-tok-number);
+}
+
+.cgd-tok--punct {
+  color: var(--cgd-tok-punct);
+}
+
+.cgd-empty {
+  padding: 12px;
+  color: var(--cgd-muted);
+}
+
+/* Files-changed list (generic; host apps may restyle the surrounding chrome) */
+.cgd-fc-row {
+  border: 1px solid var(--cgd-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.cgd-fc-row + .cgd-fc-row {
+  margin-top: 6px;
+}
+
+.cgd-fc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 8px;
+}
+
+.cgd-fc-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: none;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.cgd-fc-caret {
+  color: var(--cgd-muted);
+}
+
+.cgd-fc-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cgd-fc-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--cgd-border);
+  color: var(--cgd-muted);
+}
+
+.cgd-fc-body {
+  padding: 0 12px 12px;
+}

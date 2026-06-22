@@ -246,7 +246,7 @@ impl ProjectStore {
     }
 
     pub fn archive_workspace(&self, path: &Path) -> anyhow::Result<()> {
-        let canonical = canonicalize_project_path(path)?;
+        let canonical = canonicalize_workspace_removal_path(path);
         self.with_connection(|connection| {
             sql_query(
                 "
@@ -582,6 +582,10 @@ fn canonicalize_project_path(path: &Path) -> anyhow::Result<String> {
         .into_owned())
 }
 
+fn canonicalize_workspace_removal_path(path: &Path) -> String {
+    canonicalize_project_path(path).unwrap_or_else(|_| path.to_string_lossy().into_owned())
+}
+
 fn parse_workspace_kind(value: &str) -> RegisteredWorkspaceKind {
     match value {
         "managed_chat" => RegisteredWorkspaceKind::ManagedChat,
@@ -640,4 +644,43 @@ fn load_optional_saved_workspace_record(
     .load(connection)?;
 
     Ok(rows.into_iter().next())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_store() -> anyhow::Result<(ProjectStore, PathBuf)> {
+        let root = std::env::temp_dir().join(format!(
+            "codegraff-project-store-test-{}",
+            Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root)?;
+        let store = ProjectStore::new(root.join("projects.sqlite"), root.join("managed-chats"))?;
+        Ok((store, root))
+    }
+
+    #[test]
+    fn archive_workspace_removes_registry_entry_for_missing_folder() -> anyhow::Result<()> {
+        let (store, root) = test_store()?;
+        let project_path = root.join("deleted-project");
+        fs::create_dir_all(&project_path)?;
+        let canonical_project_path = project_path.canonicalize()?;
+
+        store.add_project(&canonical_project_path)?;
+        fs::remove_dir_all(&canonical_project_path)?;
+
+        store.archive_workspace(&canonical_project_path)?;
+        fs::create_dir_all(&canonical_project_path)?;
+
+        let registered_paths: Vec<PathBuf> = store
+            .list_workspaces()?
+            .into_iter()
+            .map(|workspace| workspace.path)
+            .collect();
+        assert!(!registered_paths.contains(&canonical_project_path));
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }

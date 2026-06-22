@@ -97,25 +97,37 @@ export function estimateChatThreadItemSize(item: ChatThreadItem): number {
 
 export function renderChatThreadItem(
   { item, index }: ChatThreadRenderItem,
-  { itemCount, requestTimingsById, workspacePath }: RenderChatThreadItemOptions,
+  {
+    itemCount,
+    requestTimingsById,
+    workspacePath,
+    onDismissCommandResult,
+  }: RenderChatThreadItemOptions,
 ) {
   const row =
     item.kind === "message" ? (
       renderChatMessage(item.message, workspacePath)
     ) : item.kind === "request_work" ? (
       <ChatWorkRow
-        key={`${item.key}:${item.isRunning ? "running" : item.hasError ? "error" : "idle"}`}
+        key={item.key}
         item={item}
         requestTiming={requestTimingsById[item.requestId]}
         workspacePath={workspacePath}
       />
     ) : (
-      <ChatCommandResultRow result={item.result} />
+      <ChatCommandResultRow
+        result={item.result}
+        onDismiss={
+          onDismissCommandResult != null
+            ? () => onDismissCommandResult(item.key)
+            : undefined
+        }
+      />
     );
 
   return (
     <div
-      className="mx-auto min-w-0 w-full max-w-3xl select-text"
+      className="mx-auto min-w-0 w-full max-w-3xl select-none"
       style={{ paddingBottom: index === itemCount - 1 ? 0 : THREAD_ITEM_GAP }}
     >
       {row}

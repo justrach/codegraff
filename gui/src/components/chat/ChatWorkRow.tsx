@@ -1,84 +1,31 @@
-import { useState } from "react";
-import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { ThinkingGlyph } from "@/components/ui/ThinkingGlyph";
 
 import { CHAT_MUTED_TEXT_CLASS } from "./constants/chatStyles";
-import { useRunningNow } from "./hooks/useRunningNow";
 import { ChatActivityRow } from "./ChatActivityRow";
-import { ChatStatusLabel } from "./ChatStatusLabel";
-import { getWorkHeaderLabelText } from "./utils/workHeaderLabel";
-import type {
-  ChatWorkRowProps,
-  WorkHeaderLabelProps,
-} from "./types/chatComponents";
+import type { ChatWorkRowProps } from "./types/chatComponents";
 
-function WorkHeaderLabel({
-  failedStepCount,
-  isRunning,
-  requestTiming,
-}: WorkHeaderLabelProps) {
-  const now = useRunningNow(isRunning);
-  const label = getWorkHeaderLabelText({
-    failedStepCount,
-    isRunning,
-    requestTiming,
-    nowMs: now,
-  });
-
-  return (
-    <span className="inline-flex min-w-0 items-center gap-1.5">
-      {isRunning ? (
-        <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-      ) : null}
-      <ChatStatusLabel text={label} />
-    </span>
-  );
-}
-
-export function ChatWorkRow({
-  item,
-  requestTiming,
-  workspacePath,
-}: ChatWorkRowProps) {
-  const [open, setOpen] = useState(item.isRunning || item.hasError);
-  const canExpand = item.activities.length > 0;
-
-  const header = (
-    <>
-      <WorkHeaderLabel
-        failedStepCount={item.failedStepCount}
-        isRunning={item.isRunning}
-        requestTiming={requestTiming}
-      />
-      {!item.isRunning && canExpand ? (
-        open ? (
-          <ChevronDown className="size-4 text-current" />
-        ) : (
-          <ChevronRight className="size-4 text-current" />
-        )
-      ) : null}
-    </>
-  );
+// The per-turn work timeline. No "Working/Worked for Ns" header at all — while
+// the turn is starting with nothing to show yet, an animated "thinking" glyph
+// (agents-are-thinking) beside a calm "Thinking" shimmer; otherwise just the
+// activity rows themselves.
+export function ChatWorkRow({ item, workspacePath }: ChatWorkRowProps) {
+  const hasActivities = item.activities.length > 0;
 
   return (
     <div className="grid min-w-0 gap-1">
-      {!item.isRunning && canExpand ? (
-        <button
-          type="button"
-          onClick={() => setOpen((current) => !current)}
-          className={`inline-flex min-w-0 items-center justify-between gap-2 border-b border-border pb-1 text-left ${CHAT_MUTED_TEXT_CLASS}`}
-        >
-          {header}
-        </button>
-      ) : (
-        <div className={`inline-flex min-w-0 items-center justify-between gap-2 border-b border-border pb-1 ${CHAT_MUTED_TEXT_CLASS}`}>
-          {header}
-        </div>
-      )}
-      {canExpand && (item.isRunning || open) ? (
+      {item.isRunning && !hasActivities ? (
+        <span className={`flex items-center gap-2 ${CHAT_MUTED_TEXT_CLASS}`}>
+          <ThinkingGlyph className="text-[color:var(--accent)]" />
+          <span className="shimmer shimmer-invert shimmer-repeat-delay-0">
+            Thinking
+          </span>
+        </span>
+      ) : null}
+      {hasActivities ? (
         <div className="grid min-w-0 gap-1">
           {item.activities.map((activityItem) => (
             <ChatActivityRow
-              key={`${activityItem.key}:${activityItem.isRunning ? "running" : activityItem.hasError ? "error" : "idle"}`}
+              key={activityItem.key}
               item={activityItem}
               workspacePath={workspacePath}
             />

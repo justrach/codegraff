@@ -53,6 +53,10 @@ export function isExternalHttpUrl(href: string): boolean {
   return /^https?:\/\//iu.test(href);
 }
 
+export function isMailtoUrl(href: string): boolean {
+  return /^mailto:/iu.test(href);
+}
+
 function trimLinkCandidate(candidate: string): string {
   let value = candidate.replace(TRAILING_PUNCTUATION_PATTERN, "");
 
@@ -139,6 +143,32 @@ export function rewriteChatFileUriHref(href: string | undefined): string | null 
   }
 
   return `${target.path}${target.hash}`;
+}
+
+export function sanitizeChatMarkdownHref(
+  href: string | undefined,
+  workspacePath?: string | null,
+): string | null {
+  if (href == null) {
+    return null;
+  }
+
+  const trimmed = href.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const rewrittenFileHref = rewriteChatFileUriHref(trimmed);
+  const candidate = rewrittenFileHref ?? trimmed;
+  if (isExternalHttpUrl(candidate) || isMailtoUrl(candidate)) {
+    return candidate;
+  }
+
+  if (resolveChatFilePathTarget(candidate, workspacePath) != null) {
+    return candidate;
+  }
+
+  return null;
 }
 
 function looksLikePosixFilesystemPath(path: string): boolean {

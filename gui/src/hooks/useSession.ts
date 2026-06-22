@@ -224,6 +224,7 @@ export function useConversationSession(binding?: ChatBinding | null) {
           meta.runtimeStatus,
         ),
         followupRequest: currentView?.followup ?? null,
+        goal: currentView?.goal ?? null,
         hasCurrentWorkspace: currentWorkspacePath != null,
         // An existing conversation is selected but its view (messages) has not
         // streamed in yet. Used to show a loading placeholder instead of
@@ -273,10 +274,21 @@ export function useAttachments(binding?: ChatBinding | null) {
     },
     [promptDraftKey],
   );
+  // Swap the whole tray in one shot (used by prompt-history navigation to
+  // rehydrate a restored prompt's attachments).
+  const replaceAttachments = useCallback(
+    (items: Attachment[]) => {
+      sessionStore.getState().clearAttachments(promptDraftKey);
+      if (items.length > 0) {
+        sessionStore.getState().addAttachments(promptDraftKey, items);
+      }
+    },
+    [promptDraftKey],
+  );
 
   return useMemo(
-    () => ({ attachments, addAttachments, removeAttachment }),
-    [attachments, addAttachments, removeAttachment],
+    () => ({ attachments, addAttachments, removeAttachment, replaceAttachments }),
+    [attachments, addAttachments, removeAttachment, replaceAttachments],
   );
 }
 
@@ -300,6 +312,12 @@ export function usePromptDraft(binding?: ChatBinding | null) {
   const setPlanningMode = useCallback(
     (value: boolean) => {
       sessionStore.getState().setPromptDraftPlanningMode(promptDraftKey, value);
+    },
+    [promptDraftKey],
+  );
+  const setUltraMode = useCallback(
+    (value: boolean) => {
+      sessionStore.getState().setPromptDraftUltraMode(promptDraftKey, value);
     },
     [promptDraftKey],
   );
@@ -335,6 +353,7 @@ export function usePromptDraft(binding?: ChatBinding | null) {
           !isConversationRunning,
         followupRequest,
         isPlanningMode: draftEntry?.isPlanningMode ?? false,
+        isUltraMode: draftEntry?.isUltraMode ?? false,
         isSendingPrompt: draftEntry?.isPending ?? false,
         promptDraft: draftEntry?.value ?? "",
         promptSettings: meta.promptSettings,
@@ -347,7 +366,8 @@ export function usePromptDraft(binding?: ChatBinding | null) {
       ...draftState,
       setPlanningMode,
       setPromptDraft,
+      setUltraMode,
     }),
-    [draftState, setPlanningMode, setPromptDraft],
+    [draftState, setPlanningMode, setPromptDraft, setUltraMode],
   );
 }

@@ -6,6 +6,7 @@ import {
   Circle,
   ListTodo,
   LoaderCircle,
+  X,
   XCircle,
 } from "lucide-react";
 
@@ -36,6 +37,7 @@ import {
 export function SessionTodoDock({
   isRequestActive,
   todos,
+  onDismiss,
 }: SessionTodoDockProps) {
   const hasActiveTodo = todos.some(isActiveTodo);
   const isBusy = isRequestActive || hasActiveTodo;
@@ -49,6 +51,7 @@ export function SessionTodoDock({
       key={isBusy ? "busy" : "idle"}
       isBusy={isBusy}
       isRequestActive={isRequestActive}
+      onDismiss={onDismiss}
       summary={buildTodoSummary(todos)}
       todos={todos}
     />
@@ -58,6 +61,7 @@ export function SessionTodoDock({
 function SessionTodoDockCard({
   isBusy,
   isRequestActive,
+  onDismiss,
   summary,
   todos,
 }: SessionTodoDockCardProps) {
@@ -78,23 +82,36 @@ function SessionTodoDockCard({
       >
         <Card size="sm">
           <CardHeader className="">
-            <CollapsibleTrigger className="group flex w-full items-start justify-between gap-3 text-left">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <ListTodo className="size-4 text-muted-foreground" />
-                  <CardTitle>Task plan</CardTitle>
+            <div className="flex w-full items-start gap-2">
+              <CollapsibleTrigger className="group flex min-w-0 flex-1 items-start justify-between gap-3 text-left">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <ListTodo className="size-4 text-muted-foreground" />
+                    <CardTitle>Task plan</CardTitle>
+                  </div>
+                  <CardDescription>{summary}</CardDescription>
                 </div>
-                <CardDescription>{summary}</CardDescription>
-              </div>
-              <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-                {open ? "Hide" : "Show"}
-                {open ? (
-                  <ChevronDown className="size-4" />
-                ) : (
-                  <ChevronRight className="size-4" />
-                )}
-              </span>
-            </CollapsibleTrigger>
+                <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+                  {open ? "Hide" : "Show"}
+                  {open ? (
+                    <ChevronDown className="size-4" />
+                  ) : (
+                    <ChevronRight className="size-4" />
+                  )}
+                </span>
+              </CollapsibleTrigger>
+              {onDismiss != null ? (
+                <button
+                  type="button"
+                  onClick={onDismiss}
+                  aria-label="Dismiss task plan"
+                  title="Dismiss"
+                  className="-mr-1 -mt-0.5 shrink-0 rounded-md p-1 text-muted-foreground/60 transition hover:bg-foreground/5 hover:text-foreground"
+                >
+                  <X className="size-4" />
+                </button>
+              ) : null}
+            </div>
           </CardHeader>
 
           <CollapsibleContent className="-mt-2">

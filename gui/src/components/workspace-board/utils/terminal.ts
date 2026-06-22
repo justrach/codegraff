@@ -9,22 +9,6 @@ import {
 } from "../constants/terminal";
 import type { TerminalGridSize } from "../types/workspaceBoard";
 
-export function applyTerminalAppearance(
-  element: HTMLElement,
-  isDarkTheme: boolean,
-) {
-  element.classList.remove("theme-light", "theme-solarized-dark");
-  element.classList.add(isDarkTheme ? "theme-solarized-dark" : "theme-light");
-  element.style.removeProperty("--term-bg");
-  element.style.removeProperty("--term-font-family");
-  element.style.removeProperty("--term-font-size");
-  element.style.removeProperty("--term-line-height");
-  element.style.removeProperty("--term-row-height");
-  element.style.removeProperty("border-radius");
-  element.style.removeProperty("box-shadow");
-  element.style.removeProperty("padding");
-}
-
 export async function waitForStableTerminalSize(terminal: WTerm) {
   await waitForFontsReady();
 
