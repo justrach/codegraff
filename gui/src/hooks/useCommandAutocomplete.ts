@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import * as desktopClient from "@/services/desktop/client";
 import type { CommandDescriptor } from "@/services/desktop/types/contracts";
+import {
+  ULTRACODE_COMMAND,
+  getCommandChoices,
+} from "@/components/commandChoices";
 
 /** Matches a slash-command being typed at the very start of the draft. */
 const SLASH_QUERY = /^\/([\w-]*)$/;
@@ -30,6 +34,8 @@ interface Options {
   setPromptDraft: (value: string) => void;
   workspacePath?: string | null;
   enabled: boolean;
+  /** Current ultracode state, used to order the `/ultracode` choice rows. */
+  ultracodeEnabled?: boolean;
   onSelect: (command: CommandDescriptor) => void;
 }
 
@@ -74,6 +80,7 @@ export function useCommandAutocomplete({
   setPromptDraft,
   workspacePath,
   enabled,
+  ultracodeEnabled = false,
   onSelect,
 }: Options): CommandAutocompleteState {
   const [commands, setCommands] = useState<CommandDescriptor[]>([]);
@@ -104,18 +111,46 @@ export function useCommandAutocomplete({
   const slashMatch = SLASH_QUERY.exec(promptDraft);
   const query = slashMatch?.[1] ?? null;
 
-  const items = useMemo(() => {
+  // Surface the GUI-only `/ultracode` toggle in autocomplete even though it has
+  // no backend command descriptor.
+  const allCommands = useMemo(() => {
+    if (commands.some((command) => command.name === ULTRACODE_COMMAND.name)) {
+      return commands;
+    }
+    return [...commands, ULTRACODE_COMMAND];
+  }, [commands]);
+
+  const normalItems = useMemo(() => {
     if (query == null) {
       return [];
     }
-    return commands
+    return allCommands
       .filter((command) => matches(command, query))
       .sort((a, b) => {
         const byRank = rank(a, query) - rank(b, query);
         return byRank !== 0 ? byRank : a.name.localeCompare(b.name);
       })
       .slice(0, MAX_VISIBLE);
-  }, [commands, query]);
+  }, [allCommands, query]);
+
+  // When the full name of a choice-command is typed (e.g. `/ultracode`), expand
+  // into its on/off choice rows instead of the normal completion list.
+  const exactCommand =
+    query == null
+      ? null
+      : (allCommands.find(
+          (command) =>
+            command.name === query || command.aliases.includes(query),
+        ) ?? null);
+  const choices = useMemo(
+    () =>
+      exactCommand == null
+        ? null
+        : getCommandChoices(exactCommand.name, { ultracodeEnabled }),
+    [exactCommand, ultracodeEnabled],
+  );
+  const inChoiceMode = choices != null && choices.length > 0;
+  const items = inChoiceMode ? choices : normalItems;
 
   // Reset the highlight whenever the query changes (adjust state during render
   // rather than in an effect — the React-recommended pattern).
@@ -172,9 +207,19 @@ export function useCommandAutocomplete({
           );
           return true;
         case "Enter":
+          if (event.metaKey || event.ctrlKey) {
+            return false;
+          }
+          // In choice mode (e.g. `/ultracode`), Enter selects the highlighted
+          // on/off row rather than autofilling or submitting.
+          if (inChoiceMode) {
+            event.preventDefault();
+            pick();
+            return true;
+          }
           // Plain Enter autofills partial commands, but exact commands should
           // fall through to the composer submit path so `/help` runs directly.
-          if (event.metaKey || event.ctrlKey || hasExactCommandMatch) {
+          if (hasExactCommandMatch) {
             return false;
           }
           event.preventDefault();
@@ -182,7 +227,11 @@ export function useCommandAutocomplete({
           return true;
         case "Tab":
           event.preventDefault();
-          complete();
+          if (inChoiceMode) {
+            pick();
+          } else {
+            complete();
+          }
           return true;
         case "Escape":
           event.preventDefault();
@@ -192,7 +241,15 @@ export function useCommandAutocomplete({
           return false;
       }
     },
-    [isOpen, items.length, complete, query, hasExactCommandMatch],
+    [
+      isOpen,
+      items.length,
+      complete,
+      pick,
+      inChoiceMode,
+      query,
+      hasExactCommandMatch,
+    ],
   );
 
   return {

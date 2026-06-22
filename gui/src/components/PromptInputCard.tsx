@@ -33,6 +33,7 @@ import { CommandAutocomplete } from "@/components/CommandAutocomplete";
 import { AttachmentTray } from "@/components/attachments/AttachmentTray";
 import { DropOverlay } from "@/components/attachments/DropOverlay";
 import { classifyPath } from "@/components/attachments/attachmentTypes";
+import { parseChoiceCommand } from "@/components/commandChoices";
 import { useAutosizeTextarea } from "@/hooks/useAutosizeTextarea";
 import { useAttachments } from "@/hooks/useSession";
 import { useCommandAutocomplete } from "@/hooks/useCommandAutocomplete";
@@ -169,6 +170,14 @@ export function PromptInputCard({
       handleModelMenuOpenChange(true);
       return;
     }
+    // `/ultracode` expands into on/off choice rows; selecting one flips the same
+    // ultra toggle the footer button uses (a GUI-only mode, not a backend cmd).
+    const choice = parseChoiceCommand(command.name);
+    if (choice != null && choice.name === "ultracode") {
+      setUltraMode(choice.arg === "on");
+      setPromptDraft("");
+      return;
+    }
     onCommandSelect(command);
   }
 
@@ -177,6 +186,7 @@ export function PromptInputCard({
     setPromptDraft,
     workspacePath,
     enabled: canCompose && !isInputDisabled,
+    ultracodeEnabled: isUltraMode,
     onSelect: handleAutocompleteSelect,
   });
 
