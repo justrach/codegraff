@@ -6,7 +6,10 @@ import type {
   CommandDescriptor,
   PromptSettings,
 } from "@/services/desktop/types/contracts";
-import { PromptInputCard } from "./PromptInputCard";
+import {
+  PromptInputCard,
+  shouldHandlePlanningModeShortcut,
+} from "./PromptInputCard";
 
 const longModelName =
   "claude-4.7-sonnet-super-long-context-reasoning-preview-20260615";
@@ -108,5 +111,48 @@ describe("PromptInputCard", () => {
     });
 
     expect(html).toContain('aria-label="Stop"');
+  });
+
+  test("uses Shift+Tab as the planning mode shortcut", () => {
+    expect(
+      shouldHandlePlanningModeShortcut(
+        {
+          key: "Tab",
+          shiftKey: true,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+        },
+        false,
+      ),
+    ).toBe(true);
+
+    expect(
+      shouldHandlePlanningModeShortcut(
+        {
+          key: "Tab",
+          shiftKey: true,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+        },
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  test("keeps plain Tab available for command completion", () => {
+    expect(
+      shouldHandlePlanningModeShortcut(
+        {
+          key: "Tab",
+          shiftKey: false,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+        },
+        false,
+      ),
+    ).toBe(false);
   });
 });

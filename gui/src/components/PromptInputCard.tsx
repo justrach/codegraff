@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent,
+} from "react";
 import {
   ArrowUpIcon,
   ChevronDownIcon,
@@ -33,6 +39,12 @@ import { CommandAutocomplete } from "@/components/CommandAutocomplete";
 import { AttachmentTray } from "@/components/attachments/AttachmentTray";
 import { DropOverlay } from "@/components/attachments/DropOverlay";
 import {
+  extractAttachmentTransferItems,
+  filterSupportedAttachmentTransferItems,
+  getAttachmentTransferFileName,
+  type AttachmentTransferItem,
+} from "@/components/attachments/attachmentTransfer";
+import {
   classifyPath,
   parseAttachmentBlock,
   type Attachment,
@@ -43,7 +55,7 @@ import { useAttachments } from "@/hooks/useSession";
 import { useCommandAutocomplete } from "@/hooks/useCommandAutocomplete";
 import { useDropZone } from "@/hooks/useFileDrop";
 import { usePromptModelPicker } from "@/hooks/usePromptModelPicker";
-import { savePastedImage, setFast } from "@/services/desktop/client";
+import { saveAttachmentFile, setFast } from "@/services/desktop/client";
 import { cn } from "@/utils/cn";
 import {
   getPromptHistoryNavigationResult,
@@ -57,12 +69,44 @@ import type { PromptInputCardProps } from "./types/prompt";
 
 const EMPTY_PROMPT_HISTORY: string[] = [];
 
+interface PlanningModeShortcutEvent {
+  key: string;
+  shiftKey: boolean;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+}
+
+export function shouldHandlePlanningModeShortcut(
+  event: PlanningModeShortcutEvent,
+  isDisabled: boolean,
+): boolean {
+  return (
+    !isDisabled &&
+    event.key === "Tab" &&
+    event.shiftKey &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey
+  );
+}
+
 function isCaretOnFirstLine(textarea: HTMLTextAreaElement) {
   return !textarea.value.slice(0, textarea.selectionStart).includes("\n");
 }
 
 function isCaretOnLastLine(textarea: HTMLTextAreaElement) {
   return !textarea.value.slice(textarea.selectionEnd).includes("\n");
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
 }
 
 export function PromptInputCard({
@@ -96,13 +140,11 @@ export function PromptInputCard({
   // it — the highlight drifts away from the caret.
   const commandOverlayRef = useRef<HTMLDivElement | null>(null);
   const dropZoneRef = useRef<HTMLDivElement | null>(null);
+  const handledPasteAtRef = useRef(0);
   const { attachments, addAttachments, removeAttachment, replaceAttachments } =
     useAttachments(binding);
-  const { isActive: isDropActive } = useDropZone(dropZoneRef, (paths) => {
-    const accepted = paths
-      .map((path) => classifyPath(path))
-      .filter((item): item is NonNullable<typeof item> => item != null);
-    addAttachments(accepted);
+  const { isActive: isDropActive } = useDropZone(dropZoneRef, (items) => {
+    void attachTransferItems(items);
   });
   const canQueueFollowup = isRequestActive && !isInputDisabled;
   const canEditPrompt = canCompose || canQueueFollowup;
@@ -226,6 +268,42 @@ export function PromptInputCard({
   const planningThinkingLabel = formatPlanningThinkingLabel();
   const selectedModelLabel =
     selectedModel?.modelName ?? selectedModel?.modelId ?? "Model";
+
+  async function saveTransferFile(file: File): Promise<string | null> {
+    try {
+      return await saveAttachmentFile({
+        name: getAttachmentTransferFileName(file),
+        dataBase64: arrayBufferToBase64(await file.arrayBuffer()),
+      });
+    } catch (error) {
+      console.error("Failed to save attachment file", error);
+      return null;
+    }
+  }
+
+  async function attachTransferItems(items: AttachmentTransferItem[]) {
+    const supportedItems = filterSupportedAttachmentTransferItems(items);
+    if (supportedItems.length === 0) {
+      return;
+    }
+
+    const accepted: NonNullable<ReturnType<typeof classifyPath>>[] = [];
+    for (const item of supportedItems) {
+      const path =
+        item.kind === "path" ? item.path : await saveTransferFile(item.file);
+      if (path == null) {
+        continue;
+      }
+      const attachment = classifyPath(path);
+      if (attachment != null) {
+        accepted.push(attachment);
+      }
+    }
+
+    if (accepted.length > 0) {
+      addAttachments(accepted);
+    }
+  }
 
   function handleSubmit(draftOverride = promptDraft) {
     if (!canSubmitDraft(draftOverride)) {
@@ -351,35 +429,81 @@ export function PromptInputCard({
     setPlanningMode(!isPlanningMode);
   }
 
-  // Cmd/Ctrl+V of an image: persist the clipboard bytes to a temp file and add
-  // it through the same attachment pipeline as a drag-dropped file.
-  async function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const items = event.clipboardData?.items;
-    if (!items) {
+  function handlePlanningModeShortcut(
+    event: KeyboardEvent<HTMLTextAreaElement>,
+  ) {
+    if (!shouldHandlePlanningModeShortcut(event, isControlDisabled)) {
       return;
     }
-    for (const item of items) {
-      if (item.kind !== "file" || !item.type.startsWith("image/")) {
-        continue;
-      }
-      const file = item.getAsFile();
-      if (!file) {
-        continue;
-      }
-      event.preventDefault();
-      try {
-        const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-        const ext = item.type.split("/")[1] ?? "png";
-        const path = await savePastedImage(bytes, ext);
-        const attachment = classifyPath(path);
-        if (attachment) {
-          addAttachments([attachment]);
-        }
-      } catch (error) {
-        console.error("Failed to attach pasted image", error);
-      }
+
+    event.preventDefault();
+    setPlanningMode(!isPlanningMode);
+  }
+
+  function scheduleClipboardTextPasteFallback(
+    event: KeyboardEvent<HTMLTextAreaElement>,
+  ) {
+    if (
+      isTextareaDisabled ||
+      event.nativeEvent.isComposing ||
+      event.altKey ||
+      (!event.metaKey && !event.ctrlKey) ||
+      event.key.toLowerCase() !== "v" ||
+      navigator.clipboard?.readText == null
+    ) {
       return;
     }
+
+    const textarea = event.currentTarget;
+    const beforeValue = textarea.value;
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+
+    window.setTimeout(() => {
+      if (
+        Date.now() - handledPasteAtRef.current < 500 ||
+        textareaRef.current !== textarea ||
+        textarea.value !== beforeValue
+      ) {
+        return;
+      }
+
+      void navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (
+            text.length === 0 ||
+            textareaRef.current !== textarea ||
+            textarea.value !== beforeValue
+          ) {
+            return;
+          }
+
+          const nextValue =
+            beforeValue.slice(0, selectionStart) +
+            text +
+            beforeValue.slice(selectionEnd);
+          handleDraftChange(nextValue);
+          requestAnimationFrame(() => {
+            const cursor = selectionStart + text.length;
+            textarea.setSelectionRange(cursor, cursor);
+          });
+        })
+        .catch(() => undefined);
+    }, 0);
+  }
+
+  async function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const items = filterSupportedAttachmentTransferItems(
+      extractAttachmentTransferItems(event.clipboardData),
+    );
+    if (items.length === 0) {
+      return;
+    }
+
+    handledPasteAtRef.current = Date.now();
+    event.preventDefault();
+    await attachTransferItems(items);
   }
 
   return (
@@ -470,6 +594,13 @@ export function PromptInputCard({
                 }
               }}
               onKeyDown={(event) => {
+                scheduleClipboardTextPasteFallback(event);
+                if (
+                  shouldHandlePlanningModeShortcut(event, isControlDisabled)
+                ) {
+                  handlePlanningModeShortcut(event);
+                  return;
+                }
                 // The command menu consumes Enter/Tab/arrows while open, so a
                 // command is completed rather than sent.
                 if (commandAutocomplete.handleKeyDown(event)) {

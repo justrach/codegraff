@@ -301,6 +301,10 @@ function mockInvokeCommand<T>(
     }
     case "read_workspace_file":
       return Promise.resolve("// QA mock file contents\nexport const value = 1;\n" as T);
+    case "save_attachment_file": {
+      const input = args?.input as { name?: string } | undefined;
+      return Promise.resolve(`/tmp/${input?.name ?? "attachment.txt"}` as T);
+    }
     case "list_mcp_servers":
       return Promise.resolve({ servers: [] } as T);
     case "pick_workspace":
@@ -685,6 +689,13 @@ export function savePastedImage(
   ext: string,
 ): Promise<string> {
   return invokeCommand("save_pasted_image", { data, ext });
+}
+
+export function saveAttachmentFile(input: {
+  name: string;
+  dataBase64: string;
+}): Promise<string> {
+  return invokeCommand("save_attachment_file", { input });
 }
 
 /** Returns a compressed JPEG thumbnail of an image file as a data URL. */
