@@ -2257,7 +2257,7 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/thinking", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/thinking", "/title", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -2654,6 +2654,125 @@ fn reasoningDelta(kind: Provider.Kind, obj: std.json.ObjectMap) []const u8 {
     };
 }
 
+
+/// Pulls the assistant's text out of a non-streamed completion response for the
+/// given provider wire format — the shape both compaction and AI title naming
+/// read back.
+fn assistantText(kind: Provider.Kind, root: std.json.ObjectMap) []const u8 {
+    return switch (kind) {
+        .anthropic => blk: {
+            const content = root.get("content") orelse break :blk "";
+            if (content != .array) break :blk "";
+            for (content.array.items) |block| {
+                if (block != .object) continue;
+                const bt = if (block.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+                if (std.mem.eql(u8, bt, "text"))
+                    if (block.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
+            }
+            break :blk "";
+        },
+        .openai => blk: {
+            const choices = root.get("choices") orelse break :blk "";
+            if (choices != .array or choices.array.items.len == 0) break :blk "";
+            const c0 = choices.array.items[0];
+            if (c0 != .object) break :blk "";
+            const message = c0.object.get("message") orelse break :blk "";
+            if (message != .object) break :blk "";
+            const c = message.object.get("content") orelse break :blk "";
+            break :blk if (c == .string) c.string else "";
+        },
+        .responses => blk: {
+            const output = root.get("output") orelse break :blk "";
+            if (output != .array) break :blk "";
+            for (output.array.items) |item| {
+                if (item != .object) continue;
+                const it = if (item.object.get("type")) |t| (if (t == .string) t.string else "") else "";
+                if (!std.mem.eql(u8, it, "message")) continue;
+                if (item.object.get("content")) |c| if (c == .array) {
+                    for (c.array.items) |b| {
+                        if (b != .object) continue;
+                        const bt = if (b.object.get("type")) |x| (if (x == .string) x.string else "") else "";
+                        if (std.mem.eql(u8, bt, "output_text")) {
+                            if (b.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
+                        }
+                    }
+                };
+            }
+            break :blk "";
+        },
+    };
+}
+
+/// Strips matched wrapping quotes/backticks (ASCII and curly), repeatedly, that a
+/// model may add around a one-line title — `"'Fix bug'"` becomes `Fix bug`.
+fn stripWrappingQuotes(s_in: []const u8) []const u8 {
+    var s = s_in;
+    const pairs = [_][2][]const u8{
+        .{ "\"", "\"" },
+        .{ "'", "'" },
+        .{ "`", "`" },
+        .{ "“", "”" },
+        .{ "‘", "’" },
+    };
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (pairs) |p| {
+            if (s.len >= p[0].len + p[1].len and std.mem.startsWith(u8, s, p[0]) and std.mem.endsWith(u8, s, p[1])) {
+                s = std.mem.trim(u8, s[p[0].len .. s.len - p[1].len], " \t");
+                changed = true;
+            }
+        }
+    }
+    return s;
+}
+
+/// Normalizes a model's raw reply into a tab-label title: first line only, drop a
+/// leading "Title:" label and wrapping quotes, trim trailing sentence punctuation,
+/// then cap to one line at a word boundary (via titleFromPrompt). Returns null
+/// when nothing usable remains, so the caller keeps the mechanical title.
+fn cleanTitle(raw: []const u8) ?[]const u8 {
+    var s = std.mem.trim(u8, raw, " \t\r\n");
+    if (std.mem.indexOfScalar(u8, s, '\n')) |nl| s = std.mem.trim(u8, s[0..nl], " \t\r");
+    if (s.len >= 6 and std.ascii.eqlIgnoreCase(s[0..6], "title:")) s = std.mem.trim(u8, s[6..], " \t");
+    s = stripWrappingQuotes(s);
+    while (s.len > 0 and (s[s.len - 1] == '.' or s[s.len - 1] == '!' or s[s.len - 1] == '?')) s = s[0 .. s.len - 1];
+    s = std.mem.trim(u8, s, " \t");
+    if (s.len == 0) return null;
+    return titleFromPrompt(s);
+}
+
+/// Asks the model the user is on for a terse tab-label title summarizing the
+/// session's first prompt, on a throwaway one-message list so the real
+/// conversation (and its token/compaction accounting) is left untouched. Returns
+/// an arena-owned title, or null on any failure (caller keeps the mechanical one).
+fn generateSessionTitle(self: *Agent, prompt: []const u8) ?[]const u8 {
+    const saved_msgs = self.messages;
+    const saved_quiet = self.stream_quiet;
+    const saved_strict = self.strict;
+    const saved_ctx = self.last_context_tokens;
+    defer {
+        self.messages = saved_msgs;
+        self.stream_quiet = saved_quiet;
+        self.strict = saved_strict;
+        self.last_context_tokens = saved_ctx;
+    }
+    self.stream_quiet = true; // internal call: never stream to the terminal
+    self.strict = false; // plain text reply, no meta-tool wrapping
+    const instr = std.fmt.allocPrint(self.arena,
+        \\Write a terse tab-label title for this task: 3-6 words, Title Case, no
+        \\quotes, no trailing punctuation, no preamble. Reply with ONLY the title.
+        \\
+        \\Task:
+        \\{s}
+    , .{prompt}) catch return null;
+    var tmp = std.json.Array.init(self.arena);
+    tmp.append(textMessage(self.arena, "user", instr) catch return null) catch return null;
+    self.messages = tmp;
+    const root = self.request(null) catch return null;
+    const cleaned = cleanTitle(assistantText(self.provider.kind, root)) orelse return null;
+    return self.arena.dupe(u8, cleaned) catch null;
+}
 fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, g_path_env, ':');
     var buf: [1024]u8 = undefined;
@@ -3056,7 +3175,7 @@ fn saveSkillSetting(io: Io, gpa: Allocator, name: []const u8, enabled: bool) boo
 /// Persist the thinking controls (/effort, /fast) to .harness/settings.json,
 /// preserving every other key. Default values (medium effort, fast off) are
 /// removed rather than written so the file stays clean. Best-effort.
-fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool, ultracode: bool, show_thinking: bool) bool {
+fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool, ultracode: bool, show_thinking: bool, ai_title: bool) bool {
     Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {}; // already-exists is fine
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -3086,6 +3205,11 @@ fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: b
         _ = root_obj.orderedRemove("show_thinking");
     } else {
         root_obj.put(a, "show_thinking", .{ .bool = false }) catch return false;
+    }
+    if (ai_title) {
+        _ = root_obj.orderedRemove("ai_title");
+    } else {
+        root_obj.put(a, "ai_title", .{ .bool = false }) catch return false;
     }
     var aw: Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
@@ -3125,6 +3249,9 @@ fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
     };
     if (v.object.get("show_thinking")) |sv| if (sv == .bool) {
         root.show_thinking = sv.bool;
+    };
+    if (v.object.get("ai_title")) |tv| if (tv == .bool) {
+        root.ai_title = tv.bool;
     };
 }
 
@@ -5158,21 +5285,21 @@ pub fn main(init: std.process.Init) !void {
                     root.emit(.{ .type = "error", .message = "set_effort needs level 'low', 'medium', or 'high'" });
                     continue;
                 }
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
                 root.emit(.{ .type = "effort", .ok = true, .level = level, .applies = root.effortApplies() });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "set_fast")) {
                 const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
                 root.fast = on;
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
                 root.emit(.{ .type = "fast", .ok = true, .on = on, .applies = root.provider.kind == .responses });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "set_ultracode")) {
                 const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
                 root.ultracode_mode = on;
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
                 root.emit(.{ .type = "ultracode", .ok = true, .on = on });
                 continue;
             }
@@ -5411,6 +5538,18 @@ pub fn main(init: std.process.Init) !void {
                 final_text;
             root.emit(.{ .type = "finalizing" });
             root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = true, .metadata_complete = root.last_context_tokens > 0 });
+        }
+
+        // After the first successful turn, replace the mechanical tab title with
+        // an AI summary of the task (one cheap call on the user's current model).
+        // The answer already streamed, so this resolves while the user reads it;
+        // any failure just keeps the mechanical title. Toggle with /title off.
+        if (!json_mode and root.ai_title and !root.ai_title_done) {
+            root.ai_title_done = true;
+            if (generateSessionTitle(&root, base_msg)) |t| {
+                root.session_title = arena.dupe(u8, t) catch t;
+                setTerminalTitle(out, t, g_cwd_display);
+            }
         }
 
         // turn_end lifecycle hooks (best-effort; interrupted/errored turns
@@ -5978,6 +6117,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/fast", .desc = "codex priority service tier — lower latency (gpt-5.5)" },
     .{ .name = "/ultracode", .desc = "toggle persistent ultracode (multi-agent workflow) mode" },
     .{ .name = "/thinking", .desc = "show/collapse the model's live reasoning stream" },
+    .{ .name = "/title", .desc = "AI-name the tab from your first prompt (on by default)" },
     .{ .name = "/image", .desc = "attach an image to the next message" },
     .{ .name = "/paste", .desc = "attach the clipboard image" },
     .{ .name = "/trace", .desc = "toggle the JSONL event trace" },
@@ -6517,7 +6657,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/fast") or std.mem.eql(u8, line, "/fast on") or std.mem.eql(u8, line, "/fast off")) {
         root.fast = if (std.mem.eql(u8, line, "/fast on")) true else if (std.mem.eql(u8, line, "/fast off")) false else !root.fast;
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("fast mode: {s}{s}\n", .{
             if (root.fast) "on" else "off",
             if (root.provider.kind != .responses) " (codex only — current model ignores it)" else "",
@@ -6527,10 +6667,21 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/thinking") or std.mem.eql(u8, line, "/thinking on") or std.mem.eql(u8, line, "/thinking off")) {
         root.show_thinking = if (std.mem.eql(u8, line, "/thinking on")) true else if (std.mem.eql(u8, line, "/thinking off")) false else !root.show_thinking;
-        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("thinking: {s} ({s}){s}\n", .{
             if (root.show_thinking) "shown" else "collapsed",
             if (root.show_thinking) "stream reasoning live" else "spinner only",
+            if (saved) "" else " (not persisted)",
+        });
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/title") or std.mem.eql(u8, line, "/title on") or std.mem.eql(u8, line, "/title off")) {
+        root.ai_title = if (std.mem.eql(u8, line, "/title on")) true else if (std.mem.eql(u8, line, "/title off")) false else !root.ai_title;
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        try out.print("AI session title: {s} ({s}){s}\n", .{
+            if (root.ai_title) "on" else "off",
+            if (root.ai_title) "name the tab from your first prompt" else "use the prompt text verbatim",
             if (saved) "" else " (not persisted)",
         });
         try out.flush();
@@ -6555,7 +6706,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return;
         };
         root.ultracode_mode = next;
-        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("ultracode mode: {s}{s}\n", .{ if (root.ultracode_mode) "on" else "off", if (saved) "" else " (not persisted)" });
         try out.flush();
         return;
@@ -6574,7 +6725,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return;
         }
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("reasoning effort: {s}{s}\n", .{
             @tagName(root.reasoning),
             if (!root.effortApplies()) " (current model ignores it — applies to codex, deepseek, codegraff)" else "",
@@ -8404,6 +8555,7 @@ const Agent = struct {
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
     ultracode_mode: bool = false, // persistent ultracode (multi-agent workflow) mode (/ultracode)
     show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
+    ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
     goal: ?[]const u8 = null, // persistent objective steering (/goal)
     session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
     session_title: ?[]const u8 = null, // human-readable title/rename metadata
@@ -8424,6 +8576,7 @@ const Agent = struct {
     stream_quiet: bool = false, // suppress live streaming (compaction summary)
     streamed_text: bool = false, // the last request printed its text live
     thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
+    ai_title_done: bool = false, // the one-time AI tab-title call has run this session
     arg_live: ArgLive = .{}, // live attempt_completion/ask_user argument text
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
     streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
@@ -9413,48 +9566,7 @@ const Agent = struct {
         self.stream_quiet = true;
         defer self.stream_quiet = false;
         const root = try self.request(null);
-        const summary = switch (self.provider.kind) {
-            .anthropic => blk: {
-                const content = root.get("content") orelse break :blk "";
-                if (content != .array) break :blk "";
-                for (content.array.items) |block| {
-                    if (block != .object) continue;
-                    const bt = if (block.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-                    if (std.mem.eql(u8, bt, "text"))
-                        if (block.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
-                }
-                break :blk "";
-            },
-            .openai => blk: {
-                const choices = root.get("choices") orelse break :blk "";
-                if (choices != .array or choices.array.items.len == 0) break :blk "";
-                const c0 = choices.array.items[0];
-                if (c0 != .object) break :blk "";
-                const message = c0.object.get("message") orelse break :blk "";
-                if (message != .object) break :blk "";
-                const c = message.object.get("content") orelse break :blk "";
-                break :blk if (c == .string) c.string else "";
-            },
-            .responses => blk: {
-                const output = root.get("output") orelse break :blk "";
-                if (output != .array) break :blk "";
-                for (output.array.items) |item| {
-                    if (item != .object) continue;
-                    const it = if (item.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-                    if (!std.mem.eql(u8, it, "message")) continue;
-                    if (item.object.get("content")) |c| if (c == .array) {
-                        for (c.array.items) |b| {
-                            if (b != .object) continue;
-                            const bt = if (b.object.get("type")) |x| (if (x == .string) x.string else "") else "";
-                            if (std.mem.eql(u8, bt, "output_text")) {
-                                if (b.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
-                            }
-                        }
-                    };
-                }
-                break :blk "";
-            },
-        };
+        const summary = assistantText(self.provider.kind, root);
         if (summary.len == 0) {
             if (!json_mode) try self.say("[compaction failed: empty summary, history unchanged]\n", .{});
             _ = self.messages.pop();
@@ -14274,4 +14386,19 @@ test "setTerminalTitle emits OSC title with folder basename, gated by color/json
     defer off.deinit();
     setTerminalTitle(&off.writer, "x", "/y");
     try std.testing.expectEqual(@as(usize, 0), off.writer.buffered().len);
+}
+
+test "cleanTitle: normalizes a model reply into a tab label, else null (/title)" {
+    // plain title passes through (capped/word-boundaried by titleFromPrompt)
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("Fix The Parser").?);
+    // wrapping quotes, a leading label, and trailing punctuation are stripped
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("  \"Fix The Parser\"  ").?);
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("Title: Fix The Parser.").?);
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("'`Fix The Parser`'").?);
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("“Fix The Parser”").?);
+    // only the first line is used
+    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("Fix The Parser\nsome rambling").?);
+    // nothing usable → null so the caller keeps the mechanical titleFromPrompt label
+    try std.testing.expect(cleanTitle("   ") == null);
+    try std.testing.expect(cleanTitle("\"\"") == null);
 }
