@@ -1,5 +1,4 @@
 import { memo } from "react";
-import { Sparkles } from "lucide-react";
 
 import { cn } from "@/utils/cn";
 import {
@@ -58,12 +57,12 @@ function UserChatMessage({ text, workspacePath }: UserChatMessageProps) {
 }
 
 /**
- * The final assistant message of a turn — rendered as a distinct "answer"
- * panel so the summary reads apart from intermediate narration and the dimmed
- * thinking blocks. A left accent rail + faint surface tint + a small accent
- * eyebrow mark it as the conclusion, mirroring the harness TUI's prominence
- * of the final answer over dim reasoning. Kept on semantic tokens so it tracks
- * every theme preset and light/dark.
+ * The final assistant message of a turn — rendered as a distinct, premium
+ * "answer" surface so the conclusion reads apart from intermediate narration
+ * and dimmed thinking. No heavy box or loud label: a single hairline accent
+ * gradient along the top edge, a barely-there accent surface wash, soft
+ * elevation, and a small accent dot. Entirely on semantic tokens, so it
+ * tracks every preset + light/dark automatically.
  */
 function FinalAnswerMessage({
   isStreaming,
@@ -73,30 +72,42 @@ function FinalAnswerMessage({
   return (
     <article
       className={cn(
-        "cg-stream-in relative max-w-3xl overflow-hidden rounded-2xl border border-border/70 bg-card/50 py-3 pl-4 pr-3.5 shadow-[var(--elevation-xs)]",
+        "cg-stream-in relative max-w-3xl overflow-hidden rounded-2xl bg-card/40 px-4 py-3.5 shadow-[var(--elevation-sm)]",
+        "ring-1 ring-inset ring-border/50",
       )}
     >
-      <span className="absolute inset-y-0 left-0 w-1 rounded-l-2xl bg-accent/55" />
-      <div className="mb-1 flex items-center gap-1.5">
-        <Sparkles className="size-3.5 shrink-0 text-accent/80" />
-        <span className="text-xs font-medium uppercase tracking-widest text-accent/80">
-          Answer
+      {/* Hairline accent gradient along the top edge — the only chrome. */}
+      <span
+        aria-hidden
+        className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/70 to-transparent"
+      />
+      {/* Faint accent wash so the surface lifts just off the background. */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-0 bg-accent/[0.035]"
+      />
+      <div className="relative mb-1.5 flex items-center gap-2">
+        <span className="size-1.5 shrink-0 rounded-full bg-accent/80 shadow-[0_0_0_3px_color-mix(in_oklab,var(--accent)_18%,transparent)]" />
+        <span className="text-[11px] font-medium tracking-wide text-muted-foreground/90">
+          Final answer
         </span>
       </div>
-      {isStreaming ? (
-        <ChatInlineText
-          as="p"
-          className={cn("whitespace-pre-wrap", CHAT_BODY_TONE_CLASS)}
-          text={text}
-          workspacePath={workspacePath}
-        />
-      ) : (
-        <ChatMarkdown
-          text={text}
-          className={CHAT_BODY_TONE_CLASS}
-          workspacePath={workspacePath}
-        />
-      )}
+      <div className="relative">
+        {isStreaming ? (
+          <ChatInlineText
+            as="p"
+            className={cn("whitespace-pre-wrap", CHAT_BODY_TONE_CLASS)}
+            text={text}
+            workspacePath={workspacePath}
+          />
+        ) : (
+          <ChatMarkdown
+            text={text}
+            className={CHAT_BODY_TONE_CLASS}
+            workspacePath={workspacePath}
+          />
+        )}
+      </div>
     </article>
   );
 }

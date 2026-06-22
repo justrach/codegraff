@@ -133,6 +133,7 @@ const qaCommands: CommandDescriptor[] = qaCommandRows.map(
 function createQaSnapshot(
   activeConversationId: string | null = null,
   messages: SessionSnapshot["visibleMessages"] = [],
+  followup: SessionSnapshot["visibleFollowup"] = null,
 ): SessionSnapshot {
   const existingMessages: SessionSnapshot["visibleMessages"] = [
     {
@@ -154,9 +155,9 @@ function createQaSnapshot(
     activeWorkspacePath: QA_WORKSPACE_PATH,
     conversationViews: [
       {
-        activeRequestIds: [],
+        activeRequestIds: followup != null ? [followup.requestId] : [],
         conversationId: activeConversationId ?? QA_CONVERSATION_ID,
-        followup: null,
+        followup,
         messages: activeConversationId == null ? existingMessages : messages,
         requestAgentIds: {},
         todos: [],
@@ -165,8 +166,8 @@ function createQaSnapshot(
     ],
     savedWorkspaces: [],
     uiError: null,
-    visibleActiveRequestIds: [],
-    visibleFollowup: null,
+    visibleActiveRequestIds: followup != null ? [followup.requestId] : [],
+    visibleFollowup: followup,
     visibleMessages: messages,
     visibleRequestAgentIds: {},
     visibleTodos: [],
@@ -313,6 +314,36 @@ function mockInvokeCommand<T>(
       const input = args?.input as SendPromptInput;
       const conversationId = input.conversationId ?? "qa-new-chat";
       const requestId = `${conversationId}-request`;
+      // A "ask" prompt surfaces a pending ask_user followup with suggested
+      // options — exercises the redesigned FollowupComposer (highlightable
+      // options above a Notes box, Enter to send option + notes).
+      if (/\bask\b/i.test(input.prompt)) {
+        const followup = {
+          conversationId,
+          followupId: `${requestId}-followup`,
+          kind: "single" as const,
+          options: [
+            { id: "opt-1", label: "Refactor the routing module" },
+            { id: "opt-2", label: "Add a regression test first" },
+            { id: "opt-3", label: "Investigate the root cause deeper" },
+          ],
+          question:
+            "I found two possible approaches before changing the routing logic. Which direction should I take?",
+          requestId,
+          workspacePath: QA_WORKSPACE_PATH,
+        };
+        return Promise.resolve(
+          createQaSnapshot(conversationId, [
+            { id: `${conversationId}-user`, kind: "user", requestId, text: input.prompt },
+            {
+              id: `${conversationId}-assistant-1`,
+              kind: "assistant",
+              requestId,
+              text: "Before I change the routing logic, I want to confirm the direction with you.",
+            },
+          ], followup) as T,
+        );
+      }
       // Showcase transcript that exercises chronological tool/text interleaving
       // (tools→text→tools→text), a reasoning/thinking block, and a final
       // markdown answer — so visual QA can verify the ordering + answer panel.
@@ -352,6 +383,20 @@ function mockInvokeCommand<T>(
       return Promise.resolve(undefined as T);
     case "list_mcp_servers":
       return Promise.resolve({ servers: [] } as T);
+    case "respond_followup": {
+      // QA mock: clear the followup and echo the answer as a user message so
+      // the composer dismisses and the thread reflects the reply.
+      return Promise.resolve(
+        createQaSnapshot(QA_CONVERSATION_ID, [
+          {
+            id: "qa-followup-user",
+            kind: "user",
+            requestId: "qa-request-1",
+            text: "follow-up reply (QA mock)",
+          },
+        ]) as T,
+      );
+    }
     default:
       return Promise.resolve(undefined as T);
   }
