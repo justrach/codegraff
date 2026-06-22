@@ -73,12 +73,24 @@ function estimateCommandResultItemSize(
   return Math.min(520, 64 + lineCount * 20);
 }
 
-function renderChatMessage(message: TranscriptMessage, workspacePath: string | null) {
+function renderChatMessage(
+  message: TranscriptMessage,
+  workspacePath: string | null,
+  activeRequestIds: string[],
+  isFinalAnswer?: boolean,
+) {
   switch (message.kind) {
     case "user":
     case "assistant":
     case "reasoning":
-      return <ChatMessageRow message={message} workspacePath={workspacePath} />;
+      return (
+        <ChatMessageRow
+          isStreaming={activeRequestIds.includes(message.requestId)}
+          isFinalAnswer={isFinalAnswer}
+          message={message}
+          workspacePath={workspacePath}
+        />
+      );
     default:
       return <ChatEventRow message={message} />;
   }
@@ -97,16 +109,16 @@ export function estimateChatThreadItemSize(item: ChatThreadItem): number {
 
 export function renderChatThreadItem(
   { item, index }: ChatThreadRenderItem,
-  {
-    itemCount,
-    requestTimingsById,
-    workspacePath,
-    onDismissCommandResult,
-  }: RenderChatThreadItemOptions,
+  { activeRequestIds, itemCount, requestTimingsById, workspacePath }: RenderChatThreadItemOptions,
 ) {
   const row =
     item.kind === "message" ? (
-      renderChatMessage(item.message, workspacePath)
+      renderChatMessage(
+        item.message,
+        workspacePath,
+        activeRequestIds,
+        item.isFinalAnswer,
+      )
     ) : item.kind === "request_work" ? (
       <ChatWorkRow
         key={item.key}
@@ -115,14 +127,7 @@ export function renderChatThreadItem(
         workspacePath={workspacePath}
       />
     ) : (
-      <ChatCommandResultRow
-        result={item.result}
-        onDismiss={
-          onDismissCommandResult != null
-            ? () => onDismissCommandResult(item.key)
-            : undefined
-        }
-      />
+      <ChatCommandResultRow result={item.result} />
     );
 
   return (

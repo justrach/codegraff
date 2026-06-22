@@ -17,19 +17,24 @@ function shouldDisplayOperationInActivity(operation: ActivityOperation): boolean
   );
 }
 
+/**
+ * Build the chat thread item list in **chronological order**: each contiguous
+ * run of tool activity is emitted as its own `request_work` segment *in place*,
+ * right before the assistant text that follows it. So a turn reads
+ * `[tools][text][tools][text][tools][text]` instead of hoisting all tool work
+ * above all text. Reasoning produces a subtle "Thinking" segment; the final
+ * assistant message of a turn is flagged `isFinalAnswer` so the GUI can render
+ * it as a distinct answer panel.
+ */
 export function buildChatThreadItems(
   messages: TranscriptMessage[],
   activeRequestIds: string[],
 ): ChatThreadItem[] {
   const items: ChatThreadItem[] = [];
   const activeRequestIdSet = new Set(activeRequestIds);
-  const pendingActivitiesByScopeId = new Map<string, ActivityItem[]>();
-  const scopeIdsInEncounterOrder: string[] = [];
-  const seenScopeIds = new Set<string>();
-  const scopeRequestIds = new Map<string, string>();
   const currentScopeIndexByRequestId = new Map<string, number>();
-  const scopeAnchorMessageKeyByScopeId = new Map<string, string>();
-  const scopeFirstMessageKeyByScopeId = new Map<string, string>();
+  // Per-scope segment counter so each emitted work segment gets a unique key.
+  const segmentIndexByScopeId = new Map<string, number>();
   let currentGroup: ActivityGroupBuilder | null = null;
 
   const buildScopeId = (requestId: string, scopeIndex: number) =>
@@ -51,19 +56,10 @@ export function buildChatThreadItems(
     return buildScopeId(requestId, nextScopeIndex);
   };
 
-  const trackScopeId = (scopeId: string, requestId: string) => {
-    scopeRequestIds.set(scopeId, requestId);
-    if (seenScopeIds.has(scopeId)) {
-      return;
-    }
-
-    seenScopeIds.add(scopeId);
-    scopeIdsInEncounterOrder.push(scopeId);
-  };
-
   const createActivityItems = (
     group: ActivityGroupBuilder,
     isRunning: boolean,
+    segmentIndex: number,
   ): ActivityItem[] => {
     const activityItems: ActivityItem[] = [];
     const visibleOperations = group.operations.filter(shouldDisplayOperationInActivity);
@@ -71,7 +67,7 @@ export function buildChatThreadItems(
     if (group.reasoningText.trim().length > 0) {
       activityItems.push({
         kind: "activity",
-        key: `activity:${group.requestId}:thinking`,
+        key: `activity:${group.requestId}:${group.scopeId}:${segmentIndex}:thinking`,
         requestId: group.requestId,
         summary: "Thinking",
         operations: [],
@@ -86,7 +82,7 @@ export function buildChatThreadItems(
     operationGroups.forEach((operations, index) => {
       activityItems.push({
         kind: "activity",
-        key: `activity:${group.requestId}:${index}`,
+        key: `activity:${group.requestId}:${group.scopeId}:${segmentIndex}:${index}`,
         requestId: group.requestId,
         summary: summarizeActivityGroup(operations),
         operations,
@@ -100,41 +96,51 @@ export function buildChatThreadItems(
     return activityItems;
   };
 
-  const appendPendingActivities = (
-    scopeId: string,
-    requestId: string,
-    activities: ActivityItem[],
-  ) => {
-    trackScopeId(scopeId, requestId);
-    if (activities.length === 0) {
-      return;
-    }
-
-    const existingActivities = pendingActivitiesByScopeId.get(scopeId) ?? [];
-    pendingActivitiesByScopeId.set(scopeId, [
-      ...existingActivities,
-      ...activities,
-    ]);
-  };
-
+  /**
+   * Flush the current group as a `request_work` segment emitted directly into
+   * `items` at the current (chronological) position. During iteration segments
+   * are emitted non-running; the final trailing flush (end of loop) may be
+   * running. `includeEmpty` only tracks the scope without emitting a segment.
+   */
   const flushGroup = (options?: FlushActivityGroupOptions) => {
     if (currentGroup == null) {
       return;
     }
 
-    const isRunning = activeRequestIdSet.has(currentGroup.requestId);
-    const activities = createActivityItems(currentGroup, isRunning);
+    const isRunning = options?.isRunning ?? false;
+    const scopeId = currentGroup.scopeId;
+    const segmentIndex = segmentIndexByScopeId.get(scopeId) ?? 0;
+    const activities = createActivityItems(currentGroup, isRunning, segmentIndex);
     if (activities.length > 0) {
-      appendPendingActivities(
-        currentGroup.scopeId,
-        currentGroup.requestId,
+      segmentIndexByScopeId.set(scopeId, segmentIndex + 1);
+      const failedStepCount = activities.filter((a) => a.hasError).length;
+      items.push({
+        kind: "request_work",
+        key: `request-work:${scopeId}:${segmentIndex}`,
+        requestId: currentGroup.requestId,
+        scopeId,
+        summary: summarizeSegment(activities),
         activities,
-      );
-    } else if (options?.includeEmpty === true) {
-      trackScopeId(currentGroup.scopeId, currentGroup.requestId);
+        isRunning,
+        hasError: failedStepCount > 0,
+        failedStepCount,
+      });
     }
 
     currentGroup = null;
+  };
+
+  /**
+   * Flush the *trailing* open group at end-of-loop. Running only when it
+   * belongs to the current scope of an active request. Takes the group
+   * explicitly so the captured `let currentGroup` doesn't defeat narrowing.
+   */
+  const flushTrailingGroup = (group: ActivityGroupBuilder) => {
+    const isActiveCurrent =
+      activeRequestIdSet.has(group.requestId) &&
+      group.scopeId === getCurrentScopeId(group.requestId);
+    currentGroup = group;
+    flushGroup({ isRunning: isActiveCurrent });
   };
 
   const ensureGroup = (scopeId: string, requestId: string) => {
@@ -166,14 +172,7 @@ export function buildChatThreadItems(
       case "user":
       case "context_compacted": {
         flushGroup();
-        const scopeId = startNextScope(message.requestId);
-        trackScopeId(scopeId, message.requestId);
-        if (!scopeAnchorMessageKeyByScopeId.has(scopeId)) {
-          scopeAnchorMessageKeyByScopeId.set(scopeId, message.id);
-        }
-        if (!scopeFirstMessageKeyByScopeId.has(scopeId)) {
-          scopeFirstMessageKeyByScopeId.set(scopeId, message.id);
-        }
+        startNextScope(message.requestId);
         items.push({
           kind: "message",
           key: message.id,
@@ -183,12 +182,8 @@ export function buildChatThreadItems(
       }
       case "assistant":
       case "error": {
-        flushGroup({ includeEmpty: true });
-        const scopeId = getCurrentScopeId(message.requestId);
-        trackScopeId(scopeId, message.requestId);
-        if (!scopeFirstMessageKeyByScopeId.has(scopeId)) {
-          scopeFirstMessageKeyByScopeId.set(scopeId, message.id);
-        }
+        flushGroup();
+        getCurrentScopeId(message.requestId);
         items.push({
           kind: "message",
           key: message.id,
@@ -235,8 +230,7 @@ export function buildChatThreadItems(
 
         flushGroup();
         {
-          const scopeId = getCurrentScopeId(message.requestId);
-          trackScopeId(scopeId, message.requestId);
+          getCurrentScopeId(message.requestId);
         }
         items.push({
           kind: "message",
@@ -254,11 +248,7 @@ export function buildChatThreadItems(
         } else {
           flushGroup();
           {
-            const scopeId = getCurrentScopeId(message.requestId);
-            trackScopeId(scopeId, message.requestId);
-            if (!scopeFirstMessageKeyByScopeId.has(scopeId)) {
-              scopeFirstMessageKeyByScopeId.set(scopeId, message.id);
-            }
+            getCurrentScopeId(message.requestId);
           }
           items.push({
             kind: "message",
@@ -293,105 +283,109 @@ export function buildChatThreadItems(
     }
   }
 
-  flushGroup();
-
-  for (const requestId of activeRequestIds) {
-    const scopeId = getCurrentScopeId(requestId);
-    trackScopeId(scopeId, requestId);
+  // Final trailing segment for whatever group is still open. It is "running"
+  // only when it belongs to the current scope of an active request.
+  if (currentGroup != null) {
+    flushTrailingGroup(currentGroup);
   }
 
-  const workItemsByScopeId = new Map<
-    string,
-    Extract<ChatThreadItem, { kind: "request_work" }>
-  >();
-  for (const scopeId of scopeIdsInEncounterOrder) {
-    const requestId = scopeRequestIds.get(scopeId);
-    if (requestId == null) {
+  // Mark the last segment of each scope as the "final" segment (the one that
+  // carries turn-level timing), and flag the final assistant message of each
+  // scope as the answer panel.
+  markFinalSegmentsAndAnswers(items);
+
+  // Running state for active requests: the last segment of an active request's
+  // current scope runs. If a scope produced no segment at all (e.g. streaming
+  // text only), emit a minimal running work row so the turn still reads active.
+  markRunningSegments(items, activeRequestIdSet, currentScopeIndexByRequestId, buildScopeId);
+
+  return items;
+}
+
+function markFinalSegmentsAndAnswers(items: ChatThreadItem[]) {
+  // Last work segment per scope = final segment (carries timing).
+  const lastWorkIndexByScope = new Map<string, number>();
+  // Last assistant message per request = final answer of the turn.
+  const lastAssistantByRequest = new Map<string, number>();
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind === "request_work") {
+      lastWorkIndexByScope.set(item.scopeId, i);
+    }
+    if (item.kind === "message" && item.message.kind === "assistant") {
+      lastAssistantByRequest.set(item.message.requestId, i);
+    }
+  }
+
+  for (const [, index] of lastWorkIndexByScope) {
+    const item = items[index];
+    if (item && item.kind === "request_work") {
+      item.isFinalSegment = true;
+    }
+  }
+  for (const [, index] of lastAssistantByRequest) {
+    const item = items[index];
+    if (item && item.kind === "message") {
+      item.isFinalAnswer = true;
+    }
+  }
+}
+
+function markRunningSegments(
+  items: ChatThreadItem[],
+  activeRequestIdSet: Set<string>,
+  currentScopeIndexByRequestId: Map<string, number>,
+  buildScopeId: (requestId: string, scopeIndex: number) => string,
+) {
+  const activeCurrentScopeByRequest = new Map<string, string>();
+  for (const requestId of activeRequestIdSet) {
+    const idx = currentScopeIndexByRequestId.get(requestId) ?? 0;
+    activeCurrentScopeByRequest.set(requestId, buildScopeId(requestId, idx));
+  }
+
+  // Walk in reverse; the last (in order) segment of each active request's
+  // current scope is the running one.
+  const handled = new Set<string>();
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind !== "request_work") {
       continue;
     }
-
-    const isRunning =
-      activeRequestIdSet.has(requestId) &&
-      scopeId === getCurrentScopeId(requestId);
-    const activities = finalizeRequestActivities(
-      pendingActivitiesByScopeId.get(scopeId) ?? [],
-      isRunning,
-    );
-
-    if (activities.length > 0 || isRunning) {
-      const failedStepCount = activities.filter((activity) => activity.hasError).length;
-      workItemsByScopeId.set(scopeId, {
-        kind: "request_work",
-        key: `request-work:${scopeId}`,
-        requestId,
-        activities,
-        isRunning,
-        hasError: failedStepCount > 0,
-        failedStepCount,
-      });
-    }
-  }
-
-  const workItemInsertionsAfterMessageKey = new Map<
-    string,
-    Extract<ChatThreadItem, { kind: "request_work" }>[]
-  >();
-  const workItemInsertionsBeforeMessageKey = new Map<
-    string,
-    Extract<ChatThreadItem, { kind: "request_work" }>[]
-  >();
-  const trailingWorkItems: Extract<ChatThreadItem, { kind: "request_work" }>[] = [];
-
-  for (const scopeId of scopeIdsInEncounterOrder) {
-    const workItem = workItemsByScopeId.get(scopeId);
-    if (workItem == null) {
+    const scope = activeCurrentScopeByRequest.get(item.requestId);
+    if (scope == null || scope !== item.scopeId) {
       continue;
     }
-
-    const insertionKey = findRequestWorkInsertionKey(
-      scopeId,
-      scopeAnchorMessageKeyByScopeId,
-    );
-    if (insertionKey == null) {
-      const firstMessageKey = scopeFirstMessageKeyByScopeId.get(scopeId);
-      if (firstMessageKey == null) {
-        trailingWorkItems.push(workItem);
-        continue;
-      }
-
-      const existingInsertions =
-        workItemInsertionsBeforeMessageKey.get(firstMessageKey) ?? [];
-      workItemInsertionsBeforeMessageKey.set(firstMessageKey, [
-        ...existingInsertions,
-        workItem,
-      ]);
+    if (handled.has(item.requestId)) {
       continue;
     }
-
-    const existingInsertions =
-      workItemInsertionsAfterMessageKey.get(insertionKey) ?? [];
-    workItemInsertionsAfterMessageKey.set(insertionKey, [
-      ...existingInsertions,
-      workItem,
-    ]);
+    item.isRunning = true;
+    if (item.activities.length > 0) {
+      item.activities[item.activities.length - 1].isRunning = true;
+    }
+    handled.add(item.requestId);
   }
 
-  const finalItems: ChatThreadItem[] = [];
-  for (const item of items) {
-    const beforeInsertions = workItemInsertionsBeforeMessageKey.get(item.key);
-    if (beforeInsertions != null) {
-      finalItems.push(...beforeInsertions);
+  // Active requests that produced no segment at all (e.g. streaming text only,
+  // or a brand-new turn with no tools yet) still need a running work row.
+  for (const requestId of activeRequestIdSet) {
+    if (handled.has(requestId)) {
+      continue;
     }
-
-    finalItems.push(item);
-    const insertions = workItemInsertionsAfterMessageKey.get(item.key);
-    if (insertions != null) {
-      finalItems.push(...insertions);
-    }
+    const scope = activeCurrentScopeByRequest.get(requestId)!;
+    items.push({
+      kind: "request_work",
+      key: `request-work:${scope}:running`,
+      requestId,
+      scopeId: scope,
+      summary: "Working",
+      activities: [],
+      isRunning: true,
+      hasError: false,
+      failedStepCount: 0,
+      isFinalSegment: true,
+    });
   }
-
-  finalItems.push(...trailingWorkItems);
-  return finalItems;
 }
 
 function isDecorativeToolStatus(
@@ -477,29 +471,6 @@ function mergeOutputText(current: string | undefined, next: string): string {
   return `${current}\n\n${trimmed}`;
 }
 
-function finalizeRequestActivities(
-  activities: ActivityItem[],
-  isRunning: boolean,
-): ActivityItem[] {
-  if (activities.length === 0) {
-    return activities;
-  }
-
-  const lastRunningIndex = isRunning ? activities.length - 1 : -1;
-  return activities.map((activity, index) => ({
-    ...activity,
-    key: `${activity.key}:${index}`,
-    isRunning: index === lastRunningIndex,
-  }));
-}
-
-function findRequestWorkInsertionKey(
-  scopeId: string,
-  scopeAnchorMessageKeyByScopeId: Map<string, string>,
-): string | null {
-  return scopeAnchorMessageKeyByScopeId.get(scopeId) ?? null;
-}
-
 function splitActivityOperationGroups(
   operations: ActivityOperation[],
 ): ActivityOperation[][] {
@@ -541,6 +512,14 @@ function getOperationGroupKey(operation: ActivityOperation): string {
     default:
       return operation.detail.kind;
   }
+}
+
+/** One-line header label for a work segment, joined from its activities. */
+function summarizeSegment(activities: ActivityItem[]): string {
+  if (activities.length === 0) {
+    return "Working";
+  }
+  return activities.map((activity) => activity.summary).join(" · ");
 }
 
 function summarizeActivityGroup(operations: ActivityOperation[]): string {

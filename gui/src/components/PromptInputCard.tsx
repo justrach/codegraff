@@ -351,7 +351,7 @@ export function PromptInputCard({
     enterSubmitLockedRef.current = true;
     window.setTimeout(() => {
       enterSubmitLockedRef.current = false;
-    }, 600);
+    }, 150);
 
     resetHistoryNavigation();
     if (value !== promptDraft) {

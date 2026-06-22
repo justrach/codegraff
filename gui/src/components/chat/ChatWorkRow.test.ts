@@ -44,31 +44,51 @@ function buildAssistantMessage(
 }
 
 describe("getWorkHeaderLabelText", () => {
-  test("reports completed requests with failed steps explicitly", () => {
+  test("reports completed final segments with their summary plus failed steps and duration", () => {
     expect(
       getWorkHeaderLabelText({
+        summary: "Updated 1 file",
         failedStepCount: 1,
         isRunning: false,
-      }),
-    ).toBe("Completed with 1 failed step");
-  });
-
-  test("pluralizes failed steps and includes duration when available", () => {
-    expect(
-      getWorkHeaderLabelText({
-        failedStepCount: 2,
-        isRunning: false,
+        isFinalSegment: true,
         requestTiming: {
           startedAtMs: 1_000,
           completedAtMs: 6_000,
         },
       }),
-    ).toBe("Completed with 2 failed steps after 5s");
+    ).toBe("Updated 1 file · 1 failed step · 5s");
+  });
+
+  test("omits timing on intermediate (non-final) segments", () => {
+    expect(
+      getWorkHeaderLabelText({
+        summary: "Ran 1 command",
+        failedStepCount: 0,
+        isRunning: false,
+        isFinalSegment: false,
+      }),
+    ).toBe("Ran 1 command");
+  });
+
+  test("pluralizes failed steps and includes duration when available", () => {
+    expect(
+      getWorkHeaderLabelText({
+        summary: "Updated 2 files",
+        failedStepCount: 2,
+        isRunning: false,
+        isFinalSegment: true,
+        requestTiming: {
+          startedAtMs: 1_000,
+          completedAtMs: 6_000,
+        },
+      }),
+    ).toBe("Updated 2 files · 2 failed steps · 5s");
   });
 
   test("keeps the running label unchanged", () => {
     expect(
       getWorkHeaderLabelText({
+        summary: "Ran 1 command",
         failedStepCount: 0,
         isRunning: true,
         requestTiming: {
@@ -99,7 +119,7 @@ describe("buildChatThreadItems", () => {
     });
     expect(streamingItems[1]).toMatchObject({
       kind: "request_work",
-      key: `request-work:${requestId}:0`,
+      key: `request-work:${requestId}:0:0`,
       requestId,
       isRunning: true,
     });
@@ -115,12 +135,12 @@ describe("buildChatThreadItems", () => {
 
     expect(afterAssistantItems.map((item) => item.key)).toEqual([
       `user:${requestId}`,
-      `request-work:${requestId}:0`,
+      `request-work:${requestId}:0:0`,
       `assistant:${requestId}`,
     ]);
     expect(afterAssistantItems[1]).toMatchObject({
       kind: "request_work",
-      key: `request-work:${requestId}:0`,
+      key: `request-work:${requestId}:0:0`,
       requestId,
       isRunning: true,
     });

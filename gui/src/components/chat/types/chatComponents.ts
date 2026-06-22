@@ -26,6 +26,7 @@ export interface ActivityChevronProps {
 export interface ActivityOperationRowProps {
   operation: ActivityOperation;
   workspacePath: string | null;
+  isLast?: boolean;
 }
 
 export interface ActivityResultCardProps {
@@ -92,6 +93,8 @@ export interface ChatContextCompactedRowProps {
 }
 
 export interface ChatMessageRowProps {
+  isStreaming?: boolean;
+  isFinalAnswer?: boolean;
   message: ChatContentMessage;
   workspacePath: string | null;
 }
@@ -158,6 +161,7 @@ export interface FileDiffResultProps {
 }
 
 export interface MarkdownChatMessageProps {
+  isStreaming?: boolean;
   text: string;
   toneClassName: string;
   workspacePath: string | null;
@@ -181,6 +185,7 @@ export interface InlineTextSegmentsProps {
 }
 
 export interface RenderChatThreadItemOptions {
+  activeRequestIds: string[];
   requestTimingsById: Record<string, RequestTimingInfo>;
   workspacePath: string | null;
   itemCount: number;
@@ -213,8 +218,10 @@ export interface ToolStartRowProps {
 }
 
 export interface WorkHeaderLabelProps {
+  summary: string;
   failedStepCount: number;
   isRunning: boolean;
+  isFinalSegment?: boolean;
   requestTiming?: RequestTimingInfo;
 }
 

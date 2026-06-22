@@ -84,18 +84,25 @@ export function ActivityResultCard({
   return (
     <div
       className={cn(
-        "min-w-0 max-w-full overflow-hidden rounded-2xl border shadow-[var(--elevation-sm)]",
+        "relative min-w-0 max-w-full overflow-hidden rounded-2xl border shadow-[var(--elevation-sm)]",
         isError
           ? "border-destructive/40 bg-destructive/5"
           : "border-border bg-card",
       )}
     >
+      {/* Tone accent strip — semantic, so it tracks every preset + light/dark. */}
+      <span
+        className={cn(
+          "absolute inset-y-0 left-0 w-1 rounded-l-2xl",
+          isError ? "bg-destructive/70" : "bg-accent/55",
+        )}
+      />
       <div
         className={cn(
-          "flex items-center gap-2 border-b px-3.5 py-2.5 text-xs/relaxed",
+          "flex items-center gap-2 border-b px-3.5 py-2 text-xs/relaxed",
           isError
-            ? "border-destructive/30 text-destructive"
-            : "border-border text-foreground",
+            ? "border-destructive/30 bg-destructive/5 text-destructive"
+            : "border-border bg-muted/25 text-foreground",
         )}
       >
         {isError ? <AlertTriangle className="size-3.5 shrink-0" /> : null}
@@ -117,8 +124,10 @@ export function ActivityResultCard({
       {children}
       <div
         className={cn(
-          "flex items-center justify-between gap-3 border-t px-3.5 py-2.5 text-xs/relaxed",
-          isError ? "border-destructive/30 text-destructive" : "border-border text-foreground",
+          "flex items-center justify-between gap-3 border-t px-3.5 py-2 text-xs/relaxed",
+          isError
+            ? "border-destructive/30 bg-destructive/5 text-destructive"
+            : "border-border bg-muted/15 text-foreground",
         )}
       >
         <span className="min-w-0 flex-1 truncate">{footer.leading}</span>

@@ -4,6 +4,9 @@
 // over a single SSE EventSource on /events.
 import {
   SESSION_UPDATED_EVENT_NAME,
+  MESSAGE_DELTA_EVENT_NAME,
+  REQUEST_CANCELLED_EVENT_NAME,
+  REQUEST_FINISHED_EVENT_NAME,
   TERMINAL_ERROR_EVENT_NAME,
   TERMINAL_EXIT_EVENT_NAME,
   TERMINAL_OUTPUT_EVENT_NAME,
@@ -55,6 +58,21 @@ import type {
 } from "./types/contracts";
 
 type UnlistenFn = () => void;
+
+export type MessageDeltaEvent = {
+  conversationId: string;
+  workspacePath: string;
+  requestId: string;
+  messageId: string;
+  kind: "assistant" | "reasoning";
+  text: string;
+};
+
+export type RequestLifecycleEvent = {
+  conversationId: string;
+  workspacePath: string;
+  requestId: string;
+};
 
 const QA_WORKSPACE_PATH = "/Users/pranavp/projects/harness/codegraff/gui";
 const QA_CONVERSATION_ID = "qa-existing-chat";
@@ -294,9 +312,22 @@ function mockInvokeCommand<T>(
     case "send_prompt": {
       const input = args?.input as SendPromptInput;
       const conversationId = input.conversationId ?? "qa-new-chat";
+      const requestId = `${conversationId}-request`;
+      // Showcase transcript that exercises chronological tool/text interleaving
+      // (tools→text→tools→text), a reasoning/thinking block, and a final
+      // markdown answer — so visual QA can verify the ordering + answer panel.
       return Promise.resolve(createQaSnapshot(conversationId, [
-        { id: `${conversationId}-user`, kind: "user", requestId: `${conversationId}-request`, text: input.prompt },
-        { id: `${conversationId}-assistant`, kind: "assistant", requestId: `${conversationId}-request`, text: "QA mock response with a bullet list:\n\n- Markdown bullets align correctly.\n- `inline code` stays readable.\n\n```ts\nconst theme = 'clean-modern';\n```\n\n[Codegraff](https://github.com/justrach/codegraff)" },
+        { id: `${conversationId}-user`, kind: "user", requestId, text: input.prompt },
+        { id: `${conversationId}-reasoning`, kind: "reasoning", requestId, text: "Let me look at the project structure first, then narrow down where the change needs to go." },
+        { id: `${conversationId}-assistant-1`, kind: "assistant", requestId, text: "I'll start by listing the source files." },
+        { id: `${conversationId}-tool-start-1`, kind: "tool_start", requestId, name: "shell", callId: `${conversationId}-call-1`, detail: { kind: "shell", command: "rg --files src", cwd: null, description: null } },
+        { id: `${conversationId}-tool-end-1`, kind: "tool_end", requestId, name: "shell", callId: `${conversationId}-call-1`, summary: "Listed 12 source files", isError: false, detail: { kind: "text", text: "src/main.ts\nsrc/utils.ts\nsrc/config.ts" } },
+        { id: `${conversationId}-assistant-2`, kind: "assistant", requestId, text: "Found the relevant module. Let me read it and apply the fix." },
+        { id: `${conversationId}-tool-start-2`, kind: "tool_start", requestId, name: "tool", callId: `${conversationId}-call-2`, detail: { kind: "file_read", path: "src/utils.ts", startLine: null, endLine: null } },
+        { id: `${conversationId}-tool-end-2`, kind: "tool_end", requestId, name: "tool", callId: `${conversationId}-call-2`, summary: null, isError: false, detail: null },
+        { id: `${conversationId}-tool-start-3`, kind: "tool_start", requestId, name: "tool", callId: `${conversationId}-call-3`, detail: { kind: "file_update", path: "src/utils.ts", operation: "replace" } },
+        { id: `${conversationId}-tool-end-3`, kind: "tool_end", requestId, name: "tool", callId: `${conversationId}-call-3`, summary: "Updated src/utils.ts", isError: false, detail: { kind: "file_diff", path: "src/utils.ts", patch: "diff --git a/src/utils.ts b/src/utils.ts\n-export const old = 1;\n+export const value = 42;" } },
+        { id: `${conversationId}-assistant-3`, kind: "assistant", requestId, text: "Done. Here's the summary:\n\n- Explored `src/` and read `src/utils.ts`.\n- Updated the exported constant.\n\n```ts\nexport const value = 42;\n```\n\n[Codegraff](https://github.com/justrach/codegraff)" },
       ]) as T);
     }
     case "read_workspace_file":
@@ -454,6 +485,9 @@ const nativeEventHandlers = new Map<string, Set<(payload: unknown) => void>>();
 
 function nativeEventType(eventName: string): string {
   if (eventName === SESSION_UPDATED_EVENT_NAME) return "session-updated";
+  if (eventName === MESSAGE_DELTA_EVENT_NAME) return "message-delta";
+  if (eventName === REQUEST_FINISHED_EVENT_NAME) return "request-finished";
+  if (eventName === REQUEST_CANCELLED_EVENT_NAME) return "request-cancelled";
   if (eventName === TERMINAL_OUTPUT_EVENT_NAME) return "terminal-output";
   if (eventName === TERMINAL_EXIT_EVENT_NAME) return "terminal-exit";
   if (eventName === TERMINAL_ERROR_EVENT_NAME) return "terminal-error";
@@ -490,6 +524,9 @@ function ensureSessionEventSource(): EventSource {
   sessionEventSource = es;
   for (const eventName of [
     SESSION_UPDATED_EVENT_NAME,
+    MESSAGE_DELTA_EVENT_NAME,
+    REQUEST_FINISHED_EVENT_NAME,
+    REQUEST_CANCELLED_EVENT_NAME,
     TERMINAL_OUTPUT_EVENT_NAME,
     TERMINAL_EXIT_EVENT_NAME,
     TERMINAL_ERROR_EVENT_NAME,
@@ -1091,6 +1128,24 @@ export async function listenSessionUpdates(
   handler: (payload: SessionSnapshot) => void,
 ): Promise<UnlistenFn> {
   return listenEvent(SESSION_UPDATED_EVENT_NAME, handler);
+}
+
+export async function listenMessageDeltas(
+  handler: (payload: MessageDeltaEvent) => void,
+): Promise<UnlistenFn> {
+  return listenEvent(MESSAGE_DELTA_EVENT_NAME, handler);
+}
+
+export async function listenRequestFinished(
+  handler: (payload: RequestLifecycleEvent) => void,
+): Promise<UnlistenFn> {
+  return listenEvent(REQUEST_FINISHED_EVENT_NAME, handler);
+}
+
+export async function listenRequestCancelled(
+  handler: (payload: RequestLifecycleEvent) => void,
+): Promise<UnlistenFn> {
+  return listenEvent(REQUEST_CANCELLED_EVENT_NAME, handler);
 }
 
 export async function listenProviderOAuthCallback(

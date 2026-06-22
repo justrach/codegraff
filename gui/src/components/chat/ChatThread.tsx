@@ -4,13 +4,16 @@ import type {
   NativeScrollEvent,
   NativeSyntheticEvent,
 } from "@legendapp/list/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WheelEvent } from "react";
 import { ArrowDownIcon } from "lucide-react";
 
 import { CHAT_BADGE_TEXT_CLASS } from "./constants/chatStyles";
 import type { ChatThreadProps } from "./types/chatComponents";
-import { buildChatThreadItems } from "./utils/chatThread";
+import {
+  buildChatThreadItemsWithCache,
+  type ChatThreadItemBuildCache,
+} from "./utils/chatThread";
 import { renderChatThreadItem } from "./utils/chatThreadList";
 
 const BOTTOM_LOCK_THRESHOLD = 8;
@@ -18,6 +21,7 @@ const BOTTOM_LOCK_THRESHOLD = 8;
 export function ChatThread({
   activeRequestIds,
   commandResults = [],
+  conversationVersion,
   messages,
   requestTimingsById,
   workspaceLabel,
@@ -29,6 +33,7 @@ export function ChatThread({
   const isProgrammaticScrollRef = useRef(false);
   const lastScrollOffsetRef = useRef<number | null>(null);
   const followFrameRefs = useRef<number[]>([]);
+  const itemBuildCacheRef = useRef<ChatThreadItemBuildCache | null>(null);
   const lastSeenPromptIdRef = useRef<string | null>(null);
   const previousItemCountRef = useRef(0);
   // Mirror of isFollowingRef for rendering (the pill). Pending count tracks how
@@ -45,26 +50,32 @@ export function ChatThread({
     }
     return null;
   })();
-  const [dismissedCommandKeys, setDismissedCommandKeys] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const handleDismissCommandResult = useCallback((key: string) => {
-    setDismissedCommandKeys((prev) => {
-      const next = new Set(prev);
-      next.add(key);
-      return next;
-    });
-  }, []);
-  const items = [
-    ...buildChatThreadItems(messages, activeRequestIds),
-    ...commandResults
-      .map((result, index) => ({
+  const streamingTextLength = (() => {
+    let totalLength = 0;
+    for (const message of messages) {
+      if (message.kind === "assistant" || message.kind === "reasoning") {
+        totalLength += message.text.length;
+      }
+    }
+    return totalLength;
+  })();
+  const activeRequestKey = activeRequestIds.join("\u0000");
+  const items = useMemo(() => {
+    const built = buildChatThreadItemsWithCache(
+      messages,
+      activeRequestIds,
+      itemBuildCacheRef.current,
+    );
+    itemBuildCacheRef.current = built.cache;
+    return [
+      ...built.items,
+      ...commandResults.map((result, index) => ({
         kind: "command_result" as const,
         key: `command-result:${index}:${result.title}`,
         result,
-      }))
-      .filter((item) => !dismissedCommandKeys.has(item.key)),
-  ];
+      })),
+    ];
+  }, [activeRequestIds, commandResults, conversationVersion, messages]);
 
   const setFollowing = useCallback((next: boolean) => {
     isFollowingRef.current = next;
@@ -143,27 +154,13 @@ export function ChatThread({
     }
   }, [items.length]);
 
-  // The thread re-renders on every streaming update, so keep locked chats pinned
-  // after both React commit and LegendList's follow-up layout measurements. When
-  // we're NOT following, re-measure the real scroll node instead: if a content or
-  // layout change has settled us at the physical bottom (e.g. a long turn just
-  // finished with nothing below it), recover the follow state so the
-  // jump-to-latest pill doesn't linger. The DOM read only runs while the pill is
-  // actually showing, so it never taxes the streaming-follow path.
+  // Keep locked chats pinned after content changes without scheduling layout work
+  // on unrelated renders.
   useEffect(() => {
     if (isFollowingRef.current) {
       scheduleFollowToBottom();
-      return;
     }
-    const node = listRef.current?.getScrollableNode();
-    if (
-      node != null &&
-      node.scrollHeight - node.clientHeight - node.scrollTop <=
-        BOTTOM_LOCK_THRESHOLD
-    ) {
-      setFollowing(true);
-    }
-  });
+  }, [activeRequestKey, items.length, streamingTextLength, scheduleFollowToBottom]);
 
   useEffect(
     () => () => {
@@ -195,15 +192,8 @@ export function ChatThread({
         event.nativeEvent;
       const offset = contentOffset.y;
       const previousOffset = lastScrollOffsetRef.current;
-      // LegendList virtualizes with estimated item sizes, so the event's
-      // contentSize can disagree with the real scroll height — measure the
-      // actual scrollable node so "at the bottom" is exact and the pill doesn't
-      // linger while you're parked at the end.
-      const node = listRef.current?.getScrollableNode() ?? null;
       const distanceFromBottom =
-        node != null
-          ? node.scrollHeight - node.clientHeight - node.scrollTop
-          : contentSize.height - layoutMeasurement.height - offset;
+        contentSize.height - layoutMeasurement.height - offset;
       const isAtBottom = distanceFromBottom <= BOTTOM_LOCK_THRESHOLD;
 
       if (
@@ -219,10 +209,7 @@ export function ChatThread({
         userWantsFollowRef.current = true;
       }
 
-      // Physically at the bottom ⇒ following again, regardless of recent scroll
-      // intent — this is what clears a pill left lingering after you return.
-      if (isAtBottom && !isFollowingRef.current) {
-        userWantsFollowRef.current = true;
+      if (isAtBottom && userWantsFollowRef.current && !isFollowingRef.current) {
         setFollowing(true);
         scheduleFollowToBottom();
       }
@@ -241,16 +228,6 @@ export function ChatThread({
     }
     if (event.deltaY > 0) {
       userWantsFollowRef.current = true;
-      // A downward flick while already pinned emits no scroll event, so
-      // recover the follow state here too.
-      const node = listRef.current?.getScrollableNode() ?? null;
-      if (
-        node != null &&
-        node.scrollHeight - node.clientHeight - node.scrollTop <=
-          BOTTOM_LOCK_THRESHOLD
-      ) {
-        setFollowing(true);
-      }
     }
   }, [setFollowing]);
 
@@ -259,6 +236,7 @@ export function ChatThread({
     setFollowing(true);
     scrollToBottom();
   }, [scrollToBottom, setFollowing]);
+
   return (
     <div className="relative h-full">
       <LegendList
@@ -266,10 +244,10 @@ export function ChatThread({
         data={items}
         renderItem={(props) =>
           renderChatThreadItem(props, {
+            activeRequestIds,
             requestTimingsById,
             workspacePath,
             itemCount: items.length,
-            onDismissCommandResult: handleDismissCommandResult,
           })
         }
         keyExtractor={(item) => item.key}

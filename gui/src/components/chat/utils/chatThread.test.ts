@@ -61,8 +61,15 @@ function toolEndMessage(
   };
 }
 
+function requestWorkItems(items: ReturnType<typeof buildChatThreadItems>) {
+  return items.filter(
+    (item): item is Extract<typeof item, { kind: "request_work" }> =>
+      item.kind === "request_work",
+  );
+}
+
 describe("buildChatThreadItems", () => {
-  test("places a single work row before the first non-user message of a completed request", () => {
+  test("interleaves work segments chronologically between assistant texts", () => {
     const items = buildChatThreadItems(
       [
         userMessage("user-1", "req-1", "add a random comment"),
@@ -113,40 +120,47 @@ describe("buildChatThreadItems", () => {
       [],
     );
 
+    // Chronological order: [user][work:Thinking][asst1][work:cmd][asst2][work:read+update][asst3]
     expect(items.map((item) => item.kind)).toEqual([
       "message",
       "request_work",
       "message",
+      "request_work",
       "message",
+      "request_work",
       "message",
     ]);
 
-    const workItem = items[1];
-    expect(workItem.kind).toBe("request_work");
-    if (workItem.kind !== "request_work") {
-      return;
-    }
+    const workItems = requestWorkItems(items);
+    expect(workItems).toHaveLength(3);
 
-    expect(workItem.isRunning).toBe(false);
-    expect(workItem.failedStepCount).toBe(0);
-    expect(workItem.activities.map((activity) => activity.summary)).toEqual([
+    // Each contiguous run becomes its own segment with the right summary.
+    expect(workItems.map((w) => w.summary)).toEqual([
       "Thinking",
       "Ran 1 command",
-      "Explored 1 file",
-      "Updated 1 file",
+      "Explored 1 file · Updated 1 file",
     ]);
-    expect(items[2]).toEqual({
-      kind: "message",
-      key: "assistant-1",
-      message: assistantMessage(
-        "assistant-1",
-        "req-1",
-        "Let me first check what source files are available.",
-      ),
-    });
+
+    // The last work segment of the scope is the final one (carries timing).
+    expect(workItems[0]?.isFinalSegment).toBeFalsy();
+    expect(workItems[1]?.isFinalSegment).toBeFalsy();
+    expect(workItems[2]?.isFinalSegment).toBe(true);
+
+    // No failed steps, none running on a completed turn.
+    expect(workItems.every((w) => w.failedStepCount === 0 && !w.isRunning)).toBe(true);
+
+    // The final assistant message of the turn is flagged as the answer.
+    expect(items[2]?.kind).toBe("message");
+    expect(items[6]?.kind).toBe("message");
+    if (items[6]?.kind === "message") {
+      expect(items[6].isFinalAnswer).toBe(true);
+    }
+    if (items[2]?.kind === "message") {
+      expect(items[2].isFinalAnswer).toBeFalsy();
+    }
   });
 
-  test("keeps a single running work row before the first non-user message for active requests", () => {
+  test("marks the last work segment of an active request's current scope as running", () => {
     const items = buildChatThreadItems(
       [
         assistantMessage("assistant-1", "req-1", "Checking files."),
@@ -169,25 +183,45 @@ describe("buildChatThreadItems", () => {
       ["req-1"],
     );
 
+    // Chronological: [asst1][work:cmd][asst2]; the work segment sits between texts.
     expect(items.map((item) => item.kind)).toEqual([
-      "request_work",
       "message",
+      "request_work",
       "message",
     ]);
 
-    const workItem = items[0];
-    expect(workItem.kind).toBe("request_work");
-    if (workItem.kind !== "request_work") {
-      return;
-    }
+    const workItem = requestWorkItems(items)[0];
+    expect(workItem).toBeDefined();
+    expect(workItem?.isRunning).toBe(true);
+    expect(workItem?.isFinalSegment).toBe(true);
+    expect(workItem?.failedStepCount).toBe(0);
+    expect(workItem?.activities).toHaveLength(1);
+    expect(workItem?.activities[0]?.summary).toBe("Ran 1 command");
+    expect(workItem?.activities.filter((a) => a.isRunning)).toHaveLength(1);
+  });
 
-    expect(workItem.isRunning).toBe(true);
-    expect(workItem.failedStepCount).toBe(0);
-    expect(workItem.activities).toHaveLength(1);
-    expect(workItem.activities[0]?.summary).toBe("Ran 1 command");
-    expect(
-      workItem.activities.filter((activity) => activity.isRunning),
-    ).toHaveLength(1);
+  test("emits a minimal running work row for an active turn that produced no tool segment", () => {
+    const items = buildChatThreadItems(
+      [
+        userMessage("user-1", "req-1", "hello"),
+        assistantMessage("assistant-1", "req-1", "Thinking about it..."),
+      ],
+      ["req-1"],
+    );
+
+    // [user][asst1][running work row (empty)] — no tools ran, so a minimal
+    // running segment is appended to keep the turn reading active.
+    expect(items.map((item) => item.kind)).toEqual([
+      "message",
+      "message",
+      "request_work",
+    ]);
+
+    const workItem = requestWorkItems(items)[0];
+    expect(workItem).toBeDefined();
+    expect(workItem?.isRunning).toBe(true);
+    expect(workItem?.activities).toHaveLength(0);
+    expect(workItem?.summary).toBe("Working");
   });
 
   test("does not merge work rows across user turns when history messages reuse a request id", () => {
@@ -224,29 +258,29 @@ describe("buildChatThreadItems", () => {
       [],
     );
 
+    // Two scopes (split by the second user message); work sits between texts in
+    // each scope, not hoisted above all text.
     expect(items.map((item) => item.kind)).toEqual([
       "message",
-      "request_work",
-      "message",
-      "message",
       "message",
       "request_work",
       "message",
+      "message",
+      "message",
+      "request_work",
       "message",
     ]);
 
-    const workItems = items.filter(
-      (item): item is Extract<typeof item, { kind: "request_work" }> =>
-        item.kind === "request_work",
-    );
-
+    const workItems = requestWorkItems(items);
     expect(workItems).toHaveLength(2);
-    expect(workItems[0]?.failedStepCount).toBe(0);
-    expect(workItems[1]?.failedStepCount).toBe(0);
-    expect(workItems[0]?.activities.map((activity) => activity.summary)).toEqual([
+    expect(workItems.map((w) => w.scopeId)).toEqual([
+      `${requestId}:0`,
+      `${requestId}:1`,
+    ]);
+    expect(workItems[0]?.activities.map((a) => a.summary)).toEqual([
       "Ran 1 command",
     ]);
-    expect(workItems[1]?.activities.map((activity) => activity.summary)).toEqual([
+    expect(workItems[1]?.activities.map((a) => a.summary)).toEqual([
       "Updated 1 file",
     ]);
   });
@@ -289,17 +323,14 @@ describe("buildChatThreadItems", () => {
       [],
     );
 
-    const workItem = items.find(
-      (item): item is Extract<typeof item, { kind: "request_work" }> =>
-        item.kind === "request_work",
-    );
+    const workItem = requestWorkItems(items)[0];
 
     expect(workItem).toBeDefined();
     expect(workItem?.failedStepCount).toBe(1);
     expect(workItem?.hasError).toBe(true);
   });
 
-  test("finalized activity keys are unique when a request flushes repeated operation groups", () => {
+  test("keeps activity keys unique across repeated work segments in the same scope", () => {
     const items = buildChatThreadItems(
       [
         userMessage("user-1", "req-1", "inspect twice"),
@@ -329,14 +360,12 @@ describe("buildChatThreadItems", () => {
       [],
     );
 
-    const workItem = items.find(
-      (item): item is Extract<typeof item, { kind: "request_work" }> =>
-        item.kind === "request_work",
-    );
-
-    expect(workItem).toBeDefined();
-    const keys = workItem?.activities.map((activity) => activity.key) ?? [];
-    expect(keys).toHaveLength(2);
-    expect(new Set(keys).size).toBe(keys.length);
+    // Two command runs separated by an assistant message → two segments in the
+    // same scope. Activity keys must stay unique across segments.
+    const workItems = requestWorkItems(items);
+    expect(workItems).toHaveLength(2);
+    const allKeys = workItems.flatMap((w) => w.activities.map((a) => a.key));
+    expect(allKeys).toHaveLength(2);
+    expect(new Set(allKeys).size).toBe(allKeys.length);
   });
 });
