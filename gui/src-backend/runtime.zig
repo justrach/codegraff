@@ -48,12 +48,19 @@ const Conversation = struct {
     followup: ?Followup = null,
 };
 
+const FollowupOption = struct {
+    id: []const u8,
+    label: []const u8,
+};
+
 const Followup = struct {
     followup_id: []const u8,
     workspace_path: []const u8,
     conversation_id: []const u8,
     request_id: []const u8,
+    kind: []const u8 = "text",
     question: []const u8,
+    options: []const FollowupOption = &.{},
     call_id: ?[]const u8,
 };
 
@@ -305,6 +312,10 @@ pub const Runtime = struct {
         const wpath = self.dupe(workspace);
         self.setActiveWorkspaceLocked(wpath);
         if (self.conversations.get(conv_id)) |conversation| {
+            if (!std.mem.eql(u8, conversation.workspace_path, wpath)) {
+                self.mutex.unlock(mer_runtime.io);
+                return bad(req, "conversation does not belong to workspace");
+            }
             self.active_conversation_id = conversation.conversation_id;
             self.selected_by_workspace.put(wpath, conversation.conversation_id) catch {};
         }
@@ -418,11 +429,20 @@ pub const Runtime = struct {
         var conversation_id: []const u8 = undefined;
         var session_name: []const u8 = undefined;
         var workspace_for_thread: []const u8 = undefined;
+        var agent_for_thread: []const u8 = undefined;
+        var plan_mode_for_thread = false;
 
         self.mutex.lockUncancelable(mer_runtime.io);
         {
             const cid = provided_conversation orelse self.uniqueId("chat");
-            const conv = self.conversations.get(cid) orelse self.createConversationLocked(workspace, cid, titleFromPrompt(self.arena, prompt));
+            const existing = self.conversations.get(cid);
+            if (existing) |conv| {
+                if (!std.mem.eql(u8, conv.workspace_path, workspace)) {
+                    self.mutex.unlock(mer_runtime.io);
+                    return bad(req, "conversation does not belong to workspace");
+                }
+            }
+            const conv = existing orelse self.createConversationLocked(workspace, cid, titleFromPrompt(self.arena, prompt));
             conversation_id = conv.conversation_id;
             session_name = conv.session_name;
             workspace_for_thread = conv.workspace_path;
@@ -434,8 +454,11 @@ pub const Runtime = struct {
                 conv.title = titleFromPrompt(self.arena, prompt);
                 self.renameManagedChatWorkspaceLocked(conv.workspace_path, conv.title);
             }
-            conv.plan_mode = agent_id != null and std.mem.eql(u8, agent_id.?, "muse");
-            conv.active_agent_id = if (agent_id) |a| self.dupe(a) else conv.active_agent_id;
+            const effective_agent = agent_id orelse conv.active_agent_id orelse self.active_agent_id;
+            agent_for_thread = self.dupe(effective_agent);
+            plan_mode_for_thread = guiAgentReadOnly(effective_agent);
+            conv.plan_mode = plan_mode_for_thread;
+            conv.active_agent_id = agent_for_thread;
             conv.updated_at = nowMillis();
             conv.messages.append(self.arena, .{
                 .kind = .user,
@@ -451,7 +474,7 @@ pub const Runtime = struct {
         self.mutex.unlock(mer_runtime.io);
 
         const prompt_owned = self.dupe(prompt);
-        const thread = std.Thread.spawn(.{}, graffTurnThread, .{ self, conversation_id, request_id, session_name, workspace_for_thread, prompt_owned }) catch |err| {
+        const thread = std.Thread.spawn(.{}, graffTurnThread, .{ self, conversation_id, request_id, session_name, workspace_for_thread, prompt_owned, agent_for_thread, plan_mode_for_thread }) catch |err| {
             self.mutex.lockUncancelable(mer_runtime.io);
             if (self.conversations.get(conversation_id)) |conv| {
                 removeString(&conv.active_request_ids, request_id);
@@ -499,30 +522,152 @@ pub const Runtime = struct {
         const root = parse(req) catch return badJson(req);
         const input = objectField(root, "input") orelse root;
         const cid = stringField(input, "conversationId") orelse return bad(req, "missing conversationId");
+        self.performConversationCompaction(req.allocator, cid) catch |err| {
+            return bad(req, switch (err) {
+                error.ConversationNotFound => "conversation not found",
+                error.CompactFailed => "compaction failed",
+                else => "failed to compact conversation",
+            });
+        };
+        return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
+    }
+
+    fn performConversationCompaction(self: *Runtime, alloc: std.mem.Allocator, cid: []const u8) !void {
+        var workspace: []const u8 = undefined;
+        var session_name: []const u8 = undefined;
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
+            workspace = self.dupe(conv.workspace_path);
+            session_name = self.dupe(conv.session_name);
+            self.writeConversationSessionFileLocked(conv);
+        } else {
+            self.mutex.unlock(mer_runtime.io);
+            return error.ConversationNotFound;
+        }
+        self.mutex.unlock(mer_runtime.io);
+
+        try self.runGraffCompact(alloc, workspace, session_name);
+
+        self.mutex.lockUncancelable(mer_runtime.io);
+        if (self.conversations.get(cid)) |conv| {
+            const path = sessionFilePath(self.allocator, workspace, session_name) catch null;
+            if (path) |p| {
+                self.importSessionFileLocked(workspace, session_name, p);
+                self.allocator.free(p);
+            }
             const rid = self.uniqueId("compact");
             conv.messages.append(self.arena, .{
                 .kind = .context_compacted,
                 .id = rid,
                 .request_id = rid,
-                .text = "Conversation compaction requested. The next prompt will continue in a fresh graff session.",
+                .text = "Conversation compacted. Future turns resume the compacted graff session.",
             }) catch {};
             conv.updated_at = nowMillis();
             self.writeConversationSessionFileLocked(conv);
+            self.bumpLocked();
         }
-        self.bumpLocked();
         self.mutex.unlock(mer_runtime.io);
-        return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
+    }
+
+    fn runGraffCompact(self: *Runtime, alloc: std.mem.Allocator, workspace: []const u8, session_name: []const u8) !void {
+        if (session_name.len == 0 or std.mem.indexOfAny(u8, session_name, "/\\") != null) return error.CompactFailed;
+        const bin = self.codegraffBinary();
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(alloc);
+        try argv.append(alloc, "/usr/bin/env");
+        try argv.append(alloc, try std.fmt.allocPrint(alloc, "HOME={s}", .{homeDir()}));
+        try argv.append(alloc, try std.fmt.allocPrint(alloc, "PATH={s}/bin:{s}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", .{ homeDir(), homeDir() }));
+        try argv.append(alloc, bin);
+        try argv.append(alloc, "--json");
+        try argv.append(alloc, "--resume");
+        try argv.append(alloc, session_name);
+
+        var child = try std.process.spawn(mer_runtime.io, .{
+            .argv = argv.items,
+            .cwd = .{ .path = workspace },
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .ignore,
+        });
+        defer child.kill(mer_runtime.io);
+
+        {
+            var wbuf: [1024]u8 = undefined;
+            var cw = child.stdin.?.writerStreaming(mer_runtime.io, &wbuf);
+            try cw.interface.writeAll("{\"type\":\"compact\"}\n");
+            try cw.interface.flush();
+            child.stdin.?.close(mer_runtime.io);
+            child.stdin = null;
+        }
+
+        var rbuf: [16 * 1024]u8 = undefined;
+        var rdr = child.stdout.?.readerStreaming(mer_runtime.io, &rbuf);
+        var saw_ok = false;
+        while (true) {
+            const ev_line = rdr.interface.takeDelimiter('\n') catch break orelse break;
+            const line = std.mem.trim(u8, ev_line, " \t\r\n");
+            if (line.len == 0) continue;
+            var tmp = std.heap.ArenaAllocator.init(alloc);
+            defer tmp.deinit();
+            const event = std.json.parseFromSliceLeaky(Value, tmp.allocator(), line, .{}) catch continue;
+            const ty = stringField(event, "type") orelse continue;
+            if (std.mem.eql(u8, ty, "compact")) {
+                if (boolField(event, "ok") orelse false) saw_ok = true;
+            } else if (std.mem.eql(u8, ty, "error")) {
+                return error.CompactFailed;
+            }
+        }
+        const term = child.wait(mer_runtime.io) catch return error.CompactFailed;
+        if (!saw_ok or term != .exited or term.exited != 0) return error.CompactFailed;
     }
 
     fn respondFollowup(self: *Runtime, req: mer.Request) mer.Response {
-        _ = parse(req) catch return badJson(req);
+        const root = parse(req) catch return badJson(req);
+        const response = objectField(root, "response") orelse root;
+        const followup_id = stringField(response, "followupId") orelse return bad(req, "missing followupId");
+        const cancelled = boolField(response, "cancelled") orelse false;
+        const notes = stringField(response, "text") orelse "";
+        const selected_ids = arrayField(response, "selectedOptionIds");
+
+        var line: ?[]const u8 = null;
+        var write_failed = false;
         self.mutex.lockUncancelable(mer_runtime.io);
+        var target_child: ?*std.process.Child = null;
         var it = self.conversations.iterator();
-        while (it.next()) |entry| entry.value_ptr.*.followup = null;
+        while (it.next()) |entry| {
+            const conv = entry.value_ptr.*;
+            const f = conv.followup orelse continue;
+            if (!std.mem.eql(u8, f.followup_id, followup_id)) continue;
+
+            const rid = f.request_id;
+            if (cancelled) {
+                if (self.active_children.get(rid)) |child| {
+                    child.kill(mer_runtime.io);
+                    _ = self.active_children.remove(rid);
+                }
+                removeString(&conv.active_request_ids, rid);
+                conv.followup = null;
+                self.writeConversationSessionFileLocked(conv);
+                self.emitRequestEventLocked("request-cancelled", conv, rid);
+            } else {
+                target_child = self.active_children.get(rid);
+                line = answerLineJson(req.allocator, f, notes, selected_ids, false) catch null;
+                conv.followup = null;
+                self.writeConversationSessionFileLocked(conv);
+            }
+            break;
+        }
+        if (!cancelled and line) |answer_line| {
+            if (target_child) |child| {
+                writeAnswerLine(child, answer_line) catch {
+                    write_failed = true;
+                };
+            } else write_failed = true;
+        }
         self.bumpLocked();
         self.mutex.unlock(mer_runtime.io);
+
+        if (write_failed) return bad(req, "followup request is no longer active");
         return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
     }
 
@@ -589,23 +734,16 @@ pub const Runtime = struct {
         if (std.mem.eql(u8, name, "loop")) return self.loopCommand(req, root, args_text);
         if (std.mem.eql(u8, name, "compact")) {
             const cid = stringField(root, "conversationId") orelse return bad(req, "missing conversationId");
-            self.mutex.lockUncancelable(mer_runtime.io);
-            if (self.conversations.get(cid)) |conv| {
-                const rid = self.uniqueId("compact");
-                conv.messages.append(self.arena, .{
-                    .kind = .context_compacted,
-                    .id = rid,
-                    .request_id = rid,
-                    .text = "Conversation compaction requested. The next prompt will continue in a fresh graff session.",
-                }) catch {};
-                conv.updated_at = nowMillis();
-                self.writeConversationSessionFileLocked(conv);
-                self.bumpLocked();
-            }
-            self.mutex.unlock(mer_runtime.io);
+            self.performConversationCompaction(req.allocator, cid) catch |err| {
+                return commandText(req, "/compact", switch (err) {
+                    error.ConversationNotFound => "Conversation not found.",
+                    error.CompactFailed => "Compaction failed; history was left unchanged.",
+                    else => "Failed to compact conversation.",
+                });
+            };
             const snap = self.snapshotJson(req.allocator) catch return oom();
             var out: std.Io.Writer.Allocating = .init(req.allocator);
-            out.writer.writeAll("{\"title\":\"/compact\",\"body\":null,\"snapshot\":") catch return oom();
+            out.writer.writeAll("{\"title\":\"/compact\",\"body\":\"Conversation compacted. Future turns resume the compacted session.\",\"snapshot\":") catch return oom();
             out.writer.writeAll(snap) catch return oom();
             out.writer.writeAll(",\"savedPath\":null,\"resultKind\":\"snapshot\",\"payload\":null}") catch return oom();
             return mer.json(out.written());
@@ -968,9 +1106,17 @@ pub const Runtime = struct {
         const root = parse(req) catch return badJson(req);
         const workspace = stringField(root, "workspacePath") orelse return bad(req, "missing workspacePath");
         const rel = stringField(root, "path") orelse return bad(req, "missing path");
-        if (workspace.len == 0 or std.mem.indexOf(u8, rel, "..") != null) return bad(req, "path is outside the workspace");
+        if (workspace.len == 0 or rel.len == 0 or std.fs.path.isAbsolute(rel) or hasParentPathComponent(rel)) return bad(req, "path is outside the workspace");
         const joined = std.fs.path.join(req.allocator, &.{ workspace, rel }) catch return oom();
-        const data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, joined, req.allocator, .limited(512 * 1024)) catch return bad(req, "failed to read file");
+        defer req.allocator.free(joined);
+        var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const root_len = std.Io.Dir.cwd().realPathFile(mer_runtime.io, workspace, &root_buf) catch return bad(req, "workspace path does not exist");
+        const target_len = std.Io.Dir.cwd().realPathFile(mer_runtime.io, joined, &target_buf) catch return bad(req, "failed to read file");
+        const root_real = root_buf[0..root_len];
+        const target_real = target_buf[0..target_len];
+        if (!pathIsWithinRoot(root_real, target_real)) return bad(req, "path is outside the workspace");
+        const data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, target_real, req.allocator, .limited(512 * 1024)) catch return bad(req, "failed to read file");
         var out: std.Io.Writer.Allocating = .init(req.allocator);
         writeString(&out.writer, data) catch return oom();
         return mer.json(out.written());
@@ -1225,7 +1371,7 @@ pub const Runtime = struct {
         return mer.json(out.written());
     }
 
-    fn streamGraffTurn(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session_name: []const u8, workspace: []const u8, prompt: []const u8) !void {
+    fn streamGraffTurn(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session_name: []const u8, workspace: []const u8, prompt: []const u8, agent_id: []const u8, plan_mode: bool) !void {
         const io = mer_runtime.io;
         const bin = self.codegraffBinary();
         self.ensurePromptSettingsLoaded();
@@ -1238,7 +1384,7 @@ pub const Runtime = struct {
         try argv.append(self.allocator, try std.fmt.allocPrint(self.allocator, "PATH={s}/bin:{s}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", .{ homeDir(), homeDir() }));
         try argv.append(self.allocator, bin);
         try argv.append(self.allocator, "--json");
-        try argv.append(self.allocator, "--yolo");
+        if (!plan_mode and std.mem.eql(u8, agent_id, "forge")) try argv.append(self.allocator, "--yolo");
         if (session_name.len > 0 and std.mem.indexOfAny(u8, session_name, "/\\") == null) {
             try argv.append(self.allocator, "--resume");
             try argv.append(self.allocator, session_name);
@@ -1250,7 +1396,7 @@ pub const Runtime = struct {
             .cwd = .{ .path = workspace },
             .stdin = .pipe,
             .stdout = .pipe,
-            .stderr = .pipe,
+            .stderr = .ignore,
         });
         self.mutex.lockUncancelable(io);
         self.active_children.put(request_id, &child) catch {};
@@ -1281,6 +1427,14 @@ pub const Runtime = struct {
             try req_buf.writer.writeAll("{\"type\":\"set_effort\",\"level\":");
             try writeString(&req_buf.writer, level);
             try req_buf.writer.writeAll("}\n");
+        }
+        if (guiAgentCoreAgent(agent_id)) |core_agent| {
+            try req_buf.writer.writeAll("{\"type\":\"set_agent\",\"id\":");
+            try writeString(&req_buf.writer, core_agent);
+            try req_buf.writer.writeAll("}\n");
+        }
+        if (plan_mode) {
+            try req_buf.writer.writeAll("{\"type\":\"set_mode\",\"mode\":\"plan\"}\n");
         }
         try req_buf.writer.writeAll("{\"type\":\"user\",\"text\":");
         try writeString(&req_buf.writer, prompt);
@@ -1364,9 +1518,11 @@ pub const Runtime = struct {
                 const input = objectField(event, "input") orelse event;
                 const call_id = stringField(event, "call_id") orelse self.uniqueId("ask-user");
                 const question = stringField(input, "question") orelse "";
+                const options = self.followupOptions(input);
+                const kind = if (options.len > 0) "single" else "text";
                 const id = self.fmt("{s}-tool-{d}", .{ request_id, nowMillis() });
                 self.appendToolStart(conversation_id, request_id, id, "ask_user", call_id, question);
-                self.setFollowup(conversation_id, request_id, workspace, call_id, question);
+                self.setFollowup(conversation_id, request_id, workspace, call_id, question, kind, options);
             } else if (std.mem.eql(u8, ty, "tool_result")) {
                 current_assistant = null;
                 const name = stringField(event, "name") orelse "tool";
@@ -1385,18 +1541,9 @@ pub const Runtime = struct {
         const completed_still_active = self.requestActiveLocked(conversation_id, request_id);
         self.mutex.unlock(io);
         if (event_count == 0 and completed_still_active) {
-            var stderr_output: ?[]const u8 = null;
-            defer if (stderr_output) |buf| self.allocator.free(buf);
-            if (child.stderr) |stderr_file| {
-                var errbuf: [8 * 1024]u8 = undefined;
-                var err_reader = stderr_file.readerStreaming(io, &errbuf);
-                stderr_output = err_reader.interface.allocRemaining(self.allocator, .limited(64 * 1024)) catch null;
-            }
-            const stderr_detail = if (stderr_output) |buf| std.mem.trim(u8, buf, " \t\r\n") else "";
             const stdout_detail = if (first_unparsed_line) |line| std.mem.trim(u8, line, " \t\r\n") else "";
-            const detail = if (stderr_detail.len > 0) stderr_detail else stdout_detail;
-            if (detail.len > 0) {
-                self.appendError(conversation_id, request_id, self.fmt("graff exited before producing a response: {s}", .{detail}));
+            if (stdout_detail.len > 0) {
+                self.appendError(conversation_id, request_id, self.fmt("graff exited before producing a response: {s}", .{stdout_detail}));
             } else {
                 self.appendError(conversation_id, request_id, "graff exited before producing a response");
             }
@@ -1489,12 +1636,33 @@ pub const Runtime = struct {
         }
     }
 
-    fn setFollowup(self: *Runtime, cid: []const u8, rid: []const u8, workspace: []const u8, call_id: []const u8, question: []const u8) void {
+    fn followupOptions(self: *Runtime, input: Value) []const FollowupOption {
+        const raw_options = arrayField(input, "options") orelse return &.{};
+        var options: std.ArrayList(FollowupOption) = .empty;
+        for (raw_options.items, 0..) |item, idx| {
+            const label = switch (item) {
+                .string => |s| s,
+                .object => |obj| strFieldObj(obj, "label") orelse strFieldObj(obj, "text") orelse strFieldObj(obj, "value") orelse continue,
+                else => continue,
+            };
+            if (label.len == 0) continue;
+            const id = switch (item) {
+                .object => |obj| strFieldObj(obj, "id") orelse self.fmt("opt-{d}", .{idx + 1}),
+                else => self.fmt("opt-{d}", .{idx + 1}),
+            };
+            options.append(self.arena, .{ .id = self.dupe(id), .label = self.dupe(label) }) catch {};
+        }
+        return options.toOwnedSlice(self.arena) catch &.{};
+    }
+
+    fn setFollowup(self: *Runtime, cid: []const u8, rid: []const u8, workspace: []const u8, call_id: []const u8, question: []const u8, kind: []const u8, options: []const FollowupOption) void {
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
             if (!self.requestActiveLocked(cid, rid)) return;
-            conv.followup = .{ .followup_id = self.dupe(call_id), .workspace_path = self.dupe(workspace), .conversation_id = conv.conversation_id, .request_id = rid, .question = self.dupe(question), .call_id = self.dupe(call_id) };
+            const stored_options = self.arena.alloc(FollowupOption, options.len) catch @panic("oom");
+            for (options, 0..) |option, idx| stored_options[idx] = .{ .id = self.dupe(option.id), .label = self.dupe(option.label) };
+            conv.followup = .{ .followup_id = self.dupe(call_id), .workspace_path = self.dupe(workspace), .conversation_id = conv.conversation_id, .request_id = rid, .kind = self.dupe(kind), .question = self.dupe(question), .options = stored_options, .call_id = self.dupe(call_id) };
             self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
         }
@@ -1665,9 +1833,20 @@ pub const Runtime = struct {
         try writeString(w, f.conversation_id);
         try w.writeAll(",\"requestId\":");
         try writeString(w, f.request_id);
-        try w.writeAll(",\"kind\":\"text\",\"question\":");
+        try w.writeAll(",\"kind\":");
+        try writeString(w, f.kind);
+        try w.writeAll(",\"question\":");
         try writeString(w, f.question);
-        try w.writeAll(",\"options\":null}");
+        try w.writeAll(",\"options\":[");
+        for (f.options, 0..) |option, idx| {
+            if (idx > 0) try w.writeByte(',');
+            try w.writeAll("{\"id\":");
+            try writeString(w, option.id);
+            try w.writeAll(",\"label\":");
+            try writeString(w, option.label);
+            try w.writeByte('}');
+        }
+        try w.writeAll("]}");
     }
 
     fn runtimeStatusJson(self: *Runtime, alloc: std.mem.Allocator, path: ?[]const u8) !mer.Response {
@@ -2125,13 +2304,10 @@ pub const Runtime = struct {
 
     fn ensurePromptSettingsLoaded(self: *Runtime) void {
         self.mutex.lockUncancelable(mer_runtime.io);
-        if (self.settings_loaded) {
-            self.mutex.unlock(mer_runtime.io);
-            return;
-        }
-        self.settings_loaded = true;
-        self.mutex.unlock(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        if (self.settings_loaded) return;
         self.loadPromptSettings();
+        self.settings_loaded = true;
     }
 
     fn savePromptSettingsLocked(self: *Runtime) void {
@@ -2171,8 +2347,8 @@ pub const Runtime = struct {
     }
 };
 
-fn graffTurnThread(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session_name: []const u8, workspace: []const u8, prompt: []const u8) void {
-    self.streamGraffTurn(conversation_id, request_id, session_name, workspace, prompt) catch |err| {
+fn graffTurnThread(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session_name: []const u8, workspace: []const u8, prompt: []const u8, agent_id: []const u8, plan_mode: bool) void {
+    self.streamGraffTurn(conversation_id, request_id, session_name, workspace, prompt, agent_id, plan_mode) catch |err| {
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.conversations.get(conversation_id)) |conv| {
             if (self.requestActiveLocked(conversation_id, request_id)) {
@@ -2251,6 +2427,21 @@ fn arrayField(v: Value, key: []const u8) ?std.json.Array {
     return if (item == .array) item.array else null;
 }
 
+fn hasParentPathComponent(path: []const u8) bool {
+    var parts = std.mem.tokenizeAny(u8, path, "/\\");
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, part, "..")) return true;
+    }
+    return false;
+}
+
+fn pathIsWithinRoot(root: []const u8, target: []const u8) bool {
+    if (std.mem.eql(u8, root, target)) return true;
+    if (!std.mem.startsWith(u8, target, root)) return false;
+    if (root.len == 0 or target.len <= root.len) return false;
+    return target[root.len] == '/';
+}
+
 fn stripDataUrlBase64(value: []const u8) []const u8 {
     if (!std.mem.startsWith(u8, value, "data:")) return value;
     const comma = std.mem.indexOfScalar(u8, value, ',') orelse return value;
@@ -2320,6 +2511,53 @@ fn writeStringArray(w: *std.Io.Writer, values: []const []const u8) !void {
         try writeString(w, value);
     }
     try w.writeByte(']');
+}
+
+fn selectedOptionLabel(options: []const FollowupOption, id: []const u8) ?[]const u8 {
+    for (options) |option| {
+        if (std.mem.eql(u8, option.id, id)) return option.label;
+    }
+    return null;
+}
+
+fn answerText(alloc: std.mem.Allocator, followup: Followup, notes_raw: []const u8, selected_ids: ?std.json.Array) ![]const u8 {
+    const notes = std.mem.trim(u8, notes_raw, " \t\r\n");
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    if (selected_ids) |ids| {
+        var wrote_option = false;
+        for (ids.items) |item| {
+            if (item != .string) continue;
+            const label = selectedOptionLabel(followup.options, item.string) orelse continue;
+            if (wrote_option) try out.writer.writeByte('\n');
+            try out.writer.writeAll(label);
+            wrote_option = true;
+        }
+        if (wrote_option and notes.len > 0) try out.writer.writeAll("\n\nNotes: ");
+    }
+    if (notes.len > 0) try out.writer.writeAll(notes);
+    return out.toOwnedSlice();
+}
+
+fn answerLineJson(alloc: std.mem.Allocator, followup: Followup, notes: []const u8, selected_ids: ?std.json.Array, cancelled: bool) ![]const u8 {
+    const text = if (cancelled) "" else try answerText(alloc, followup, notes, selected_ids);
+    defer if (!cancelled) alloc.free(text);
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try out.writer.writeAll("{\"type\":\"answer\",\"text\":");
+    try writeString(&out.writer, text);
+    try out.writer.writeAll(",\"cancelled\":");
+    try out.writer.writeAll(if (cancelled) "true" else "false");
+    try out.writer.writeAll(",\"call_id\":");
+    try writeString(&out.writer, followup.call_id orelse followup.followup_id);
+    try out.writer.writeByte('}');
+    return out.toOwnedSlice();
+}
+
+fn writeAnswerLine(child: *std.process.Child, line: []const u8) !void {
+    var wbuf: [4096]u8 = undefined;
+    var cw = child.stdin.?.writerStreaming(mer_runtime.io, &wbuf);
+    try cw.interface.writeAll(line);
+    try cw.interface.writeByte('\n');
+    try cw.interface.flush();
 }
 
 const PromptSelection = struct {
@@ -2541,6 +2779,15 @@ fn sanitizeTerminalOutput(alloc: std.mem.Allocator, bytes: []const u8) ![]const 
         }
     }
     return out.toOwnedSlice(alloc);
+}
+
+fn guiAgentReadOnly(agent_id: []const u8) bool {
+    return std.mem.eql(u8, agent_id, "muse") or std.mem.eql(u8, agent_id, "sage");
+}
+
+fn guiAgentCoreAgent(agent_id: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, agent_id, "muse") or std.mem.eql(u8, agent_id, "sage")) return "researcher";
+    return null;
 }
 
 fn validReasoningEffort(level: []const u8) bool {
@@ -3432,4 +3679,57 @@ test "conversationSessionJsonLocked writes CLI-readable session JSON" {
     try std.testing.expectEqualStrings("persist me", stringField(messages.items[0], "content").?);
     try std.testing.expectEqualStrings("assistant", stringField(messages.items[1], "role").?);
     try std.testing.expectEqualStrings("persisted", stringField(messages.items[1], "content").?);
+}
+
+test "writeFollowup serializes options and kind" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const followup = Followup{
+        .followup_id = "call-1",
+        .workspace_path = "/tmp/workspace",
+        .conversation_id = "chat-1",
+        .request_id = "request-1",
+        .kind = "single",
+        .question = "Choose one",
+        .options = &.{
+            .{ .id = "opt-1", .label = "First" },
+            .{ .id = "opt-2", .label = "Second" },
+        },
+        .call_id = "call-1",
+    };
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try rt.writeFollowup(&out.writer, followup);
+
+    try std.testing.expectEqualStrings(
+        "{\"followupId\":\"call-1\",\"workspacePath\":\"/tmp/workspace\",\"conversationId\":\"chat-1\",\"requestId\":\"request-1\",\"kind\":\"single\",\"question\":\"Choose one\",\"options\":[{\"id\":\"opt-1\",\"label\":\"First\"},{\"id\":\"opt-2\",\"label\":\"Second\"}]}",
+        out.written(),
+    );
+}
+
+test "answerLineJson combines selected option labels and notes" {
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const selected = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"selectedOptionIds\":[\"opt-2\"]}", .{ .allocate = .alloc_always });
+    const followup = Followup{
+        .followup_id = "call-1",
+        .workspace_path = "/tmp/workspace",
+        .conversation_id = "chat-1",
+        .request_id = "request-1",
+        .kind = "single",
+        .question = "Choose one",
+        .options = &.{
+            .{ .id = "opt-1", .label = "First" },
+            .{ .id = "opt-2", .label = "Second" },
+        },
+        .call_id = "call-1",
+    };
+    const line = try answerLineJson(std.testing.allocator, followup, "because it is safer", arrayField(selected, "selectedOptionIds"), false);
+    defer std.testing.allocator.free(line);
+
+    try std.testing.expectEqualStrings(
+        "{\"type\":\"answer\",\"text\":\"Second\\n\\nNotes: because it is safer\",\"cancelled\":false,\"call_id\":\"call-1\"}",
+        line,
+    );
 }
