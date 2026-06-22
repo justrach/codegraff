@@ -38,14 +38,24 @@ pub fn build(b: *std.Build) void {
     });
     native_mod.addImport("manifest", manifest_mod);
 
+    // Local PTY module: vendored/adapted openpty + Codegraff-owned shell process lifecycle.
+    const pty_mod = b.createModule(.{
+        .root_source_file = b.path("src-backend/pty/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     // Backend runtime module (the port of runtime/simple.rs).
     const backend_mod = b.createModule(.{
         .root_source_file = b.path("src-backend/runtime.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     backend_mod.addImport("mer", mer_mod);
     backend_mod.addImport("runtime", runtime_mod);
+    backend_mod.addImport("pty", pty_mod);
     native_mod.addImport("backend", backend_mod);
 
     // routes — the app's route table. We have api/ backend routes only (no SSR

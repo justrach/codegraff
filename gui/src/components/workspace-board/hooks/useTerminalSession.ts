@@ -27,6 +27,22 @@ import {
   waitForStableTerminalSize,
 } from "../utils/terminal";
 
+function normalizeTerminalOutput(data: string): string {
+  // Terminal emulators treat LF as "move down" and CR as "return to column 0".
+  // Shell command output usually contains bare LF, so convert only those bare
+  // newlines to CRLF. Without this, `ls` renders diagonally/stair-stepped.
+  let normalized = "";
+  for (let index = 0; index < data.length; index += 1) {
+    const char = data[index];
+    if (char === "\n" && data[index - 1] !== "\r") {
+      normalized += "\r\n";
+    } else {
+      normalized += char;
+    }
+  }
+  return normalized;
+}
+
 export function useTerminalSession(
   params: TerminalPaneParams,
   containerRef: RefObject<HTMLDivElement | null>,
@@ -82,6 +98,7 @@ export function useTerminalSession(
     let resizeObserver: ResizeObserver | null = null;
     let resizeFrameId: number | null = null;
     let syncedBackendSize: TerminalGridSize | null = null;
+    let didOpenSession = false;
 
     const syncTerminalSize = async (
       nextSize: TerminalGridSize,
@@ -167,7 +184,7 @@ export function useTerminalSession(
 
       cleanupListeners = await Promise.all([
         desktopClient.listenTerminalOutput(terminalId, (event) => {
-          terminal?.write(event.data);
+          terminal?.write(normalizeTerminalOutput(event.data));
         }),
         desktopClient.listenTerminalExit(terminalId, (event) => {
           const suffix =
@@ -204,6 +221,7 @@ export function useTerminalSession(
         cols: initialSize.cols,
         rows: initialSize.rows,
       });
+      didOpenSession = true;
 
       if (disposed) {
         cleanupListeners.forEach((cleanup) => {
@@ -266,7 +284,9 @@ export function useTerminalSession(
         cleanup();
       }
 
-      void desktopClient.closeTerminal({ terminalId });
+      if (didOpenSession) {
+        void desktopClient.closeTerminal({ terminalId });
+      }
       terminal?.destroy();
       terminalRef.current = null;
     };
