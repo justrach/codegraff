@@ -1028,12 +1028,6 @@ pub const Runtime = struct {
         const model = self.selectedModelLocked();
         const provider = self.selectedProviderLocked();
         const effort = self.selectedEffortFor(provider, model);
-        const session_name = blk: {
-            self.mutex.lockUncancelable(mer_runtime.io);
-            defer self.mutex.unlock(mer_runtime.io);
-            if (self.conversations.get(conversation_id)) |conv| break :blk conv.session_name;
-            break :blk conversation_id;
-        };
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.append(self.allocator, "/usr/bin/env");
         try argv.append(self.allocator, try std.fmt.allocPrint(self.allocator, "HOME={s}", .{homeDir()}));
@@ -1041,8 +1035,6 @@ pub const Runtime = struct {
         try argv.append(self.allocator, bin);
         try argv.append(self.allocator, "--json");
         try argv.append(self.allocator, "--yolo");
-        try argv.append(self.allocator, "--resume");
-        try argv.append(self.allocator, session_name);
         defer argv.deinit(self.allocator);
 
         var child = try std.process.spawn(io, .{
@@ -1060,10 +1052,8 @@ pub const Runtime = struct {
         defer req_buf.deinit();
         if (provider) |p| if (model) |m| {
             if (p.len > 0 and m.len > 0 and !std.mem.eql(u8, m, "default")) {
-                try req_buf.writer.writeAll("{\"type\":\"set_model\",\"provider\":");
-                try writeString(&req_buf.writer, p);
-                try req_buf.writer.writeAll(",\"model\":");
-                try writeString(&req_buf.writer, m);
+                try req_buf.writer.writeAll("{\"type\":\"set_model\",\"name\":");
+                try writeString(&req_buf.writer, self.fmt("{s}/{s}", .{ p, m }));
                 try req_buf.writer.writeAll("}\n");
             }
         };
