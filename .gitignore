@@ -9,7 +9,7 @@ node_modules/
 harness.trace.jsonl
 harness.trajectory.jsonl
 .harness/
-.graff/worktrees/
+.graff/
 .claude/scheduled_tasks.lock
 *.session.json
 .mcp.json
@@ -28,6 +28,10 @@ __pycache__/
 
 # local agent/IDE config (not project source)
 .devin/
+
+# local scratch artifacts (plans/handoffs, visual-QA screenshots)
+plans/
+shots/
 
 # release artifacts
 dist/
