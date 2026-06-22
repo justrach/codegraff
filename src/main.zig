@@ -1147,6 +1147,24 @@ fn noSymlinkEscape(io: Io, path: []const u8) bool {
 
 const trace_path = "harness.trace.jsonl";
 
+/// Serialize one record as a single JSON line into an in-memory buffer, then
+/// write the whole line to `w` in one shot. Building the line in memory first
+/// means a partial serialization failure writes *nothing* — the shared buffered
+/// file writer never sees a half-record, and the trailing newline is always
+/// attached to its record. Without this, a write that errored mid-record left a
+/// truncated line plus leftover buffer bytes that the next record concatenated
+/// onto, corrupting the JSONL (issue #86: lines like `{"text":"You ar{"kind":…`).
+/// Flushing per line keeps the buffer empty between records. Best-effort.
+fn writeJsonLine(gpa: Allocator, w: *Io.Writer, rec: anytype) void {
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    s.write(rec) catch return;
+    aw.writer.writeByte('\n') catch return;
+    w.writeAll(aw.writer.buffered()) catch return;
+    w.flush() catch return;
+}
+
 /// Session event trace: one JSON object per line, written to trace_path in
 /// the cwd (truncated at startup, so it always covers the current session).
 /// Thread-safe — agents on pool threads share it through the mutex. The
@@ -1155,6 +1173,7 @@ const trace_path = "harness.trace.jsonl";
 const Tracer = struct {
     mutex: Io.Mutex = .init,
     io: Io,
+    gpa: Allocator,
     out: ?*Io.Writer,
     start: Io.Timestamp,
     enabled: bool = true,
@@ -1203,10 +1222,7 @@ const Tracer = struct {
         defer self.mutex.unlock(self.io);
         const w = self.out orelse return;
         if (!self.enabled) return;
-        var s: std.json.Stringify = .{ .writer = w };
-        s.write(event) catch return;
-        w.writeByte('\n') catch return;
-        w.flush() catch return;
+        writeJsonLine(self.gpa, w, event);
     }
 
     fn toggle(self: *Tracer) bool {
@@ -1289,10 +1305,7 @@ const Trajectory = struct {
 
     fn writeLocked(self: *Trajectory, rec: anytype) void {
         const w = self.out orelse return;
-        var s: std.json.Stringify = .{ .writer = w };
-        s.write(rec) catch return;
-        w.writeByte('\n') catch return;
-        w.flush() catch return;
+        writeJsonLine(self.gpa, w, rec);
     }
 
     fn deinit(self: *Trajectory) void {
@@ -4869,6 +4882,7 @@ pub fn main(init: std.process.Init) !void {
     var trace_writer = if (trace_file) |f| f.writer(io, &trace_buf) else undefined;
     var tracer: Tracer = .{
         .io = io,
+        .gpa = gpa,
         .out = if (trace_file != null) &trace_writer.interface else null,
         .start = Io.Timestamp.now(io, .awake),
     };
@@ -5173,10 +5187,7 @@ pub fn main(init: std.process.Init) !void {
                 // thing — summarize up front instead.
                 if (est >= root.provider.compactAt()) {
                     root.last_context_tokens = est;
-                    _ = root.compact() catch |err| switch (err) {
-                        error.ApiError => {},
-                        else => |e| root.say("[resume compaction skipped: {t}]\n", .{e}) catch {},
-                    };
+                    root.compactOrRecover(true);
                 }
             }
         } else |_| {}
@@ -5515,6 +5526,16 @@ pub fn main(init: std.process.Init) !void {
                 .ok = turn_ok,
                 .context_tokens = root.last_context_tokens,
             });
+            // Preserve the failure reason in the archive: the turn node only
+            // records ok:false, so an adjacent error record keeps the
+            // user-visible detail (network give-up, api error) joinable to it (#86).
+            if (!turn_ok) {
+                const fail_detail: []const u8 = if (turn_result) |_| "" else |e| switch (e) {
+                    error.ApiError => root.last_api_error orelse "api error",
+                    else => @errorName(e),
+                };
+                tj.node(.{ .kind = "turn_error", .parent = turn_id, .t = tj.elapsedMs(), .detail = fail_detail });
+            }
             if (g_telem) |t| t.runEvent(&fp, !std.mem.eql(u8, &fp, &prev_prompt_fp), turn_ok, turn_ms, turn_tools);
             prev_turn_id = turn_id;
             prev_prompt_fp = fp;
@@ -5547,6 +5568,10 @@ pub fn main(init: std.process.Init) !void {
                         root.emit(.{ .type = "turn", .text = partial, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = false, .metadata_complete = root.last_context_tokens > 0 });
                     }
                 }
+                // A turn can fail because the context window overflowed; if we're
+                // over the compaction threshold, compact (or emergency-trim) now
+                // so the next turn isn't doomed to fail at the same size (#88).
+                if (root.last_context_tokens >= root.provider.compactAt()) root.compactOrRecover(true);
                 saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
@@ -5592,10 +5617,10 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (root.last_context_tokens >= root.provider.compactAt()) {
-            _ = root.compact() catch |err| switch (err) {
-                error.ApiError => {},
-                else => |e| root.say("[compaction skipped: {t}]\n", .{e}) catch {},
-            };
+            // Trim on failure only when we're genuinely against the window — at
+            // 80–95% a transient compaction failure can recover next turn.
+            const near_cap = root.provider.context > 0 and root.last_context_tokens * 100 >= root.provider.context * 95;
+            root.compactOrRecover(near_cap);
         }
         // opencode-style continuous autosave: persist after every turn so a
         // crash or quit never loses the thread — last.session.json, the same
@@ -8781,7 +8806,14 @@ const Agent = struct {
                                 if (self.tracer) |tr| tr.note("retry", if (g_5xx_body_len > 0) g_5xx_body_buf[0..g_5xx_body_len] else what);
                                 self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                             } else {
-                                try self.say("[network error: {t} — retrying ({d}/{d})]\n", .{ err, attempt + 1, max_attempts });
+                                // Transport flake (HttpConnectionClosing, a reset,
+                                // a truncated TLS read): back off before a fresh
+                                // connection. Rapid-fire retries against a
+                                // just-closed keep-alive almost always re-fail
+                                // (#86). 250ms·2ⁿ, capped at 2s; Esc cancels.
+                                const delay_ms = @min(@as(u64, 250) << @intCast(@min(attempt, 3)), 2000);
+                                try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
+                                self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                             }
                             continue;
                         }
@@ -8791,8 +8823,11 @@ const Agent = struct {
                             try self.say("[request failed: {t} — giving up this turn]\n", .{err});
                         }
                         // Network give-up is its own error kind: the ApiError
-                        // handler's last_api_error is an API envelope, stale
-                        // or null on a pure transport failure.
+                        // handler's last_api_error would otherwise be an API
+                        // envelope, stale or null on a pure transport failure —
+                        // record the real reason so the failed turn's --json error
+                        // event and trajectory node preserve it (#86).
+                        self.last_api_error = std.fmt.allocPrint(self.arena, "network error: {s} (gave up after {d} attempts)", .{ @errorName(err), max_attempts }) catch null;
                         if (g_telem) |t| t.errorEvent("net", @errorName(err));
                         if (self.tracer) |tr| tr.api(self.label, self.provider.model, 0, body.len, 0, 0, 0, true);
                         return error.ApiError;
@@ -9617,6 +9652,86 @@ const Agent = struct {
         self.last_context_tokens = 0;
         if (!json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
         return summary.len;
+    }
+
+    fn cleanUserTurn(m: Value) bool {
+        if (m != .object) return false;
+        const role = m.object.get("role") orelse return false;
+        if (role != .string or !std.mem.eql(u8, role.string, "user")) return false;
+        const content = m.object.get("content") orelse return true;
+        switch (content) {
+            .string => return true, // a plain-text user turn
+            .array => |arr| {
+                // An anthropic user message that only carries tool_result blocks
+                // is the response half of a tool call — it can't begin a
+                // conversation, so it is not a safe trim boundary.
+                for (arr.items) |blk| {
+                    if (blk != .object) continue;
+                    const t = blk.object.get("type") orelse continue;
+                    if (t == .string and std.mem.eql(u8, t.string, "tool_result")) return false;
+                }
+                return true;
+            },
+            else => return true,
+        }
+    }
+
+    /// Index to cut history at for an emergency trim: the first clean user turn
+    /// at or after the midpoint, so messages[cut..] is always a valid
+    /// conversation start (never an orphaned tool_result). null when there is no
+    /// safe cut — too short, or only tool_result user messages remain.
+    fn emergencyCutIndex(items: []const Value) ?usize {
+        if (items.len < 4) return null;
+        var i: usize = items.len / 2;
+        while (i < items.len) : (i += 1) {
+            if (cleanUserTurn(items[i])) return i;
+        }
+        return null;
+    }
+
+    /// Last-resort context recovery when compact() itself can't run — typically
+    /// because the history already overflows the window, so the summarization
+    /// request overflows too and fails. Drops the oldest messages at a safe
+    /// boundary; returns the count dropped (0 if none). The next turn re-measures
+    /// context from the provider usage.
+    fn emergencyTrim(self: *Agent) usize {
+        const cut = emergencyCutIndex(self.messages.items) orelse return 0;
+        var fresh = std.json.Array.init(self.arena);
+        for (self.messages.items[cut..]) |m| fresh.append(m) catch return 0;
+        self.messages = fresh;
+        self.last_context_tokens = 0;
+        return cut;
+    }
+
+    /// Auto-compaction with recovery. compact() summarizes the whole history in
+    /// one request; once context overflows the window that request overflows too
+    /// and fails — historically swallowed silently, wedging the session so every
+    /// later turn failed at the same huge token count (issue #88). Surface the
+    /// failure and, when `trim_on_fail`, emergency-trim so the next turn has
+    /// room. Best-effort; never throws into the REPL loop.
+    fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
+        if (self.compact()) |_| return else |err| {
+            switch (err) {
+                error.Interrupted => return, // user hit Esc mid-compaction
+                error.EmptySummary => {}, // compact() already explained it
+                else => {
+                    if (json_mode)
+                        self.emit(.{ .type = "error", .message = std.fmt.allocPrint(self.arena, "auto-compaction failed: {s}", .{@errorName(err)}) catch "auto-compaction failed" })
+                    else
+                        self.say("[auto-compaction failed: {t}]\n", .{err}) catch {};
+                },
+            }
+            if (!trim_on_fail) return;
+            const dropped = self.emergencyTrim();
+            if (dropped > 0) {
+                if (json_mode)
+                    self.emit(.{ .type = "compact", .ok = true, .trimmed = dropped })
+                else
+                    self.say("[context emergency-trimmed: dropped {d} old message(s) so the session can continue]\n", .{dropped}) catch {};
+            } else if (!json_mode) {
+                self.say("[warning: context too large to compact and could not be trimmed safely]\n", .{}) catch {};
+            }
+        }
     }
 
     fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: bool, stream_usage: bool) ![]u8 {
@@ -13955,6 +14070,60 @@ test "Provider.compactAt: auto-compacts at 80% of the context window (long-horiz
     try std.testing.expectEqual(@as(u64, 160_000), small.compactAt());
     const zero = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 0 };
     try std.testing.expectEqual(@as(u64, 0), zero.compactAt());
+}
+
+test "writeJsonLine: one complete newline-terminated JSON record per call" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    writeJsonLine(std.testing.allocator, &aw.writer, .{ .kind = "turn", .id = @as(u64, 7), .ok = true });
+    writeJsonLine(std.testing.allocator, &aw.writer, .{ .kind = "prompt", .text = "hi" });
+    const out = aw.writer.buffered();
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "\n"));
+    var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out, "\n"), '\n');
+    while (it.next()) |line| {
+        var p = try std.json.parseFromSlice(Value, std.testing.allocator, line, .{});
+        defer p.deinit();
+        try std.testing.expect(p.value == .object); // each line parses as valid JSON
+    }
+}
+
+test "Agent.cleanUserTurn: plain user text yes; assistant/tool_result no" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expect(Agent.cleanUserTurn(try textMessage(a, "user", "hello")));
+    try std.testing.expect(!Agent.cleanUserTurn(try textMessage(a, "assistant", "hi")));
+    // an anthropic tool_result-only user message is NOT a clean conversation start
+    const tr = try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}", .{});
+    try std.testing.expect(!Agent.cleanUserTurn(tr));
+}
+
+test "Agent.emergencyCutIndex: cuts at a clean user turn at/after the midpoint" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var items = std.json.Array.init(a);
+    const roles = [_][]const u8{ "user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant" };
+    for (roles) |r| try items.append(try textMessage(a, r, "x"));
+    try std.testing.expectEqual(@as(?usize, 4), Agent.emergencyCutIndex(items.items)); // midpoint 4 is a user turn
+    try std.testing.expectEqual(@as(?usize, null), Agent.emergencyCutIndex(items.items[0..3])); // too short to trim
+}
+
+test "Agent.emergencyCutIndex: skips a tool_result user message at the midpoint" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var items = std.json.Array.init(a);
+    try items.append(try textMessage(a, "user", "x")); // 0
+    try items.append(try textMessage(a, "assistant", "x")); // 1
+    try items.append(try textMessage(a, "user", "x")); // 2
+    try items.append(try textMessage(a, "assistant", "x")); // 3
+    // 4: an anthropic tool_result-only user message (not a valid conversation start)
+    try items.append(try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"x\"}]}", .{})); // 4 (skip)
+    try items.append(try textMessage(a, "assistant", "x")); // 5
+    try items.append(try textMessage(a, "user", "x")); // 6 (first clean user >= midpoint)
+    try items.append(try textMessage(a, "assistant", "x")); // 7
+    try std.testing.expectEqual(@as(?usize, 6), Agent.emergencyCutIndex(items.items));
 }
 
 test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
