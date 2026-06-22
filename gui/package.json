@@ -25,6 +25,7 @@
     "@tauri-apps/plugin-process": "^2.3.0",
     "@tauri-apps/plugin-updater": "^2.9.0",
     "@wterm/dom": "^0.1.9",
+    "@zane-chen/agents-are-thinking": "^0.1.6",
     "border-beam": "^1.0.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -56,9 +57,12 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "rollup": "^4.62.2",
     "tailwindcss": "^4.2.2",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.0",
-    "vite": "^8.0.4"
+    "vite": "^8.0.4",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.6.0"
   }
 }
