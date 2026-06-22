@@ -6,7 +6,7 @@
 
 [package]
 name = "codegraff-gui"
-version = "0.0.164"
+version = "0.0.165"
 description = "Desktop coding agent interface powered by Codegraff"
 authors = ["Codegraff contributors"]
 license = "Apache-2.0"
