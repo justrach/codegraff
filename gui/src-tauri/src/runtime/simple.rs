@@ -60,6 +60,8 @@ struct RuntimeState {
     /// forwarded live to running sessions. None effort = the binary default.
     selected_effort: Option<String>,
     fast_enabled: bool,
+    /// Per-user model usage counters used to rank the model picker.
+    model_usage: ModelUsageByProvider,
     /// Last successful `graff --schema` model list. Refreshed when the prompt
     /// settings endpoint is read so the GUI picks up newly shipped models
     /// without an app restart.
@@ -121,6 +123,7 @@ impl RuntimeManager {
                 selected_model: persisted_prompt.selected_model,
                 selected_effort: persisted_prompt.selected_effort,
                 fast_enabled: persisted_prompt.fast_enabled,
+                model_usage: persisted_prompt.model_usage,
                 ..RuntimeState::default()
             })),
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -164,13 +167,14 @@ impl RuntimeManager {
     pub async fn get_prompt_settings(&self, _: Option<String>) -> Result<PromptSettingsDto> {
         let catalog = self.refresh_model_catalog().await;
         let configured_provider_ids = configured_provider_ids().await;
-        let (selected_provider, selected_model, selected_effort, fast_enabled) = {
+        let (selected_provider, selected_model, selected_effort, fast_enabled, model_usage) = {
             let state = self.state.lock().await;
             (
                 state.selected_provider.clone(),
                 state.selected_model.clone(),
                 state.selected_effort.clone(),
                 state.fast_enabled,
+                state.model_usage.clone(),
             )
         };
 
@@ -181,10 +185,11 @@ impl RuntimeManager {
             selected_model.as_deref(),
             selected_effort,
             fast_enabled,
+            &model_usage,
         ))
     }
 
-    async fn selected_model_arg(&self) -> Option<String> {
+    async fn selected_model_pair(&self) -> Option<(String, String)> {
         let catalog = self.ensure_model_catalog().await;
         let configured_provider_ids = configured_provider_ids().await;
         let (selected_provider, selected_model) = {
@@ -200,7 +205,12 @@ impl RuntimeManager {
             selected_provider.as_deref(),
             selected_model.as_deref(),
         )
-        .map(|(provider, model)| prompt_model_arg(&provider, &model))
+    }
+
+    async fn selected_model_arg(&self) -> Option<String> {
+        self.selected_model_pair()
+            .await
+            .map(|(provider, model)| prompt_model_arg(&provider, &model))
     }
 
     /// Generates a short chat title with the active model (a one-shot graff run)
@@ -254,9 +264,18 @@ impl RuntimeManager {
                 selected_model: state.selected_model.clone(),
                 selected_effort: state.selected_effort.clone(),
                 fast_enabled: state.fast_enabled,
+                model_usage: state.model_usage.clone(),
             }
         };
         save_prompt_settings(&settings);
+    }
+
+    async fn record_model_usage(&self, provider_id: &str, model_id: &str) {
+        {
+            let mut state = self.state.lock().await;
+            increment_model_usage(&mut state.model_usage, provider_id, model_id, now_millis());
+        }
+        self.persist_prompt_settings().await;
     }
 
     /// Persists the model selection and applies it to the live session when possible.
@@ -440,6 +459,7 @@ impl RuntimeManager {
         Ok(vec![
             command("help", "Show available commands.", false),
             command("agent", "Show active agent.", false),
+            command("model", "Open the model picker.", false),
             command("goal", "Set/show the current objective.", true),
             command("loop", "Run an autonomous plan→act→verify pass.", true),
             bash_command(),
@@ -459,7 +479,10 @@ impl RuntimeManager {
         let request_id = format!("request-{}", Uuid::new_v4().simple());
         let plan_mode = input.agent_id.as_deref() == Some("muse");
         let loop_mode = input.agent_id.as_deref() == Some("loop");
-        let title_model_arg = self.selected_model_arg().await;
+        let usage_model_pair = self.selected_model_pair().await;
+        let title_model_arg = usage_model_pair
+            .as_ref()
+            .map(|(provider, model)| prompt_model_arg(provider, model));
         let is_first_turn;
         let engine_prompt;
         let should_queue;
@@ -516,7 +539,10 @@ impl RuntimeManager {
             // after a planning-mode turn completes (gate keys off "muse").
             conversation.request_agent_ids.insert(
                 request_id.clone(),
-                input.agent_id.clone().unwrap_or_else(|| "forge".to_string()),
+                input
+                    .agent_id
+                    .clone()
+                    .unwrap_or_else(|| "forge".to_string()),
             );
             should_queue = !conversation.active_request_ids.is_empty();
             if should_queue {
@@ -528,6 +554,10 @@ impl RuntimeManager {
             } else {
                 conversation.active_request_ids.push(request_id.clone());
             }
+        }
+
+        if let Some((provider_id, model_id)) = usage_model_pair.as_ref() {
+            self.record_model_usage(provider_id, model_id).await;
         }
 
         // Managed chats are auto-created `chat_<id>` folders; once a chat has a
@@ -2272,6 +2302,16 @@ struct PersistedConversation {
     updated_at: i64,
 }
 
+type ModelUsageByProvider = HashMap<String, HashMap<String, PersistedModelUsage>>;
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct PersistedModelUsage {
+    #[serde(default)]
+    prompt_count: u64,
+    #[serde(default)]
+    last_used_at: i64,
+}
+
 /// Path to the transcript store (`~/.codegraff-gui/conversations.json`).
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct PersistedPromptSettings {
@@ -2283,6 +2323,8 @@ struct PersistedPromptSettings {
     selected_effort: Option<String>,
     #[serde(default)]
     fast_enabled: bool,
+    #[serde(default)]
+    model_usage: ModelUsageByProvider,
 }
 
 /// Path to the persisted prompt selection (`~/.codegraff-gui/prompt-settings.json`).
@@ -2489,7 +2531,9 @@ fn login_shell_env() -> &'static std::collections::HashMap<String, String> {
         std::thread::spawn(move || {
             // -il = interactive login shell: sources the login profile AND
             // .zshrc/.bashrc, where most users export their *_API_KEY.
-            let out = std::process::Command::new(&shell).args(["-ilc", "env"]).output();
+            let out = std::process::Command::new(&shell)
+                .args(["-ilc", "env"])
+                .output();
             let _ = tx.send(out);
         });
         let mut map = std::collections::HashMap::new();
@@ -2511,7 +2555,6 @@ fn bash_command() -> CommandDescriptorDto {
         argument_hint: Some("<command>".into()),
         ..command("bash", "Run a shell command in the workspace.", true)
     }
-
 }
 
 /// Spawns a persistent `graff --json` child for a conversation. `--yolo` skips
@@ -2798,6 +2841,65 @@ fn selected_pair_exists(
         .any(|candidate| candidate.provider == provider && candidate.name == model)
 }
 
+fn increment_model_usage(
+    usage: &mut ModelUsageByProvider,
+    provider_id: &str,
+    model_id: &str,
+    now: i64,
+) {
+    let entry = usage
+        .entry(provider_id.to_string())
+        .or_default()
+        .entry(model_id.to_string())
+        .or_default();
+    entry.prompt_count = entry.prompt_count.saturating_add(1);
+    entry.last_used_at = now;
+}
+
+fn model_usage_for<'a>(
+    usage: &'a ModelUsageByProvider,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<&'a PersistedModelUsage> {
+    usage
+        .get(provider_id)
+        .and_then(|models| models.get(model_id))
+}
+
+fn model_sort_name(model: &ModelOption) -> String {
+    format!(
+        "{}\u{0}{}\u{0}{}",
+        model.name.to_lowercase(),
+        model
+            .provider_name
+            .as_deref()
+            .unwrap_or(&model.provider)
+            .to_lowercase(),
+        model.provider.to_lowercase()
+    )
+}
+
+fn usage_ranked_catalog_models<'a>(
+    catalog: &'a [ModelOption],
+    configured_provider_ids: &HashSet<String>,
+    model_usage: &ModelUsageByProvider,
+) -> Vec<&'a ModelOption> {
+    let mut models = filtered_catalog_models(catalog, configured_provider_ids);
+    models.sort_by(|left, right| {
+        let left_count = model_usage_for(model_usage, &left.provider, &left.name)
+            .map(|usage| usage.prompt_count)
+            .unwrap_or(0);
+        let right_count = model_usage_for(model_usage, &right.provider, &right.name)
+            .map(|usage| usage.prompt_count)
+            .unwrap_or(0);
+
+        right_count
+            .cmp(&left_count)
+            .then_with(|| model_sort_name(left).cmp(&model_sort_name(right)))
+    });
+    models
+}
+
 fn build_prompt_settings_from_catalog(
     catalog: &[ModelOption],
     configured_provider_ids: &HashSet<String>,
@@ -2805,6 +2907,7 @@ fn build_prompt_settings_from_catalog(
     selected_model: Option<&str>,
     selected_effort: Option<String>,
     fast_enabled: bool,
+    model_usage: &ModelUsageByProvider,
 ) -> PromptSettingsDto {
     if catalog.is_empty() {
         if configured_provider_ids.contains("codegraff") {
@@ -2834,7 +2937,8 @@ fn build_prompt_settings_from_catalog(
         };
     }
 
-    let available_catalog = filtered_catalog_models(catalog, configured_provider_ids);
+    let available_catalog =
+        usage_ranked_catalog_models(catalog, configured_provider_ids, model_usage);
     let available_models = available_catalog
         .iter()
         .map(|model| prompt_model_option(model))
@@ -3803,13 +3907,19 @@ mod tests {
     #[cfg(unix)]
     fn format_command_output_empty_is_no_output() {
         // stdout+stderr empty, exit 0 -> the "(no output)" placeholder.
-        assert_eq!(format_command_output(&mk_output(b"", b"", 0)), "(no output)");
+        assert_eq!(
+            format_command_output(&mk_output(b"", b"", 0)),
+            "(no output)"
+        );
     }
 
     #[test]
     #[cfg(unix)]
     fn format_command_output_stdout_only_unchanged() {
-        assert_eq!(format_command_output(&mk_output(b"hello\n", b"", 0)), "hello\n");
+        assert_eq!(
+            format_command_output(&mk_output(b"hello\n", b"", 0)),
+            "hello\n"
+        );
     }
 
     #[test]
@@ -3837,7 +3947,6 @@ mod tests {
         // raw status 2 -> WIFSIGNALED -> status.code() is None.
         assert!(format_command_output(&mk_output(b"", b"", 2)).contains("[terminated abnormally]"));
     }
-
 
     fn followup(
         id: &str,
@@ -4118,6 +4227,7 @@ mod tests {
             None,
             Some("high".into()),
             true,
+            &HashMap::new(),
         );
 
         assert!(settings.available_models.is_empty());
@@ -4140,6 +4250,7 @@ mod tests {
             None,
             None,
             false,
+            &HashMap::new(),
         );
 
         assert_eq!(settings.available_models.len(), 1);
@@ -4161,6 +4272,7 @@ mod tests {
             Some("gpt-5.5"),
             Some("medium".into()),
             false,
+            &HashMap::new(),
         );
 
         assert_eq!(settings.available_models.len(), 1);
@@ -4170,6 +4282,113 @@ mod tests {
             Some("deepseek-v4-pro")
         );
         assert_eq!(settings.selected_reasoning_effort, None);
+    }
+
+    fn usage_counts(entries: &[(&str, &str, u64)]) -> ModelUsageByProvider {
+        let mut usage = HashMap::new();
+        for (provider, model, count) in entries {
+            usage
+                .entry((*provider).to_string())
+                .or_insert_with(HashMap::new)
+                .insert(
+                    (*model).to_string(),
+                    PersistedModelUsage {
+                        prompt_count: *count,
+                        last_used_at: 0,
+                    },
+                );
+        }
+        usage
+    }
+
+    #[test]
+    fn prompt_settings_orders_models_alphabetically_without_usage() {
+        let settings = build_prompt_settings_from_catalog(
+            &[
+                model("codegraff", "zeta"),
+                model("codegraff", "alpha"),
+                model("codex", "beta"),
+            ],
+            &provider_ids(&["codegraff", "codex"]),
+            None,
+            None,
+            None,
+            false,
+            &HashMap::new(),
+        );
+
+        let ordered: Vec<_> = settings
+            .available_models
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["alpha", "beta", "zeta"]);
+    }
+
+    #[test]
+    fn prompt_settings_ranks_models_by_user_usage_then_alphabetically() {
+        let usage = usage_counts(&[
+            ("codegraff", "zeta", 2),
+            ("codex", "beta", 5),
+            ("openai", "removed", 99),
+        ]);
+        let settings = build_prompt_settings_from_catalog(
+            &[
+                model("codegraff", "zeta"),
+                model("codegraff", "alpha"),
+                model("codex", "beta"),
+                model("codex", "gamma"),
+            ],
+            &provider_ids(&["codegraff", "codex"]),
+            None,
+            None,
+            None,
+            false,
+            &usage,
+        );
+
+        let ordered: Vec<_> = settings
+            .available_models
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["beta", "zeta", "alpha", "gamma"]);
+    }
+
+    #[test]
+    fn prompt_settings_usage_ranking_does_not_change_default_selection() {
+        let usage = usage_counts(&[("codex", "popular", 100)]);
+        let settings = build_prompt_settings_from_catalog(
+            &[
+                model("codegraff", "deepseek-v4-pro"),
+                model("codex", "popular"),
+            ],
+            &provider_ids(&["codegraff", "codex"]),
+            None,
+            None,
+            None,
+            false,
+            &usage,
+        );
+
+        assert_eq!(settings.available_models[0].provider_id, "codex");
+        assert_eq!(settings.available_models[0].model_id, "popular");
+        assert_eq!(settings.selected_provider_id.as_deref(), Some("codegraff"));
+        assert_eq!(
+            settings.selected_model_id.as_deref(),
+            Some("deepseek-v4-pro")
+        );
+    }
+
+    #[test]
+    fn increment_model_usage_updates_count_and_timestamp() {
+        let mut usage = ModelUsageByProvider::new();
+        increment_model_usage(&mut usage, "codex", "gpt-5", 10);
+        increment_model_usage(&mut usage, "codex", "gpt-5", 20);
+
+        let entry = model_usage_for(&usage, "codex", "gpt-5").expect("usage entry");
+        assert_eq!(entry.prompt_count, 2);
+        assert_eq!(entry.last_used_at, 20);
     }
 
     #[test]
@@ -4189,8 +4408,15 @@ mod tests {
 
     #[test]
     fn prompt_settings_schema_fallback_requires_configured_codegraff() {
-        let unavailable =
-            build_prompt_settings_from_catalog(&[], &HashSet::new(), None, None, None, false);
+        let unavailable = build_prompt_settings_from_catalog(
+            &[],
+            &HashSet::new(),
+            None,
+            None,
+            None,
+            false,
+            &HashMap::new(),
+        );
         assert!(unavailable.available_models.is_empty());
 
         let available = build_prompt_settings_from_catalog(
@@ -4200,6 +4426,7 @@ mod tests {
             None,
             None,
             true,
+            &HashMap::new(),
         );
         assert_eq!(available.available_models.len(), 1);
         assert_eq!(available.selected_provider_id.as_deref(), Some("codegraff"));
