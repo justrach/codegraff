@@ -141,7 +141,12 @@ pub const Runtime = struct {
         self.ensureGuiStateLoaded();
         const cmd = commandName(req.path);
 
-        if (std.mem.eql(u8, cmd, "get_session_snapshot")) return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
+        if (std.mem.eql(u8, cmd, "get_session_snapshot")) {
+            self.mutex.lockUncancelable(mer_runtime.io);
+            self.refreshWorkspaceSessionsLocked();
+            self.mutex.unlock(mer_runtime.io);
+            return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
+        }
         if (std.mem.eql(u8, cmd, "open_workspace")) return self.openWorkspace(req);
         if (std.mem.eql(u8, cmd, "get_runtime_status")) return self.getRuntimeStatus(req);
         if (std.mem.eql(u8, cmd, "get_prompt_settings")) return self.getPromptSettings(req);
@@ -153,7 +158,7 @@ pub const Runtime = struct {
         if (std.mem.eql(u8, cmd, "select_conversation") or std.mem.eql(u8, cmd, "ensure_conversation_view")) return self.selectConversation(req);
         if (std.mem.eql(u8, cmd, "start_new_chat")) return self.startNewChat(req);
         if (std.mem.eql(u8, cmd, "create_managed_chat")) return self.createManagedChat(req);
-        if (std.mem.eql(u8, cmd, "handoff_chat")) return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
+        if (std.mem.eql(u8, cmd, "handoff_chat")) return self.handoffChat(req);
         if (std.mem.eql(u8, cmd, "send_prompt")) return self.sendPrompt(req);
         if (std.mem.eql(u8, cmd, "stop_prompt")) return self.stopPrompt(req);
         if (std.mem.eql(u8, cmd, "compact_conversation")) return self.compactConversation(req);
@@ -314,7 +319,56 @@ pub const Runtime = struct {
         const conversation = self.createConversationLocked(workspace, cid, "New chat");
         self.active_conversation_id = conversation.conversation_id;
         self.selected_by_workspace.put(conversation.workspace_path, conversation.conversation_id) catch {};
+        self.bumpLocked();
+        self.saveGuiStateLocked();
+        self.mutex.unlock(mer_runtime.io);
+        return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
+    }
+
+    fn handoffChat(self: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch return badJson(req);
+        const input = objectField(root, "input") orelse return bad(req, "missing input");
+        const source_workspace = stringField(input, "sourceWorkspacePath") orelse return bad(req, "missing sourceWorkspacePath");
+        const target = stringField(input, "target") orelse return bad(req, "missing target");
+        const branch_name = stringField(input, "branchName");
+        const source_conversation_id = stringField(input, "conversationId");
+
+        const target_workspace = if (std.mem.eql(u8, target, "local")) blk: {
+            const git = gitRuntimeStatus(req.allocator, source_workspace);
+            const local_workspace = git.root_path orelse source_workspace;
+            if (branch_name) |branch| {
+                _ = gitOutput(req.allocator, local_workspace, &.{ "git", "checkout", "-B", branch }) catch return bad(req, "failed to switch local branch");
+            }
+            break :blk local_workspace;
+        } else if (std.mem.eql(u8, target, "worktree")) blk: {
+            const branch = branch_name orelse return bad(req, "missing branchName");
+            const git = gitRuntimeStatus(req.allocator, source_workspace);
+            const main_workspace = git.root_path orelse source_workspace;
+            const worktree_path = worktreePathForBranch(req.allocator, main_workspace, branch) catch return oom();
+            if (!fileExists(worktree_path)) {
+                _ = gitOutput(req.allocator, main_workspace, &.{ "git", "worktree", "add", "-B", branch, worktree_path }) catch return bad(req, "failed to create git worktree");
+            }
+            break :blk worktree_path;
+        } else return bad(req, "invalid handoff target");
+
+        self.mutex.lockUncancelable(mer_runtime.io);
+        const owned_workspace = self.dupe(target_workspace);
+        self.activateWorkspaceLocked(owned_workspace);
+        const conversation = if (source_conversation_id) |cid| conv: {
+            if (self.conversations.get(cid)) |existing| {
+                existing.workspace_path = owned_workspace;
+                existing.updated_at = nowMillis();
+                break :conv existing;
+            }
+            break :conv self.createConversationLocked(owned_workspace, cid, "New chat");
+        } else conv: {
+            const cid = self.uniqueId("chat");
+            break :conv self.createConversationLocked(owned_workspace, cid, "New chat");
+        };
+        self.active_conversation_id = conversation.conversation_id;
+        self.selected_by_workspace.put(conversation.workspace_path, conversation.conversation_id) catch {};
         self.writeConversationSessionFileLocked(conversation);
+        self.scanWorkspaceSessionsLocked(owned_workspace);
         self.bumpLocked();
         self.saveGuiStateLocked();
         self.mutex.unlock(mer_runtime.io);
@@ -335,7 +389,6 @@ pub const Runtime = struct {
         const conversation = self.createConversationLocked(owned, cid, "New chat");
         self.active_conversation_id = conversation.conversation_id;
         self.selected_by_workspace.put(conversation.workspace_path, conversation.conversation_id) catch {};
-        self.writeConversationSessionFileLocked(conversation);
         self.bumpLocked();
         self.saveGuiStateLocked();
         self.mutex.unlock(mer_runtime.io);
@@ -370,6 +423,10 @@ pub const Runtime = struct {
             self.active_conversation_id = conv.conversation_id;
             self.selected_by_workspace.put(conv.workspace_path, conv.conversation_id) catch {};
             self.ensureConversationSessionFileLocked(conv);
+            if (shouldAutoTitleConversation(conv)) {
+                conv.title = titleFromPrompt(self.arena, prompt);
+                self.renameManagedChatWorkspaceLocked(conv.workspace_path, conv.title);
+            }
             conv.plan_mode = agent_id != null and std.mem.eql(u8, agent_id.?, "muse");
             conv.active_agent_id = if (agent_id) |a| self.dupe(a) else conv.active_agent_id;
             conv.updated_at = nowMillis();
@@ -380,6 +437,7 @@ pub const Runtime = struct {
                 .text = self.dupe(prompt),
             }) catch {};
             conv.active_request_ids.append(self.arena, request_id) catch {};
+            self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
             self.saveGuiStateLocked();
         }
@@ -394,6 +452,7 @@ pub const Runtime = struct {
                     .request_id = request_id,
                     .error_message = self.fmt("Failed to run graff: {s}", .{@errorName(err)}),
                 }) catch {};
+                self.writeConversationSessionFileLocked(conv);
             }
             self.bumpLocked();
             self.mutex.unlock(mer_runtime.io);
@@ -403,6 +462,7 @@ pub const Runtime = struct {
         if (self.conversations.get(conversation_id)) |conv| {
             removeString(&conv.active_request_ids, request_id);
             conv.followup = null;
+            self.writeConversationSessionFileLocked(conv);
         }
         self.bumpLocked();
         self.mutex.unlock(mer_runtime.io);
@@ -1179,11 +1239,13 @@ pub const Runtime = struct {
                 i -= 1;
                 if (std.mem.eql(u8, conv.messages.items[i].id, id)) {
                     conv.messages.items[i].text = self.fmt("{s}{s}", .{ conv.messages.items[i].text, delta });
+                    self.writeConversationSessionFileLocked(conv);
                     self.bumpLocked();
                     return;
                 }
             }
             conv.messages.append(self.arena, .{ .kind = kind, .id = id, .request_id = rid, .text = self.dupe(delta) }) catch {};
+            self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
         }
     }
@@ -1193,6 +1255,7 @@ pub const Runtime = struct {
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
             conv.messages.append(self.arena, .{ .kind = .tool_start, .id = id, .request_id = rid, .name = self.dupe(name), .call_id = if (call_id) |c| self.dupe(c) else null, .question = self.dupe(question) }) catch {};
+            self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
         }
     }
@@ -1202,6 +1265,7 @@ pub const Runtime = struct {
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
             conv.messages.append(self.arena, .{ .kind = .tool_end, .id = id, .request_id = rid, .name = self.dupe(name), .summary = firstLine(self.arena, text), .text = self.dupe(text), .is_error = is_error }) catch {};
+            self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
         }
     }
@@ -1211,6 +1275,7 @@ pub const Runtime = struct {
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
             conv.messages.append(self.arena, .{ .kind = .@"error", .id = self.fmt("{s}-error-{d}", .{ rid, nowMillis() }), .request_id = rid, .error_message = self.dupe(msg) }) catch {};
+            self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
         }
     }
@@ -1220,6 +1285,7 @@ pub const Runtime = struct {
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
             conv.followup = .{ .followup_id = self.dupe(call_id), .workspace_path = self.dupe(workspace), .conversation_id = conv.conversation_id, .request_id = rid, .question = self.dupe(question), .call_id = self.dupe(call_id) };
+            self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
         }
     }
@@ -1410,7 +1476,7 @@ pub const Runtime = struct {
         try out.writer.writeAll(",\"gitBranches\":");
         try writeStringArray(&out.writer, git.branches);
         try out.writer.writeAll(",\"gitWorkspaceKind\":");
-        try writeNullableString(&out.writer, if (git.repo_name != null) "main" else null);
+        try writeNullableString(&out.writer, git.workspace_kind);
         try out.writer.writeAll(",\"gitMainWorkspacePath\":");
         try writeNullableString(&out.writer, git.root_path);
         try out.writer.writeAll(",\"availableOpenTargets\":[\"file-manager\"],\"configured\":true,\"configurationError\":null}");
@@ -1653,6 +1719,7 @@ pub const Runtime = struct {
         const cid = self.conversationIdForSession(workspace_path, session_name);
         const title_value = stringField(parsed, "title");
         const initial_title = if (title_value) |title| (if (title.len > 0) title else session_name) else session_name;
+        const title_needs_prompt = title_value == null or isDefaultConversationTitle(initial_title) or std.mem.eql(u8, initial_title, session_name);
         const conv = self.conversations.get(cid) orelse self.createConversationWithSessionLocked(workspace_path, cid, session_name, initial_title);
         conv.session_name = self.dupe(session_name);
         conv.title = self.dupe(initial_title);
@@ -1700,7 +1767,25 @@ pub const Runtime = struct {
                 }
             }
         }
-        if (title_value == null and first_user_title != null) conv.title = first_user_title.?;
+        if (title_needs_prompt and first_user_title != null) {
+            conv.title = first_user_title.?;
+            self.renameManagedChatWorkspaceLocked(workspace_path, conv.title);
+            self.writeConversationSessionFileLocked(conv);
+        }
+    }
+
+    fn refreshWorkspaceSessionsLocked(self: *Runtime) void {
+        for (self.workspaces.items) |workspace| {
+            self.scanWorkspaceSessionsLocked(workspace.path);
+        }
+    }
+
+    fn renameManagedChatWorkspaceLocked(self: *Runtime, workspace_path: []const u8, title: []const u8) void {
+        if (self.workspaceIndexLocked(workspace_path)) |idx| {
+            if (std.mem.eql(u8, self.workspaces.items[idx].kind, "managed_chat")) {
+                self.workspaces.items[idx].display_name = self.dupe(title);
+            }
+        }
     }
 
     fn ensureWorkspaceSelectionLocked(self: *Runtime, workspace_path: []const u8) void {
@@ -2234,6 +2319,20 @@ fn effectiveReasoningEffort(provider: ?[]const u8, model: ?[]const u8, selected:
     return default_reasoning_effort;
 }
 
+fn isDefaultConversationTitle(title: []const u8) bool {
+    return title.len == 0 or
+        std.mem.eql(u8, title, "New chat") or
+        std.mem.eql(u8, title, "Untitled session");
+}
+
+fn shouldAutoTitleConversation(conv: *const Conversation) bool {
+    if (!isDefaultConversationTitle(conv.title)) return false;
+    for (conv.messages.items) |message| {
+        if (message.kind == .user) return false;
+    }
+    return true;
+}
+
 fn titleFromPrompt(alloc: std.mem.Allocator, prompt: []const u8) []const u8 {
     var words = std.mem.tokenizeAny(u8, prompt, " \t\r\n");
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -2256,6 +2355,7 @@ const GitRuntimeStatus = struct {
     root_path: ?[]const u8 = null,
     repo_name: ?[]const u8 = null,
     branch_name: ?[]const u8 = null,
+    workspace_kind: ?[]const u8 = null,
     branches: []const []const u8 = &.{},
 };
 
@@ -2271,12 +2371,33 @@ fn gitRuntimeStatus(alloc: std.mem.Allocator, workspace: []const u8) GitRuntimeS
     if (root.len == 0) return .{};
     const branch_raw = gitOutput(alloc, workspace, &.{ "git", "branch", "--show-current" }) catch "";
     const branch = std.mem.trim(u8, branch_raw, " \t\r\n");
+    const common_raw = gitOutput(alloc, workspace, &.{ "git", "rev-parse", "--git-common-dir" }) catch "";
+    const common = std.mem.trim(u8, common_raw, " \t\r\n");
+    const is_linked_worktree = common.len > 0 and !std.mem.eql(u8, common, ".git");
+    const main_root = if (is_linked_worktree and std.mem.eql(u8, std.fs.path.basename(common), ".git"))
+        (std.fs.path.dirname(common) orelse root)
+    else
+        root;
     return .{
-        .root_path = alloc.dupe(u8, root) catch root,
-        .repo_name = alloc.dupe(u8, workspaceName(root)) catch workspaceName(root),
+        .root_path = alloc.dupe(u8, main_root) catch main_root,
+        .repo_name = alloc.dupe(u8, workspaceName(main_root)) catch workspaceName(main_root),
         .branch_name = if (branch.len == 0) null else alloc.dupe(u8, branch) catch branch,
+        .workspace_kind = if (is_linked_worktree) "worktree" else "local",
         .branches = gitBranches(alloc, workspace) catch &.{},
     };
+}
+
+fn worktreePathForBranch(alloc: std.mem.Allocator, main_workspace: []const u8, branch: []const u8) ![]const u8 {
+    const parent = std.fs.path.dirname(main_workspace) orelse ".";
+    const base = workspaceName(main_workspace);
+    var safe: std.ArrayList(u8) = .empty;
+    defer safe.deinit(alloc);
+    for (branch) |ch| {
+        try safe.append(alloc, if (std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_') ch else '-');
+    }
+    if (safe.items.len == 0) try safe.appendSlice(alloc, "branch");
+    const dirname = try std.fmt.allocPrint(alloc, "{s}-{s}", .{ base, safe.items });
+    return std.fs.path.join(alloc, &.{ parent, dirname });
 }
 
 fn gitBranches(alloc: std.mem.Allocator, workspace: []const u8) ![]const []const u8 {

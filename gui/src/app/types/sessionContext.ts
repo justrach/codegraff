@@ -10,6 +10,18 @@ export interface RequestTimingInfo {
   startedAtMs: number;
 }
 
+export type SubmitPromptInput =
+  | string
+  | {
+      conversationId?: string | null;
+      draft: string;
+      workspacePath?: string | null;
+    };
+
+export function getSubmitPromptDraft(input?: SubmitPromptInput): string | undefined {
+  return typeof input === "string" ? input : input?.draft;
+}
+
 export interface SessionActionsContextValue {
   openWorkspacePicker: () => Promise<string | null>;
   openProject: (workspacePath: string) => Promise<void>;
@@ -42,7 +54,7 @@ export interface SessionActionsContextValue {
     reasoningEffort?: string | null;
   }) => Promise<void>;
   stopPrompt: () => Promise<void>;
-  submitPrompt: (draftOverride?: string) => Promise<void>;
+  submitPrompt: (input?: SubmitPromptInput) => Promise<void>;
   submitFollowup: (input: {
     cancelled: boolean;
     text?: string;

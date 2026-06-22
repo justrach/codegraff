@@ -96,8 +96,8 @@ export function ProjectSidebar({
   const managedChats = workspaces.filter(
     (workspace) => workspace.kind === "managed_chat",
   );
-  const visibleManagedChats = managedChats.filter(
-    (workspace) => workspace.conversations.length > 0,
+  const visibleManagedChats = managedChats.filter((workspace) =>
+    workspace.conversations.some((conversation) => !conversation.isDraft),
   );
 
   async function handleOpenWorkspacePicker() {
@@ -308,16 +308,21 @@ export function ProjectSidebar({
                 {visibleManagedChats.map((chatWorkspace) => {
                   const isChatOpen =
                     chatWorkspace.workspacePath === activeWorkspacePath;
+                  const visibleConversation =
+                    chatWorkspace.conversations.find(
+                      (conversation) => !conversation.isDraft,
+                    ) ?? null;
+                  if (visibleConversation == null) {
+                    return null;
+                  }
                   const activeChatId =
                     chatWorkspace.selectedConversationId ??
-                    chatWorkspace.conversations[0]?.conversationId ??
-                    null;
+                    visibleConversation.conversationId;
                   const isActive =
                     isChatOpen && activeConversationId === activeChatId;
-                  const chatTitle =
-                    chatWorkspace.conversations[0]?.title ?? "New chat";
+                  const chatTitle = visibleConversation.title;
                   const updatedAt = formatRelativeTimestamp(
-                    chatWorkspace.conversations[0]?.updatedAt ?? null,
+                    visibleConversation.updatedAt ?? null,
                   );
 
                   return (

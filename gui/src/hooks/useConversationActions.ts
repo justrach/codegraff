@@ -15,6 +15,7 @@ import {
 import { getPromptDraftKey } from "@/app/sessionSnapshot";
 import { appendAttachmentsToPrompt } from "@/components/attachments/attachmentTypes";
 import * as desktopClient from "@/services/desktop/client";
+import type { SubmitPromptInput } from "@/app/types/sessionContext";
 import type { ChatBinding } from "@/services/desktop/types/contracts";
 
 import { useSessionActions } from "./useSession";
@@ -73,15 +74,27 @@ export function useConversationActions(binding?: ChatBinding | null) {
       store.setPromptDraftUltraMode(promptDraftKey, false);
       store.clearAttachments(promptDraftKey);
       store.setPromptDraftPending(promptDraftKey, true);
+      const optimisticRequestId = `optimistic-${Date.now()}`;
+      const agentId = isPlanningMode ? "muse" : "forge";
+      store.appendOptimisticUserMessage(
+        { conversationId, workspacePath },
+        optimisticRequestId,
+        prompt,
+        agentId,
+      );
       try {
         const snapshot = await desktopClient.sendPrompt({
-          agentId: isPlanningMode ? "muse" : "forge",
+          agentId,
           conversationId,
           prompt,
           workspacePath,
         });
         sessionStore.getState().applySessionSnapshot(snapshot);
       } catch {
+        sessionStore.getState().removeOptimisticRequest(
+          { conversationId, workspacePath },
+          optimisticRequestId,
+        );
         restorePromptDraft(value, isPlanningMode, isUltraMode, attachments);
         return;
       } finally {
@@ -155,13 +168,13 @@ export function useConversationActions(binding?: ChatBinding | null) {
           })
           .catch(() => null);
       },
-      submitPrompt: async (draftOverride?: string) => {
+      submitPrompt: async (input?: SubmitPromptInput) => {
         if (promptDraftKey == null) {
           return;
         }
 
         const draftState = getPromptDraftState(promptDraftKey);
-        const draftValue = draftOverride ?? draftState.value;
+        const draftValue = typeof input === "string" ? input : input?.draft ?? draftState.value;
         const trimmedPrompt = draftValue.trim();
         if (trimmedPrompt.length === 0) {
           return;

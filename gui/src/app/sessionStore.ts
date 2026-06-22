@@ -470,6 +470,78 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
         };
       });
     },
+
+    appendOptimisticUserMessage: (binding, requestId, text, agentId) => {
+      set((current) => {
+        const key = getConversationStoreKey(
+          binding.workspacePath,
+          binding.conversationId,
+        );
+        const existing = current.conversationViewsByKey[key];
+        if (existing == null) {
+          return current;
+        }
+        if (existing.messages.some((message) => message.id === `${requestId}-user`)) {
+          return current;
+        }
+        return {
+          conversationViewsByKey: {
+            ...current.conversationViewsByKey,
+            [key]: {
+              ...existing,
+              activeRequestIds: existing.activeRequestIds.includes(requestId)
+                ? existing.activeRequestIds
+                : [...existing.activeRequestIds, requestId],
+              messages: [
+                ...existing.messages,
+                {
+                  kind: "user",
+                  id: `${requestId}-user`,
+                  requestId,
+                  text,
+                },
+              ],
+              requestAgentIds:
+                agentId == null
+                  ? existing.requestAgentIds
+                  : { ...existing.requestAgentIds, [requestId]: agentId },
+            },
+          },
+        };
+      });
+    },
+
+    removeOptimisticRequest: (binding, requestId) => {
+      set((current) => {
+        const key = getConversationStoreKey(
+          binding.workspacePath,
+          binding.conversationId,
+        );
+        const existing = current.conversationViewsByKey[key];
+        if (existing == null) {
+          return current;
+        }
+        return {
+          conversationViewsByKey: {
+            ...current.conversationViewsByKey,
+            [key]: {
+              ...existing,
+              activeRequestIds: existing.activeRequestIds.filter(
+                (id) => id !== requestId,
+              ),
+              messages: existing.messages.filter(
+                (message) => message.requestId !== requestId,
+              ),
+              requestAgentIds: Object.fromEntries(
+                Object.entries(existing.requestAgentIds).filter(
+                  ([id]) => id !== requestId,
+                ),
+              ),
+            },
+          },
+        };
+      });
+    },
     addAttachments: (key, items) => {
       if (key == null || items.length === 0) {
         return;

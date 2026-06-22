@@ -9,6 +9,7 @@ import type {
 } from "../services/desktop/types/contracts";
 import { extractBindingsFromLayoutJson } from "../components/workspace-board/layout";
 import { SessionActionsContext } from "./SessionContext";
+import type { SubmitPromptInput } from "./types/sessionContext";
 import {
   openWorkspaceInTarget,
   runWorkspaceRuntimeStatusAction,
@@ -94,6 +95,16 @@ export function SessionProvider({ children }: SessionProviderProps) {
 
   useEffect(() => {
     if (activeWorkspacePath == null) {
+      return;
+    }
+
+    const activeWorkspace = sessionStore
+      .getState()
+      .workspaces.find(
+        (workspace) => workspace.workspacePath === activeWorkspacePath,
+      );
+    if (activeWorkspace?.kind === "managed_chat") {
+      window.localStorage.removeItem(LATEST_WORKSPACE_STORAGE_KEY);
       return;
     }
 
@@ -581,22 +592,27 @@ export function SessionProvider({ children }: SessionProviderProps) {
           .then(applySessionSnapshot)
           .catch(() => null);
       },
-      submitPrompt: async (draftOverride?: string) => {
-        const workspacePath = getUiActiveWorkspacePath(sessionStore.getState());
+      submitPrompt: async (input?: SubmitPromptInput) => {
+        const state = sessionStore.getState();
+        const workspacePath =
+          typeof input === "object" && input != null && "workspacePath" in input
+            ? input.workspacePath ?? null
+            : getUiActiveWorkspacePath(state);
         if (workspacePath == null) {
           return;
         }
 
-        const conversationId = getUiActiveConversationId(
-          sessionStore.getState(),
-        );
+        const conversationId =
+          typeof input === "object" && input != null && "conversationId" in input
+            ? input.conversationId ?? null
+            : getUiActiveConversationId(state);
         const promptDraftKey = getPromptDraftKey(workspacePath, conversationId);
         if (promptDraftKey == null) {
           return;
         }
 
         const draftState = getPromptDraftState(promptDraftKey);
-        const draftValue = draftOverride ?? draftState.value;
+        const draftValue = typeof input === "string" ? input : input?.draft ?? draftState.value;
         const trimmedPrompt = draftValue.trim();
         if (trimmedPrompt.length === 0) {
           return;
@@ -624,17 +640,34 @@ export function SessionProvider({ children }: SessionProviderProps) {
         sessionStore.getState().clearAttachments(promptDraftKey);
 
         let nextPromptDraftKey: string | null = promptDraftKey;
-        sessionStore.getState().setPromptDraftPending(promptDraftKey, true);
+        const agentId = draftState.isPlanningMode ? "muse" : "forge";
+        const store = sessionStore.getState();
+        const optimisticRequestId = `optimistic-${Date.now()}`;
+        store.setPromptDraftPending(promptDraftKey, true);
+        if (conversationId != null) {
+          store.appendOptimisticUserMessage(
+            { conversationId, workspacePath },
+            optimisticRequestId,
+            prompt,
+            agentId,
+          );
+        }
 
         const snapshot = await desktopClient
           .sendPrompt({
-            agentId: draftState.isPlanningMode ? "muse" : "forge",
+            agentId,
             conversationId,
             prompt,
             workspacePath,
           })
           .catch(() => null);
         if (snapshot == null) {
+          if (conversationId != null) {
+            sessionStore.getState().removeOptimisticRequest(
+              { conversationId, workspacePath },
+              optimisticRequestId,
+            );
+          }
           restorePromptDraft();
           sessionStore.getState().setPromptDraftPending(promptDraftKey, false);
           return;

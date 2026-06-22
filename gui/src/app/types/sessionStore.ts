@@ -64,6 +64,8 @@ export interface SessionStoreState {
   workspaces: WorkspaceSession[];
   workspacesByPath: Record<string, WorkspaceSession>;
   applySessionSnapshot: (snapshot: SessionSnapshot) => void;
+  appendOptimisticUserMessage: (binding: { workspacePath: string; conversationId: string }, requestId: string, text: string, agentId?: string | null) => void;
+  removeOptimisticRequest: (binding: { workspacePath: string; conversationId: string }, requestId: string) => void;
   addAttachments: (key: string | null, items: Attachment[]) => void;
   removeAttachment: (key: string | null, id: string) => void;
   clearAttachments: (key: string | null) => void;

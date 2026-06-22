@@ -30,9 +30,6 @@ export function NewChatTrigger({ children }: NewChatTriggerProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const isGitWorkspace = runtimeStatus?.gitWorkspaceKind != null;
-  const isDetachedWorktree =
-    runtimeStatus?.gitWorkspaceKind === "worktree" &&
-    runtimeStatus.gitBranchName == null;
 
   function resetBranchDialog() {
     setBranchDialogMode(null);
@@ -74,30 +71,8 @@ export function NewChatTrigger({ children }: NewChatTriggerProps) {
 
   async function handleStartLocal() {
     setIsChoiceDialogOpen(false);
-    if (workspacePath == null) {
-      await runAction(async () => {
-        await startNewChat();
-      });
-      return;
-    }
-
-    if (isDetachedWorktree) {
-      openBranchDialog("local");
-      return;
-    }
-
     await runAction(async () => {
-      if (runtimeStatus?.gitWorkspaceKind === "local") {
-        await startNewChat(workspacePath);
-        return;
-      }
-
-      await handoffChat({
-        branchName: null,
-        conversationId: null,
-        sourceWorkspacePath: workspacePath,
-        target: "local",
-      });
+      await startNewChat();
     });
   }
 

@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 
 import { getUiActiveBinding, sessionStore } from "@/app/sessionStore";
+import type { SubmitPromptInput } from "@/app/types/sessionContext";
 import { CommandResultDialog } from "@/components/CommandResultDialog";
 import { FollowupComposer } from "@/components/FollowupComposer";
 import { PromptInputCard } from "@/components/PromptInputCard";
@@ -71,17 +72,25 @@ export function NewChatPromptSection({
     .filter((message) => message.kind === "user")
     .map((message) => message.text);
   const handleSubmit = useCallback(
-    async (draftOverride?: string) => {
-      const draft = draftOverride ?? promptDraft;
-      if (draftOverride != null) {
-        setPromptDraft(draftOverride);
+    async (input?: SubmitPromptInput) => {
+      const draft = typeof input === "string" ? input : input?.draft ?? promptDraft;
+      if (input != null) {
+        setPromptDraft(draft);
       }
       if (trySubmitAsCommand(draft)) {
         return;
       }
-      await submitPrompt(draftOverride);
+      await submitPrompt(
+        typeof input === "object" && input != null
+          ? input
+          : {
+              conversationId: binding?.conversationId ?? null,
+              draft,
+              workspacePath: binding?.workspacePath ?? workspacePath ?? null,
+            },
+      );
     },
-    [promptDraft, setPromptDraft, submitPrompt, trySubmitAsCommand],
+    [binding, promptDraft, setPromptDraft, submitPrompt, trySubmitAsCommand, workspacePath],
   );
   const handleImplementPlan = useCallback(async () => {
     if (lastAssistant == null) {

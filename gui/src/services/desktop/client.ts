@@ -988,6 +988,18 @@ export function openPathForEdit(path: string): Promise<void> {
   return merInvoke("open.path", { path });
 }
 
+
+export function closeWindow(): Promise<void> {
+  if (isQaMockMode) {
+    return Promise.resolve();
+  }
+  if (!hasMerInvoke()) {
+    window.close();
+    return Promise.resolve();
+  }
+  return merInvoke("window.close", {});
+}
+
 export function setWindowTitle(title: string): Promise<void> {
   if (isQaMockMode) {
     if (typeof document !== "undefined") {

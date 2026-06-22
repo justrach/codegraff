@@ -37,7 +37,7 @@ import { useSessionStore } from "../hooks/useSession";
 import { DragDropProvider } from "../hooks/useFileDrop";
 import { SessionProvider } from "./SessionProvider";
 import { SettingsNavigationProvider } from "./settingsNavigation";
-import { setWindowTitle } from "../services/desktop/client";
+import { closeWindow, setWindowTitle } from "../services/desktop/client";
 import {
   getUiActiveWorkspacePath,
   getUiWorkspaceLabel,
@@ -214,18 +214,22 @@ function AppShell() {
     };
   }, []);
 
-  // Global Cmd/Ctrl+N → new chat. Reuses NewChatTrigger's openNewChat (captured
-  // in newChatRef) so the git-worktree choice dialog flows through identically.
-  // Skipped while a settings view or dialog is open or while the session is
-  // mid-bootstrap, and ignores key presses originating inside an input/textarea
-  // so it never fights typing — though Cmd+N is uncommon enough to be safe.
+  // Global app shortcuts.
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (!(event.metaKey || event.ctrlKey) || event.key !== "n") {
+      if (!(event.metaKey || event.ctrlKey)) {
         return;
       }
-      event.preventDefault();
-      newChatRef.current?.();
+      const key = event.key.toLowerCase();
+      if (key === "n") {
+        event.preventDefault();
+        newChatRef.current?.();
+        return;
+      }
+      if (key === "w") {
+        event.preventDefault();
+        void closeWindow().catch(() => undefined);
+      }
     }
 
     window.addEventListener("keydown", handleKeyDown);

@@ -1,9 +1,5 @@
 import { useEffect, useEffectEvent, useRef } from 'react'
 
-import {
-  LATEST_WORKSPACE_STORAGE_KEY,
-  resolveLatestWorkspacePath,
-} from '../app/sessionSnapshot'
 import * as desktopClient from '../services/desktop/client'
 import type { SessionSnapshot } from '../services/desktop/types/contracts'
 import type { UseSessionBootstrapOptions } from './types/sessionBootstrap'
@@ -49,26 +45,6 @@ export function useSessionBootstrap({
         if (snapshot.activeWorkspacePath != null) {
           setSessionSnapshot(snapshot)
           return
-        }
-
-        const latestWorkspacePath = resolveLatestWorkspacePath(
-          snapshot,
-          window.localStorage.getItem(LATEST_WORKSPACE_STORAGE_KEY),
-        )
-        if (latestWorkspacePath != null) {
-          try {
-            const draftSnapshot = await desktopClient.startNewChat(latestWorkspacePath)
-            if (isMounted() === false || receivedSessionUpdateRef.current) {
-              return
-            }
-
-            setSessionSnapshot(draftSnapshot)
-            return
-          } catch {
-            if (isMounted() === false || receivedSessionUpdateRef.current) {
-              return
-            }
-          }
         }
 
         try {

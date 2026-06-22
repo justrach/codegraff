@@ -153,6 +153,8 @@ export function PromptInputCard({
   const commandOverlayRef = useRef<HTMLDivElement | null>(null);
   const dropZoneRef = useRef<HTMLDivElement | null>(null);
   const handledPasteAtRef = useRef(0);
+  const isComposingRef = useRef(false);
+  const enterSubmitLockedRef = useRef(false);
   const { attachments, addAttachments, removeAttachment, replaceAttachments } =
     useAttachments(binding);
   const isActiveDropTarget = useSessionStore((state) => {
@@ -330,11 +332,38 @@ export function PromptInputCard({
       return;
     }
 
-    resetHistoryNavigation();
-    if (draftOverride !== promptDraft) {
-      setPromptDraft(draftOverride);
+    submitCurrentDraft(draftOverride);
+  }
+
+  function submitCurrentDraft(value: string) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || isInputDisabled) {
+      return;
     }
-    void submitPrompt(draftOverride);
+    // If the composer is genuinely unavailable, ignore Enter. A running request
+    // with a non-empty draft is still valid: it queues a follow-up.
+    if (!canCompose && !isQueueSubmit) {
+      return;
+    }
+    if (enterSubmitLockedRef.current) {
+      return;
+    }
+    enterSubmitLockedRef.current = true;
+    window.setTimeout(() => {
+      enterSubmitLockedRef.current = false;
+    }, 600);
+
+    resetHistoryNavigation();
+    if (value !== promptDraft) {
+      setPromptDraft(value);
+    }
+    void submitPrompt({
+      conversationId: binding?.conversationId ?? null,
+      draft: value,
+      workspacePath: binding?.workspacePath ?? workspacePath ?? null,
+    }).finally(() => {
+      enterSubmitLockedRef.current = false;
+    });
   }
 
   function handleDraftChange(value: string) {
@@ -605,6 +634,12 @@ export function PromptInputCard({
               value={promptDraft}
               onChange={(event) => handleDraftChange(event.target.value)}
               onPaste={handlePaste}
+              onCompositionStart={() => {
+                isComposingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                isComposingRef.current = false;
+              }}
               onScroll={(event) => {
                 if (commandOverlayRef.current != null) {
                   commandOverlayRef.current.scrollTop =
@@ -619,35 +654,36 @@ export function PromptInputCard({
                   handlePlanningModeShortcut(event);
                   return;
                 }
-                // The command menu consumes Enter/Tab/arrows while open, so a
-                // command is completed rather than sent.
+                if (event.key === "Enter") {
+                  // Let the slash-command menu consume Enter first when it has
+                  // an active completion. Otherwise plain Enter is submit.
+                  if (commandAutocomplete.handleKeyDown(event)) {
+                    return;
+                  }
+                  // Shift+Enter and Alt/Option+Enter insert a newline instead
+                  // of sending.
+                  if (event.shiftKey) {
+                    return;
+                  }
+                  if (event.altKey) {
+                    event.preventDefault();
+                    document.execCommand("insertText", false, "\n");
+                    return;
+                  }
+                  // Don't submit mid-IME-composition (e.g. selecting a candidate).
+                  if (isComposingRef.current || event.nativeEvent.isComposing) {
+                    return;
+                  }
+                  event.preventDefault();
+                  submitCurrentDraft(event.currentTarget.value);
+                  return;
+                }
+                // The command menu consumes Tab/arrows/Escape while open.
                 if (commandAutocomplete.handleKeyDown(event)) {
                   return;
                 }
                 if (handleHistoryNavigation(event)) {
                   return;
-                }
-                if (event.key !== "Enter") {
-                  return;
-                }
-                // Shift+Enter and Alt/Option+Enter insert a newline instead of
-                // sending.
-                if (event.shiftKey) {
-                  return;
-                }
-                if (event.altKey) {
-                  event.preventDefault();
-                  document.execCommand("insertText", false, "\n");
-                  return;
-                }
-                // Don't submit mid-IME-composition (e.g. selecting a candidate).
-                if (event.nativeEvent.isComposing) {
-                  return;
-                }
-                event.preventDefault();
-                const currentDraft = event.currentTarget.value;
-                if (canSubmitDraft(currentDraft)) {
-                  handleSubmit(currentDraft);
                 }
               }}
               disabled={isTextareaDisabled}

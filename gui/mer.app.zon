@@ -31,6 +31,7 @@
             .{ .name = "open.external", .permissions = .{ "open" }, .origins = .{ "http://127.0.0.1" } },
             .{ .name = "open.path", .permissions = .{ "open" }, .origins = .{ "http://127.0.0.1" } },
             .{ .name = "window.setTitle", .permissions = .{ "window" }, .origins = .{ "http://127.0.0.1" } },
+            .{ .name = "window.close", .permissions = .{ "window" }, .origins = .{ "http://127.0.0.1" } },
         },
     },
 }
