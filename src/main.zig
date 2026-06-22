@@ -2621,6 +2621,39 @@ fn printSessionHeader(w: *Io.Writer, title: []const u8, folder: []const u8) !voi
     try w.flush();
 }
 
+/// Extracts the reasoning/thinking text from one streamed SSE delta object for
+/// the given provider wire format, or "" when this delta carries no reasoning.
+/// deepseek/openai stream `reasoning_content`, anthropic a `thinking_delta`,
+/// codex/responses a `response.reasoning_summary_text.delta`.
+fn reasoningDelta(kind: Provider.Kind, obj: std.json.ObjectMap) []const u8 {
+    return switch (kind) {
+        .anthropic => blk: {
+            const d = obj.get("delta") orelse break :blk "";
+            if (d != .object) break :blk "";
+            const dt = d.object.get("type") orelse break :blk "";
+            if (dt != .string or !std.mem.eql(u8, dt.string, "thinking_delta")) break :blk "";
+            const x = d.object.get("thinking") orelse break :blk "";
+            break :blk if (x == .string) x.string else "";
+        },
+        .openai => blk: {
+            const choices = obj.get("choices") orelse break :blk "";
+            if (choices != .array or choices.array.items.len == 0) break :blk "";
+            const c0 = choices.array.items[0];
+            if (c0 != .object) break :blk "";
+            const d = c0.object.get("delta") orelse break :blk "";
+            if (d != .object) break :blk "";
+            const x = d.object.get("reasoning_content") orelse d.object.get("reasoning") orelse break :blk "";
+            break :blk if (x == .string) x.string else "";
+        },
+        .responses => blk: {
+            const t = obj.get("type") orelse break :blk "";
+            if (t != .string or !std.mem.eql(u8, t.string, "response.reasoning_summary_text.delta")) break :blk "";
+            const x = obj.get("delta") orelse break :blk "";
+            break :blk if (x == .string) x.string else "";
+        },
+    };
+}
+
 fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, g_path_env, ':');
     var buf: [1024]u8 = undefined;
@@ -10116,32 +10149,7 @@ const Agent = struct {
         // a thinking_delta, codex a summary delta. JSON clients get a `reasoning`
         // event; on a TTY we stream it into a live, dimmed "Thinking" block when
         // /thinking is enabled, otherwise the spinner stands in for it.
-        const reasoning: []const u8 = switch (self.provider.kind) {
-            .anthropic => blk: {
-                const d = obj.get("delta") orelse break :blk "";
-                if (d != .object) break :blk "";
-                const dt = d.object.get("type") orelse break :blk "";
-                if (dt != .string or !std.mem.eql(u8, dt.string, "thinking_delta")) break :blk "";
-                const x = d.object.get("thinking") orelse break :blk "";
-                break :blk if (x == .string) x.string else "";
-            },
-            .openai => blk: {
-                const choices = obj.get("choices") orelse break :blk "";
-                if (choices != .array or choices.array.items.len == 0) break :blk "";
-                const c0 = choices.array.items[0];
-                if (c0 != .object) break :blk "";
-                const d = c0.object.get("delta") orelse break :blk "";
-                if (d != .object) break :blk "";
-                const x = d.object.get("reasoning_content") orelse d.object.get("reasoning") orelse break :blk "";
-                break :blk if (x == .string) x.string else "";
-            },
-            .responses => blk: {
-                const t = obj.get("type") orelse break :blk "";
-                if (t != .string or !std.mem.eql(u8, t.string, "response.reasoning_summary_text.delta")) break :blk "";
-                const x = obj.get("delta") orelse break :blk "";
-                break :blk if (x == .string) x.string else "";
-            },
-        };
+        const reasoning = reasoningDelta(self.provider.kind, obj);
         if (reasoning.len != 0) {
             if (json_mode) {
                 self.emit(.{ .type = "reasoning", .text = reasoning });
@@ -14166,4 +14174,104 @@ test "/bash slash command runs the bash tool and frees its gpa-allocated result"
 
     const written = aw.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "leak-guard-XYZ") != null);
+}
+
+test "reasoningDelta extracts thinking/reasoning per provider wire format (#75)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const mk = struct {
+        fn p(al: Allocator, s: []const u8) std.json.ObjectMap {
+            return (std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable).object;
+        }
+    }.p;
+
+    // anthropic streams a thinking_delta inside content_block_delta
+    const an = mk(a, "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ponder\"}}");
+    try std.testing.expectEqualStrings("ponder", reasoningDelta(.anthropic, an));
+    // openai/deepseek stream reasoning_content (or reasoning) on choices[0].delta
+    const oa = mk(a, "{\"choices\":[{\"delta\":{\"reasoning_content\":\"hmm\"}}]}");
+    try std.testing.expectEqualStrings("hmm", reasoningDelta(.openai, oa));
+    // codex/responses stream a reasoning summary delta
+    const re = mk(a, "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"plan\"}");
+    try std.testing.expectEqualStrings("plan", reasoningDelta(.responses, re));
+    // a plain answer-text delta carries no reasoning
+    const txt = mk(a, "{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}");
+    try std.testing.expectEqualStrings("", reasoningDelta(.openai, txt));
+}
+
+test "firstUserTitle: first user message becomes the header title, else Chat (#83)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const mk = struct {
+        fn p(al: Allocator, s: []const u8) Value {
+            return std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable;
+        }
+    }.p;
+
+    var msgs = std.json.Array.init(a);
+    try msgs.append(mk(a, "{\"role\":\"assistant\",\"content\":\"hi\"}"));
+    try msgs.append(mk(a, "{\"role\":\"user\",\"content\":\"Fix the parser\\nmore detail\"}"));
+    try std.testing.expectEqualStrings("Fix the parser", firstUserTitle(a, msgs));
+
+    const empty = std.json.Array.init(a);
+    try std.testing.expectEqualStrings("Chat", firstUserTitle(a, empty));
+}
+
+test "titleFromPrompt: truncates long prompts at a word boundary, UTF-8 intact (#83)" {
+    const long = "Refactor the streaming parser and add tests for partial UTF-8 edge cases that panic";
+    const t = titleFromPrompt(long);
+    try std.testing.expect(t.len < long.len); // capped
+    try std.testing.expect(std.mem.startsWith(u8, long, t)); // a clean prefix
+    try std.testing.expect(t[t.len - 1] != ' '); // trailing space trimmed
+    // a short multibyte prompt is returned whole, never split mid-codepoint
+    try std.testing.expectEqualStrings("héllo wörld", titleFromPrompt("héllo wörld"));
+}
+
+test "printSessionHeader renders the working-on title and folder (#83)" {
+    const saved = json_mode;
+    json_mode = false;
+    defer json_mode = saved;
+
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try printSessionHeader(&aw.writer, "Fix the bug", "/tmp/proj");
+    const s = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, s, "Codegraff") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "Fix the bug") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "/tmp/proj") != null);
+
+    // JSON mode emits nothing (the header would corrupt the event stream).
+    json_mode = true;
+    var jw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer jw.deinit();
+    try printSessionHeader(&jw.writer, "x", "/y");
+    try std.testing.expectEqual(@as(usize, 0), jw.writer.buffered().len);
+}
+
+test "setTerminalTitle emits OSC title with folder basename, gated by color/json (#83)" {
+    const sc = use_color;
+    const sj = json_mode;
+    defer {
+        use_color = sc;
+        json_mode = sj;
+    }
+
+    use_color = true;
+    json_mode = false;
+    var on: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer on.deinit();
+    setTerminalTitle(&on.writer, "Add dark mode", "/a/b/myproj");
+    const s = on.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, s, "Codegraff: Add dark mode — myproj") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\x1b]0;") != null); // window title
+    try std.testing.expect(std.mem.indexOf(u8, s, "\x1b]2;") != null); // tab title
+
+    // Gated off in JSON mode (would corrupt the stream) and when color is off.
+    json_mode = true;
+    var off: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer off.deinit();
+    setTerminalTitle(&off.writer, "x", "/y");
+    try std.testing.expectEqual(@as(usize, 0), off.writer.buffered().len);
 }
