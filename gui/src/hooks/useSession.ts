@@ -274,10 +274,21 @@ export function useAttachments(binding?: ChatBinding | null) {
     },
     [promptDraftKey],
   );
+  // Swap the whole tray in one shot (used by prompt-history navigation to
+  // rehydrate a restored prompt's attachments).
+  const replaceAttachments = useCallback(
+    (items: Attachment[]) => {
+      sessionStore.getState().clearAttachments(promptDraftKey);
+      if (items.length > 0) {
+        sessionStore.getState().addAttachments(promptDraftKey, items);
+      }
+    },
+    [promptDraftKey],
+  );
 
   return useMemo(
-    () => ({ attachments, addAttachments, removeAttachment }),
-    [attachments, addAttachments, removeAttachment],
+    () => ({ attachments, addAttachments, removeAttachment, replaceAttachments }),
+    [attachments, addAttachments, removeAttachment, replaceAttachments],
   );
 }
 

@@ -32,7 +32,11 @@ import { Throbber } from "@/components/ui/Throbber";
 import { CommandAutocomplete } from "@/components/CommandAutocomplete";
 import { AttachmentTray } from "@/components/attachments/AttachmentTray";
 import { DropOverlay } from "@/components/attachments/DropOverlay";
-import { classifyPath } from "@/components/attachments/attachmentTypes";
+import {
+  classifyPath,
+  parseAttachmentBlock,
+  type Attachment,
+} from "@/components/attachments/attachmentTypes";
 import { parseChoiceCommand } from "@/components/commandChoices";
 import { useAutosizeTextarea } from "@/hooks/useAutosizeTextarea";
 import { useAttachments } from "@/hooks/useSession";
@@ -91,7 +95,7 @@ export function PromptInputCard({
   // it — the highlight drifts away from the caret.
   const commandOverlayRef = useRef<HTMLDivElement | null>(null);
   const dropZoneRef = useRef<HTMLDivElement | null>(null);
-  const { attachments, addAttachments, removeAttachment } =
+  const { attachments, addAttachments, removeAttachment, replaceAttachments } =
     useAttachments(binding);
   const { isActive: isDropActive } = useDropZone(dropZoneRef, (paths) => {
     const accepted = paths
@@ -136,11 +140,16 @@ export function PromptInputCard({
   const [historyCursor, setHistoryCursor] =
     useState<PromptHistoryCursor>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState("");
+  // Live attachment tray captured when entering history, restored on the way out.
+  const [attachmentsBeforeHistory, setAttachmentsBeforeHistory] = useState<
+    Attachment[]
+  >([]);
   const promptHistoryLengthRef = useRef(promptHistory.length);
 
   function resetHistoryNavigation() {
     setHistoryCursor(null);
     setDraftBeforeHistory("");
+    setAttachmentsBeforeHistory([]);
   }
 
   useEffect(() => {
@@ -283,9 +292,32 @@ export function PromptInputCard({
     }
 
     event.preventDefault();
+
+    // Mirror the draft preservation for attachments: snapshot the live tray when
+    // entering history so ArrowDown back out restores it, and rehydrate the
+    // attachment cards from the stored `Attached files:` block on each entry.
+    const enteringHistory = effectiveCursor == null && result.cursor != null;
+    if (enteringHistory) {
+      setAttachmentsBeforeHistory(attachments);
+    }
+
     setHistoryCursor(result.cursor);
     setDraftBeforeHistory(result.draftBeforeHistory);
-    setPromptDraft(result.draft);
+
+    if (result.cursor == null) {
+      // Exited history — restore the live draft and its attachments.
+      setPromptDraft(result.draft);
+      replaceAttachments(attachmentsBeforeHistory);
+      setAttachmentsBeforeHistory([]);
+    } else {
+      const { body, paths } = parseAttachmentBlock(result.draft);
+      setPromptDraft(body);
+      replaceAttachments(
+        paths
+          .map((path) => classifyPath(path))
+          .filter((item): item is Attachment => item != null),
+      );
+    }
     moveCaretToEndOnNextFrame();
     return true;
   }
