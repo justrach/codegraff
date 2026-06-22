@@ -2257,7 +2257,7 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/thinking", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -2959,7 +2959,7 @@ fn saveSkillSetting(io: Io, gpa: Allocator, name: []const u8, enabled: bool) boo
 /// Persist the thinking controls (/effort, /fast) to .harness/settings.json,
 /// preserving every other key. Default values (medium effort, fast off) are
 /// removed rather than written so the file stays clean. Best-effort.
-fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool, ultracode: bool) bool {
+fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool, ultracode: bool, show_thinking: bool) bool {
     Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {}; // already-exists is fine
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -2984,6 +2984,11 @@ fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: b
         _ = root_obj.orderedRemove("ultracode");
     } else {
         root_obj.put(a, "ultracode", .{ .bool = true }) catch return false;
+    }
+    if (show_thinking) {
+        _ = root_obj.orderedRemove("show_thinking");
+    } else {
+        root_obj.put(a, "show_thinking", .{ .bool = false }) catch return false;
     }
     var aw: Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
@@ -3020,6 +3025,9 @@ fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
     };
     if (v.object.get("ultracode")) |uv| if (uv == .bool) {
         root.ultracode_mode = uv.bool;
+    };
+    if (v.object.get("show_thinking")) |sv| if (sv == .bool) {
+        root.show_thinking = sv.bool;
     };
 }
 
@@ -5047,21 +5055,21 @@ pub fn main(init: std.process.Init) !void {
                     root.emit(.{ .type = "error", .message = "set_effort needs level 'low', 'medium', or 'high'" });
                     continue;
                 }
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode);
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
                 root.emit(.{ .type = "effort", .ok = true, .level = level, .applies = root.effortApplies() });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "set_fast")) {
                 const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
                 root.fast = on;
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode);
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
                 root.emit(.{ .type = "fast", .ok = true, .on = on, .applies = root.provider.kind == .responses });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "set_ultracode")) {
                 const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
                 root.ultracode_mode = on;
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode);
+                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
                 root.emit(.{ .type = "ultracode", .ok = true, .on = on });
                 continue;
             }
@@ -5853,6 +5861,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/reasoning", .desc = "alias for /effort" },
     .{ .name = "/fast", .desc = "codex priority service tier — lower latency (gpt-5.5)" },
     .{ .name = "/ultracode", .desc = "toggle persistent ultracode (multi-agent workflow) mode" },
+    .{ .name = "/thinking", .desc = "show/collapse the model's live reasoning stream" },
     .{ .name = "/image", .desc = "attach an image to the next message" },
     .{ .name = "/paste", .desc = "attach the clipboard image" },
     .{ .name = "/trace", .desc = "toggle the JSONL event trace" },
@@ -6390,10 +6399,21 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/fast") or std.mem.eql(u8, line, "/fast on") or std.mem.eql(u8, line, "/fast off")) {
         root.fast = if (std.mem.eql(u8, line, "/fast on")) true else if (std.mem.eql(u8, line, "/fast off")) false else !root.fast;
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode);
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
         try out.print("fast mode: {s}{s}\n", .{
             if (root.fast) "on" else "off",
             if (root.provider.kind != .responses) " (codex only — current model ignores it)" else "",
+        });
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/thinking") or std.mem.eql(u8, line, "/thinking on") or std.mem.eql(u8, line, "/thinking off")) {
+        root.show_thinking = if (std.mem.eql(u8, line, "/thinking on")) true else if (std.mem.eql(u8, line, "/thinking off")) false else !root.show_thinking;
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
+        try out.print("thinking: {s} ({s}){s}\n", .{
+            if (root.show_thinking) "shown" else "collapsed",
+            if (root.show_thinking) "stream reasoning live" else "spinner only",
+            if (saved) "" else " (not persisted)",
         });
         try out.flush();
         return;
@@ -6417,7 +6437,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return;
         };
         root.ultracode_mode = next;
-        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode);
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
         try out.print("ultracode mode: {s}{s}\n", .{ if (root.ultracode_mode) "on" else "off", if (saved) "" else " (not persisted)" });
         try out.flush();
         return;
@@ -6436,7 +6456,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return;
         }
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode);
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking);
         try out.print("reasoning effort: {s}{s}\n", .{
             @tagName(root.reasoning),
             if (!root.effortApplies()) " (current model ignores it — applies to codex, deepseek, codegraff)" else "",
@@ -8264,6 +8284,7 @@ const Agent = struct {
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
     ultracode_mode: bool = false, // persistent ultracode (multi-agent workflow) mode (/ultracode)
+    show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
     goal: ?[]const u8 = null, // persistent objective steering (/goal)
     session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
     session_title: ?[]const u8 = null, // human-readable title/rename metadata
@@ -8283,6 +8304,7 @@ const Agent = struct {
     partial_text: std.ArrayList(u8) = .empty,
     stream_quiet: bool = false, // suppress live streaming (compaction summary)
     streamed_text: bool = false, // the last request printed its text live
+    thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
     arg_live: ArgLive = .{}, // live attempt_completion/ask_user argument text
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
     streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
@@ -9553,9 +9575,37 @@ const Agent = struct {
         }
     }
 
+    /// Stream a chunk of the model's reasoning into a live, dimmed "Thinking"
+    /// block in the terminal, opening the block (and handing the line off from
+    /// the spinner) on the first chunk. Gated by /thinking; when off the block
+    /// is never opened and the spinner stands in for it. Append-only: reasoning
+    /// is shown as it arrives rather than retro-collapsing a printed block.
+    fn streamThinking(self: *Agent, chunk: []const u8) void {
+        const w = self.out orelse return;
+        if (!self.thinking_open) {
+            self.spinnerStop();
+            w.print("{s}Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
+            self.thinking_open = true;
+        }
+        w.writeAll(chunk) catch return;
+        w.flush() catch return;
+    }
+
+    /// Close an open "Thinking" block before normal output (or at stream end).
+    fn closeThinkingBlock(self: *Agent) void {
+        if (!self.thinking_open) return;
+        self.thinking_open = false;
+        const w = self.out orelse return;
+        w.writeAll(style.reset) catch return;
+        w.writeAll("\n\n") catch return;
+        w.flush() catch return;
+    }
+
     fn postStream(self: *Agent, body: []const u8) ![]u8 {
         self.spinnerStart();
         defer self.spinnerStop();
+        self.thinking_open = false; // fresh "Thinking" block state per request
+        defer self.closeThinkingBlock(); // close a reasoning-only turn's block
         const gpa = self.gpa;
         const provider = self.provider;
         const bearer = switch (provider.auth) {
@@ -9942,39 +9992,45 @@ const Agent = struct {
                 break :blk if (x == .string) x.string else "";
             },
         };
-        // Reasoning/thinking deltas → a separate `reasoning` event for JSON
-        // clients (terminal mode keeps showing the spinner). deepseek streams
-        // reasoning_content, anthropic a thinking_delta, codex a summary delta.
-        if (json_mode) {
-            const reasoning: []const u8 = switch (self.provider.kind) {
-                .anthropic => blk: {
-                    const d = obj.get("delta") orelse break :blk "";
-                    if (d != .object) break :blk "";
-                    const dt = d.object.get("type") orelse break :blk "";
-                    if (dt != .string or !std.mem.eql(u8, dt.string, "thinking_delta")) break :blk "";
-                    const x = d.object.get("thinking") orelse break :blk "";
-                    break :blk if (x == .string) x.string else "";
-                },
-                .openai => blk: {
-                    const choices = obj.get("choices") orelse break :blk "";
-                    if (choices != .array or choices.array.items.len == 0) break :blk "";
-                    const c0 = choices.array.items[0];
-                    if (c0 != .object) break :blk "";
-                    const d = c0.object.get("delta") orelse break :blk "";
-                    if (d != .object) break :blk "";
-                    const x = d.object.get("reasoning_content") orelse d.object.get("reasoning") orelse break :blk "";
-                    break :blk if (x == .string) x.string else "";
-                },
-                .responses => blk: {
-                    const t = obj.get("type") orelse break :blk "";
-                    if (t != .string or !std.mem.eql(u8, t.string, "response.reasoning_summary_text.delta")) break :blk "";
-                    const x = obj.get("delta") orelse break :blk "";
-                    break :blk if (x == .string) x.string else "";
-                },
-            };
-            if (reasoning.len != 0) self.emit(.{ .type = "reasoning", .text = reasoning });
+        // Reasoning/thinking deltas: deepseek streams reasoning_content, anthropic
+        // a thinking_delta, codex a summary delta. JSON clients get a `reasoning`
+        // event; on a TTY we stream it into a live, dimmed "Thinking" block when
+        // /thinking is enabled, otherwise the spinner stands in for it.
+        const reasoning: []const u8 = switch (self.provider.kind) {
+            .anthropic => blk: {
+                const d = obj.get("delta") orelse break :blk "";
+                if (d != .object) break :blk "";
+                const dt = d.object.get("type") orelse break :blk "";
+                if (dt != .string or !std.mem.eql(u8, dt.string, "thinking_delta")) break :blk "";
+                const x = d.object.get("thinking") orelse break :blk "";
+                break :blk if (x == .string) x.string else "";
+            },
+            .openai => blk: {
+                const choices = obj.get("choices") orelse break :blk "";
+                if (choices != .array or choices.array.items.len == 0) break :blk "";
+                const c0 = choices.array.items[0];
+                if (c0 != .object) break :blk "";
+                const d = c0.object.get("delta") orelse break :blk "";
+                if (d != .object) break :blk "";
+                const x = d.object.get("reasoning_content") orelse d.object.get("reasoning") orelse break :blk "";
+                break :blk if (x == .string) x.string else "";
+            },
+            .responses => blk: {
+                const t = obj.get("type") orelse break :blk "";
+                if (t != .string or !std.mem.eql(u8, t.string, "response.reasoning_summary_text.delta")) break :blk "";
+                const x = obj.get("delta") orelse break :blk "";
+                break :blk if (x == .string) x.string else "";
+            },
+        };
+        if (reasoning.len != 0) {
+            if (json_mode) {
+                self.emit(.{ .type = "reasoning", .text = reasoning });
+            } else if (self.show_thinking and !self.sub and !self.stream_quiet and use_color) {
+                self.streamThinking(reasoning);
+            }
         }
         if (text.len == 0) return;
+        if (self.thinking_open) self.closeThinkingBlock(); // reasoning → answer transition
         self.spinnerStop(); // first visible byte: clear the thinking line
         self.streamed_text = true;
         self.partial_text.appendSlice(self.arena, text) catch {}; // Esc-interrupt capture
