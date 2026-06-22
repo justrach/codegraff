@@ -33,29 +33,32 @@ export function useConversationActions(binding?: ChatBinding | null) {
     const promptDraftKey = getPromptDraftKey(workspacePath, conversationId);
 
     const restorePromptDraft = (
+      key: string | null,
       value: string,
       isPlanningMode: boolean,
       isUltraMode: boolean,
       attachments: ReturnType<typeof getAttachments>,
     ) => {
-      if (promptDraftKey == null) {
+      if (key == null) {
         return;
       }
       const store = sessionStore.getState();
-      store.setPromptDraftValue(promptDraftKey, value);
-      store.setPromptDraftPlanningMode(promptDraftKey, isPlanningMode);
-      store.setPromptDraftUltraMode(promptDraftKey, isUltraMode);
-      store.clearAttachments(promptDraftKey);
-      store.addAttachments(promptDraftKey, attachments);
+      store.setPromptDraftValue(key, value);
+      store.setPromptDraftPlanningMode(key, isPlanningMode);
+      store.setPromptDraftUltraMode(key, isUltraMode);
+      store.clearAttachments(key);
+      store.addAttachments(key, attachments);
     };
 
     const submitCapturedPrompt = async (
+      target: ChatBinding,
+      key: string | null,
       value: string,
       isPlanningMode: boolean,
       isUltraMode: boolean,
       attachments: ReturnType<typeof getAttachments>,
     ) => {
-      if (promptDraftKey == null) {
+      if (key == null) {
         return;
       }
 
@@ -70,14 +73,14 @@ export function useConversationActions(binding?: ChatBinding | null) {
       }
 
       const store = sessionStore.getState();
-      store.clearPromptDraft(promptDraftKey);
-      store.setPromptDraftUltraMode(promptDraftKey, false);
-      store.clearAttachments(promptDraftKey);
-      store.setPromptDraftPending(promptDraftKey, true);
+      store.clearPromptDraft(key);
+      store.setPromptDraftUltraMode(key, false);
+      store.clearAttachments(key);
+      store.setPromptDraftPending(key, true);
       const optimisticRequestId = `optimistic-${Date.now()}`;
       const agentId = isPlanningMode ? "muse" : "forge";
       store.appendOptimisticUserMessage(
-        { conversationId, workspacePath },
+        target,
         optimisticRequestId,
         prompt,
         agentId,
@@ -85,20 +88,20 @@ export function useConversationActions(binding?: ChatBinding | null) {
       try {
         const snapshot = await desktopClient.sendPrompt({
           agentId,
-          conversationId,
+          conversationId: target.conversationId,
           prompt,
-          workspacePath,
+          workspacePath: target.workspacePath,
         });
         sessionStore.getState().applySessionSnapshot(snapshot);
       } catch {
         sessionStore.getState().removeOptimisticRequest(
-          { conversationId, workspacePath },
+          target,
           optimisticRequestId,
         );
-        restorePromptDraft(value, isPlanningMode, isUltraMode, attachments);
+        restorePromptDraft(key, value, isPlanningMode, isUltraMode, attachments);
         return;
       } finally {
-        sessionStore.getState().setPromptDraftPending(promptDraftKey, false);
+        sessionStore.getState().setPromptDraftPending(key, false);
       }
     };
 
@@ -169,35 +172,48 @@ export function useConversationActions(binding?: ChatBinding | null) {
           .catch(() => null);
       },
       submitPrompt: async (input?: SubmitPromptInput) => {
-        if (promptDraftKey == null) {
+        const target: ChatBinding =
+          typeof input === "object" && input != null
+            ? {
+                conversationId: input.conversationId ?? conversationId,
+                workspacePath: input.workspacePath ?? workspacePath,
+              }
+            : { conversationId, workspacePath };
+        const targetPromptDraftKey = getPromptDraftKey(
+          target.workspacePath,
+          target.conversationId,
+        );
+        if (targetPromptDraftKey == null) {
           return;
         }
 
-        const draftState = getPromptDraftState(promptDraftKey);
+        const draftState = getPromptDraftState(targetPromptDraftKey);
         const draftValue = typeof input === "string" ? input : input?.draft ?? draftState.value;
         const trimmedPrompt = draftValue.trim();
         if (trimmedPrompt.length === 0) {
           return;
         }
 
-        const attachments = getAttachments(promptDraftKey);
+        const attachments = getAttachments(targetPromptDraftKey);
         const activeRequestCount =
-          getConversationView(binding)?.activeRequestIds.length ?? 0;
+          getConversationView(target)?.activeRequestIds.length ?? 0;
         if (activeRequestCount > 0) {
           const store = sessionStore.getState();
-          store.enqueuePrompt(promptDraftKey, {
+          store.enqueuePrompt(targetPromptDraftKey, {
             attachments,
             isPlanningMode: draftState.isPlanningMode,
             isUltraMode: draftState.isUltraMode,
             value: trimmedPrompt,
           });
-          store.clearPromptDraft(promptDraftKey);
-          store.setPromptDraftUltraMode(promptDraftKey, false);
-          store.clearAttachments(promptDraftKey);
+          store.clearPromptDraft(targetPromptDraftKey);
+          store.setPromptDraftUltraMode(targetPromptDraftKey, false);
+          store.clearAttachments(targetPromptDraftKey);
           return;
         }
 
         await submitCapturedPrompt(
+          target,
+          targetPromptDraftKey,
           trimmedPrompt,
           draftState.isPlanningMode,
           draftState.isUltraMode,

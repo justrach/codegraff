@@ -477,14 +477,21 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
           binding.workspacePath,
           binding.conversationId,
         );
-        const existing = current.conversationViewsByKey[key];
-        if (existing == null) {
-          return current;
-        }
+        const existing = current.conversationViewsByKey[key] ?? {
+          activeRequestIds: [],
+          conversationId: binding.conversationId,
+          followup: null,
+          messages: [],
+          requestAgentIds: {},
+          todos: [],
+          workspacePath: binding.workspacePath,
+        } satisfies ConversationViewSnapshot;
         if (existing.messages.some((message) => message.id === `${requestId}-user`)) {
           return current;
         }
         return {
+          activeConversationId: binding.conversationId,
+          activeWorkspacePath: binding.workspacePath,
           conversationViewsByKey: {
             ...current.conversationViewsByKey,
             [key]: {
@@ -507,6 +514,10 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
                   : { ...existing.requestAgentIds, [requestId]: agentId },
             },
           },
+          selection: {
+            kind: "single-chat",
+            chat: binding,
+          },
         };
       });
     },
@@ -521,24 +532,44 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
         if (existing == null) {
           return current;
         }
+        const nextView = {
+          ...existing,
+          activeRequestIds: existing.activeRequestIds.filter(
+            (id) => id !== requestId,
+          ),
+          messages: existing.messages.filter(
+            (message) => message.requestId !== requestId,
+          ),
+          requestAgentIds: Object.fromEntries(
+            Object.entries(existing.requestAgentIds).filter(
+              ([id]) => id !== requestId,
+            ),
+          ),
+        };
+        const nextViewsByKey = { ...current.conversationViewsByKey };
+        const hasSummary = current.conversationSummariesByKey[key] != null;
+        const shouldDropEmptyOptimisticView =
+          !hasSummary &&
+          nextView.messages.length === 0 &&
+          nextView.activeRequestIds.length === 0;
+        if (shouldDropEmptyOptimisticView) {
+          delete nextViewsByKey[key];
+        } else {
+          nextViewsByKey[key] = nextView;
+        }
+        const isActiveOptimisticView =
+          current.activeWorkspacePath === binding.workspacePath &&
+          current.activeConversationId === binding.conversationId;
         return {
-          conversationViewsByKey: {
-            ...current.conversationViewsByKey,
-            [key]: {
-              ...existing,
-              activeRequestIds: existing.activeRequestIds.filter(
-                (id) => id !== requestId,
-              ),
-              messages: existing.messages.filter(
-                (message) => message.requestId !== requestId,
-              ),
-              requestAgentIds: Object.fromEntries(
-                Object.entries(existing.requestAgentIds).filter(
-                  ([id]) => id !== requestId,
-                ),
-              ),
-            },
-          },
+          activeConversationId:
+            shouldDropEmptyOptimisticView && isActiveOptimisticView
+              ? null
+              : current.activeConversationId,
+          conversationViewsByKey: nextViewsByKey,
+          selection:
+            shouldDropEmptyOptimisticView && isActiveOptimisticView
+              ? { kind: "workspace-draft", workspacePath: binding.workspacePath }
+              : current.selection,
         };
       });
     },

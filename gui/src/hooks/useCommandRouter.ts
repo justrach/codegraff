@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useSettingsNavigation } from "@/app/settingsNavigationContext";
 import { sessionStore } from "@/app/sessionStore";
@@ -22,6 +22,20 @@ const ARG_COMMANDS = new Set([
   "loop",
   "bash",
   "reasoning-effort",
+]);
+
+const LOCAL_COMMANDS = new Set([
+  "act",
+  "compact",
+  "delete",
+  "forge",
+  "login",
+  "mcp-settings",
+  "muse",
+  "new",
+  "plan",
+  "provider",
+  "logout",
 ]);
 
 interface ParsedCommand {
@@ -68,9 +82,63 @@ export function useCommandRouter(
   const workspacePath = binding?.workspacePath ?? null;
   const conversationId = binding?.conversationId ?? null;
   const { onCommandResult } = options;
+  const [commands, setCommands] = useState<CommandDescriptor[]>([]);
+  const [commandsLoaded, setCommandsLoaded] = useState(false);
   const [commandResult, setCommandResult] = useState<CommandRunResult | null>(
     null,
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    desktopClient
+      .listCommands(workspacePath)
+      .then((result) => {
+        if (!cancelled) {
+          setCommands(result);
+          setCommandsLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCommands([]);
+          setCommandsLoaded(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspacePath]);
+
+  const resolveCommand = useCallback(
+    (name: string): CommandDescriptor | null => {
+      const needle = name.toLowerCase();
+      return (
+        commands.find(
+          (candidate) =>
+            candidate.name.toLowerCase() === needle ||
+            candidate.aliases.some((alias) => alias.toLowerCase() === needle),
+        ) ?? null
+      );
+    },
+    [commands],
+  );
+
+  const canonicalCommandName = useCallback(
+    (name: string): string => resolveCommand(name)?.name ?? name,
+    [resolveCommand],
+  );
+
+  const isRunnableSlashCommand = useCallback(
+    (name: string): boolean => {
+      const canonicalName = canonicalCommandName(name);
+      if (LOCAL_COMMANDS.has(canonicalName) || canonicalName.startsWith("agent-")) {
+        return true;
+      }
+      return commandsLoaded && resolveCommand(name) != null;
+    },
+    [canonicalCommandName, commandsLoaded, resolveCommand],
+  );
+
   const publishCommandResult = useCallback(
     (result: CommandRunResult) => {
       if (result.payload?.kind === "workflowDraft") {
@@ -103,9 +171,14 @@ export function useCommandRouter(
           }
         })
         .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes("/api/run_slash_command") && message.includes("404")) {
+            setCommands([]);
+            setCommandsLoaded(false);
+          }
           const result = {
             title: "Command failed",
-            body: error instanceof Error ? error.message : String(error),
+            body: message,
             snapshot: null,
             savedPath: null,
             resultKind: "text",
@@ -224,13 +297,16 @@ export function useCommandRouter(
       if (parsed == null) {
         return false;
       }
-      const handled = dispatch(parsed.name, parsed.args);
+      if (!isRunnableSlashCommand(parsed.name)) {
+        return false;
+      }
+      const handled = dispatch(canonicalCommandName(parsed.name), parsed.args);
       if (handled) {
         setPromptDraft("");
       }
       return handled;
     },
-    [dispatch, setPromptDraft],
+    [canonicalCommandName, dispatch, isRunnableSlashCommand, setPromptDraft],
   );
 
   return {

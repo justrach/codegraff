@@ -560,7 +560,10 @@ export function pickWorkspace(): Promise<string | null> {
   if (!hasMerInvoke()) {
     return Promise.resolve(null);
   }
-  return merInvoke("dialog.pickDirectory", { title: "Open project" });
+  return merInvoke("dialog.pickDirectory", {
+    title: "Open project",
+    canCreateDirectories: true,
+  });
 }
 
 export function pickDirectory(title?: string): Promise<string | null> {

@@ -28,8 +28,13 @@ export function NewChatPromptSection({
   focusSignal?: number;
   onCommandResult?: (result: CommandRunResult) => void;
 }) {
-  const { hasCurrentWorkspace, messages, requestAgentIds, workspaceKind } =
-    useConversationSession(binding);
+  const {
+    hasCurrentWorkspace,
+    messages,
+    requestAgentIds,
+    workspaceKind,
+    workspacePath: sessionWorkspacePath,
+  } = useConversationSession(binding);
   const {
     canCompose,
     followupRequest,
@@ -51,7 +56,7 @@ export function NewChatPromptSection({
     string | null
   >(null);
   const {
-    workspacePath,
+    workspacePath: commandWorkspacePath,
     handleCommandSelect,
     trySubmitAsCommand,
     commandResult,
@@ -86,12 +91,44 @@ export function NewChatPromptSection({
           : {
               conversationId: binding?.conversationId ?? null,
               draft,
-              workspacePath: binding?.workspacePath ?? workspacePath ?? null,
+              workspacePath:
+                binding?.workspacePath ??
+                sessionWorkspacePath ??
+                commandWorkspacePath ??
+                null,
             },
       );
     },
-    [binding, promptDraft, setPromptDraft, submitPrompt, trySubmitAsCommand, workspacePath],
+    [
+      binding,
+      commandWorkspacePath,
+      promptDraft,
+      sessionWorkspacePath,
+      setPromptDraft,
+      submitPrompt,
+      trySubmitAsCommand,
+    ],
   );
+  const handleApproveWorkflow = useCallback(
+    async (prompt: string) => {
+      const activeBinding =
+        binding ?? getUiActiveBinding(sessionStore.getState());
+      if (activeBinding == null) {
+        setPromptDraft(prompt);
+        return;
+      }
+      const snapshot = await desktopClient.sendPrompt({
+        workspacePath: activeBinding.workspacePath,
+        conversationId: activeBinding.conversationId,
+        agentId: isPlanningMode ? "muse" : "forge",
+        prompt,
+      });
+      sessionStore.getState().applySessionSnapshot(snapshot);
+      dismissCommandResult();
+    },
+    [binding, dismissCommandResult, isPlanningMode, setPromptDraft],
+  );
+
   const handleImplementPlan = useCallback(async () => {
     if (lastAssistant == null) {
       return;
@@ -156,7 +193,7 @@ export function NewChatPromptSection({
         promptSettings={promptSettings}
         isInputDisabled={!hasCurrentWorkspace}
         binding={binding}
-        workspacePath={workspacePath}
+        workspacePath={sessionWorkspacePath ?? commandWorkspacePath}
         onCommandSelect={handleCommandSelect}
         setPlanningMode={setPlanningMode}
         setUltraMode={setUltraMode}
@@ -168,6 +205,7 @@ export function NewChatPromptSection({
       <CommandResultDialog
         result={commandResult}
         onClose={dismissCommandResult}
+        onApproveWorkflow={handleApproveWorkflow}
       />
     </>
   );

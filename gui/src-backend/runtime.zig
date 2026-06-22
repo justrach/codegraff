@@ -495,6 +495,7 @@ pub const Runtime = struct {
                 .text = "Conversation compaction requested. The next prompt will continue in a fresh graff session.",
             }) catch {};
             conv.updated_at = nowMillis();
+            self.writeConversationSessionFileLocked(conv);
         }
         self.bumpLocked();
         self.mutex.unlock(mer_runtime.io);
@@ -559,7 +560,8 @@ pub const Runtime = struct {
         const root = parse(req) catch return badJson(req);
         const name = stringField(root, "name") orelse "help";
         const args_text = joinArgs(req.allocator, root) catch return oom();
-        if (std.mem.eql(u8, name, "agent")) return mer.json("{\"title\":\"/agent\",\"body\":\"Active agent: Forge\",\"snapshot\":null,\"savedPath\":null,\"resultKind\":\"agents\",\"payload\":{\"kind\":\"agents\",\"activeAgentId\":\"forge\",\"selectedProviderId\":\"codegraff\",\"selectedModelId\":\"default\",\"selectedReasoningEffort\":null,\"agents\":[{\"id\":\"forge\",\"title\":\"Forge\",\"description\":\"Default Codegraff assistant.\",\"isActive\":true,\"modelId\":\"default\"}]}}");
+        if (std.mem.eql(u8, name, "help")) return mer.json("{\"title\":\"/help\",\"body\":\"Available commands: /help, /agent, /goal, /loop, /bash <command>, /compact, /workspace-status, /workspace-info, /workspace-query <query>, /workflow <goal>, /reasoning-effort <low|medium|high>, /mcp.\",\"snapshot\":null,\"savedPath\":null,\"resultKind\":\"text\",\"payload\":null}");
+        if (std.mem.eql(u8, name, "agent")) return self.agentCommand(req);
         if (std.mem.eql(u8, name, "bash")) {
             var out: std.Io.Writer.Allocating = .init(req.allocator);
             out.writer.writeAll("{\"title\":") catch return oom();
@@ -572,6 +574,21 @@ pub const Runtime = struct {
         if (std.mem.eql(u8, name, "goal")) return self.goalCommand(req, root, args_text);
         if (std.mem.eql(u8, name, "loop")) return self.loopCommand(req, root, args_text);
         if (std.mem.eql(u8, name, "compact")) {
+            const cid = stringField(root, "conversationId") orelse return bad(req, "missing conversationId");
+            self.mutex.lockUncancelable(mer_runtime.io);
+            if (self.conversations.get(cid)) |conv| {
+                const rid = self.uniqueId("compact");
+                conv.messages.append(self.arena, .{
+                    .kind = .context_compacted,
+                    .id = rid,
+                    .request_id = rid,
+                    .text = "Conversation compaction requested. The next prompt will continue in a fresh graff session.",
+                }) catch {};
+                conv.updated_at = nowMillis();
+                self.writeConversationSessionFileLocked(conv);
+                self.bumpLocked();
+            }
+            self.mutex.unlock(mer_runtime.io);
             const snap = self.snapshotJson(req.allocator) catch return oom();
             var out: std.Io.Writer.Allocating = .init(req.allocator);
             out.writer.writeAll("{\"title\":\"/compact\",\"body\":null,\"snapshot\":") catch return oom();
@@ -579,8 +596,13 @@ pub const Runtime = struct {
             out.writer.writeAll(",\"savedPath\":null,\"resultKind\":\"snapshot\",\"payload\":null}") catch return oom();
             return mer.json(out.written());
         }
+        if (std.mem.eql(u8, name, "reasoning-effort") or std.mem.eql(u8, name, "effort") or std.mem.eql(u8, name, "reasoning")) return self.reasoningEffortCommand(req, args_text);
+        if (std.mem.eql(u8, name, "workflow")) return self.workflowCommand(req, args_text);
+        if (std.mem.eql(u8, name, "workspace-query") or std.mem.eql(u8, name, "workspace-search")) return self.workspaceQueryCommand(req, root, args_text);
+        if (std.mem.eql(u8, name, "workspace-info")) return self.workspaceInfoCommand(req, root);
+        if (std.mem.eql(u8, name, "mcp")) return mer.json("{\"title\":\"/mcp\",\"body\":\"No MCP servers are configured in the Zig backend yet.\",\"snapshot\":null,\"savedPath\":null,\"resultKind\":\"mcp\",\"payload\":{\"kind\":\"mcp\",\"servers\":[]}}");
         if (std.mem.eql(u8, name, "workspace-status")) return self.workspaceStatusCommand(req, root);
-        return mer.json("{\"title\":\"/help\",\"body\":\"Available MVP commands: /help, /agent, /goal, /loop, /bash <command>, /compact, /workspace-status.\",\"snapshot\":null,\"savedPath\":null,\"resultKind\":\"text\",\"payload\":null}");
+        return commandText(req, "Command failed", self.fmt("Unknown command: /{s}. Run /help for the list.", .{name}));
     }
 
     fn goalCommand(self: *Runtime, req: mer.Request, root: Value, args_text: []const u8) mer.Response {
@@ -593,13 +615,17 @@ pub const Runtime = struct {
                     self.mutex.unlock(mer_runtime.io);
                     return commandText(req, "/goal", body);
                 }
-                if (std.mem.eql(u8, args_text, "clear")) {
+                if (std.mem.eql(u8, args_text, "clear") or std.mem.eql(u8, args_text, "off")) {
                     conv.goal = null;
+                    conv.updated_at = nowMillis();
+                    self.writeConversationSessionFileLocked(conv);
                     self.bumpLocked();
                     self.mutex.unlock(mer_runtime.io);
                     return commandText(req, "/goal", "Goal cleared. Future turns will not get goal steering.");
                 }
                 conv.goal = self.dupe(args_text);
+                conv.updated_at = nowMillis();
+                self.writeConversationSessionFileLocked(conv);
                 self.bumpLocked();
                 const body = self.fmt("Goal set: {s}", .{args_text});
                 self.mutex.unlock(mer_runtime.io);
@@ -625,6 +651,8 @@ pub const Runtime = struct {
         conv.messages.append(self.arena, .{ .kind = .user, .id = self.fmt("{s}-user", .{request_id}), .request_id = request_id, .text = self.fmt("/loop {s}", .{prompt}) }) catch {};
         conv.messages.append(self.arena, .{ .kind = .assistant, .id = self.fmt("{s}-assistant", .{request_id}), .request_id = request_id, .text = "Loop mode is not fully implemented in the Zig backend yet. This placeholder keeps the release UI flow active." }) catch {};
         conv.updated_at = nowMillis();
+        self.writeConversationSessionFileLocked(conv);
+        self.saveGuiStateLocked();
         self.bumpLocked();
         self.mutex.unlock(mer_runtime.io);
 
@@ -633,6 +661,98 @@ pub const Runtime = struct {
         out.writer.writeAll("{\"title\":\"/loop\",\"body\":\"Started an autonomous plan-act-verify pass.\",\"snapshot\":") catch return oom();
         out.writer.writeAll(snap) catch return oom();
         out.writer.writeAll(",\"savedPath\":null,\"resultKind\":\"snapshot\",\"payload\":null}") catch return oom();
+        return mer.json(out.written());
+    }
+
+    fn reasoningEffortCommand(self: *Runtime, req: mer.Request, args_text: []const u8) mer.Response {
+        self.ensurePromptSettingsLoaded();
+        const level = std.mem.trim(u8, args_text, " \t\r\n");
+        if (level.len == 0) {
+            const current = self.settings.selected_effort orelse default_reasoning_effort;
+            return commandText(req, "/reasoning-effort", self.fmt("Reasoning effort is **{s}**. Set it with /reasoning-effort <low|medium|high>.", .{current}));
+        }
+        if (!validReasoningEffort(level)) return commandText(req, "/reasoning-effort", "Usage: /reasoning-effort <low|medium|high>");
+        self.mutex.lockUncancelable(mer_runtime.io);
+        self.settings.selected_effort = self.dupe(level);
+        self.savePromptSettingsLocked();
+        self.bumpLocked();
+        self.mutex.unlock(mer_runtime.io);
+        return commandText(req, "/reasoning-effort", self.fmt("Reasoning effort is now **{s}**.", .{level}));
+    }
+
+    fn workflowCommand(_: *Runtime, req: mer.Request, args_text: []const u8) mer.Response {
+        const goal = if (args_text.len > 0) args_text else "Draft a workflow.";
+        var out: std.Io.Writer.Allocating = .init(req.allocator);
+        out.writer.writeAll("{\"title\":\"/workflow\",\"body\":\"Review the generated workflow before approving.\",\"snapshot\":null,\"savedPath\":null,\"resultKind\":\"workflowDraft\",\"payload\":{\"kind\":\"workflowDraft\",\"goal\":") catch return oom();
+        writeString(&out.writer, goal) catch return oom();
+        out.writer.writeAll(",\"summary\":\"Zig backend workflow draft placeholder.\",\"nodes\":[],\"exportText\":") catch return oom();
+        writeString(&out.writer, std.fmt.allocPrint(req.allocator, "goal: {s}\nnodes: []", .{goal}) catch "nodes: []") catch return oom();
+        out.writer.writeAll(",\"approvedPrompt\":") catch return oom();
+        writeString(&out.writer, goal) catch return oom();
+        out.writer.writeAll(",\"trace\":[\"Created workflow draft in the Zig backend\"]}}") catch return oom();
+        return mer.json(out.written());
+    }
+
+    fn workspaceQueryCommand(_: *Runtime, req: mer.Request, root: Value, args_text: []const u8) mer.Response {
+        const workspace = stringField(root, "workspacePath") orelse "";
+        var out: std.Io.Writer.Allocating = .init(req.allocator);
+        out.writer.writeAll("{\"title\":\"/workspace-query\",\"body\":\"Workspace semantic search is not indexed by the Zig backend yet.\",\"snapshot\":null,\"savedPath\":null,\"resultKind\":\"workspaceSearch\",\"payload\":{\"kind\":\"workspaceSearch\",\"workspacePath\":") catch return oom();
+        writeString(&out.writer, workspace) catch return oom();
+        out.writer.writeAll(",\"query\":") catch return oom();
+        writeString(&out.writer, args_text) catch return oom();
+        out.writer.writeAll(",\"results\":[]}}") catch return oom();
+        return mer.json(out.written());
+    }
+
+    fn workspaceInfoCommand(_: *Runtime, req: mer.Request, root: Value) mer.Response {
+        const workspace = stringField(root, "workspacePath") orelse "";
+        var out: std.Io.Writer.Allocating = .init(req.allocator);
+        out.writer.writeAll("{\"title\":\"/workspace-info\",\"body\":\"Workspace metadata loaded.\",\"snapshot\":null,\"savedPath\":null,\"resultKind\":\"workspaceInfo\",\"payload\":{\"kind\":\"workspaceInfo\",\"workspacePath\":") catch return oom();
+        writeString(&out.writer, workspace) catch return oom();
+        out.writer.writeAll(",\"workspaceId\":null,\"workingDir\":") catch return oom();
+        writeNullableString(&out.writer, if (workspace.len == 0) null else workspace) catch return oom();
+        out.writer.writeAll(",\"nodeCount\":null,\"relationCount\":null,\"lastUpdated\":null,\"createdAt\":null}}") catch return oom();
+        return mer.json(out.written());
+    }
+
+    fn writeAgentsPayload(self: *Runtime, w: *std.Io.Writer, include_kind: bool) !void {
+        self.ensurePromptSettingsLoaded();
+        const provider = self.settings.selected_provider orelse "codegraff";
+        const model = self.settings.selected_model orelse "default";
+        const effort = effectiveReasoningEffort(provider, model, self.settings.selected_effort);
+        const active = self.active_agent_id;
+        if (include_kind) try w.writeAll("{\"kind\":\"agents\",") else try w.writeByte('{');
+        try w.writeAll("\"activeAgentId\":");
+        try writeString(w, active);
+        try w.writeAll(",\"selectedProviderId\":");
+        try writeString(w, provider);
+        try w.writeAll(",\"selectedModelId\":");
+        try writeString(w, model);
+        try w.writeAll(",\"selectedReasoningEffort\":");
+        try writeNullableString(w, effort);
+        try w.writeAll(",\"agents\":[");
+        inline for (.{ .{ "forge", "Forge", "Implementation assistant for coding tasks." }, .{ "muse", "Muse", "Planning assistant for read-only analysis." }, .{ "sage", "Sage", "Research assistant for deeper analysis." } }, 0..) |agent, i| {
+            if (i > 0) try w.writeByte(',');
+            try w.writeAll("{\"id\":");
+            try writeString(w, agent[0]);
+            try w.writeAll(",\"title\":");
+            try writeString(w, agent[1]);
+            try w.writeAll(",\"description\":");
+            try writeString(w, agent[2]);
+            try w.writeAll(",\"isActive\":");
+            try w.writeAll(if (std.mem.eql(u8, active, agent[0])) "true" else "false");
+            try w.writeAll(",\"modelId\":");
+            try writeString(w, model);
+            try w.writeByte('}');
+        }
+        try w.writeAll("]}");
+    }
+
+    fn agentCommand(self: *Runtime, req: mer.Request) mer.Response {
+        var out: std.Io.Writer.Allocating = .init(req.allocator);
+        out.writer.writeAll("{\"title\":\"/agent\",\"body\":\"Active agent status.\",\"snapshot\":null,\"savedPath\":null,\"resultKind\":\"agents\",\"payload\":") catch return oom();
+        self.writeAgentsPayload(&out.writer, true) catch return oom();
+        out.writer.writeByte('}') catch return oom();
         return mer.json(out.written());
     }
 
@@ -691,7 +811,9 @@ pub const Runtime = struct {
         self.active_agent_id = self.dupe(agent);
         self.bumpLocked();
         self.mutex.unlock(mer_runtime.io);
-        return mer.json("{\"activeAgentId\":\"forge\",\"selectedProviderId\":\"codegraff\",\"selectedModelId\":\"default\",\"selectedReasoningEffort\":null,\"agents\":[{\"id\":\"forge\",\"title\":\"Forge\",\"description\":\"Default Codegraff assistant.\",\"isActive\":true,\"modelId\":\"default\"}]}");
+        var out: std.Io.Writer.Allocating = .init(req.allocator);
+        self.writeAgentsPayload(&out.writer, false) catch return oom();
+        return mer.json(out.written());
     }
 
     fn setEffort(self: *Runtime, req: mer.Request) mer.Response {
@@ -3034,7 +3156,7 @@ fn oom() mer.Response {
 }
 
 const commands_json =
-    \\[{"name":"help","usage":"Show available commands.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":false,"requiresConversation":false,"argumentHint":null,"resultKind":"text"},{"name":"agent","usage":"Show active agent.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":false,"requiresConversation":false,"argumentHint":null,"resultKind":"agents"},{"name":"bash","usage":"Run a shell command in the workspace.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":true,"requiresConversation":false,"argumentHint":"<command>","resultKind":"text"},{"name":"goal","usage":"Set/show the current objective.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":false,"requiresConversation":true,"argumentHint":"<objective|clear>","resultKind":"text"},{"name":"loop","usage":"Run an autonomous plan-act-verify pass.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":true,"requiresConversation":true,"argumentHint":"<prompt>","resultKind":"snapshot"},{"name":"compact","usage":"Compact current conversation.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":true,"requiresConversation":true,"argumentHint":null,"resultKind":"text"},{"name":"workspace-status","usage":"Show git status.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":true,"requiresConversation":false,"argumentHint":null,"resultKind":"workspaceStatus"}]
+    \\[{"name":"help","usage":"Show available commands.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":false,"requiresConversation":false,"argumentHint":null,"resultKind":"text"},{"name":"agent","usage":"Show active agent.","aliases":["agents"],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":false,"requiresConversation":false,"argumentHint":null,"resultKind":"agents"},{"name":"bash","usage":"Show a shell command for terminal execution.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"terminalAssisted","requiresWorkspace":true,"requiresConversation":false,"argumentHint":"<command>","resultKind":"text"},{"name":"goal","usage":"Set/show the current objective.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":false,"requiresConversation":true,"argumentHint":"<objective|clear>","resultKind":"text"},{"name":"loop","usage":"Run an autonomous plan-act-verify pass.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":true,"requiresConversation":true,"argumentHint":"<prompt>","resultKind":"snapshot"},{"name":"compact","usage":"Compact current conversation.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":true,"requiresConversation":true,"argumentHint":null,"resultKind":"snapshot"},{"name":"workspace-status","usage":"Show git status.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":true,"requiresConversation":false,"argumentHint":null,"resultKind":"workspaceStatus"},{"name":"workspace-info","usage":"Show workspace metadata.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":true,"requiresConversation":false,"argumentHint":null,"resultKind":"workspaceInfo"},{"name":"workspace-query","usage":"Search workspace semantically.","aliases":["workspace-search"],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":true,"requiresConversation":false,"argumentHint":"<query>","resultKind":"workspaceSearch"},{"name":"workflow","usage":"Draft a reviewable workflow.","aliases":[],"kind":"workflow","value":null,"isAgentSwitch":false,"executionKind":"modal","requiresWorkspace":false,"requiresConversation":false,"argumentHint":"<goal>","resultKind":"workflowDraft"},{"name":"reasoning-effort","usage":"Set reasoning effort.","aliases":["effort","reasoning"],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":false,"requiresConversation":false,"argumentHint":"<low|medium|high>","resultKind":"text"},{"name":"mcp","usage":"Show MCP server status.","aliases":[],"kind":"builtin","value":null,"isAgentSwitch":false,"executionKind":"runnable","requiresWorkspace":false,"requiresConversation":false,"argumentHint":null,"resultKind":"mcp"}]
 ;
 
 pub fn handleEvents(

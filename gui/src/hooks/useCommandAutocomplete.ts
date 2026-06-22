@@ -158,6 +158,7 @@ export function useCommandAutocomplete({
   if (query !== lastQuery) {
     setLastQuery(query);
     setActiveIndex(0);
+    setDismissedQuery(null);
   }
 
   const safeIndex = activeIndex < items.length ? activeIndex : 0;

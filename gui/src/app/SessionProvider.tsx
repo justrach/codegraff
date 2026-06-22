@@ -643,15 +643,17 @@ export function SessionProvider({ children }: SessionProviderProps) {
         const agentId = draftState.isPlanningMode ? "muse" : "forge";
         const store = sessionStore.getState();
         const optimisticRequestId = `optimistic-${Date.now()}`;
+        const optimisticBinding = {
+          conversationId: conversationId ?? `optimistic-chat-${Date.now()}`,
+          workspacePath,
+        };
         store.setPromptDraftPending(promptDraftKey, true);
-        if (conversationId != null) {
-          store.appendOptimisticUserMessage(
-            { conversationId, workspacePath },
-            optimisticRequestId,
-            prompt,
-            agentId,
-          );
-        }
+        store.appendOptimisticUserMessage(
+          optimisticBinding,
+          optimisticRequestId,
+          prompt,
+          agentId,
+        );
 
         const snapshot = await desktopClient
           .sendPrompt({
@@ -662,12 +664,10 @@ export function SessionProvider({ children }: SessionProviderProps) {
           })
           .catch(() => null);
         if (snapshot == null) {
-          if (conversationId != null) {
-            sessionStore.getState().removeOptimisticRequest(
-              { conversationId, workspacePath },
-              optimisticRequestId,
-            );
-          }
+          sessionStore.getState().removeOptimisticRequest(
+            optimisticBinding,
+            optimisticRequestId,
+          );
           restorePromptDraft();
           sessionStore.getState().setPromptDraftPending(promptDraftKey, false);
           return;

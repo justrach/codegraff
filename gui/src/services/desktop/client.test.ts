@@ -133,7 +133,10 @@ describe("desktop native bridge client", () => {
 
     expect(selected).toBe("/tmp/project");
     expect(invocations).toEqual([
-      { name: "dialog.pickDirectory", args: { title: "Open project" } },
+      {
+        name: "dialog.pickDirectory",
+        args: { title: "Open project", canCreateDirectories: true },
+      },
     ]);
     expect(fetchCalls).toHaveLength(0);
   });
