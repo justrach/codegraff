@@ -471,6 +471,111 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
       });
     },
 
+    appendMessageDelta: (delta) => {
+      set((current) => {
+        const key = getConversationStoreKey(
+          delta.workspacePath,
+          delta.conversationId,
+        );
+        const existing = current.conversationViewsByKey[key] ?? {
+          activeRequestIds: [],
+          conversationId: delta.conversationId,
+          followup: null,
+          messages: [],
+          requestAgentIds: {},
+          todos: [],
+          workspacePath: delta.workspacePath,
+        } satisfies ConversationViewSnapshot;
+        const messageIndex = existing.messages.findIndex(
+          (message) => message.id === delta.messageId,
+        );
+        const messages =
+          messageIndex >= 0
+            ? existing.messages.map((message, index) => {
+                if (index !== messageIndex) {
+                  return message;
+                }
+                if (
+                  message.kind !== "assistant" &&
+                  message.kind !== "reasoning"
+                ) {
+                  return message;
+                }
+                return { ...message, text: `${message.text}${delta.text}` };
+              })
+            : [
+                ...existing.messages,
+                {
+                  id: delta.messageId,
+                  kind: delta.kind,
+                  requestId: delta.requestId,
+                  text: delta.text,
+                },
+              ];
+        const activeRequestIds = existing.activeRequestIds.includes(
+          delta.requestId,
+        )
+          ? existing.activeRequestIds
+          : [...existing.activeRequestIds, delta.requestId];
+        return {
+          activeConversationId: current.activeConversationId ?? delta.conversationId,
+          activeWorkspacePath: current.activeWorkspacePath ?? delta.workspacePath,
+          conversationViewsByKey: {
+            ...current.conversationViewsByKey,
+            [key]: {
+              ...existing,
+              activeRequestIds,
+              messages,
+            },
+          },
+        };
+      });
+    },
+
+    markRequestFinished: (event) => {
+      set((current) => {
+        const key = getConversationStoreKey(
+          event.workspacePath,
+          event.conversationId,
+        );
+        const existing = current.conversationViewsByKey[key];
+        const now = Date.now();
+        const currentConversationTimings =
+          current.requestTimingsByConversationId[event.conversationId] ?? {};
+        const timing = currentConversationTimings[event.requestId];
+        const nextTimings = {
+          ...currentConversationTimings,
+          [event.requestId]: {
+            completedAtMs: now,
+            startedAtMs: timing?.startedAtMs ?? now,
+          },
+        };
+        if (existing == null) {
+          return {
+            requestTimingsByConversationId: {
+              ...current.requestTimingsByConversationId,
+              [event.conversationId]: nextTimings,
+            },
+          };
+        }
+        return {
+          conversationViewsByKey: {
+            ...current.conversationViewsByKey,
+            [key]: {
+              ...existing,
+              activeRequestIds: existing.activeRequestIds.filter(
+                (requestId) => requestId !== event.requestId,
+              ),
+            },
+          },
+          requestTimingsByConversationId: {
+            ...current.requestTimingsByConversationId,
+            [event.conversationId]: nextTimings,
+          },
+        };
+      });
+    },
+
     appendOptimisticUserMessage: (binding, requestId, text, agentId) => {
       set((current) => {
         const key = getConversationStoreKey(

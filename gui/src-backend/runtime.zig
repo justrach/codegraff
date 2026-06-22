@@ -98,6 +98,7 @@ pub const Runtime = struct {
     conversations: std.StringHashMap(*Conversation),
     selected_by_workspace: std.StringHashMap([]const u8),
     terminals: std.StringHashMap(*TerminalSessionState),
+    active_children: std.StringHashMap(*std.process.Child),
     event_mutex: std.Io.Mutex = .init,
     events: std.ArrayList(SseEvent) = .empty,
     next_event_seq: u64 = 1,
@@ -117,6 +118,7 @@ pub const Runtime = struct {
             .conversations = std.StringHashMap(*Conversation).init(allocator),
             .selected_by_workspace = std.StringHashMap([]const u8).init(allocator),
             .terminals = std.StringHashMap(*TerminalSessionState).init(allocator),
+            .active_children = std.StringHashMap(*std.process.Child).init(allocator),
         };
         rt.arena = rt.arena_state.allocator();
         instance = rt;
@@ -128,6 +130,7 @@ pub const Runtime = struct {
         var it = self.terminals.valueIterator();
         while (it.next()) |session| closeTerminalSession(session.*);
         self.terminals.deinit();
+        self.active_children.deinit();
         self.events.deinit(self.allocator);
         self.conversations.deinit();
         self.selected_by_workspace.deinit();
@@ -413,12 +416,16 @@ pub const Runtime = struct {
 
         const request_id = self.uniqueId("request");
         var conversation_id: []const u8 = undefined;
+        var session_name: []const u8 = undefined;
+        var workspace_for_thread: []const u8 = undefined;
 
         self.mutex.lockUncancelable(mer_runtime.io);
         {
             const cid = provided_conversation orelse self.uniqueId("chat");
             const conv = self.conversations.get(cid) orelse self.createConversationLocked(workspace, cid, titleFromPrompt(self.arena, prompt));
             conversation_id = conv.conversation_id;
+            session_name = conv.session_name;
+            workspace_for_thread = conv.workspace_path;
             self.setActiveWorkspaceLocked(conv.workspace_path);
             self.active_conversation_id = conv.conversation_id;
             self.selected_by_workspace.put(conv.workspace_path, conv.conversation_id) catch {};
@@ -443,29 +450,25 @@ pub const Runtime = struct {
         }
         self.mutex.unlock(mer_runtime.io);
 
-        self.streamGraffTurn(conversation_id, request_id, workspace, prompt) catch |err| {
+        const prompt_owned = self.dupe(prompt);
+        const thread = std.Thread.spawn(.{}, graffTurnThread, .{ self, conversation_id, request_id, session_name, workspace_for_thread, prompt_owned }) catch |err| {
             self.mutex.lockUncancelable(mer_runtime.io);
             if (self.conversations.get(conversation_id)) |conv| {
+                removeString(&conv.active_request_ids, request_id);
                 conv.messages.append(self.arena, .{
                     .kind = .@"error",
                     .id = self.fmt("{s}-error", .{request_id}),
                     .request_id = request_id,
-                    .error_message = self.fmt("Failed to run graff: {s}", .{@errorName(err)}),
+                    .error_message = self.fmt("Failed to start graff thread: {s}", .{@errorName(err)}),
                 }) catch {};
                 self.writeConversationSessionFileLocked(conv);
+                self.emitRequestEventLocked("request-finished", conv, request_id);
             }
             self.bumpLocked();
             self.mutex.unlock(mer_runtime.io);
+            return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
         };
-
-        self.mutex.lockUncancelable(mer_runtime.io);
-        if (self.conversations.get(conversation_id)) |conv| {
-            removeString(&conv.active_request_ids, request_id);
-            conv.followup = null;
-            self.writeConversationSessionFileLocked(conv);
-        }
-        self.bumpLocked();
-        self.mutex.unlock(mer_runtime.io);
+        thread.detach();
 
         return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
     }
@@ -475,7 +478,18 @@ pub const Runtime = struct {
         const input = objectField(root, "input") orelse root;
         const cid = stringField(input, "conversationId") orelse return mer.json("{}");
         self.mutex.lockUncancelable(mer_runtime.io);
-        if (self.conversations.get(cid)) |conv| conv.active_request_ids.clearRetainingCapacity();
+        if (self.conversations.get(cid)) |conv| {
+            for (conv.active_request_ids.items) |rid| {
+                if (self.active_children.get(rid)) |child| {
+                    child.kill(mer_runtime.io);
+                    _ = self.active_children.remove(rid);
+                }
+                self.emitRequestEventLocked("request-cancelled", conv, rid);
+            }
+            conv.active_request_ids.clearRetainingCapacity();
+            conv.followup = null;
+            self.writeConversationSessionFileLocked(conv);
+        }
         self.bumpLocked();
         self.mutex.unlock(mer_runtime.io);
         return mer.json("{}");
@@ -1183,6 +1197,14 @@ pub const Runtime = struct {
         }
     }
 
+    fn requestActiveLocked(self: *Runtime, cid: []const u8, rid: []const u8) bool {
+        const conv = self.conversations.get(cid) orelse return false;
+        for (conv.active_request_ids.items) |active| {
+            if (std.mem.eql(u8, active, rid)) return true;
+        }
+        return false;
+    }
+
     fn workspaceStatusCommand(self: *Runtime, req: mer.Request, root: Value) mer.Response {
         _ = self;
         const workspace = stringField(root, "workspacePath") orelse "";
@@ -1203,7 +1225,7 @@ pub const Runtime = struct {
         return mer.json(out.written());
     }
 
-    fn streamGraffTurn(self: *Runtime, conversation_id: []const u8, request_id: []const u8, workspace: []const u8, prompt: []const u8) !void {
+    fn streamGraffTurn(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session_name: []const u8, workspace: []const u8, prompt: []const u8) !void {
         const io = mer_runtime.io;
         const bin = self.codegraffBinary();
         self.ensurePromptSettingsLoaded();
@@ -1217,6 +1239,10 @@ pub const Runtime = struct {
         try argv.append(self.allocator, bin);
         try argv.append(self.allocator, "--json");
         try argv.append(self.allocator, "--yolo");
+        if (session_name.len > 0 and std.mem.indexOfAny(u8, session_name, "/\\") == null) {
+            try argv.append(self.allocator, "--resume");
+            try argv.append(self.allocator, session_name);
+        }
         defer argv.deinit(self.allocator);
 
         var child = try std.process.spawn(io, .{
@@ -1226,7 +1252,19 @@ pub const Runtime = struct {
             .stdout = .pipe,
             .stderr = .pipe,
         });
-        defer child.kill(io);
+        self.mutex.lockUncancelable(io);
+        self.active_children.put(request_id, &child) catch {};
+        self.mutex.unlock(io);
+        defer {
+            self.mutex.lockUncancelable(io);
+            if (self.active_children.get(request_id) == &child) _ = self.active_children.remove(request_id);
+            self.mutex.unlock(io);
+            child.kill(io);
+        }
+        self.mutex.lockUncancelable(io);
+        const active_after_spawn = self.requestActiveLocked(conversation_id, request_id);
+        self.mutex.unlock(io);
+        if (!active_after_spawn) return;
 
         var wbuf: [4096]u8 = undefined;
         var cw = child.stdin.?.writerStreaming(io, &wbuf);
@@ -1263,14 +1301,24 @@ pub const Runtime = struct {
         defer if (first_unparsed_line) |line| self.allocator.free(line);
         while (true) {
             const ev_line = rdr.interface.takeDelimiter('\n') catch |err| {
-                log.warn("graff read ended with {}", .{err});
+                self.mutex.lockUncancelable(io);
+                const still_active = self.requestActiveLocked(conversation_id, request_id);
+                self.mutex.unlock(io);
+                if (still_active) log.warn("graff read ended with {}", .{err});
                 break;
             } orelse {
-                log.warn("graff read ended with EOF", .{});
+                self.mutex.lockUncancelable(io);
+                const still_active = self.requestActiveLocked(conversation_id, request_id);
+                self.mutex.unlock(io);
+                if (still_active) log.warn("graff read ended with EOF", .{});
                 break;
             };
             const line = std.mem.trim(u8, ev_line, " \t\r\n");
             if (line.len == 0) continue;
+            self.mutex.lockUncancelable(io);
+            const still_active = self.requestActiveLocked(conversation_id, request_id);
+            self.mutex.unlock(io);
+            if (!still_active) break;
             var turn_arena = std.heap.ArenaAllocator.init(self.allocator);
             defer turn_arena.deinit();
             const event = std.json.parseFromSliceLeaky(Value, turn_arena.allocator(), line, .{}) catch |err| {
@@ -1333,7 +1381,10 @@ pub const Runtime = struct {
                 break;
             }
         }
-        if (event_count == 0) {
+        self.mutex.lockUncancelable(io);
+        const completed_still_active = self.requestActiveLocked(conversation_id, request_id);
+        self.mutex.unlock(io);
+        if (event_count == 0 and completed_still_active) {
             var stderr_output: ?[]const u8 = null;
             defer if (stderr_output) |buf| self.allocator.free(buf);
             if (child.stderr) |stderr_file| {
@@ -1356,26 +1407,60 @@ pub const Runtime = struct {
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
+            if (!self.requestActiveLocked(cid, rid)) return;
             var i = conv.messages.items.len;
             while (i > 0) {
                 i -= 1;
                 if (std.mem.eql(u8, conv.messages.items[i].id, id)) {
                     conv.messages.items[i].text = self.fmt("{s}{s}", .{ conv.messages.items[i].text, delta });
-                    self.writeConversationSessionFileLocked(conv);
-                    self.bumpLocked();
+                    conv.updated_at = nowMillis();
+                    self.emitMessageDeltaLocked(conv, rid, id, kind, delta);
                     return;
                 }
             }
             conv.messages.append(self.arena, .{ .kind = kind, .id = id, .request_id = rid, .text = self.dupe(delta) }) catch {};
-            self.writeConversationSessionFileLocked(conv);
-            self.bumpLocked();
+            conv.updated_at = nowMillis();
+            self.emitMessageDeltaLocked(conv, rid, id, kind, delta);
         }
+    }
+
+    fn emitMessageDeltaLocked(self: *Runtime, conv: *Conversation, rid: []const u8, id: []const u8, kind: Message.Kind, delta: []const u8) void {
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        out.writer.writeAll("{\"conversationId\":") catch return;
+        writeString(&out.writer, conv.conversation_id) catch return;
+        out.writer.writeAll(",\"workspacePath\":") catch return;
+        writeString(&out.writer, conv.workspace_path) catch return;
+        out.writer.writeAll(",\"requestId\":") catch return;
+        writeString(&out.writer, rid) catch return;
+        out.writer.writeAll(",\"messageId\":") catch return;
+        writeString(&out.writer, id) catch return;
+        out.writer.writeAll(",\"kind\":") catch return;
+        writeString(&out.writer, @tagName(kind)) catch return;
+        out.writer.writeAll(",\"text\":") catch return;
+        writeString(&out.writer, delta) catch return;
+        out.writer.writeByte('}') catch return;
+        self.emitSseEvent("message-delta", out.written());
+    }
+
+    fn emitRequestEventLocked(self: *Runtime, event_name: []const u8, conv: *Conversation, rid: []const u8) void {
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        out.writer.writeAll("{\"conversationId\":") catch return;
+        writeString(&out.writer, conv.conversation_id) catch return;
+        out.writer.writeAll(",\"workspacePath\":") catch return;
+        writeString(&out.writer, conv.workspace_path) catch return;
+        out.writer.writeAll(",\"requestId\":") catch return;
+        writeString(&out.writer, rid) catch return;
+        out.writer.writeByte('}') catch return;
+        self.emitSseEvent(event_name, out.written());
     }
 
     fn appendToolStart(self: *Runtime, cid: []const u8, rid: []const u8, id: []const u8, name: []const u8, call_id: ?[]const u8, question: []const u8) void {
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
+            if (!self.requestActiveLocked(cid, rid)) return;
             conv.messages.append(self.arena, .{ .kind = .tool_start, .id = id, .request_id = rid, .name = self.dupe(name), .call_id = if (call_id) |c| self.dupe(c) else null, .question = self.dupe(question) }) catch {};
             self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
@@ -1386,6 +1471,7 @@ pub const Runtime = struct {
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
+            if (!self.requestActiveLocked(cid, rid)) return;
             conv.messages.append(self.arena, .{ .kind = .tool_end, .id = id, .request_id = rid, .name = self.dupe(name), .summary = firstLine(self.arena, text), .text = self.dupe(text), .is_error = is_error }) catch {};
             self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
@@ -1396,6 +1482,7 @@ pub const Runtime = struct {
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
+            if (!self.requestActiveLocked(cid, rid)) return;
             conv.messages.append(self.arena, .{ .kind = .@"error", .id = self.fmt("{s}-error-{d}", .{ rid, nowMillis() }), .request_id = rid, .error_message = self.dupe(msg) }) catch {};
             self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
@@ -1406,6 +1493,7 @@ pub const Runtime = struct {
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
+            if (!self.requestActiveLocked(cid, rid)) return;
             conv.followup = .{ .followup_id = self.dupe(call_id), .workspace_path = self.dupe(workspace), .conversation_id = conv.conversation_id, .request_id = rid, .question = self.dupe(question), .call_id = self.dupe(call_id) };
             self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
@@ -2082,6 +2170,36 @@ pub const Runtime = struct {
         return self.fmt("{s}-{x:0>16}", .{ prefix, std.mem.readInt(u64, &raw, .big) });
     }
 };
+
+fn graffTurnThread(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session_name: []const u8, workspace: []const u8, prompt: []const u8) void {
+    self.streamGraffTurn(conversation_id, request_id, session_name, workspace, prompt) catch |err| {
+        self.mutex.lockUncancelable(mer_runtime.io);
+        if (self.conversations.get(conversation_id)) |conv| {
+            if (self.requestActiveLocked(conversation_id, request_id)) {
+                conv.messages.append(self.arena, .{
+                    .kind = .@"error",
+                    .id = self.fmt("{s}-error", .{request_id}),
+                    .request_id = request_id,
+                    .error_message = self.fmt("Failed to run graff: {s}", .{@errorName(err)}),
+                }) catch {};
+                self.writeConversationSessionFileLocked(conv);
+            }
+        }
+        self.bumpLocked();
+        self.mutex.unlock(mer_runtime.io);
+    };
+
+    self.mutex.lockUncancelable(mer_runtime.io);
+    if (self.conversations.get(conversation_id)) |conv| {
+        const was_active = self.requestActiveLocked(conversation_id, request_id);
+        removeString(&conv.active_request_ids, request_id);
+        conv.followup = null;
+        self.writeConversationSessionFileLocked(conv);
+        if (was_active) self.emitRequestEventLocked("request-finished", conv, request_id);
+    }
+    self.bumpLocked();
+    self.mutex.unlock(mer_runtime.io);
+}
 
 fn commandName(path: []const u8) []const u8 {
     if (std.mem.startsWith(u8, path, "/api/")) return path[5..];

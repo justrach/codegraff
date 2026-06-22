@@ -6,6 +6,7 @@ import type {
   PromptSettings,
   RuntimeStatus,
   SavedWorkspaceSummary,
+  SessionMessage,
   SessionSnapshot,
   WorkspaceSession,
 } from "@/services/desktop/types/contracts";
@@ -64,6 +65,8 @@ export interface SessionStoreState {
   workspaces: WorkspaceSession[];
   workspacesByPath: Record<string, WorkspaceSession>;
   applySessionSnapshot: (snapshot: SessionSnapshot) => void;
+  appendMessageDelta: (delta: { workspacePath: string; conversationId: string; requestId: string; messageId: string; kind: Extract<SessionMessage["kind"], "assistant" | "reasoning">; text: string }) => void;
+  markRequestFinished: (event: { workspacePath: string; conversationId: string; requestId: string }) => void;
   appendOptimisticUserMessage: (binding: { workspacePath: string; conversationId: string }, requestId: string, text: string, agentId?: string | null) => void;
   removeOptimisticRequest: (binding: { workspacePath: string; conversationId: string }, requestId: string) => void;
   addAttachments: (key: string | null, items: Attachment[]) => void;
