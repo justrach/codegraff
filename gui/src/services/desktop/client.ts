@@ -305,6 +305,20 @@ function mockInvokeCommand<T>(
       const input = args?.input as { name?: string } | undefined;
       return Promise.resolve(`/tmp/${input?.name ?? "attachment.txt"}` as T);
     }
+    case "terminal_open": {
+      const input = args?.input as TerminalOpenInput | undefined;
+      return Promise.resolve({
+        terminalId: input?.terminalId ?? "qa-terminal",
+        workspacePath: input?.workspacePath ?? QA_WORKSPACE_PATH,
+        shell: "browser-qa",
+        cols: input?.cols ?? 80,
+        rows: input?.rows ?? 24,
+      } as T);
+    }
+    case "terminal_write":
+    case "terminal_resize":
+    case "terminal_close":
+      return Promise.resolve(undefined as T);
     case "list_mcp_servers":
       return Promise.resolve({ servers: [] } as T);
     default:
@@ -331,11 +345,24 @@ function getMerInvoke(): MerInvokeFunction | null {
     (await invoke(name, args)) as T;
 }
 
+function apiRoute(command: string): string {
+  return `/api/${command}`;
+}
+
+function apiFailureMessage(command: string, res: Response, body: string): string {
+  const snippet = body.replace(/\s+/g, " ").trim().slice(0, 180);
+  const route = apiRoute(command);
+  if (res.status === 404 && command.startsWith("terminal_")) {
+    return `${command} failed: ${res.status} at ${route}. The GUI backend serving this window does not expose terminal routes; rebuild/restart the native app so gui/routes.zig is current.`;
+  }
+  return `${command} failed: ${res.status} at ${route}${snippet.length > 0 ? ` — ${snippet}` : ""}`;
+}
+
 async function httpInvoke<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  const res = await fetch(`/api/${command}`, {
+  const res = await fetch(apiRoute(command), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: args ? JSON.stringify(args) : "{}",
@@ -354,7 +381,7 @@ async function httpInvoke<T>(
     if (parsedError != null) {
       throw new Error(parsedError);
     }
-    throw new Error(`${command} failed: ${res.status} ${text}`);
+    throw new Error(apiFailureMessage(command, res, text));
   }
   return res.json() as Promise<T>;
 }
