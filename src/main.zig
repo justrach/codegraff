@@ -3989,6 +3989,12 @@ fn readLine(
                 cur = 0;
                 redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
             },
+            0x1a => { // Ctrl-Z: save the session and quit (like a safe Ctrl-D)
+                out.writeAll("^Z — saving & quit\n") catch {};
+                out.flush() catch {};
+                saveSession(root, root.arena, root.session_name) catch {};
+                return null;
+            },
             0x04 => { // Ctrl-D: EOF on empty line, else forward-delete
                 if (buf.items.len == 0) {
                     out.writeAll("\n") catch {};
@@ -5145,6 +5151,11 @@ pub fn main(init: std.process.Init) !void {
     root.session_name = if (resume_flag) |name| (if (!new_session_flag and !no_resume_flag) name else fresh_session_name) else fresh_session_name;
     loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
     tracer.note("session", root.provider.model);
+
+    // Save from the start: if the harness is killed (Ctrl+C / SIGINT) before
+    // any turn completes, the session file is already on disk with the initial
+    // state (provider, model, settings) so nothing is lost.
+    saveSession(&root, arena, root.session_name) catch {};
 
     if (oneshot_prompt != null and resume_flag != null and !new_session_flag and !no_resume_flag) {
         loadSession(&root, keys, arena, root.session_name) catch {};
