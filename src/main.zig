@@ -5424,6 +5424,14 @@ pub fn main(init: std.process.Init) !void {
         saveSession(&root, arena, root.session_name) catch |err| {
             std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
         };
+        // One-shot returns here, before the REPL cleanup defer below is even
+        // registered, so free the root's gpa-backed buffers explicitly (else a
+        // tool-using one-shot leaks its tool log / render buffers on exit).
+        root.md_buf.deinit(gpa);
+        root.md_word.deinit(gpa);
+        for (root.md_table.items) |r| gpa.free(r);
+        root.md_table.deinit(gpa);
+        root.tools_used.deinit(gpa);
         return;
     }
 
