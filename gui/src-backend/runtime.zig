@@ -1266,9 +1266,13 @@ pub const Runtime = struct {
         const root = parse(req) catch return badJson(req);
         const input = objectField(root, "input") orelse root;
         const workspace = stringField(input, "workspacePath") orelse stringField(root, "workspacePath") orelse "";
-        _ = cmd;
+        if (workspace.len == 0) return bad(req, "missing workspacePath");
         self.mutex.lockUncancelable(mer_runtime.io);
-        self.invalidateRuntimeStatusLocked(if (workspace.len == 0) null else workspace);
+        runGitMutation(req.allocator, workspace, cmd, input) catch |err| {
+            self.mutex.unlock(mer_runtime.io);
+            return bad(req, gitMutationErrorMessage(err));
+        };
+        self.invalidateRuntimeStatusLocked(workspace);
         self.mutex.unlock(mer_runtime.io);
         return self.runtimeStatusJson(req.allocator, workspace) catch oom();
     }
@@ -3507,6 +3511,64 @@ fn gitStatusFiles(alloc: std.mem.Allocator, workspace: []const u8) ![]const GitF
     return list.toOwnedSlice(alloc);
 }
 
+fn runGitMutation(alloc: std.mem.Allocator, workspace: []const u8, cmd: []const u8, input: Value) !void {
+    if (std.mem.eql(u8, cmd, "checkout_git_branch")) {
+        const branch = validatedGitBranchName(input) catch |err| return err;
+        _ = try gitOutput(alloc, workspace, &.{ "git", "switch", branch });
+        return;
+    }
+    if (std.mem.eql(u8, cmd, "create_git_branch")) {
+        const branch = validatedGitBranchName(input) catch |err| return err;
+        _ = try gitOutput(alloc, workspace, &.{ "git", "switch", "-c", branch });
+        return;
+    }
+    if (std.mem.eql(u8, cmd, "commit_git_changes")) {
+        const message = stringField(input, "message") orelse return error.MissingCommitMessage;
+        if (std.mem.trim(u8, message, " \t\r\n").len == 0) return error.MissingCommitMessage;
+        return error.CommitRequiresExplicitStaging;
+    }
+    if (std.mem.eql(u8, cmd, "push_git_branch")) {
+        const git = gitRuntimeStatus(alloc, workspace);
+        const branch = git.branch_name orelse return error.MissingBranchName;
+        if (!isSafeGitBranchName(branch)) return error.InvalidBranchName;
+        const refspec = try std.fmt.allocPrint(alloc, "refs/heads/{s}:refs/heads/{s}", .{ branch, branch });
+        _ = try gitOutput(alloc, workspace, &.{ "git", "push", "-u", "origin", refspec });
+        return;
+    }
+    return error.UnsupportedGitMutation;
+}
+
+fn validatedGitBranchName(input: Value) ![]const u8 {
+    const branch = stringField(input, "branchName") orelse return error.MissingBranchName;
+    if (!isSafeGitBranchName(branch)) return error.InvalidBranchName;
+    return branch;
+}
+
+fn isSafeGitBranchName(branch: []const u8) bool {
+    if (branch.len == 0 or branch[0] == '-' or branch[0] == '/' or branch[branch.len - 1] == '/' or branch[branch.len - 1] == '.') return false;
+    if (std.mem.startsWith(u8, branch, ".") or std.mem.endsWith(u8, branch, ".lock")) return false;
+    if (std.mem.indexOf(u8, branch, "..") != null or std.mem.indexOf(u8, branch, "@{") != null or std.mem.indexOf(u8, branch, "//") != null) return false;
+    for (branch) |c| {
+        const ok = (c >= 'a' and c <= 'z') or
+            (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or
+            c == '/' or c == '-' or c == '_' or c == '.';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+fn gitMutationErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.MissingBranchName => "missing branchName",
+        error.InvalidBranchName => "invalid branchName",
+        error.MissingCommitMessage => "missing commit message",
+        error.CommitRequiresExplicitStaging => "committing from the GUI backend is disabled until explicit reviewed-file staging is implemented",
+        error.UnsupportedGitMutation => "unsupported git operation",
+        else => "git operation failed",
+    };
+}
+
 fn gitStatusLabel(status: []const u8) []const u8 {
     if (std.mem.indexOfScalar(u8, status, '?') != null) return "untracked";
     if (std.mem.indexOfScalar(u8, status, 'A') != null) return "added";
@@ -4363,6 +4425,26 @@ fn writeFrame(bw: *std.http.BodyWriter, frame: []const u8) bool {
     bw.writer.flush() catch return false;
     bw.http_protocol_output.flush() catch return false;
     return true;
+}
+
+test "git mutation validation fails before shelling out" {
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const empty = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{}", .{ .allocate = .alloc_always });
+    const blank_branch = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"branchName\":\"  \"}", .{ .allocate = .alloc_always });
+    const blank_message = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"message\":\"  \"}", .{ .allocate = .alloc_always });
+    const commit_message = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"message\":\"commit reviewed changes\"}", .{ .allocate = .alloc_always });
+    const option_branch = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"branchName\":\"-f\"}", .{ .allocate = .alloc_always });
+    const refspec_branch = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"branchName\":\":main\"}", .{ .allocate = .alloc_always });
+
+    try std.testing.expectError(error.MissingBranchName, runGitMutation(std.testing.allocator, "/tmp/workspace", "checkout_git_branch", empty));
+    try std.testing.expectError(error.InvalidBranchName, runGitMutation(std.testing.allocator, "/tmp/workspace", "create_git_branch", blank_branch));
+    try std.testing.expectError(error.MissingCommitMessage, runGitMutation(std.testing.allocator, "/tmp/workspace", "commit_git_changes", blank_message));
+    try std.testing.expectError(error.CommitRequiresExplicitStaging, runGitMutation(std.testing.allocator, "/tmp/workspace", "commit_git_changes", commit_message));
+    try std.testing.expectError(error.InvalidBranchName, runGitMutation(std.testing.allocator, "/tmp/workspace", "checkout_git_branch", option_branch));
+    try std.testing.expectError(error.InvalidBranchName, runGitMutation(std.testing.allocator, "/tmp/workspace", "checkout_git_branch", refspec_branch));
+    try std.testing.expect(isSafeGitBranchName("feature/safe-branch_1.2"));
+    try std.testing.expectError(error.UnsupportedGitMutation, runGitMutation(std.testing.allocator, "/tmp/workspace", "unknown_git_command", empty));
 }
 
 test "provider summaries are generated from core schema" {
