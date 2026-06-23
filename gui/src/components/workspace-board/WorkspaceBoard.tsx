@@ -75,10 +75,12 @@ export function WorkspaceBoard() {
     [],
   );
   const {
+    flushPendingPersist,
     isApplyingLayoutRef,
     markPersistedLayout,
     schedulePersist,
   } = useDockviewLayoutPersistence({
+    delayMs: 1200,
     onPersist: persistWorkspaceLayout,
   });
 
@@ -171,11 +173,26 @@ export function WorkspaceBoard() {
       return;
     }
 
-    schedulePersist(() => outerApiRef.current);
+    const workspaceId = selectionRef.current.workspace.id;
+    schedulePersist(
+      () => outerApiRef.current,
+      async (layoutJson) => {
+        await desktopClient.updateSavedWorkspaceLayout({
+          workspaceId,
+          layoutJson,
+        });
+      },
+      workspaceId,
+    );
   }, [schedulePersist]);
   const finishSelectionRestore = useCallback(
     (layoutJson: string | null) => {
-      markPersistedLayout(layoutJson);
+      markPersistedLayout(
+        layoutJson,
+        selectionRef.current.kind === "saved-workspace"
+          ? selectionRef.current.workspace.id
+          : undefined,
+      );
       isApplyingLayoutRef.current = false;
     },
     [isApplyingLayoutRef, markPersistedLayout],
@@ -237,6 +254,7 @@ export function WorkspaceBoard() {
 
   const restoreSelection = useCallback(
     async (api: DockviewApi) => {
+      flushPendingPersist();
       isApplyingLayoutRef.current = true;
       if (fallbackBindingsRef.current != null) {
         const bindings = fallbackBindingsRef.current;
@@ -304,6 +322,7 @@ export function WorkspaceBoard() {
       applyOuterLayoutConstraints,
       buildDefaultOuterLayout,
       finishSelectionRestore,
+      flushPendingPersist,
       isApplyingLayoutRef,
       selection,
       setSelection,
@@ -369,7 +388,7 @@ export function WorkspaceBoard() {
           chats: extractBindingsFromSerializedLayout(layout),
           layoutJson,
         });
-        markPersistedLayout(layoutJson);
+        markPersistedLayout(layoutJson, detail.id);
         setSelection({
           kind: "saved-workspace",
           workspace: detail,
@@ -458,6 +477,7 @@ export function WorkspaceBoard() {
             workspace: currentSelection.workspace,
             activeChat: binding,
           });
+          void ensureConversationViewLoaded(binding);
         }),
         event.api.onDidLayoutChange(() => {
           applyOuterLayoutConstraints(event.api);

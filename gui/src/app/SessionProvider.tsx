@@ -23,7 +23,6 @@ import {
   ensureWorkspacePromptSettingsLoaded,
   ensureWorkspaceRuntimeStatusLoaded,
   getAttachments,
-  getConversationStoreKeyForBinding,
   getConversationView,
   getSelectionFromSnapshot,
   isLatestConversationSelectionRequest,
@@ -336,36 +335,18 @@ export function SessionProvider({ children }: SessionProviderProps) {
 
         const bindings = extractBindingsFromLayoutJson(workspace.layoutJson);
         const initialBinding = bindings[0] ?? null;
-        const uniqueBindings = Array.from(
-          new Map(
-            bindings.map((binding) => [
-              getConversationStoreKeyForBinding(binding),
-              binding,
-            ]),
-          ).values(),
-        );
         sessionStore.getState().setBoardSelection({
           kind: "saved-workspace",
           workspace,
           activeChat: initialBinding,
         });
 
-        await Promise.all(
-          uniqueBindings.map((binding) =>
-            ensureConversationViewLoaded(binding),
-          ),
-        );
-
-        const workspacePaths = Array.from(
-          new Set(uniqueBindings.map((binding) => binding.workspacePath)),
-        );
-        workspacePaths.forEach((workspacePath) => {
-          ensureWorkspaceMeta(workspacePath);
-        });
-
         if (initialBinding == null) {
           return;
         }
+
+        ensureWorkspaceMeta(initialBinding.workspacePath);
+        await ensureConversationViewLoaded(initialBinding);
 
         const snapshot = await runSnapshotCommand(() =>
           desktopClient.selectConversation(

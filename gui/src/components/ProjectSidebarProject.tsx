@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+
 import {
   ChevronDown,
   ChevronRight,
@@ -29,6 +31,11 @@ export function ProjectSidebarProject({
   onStartNewChat,
   onToggleProjectExpanded,
 }: ProjectSidebarProjectProps) {
+  const namedConversations = useMemo(
+    () => project.conversations.filter((conv) => !conv.isDraft),
+    [project.conversations],
+  );
+
   return (
     <SidebarMenuItem className="grid gap-1">
       <div className="relative">
@@ -90,31 +97,26 @@ export function ProjectSidebarProject({
       </div>
 
       {isExpanded ? (
-        (() => {
-          const namedConversations = project.conversations.filter(
-            (conv) => !conv.isDraft,
-          );
-          return namedConversations.length > 0 ? (
-            <SidebarMenuSub className="ml-3.5 mr-0 pr-0">
-              {namedConversations.map((conversation) => (
-                <ProjectSidebarConversationRow
-                  key={`${project.workspacePath}:${conversation.conversationId}`}
-                  conversation={conversation}
-                  isSelected={
-                    selectedConversationId === conversation.conversationId
-                  }
-                  onArchiveConversation={onArchiveConversation}
-                  workspacePath={project.workspacePath}
-                  onSelectConversation={onSelectConversation}
-                />
-              ))}
-            </SidebarMenuSub>
-          ) : isActive ? (
-            <p className="px-2 py-1 text-xs font-medium text-sidebar-foreground/60">
-              No chats yet
-            </p>
-          ) : null;
-        })()
+        namedConversations.length > 0 ? (
+          <SidebarMenuSub className="ml-3.5 mr-0 pr-0">
+            {namedConversations.map((conversation) => (
+              <ProjectSidebarConversationRow
+                key={`${project.workspacePath}:${conversation.conversationId}`}
+                conversation={conversation}
+                isSelected={
+                  selectedConversationId === conversation.conversationId
+                }
+                onArchiveConversation={onArchiveConversation}
+                workspacePath={project.workspacePath}
+                onSelectConversation={onSelectConversation}
+              />
+            ))}
+          </SidebarMenuSub>
+        ) : isActive ? (
+          <p className="px-2 py-1 text-xs font-medium text-sidebar-foreground/60">
+            No chats yet
+          </p>
+        ) : null
       ) : null}
     </SidebarMenuItem>
   );

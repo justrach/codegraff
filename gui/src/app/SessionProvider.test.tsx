@@ -15,6 +15,7 @@ let getRuntimeStatusCallCount = 0;
 let createManagedChatCallCount = 0;
 let handoffChatCallCount = 0;
 let openWorkspaceCallCount = 0;
+let getSavedWorkspaceCallCount = 0;
 let renameWorkspaceCallCount = 0;
 let renameSavedWorkspaceCallCount = 0;
 let selectConversationCallCount = 0;
@@ -31,6 +32,7 @@ let handoffChatImpl: (
   input: import("../services/desktop/types/contracts").HandoffChatInput,
 ) => Promise<SessionSnapshot>;
 let openWorkspaceImpl: (workspacePath: string) => Promise<SessionSnapshot>;
+let getSavedWorkspaceImpl: (workspaceId: string) => Promise<import("../services/desktop/types/contracts").SavedWorkspaceDetail | null>;
 let selectConversationImpl: (
   workspacePath: string,
   conversationId: string,
@@ -189,6 +191,10 @@ mock.module("../services/desktop/client", () => ({
     openWorkspaceCallCount += 1;
     return await openWorkspaceImpl(workspacePath);
   },
+  getSavedWorkspace: async (workspaceId: string) => {
+    getSavedWorkspaceCallCount += 1;
+    return await getSavedWorkspaceImpl(workspaceId);
+  },
   selectConversation: async (workspacePath: string, conversationId: string) => {
     selectConversationCallCount += 1;
     return await selectConversationImpl(workspacePath, conversationId);
@@ -225,6 +231,7 @@ describe("SessionProvider", () => {
     createManagedChatCallCount = 0;
     handoffChatCallCount = 0;
     openWorkspaceCallCount = 0;
+    getSavedWorkspaceCallCount = 0;
     renameWorkspaceCallCount = 0;
     renameSavedWorkspaceCallCount = 0;
     selectConversationCallCount = 0;
@@ -310,6 +317,21 @@ describe("SessionProvider", () => {
       );
     openWorkspaceImpl = async (workspacePath: string) =>
       createSnapshot(workspacePath, "chat-1");
+    getSavedWorkspaceImpl = async (workspaceId: string) => ({
+      id: workspaceId,
+      name: "Workspace",
+      updatedAt: 1,
+      layoutJson: JSON.stringify({
+        panels: {
+          first: {
+            params: {
+              workspacePath: "/workspace/codegraff-gui",
+              conversationId: "chat-1",
+            },
+          },
+        },
+      }),
+    });
     selectConversationImpl = async (
       workspacePath: string,
       conversationId: string,
@@ -1128,6 +1150,69 @@ describe("SessionProvider", () => {
         workspacePath: "/workspace/codegraff-gui",
       },
       kind: "single-chat",
+    });
+  });
+
+  test("opening a saved workspace loads only the active panel first", async () => {
+    const layoutJson = JSON.stringify({
+      panels: {
+        first: {
+          params: {
+            workspacePath: "/workspace/codegraff-gui",
+            conversationId: "chat-1",
+          },
+        },
+        second: {
+          params: {
+            workspacePath: "/workspace/codegraff-gui",
+            conversationId: "chat-2",
+          },
+        },
+      },
+    });
+    getSavedWorkspaceImpl = async (workspaceId: string) => ({
+      id: workspaceId,
+      name: "Performance board",
+      updatedAt: 10,
+      layoutJson,
+    });
+
+    let capturedActions: SessionActionsContextValue | null = null;
+
+    function CaptureActions() {
+      capturedActions = useContext(SessionActionsContext);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      <SessionProvider>
+        <CaptureActions />
+      </SessionProvider>,
+    );
+
+    if (capturedActions == null) {
+      throw new Error("Expected session actions to be available");
+    }
+
+    const actions = capturedActions as SessionActionsContextValue;
+
+    await actions.openSavedWorkspace("saved-1");
+
+    expect(getSavedWorkspaceCallCount).toBe(1);
+    expect(ensureConversationViewCallCount).toBe(1);
+    expect(selectConversationCallCount).toBe(1);
+    expect(sessionStore.getState().selection).toEqual({
+      kind: "saved-workspace",
+      workspace: {
+        id: "saved-1",
+        name: "Workspace",
+        layoutJson,
+        updatedAt: 1,
+      },
+      activeChat: {
+        workspacePath: "/workspace/codegraff-gui",
+        conversationId: "chat-1",
+      },
     });
   });
 

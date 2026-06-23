@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+
 import {
   FolderPlus,
   PanelsTopLeft,
@@ -90,14 +92,18 @@ export function ProjectSidebar({
     savedWorkspaces,
     workspaces,
   } = useSidebarSession();
-  const projectWorkspaces = workspaces.filter(
-    (workspace) => workspace.kind === "project",
+  const projectWorkspaces = useMemo(
+    () => workspaces.filter((workspace) => workspace.kind === "project"),
+    [workspaces],
   );
-  const managedChats = workspaces.filter(
-    (workspace) => workspace.kind === "managed_chat",
-  );
-  const visibleManagedChats = managedChats.filter((workspace) =>
-    workspace.conversations.some((conversation) => !conversation.isDraft),
+  const visibleManagedChats = useMemo(
+    () =>
+      workspaces.filter(
+        (workspace) =>
+          workspace.kind === "managed_chat" &&
+          workspace.conversations.some((conversation) => !conversation.isDraft),
+      ),
+    [workspaces],
   );
 
   async function handleOpenWorkspacePicker() {

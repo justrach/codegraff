@@ -158,6 +158,7 @@ export function ChatTile({
     markPersistedLayout,
     schedulePersist,
   } = useDockviewLayoutPersistence({
+    delayMs: 1200,
     onPersist: persistConversationLayout,
   });
 
