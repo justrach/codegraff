@@ -278,6 +278,8 @@ const provider_specs = [_]ProviderSpec{
     .{ .id = "moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
     .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
     .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
+    .{ .id = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
+    .{ .id = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
     // — it's the OAuth access token read from ~/.codex/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
@@ -328,6 +330,26 @@ const model_table = [_]ModelInfo{
     .{ .provider = "xiaomi", .name = "mimo-v2.5-pro-ultraspeed", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2-flash", .context = 262_144 },
     .{ .provider = "codex", .name = "gpt-5.5", .context = codex_context_window },
+    // Sakana AI — Fugu (OpenAI-compatible chat/completions). `fugu` is the fast
+    // mini model, `fugu-ultra` the multi-agent reasoning conductor. Sakana does
+    // not publish a context window; use the harness's conservative 200k default
+    // (auto-compaction + #88 overflow recovery cover an underestimate safely).
+    .{ .provider = "fugu", .name = "fugu", .context = 200_000 },
+    .{ .provider = "fugu", .name = "fugu-ultra", .context = 200_000 },
+    .{ .provider = "fugu", .name = "fugu-ultra-20260615", .context = 200_000 },
+    // Fireworks AI (OpenAI-compatible, api.fireworks.ai/inference/v1). Full
+    // account-path model ids; context windows from models.dev (snapshot
+    // 2026-06-23). Not yet live-tested here (no key on hand), but the wire shape
+    // is the same OpenAI one fugu/deepseek use. Set FIREWORKS_API_KEY or
+    // `graff key set fireworks <key>`; verify the live list at .../v1/models.
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/deepseek-v4-pro", .context = 1_000_000 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/deepseek-v4-flash", .context = 1_000_000 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/kimi-k2p7-code", .context = 262_000 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/kimi-k2p6", .context = 262_000 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/glm-5p2", .context = 1_048_576 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/minimax-m3", .context = 512_000 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/qwen3p7-plus", .context = 262_144 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/gpt-oss-120b", .context = 131_072 },
     // codegraff gateway (its claude aliases use dots, so they don't collide
     // with the anthropic rows above)
     .{ .provider = "codegraff", .name = "claude-opus-4.8", .context = 1_000_000 },
@@ -446,6 +468,11 @@ const main_system_prompt =
     \\errors), and "t" = ms since session start. When asked to debug, profile,
     \\or explain the harness's own behavior — including your own — read that
     \\file and analyze it.
+    \\
+    \\When making git commits on behalf of the user, always set the author
+    \\to Codegraff <blackfloofie@codegraff.com> — pass GIT_AUTHOR_NAME,
+    \\GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and GIT_COMMITTER_EMAIL env vars
+    \\on every git command so the bot identity is preserved in the commit log.
     \\
     \\Be direct and concise.
 ;
@@ -1147,6 +1174,24 @@ fn noSymlinkEscape(io: Io, path: []const u8) bool {
 
 const trace_path = "harness.trace.jsonl";
 
+/// Serialize one record as a single JSON line into an in-memory buffer, then
+/// write the whole line to `w` in one shot. Building the line in memory first
+/// means a partial serialization failure writes *nothing* — the shared buffered
+/// file writer never sees a half-record, and the trailing newline is always
+/// attached to its record. Without this, a write that errored mid-record left a
+/// truncated line plus leftover buffer bytes that the next record concatenated
+/// onto, corrupting the JSONL (issue #86: lines like `{"text":"You ar{"kind":…`).
+/// Flushing per line keeps the buffer empty between records. Best-effort.
+fn writeJsonLine(gpa: Allocator, w: *Io.Writer, rec: anytype) void {
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    s.write(rec) catch return;
+    aw.writer.writeByte('\n') catch return;
+    w.writeAll(aw.writer.buffered()) catch return;
+    w.flush() catch return;
+}
+
 /// Session event trace: one JSON object per line, written to trace_path in
 /// the cwd (truncated at startup, so it always covers the current session).
 /// Thread-safe — agents on pool threads share it through the mutex. The
@@ -1155,6 +1200,7 @@ const trace_path = "harness.trace.jsonl";
 const Tracer = struct {
     mutex: Io.Mutex = .init,
     io: Io,
+    gpa: Allocator,
     out: ?*Io.Writer,
     start: Io.Timestamp,
     enabled: bool = true,
@@ -1203,10 +1249,7 @@ const Tracer = struct {
         defer self.mutex.unlock(self.io);
         const w = self.out orelse return;
         if (!self.enabled) return;
-        var s: std.json.Stringify = .{ .writer = w };
-        s.write(event) catch return;
-        w.writeByte('\n') catch return;
-        w.flush() catch return;
+        writeJsonLine(self.gpa, w, event);
     }
 
     fn toggle(self: *Tracer) bool {
@@ -1289,10 +1332,7 @@ const Trajectory = struct {
 
     fn writeLocked(self: *Trajectory, rec: anytype) void {
         const w = self.out orelse return;
-        var s: std.json.Stringify = .{ .writer = w };
-        s.write(rec) catch return;
-        w.writeByte('\n') catch return;
-        w.flush() catch return;
+        writeJsonLine(self.gpa, w, rec);
     }
 
     fn deinit(self: *Trajectory) void {
@@ -2653,7 +2693,6 @@ fn reasoningDelta(kind: Provider.Kind, obj: std.json.ObjectMap) []const u8 {
         },
     };
 }
-
 
 /// Pulls the assistant's text out of a non-streamed completion response for the
 /// given provider wire format — the shape both compaction and AI title naming
@@ -4320,6 +4359,21 @@ fn writeOpenAIMessageNormalized(s: *std.json.Stringify, m: Value) !void {
 
 const harness_version: []const u8 = @import("build_options").version;
 
+/// Shown under `graff --version` — a terse "what's new" for recent releases.
+/// Keep it short and current; bump alongside the version each release.
+const changelog_text =
+    \\What's new
+    \\──────────
+    \\0.0.166
+    \\  • Trace/trajectory JSONL never corrupts on a failed write (#86)
+    \\  • Auto-compaction recovers instead of wedging on huge context (#88)
+    \\  • New providers: Sakana AI (fugu) + Fireworks AI (deepseek, kimi, glm…)
+    \\0.0.165
+    \\  • TUI: live /thinking reasoning stream, AI /title, session headers
+    \\  • GUI: /ultracode toggle, prompt-history image fix, segmented borders
+    \\
+;
+
 /// OTLP endpoint baked into release builds (-Dtelemetry-endpoint); "" in dev
 /// builds → telemetry stays off unless an env var configures it. Used as the
 /// lowest-precedence telemetry endpoint, below env overrides and opt-out.
@@ -4681,7 +4735,7 @@ pub fn main(init: std.process.Init) !void {
     if (help_flag or version_flag) {
         var hbuf: [4096]u8 = undefined;
         var hw = Io.File.stdout().writer(io, &hbuf);
-        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("graff {s}\n", .{harness_version});
+        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("graff {s}\n\n{s}", .{ harness_version, changelog_text });
         try hw.interface.flush();
         return;
     }
@@ -4869,6 +4923,7 @@ pub fn main(init: std.process.Init) !void {
     var trace_writer = if (trace_file) |f| f.writer(io, &trace_buf) else undefined;
     var tracer: Tracer = .{
         .io = io,
+        .gpa = gpa,
         .out = if (trace_file != null) &trace_writer.interface else null,
         .start = Io.Timestamp.now(io, .awake),
     };
@@ -5173,10 +5228,7 @@ pub fn main(init: std.process.Init) !void {
                 // thing — summarize up front instead.
                 if (est >= root.provider.compactAt()) {
                     root.last_context_tokens = est;
-                    _ = root.compact() catch |err| switch (err) {
-                        error.ApiError => {},
-                        else => |e| root.say("[resume compaction skipped: {t}]\n", .{e}) catch {},
-                    };
+                    root.compactOrRecover(true);
                 }
             }
         } else |_| {}
@@ -5515,6 +5567,16 @@ pub fn main(init: std.process.Init) !void {
                 .ok = turn_ok,
                 .context_tokens = root.last_context_tokens,
             });
+            // Preserve the failure reason in the archive: the turn node only
+            // records ok:false, so an adjacent error record keeps the
+            // user-visible detail (network give-up, api error) joinable to it (#86).
+            if (!turn_ok) {
+                const fail_detail: []const u8 = if (turn_result) |_| "" else |e| switch (e) {
+                    error.ApiError => root.last_api_error orelse "api error",
+                    else => @errorName(e),
+                };
+                tj.node(.{ .kind = "turn_error", .parent = turn_id, .t = tj.elapsedMs(), .detail = fail_detail });
+            }
             if (g_telem) |t| t.runEvent(&fp, !std.mem.eql(u8, &fp, &prev_prompt_fp), turn_ok, turn_ms, turn_tools);
             prev_turn_id = turn_id;
             prev_prompt_fp = fp;
@@ -5547,6 +5609,10 @@ pub fn main(init: std.process.Init) !void {
                         root.emit(.{ .type = "turn", .text = partial, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = false, .metadata_complete = root.last_context_tokens > 0 });
                     }
                 }
+                // A turn can fail because the context window overflowed; if we're
+                // over the compaction threshold, compact (or emergency-trim) now
+                // so the next turn isn't doomed to fail at the same size (#88).
+                if (root.last_context_tokens >= root.provider.compactAt()) root.compactOrRecover(true);
                 saveSession(&root, arena, root.session_name) catch {};
                 continue;
             },
@@ -5592,10 +5658,10 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (root.last_context_tokens >= root.provider.compactAt()) {
-            _ = root.compact() catch |err| switch (err) {
-                error.ApiError => {},
-                else => |e| root.say("[compaction skipped: {t}]\n", .{e}) catch {},
-            };
+            // Trim on failure only when we're genuinely against the window — at
+            // 80–95% a transient compaction failure can recover next turn.
+            const near_cap = root.provider.context > 0 and root.last_context_tokens * 100 >= root.provider.context * 95;
+            root.compactOrRecover(near_cap);
         }
         // opencode-style continuous autosave: persist after every turn so a
         // crash or quit never loses the thread — last.session.json, the same
@@ -6183,6 +6249,109 @@ fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: []co
     }
 }
 
+/// Better UX when /model targets a provider with no key: instead of a flat
+/// "no key" dead-end, offer to log in (OAuth, for providers that have a flow)
+/// or paste an API key, then switch to pid/model. Esc/blank/"keep" stays on the
+/// current model. Non-TTY just prints the actionable one-liner. Best-effort.
+fn offerProviderAuth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer, pid: []const u8, model: []const u8) !void {
+    var spec_idx: ?usize = null;
+    for (provider_specs, 0..) |spec, i| if (std.mem.eql(u8, spec.id, pid)) {
+        spec_idx = i;
+    };
+    const si = spec_idx orelse {
+        try out.print("unknown provider '{s}' — see /model for the list\n", .{pid});
+        try out.flush();
+        return;
+    };
+    const can_login = std.mem.eql(u8, pid, "codegraff") or std.mem.eql(u8, pid, "codex") or std.mem.eql(u8, pid, "kimi");
+
+    // Non-interactive (one-shot / no TTY): no picker — print the hint and bail.
+    if (!use_color or root.in == null) {
+        if (can_login)
+            try out.print("no key for {s} — /login {s} (OAuth) or /key {s} <key>\n", .{ pid, pid, pid })
+        else
+            try out.print("no key for {s} — /key {s} <key> (or set {s})\n", .{ pid, pid, provider_specs[si].env_key });
+        try out.flush();
+        return;
+    }
+
+    // Choice menu — login row only when the provider actually has an OAuth flow.
+    var items: [3]PickItem = undefined;
+    var n: usize = 0;
+    if (can_login) {
+        items[n] = .{ .name = "log in (OAuth)", .desc = "device/browser sign-in — no key to paste" };
+        n += 1;
+    }
+    items[n] = .{ .name = "paste an API key", .desc = "enter a key now (used live + saved)" };
+    n += 1;
+    items[n] = .{ .name = "keep current model", .desc = "cancel — stay on the current model" };
+    n += 1;
+
+    const title = std.fmt.allocPrint(arena, "No key for {s} \xe2\x80\xba", .{pid}) catch "No key \xe2\x80\xba";
+    const choice = listPicker(root, arena, out, title, items[0..n]) orelse {
+        try out.print("kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+        try out.flush();
+        return;
+    };
+    const picked = items[choice].name;
+
+    if (std.mem.eql(u8, picked, "keep current model")) {
+        try out.print("kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+        try out.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, picked, "log in (OAuth)")) {
+        const home = root.home;
+        try out.flush(); // hand stdout to the login flow's own writer
+        if (std.mem.eql(u8, pid, "codegraff")) {
+            codegraffLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 codegraff login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else if (std.mem.eql(u8, pid, "codex")) {
+            codexLogin(root.io, root.gpa, arena, home, false) catch |err| {
+                try out.print("\xe2\x9c\x97 codex login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else if (std.mem.eql(u8, pid, "kimi")) {
+            kimiLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 kimi login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        }
+        reloadLoginKey(root, keys, arena, pid);
+    } else {
+        // Paste a key: one cooked-mode line read (echoes), same pattern as the
+        // tool-approval prompt. Blank input cancels.
+        const in = root.in orelse return;
+        try out.print("paste your {s} API key, then Enter (blank cancels): ", .{pid});
+        try out.flush();
+        const raw = (in.takeDelimiter('\n') catch null) orelse "";
+        const key = std.mem.trim(u8, raw, " \t\r\n");
+        if (key.len == 0) {
+            try out.print("cancelled — kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+            try out.flush();
+            return;
+        }
+        const dup = arena.dupe(u8, key) catch key;
+        keys.values[si] = dup;
+        const saved = storeKey(root.io, root.gpa, arena, root.home, pid, dup);
+        try out.print("\xe2\x9c\x93 {s} key set (live{s})\n", .{ pid, if (saved) " + Keychain" else "" });
+    }
+
+    // Auth done — switch now if the key/login took, else keep the current model.
+    const provider = keys.providerById(pid, model) catch {
+        try out.print("still no usable key for {s} — kept {s}{s}{s}\n", .{ pid, style.cyan, root.provider.model, style.reset });
+        try out.flush();
+        return;
+    };
+    try switchProvider(root, arena, provider, out);
+}
+
 fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !void {
     if (std.mem.eql(u8, line, "/clear")) {
         root.messages = std.json.Array.init(arena);
@@ -6551,8 +6720,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 if (modelPicker(root, keys, arena, out)) |idx| {
                     const m = model_table[idx];
                     const provider = keys.providerById(m.provider, m.name) catch {
-                        try out.print("no key/login for {s} — add one with /key {s} <key>\n", .{ m.provider, m.provider });
-                        try out.flush();
+                        try offerProviderAuth(root, keys, arena, out, m.provider, m.name);
                         return;
                     };
                     try switchProvider(root, arena, provider, out);
@@ -6584,8 +6752,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 if (!std.mem.eql(u8, spec.id, pid) or mdl.len == 0) continue;
                 const m = try arena.dupe(u8, mdl);
                 const provider = keys.providerById(pid, m) catch {
-                    try out.print("no key/login for provider '{s}' — `graff key set {s} <key>` or set {s}\n", .{ pid, pid, spec.env_key });
-                    try out.flush();
+                    try offerProviderAuth(root, keys, arena, out, pid, m);
                     return;
                 };
                 try switchProvider(root, arena, provider, out);
@@ -6597,8 +6764,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         for (provider_specs) |spec| {
             if (!std.mem.eql(u8, spec.id, arg)) continue;
             const provider = keys.providerById(spec.id, spec.default_model) catch {
-                try out.print("no key/login for provider '{s}' — `graff key set {s} <key>` or set {s}\n", .{ spec.id, spec.id, spec.env_key });
-                try out.flush();
+                try offerProviderAuth(root, keys, arena, out, spec.id, spec.default_model);
                 return;
             };
             try switchProvider(root, arena, provider, out);
@@ -6607,6 +6773,10 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const resolved = resolveModelName(keys.*, arg);
         const name = try arena.dupe(u8, resolved orelse arg);
         const provider = keys.providerFor(name) catch {
+            for (model_table) |mt| if (std.mem.eql(u8, mt.name, name)) {
+                try offerProviderAuth(root, keys, arena, out, mt.provider, name);
+                return;
+            };
             try out.writeAll("no API key for any provider serving that model — see /models, or add one with /key <provider> <key>\n");
             try out.flush();
             return;
@@ -8781,7 +8951,14 @@ const Agent = struct {
                                 if (self.tracer) |tr| tr.note("retry", if (g_5xx_body_len > 0) g_5xx_body_buf[0..g_5xx_body_len] else what);
                                 self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                             } else {
-                                try self.say("[network error: {t} — retrying ({d}/{d})]\n", .{ err, attempt + 1, max_attempts });
+                                // Transport flake (HttpConnectionClosing, a reset,
+                                // a truncated TLS read): back off before a fresh
+                                // connection. Rapid-fire retries against a
+                                // just-closed keep-alive almost always re-fail
+                                // (#86). 250ms·2ⁿ, capped at 2s; Esc cancels.
+                                const delay_ms = @min(@as(u64, 250) << @intCast(@min(attempt, 3)), 2000);
+                                try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
+                                self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                             }
                             continue;
                         }
@@ -8791,8 +8968,11 @@ const Agent = struct {
                             try self.say("[request failed: {t} — giving up this turn]\n", .{err});
                         }
                         // Network give-up is its own error kind: the ApiError
-                        // handler's last_api_error is an API envelope, stale
-                        // or null on a pure transport failure.
+                        // handler's last_api_error would otherwise be an API
+                        // envelope, stale or null on a pure transport failure —
+                        // record the real reason so the failed turn's --json error
+                        // event and trajectory node preserve it (#86).
+                        self.last_api_error = std.fmt.allocPrint(self.arena, "network error: {s} (gave up after {d} attempts)", .{ @errorName(err), max_attempts }) catch null;
                         if (g_telem) |t| t.errorEvent("net", @errorName(err));
                         if (self.tracer) |tr| tr.api(self.label, self.provider.model, 0, body.len, 0, 0, 0, true);
                         return error.ApiError;
@@ -9617,6 +9797,86 @@ const Agent = struct {
         self.last_context_tokens = 0;
         if (!json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
         return summary.len;
+    }
+
+    fn cleanUserTurn(m: Value) bool {
+        if (m != .object) return false;
+        const role = m.object.get("role") orelse return false;
+        if (role != .string or !std.mem.eql(u8, role.string, "user")) return false;
+        const content = m.object.get("content") orelse return true;
+        switch (content) {
+            .string => return true, // a plain-text user turn
+            .array => |arr| {
+                // An anthropic user message that only carries tool_result blocks
+                // is the response half of a tool call — it can't begin a
+                // conversation, so it is not a safe trim boundary.
+                for (arr.items) |blk| {
+                    if (blk != .object) continue;
+                    const t = blk.object.get("type") orelse continue;
+                    if (t == .string and std.mem.eql(u8, t.string, "tool_result")) return false;
+                }
+                return true;
+            },
+            else => return true,
+        }
+    }
+
+    /// Index to cut history at for an emergency trim: the first clean user turn
+    /// at or after the midpoint, so messages[cut..] is always a valid
+    /// conversation start (never an orphaned tool_result). null when there is no
+    /// safe cut — too short, or only tool_result user messages remain.
+    fn emergencyCutIndex(items: []const Value) ?usize {
+        if (items.len < 4) return null;
+        var i: usize = items.len / 2;
+        while (i < items.len) : (i += 1) {
+            if (cleanUserTurn(items[i])) return i;
+        }
+        return null;
+    }
+
+    /// Last-resort context recovery when compact() itself can't run — typically
+    /// because the history already overflows the window, so the summarization
+    /// request overflows too and fails. Drops the oldest messages at a safe
+    /// boundary; returns the count dropped (0 if none). The next turn re-measures
+    /// context from the provider usage.
+    fn emergencyTrim(self: *Agent) usize {
+        const cut = emergencyCutIndex(self.messages.items) orelse return 0;
+        var fresh = std.json.Array.init(self.arena);
+        for (self.messages.items[cut..]) |m| fresh.append(m) catch return 0;
+        self.messages = fresh;
+        self.last_context_tokens = 0;
+        return cut;
+    }
+
+    /// Auto-compaction with recovery. compact() summarizes the whole history in
+    /// one request; once context overflows the window that request overflows too
+    /// and fails — historically swallowed silently, wedging the session so every
+    /// later turn failed at the same huge token count (issue #88). Surface the
+    /// failure and, when `trim_on_fail`, emergency-trim so the next turn has
+    /// room. Best-effort; never throws into the REPL loop.
+    fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
+        if (self.compact()) |_| return else |err| {
+            switch (err) {
+                error.Interrupted => return, // user hit Esc mid-compaction
+                error.EmptySummary => {}, // compact() already explained it
+                else => {
+                    if (json_mode)
+                        self.emit(.{ .type = "error", .message = std.fmt.allocPrint(self.arena, "auto-compaction failed: {s}", .{@errorName(err)}) catch "auto-compaction failed" })
+                    else
+                        self.say("[auto-compaction failed: {t}]\n", .{err}) catch {};
+                },
+            }
+            if (!trim_on_fail) return;
+            const dropped = self.emergencyTrim();
+            if (dropped > 0) {
+                if (json_mode)
+                    self.emit(.{ .type = "compact", .ok = true, .trimmed = dropped })
+                else
+                    self.say("[context emergency-trimmed: dropped {d} old message(s) so the session can continue]\n", .{dropped}) catch {};
+            } else if (!json_mode) {
+                self.say("[warning: context too large to compact and could not be trimmed safely]\n", .{}) catch {};
+            }
+        }
     }
 
     fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: bool, stream_usage: bool) ![]u8 {
@@ -13955,6 +14215,60 @@ test "Provider.compactAt: auto-compacts at 80% of the context window (long-horiz
     try std.testing.expectEqual(@as(u64, 160_000), small.compactAt());
     const zero = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 0 };
     try std.testing.expectEqual(@as(u64, 0), zero.compactAt());
+}
+
+test "writeJsonLine: one complete newline-terminated JSON record per call" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    writeJsonLine(std.testing.allocator, &aw.writer, .{ .kind = "turn", .id = @as(u64, 7), .ok = true });
+    writeJsonLine(std.testing.allocator, &aw.writer, .{ .kind = "prompt", .text = "hi" });
+    const out = aw.writer.buffered();
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "\n"));
+    var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out, "\n"), '\n');
+    while (it.next()) |line| {
+        var p = try std.json.parseFromSlice(Value, std.testing.allocator, line, .{});
+        defer p.deinit();
+        try std.testing.expect(p.value == .object); // each line parses as valid JSON
+    }
+}
+
+test "Agent.cleanUserTurn: plain user text yes; assistant/tool_result no" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expect(Agent.cleanUserTurn(try textMessage(a, "user", "hello")));
+    try std.testing.expect(!Agent.cleanUserTurn(try textMessage(a, "assistant", "hi")));
+    // an anthropic tool_result-only user message is NOT a clean conversation start
+    const tr = try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}", .{});
+    try std.testing.expect(!Agent.cleanUserTurn(tr));
+}
+
+test "Agent.emergencyCutIndex: cuts at a clean user turn at/after the midpoint" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var items = std.json.Array.init(a);
+    const roles = [_][]const u8{ "user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant" };
+    for (roles) |r| try items.append(try textMessage(a, r, "x"));
+    try std.testing.expectEqual(@as(?usize, 4), Agent.emergencyCutIndex(items.items)); // midpoint 4 is a user turn
+    try std.testing.expectEqual(@as(?usize, null), Agent.emergencyCutIndex(items.items[0..3])); // too short to trim
+}
+
+test "Agent.emergencyCutIndex: skips a tool_result user message at the midpoint" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var items = std.json.Array.init(a);
+    try items.append(try textMessage(a, "user", "x")); // 0
+    try items.append(try textMessage(a, "assistant", "x")); // 1
+    try items.append(try textMessage(a, "user", "x")); // 2
+    try items.append(try textMessage(a, "assistant", "x")); // 3
+    // 4: an anthropic tool_result-only user message (not a valid conversation start)
+    try items.append(try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"x\"}]}", .{})); // 4 (skip)
+    try items.append(try textMessage(a, "assistant", "x")); // 5
+    try items.append(try textMessage(a, "user", "x")); // 6 (first clean user >= midpoint)
+    try items.append(try textMessage(a, "assistant", "x")); // 7
+    try std.testing.expectEqual(@as(?usize, 6), Agent.emergencyCutIndex(items.items));
 }
 
 test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
