@@ -49,6 +49,8 @@ export interface SessionStoreState {
   activeWorkspacePath: string | null;
   attachmentsByKey: Record<string, Attachment[]>;
   conversationSummariesByKey: Record<string, ConversationSessionSummary>;
+  conversationMessageIndicesByKey: Record<string, Record<string, number>>;
+  conversationVersionsByKey: Record<string, number>;
   conversationViewsByKey: Record<string, ConversationViewSnapshot>;
   isBootstrapped: boolean;
   isOpeningProject: boolean;

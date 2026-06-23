@@ -281,6 +281,24 @@ function buildConversationSummariesByKey(workspaces: WorkspaceSession[]) {
   return byKey;
 }
 
+function buildMessageIndexById(messages: ConversationViewSnapshot["messages"]) {
+  const indexById: Record<string, number> = {};
+  messages.forEach((message, index) => {
+    indexById[message.id] = index;
+  });
+  return indexById;
+}
+
+function bumpConversationVersion(
+  versions: Record<string, number>,
+  key: string,
+): Record<string, number> {
+  return {
+    ...versions,
+    [key]: (versions[key] ?? 0) + 1,
+  };
+}
+
 export function areSelectionsEqual(
   left: WorkspaceBoardSelection,
   right: WorkspaceBoardSelection,
@@ -364,6 +382,8 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
     activeWorkspacePath: null,
     attachmentsByKey: {},
     conversationSummariesByKey: {},
+    conversationMessageIndicesByKey: {},
+    conversationVersionsByKey: {},
     conversationViewsByKey: {},
     isBootstrapped: false,
     isOpeningProject: false,
@@ -429,10 +449,30 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
         }
 
         const nextConversationViewsByKey = { ...current.conversationViewsByKey };
+        let nextConversationMessageIndicesByKey =
+          current.conversationMessageIndicesByKey;
+        let nextConversationVersionsByKey = current.conversationVersionsByKey;
         for (const view of nextViews) {
-          nextConversationViewsByKey[
-            getConversationStoreKey(view.workspacePath, view.conversationId)
-          ] = view;
+          const key = getConversationStoreKey(view.workspacePath, view.conversationId);
+          const previousView = current.conversationViewsByKey[key];
+          nextConversationViewsByKey[key] = view;
+          if (previousView !== view) {
+            if (
+              nextConversationMessageIndicesByKey ===
+              current.conversationMessageIndicesByKey
+            ) {
+              nextConversationMessageIndicesByKey = {
+                ...current.conversationMessageIndicesByKey,
+              };
+            }
+            nextConversationMessageIndicesByKey[key] = buildMessageIndexById(
+              view.messages,
+            );
+            nextConversationVersionsByKey = bumpConversationVersion(
+              nextConversationVersionsByKey,
+              key,
+            );
+          }
         }
 
         return {
@@ -441,6 +481,8 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
           conversationSummariesByKey: buildConversationSummariesByKey(
             snapshot.workspaces,
           ),
+          conversationMessageIndicesByKey: nextConversationMessageIndicesByKey,
+          conversationVersionsByKey: nextConversationVersionsByKey,
           conversationViewsByKey: nextConversationViewsByKey,
           requestTimingsByConversationId: nextRequestTimingsByConversationId,
           savedWorkspaces: snapshot.savedWorkspaces,
@@ -486,32 +528,45 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
           todos: [],
           workspacePath: delta.workspacePath,
         } satisfies ConversationViewSnapshot;
-        const messageIndex = existing.messages.findIndex(
-          (message) => message.id === delta.messageId,
-        );
-        const messages =
-          messageIndex >= 0
-            ? existing.messages.map((message, index) => {
-                if (index !== messageIndex) {
-                  return message;
-                }
-                if (
-                  message.kind !== "assistant" &&
-                  message.kind !== "reasoning"
-                ) {
-                  return message;
-                }
-                return { ...message, text: `${message.text}${delta.text}` };
-              })
-            : [
-                ...existing.messages,
-                {
-                  id: delta.messageId,
-                  kind: delta.kind,
-                  requestId: delta.requestId,
-                  text: delta.text,
-                },
-              ];
+        const existingIndexById =
+          current.conversationMessageIndicesByKey[key] ??
+          buildMessageIndexById(existing.messages);
+        const messageIndex = existingIndexById[delta.messageId];
+        let nextIndexById = existingIndexById;
+        let messages = existing.messages;
+
+        if (messageIndex != null) {
+          const message = existing.messages[messageIndex];
+          if (
+            message?.kind === "assistant" ||
+            message?.kind === "reasoning"
+          ) {
+            messages = existing.messages.slice();
+            messages[messageIndex] = {
+              ...message,
+              text: `${message.text}${delta.text}`,
+            };
+          }
+        } else {
+          messages = [
+            ...existing.messages,
+            {
+              id: delta.messageId,
+              kind: delta.kind,
+              requestId: delta.requestId,
+              text: delta.text,
+            },
+          ];
+          nextIndexById = {
+            ...existingIndexById,
+            [delta.messageId]: existing.messages.length,
+          };
+        }
+
+        if (messages === existing.messages) {
+          return current;
+        }
+
         const activeRequestIds = existing.activeRequestIds.includes(
           delta.requestId,
         )
@@ -520,6 +575,18 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
         return {
           activeConversationId: current.activeConversationId ?? delta.conversationId,
           activeWorkspacePath: current.activeWorkspacePath ?? delta.workspacePath,
+          conversationMessageIndicesByKey:
+            nextIndexById === existingIndexById &&
+            current.conversationMessageIndicesByKey[key] != null
+              ? current.conversationMessageIndicesByKey
+              : {
+                  ...current.conversationMessageIndicesByKey,
+                  [key]: nextIndexById,
+                },
+          conversationVersionsByKey: bumpConversationVersion(
+            current.conversationVersionsByKey,
+            key,
+          ),
           conversationViewsByKey: {
             ...current.conversationViewsByKey,
             [key]: {
@@ -559,6 +626,10 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
           };
         }
         return {
+          conversationVersionsByKey: bumpConversationVersion(
+            current.conversationVersionsByKey,
+            key,
+          ),
           conversationViewsByKey: {
             ...current.conversationViewsByKey,
             [key]: {
@@ -594,9 +665,31 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
         if (existing.messages.some((message) => message.id === `${requestId}-user`)) {
           return current;
         }
+        const messageId = `${requestId}-user`;
+        const messages = [
+          ...existing.messages,
+          {
+            kind: "user" as const,
+            id: messageId,
+            requestId,
+            text,
+          },
+        ];
         return {
           activeConversationId: binding.conversationId,
           activeWorkspacePath: binding.workspacePath,
+          conversationMessageIndicesByKey: {
+            ...current.conversationMessageIndicesByKey,
+            [key]: {
+              ...(current.conversationMessageIndicesByKey[key] ??
+                buildMessageIndexById(existing.messages)),
+              [messageId]: existing.messages.length,
+            },
+          },
+          conversationVersionsByKey: bumpConversationVersion(
+            current.conversationVersionsByKey,
+            key,
+          ),
           conversationViewsByKey: {
             ...current.conversationViewsByKey,
             [key]: {
@@ -604,15 +697,7 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
               activeRequestIds: existing.activeRequestIds.includes(requestId)
                 ? existing.activeRequestIds
                 : [...existing.activeRequestIds, requestId],
-              messages: [
-                ...existing.messages,
-                {
-                  kind: "user",
-                  id: `${requestId}-user`,
-                  requestId,
-                  text,
-                },
-              ],
+              messages,
               requestAgentIds:
                 agentId == null
                   ? existing.requestAgentIds
@@ -657,10 +742,19 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
           !hasSummary &&
           nextView.messages.length === 0 &&
           nextView.activeRequestIds.length === 0;
+        let nextMessageIndicesByKey = current.conversationMessageIndicesByKey;
         if (shouldDropEmptyOptimisticView) {
           delete nextViewsByKey[key];
+          if (current.conversationMessageIndicesByKey[key] != null) {
+            nextMessageIndicesByKey = { ...current.conversationMessageIndicesByKey };
+            delete nextMessageIndicesByKey[key];
+          }
         } else {
           nextViewsByKey[key] = nextView;
+          nextMessageIndicesByKey = {
+            ...current.conversationMessageIndicesByKey,
+            [key]: buildMessageIndexById(nextView.messages),
+          };
         }
         const isActiveOptimisticView =
           current.activeWorkspacePath === binding.workspacePath &&
@@ -670,6 +764,11 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
             shouldDropEmptyOptimisticView && isActiveOptimisticView
               ? null
               : current.activeConversationId,
+          conversationMessageIndicesByKey: nextMessageIndicesByKey,
+          conversationVersionsByKey: bumpConversationVersion(
+            current.conversationVersionsByKey,
+            key,
+          ),
           conversationViewsByKey: nextViewsByKey,
           selection:
             shouldDropEmptyOptimisticView && isActiveOptimisticView

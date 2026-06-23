@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import type {
   PromptSettings,
   RuntimeStatus,
+  SessionMessage,
   SessionSnapshot,
 } from "../services/desktop/types/contracts";
 
@@ -364,6 +365,69 @@ describe("sessionStore", () => {
     expect(
       sessionStore.getState().attachmentsByKey[destinationKey],
     ).toBeUndefined();
+  });
+
+  test("message deltas maintain per-conversation message indices and versions", () => {
+    const historicalMessages: SessionMessage[] = Array.from(
+      { length: 250 },
+      (_value, index) => ({
+        id: `assistant-old-${index}`,
+        kind: "assistant" as const,
+        requestId: `old-${index}`,
+        text: `historical ${index}`,
+      }),
+    );
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        conversationViews: [
+          {
+            activeRequestIds: ["req-stream"],
+            conversationId: "chat-1",
+            followup: null,
+            messages: historicalMessages,
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+
+    const key = "/workspace/codegraff-gui::chat-1";
+    const initialVersion = sessionStore.getState().conversationVersionsByKey[key] ?? 0;
+
+    sessionStore.getState().appendMessageDelta({
+      conversationId: "chat-1",
+      kind: "assistant",
+      messageId: "streaming-message",
+      requestId: "req-stream",
+      text: "hello",
+      workspacePath: "/workspace/codegraff-gui",
+    });
+    for (let index = 0; index < 100; index += 1) {
+      sessionStore.getState().appendMessageDelta({
+        conversationId: "chat-1",
+        kind: "assistant",
+        messageId: "streaming-message",
+        requestId: "req-stream",
+        text: "!",
+        workspacePath: "/workspace/codegraff-gui",
+      });
+    }
+
+    const state = sessionStore.getState();
+    const view = state.conversationViewsByKey[key];
+    const messageIndex = state.conversationMessageIndicesByKey[key]?.[
+      "streaming-message"
+    ];
+    expect(messageIndex).toBe(250);
+    expect(view?.messages[messageIndex ?? -1]).toEqual({
+      id: "streaming-message",
+      kind: "assistant",
+      requestId: "req-stream",
+      text: `hello${"!".repeat(100)}`,
+    });
+    expect(state.conversationVersionsByKey[key]).toBe(initialVersion + 101);
   });
 
   test("workspace draft selection ignores a stale active conversation", () => {

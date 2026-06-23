@@ -26,6 +26,117 @@ function shouldDisplayOperationInActivity(operation: ActivityOperation): boolean
  * assistant message of a turn is flagged `isFinalAnswer` so the GUI can render
  * it as a distinct answer panel.
  */
+export interface ChatThreadItemBuildCache {
+  activeRequestKey: string;
+  itemIndexByMessageId: Map<string, number>;
+  items: ChatThreadItem[];
+  messages: TranscriptMessage[];
+}
+
+export interface ChatThreadItemBuildResult {
+  cache: ChatThreadItemBuildCache;
+  items: ChatThreadItem[];
+}
+
+function createBuildCache(
+  messages: TranscriptMessage[],
+  activeRequestKey: string,
+  items: ChatThreadItem[],
+): ChatThreadItemBuildCache {
+  const itemIndexByMessageId = new Map<string, number>();
+  items.forEach((item, index) => {
+    if (item.kind === "message") {
+      itemIndexByMessageId.set(item.message.id, index);
+    }
+  });
+  return { activeRequestKey, itemIndexByMessageId, items, messages };
+}
+
+function updateCachedStreamingAssistantMessage(
+  cache: ChatThreadItemBuildCache,
+  messages: TranscriptMessage[],
+  activeRequestKey: string,
+): ChatThreadItemBuildResult | null {
+  if (
+    cache.activeRequestKey !== activeRequestKey ||
+    cache.messages.length !== messages.length
+  ) {
+    return null;
+  }
+
+  let changedIndex = -1;
+  for (let index = 0; index < messages.length; index += 1) {
+    if (cache.messages[index] === messages[index]) {
+      continue;
+    }
+    if (changedIndex !== -1) {
+      return null;
+    }
+    changedIndex = index;
+  }
+
+  if (changedIndex === -1) {
+    return { cache, items: cache.items };
+  }
+
+  const previousMessage = cache.messages[changedIndex];
+  const nextMessage = messages[changedIndex];
+  if (
+    previousMessage.kind !== "assistant" ||
+    nextMessage.kind !== "assistant" ||
+    previousMessage.id !== nextMessage.id ||
+    previousMessage.requestId !== nextMessage.requestId ||
+    nextMessage.text.startsWith(previousMessage.text) === false
+  ) {
+    return null;
+  }
+
+  const itemIndex = cache.itemIndexByMessageId.get(nextMessage.id);
+  if (itemIndex == null) {
+    return null;
+  }
+
+  const previousItem = cache.items[itemIndex];
+  if (previousItem?.kind !== "message") {
+    return null;
+  }
+
+  const items = cache.items.slice();
+  items[itemIndex] = {
+    ...previousItem,
+    message: nextMessage,
+  };
+  return {
+    cache: createBuildCache(messages, activeRequestKey, items),
+    items,
+  };
+}
+
+export function buildChatThreadItemsWithCache(
+  messages: TranscriptMessage[],
+  activeRequestIds: string[],
+  previousCache?: ChatThreadItemBuildCache | null,
+): ChatThreadItemBuildResult {
+  const activeRequestKey = activeRequestIds.join("\u0000");
+  const cached =
+    previousCache == null
+      ? null
+      : updateCachedStreamingAssistantMessage(
+          previousCache,
+          messages,
+          activeRequestKey,
+        );
+  if (cached != null) {
+    return cached;
+  }
+
+  const items = buildChatThreadItems(messages, activeRequestIds);
+  return {
+    cache: createBuildCache(messages, activeRequestKey, items),
+    items,
+  };
+}
+
 export function buildChatThreadItems(
   messages: TranscriptMessage[],
   activeRequestIds: string[],

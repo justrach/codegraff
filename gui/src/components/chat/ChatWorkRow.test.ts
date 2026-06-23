@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import type { TranscriptMessage } from "../../services/desktop/types/contracts";
 import { getWorkHeaderLabelText } from "./utils/workHeaderLabel";
-import { buildChatThreadItems } from "./utils/chatThread";
+import {
+  buildChatThreadItems,
+  buildChatThreadItemsWithCache,
+} from "./utils/chatThread";
 
 function buildUserMessage(
   requestId: string,
@@ -102,6 +105,34 @@ describe("getWorkHeaderLabelText", () => {
 });
 
 describe("buildChatThreadItems", () => {
+  test("reuses display item structure for assistant-only streaming text updates", () => {
+    const requestId = "req-cache";
+    const firstMessages = [
+      buildUserMessage(requestId, "Tell me more"),
+      buildAssistantMessage(requestId, "Hello", "assistant-stream"),
+    ];
+    const first = buildChatThreadItemsWithCache(firstMessages, [requestId]);
+    const nextMessages = [
+      firstMessages[0],
+      buildAssistantMessage(requestId, "Hello world", "assistant-stream"),
+    ];
+    const next = buildChatThreadItemsWithCache(
+      nextMessages,
+      [requestId],
+      first.cache,
+    );
+
+    expect(next.items).toHaveLength(first.items.length);
+    expect(next.items[0]).toBe(first.items[0]);
+    expect(next.items[1]).toMatchObject({
+      kind: "message",
+      key: "assistant-stream",
+      message: {
+        text: "Hello world",
+      },
+    });
+  });
+
   test("keeps request work row keyed and anchored after the scope's user message", () => {
     const requestId = "req-1";
     const streamingItems = buildChatThreadItems(

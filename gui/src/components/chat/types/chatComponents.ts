@@ -143,6 +143,7 @@ export interface ChatToolEventRowProps {
 export interface ChatThreadProps {
   activeRequestIds: string[];
   commandResults?: CommandRunResult[];
+  conversationVersion?: number;
   messages: TranscriptMessage[];
   requestTimingsById: Record<string, RequestTimingInfo>;
   workspaceLabel: string;

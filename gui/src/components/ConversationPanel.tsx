@@ -27,6 +27,7 @@ export function ConversationPanel({
     activeWorkspaceLabel,
     activeWorkspaceConfigured,
     activeWorkspaceConfigurationError,
+    conversationVersion,
     followupRequest,
     hasCurrentWorkspace,
     isConversationLoading,
@@ -113,6 +114,7 @@ export function ConversationPanel({
             <ChatThread
               messages={messages}
               commandResults={commandResults}
+              conversationVersion={conversationVersion}
               activeRequestIds={activeRequestIds}
               requestTimingsById={requestTimingsById}
               workspaceLabel={activeWorkspaceLabel}
