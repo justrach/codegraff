@@ -67,7 +67,7 @@ function createSnapshot(
         workspacePath: "/workspace/codegraff-gui",
       },
     ],
-    savedWorkspaces: [{ id: "saved-1", name: "Workspace", updatedAt: 1n }],
+    savedWorkspaces: [{ id: "saved-1", name: "Workspace", updatedAt: 1 }],
     uiError: null,
     visibleActiveRequestIds: [],
     visibleFollowup: null,
@@ -201,7 +201,7 @@ describe("sessionStore", () => {
         id: "saved-1",
         layoutJson: "{\"grid\":true}",
         name: "Workspace",
-        updatedAt: 1n,
+        updatedAt: 1,
       },
     });
 
@@ -221,7 +221,7 @@ describe("sessionStore", () => {
         id: "saved-1",
         layoutJson: "{\"grid\":true}",
         name: "Workspace",
-        updatedAt: 1n,
+        updatedAt: 1,
       },
     });
   });
@@ -237,13 +237,13 @@ describe("sessionStore", () => {
         id: "saved-1",
         layoutJson: "{\"grid\":true}",
         name: "Workspace",
-        updatedAt: 1n,
+        updatedAt: 1,
       },
     });
 
     sessionStore.getState().applySessionSnapshot(
       createSnapshot({
-        savedWorkspaces: [{ id: "saved-1", name: "Renamed workspace", updatedAt: 2n }],
+        savedWorkspaces: [{ id: "saved-1", name: "Renamed workspace", updatedAt: 2 }],
       }),
     );
 
@@ -257,7 +257,7 @@ describe("sessionStore", () => {
         id: "saved-1",
         layoutJson: "{\"grid\":true}",
         name: "Renamed workspace",
-        updatedAt: 2n,
+        updatedAt: 2,
       },
     });
   });

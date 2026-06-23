@@ -17,7 +17,7 @@ const longModelName =
 const promptSettings: PromptSettings = {
   availableModels: [
     {
-      contextLength: 200000n,
+      contextLength: 200000,
       modelId: "claude-sonnet-long",
       modelName: longModelName,
       providerId: "anthropic",

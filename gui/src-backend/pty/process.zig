@@ -22,6 +22,15 @@ pub const PtyProcess = struct {
         return @intCast(written);
     }
 
+    pub fn writeAll(self: *PtyProcess, data: []const u8) !void {
+        var offset: usize = 0;
+        while (offset < data.len) {
+            const written = try self.write(data[offset..]);
+            if (written == 0) return error.WriteFailed;
+            offset += written;
+        }
+    }
+
     pub fn read(self: *PtyProcess, buffer: []u8) !usize {
         if (buffer.len == 0) return 0;
         const n = std.c.read(self.master_fd, buffer.ptr, buffer.len);

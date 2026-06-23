@@ -198,7 +198,7 @@ function qaPromptSettings(): PromptSettings {
   return {
     availableModels: [
       {
-        contextLength: 200000n,
+        contextLength: 200000,
         modelId: "claude-sonnet-4",
         modelName: "Claude Sonnet 4",
         providerId: "anthropic",
@@ -271,7 +271,7 @@ function qaCommandResult(input: {
     case "loop":
       return { body: "Started an autonomous plan→act→verify pass.", payload: null, resultKind: "snapshot", savedPath: null, snapshot: createQaSnapshot(input.conversationId ?? QA_CONVERSATION_ID, [{ id: "qa-loop-user", kind: "user", requestId: "qa-loop-request", text: `/loop ${input.args.join(" ")}` }, { id: "qa-loop-assistant", kind: "assistant", requestId: "qa-loop-request", text: "Loop pass complete: planned, acted, and verified the requested change." }]), title };
     case "workspace-info":
-      return { body: "| Field | Value |\n|---|---|\n| Workspace | Codegraff GUI |\n| Branch | qa/mock-browser |\n| Indexed nodes | 1,284 |", payload: { createdAt: "2026-06-03T00:00:00Z", kind: "workspaceInfo", lastUpdated: "2026-06-03T12:00:00Z", nodeCount: 1284n, relationCount: 642n, workingDir: QA_WORKSPACE_PATH, workspaceId: "qa-codegraff-gui", workspacePath: QA_WORKSPACE_PATH }, resultKind: "workspaceInfo", savedPath: null, snapshot: null, title };
+      return { body: "| Field | Value |\n|---|---|\n| Workspace | Codegraff GUI |\n| Branch | qa/mock-browser |\n| Indexed nodes | 1,284 |", payload: { createdAt: "2026-06-03T00:00:00Z", kind: "workspaceInfo", lastUpdated: "2026-06-03T12:00:00Z", nodeCount: 1284, relationCount: 642, workingDir: QA_WORKSPACE_PATH, workspaceId: "qa-codegraff-gui", workspacePath: QA_WORKSPACE_PATH }, resultKind: "workspaceInfo", savedPath: null, snapshot: null, title };
     case "workspace-status":
       return { body: "Workspace has 2 modified files and no conflicts.", payload: { files: [{ path: "src/hooks/useCommandRouter.ts", status: "modified" }, { path: "src/components/chat/ChatCommandResultRow.tsx", status: "modified" }, { path: "src/components/PromptInputCard.tsx", status: "clean" }], kind: "workspaceStatus", workspacePath: QA_WORKSPACE_PATH }, resultKind: "workspaceStatus", savedPath: null, snapshot: null, title };
     case "workspace-query":
@@ -1199,14 +1199,25 @@ export async function listenProviderOAuthCallback(
   return listenEvent(PROVIDER_OAUTH_CALLBACK_EVENT_NAME, handler);
 }
 
+function matchesTerminalEvent(
+  payload: { terminalId: string; terminalInstanceId?: string },
+  terminalId: string,
+  terminalInstanceId?: string | null,
+): boolean {
+  if (payload.terminalId !== terminalId) return false;
+  if (terminalInstanceId == null) return true;
+  return payload.terminalInstanceId === terminalInstanceId;
+}
+
 export async function listenTerminalOutput(
   terminalId: string,
   handler: (payload: TerminalOutputEvent) => void,
+  terminalInstanceId?: string | null,
 ): Promise<UnlistenFn> {
   return listenEvent(
     TERMINAL_OUTPUT_EVENT_NAME,
     (payload: TerminalOutputEvent) => {
-      if (payload.terminalId === terminalId) {
+      if (matchesTerminalEvent(payload, terminalId, terminalInstanceId)) {
         handler(payload);
       }
     },
@@ -1216,9 +1227,10 @@ export async function listenTerminalOutput(
 export async function listenTerminalExit(
   terminalId: string,
   handler: (payload: TerminalExitEvent) => void,
+  terminalInstanceId?: string | null,
 ): Promise<UnlistenFn> {
   return listenEvent(TERMINAL_EXIT_EVENT_NAME, (payload: TerminalExitEvent) => {
-    if (payload.terminalId === terminalId) {
+    if (matchesTerminalEvent(payload, terminalId, terminalInstanceId)) {
       handler(payload);
     }
   });
@@ -1227,11 +1239,12 @@ export async function listenTerminalExit(
 export async function listenTerminalErrors(
   terminalId: string,
   handler: (payload: TerminalErrorEvent) => void,
+  terminalInstanceId?: string | null,
 ): Promise<UnlistenFn> {
   return listenEvent(
     TERMINAL_ERROR_EVENT_NAME,
     (payload: TerminalErrorEvent) => {
-      if (payload.terminalId === terminalId) {
+      if (matchesTerminalEvent(payload, terminalId, terminalInstanceId)) {
         handler(payload);
       }
     },

@@ -40,9 +40,9 @@ export type WorkspaceKind = "project" | "managed_chat";
 
 export type WorkspaceSession = { kind: WorkspaceKind, workspacePath: string, workspaceName: string, configured: boolean, configurationError: string | null, selectedConversationId: string | null, conversations: Array<ConversationSessionSummary>, };
 
-export type SavedWorkspaceSummary = { id: string, name: string, updatedAt: bigint, };
+export type SavedWorkspaceSummary = { id: string, name: string, updatedAt: number, };
 
-export type SavedWorkspaceDetail = { id: string, name: string, layoutJson: string, updatedAt: bigint, };
+export type SavedWorkspaceDetail = { id: string, name: string, layoutJson: string, updatedAt: number, };
 
 export type SessionSnapshot = { activeWorkspacePath: string | null, activeConversationId: string | null, visibleMessages: Array<SessionMessage>, visibleActiveRequestIds: Array<string>, visibleRequestAgentIds: { [key in string]: string }, visibleTodos: Array<SessionTodo>,
 /**
@@ -52,7 +52,7 @@ export type SessionSnapshot = { activeWorkspacePath: string | null, activeConver
  */
 visibleGoal?: string, visibleFollowup: FollowupRequest | null, conversationViews: Array<ConversationViewSnapshot>, uiError: string | null, workspaces: Array<WorkspaceSession>, savedWorkspaces: Array<SavedWorkspaceSummary>, };
 
-export type PromptModelOption = { providerId: string, providerName: string, modelId: string, modelName: string | null, contextLength: bigint | null, supportsReasoning: boolean, reasoningEfforts: Array<string>, };
+export type PromptModelOption = { providerId: string, providerName: string, modelId: string, modelName: string | null, contextLength: number | null, supportsReasoning: boolean, reasoningEfforts: Array<string>, };
 
 export type PromptSettings = { availableModels: Array<PromptModelOption>, selectedProviderId: string | null, selectedModelId: string | null, selectedReasoningEffort: string | null, fastEnabled: boolean,
 /**
@@ -97,7 +97,7 @@ export type ProviderUrlParamValue = { name: string, value: string, };
 
 export type ProviderAuthSessionKind = "api_key" | "device_code" | "cli_login" | "o_auth_code";
 
-export type ProviderAuthSession = { kind: ProviderAuthSessionKind, authSessionId: string, requiresApiKey: boolean, apiKeyHint: string | null, urlParameters: Array<ProviderUrlParam>, verificationUri: string | null, verificationUriComplete: string | null, userCode: string | null, expiresInSeconds: bigint | null, authorizationUrl: string | null, };
+export type ProviderAuthSession = { kind: ProviderAuthSessionKind, authSessionId: string, requiresApiKey: boolean, apiKeyHint: string | null, urlParameters: Array<ProviderUrlParam>, verificationUri: string | null, verificationUriComplete: string | null, userCode: string | null, expiresInSeconds: number | null, authorizationUrl: string | null, };
 
 export type ProviderOAuthCallback = { authSessionId: string, providerId: string, authorizationCode: string | null, errorMessage: string | null, };
 
@@ -137,19 +137,19 @@ export type SaveConversationLayoutInput = { conversationId: string, layoutJson: 
 
 export type TerminalOpenInput = { terminalId: string, workspacePath: string, cols: number, rows: number, };
 
-export type TerminalWriteInput = { terminalId: string, data: string, };
+export type TerminalWriteInput = { terminalId: string, terminalInstanceId?: string | null, data: string, };
 
-export type TerminalResizeInput = { terminalId: string, cols: number, rows: number, };
+export type TerminalResizeInput = { terminalId: string, terminalInstanceId?: string | null, cols: number, rows: number, };
 
-export type TerminalCloseInput = { terminalId: string, };
+export type TerminalCloseInput = { terminalId: string, terminalInstanceId?: string | null, };
 
-export type TerminalSession = { terminalId: string, workspacePath: string, shell: string, cols: number, rows: number, };
+export type TerminalSession = { terminalId: string, terminalInstanceId?: string, workspacePath: string, shell: string, cols: number, rows: number, scrollback?: string, scrollbackTruncated?: boolean, scrollbackSeq?: number, };
 
-export type TerminalOutputEvent = { terminalId: string, data: string, };
+export type TerminalOutputEvent = { terminalId: string, terminalInstanceId?: string, terminalOutputSeq?: number, data: string, };
 
-export type TerminalExitEvent = { terminalId: string, exitCode: number | null, signal: string | null, };
+export type TerminalExitEvent = { terminalId: string, terminalInstanceId?: string, exitCode: number | null, signal: string | null, };
 
-export type TerminalErrorEvent = { terminalId: string, message: string, };
+export type TerminalErrorEvent = { terminalId: string, terminalInstanceId?: string, message: string, };
 
 export type CommandKind = "builtin" | "agent" | "workflow";
 
@@ -293,11 +293,11 @@ workingDir: string | null,
 /**
  * Indexed node count.
  */
-nodeCount: bigint | null,
+nodeCount: number | null,
 /**
  * Indexed relation count.
  */
-relationCount: bigint | null,
+relationCount: number | null,
 /**
  * Last update timestamp as RFC3339 text.
  */

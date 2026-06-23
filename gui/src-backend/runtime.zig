@@ -8,6 +8,7 @@ const log = std.log.scoped(.backend);
 const Value = std.json.Value;
 const default_reasoning_effort = "medium";
 const session_ext = ".session.json";
+const terminal_scrollback_limit = 1024 * 1024;
 
 pub var instance: ?*Runtime = null;
 
@@ -22,6 +23,8 @@ const Message = struct {
     summary: ?[]const u8 = null,
     is_error: bool = false,
     error_message: []const u8 = "",
+    tool_detail_json: ?[]const u8 = null,
+    result_detail_json: ?[]const u8 = null,
 
     const Kind = enum {
         user,
@@ -79,12 +82,19 @@ const PromptSettings = struct {
 
 const TerminalSessionState = struct {
     terminal_id: []const u8,
+    instance_id: []const u8,
     workspace_path: []const u8,
     cwd: []const u8,
     shell: []const u8,
     cols: u16,
     rows: u16,
     proc: pty.PtyProcess,
+    scrollback: std.ArrayList(u8) = .empty,
+    scrollback_truncated: bool = false,
+    output_seq: u64 = 0,
+    utf8_pending: [4]u8 = undefined,
+    utf8_pending_len: usize = 0,
+    io_mutex: std.Io.Mutex = .init,
     closing: std.atomic.Value(bool) = .init(false),
     exited: std.atomic.Value(bool) = .init(false),
 };
@@ -769,7 +779,7 @@ pub const Runtime = struct {
         if (std.mem.eql(u8, name, "workflow")) return self.workflowCommand(req, args_text);
         if (std.mem.eql(u8, name, "workspace-query") or std.mem.eql(u8, name, "workspace-search")) return self.workspaceQueryCommand(req, root, args_text);
         if (std.mem.eql(u8, name, "workspace-info")) return self.workspaceInfoCommand(req, root);
-        if (std.mem.eql(u8, name, "mcp")) return mer.json("{\"title\":\"/mcp\",\"body\":\"No MCP servers are configured in the Zig backend yet.\",\"snapshot\":null,\"savedPath\":null,\"resultKind\":\"mcp\",\"payload\":{\"kind\":\"mcp\",\"servers\":[]}}");
+        if (std.mem.eql(u8, name, "mcp")) return self.mcpCommand(req, root);
         if (std.mem.eql(u8, name, "workspace-status")) return self.workspaceStatusCommand(req, root);
         return commandText(req, "Command failed", self.fmt("Unknown command: /{s}. Run /help for the list.", .{name}));
     }
@@ -1009,21 +1019,68 @@ pub const Runtime = struct {
         return mer.json("{}");
     }
 
-    fn listMcpServers(_: *Runtime, req: mer.Request) mer.Response {
-        _ = req;
-        return mer.json("{\"servers\":[]}");
+    fn listMcpServers(self: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch null;
+        const workspace = self.workspaceFromRequest(root);
+        return self.mcpSettingsResponse(req, workspace) catch return oom();
     }
 
     fn importMcpConfig(self: *Runtime, req: mer.Request) mer.Response {
-        _ = self;
-        _ = parse(req) catch return badJson(req);
-        return mer.json("{\"servers\":[]}");
+        const root = parse(req) catch return badJson(req);
+        const input = objectField(root, "input") orelse root;
+        const scope = stringField(input, "scope") orelse "local";
+        if (!std.mem.eql(u8, scope, "local")) return bad(req, "only local workspace MCP config is supported");
+        const json_text = stringField(input, "json") orelse return bad(req, "missing MCP config JSON");
+        if (json_text.len > 1024 * 1024) return bad(req, "MCP config is too large");
+        var tmp = std.heap.ArenaAllocator.init(req.allocator);
+        defer tmp.deinit();
+        const parsed = std.json.parseFromSliceLeaky(Value, tmp.allocator(), json_text, .{ .allocate = .alloc_always }) catch return bad(req, "invalid MCP config JSON");
+        if (parsed != .object or objectField(parsed, "mcpServers") == null) return bad(req, "MCP config must contain an mcpServers object");
+        const workspace = self.workspaceFromRequest(root) orelse return bad(req, "open a workspace before importing local MCP config");
+        writeMcpConfig(req.allocator, workspace, json_text) catch return bad(req, "failed to write MCP config");
+        return self.mcpSettingsResponse(req, workspace) catch return oom();
     }
 
     fn removeMcpServer(self: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch return badJson(req);
+        const input = objectField(root, "input") orelse root;
+        const scope = stringField(input, "scope") orelse "local";
+        if (!std.mem.eql(u8, scope, "local")) return bad(req, "only local workspace MCP config is supported");
+        const name = stringField(input, "name") orelse return bad(req, "missing MCP server name");
+        const workspace = self.workspaceFromRequest(root) orelse return bad(req, "open a workspace before editing local MCP config");
+        removeMcpServerFromConfig(req.allocator, workspace, name) catch |err| {
+            return bad(req, switch (err) {
+                error.McpConfigNotFound => "MCP config not found",
+                error.McpServerNotFound => "MCP server not found",
+                else => "failed to update MCP config",
+            });
+        };
+        return self.mcpSettingsResponse(req, workspace) catch return oom();
+    }
+
+    fn mcpCommand(self: *Runtime, req: mer.Request, root: Value) mer.Response {
+        const workspace = stringField(root, "workspacePath") orelse self.active_workspace_path;
+        const payload = renderMcpSettingsJson(req.allocator, workspace) catch return oom();
+        var out: std.Io.Writer.Allocating = .init(req.allocator);
+        out.writer.writeAll("{\"title\":\"/mcp\",\"body\":\"Workspace MCP configuration loaded. Servers are shown from .mcp.json without executing them.\",\"snapshot\":null,\"savedPath\":null,\"resultKind\":\"mcp\",\"payload\":{\"kind\":\"mcp\",") catch return oom();
+        out.writer.writeAll(payload[1 .. payload.len - 1]) catch return oom();
+        out.writer.writeAll("}}") catch return oom();
+        return mer.json(out.written());
+    }
+
+    fn mcpSettingsResponse(self: *Runtime, req: mer.Request, workspace: ?[]const u8) !mer.Response {
         _ = self;
-        _ = parse(req) catch return badJson(req);
-        return mer.json("{\"servers\":[]}");
+        return mer.json(try renderMcpSettingsJson(req.allocator, workspace));
+    }
+
+    fn workspaceFromRequest(self: *Runtime, root: ?Value) ?[]const u8 {
+        if (root) |value| {
+            if (stringField(value, "workspacePath")) |workspace| return workspace;
+            if (objectField(value, "input")) |input| if (stringField(input, "workspacePath")) |workspace| return workspace;
+        }
+        self.mutex.lockUncancelable(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        return self.active_workspace_path;
     }
 
     fn startProviderAuth(_: *Runtime, req: mer.Request) mer.Response {
@@ -1209,15 +1266,28 @@ pub const Runtime = struct {
         const workspace = stringField(input, "workspacePath") orelse return bad(req, "missing workspacePath");
         const cols = clampTerminalSize(intField(input, "cols", 80), 80);
         const rows = clampTerminalSize(intField(input, "rows", 24), 24);
+        if (!fileExists(workspace)) return bad(req, "workspace path does not exist");
 
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.terminals.get(terminal_id)) |existing| {
+            if (!std.mem.eql(u8, existing.workspace_path, workspace)) {
+                self.mutex.unlock(mer_runtime.io);
+                return bad(req, "terminal id belongs to a different workspace");
+            }
             existing.cols = cols;
             existing.rows = rows;
             existing.proc.resize(cols, rows) catch {};
             const shell = existing.shell;
+            const instance_id = existing.instance_id;
+            const stored_workspace = existing.workspace_path;
+            const scrollback = req.allocator.dupe(u8, existing.scrollback.items) catch {
+                self.mutex.unlock(mer_runtime.io);
+                return oom();
+            };
+            const truncated = existing.scrollback_truncated;
+            const scrollback_seq = existing.output_seq;
             self.mutex.unlock(mer_runtime.io);
-            return terminalSessionJson(req.allocator, terminal_id, workspace, shell, cols, rows);
+            return terminalSessionJson(req.allocator, terminal_id, instance_id, stored_workspace, shell, cols, rows, scrollback, truncated, scrollback_seq);
         }
         self.mutex.unlock(mer_runtime.io);
 
@@ -1235,6 +1305,7 @@ pub const Runtime = struct {
         const session = self.arena.create(TerminalSessionState) catch return oom();
         session.* = .{
             .terminal_id = self.dupe(terminal_id),
+            .instance_id = self.uniqueId("terminal-instance"),
             .workspace_path = self.dupe(workspace),
             .cwd = self.dupe(workspace),
             .shell = shell,
@@ -1244,6 +1315,29 @@ pub const Runtime = struct {
         };
 
         self.mutex.lockUncancelable(mer_runtime.io);
+        if (self.terminals.get(terminal_id)) |winner| {
+            if (!std.mem.eql(u8, winner.workspace_path, workspace)) {
+                self.mutex.unlock(mer_runtime.io);
+                closeTerminalSession(session);
+                return bad(req, "terminal id belongs to a different workspace");
+            }
+            const winner_terminal_id = winner.terminal_id;
+            const winner_instance_id = winner.instance_id;
+            const winner_workspace = winner.workspace_path;
+            const winner_shell = winner.shell;
+            const winner_cols = winner.cols;
+            const winner_rows = winner.rows;
+            const winner_scrollback = req.allocator.dupe(u8, winner.scrollback.items) catch {
+                self.mutex.unlock(mer_runtime.io);
+                closeTerminalSession(session);
+                return oom();
+            };
+            const winner_truncated = winner.scrollback_truncated;
+            const winner_scrollback_seq = winner.output_seq;
+            self.mutex.unlock(mer_runtime.io);
+            closeTerminalSession(session);
+            return terminalSessionJson(req.allocator, winner_terminal_id, winner_instance_id, winner_workspace, winner_shell, winner_cols, winner_rows, winner_scrollback, winner_truncated, winner_scrollback_seq);
+        }
         self.terminals.put(session.terminal_id, session) catch {
             self.mutex.unlock(mer_runtime.io);
             closeTerminalSession(session);
@@ -1261,13 +1355,14 @@ pub const Runtime = struct {
         };
         thread.detach();
 
-        return terminalSessionJson(req.allocator, terminal_id, workspace, shell, cols, rows);
+        return terminalSessionJson(req.allocator, terminal_id, session.instance_id, workspace, shell, cols, rows, "", false, 0);
     }
 
     fn terminalWrite(self: *Runtime, req: mer.Request) mer.Response {
         const root = parse(req) catch return badJson(req);
         const input = objectField(root, "input") orelse root;
         const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
+        const terminal_instance_id = stringField(input, "terminalInstanceId") orelse return bad(req, "missing terminalInstanceId");
         const data = stringField(input, "data") orelse "";
 
         self.mutex.lockUncancelable(mer_runtime.io);
@@ -1275,12 +1370,18 @@ pub const Runtime = struct {
             self.mutex.unlock(mer_runtime.io);
             return bad(req, "terminal session not found");
         };
-        _ = session.proc.write(data) catch {
+        if (!self.terminalInstanceMatches(session, terminal_instance_id)) {
             self.mutex.unlock(mer_runtime.io);
-            self.emitTerminalError(terminal_id, "terminal write failed");
+            return bad(req, "terminal session instance is no longer active");
+        }
+        self.mutex.unlock(mer_runtime.io);
+        session.io_mutex.lockUncancelable(mer_runtime.io);
+        defer session.io_mutex.unlock(mer_runtime.io);
+        if (session.closing.load(.acquire)) return bad(req, "terminal session is closing");
+        session.proc.writeAll(data) catch {
+            self.emitTerminalError(session, "terminal write failed");
             return mer.Response.init(.internal_server_error, .json, "{\"error\":\"terminal write failed\"}");
         };
-        self.mutex.unlock(mer_runtime.io);
         return mer.json("null");
     }
 
@@ -1288,13 +1389,20 @@ pub const Runtime = struct {
         const root = parse(req) catch return badJson(req);
         const input = objectField(root, "input") orelse root;
         const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
+        const terminal_instance_id = stringField(input, "terminalInstanceId") orelse return bad(req, "missing terminalInstanceId");
         const cols = clampTerminalSize(intField(input, "cols", 80), 80);
         const rows = clampTerminalSize(intField(input, "rows", 24), 24);
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.terminals.get(terminal_id)) |session| {
+            if (!self.terminalInstanceMatches(session, terminal_instance_id)) {
+                self.mutex.unlock(mer_runtime.io);
+                return bad(req, "terminal session instance is no longer active");
+            }
             session.cols = cols;
             session.rows = rows;
-            session.proc.resize(cols, rows) catch self.emitTerminalError(terminal_id, "terminal resize failed");
+            session.io_mutex.lockUncancelable(mer_runtime.io);
+            session.proc.resize(cols, rows) catch self.emitTerminalError(session, "terminal resize failed");
+            session.io_mutex.unlock(mer_runtime.io);
         }
         self.mutex.unlock(mer_runtime.io);
         return mer.json("null");
@@ -1304,43 +1412,74 @@ pub const Runtime = struct {
         const root = parse(req) catch return badJson(req);
         const input = objectField(root, "input") orelse root;
         const terminal_id = stringField(input, "terminalId") orelse return bad(req, "missing terminalId");
+        const terminal_instance_id = stringField(input, "terminalInstanceId") orelse return bad(req, "missing terminalInstanceId");
         self.mutex.lockUncancelable(mer_runtime.io);
         const session = self.terminals.get(terminal_id);
+        if (session) |s| {
+            if (!self.terminalInstanceMatches(s, terminal_instance_id)) {
+                self.mutex.unlock(mer_runtime.io);
+                return mer.json("null");
+            }
+        }
         _ = self.terminals.remove(terminal_id);
         self.mutex.unlock(mer_runtime.io);
         if (session) |s| closeTerminalSession(s);
         return mer.json("null");
     }
 
-    fn emitTerminalOutput(self: *Runtime, terminal_id: []const u8, data: []const u8) void {
+    fn emitTerminalOutput(self: *Runtime, session: *TerminalSessionState, data: []const u8) void {
+        const seq = self.appendTerminalScrollback(session, data);
         var out: std.Io.Writer.Allocating = .init(self.allocator);
         defer out.deinit();
         out.writer.writeAll("{\"terminalId\":") catch return;
-        writeString(&out.writer, terminal_id) catch return;
+        writeString(&out.writer, session.terminal_id) catch return;
+        out.writer.writeAll(",\"terminalInstanceId\":") catch return;
+        writeString(&out.writer, session.instance_id) catch return;
+        out.writer.writeAll(",\"terminalOutputSeq\":") catch return;
+        out.writer.print("{d}", .{seq}) catch return;
         out.writer.writeAll(",\"data\":") catch return;
         writeString(&out.writer, data) catch return;
         out.writer.writeAll("}") catch return;
         self.emitSseEvent("terminal-output", out.written());
     }
 
-    fn emitTerminalExit(self: *Runtime, terminal_id: []const u8, exit_code: i64) void {
+    fn emitTerminalExit(self: *Runtime, session: *TerminalSessionState, exit_code: i64) void {
         var out: std.Io.Writer.Allocating = .init(self.allocator);
         defer out.deinit();
         out.writer.writeAll("{\"terminalId\":") catch return;
-        writeString(&out.writer, terminal_id) catch return;
+        writeString(&out.writer, session.terminal_id) catch return;
+        out.writer.writeAll(",\"terminalInstanceId\":") catch return;
+        writeString(&out.writer, session.instance_id) catch return;
         out.writer.print(",\"exitCode\":{d},\"signal\":null}}", .{exit_code}) catch return;
         self.emitSseEvent("terminal-exit", out.written());
     }
 
-    fn emitTerminalError(self: *Runtime, terminal_id: []const u8, message: []const u8) void {
+    fn emitTerminalError(self: *Runtime, session: *TerminalSessionState, message: []const u8) void {
         var out: std.Io.Writer.Allocating = .init(self.allocator);
         defer out.deinit();
         out.writer.writeAll("{\"terminalId\":") catch return;
-        writeString(&out.writer, terminal_id) catch return;
+        writeString(&out.writer, session.terminal_id) catch return;
+        out.writer.writeAll(",\"terminalInstanceId\":") catch return;
+        writeString(&out.writer, session.instance_id) catch return;
         out.writer.writeAll(",\"message\":") catch return;
         writeString(&out.writer, message) catch return;
         out.writer.writeAll("}") catch return;
         self.emitSseEvent("terminal-error", out.written());
+    }
+
+    fn appendTerminalScrollback(self: *Runtime, session: *TerminalSessionState, data: []const u8) u64 {
+        self.mutex.lockUncancelable(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        session.output_seq += 1;
+        const seq = session.output_seq;
+        session.scrollback.appendSlice(self.allocator, data) catch return seq;
+        if (session.scrollback.items.len > terminal_scrollback_limit) {
+            const drop = session.scrollback.items.len - terminal_scrollback_limit;
+            std.mem.copyForwards(u8, session.scrollback.items[0..terminal_scrollback_limit], session.scrollback.items[drop..]);
+            session.scrollback.items.len = terminal_scrollback_limit;
+            session.scrollback_truncated = true;
+        }
+        return seq;
     }
 
     fn emitSseEvent(self: *Runtime, name: []const u8, data: []const u8) void {
@@ -1358,6 +1497,10 @@ pub const Runtime = struct {
             std.mem.copyForwards(SseEvent, self.events.items[0..max_events], self.events.items[drop..]);
             self.events.items.len = max_events;
         }
+    }
+
+    fn terminalInstanceMatches(_: *Runtime, session: *TerminalSessionState, requested: ?[]const u8) bool {
+        return requested == null or std.mem.eql(u8, session.instance_id, requested.?);
     }
 
     fn requestActiveLocked(self: *Runtime, cid: []const u8, rid: []const u8) bool {
@@ -1528,8 +1671,10 @@ pub const Runtime = struct {
             } else if (std.mem.eql(u8, ty, "tool_call")) {
                 current_assistant = null;
                 const name = stringField(event, "name") orelse "tool";
+                const input = objectField(event, "input") orelse event;
                 const id = self.fmt("{s}-tool-{d}", .{ request_id, nowMillis() });
-                self.appendToolStart(conversation_id, request_id, id, name, null, stringField(objectField(event, "input") orelse event, "question") orelse "");
+                const call_id = stringField(event, "call_id") orelse stringField(event, "id") orelse id;
+                self.appendToolStart(conversation_id, request_id, id, name, call_id, stringField(input, "question") orelse "", input);
             } else if (std.mem.eql(u8, ty, "ask_user")) {
                 current_assistant = null;
                 const input = objectField(event, "input") orelse event;
@@ -1538,14 +1683,15 @@ pub const Runtime = struct {
                 const options = self.followupOptions(input);
                 const kind = if (options.len > 0) "single" else "text";
                 const id = self.fmt("{s}-tool-{d}", .{ request_id, nowMillis() });
-                self.appendToolStart(conversation_id, request_id, id, "ask_user", call_id, question);
+                self.appendToolStart(conversation_id, request_id, id, "ask_user", call_id, question, input);
                 self.setFollowup(conversation_id, request_id, workspace, call_id, question, kind, options);
             } else if (std.mem.eql(u8, ty, "tool_result")) {
                 current_assistant = null;
                 const name = stringField(event, "name") orelse "tool";
                 const text = stringField(event, "text") orelse "";
                 const is_error = boolField(event, "is_error") orelse false;
-                self.appendToolEnd(conversation_id, request_id, self.fmt("{s}-toolend-{d}", .{ request_id, nowMillis() }), name, text, is_error);
+                const call_id = stringField(event, "call_id") orelse stringField(event, "id");
+                self.appendToolEnd(conversation_id, request_id, self.fmt("{s}-toolend-{d}", .{ request_id, nowMillis() }), name, call_id, text, is_error);
             } else if (std.mem.eql(u8, ty, "error")) {
                 const msg = stringField(event, "message") orelse "graff error";
                 self.appendError(conversation_id, request_id, msg);
@@ -1620,26 +1766,84 @@ pub const Runtime = struct {
         self.emitSseEvent(event_name, out.written());
     }
 
-    fn appendToolStart(self: *Runtime, cid: []const u8, rid: []const u8, id: []const u8, name: []const u8, call_id: ?[]const u8, question: []const u8) void {
+    fn appendToolStart(self: *Runtime, cid: []const u8, rid: []const u8, id: []const u8, name: []const u8, call_id: ?[]const u8, question: []const u8, input: Value) void {
+        const detail = self.toolCallDetailJson(name, question, input);
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
             if (!self.requestActiveLocked(cid, rid)) return;
-            conv.messages.append(self.arena, .{ .kind = .tool_start, .id = id, .request_id = rid, .name = self.dupe(name), .call_id = if (call_id) |c| self.dupe(c) else null, .question = self.dupe(question) }) catch {};
+            conv.messages.append(self.arena, .{ .kind = .tool_start, .id = id, .request_id = rid, .name = self.dupe(name), .call_id = if (call_id) |c| self.dupe(c) else null, .question = self.dupe(question), .tool_detail_json = detail }) catch {};
             self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
         }
     }
 
-    fn appendToolEnd(self: *Runtime, cid: []const u8, rid: []const u8, id: []const u8, name: []const u8, text: []const u8, is_error: bool) void {
+    fn appendToolEnd(self: *Runtime, cid: []const u8, rid: []const u8, id: []const u8, name: []const u8, call_id: ?[]const u8, text: []const u8, is_error: bool) void {
+        const detail = self.toolResultDetailJson(name, text);
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
             if (!self.requestActiveLocked(cid, rid)) return;
-            conv.messages.append(self.arena, .{ .kind = .tool_end, .id = id, .request_id = rid, .name = self.dupe(name), .summary = firstLine(self.arena, text), .text = self.dupe(text), .is_error = is_error }) catch {};
+            conv.messages.append(self.arena, .{ .kind = .tool_end, .id = id, .request_id = rid, .name = self.dupe(name), .call_id = if (call_id) |c| self.dupe(c) else null, .summary = firstLine(self.arena, text), .text = self.dupe(text), .is_error = is_error, .result_detail_json = detail }) catch {};
             self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
         }
+    }
+
+    fn toolCallDetailJson(self: *Runtime, name: []const u8, question: []const u8, input: Value) []const u8 {
+        var out: std.Io.Writer.Allocating = .init(self.arena);
+        const w = &out.writer;
+        if (std.mem.eql(u8, name, "bash")) {
+            w.writeAll("{\"kind\":\"shell\",\"command\":") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            writeString(w, stringField(input, "command") orelse stringField(input, "cmd") orelse "") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            w.writeAll(",\"cwd\":null,\"description\":null}") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+        } else if (std.mem.eql(u8, name, "read_file")) {
+            w.writeAll("{\"kind\":\"file_read\",\"path\":") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            writeString(w, stringField(input, "path") orelse "") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            w.writeAll(",\"startLine\":null,\"endLine\":null}") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+        } else if (std.mem.eql(u8, name, "write_file") or std.mem.eql(u8, name, "edit_file")) {
+            w.writeAll("{\"kind\":\"file_update\",\"path\":") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            writeString(w, stringField(input, "path") orelse "") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            w.writeAll(",\"operation\":") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            writeString(w, if (std.mem.eql(u8, name, "write_file")) "overwrite" else "replace") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            w.writeAll("}") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+        } else if (std.mem.eql(u8, name, "webfetch")) {
+            w.writeAll("{\"kind\":\"fetch\",\"url\":") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            writeString(w, stringField(input, "url") orelse "") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            w.writeAll("}") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+        } else if (std.mem.eql(u8, name, "ask_user")) {
+            w.writeAll("{\"kind\":\"followup\",\"question\":") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            writeString(w, question) catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            w.writeAll("}") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+        } else if (std.mem.eql(u8, name, "todo_read")) {
+            w.writeAll("{\"kind\":\"todo_read\"}") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+        } else if (std.mem.eql(u8, name, "todo_write")) {
+            w.writeAll("{\"kind\":\"todo_write\",\"count\":0}") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+        } else if (std.mem.eql(u8, name, "codedb")) {
+            w.writeAll("{\"kind\":\"codebase_search\",\"queries\":[") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            writeString(w, stringField(input, "command") orelse "") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            w.writeAll("]}") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+        } else {
+            w.writeAll("{\"kind\":\"unknown\",\"name\":") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            writeString(w, name) catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+            w.writeAll("}") catch return "{\"kind\":\"unknown\",\"name\":\"tool\"}";
+        }
+        return out.written();
+    }
+
+    fn toolResultDetailJson(self: *Runtime, name: []const u8, text: []const u8) []const u8 {
+        var out: std.Io.Writer.Allocating = .init(self.arena);
+        const w = &out.writer;
+        if (std.mem.eql(u8, name, "bash")) {
+            w.writeAll("{\"kind\":\"shell_output\",\"command\":\"\",\"shell\":\"sh\",\"exitCode\":null,\"description\":null,\"stdout\":{\"content\":") catch return "{\"kind\":\"text\",\"text\":\"\"}";
+            writeString(w, text) catch return "{\"kind\":\"text\",\"text\":\"\"}";
+            w.writeAll(",\"totalLines\":0,\"headDisplayLines\":null,\"tailDisplayLines\":null,\"fullOutputPath\":null},\"stderr\":null}") catch return "{\"kind\":\"text\",\"text\":\"\"}";
+        } else {
+            w.writeAll("{\"kind\":\"text\",\"text\":") catch return "{\"kind\":\"text\",\"text\":\"\"}";
+            writeString(w, text) catch return "{\"kind\":\"text\",\"text\":\"\"}";
+            w.writeAll("}") catch return "{\"kind\":\"text\",\"text\":\"\"}";
+        }
+        return out.written();
     }
 
     fn appendError(self: *Runtime, cid: []const u8, rid: []const u8, msg: []const u8) void {
@@ -1797,12 +2001,9 @@ pub const Runtime = struct {
                     try writeString(w, message.name);
                     try w.writeAll(",\"callId\":");
                     try writeNullableString(w, message.call_id);
-                    if (std.mem.eql(u8, message.name, "ask_user")) {
-                        try w.writeAll(",\"detail\":{\"kind\":\"followup\",\"question\":");
-                        try writeString(w, message.question);
-                        try w.writeAll("}");
-                    } else {
-                        try w.writeAll(",\"detail\":{\"kind\":\"unknown\",\"name\":");
+                    try w.writeAll(",\"detail\":");
+                    if (message.tool_detail_json) |detail| try w.writeAll(detail) else {
+                        try w.writeAll("{\"kind\":\"unknown\",\"name\":");
                         try writeString(w, message.name);
                         try w.writeAll("}");
                     }
@@ -1810,12 +2011,14 @@ pub const Runtime = struct {
                 .tool_end => {
                     try w.writeAll(",\"name\":");
                     try writeString(w, message.name);
-                    try w.writeAll(",\"callId\":null,\"summary\":");
+                    try w.writeAll(",\"callId\":");
+                    try writeNullableString(w, message.call_id);
+                    try w.writeAll(",\"summary\":");
                     try writeNullableString(w, message.summary);
                     try w.writeAll(",\"isError\":");
                     try w.writeAll(if (message.is_error) "true" else "false");
                     try w.writeAll(",\"detail\":");
-                    if (message.text.len > 0) {
+                    if (message.result_detail_json) |detail| try w.writeAll(detail) else if (message.text.len > 0) {
                         try w.writeAll("{\"kind\":\"text\",\"text\":");
                         try writeString(w, message.text);
                         try w.writeAll("}");
@@ -2758,10 +2961,12 @@ fn clampTerminalSize(value: i64, default: u16) u16 {
     return @intCast(value);
 }
 
-fn terminalSessionJson(alloc: std.mem.Allocator, terminal_id: []const u8, workspace: []const u8, shell: []const u8, cols: u16, rows: u16) mer.Response {
+fn terminalSessionJson(alloc: std.mem.Allocator, terminal_id: []const u8, instance_id: []const u8, workspace: []const u8, shell: []const u8, cols: u16, rows: u16, scrollback: []const u8, scrollback_truncated: bool, scrollback_seq: u64) mer.Response {
     var out: std.Io.Writer.Allocating = .init(alloc);
     out.writer.writeAll("{\"terminalId\":") catch return oom();
     writeString(&out.writer, terminal_id) catch return oom();
+    out.writer.writeAll(",\"terminalInstanceId\":") catch return oom();
+    writeString(&out.writer, instance_id) catch return oom();
     out.writer.writeAll(",\"workspacePath\":") catch return oom();
     writeString(&out.writer, workspace) catch return oom();
     out.writer.writeAll(",\"shell\":") catch return oom();
@@ -2770,6 +2975,12 @@ fn terminalSessionJson(alloc: std.mem.Allocator, terminal_id: []const u8, worksp
     out.writer.print("{d}", .{cols}) catch return oom();
     out.writer.writeAll(",\"rows\":") catch return oom();
     out.writer.print("{d}", .{rows}) catch return oom();
+    out.writer.writeAll(",\"scrollback\":") catch return oom();
+    writeString(&out.writer, scrollback) catch return oom();
+    out.writer.writeAll(",\"scrollbackTruncated\":") catch return oom();
+    out.writer.writeAll(if (scrollback_truncated) "true" else "false") catch return oom();
+    out.writer.writeAll(",\"scrollbackSeq\":") catch return oom();
+    out.writer.print("{d}", .{scrollback_seq}) catch return oom();
     out.writer.writeAll("}") catch return oom();
     return mer.json(out.written());
 }
@@ -2785,6 +2996,8 @@ fn resolveShell() []const u8 {
 
 fn closeTerminalSession(session: *TerminalSessionState) void {
     if (session.closing.swap(true, .acq_rel)) return;
+    session.io_mutex.lockUncancelable(mer_runtime.io);
+    defer session.io_mutex.unlock(mer_runtime.io);
     session.proc.terminate();
     session.proc.close();
 }
@@ -2794,12 +3007,19 @@ fn terminalReaderMain(rt: *Runtime, session: *TerminalSessionState) void {
     while (!session.closing.load(.acquire)) {
         const n = session.proc.read(&buffer) catch break;
         if (n == 0) break;
-        rt.emitTerminalOutput(session.terminal_id, sanitizeTerminalOutput(rt.allocator, buffer[0..n]) catch buffer[0..n]);
+        if (sanitizeTerminalChunk(rt.allocator, session, buffer[0..n])) |chunk| {
+            defer rt.allocator.free(chunk);
+            if (chunk.len > 0) rt.emitTerminalOutput(session, chunk);
+        } else |_| rt.emitTerminalOutput(session, buffer[0..n]);
     }
 
     const exit_code = session.proc.wait() orelse 0;
+    if (session.utf8_pending_len > 0) {
+        session.utf8_pending_len = 0;
+        rt.emitTerminalOutput(session, "�");
+    }
     if (!session.exited.swap(true, .acq_rel)) {
-        rt.emitTerminalExit(session.terminal_id, exit_code);
+        rt.emitTerminalExit(session, exit_code);
     }
     rt.mutex.lockUncancelable(mer_runtime.io);
     if (rt.terminals.get(session.terminal_id) == session) {
@@ -2808,8 +3028,38 @@ fn terminalReaderMain(rt: *Runtime, session: *TerminalSessionState) void {
     rt.mutex.unlock(mer_runtime.io);
 }
 
+fn sanitizeTerminalChunk(alloc: std.mem.Allocator, session: *TerminalSessionState, bytes: []const u8) ![]const u8 {
+    var combined: [8196]u8 = undefined;
+    var len = session.utf8_pending_len;
+    if (len > 0) @memcpy(combined[0..len], session.utf8_pending[0..len]);
+    const copy_len = @min(bytes.len, combined.len - len);
+    @memcpy(combined[len .. len + copy_len], bytes[0..copy_len]);
+    len += copy_len;
+    session.utf8_pending_len = 0;
+
+    var complete_len = len;
+    var i: usize = 0;
+    while (i < len) {
+        const seq_len = std.unicode.utf8ByteSequenceLength(combined[i]) catch {
+            i += 1;
+            continue;
+        };
+        if (i + seq_len > len) {
+            complete_len = i;
+            const pending_len = len - i;
+            if (pending_len <= session.utf8_pending.len) {
+                @memcpy(session.utf8_pending[0..pending_len], combined[i..len]);
+                session.utf8_pending_len = pending_len;
+            }
+            break;
+        }
+        i += seq_len;
+    }
+    return sanitizeTerminalOutput(alloc, combined[0..complete_len]);
+}
+
 fn sanitizeTerminalOutput(alloc: std.mem.Allocator, bytes: []const u8) ![]const u8 {
-    if (std.unicode.utf8ValidateSlice(bytes)) return bytes;
+    if (std.unicode.utf8ValidateSlice(bytes)) return try alloc.dupe(u8, bytes);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
     var i: usize = 0;
@@ -3152,6 +3402,69 @@ fn isGeneratedManagedChatPath(alloc: std.mem.Allocator, path: []const u8) bool {
 
 fn sessionFilePath(alloc: std.mem.Allocator, workspace_path: []const u8, session_name: []const u8) ![]const u8 {
     return std.fmt.allocPrint(alloc, "{s}/{s}{s}", .{ workspace_path, session_name, session_ext });
+}
+
+fn mcpConfigPath(alloc: std.mem.Allocator, workspace_path: []const u8) ![]const u8 {
+    return std.fs.path.join(alloc, &.{ workspace_path, ".mcp.json" });
+}
+
+fn renderMcpSettingsJson(alloc: std.mem.Allocator, workspace: ?[]const u8) ![]const u8 {
+    const path = if (workspace) |w| try mcpConfigPath(alloc, w) else null;
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try out.writer.writeAll("{\"servers\":[");
+    if (path) |config_path| {
+        const data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, config_path, alloc, .limited(1024 * 1024)) catch null;
+        if (data) |json| {
+            var tmp = std.heap.ArenaAllocator.init(alloc);
+            defer tmp.deinit();
+            const parsed = std.json.parseFromSliceLeaky(Value, tmp.allocator(), json, .{ .allocate = .alloc_always }) catch null;
+            if (parsed) |value| if (objectField(value, "mcpServers")) |servers| {
+                var first = true;
+                var it = servers.object.iterator();
+                while (it.next()) |entry| {
+                    if (entry.value_ptr.* != .object) continue;
+                    if (!first) try out.writer.writeByte(',');
+                    first = false;
+                    try writeMcpServerSummary(&out.writer, entry.key_ptr.*, entry.value_ptr.*);
+                }
+            };
+        }
+    }
+    try out.writer.writeAll("]}");
+    return out.written();
+}
+
+fn writeMcpServerSummary(w: *std.Io.Writer, name: []const u8, server: Value) !void {
+    const command = stringField(server, "command") orelse stringField(server, "url") orelse "";
+    try w.writeAll("{\"name\":");
+    try writeString(w, name);
+    try w.writeAll(",\"serverType\":");
+    try writeString(w, if (stringField(server, "url") != null) "http" else "stdio");
+    try w.writeAll(",\"target\":");
+    try writeString(w, command);
+    try w.writeAll(",\"isDisabled\":");
+    try w.writeAll(if (boolField(server, "disabled") orelse false) "true" else "false");
+    try w.writeAll(",\"toolCount\":0,\"tools\":[],\"error\":null,\"authStatus\":null}");
+}
+
+fn writeMcpConfig(alloc: std.mem.Allocator, workspace: []const u8, json_text: []const u8) !void {
+    const path = try mcpConfigPath(alloc, workspace);
+    try std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = json_text });
+}
+
+fn removeMcpServerFromConfig(alloc: std.mem.Allocator, workspace: []const u8, name: []const u8) !void {
+    const path = try mcpConfigPath(alloc, workspace);
+    const data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, path, alloc, .limited(1024 * 1024)) catch return error.McpConfigNotFound;
+    var parsed = try std.json.parseFromSlice(Value, alloc, data, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidMcpConfig;
+    const servers_ptr = parsed.value.object.getPtr("mcpServers") orelse return error.InvalidMcpConfig;
+    if (servers_ptr.* != .object) return error.InvalidMcpConfig;
+    if (!servers_ptr.object.swapRemove(name)) return error.McpServerNotFound;
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    var s: std.json.Stringify = .{ .writer = &out.writer };
+    try s.write(parsed.value);
+    try std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = out.written() });
 }
 
 fn isGuiChatSessionName(value: []const u8) bool {

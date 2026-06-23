@@ -78,7 +78,7 @@ function createSnapshot(
         workspacePath,
       },
     ],
-    savedWorkspaces: [{ id: "saved-1", name: "Workspace", updatedAt: 1n }],
+    savedWorkspaces: [{ id: "saved-1", name: "Workspace", updatedAt: 1 }],
     uiError: null,
     visibleActiveRequestIds: [],
     visibleFollowup: null,
@@ -342,7 +342,7 @@ describe("SessionProvider", () => {
       });
     renameSavedWorkspaceImpl = async (workspaceId: string, name: string) =>
       createSnapshot("/workspace/codegraff-gui", "chat-1", {
-        savedWorkspaces: [{ id: workspaceId, name, updatedAt: 2n }],
+        savedWorkspaces: [{ id: workspaceId, name, updatedAt: 2 }],
       });
     resetSessionStore();
   });
@@ -358,7 +358,7 @@ describe("SessionProvider", () => {
         id: "saved-1",
         layoutJson: '{"grid":true}',
         name: "Workspace",
-        updatedAt: 1n,
+        updatedAt: 1,
       },
     });
 
@@ -592,7 +592,7 @@ describe("SessionProvider", () => {
         id: "saved-1",
         layoutJson: '{"grid":true}',
         name: "Workspace",
-        updatedAt: 1n,
+        updatedAt: 1,
       },
     });
 
@@ -630,7 +630,7 @@ describe("SessionProvider", () => {
         id: "saved-1",
         layoutJson: '{"grid":true}',
         name: "Workspace",
-        updatedAt: 1n,
+        updatedAt: 1,
       },
     });
 
@@ -1142,7 +1142,7 @@ describe("SessionProvider", () => {
         id: "saved-1",
         layoutJson: '{"grid":true}',
         name: "Workspace",
-        updatedAt: 1n,
+        updatedAt: 1,
       },
     });
     sessionStore
@@ -1174,7 +1174,7 @@ describe("SessionProvider", () => {
 
     expect(renameSavedWorkspaceCallCount).toBe(1);
     expect(sessionStore.getState().savedWorkspaces).toEqual([
-      { id: "saved-1", name: "Renamed workspace", updatedAt: 2n },
+      { id: "saved-1", name: "Renamed workspace", updatedAt: 2 },
     ]);
     expect(sessionStore.getState().selection).toEqual({
       activeChat: {
@@ -1186,7 +1186,7 @@ describe("SessionProvider", () => {
         id: "saved-1",
         layoutJson: '{"grid":true}',
         name: "Renamed workspace",
-        updatedAt: 2n,
+        updatedAt: 2,
       },
     });
   });
