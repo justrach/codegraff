@@ -13013,12 +13013,23 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
     g_jobs.mutex.unlock(io);
 }
 
+/// Argv that runs a shell command string: `/bin/sh -c` on POSIX, `cmd.exe /c`
+/// on Windows (which has no /bin/sh). The bash tool routes through this so the
+/// model's shell commands run on every platform.
+fn shellArgv(cmd: []const u8) [3][]const u8 {
+    return if (builtin.os.tag == .windows)
+        .{ "cmd.exe", "/c", cmd }
+    else
+        .{ "/bin/sh", "-c", cmd };
+}
+
 /// Spawn a background job and its pump. Uses io.concurrent (NOT io.async,
 /// which may run inline and block this tool forever on a long-lived child);
 /// no spare concurrency cleans up and surfaces the error to the model.
 fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
+    const argv = shellArgv(cmd);
     var child = try std.process.spawn(io, .{
-        .argv = &.{ "/bin/sh", "-c", cmd },
+        .argv = &argv,
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
@@ -13212,7 +13223,8 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             };
             return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.", .{ job.id, job.cmd, job.id }) };
         }
-        const run = try runCapped(gpa, io, &.{ "/bin/sh", "-c", cmd }, bash_stdout_cap, bash_stderr_cap);
+        const sh = shellArgv(cmd);
+        const run = try runCapped(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap);
         defer gpa.free(run.stdout);
         defer gpa.free(run.stderr);
 
@@ -14869,7 +14881,7 @@ test "/bash slash command runs the bash tool and frees its gpa-allocated result"
     defer aw.deinit();
 
     defer root.tools_used.deinit(gpa);
-    try handleCommand(&root, &keys, arena, "/bash printf leak-guard-XYZ", &aw.writer);
+    try handleCommand(&root, &keys, arena, "/bash echo leak-guard-XYZ", &aw.writer);
 
     const written = aw.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "leak-guard-XYZ") != null);
