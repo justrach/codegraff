@@ -278,6 +278,8 @@ const provider_specs = [_]ProviderSpec{
     .{ .id = "moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
     .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
     .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
+    .{ .id = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
+    .{ .id = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
     // — it's the OAuth access token read from ~/.codex/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
@@ -328,6 +330,26 @@ const model_table = [_]ModelInfo{
     .{ .provider = "xiaomi", .name = "mimo-v2.5-pro-ultraspeed", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2-flash", .context = 262_144 },
     .{ .provider = "codex", .name = "gpt-5.5", .context = codex_context_window },
+    // Sakana AI — Fugu (OpenAI-compatible chat/completions). `fugu` is the fast
+    // mini model, `fugu-ultra` the multi-agent reasoning conductor. Sakana does
+    // not publish a context window; use the harness's conservative 200k default
+    // (auto-compaction + #88 overflow recovery cover an underestimate safely).
+    .{ .provider = "fugu", .name = "fugu", .context = 200_000 },
+    .{ .provider = "fugu", .name = "fugu-ultra", .context = 200_000 },
+    .{ .provider = "fugu", .name = "fugu-ultra-20260615", .context = 200_000 },
+    // Fireworks AI (OpenAI-compatible, api.fireworks.ai/inference/v1). Full
+    // account-path model ids; context windows from models.dev (snapshot
+    // 2026-06-23). Not yet live-tested here (no key on hand), but the wire shape
+    // is the same OpenAI one fugu/deepseek use. Set FIREWORKS_API_KEY or
+    // `graff key set fireworks <key>`; verify the live list at .../v1/models.
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/deepseek-v4-pro", .context = 1_000_000 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/deepseek-v4-flash", .context = 1_000_000 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/kimi-k2p7-code", .context = 262_000 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/kimi-k2p6", .context = 262_000 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/glm-5p2", .context = 1_048_576 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/minimax-m3", .context = 512_000 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/qwen3p7-plus", .context = 262_144 },
+    .{ .provider = "fireworks", .name = "accounts/fireworks/models/gpt-oss-120b", .context = 131_072 },
     // codegraff gateway (its claude aliases use dots, so they don't collide
     // with the anthropic rows above)
     .{ .provider = "codegraff", .name = "claude-opus-4.8", .context = 1_000_000 },
@@ -446,6 +468,11 @@ const main_system_prompt =
     \\errors), and "t" = ms since session start. When asked to debug, profile,
     \\or explain the harness's own behavior — including your own — read that
     \\file and analyze it.
+    \\
+    \\When making git commits on behalf of the user, always set the author
+    \\to Codegraff <blackfloofie@codegraff.com> — pass GIT_AUTHOR_NAME,
+    \\GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and GIT_COMMITTER_EMAIL env vars
+    \\on every git command so the bot identity is preserved in the commit log.
     \\
     \\Be direct and concise.
 ;
@@ -2667,7 +2694,6 @@ fn reasoningDelta(kind: Provider.Kind, obj: std.json.ObjectMap) []const u8 {
     };
 }
 
-
 /// Pulls the assistant's text out of a non-streamed completion response for the
 /// given provider wire format — the shape both compaction and AI title naming
 /// read back.
@@ -4333,6 +4359,21 @@ fn writeOpenAIMessageNormalized(s: *std.json.Stringify, m: Value) !void {
 
 const harness_version: []const u8 = @import("build_options").version;
 
+/// Shown under `graff --version` — a terse "what's new" for recent releases.
+/// Keep it short and current; bump alongside the version each release.
+const changelog_text =
+    \\What's new
+    \\──────────
+    \\0.0.166
+    \\  • Trace/trajectory JSONL never corrupts on a failed write (#86)
+    \\  • Auto-compaction recovers instead of wedging on huge context (#88)
+    \\  • New providers: Sakana AI (fugu) + Fireworks AI (deepseek, kimi, glm…)
+    \\0.0.165
+    \\  • TUI: live /thinking reasoning stream, AI /title, session headers
+    \\  • GUI: /ultracode toggle, prompt-history image fix, segmented borders
+    \\
+;
+
 /// OTLP endpoint baked into release builds (-Dtelemetry-endpoint); "" in dev
 /// builds → telemetry stays off unless an env var configures it. Used as the
 /// lowest-precedence telemetry endpoint, below env overrides and opt-out.
@@ -4694,7 +4735,7 @@ pub fn main(init: std.process.Init) !void {
     if (help_flag or version_flag) {
         var hbuf: [4096]u8 = undefined;
         var hw = Io.File.stdout().writer(io, &hbuf);
-        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("graff {s}\n", .{harness_version});
+        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("graff {s}\n\n{s}", .{ harness_version, changelog_text });
         try hw.interface.flush();
         return;
     }
@@ -6208,6 +6249,109 @@ fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: []co
     }
 }
 
+/// Better UX when /model targets a provider with no key: instead of a flat
+/// "no key" dead-end, offer to log in (OAuth, for providers that have a flow)
+/// or paste an API key, then switch to pid/model. Esc/blank/"keep" stays on the
+/// current model. Non-TTY just prints the actionable one-liner. Best-effort.
+fn offerProviderAuth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer, pid: []const u8, model: []const u8) !void {
+    var spec_idx: ?usize = null;
+    for (provider_specs, 0..) |spec, i| if (std.mem.eql(u8, spec.id, pid)) {
+        spec_idx = i;
+    };
+    const si = spec_idx orelse {
+        try out.print("unknown provider '{s}' — see /model for the list\n", .{pid});
+        try out.flush();
+        return;
+    };
+    const can_login = std.mem.eql(u8, pid, "codegraff") or std.mem.eql(u8, pid, "codex") or std.mem.eql(u8, pid, "kimi");
+
+    // Non-interactive (one-shot / no TTY): no picker — print the hint and bail.
+    if (!use_color or root.in == null) {
+        if (can_login)
+            try out.print("no key for {s} — /login {s} (OAuth) or /key {s} <key>\n", .{ pid, pid, pid })
+        else
+            try out.print("no key for {s} — /key {s} <key> (or set {s})\n", .{ pid, pid, provider_specs[si].env_key });
+        try out.flush();
+        return;
+    }
+
+    // Choice menu — login row only when the provider actually has an OAuth flow.
+    var items: [3]PickItem = undefined;
+    var n: usize = 0;
+    if (can_login) {
+        items[n] = .{ .name = "log in (OAuth)", .desc = "device/browser sign-in — no key to paste" };
+        n += 1;
+    }
+    items[n] = .{ .name = "paste an API key", .desc = "enter a key now (used live + saved)" };
+    n += 1;
+    items[n] = .{ .name = "keep current model", .desc = "cancel — stay on the current model" };
+    n += 1;
+
+    const title = std.fmt.allocPrint(arena, "No key for {s} \xe2\x80\xba", .{pid}) catch "No key \xe2\x80\xba";
+    const choice = listPicker(root, arena, out, title, items[0..n]) orelse {
+        try out.print("kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+        try out.flush();
+        return;
+    };
+    const picked = items[choice].name;
+
+    if (std.mem.eql(u8, picked, "keep current model")) {
+        try out.print("kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+        try out.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, picked, "log in (OAuth)")) {
+        const home = root.home;
+        try out.flush(); // hand stdout to the login flow's own writer
+        if (std.mem.eql(u8, pid, "codegraff")) {
+            codegraffLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 codegraff login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else if (std.mem.eql(u8, pid, "codex")) {
+            codexLogin(root.io, root.gpa, arena, home, false) catch |err| {
+                try out.print("\xe2\x9c\x97 codex login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else if (std.mem.eql(u8, pid, "kimi")) {
+            kimiLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 kimi login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        }
+        reloadLoginKey(root, keys, arena, pid);
+    } else {
+        // Paste a key: one cooked-mode line read (echoes), same pattern as the
+        // tool-approval prompt. Blank input cancels.
+        const in = root.in orelse return;
+        try out.print("paste your {s} API key, then Enter (blank cancels): ", .{pid});
+        try out.flush();
+        const raw = (in.takeDelimiter('\n') catch null) orelse "";
+        const key = std.mem.trim(u8, raw, " \t\r\n");
+        if (key.len == 0) {
+            try out.print("cancelled — kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+            try out.flush();
+            return;
+        }
+        const dup = arena.dupe(u8, key) catch key;
+        keys.values[si] = dup;
+        const saved = storeKey(root.io, root.gpa, arena, root.home, pid, dup);
+        try out.print("\xe2\x9c\x93 {s} key set (live{s})\n", .{ pid, if (saved) " + Keychain" else "" });
+    }
+
+    // Auth done — switch now if the key/login took, else keep the current model.
+    const provider = keys.providerById(pid, model) catch {
+        try out.print("still no usable key for {s} — kept {s}{s}{s}\n", .{ pid, style.cyan, root.provider.model, style.reset });
+        try out.flush();
+        return;
+    };
+    try switchProvider(root, arena, provider, out);
+}
+
 fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !void {
     if (std.mem.eql(u8, line, "/clear")) {
         root.messages = std.json.Array.init(arena);
@@ -6576,8 +6720,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 if (modelPicker(root, keys, arena, out)) |idx| {
                     const m = model_table[idx];
                     const provider = keys.providerById(m.provider, m.name) catch {
-                        try out.print("no key/login for {s} — add one with /key {s} <key>\n", .{ m.provider, m.provider });
-                        try out.flush();
+                        try offerProviderAuth(root, keys, arena, out, m.provider, m.name);
                         return;
                     };
                     try switchProvider(root, arena, provider, out);
@@ -6609,8 +6752,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 if (!std.mem.eql(u8, spec.id, pid) or mdl.len == 0) continue;
                 const m = try arena.dupe(u8, mdl);
                 const provider = keys.providerById(pid, m) catch {
-                    try out.print("no key/login for provider '{s}' — `graff key set {s} <key>` or set {s}\n", .{ pid, pid, spec.env_key });
-                    try out.flush();
+                    try offerProviderAuth(root, keys, arena, out, pid, m);
                     return;
                 };
                 try switchProvider(root, arena, provider, out);
@@ -6622,8 +6764,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         for (provider_specs) |spec| {
             if (!std.mem.eql(u8, spec.id, arg)) continue;
             const provider = keys.providerById(spec.id, spec.default_model) catch {
-                try out.print("no key/login for provider '{s}' — `graff key set {s} <key>` or set {s}\n", .{ spec.id, spec.id, spec.env_key });
-                try out.flush();
+                try offerProviderAuth(root, keys, arena, out, spec.id, spec.default_model);
                 return;
             };
             try switchProvider(root, arena, provider, out);
@@ -6632,6 +6773,10 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const resolved = resolveModelName(keys.*, arg);
         const name = try arena.dupe(u8, resolved orelse arg);
         const provider = keys.providerFor(name) catch {
+            for (model_table) |mt| if (std.mem.eql(u8, mt.name, name)) {
+                try offerProviderAuth(root, keys, arena, out, mt.provider, name);
+                return;
+            };
             try out.writeAll("no API key for any provider serving that model — see /models, or add one with /key <provider> <key>\n");
             try out.flush();
             return;
