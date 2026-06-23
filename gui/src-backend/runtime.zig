@@ -113,6 +113,17 @@ const TerminalSessionState = struct {
     exited: std.atomic.Value(bool) = .init(false),
 };
 
+const GraffSession = struct {
+    conversation_id: []const u8,
+    workspace_path: []const u8,
+    session_name: []const u8,
+    desired_provider: ?[]const u8 = null,
+    desired_model: ?[]const u8 = null,
+    child: *std.process.Child,
+    yolo_enabled: bool = false,
+    stdin_mutex: std.Io.Mutex = .init,
+};
+
 const SseEvent = struct {
     seq: u64,
     name: []const u8,
@@ -139,6 +150,7 @@ pub const Runtime = struct {
     selected_by_workspace: std.StringHashMap([]const u8),
     terminals: std.StringHashMap(*TerminalSessionState),
     active_children: std.StringHashMap(*std.process.Child),
+    graff_sessions: std.StringHashMap(*GraffSession),
     runtime_status_cache: std.StringHashMap(RuntimeStatusCacheEntry),
     runtime_status_generation: u64 = 0,
     session_scan_cache: std.StringHashMap(SessionScanCacheEntry),
@@ -164,6 +176,7 @@ pub const Runtime = struct {
             .selected_by_workspace = std.StringHashMap([]const u8).init(allocator),
             .terminals = std.StringHashMap(*TerminalSessionState).init(allocator),
             .active_children = std.StringHashMap(*std.process.Child).init(allocator),
+            .graff_sessions = std.StringHashMap(*GraffSession).init(allocator),
             .runtime_status_cache = std.StringHashMap(RuntimeStatusCacheEntry).init(allocator),
             .session_scan_cache = std.StringHashMap(SessionScanCacheEntry).init(allocator),
         };
@@ -177,6 +190,9 @@ pub const Runtime = struct {
         var it = self.terminals.valueIterator();
         while (it.next()) |session| closeTerminalSession(session.*);
         self.terminals.deinit();
+        var graff_it = self.graff_sessions.valueIterator();
+        while (graff_it.next()) |session| self.closeGraffSession(session.*);
+        self.graff_sessions.deinit();
         self.active_children.deinit();
         var cache_it = self.runtime_status_cache.iterator();
         while (cache_it.next()) |entry| {
@@ -408,6 +424,7 @@ pub const Runtime = struct {
         self.activateWorkspaceLocked(owned_workspace);
         const conversation = if (source_conversation_id) |cid| conv: {
             if (self.conversations.get(cid)) |existing| {
+                self.dropGraffSession(cid);
                 existing.workspace_path = owned_workspace;
                 existing.updated_at = nowMillis();
                 break :conv existing;
@@ -482,6 +499,10 @@ pub const Runtime = struct {
                 }
             }
             const conv = existing orelse self.createConversationLocked(workspace, cid, titleFromPrompt(self.arena, prompt));
+            if (conv.active_request_ids.items.len > 0) {
+                self.mutex.unlock(mer_runtime.io);
+                return bad(req, "conversation already has an active prompt");
+            }
             conversation_id = conv.conversation_id;
             session_name = conv.session_name;
             workspace_for_thread = conv.workspace_path;
@@ -548,6 +569,7 @@ pub const Runtime = struct {
                 }
                 self.emitRequestEventLocked("request-cancelled", conv, rid);
             }
+            self.dropGraffSession(cid);
             conv.active_request_ids.clearRetainingCapacity();
             conv.followup = null;
             self.writeConversationSessionFileLocked(conv);
@@ -576,9 +598,14 @@ pub const Runtime = struct {
         var session_name: []const u8 = undefined;
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
+            if (conv.active_request_ids.items.len > 0) {
+                self.mutex.unlock(mer_runtime.io);
+                return error.CompactFailed;
+            }
             workspace = self.dupe(conv.workspace_path);
             session_name = self.dupe(conv.session_name);
             self.writeConversationSessionFileLocked(conv);
+            self.dropGraffSession(cid);
         } else {
             self.mutex.unlock(mer_runtime.io);
             return error.ConversationNotFound;
@@ -684,6 +711,7 @@ pub const Runtime = struct {
                     child.kill(mer_runtime.io);
                     _ = self.active_children.remove(rid);
                 }
+                self.dropGraffSession(conv.conversation_id);
                 removeString(&conv.active_request_ids, rid);
                 conv.followup = null;
                 self.writeConversationSessionFileLocked(conv);
@@ -696,13 +724,13 @@ pub const Runtime = struct {
             }
             break;
         }
-        if (!cancelled and line) |answer_line| {
+        if (!cancelled) if (line) |answer_line| {
             if (target_child) |child| {
                 writeAnswerLine(child, answer_line) catch {
                     write_failed = true;
                 };
             } else write_failed = true;
-        }
+        };
         self.bumpLocked();
         self.mutex.unlock(mer_runtime.io);
 
@@ -715,6 +743,7 @@ pub const Runtime = struct {
         const cid = stringField(root, "conversationId") orelse return bad(req, "missing conversationId");
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.conversations.get(cid)) |conv| {
+            self.dropGraffSession(cid);
             self.deleteConversationSessionFileLocked(conv);
             _ = self.conversations.remove(cid);
             if (self.active_conversation_id != null and std.mem.eql(u8, self.active_conversation_id.?, conv.conversation_id)) self.active_conversation_id = null;
@@ -1589,53 +1618,140 @@ pub const Runtime = struct {
         return mer.json(out.written());
     }
 
-    fn streamGraffTurn(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session_name: []const u8, workspace: []const u8, prompt: []const u8, agent_id: []const u8, plan_mode: bool) !void {
+    fn ensureGraffSession(self: *Runtime, conversation_id: []const u8, session_name: []const u8, workspace: []const u8, agent_id: []const u8, plan_mode: bool, provider: ?[]const u8, model: ?[]const u8) !*GraffSession {
         const io = mer_runtime.io;
+        const desired_yolo = !plan_mode and std.mem.eql(u8, agent_id, "forge");
+        self.mutex.lockUncancelable(io);
+        if (self.graff_sessions.get(conversation_id)) |session| {
+            if (session.yolo_enabled == desired_yolo and std.mem.eql(u8, session.workspace_path, workspace) and std.mem.eql(u8, session.session_name, session_name) and optionalStringEql(session.desired_provider, provider) and optionalStringEql(session.desired_model, model)) {
+                self.mutex.unlock(io);
+                return session;
+            }
+            if (self.graff_sessions.fetchRemove(conversation_id)) |entry| self.closeGraffSession(entry.value);
+        }
+        self.mutex.unlock(io);
+
         const bin = self.codegraffBinary();
-        self.ensurePromptSettingsLoaded();
-        const prompt_selection = self.turnPromptSelectionLocked(conversation_id);
-        const model = prompt_selection.model;
-        const provider = prompt_selection.provider;
-        const effort = prompt_selection.effort;
         var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(self.allocator);
         try argv.append(self.allocator, "/usr/bin/env");
         try argv.append(self.allocator, try std.fmt.allocPrint(self.allocator, "HOME={s}", .{homeDir()}));
         try argv.append(self.allocator, try std.fmt.allocPrint(self.allocator, "PATH={s}/bin:{s}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", .{ homeDir(), homeDir() }));
         try argv.append(self.allocator, bin);
         try argv.append(self.allocator, "--json");
-        if (!plan_mode and std.mem.eql(u8, agent_id, "forge")) try argv.append(self.allocator, "--yolo");
+        if (desired_yolo) try argv.append(self.allocator, "--yolo");
         if (session_name.len > 0 and std.mem.indexOfAny(u8, session_name, "/\\") == null) {
             try argv.append(self.allocator, "--resume");
             try argv.append(self.allocator, session_name);
         }
-        defer argv.deinit(self.allocator);
 
-        var child = try std.process.spawn(io, .{
+        const child = try self.allocator.create(std.process.Child);
+        errdefer self.allocator.destroy(child);
+        child.* = try std.process.spawn(io, .{
             .argv = argv.items,
             .cwd = .{ .path = workspace },
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .ignore,
         });
+        const session = try self.allocator.create(GraffSession);
+        errdefer {
+            child.kill(io);
+            self.allocator.destroy(session);
+        }
+        session.* = .{
+            .conversation_id = self.dupe(conversation_id),
+            .workspace_path = self.dupe(workspace),
+            .session_name = self.dupe(session_name),
+            .desired_provider = if (provider) |p| self.dupe(p) else null,
+            .desired_model = if (model) |m| self.dupe(m) else null,
+            .child = child,
+            .yolo_enabled = desired_yolo,
+        };
+
         self.mutex.lockUncancelable(io);
-        self.active_children.put(request_id, &child) catch {};
+        if (self.graff_sessions.get(conversation_id)) |_| {
+            self.mutex.unlock(io);
+            self.closeGraffSession(session);
+            return error.SessionRace;
+        }
+        self.graff_sessions.put(session.conversation_id, session) catch {
+            self.mutex.unlock(io);
+            self.closeGraffSession(session);
+            return error.OutOfMemory;
+        };
+        self.mutex.unlock(io);
+        return session;
+    }
+
+    fn dropGraffSession(self: *Runtime, conversation_id: []const u8) void {
+        if (self.graff_sessions.fetchRemove(conversation_id)) |entry| self.closeGraffSession(entry.value);
+    }
+
+    fn dropGraffSessionIfCurrent(self: *Runtime, conversation_id: []const u8, session: *GraffSession) void {
+        const current = self.graff_sessions.get(conversation_id) orelse return;
+        if (current == session) {
+            if (self.graff_sessions.fetchRemove(conversation_id)) |entry| self.closeGraffSession(entry.value);
+        }
+    }
+
+    fn closeGraffSession(self: *Runtime, session: *GraffSession) void {
+        _ = self;
+        // Turn threads may still hold the session pointer while a stop/cancel
+        // unblocks their stdout read. Kill immediately, but leave reclamation to
+        // process teardown rather than risking use-after-free across threads.
+        session.child.kill(mer_runtime.io);
+    }
+
+    fn retryGraffTurnAfterSetupFailure(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session: *GraffSession, session_name: []const u8, workspace: []const u8, prompt: []const u8, agent_id: []const u8, plan_mode: bool) anyerror!void {
+        self.mutex.lockUncancelable(mer_runtime.io);
+        self.dropGraffSessionIfCurrent(conversation_id, session);
+        self.mutex.unlock(mer_runtime.io);
+        return self.streamGraffTurn(conversation_id, request_id, session_name, workspace, prompt, agent_id, plan_mode, false);
+    }
+
+    fn streamGraffTurn(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session_name: []const u8, workspace: []const u8, prompt: []const u8, agent_id: []const u8, plan_mode: bool, retry_on_setup_failure: bool) anyerror!void {
+        const io = mer_runtime.io;
+        self.ensurePromptSettingsLoaded();
+        const prompt_selection = self.turnPromptSelectionLocked(conversation_id);
+        const model = prompt_selection.model;
+        const provider = prompt_selection.provider;
+        const effort = prompt_selection.effort;
+        const fast_enabled = prompt_selection.fast_enabled;
+
+        const session = try self.ensureGraffSession(conversation_id, session_name, workspace, agent_id, plan_mode, provider, model);
+        self.mutex.lockUncancelable(io);
+        self.active_children.put(request_id, session.child) catch {};
+        const active_after_spawn = self.requestActiveLocked(conversation_id, request_id);
         self.mutex.unlock(io);
         defer {
             self.mutex.lockUncancelable(io);
-            if (self.active_children.get(request_id) == &child) _ = self.active_children.remove(request_id);
+            if (self.active_children.get(request_id) == session.child) _ = self.active_children.remove(request_id);
             self.mutex.unlock(io);
-            child.kill(io);
         }
-        self.mutex.lockUncancelable(io);
-        const active_after_spawn = self.requestActiveLocked(conversation_id, request_id);
-        self.mutex.unlock(io);
-        if (!active_after_spawn) return;
+        if (!active_after_spawn) {
+            self.mutex.lockUncancelable(io);
+            self.dropGraffSessionIfCurrent(conversation_id, session);
+            self.mutex.unlock(io);
+            return;
+        }
+        var drop_session_on_return = false;
+        defer if (drop_session_on_return) {
+            self.mutex.lockUncancelable(io);
+            self.dropGraffSessionIfCurrent(conversation_id, session);
+            self.mutex.unlock(io);
+        };
+        errdefer {
+            self.mutex.lockUncancelable(io);
+            self.dropGraffSessionIfCurrent(conversation_id, session);
+            self.mutex.unlock(io);
+        }
 
         var wbuf: [4096]u8 = undefined;
-        var cw = child.stdin.?.writerStreaming(io, &wbuf);
+        var cw = session.child.stdin.?.writerStreaming(io, &wbuf);
         const rbuf = try self.allocator.alloc(u8, 1024 * 1024);
         defer self.allocator.free(rbuf);
-        var rdr = child.stdout.?.readerStreaming(io, rbuf);
+        var rdr = session.child.stdout.?.readerStreaming(io, rbuf);
         var protocol_warning_count: usize = 0;
 
         if (prompt_selection.send_model_control) if (provider) |p| if (model) |m| {
@@ -1645,7 +1761,11 @@ pub const Runtime = struct {
                 try control.writer.writeAll("{\"type\":\"set_model\",\"name\":");
                 try writeString(&control.writer, self.fmt("{s}/{s}", .{ p, m }));
                 try control.writer.writeByte('}');
-                if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "model", &protocol_warning_count)) return;
+                if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "model", &protocol_warning_count, retry_on_setup_failure, true)) {
+                    if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
+                    drop_session_on_return = true;
+                    return;
+                }
             }
         };
         if (effort) |level| {
@@ -1654,18 +1774,41 @@ pub const Runtime = struct {
             try control.writer.writeAll("{\"type\":\"set_effort\",\"level\":");
             try writeString(&control.writer, level);
             try control.writer.writeByte('}');
-            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "effort", &protocol_warning_count)) return;
+            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "effort", &protocol_warning_count, retry_on_setup_failure, true)) {
+                if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
+                drop_session_on_return = true;
+                return;
+            }
         }
-        if (guiAgentCoreAgent(agent_id)) |core_agent| {
+        if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, if (fast_enabled) "{\"type\":\"set_fast\",\"on\":true}" else "{\"type\":\"set_fast\",\"on\":false}", "fast", &protocol_warning_count, retry_on_setup_failure, true)) {
+            if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
+            drop_session_on_return = true;
+            return;
+        }
+        {
             var control: std.Io.Writer.Allocating = .init(self.allocator);
             defer control.deinit();
             try control.writer.writeAll("{\"type\":\"set_agent\",\"id\":");
-            try writeString(&control.writer, core_agent);
+            try writeString(&control.writer, guiAgentCoreAgent(agent_id) orelse "");
             try control.writer.writeByte('}');
-            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "agent", &protocol_warning_count)) return;
+            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "agent", &protocol_warning_count, retry_on_setup_failure, true)) {
+                if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
+                drop_session_on_return = true;
+                return;
+            }
         }
         if (plan_mode) {
-            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, "{\"type\":\"set_mode\",\"mode\":\"plan\"}", "mode", &protocol_warning_count)) return;
+            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, "{\"type\":\"set_mode\",\"mode\":\"plan\"}", "mode", &protocol_warning_count, retry_on_setup_failure, true)) {
+                if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
+                drop_session_on_return = true;
+                return;
+            }
+        } else {
+            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, "{\"type\":\"set_mode\",\"mode\":\"normal\"}", "mode", &protocol_warning_count, retry_on_setup_failure, true)) {
+                if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
+                drop_session_on_return = true;
+                return;
+            }
         }
 
         var user_req: std.Io.Writer.Allocating = .init(self.allocator);
@@ -1673,27 +1816,40 @@ pub const Runtime = struct {
         try user_req.writer.writeAll("{\"type\":\"user\",\"text\":");
         try writeString(&user_req.writer, prompt);
         try user_req.writer.writeByte('}');
-        try cw.interface.writeAll(user_req.written());
-        try cw.interface.writeByte('\n');
-        try cw.interface.flush();
+        cw.interface.writeAll(user_req.written()) catch |err| {
+            if (retry_on_setup_failure) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
+            return err;
+        };
+        cw.interface.writeByte('\n') catch |err| {
+            if (retry_on_setup_failure) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
+            return err;
+        };
+        cw.interface.flush() catch |err| {
+            if (retry_on_setup_failure) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
+            return err;
+        };
 
         var assistant_seq: usize = 0;
         var reasoning_seq: usize = 0;
         var current_assistant: ?[]const u8 = null;
         var current_reasoning: ?[]const u8 = null;
         var event_count: usize = 0;
+        var session_failed = false;
+        var saw_turn = false;
         while (true) {
             const ev_line = rdr.interface.takeDelimiter('\n') catch |err| {
                 self.mutex.lockUncancelable(io);
                 const still_active = self.requestActiveLocked(conversation_id, request_id);
                 self.mutex.unlock(io);
                 if (still_active) log.warn("graff read ended with {}", .{err});
+                session_failed = true;
                 break;
             } orelse {
                 self.mutex.lockUncancelable(io);
                 const still_active = self.requestActiveLocked(conversation_id, request_id);
                 self.mutex.unlock(io);
                 if (still_active) log.warn("graff read ended with EOF", .{});
+                session_failed = true;
                 break;
             };
             const line = std.mem.trim(u8, ev_line, " \t\r\n");
@@ -1765,24 +1921,34 @@ pub const Runtime = struct {
             } else if (std.mem.eql(u8, ty, "error")) {
                 const msg = stringField(event, "message") orelse "graff error";
                 self.appendError(conversation_id, request_id, msg);
+                session_failed = true;
                 break;
             } else if (std.mem.eql(u8, ty, "turn")) {
                 const final_text = stringField(event, "text") orelse "";
                 if (final_text.len > 0 and !self.requestHasMessageKind(conversation_id, request_id, .assistant)) {
                     self.appendDelta(conversation_id, request_id, self.fmt("{s}-assistant-final", .{request_id}), .assistant, final_text);
                 }
+                saw_turn = true;
                 break;
             } else {
                 const raw = self.valueJson(event) catch line;
                 self.appendStatusOutput(conversation_id, request_id, self.fmt("{s}-unknown-event-{d}", .{ request_id, event_count }), self.fmt("Unhandled graff event: {s}", .{ty}), raw);
             }
         }
+        if (saw_turn) {
+            var post_turn_warnings: usize = protocol_warning_count;
+            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, if (fast_enabled) "{\"type\":\"set_fast\",\"on\":true}" else "{\"type\":\"set_fast\",\"on\":false}", "fast", &post_turn_warnings, true, false)) {
+                session_failed = true;
+            }
+        }
+
         self.mutex.lockUncancelable(io);
         const completed_still_active = self.requestActiveLocked(conversation_id, request_id);
         self.mutex.unlock(io);
         if (event_count == 0 and completed_still_active) {
             self.appendError(conversation_id, request_id, "graff exited before producing a response");
         }
+        if (session_failed) drop_session_on_return = true;
     }
 
     fn appendDelta(self: *Runtime, cid: []const u8, rid: []const u8, id: []const u8, kind: Message.Kind, delta: []const u8) void {
@@ -1950,18 +2116,30 @@ pub const Runtime = struct {
         return count + 1;
     }
 
-    fn sendControlAndWait(self: *Runtime, rdr: anytype, cw: anytype, cid: []const u8, rid: []const u8, request_line: []const u8, ack_type: []const u8, warning_count: *usize) !bool {
-        try cw.interface.writeAll(request_line);
-        try cw.interface.writeByte('\n');
-        try cw.interface.flush();
+    fn sendControlAndWait(self: *Runtime, rdr: anytype, cw: anytype, cid: []const u8, rid: []const u8, request_line: []const u8, ack_type: []const u8, warning_count: *usize, suppress_transport_errors: bool, handle_ack: bool) !bool {
+        cw.interface.writeAll(request_line) catch |err| {
+            log.warn("graff {s} control write failed with {}", .{ ack_type, err });
+            if (!suppress_transport_errors) self.appendError(cid, rid, self.fmt("graff {s} control did not acknowledge", .{ack_type}));
+            return false;
+        };
+        cw.interface.writeByte('\n') catch |err| {
+            log.warn("graff {s} control write failed with {}", .{ ack_type, err });
+            if (!suppress_transport_errors) self.appendError(cid, rid, self.fmt("graff {s} control did not acknowledge", .{ack_type}));
+            return false;
+        };
+        cw.interface.flush() catch |err| {
+            log.warn("graff {s} control flush failed with {}", .{ ack_type, err });
+            if (!suppress_transport_errors) self.appendError(cid, rid, self.fmt("graff {s} control did not acknowledge", .{ack_type}));
+            return false;
+        };
 
         while (true) {
             const ev_line = rdr.interface.takeDelimiter('\n') catch |err| {
                 log.warn("graff control read ended with {}", .{err});
-                self.appendError(cid, rid, self.fmt("graff {s} control did not acknowledge", .{ack_type}));
+                if (!suppress_transport_errors) self.appendError(cid, rid, self.fmt("graff {s} control did not acknowledge", .{ack_type}));
                 return false;
             } orelse {
-                self.appendError(cid, rid, self.fmt("graff exited before {s} control acknowledged", .{ack_type}));
+                if (!suppress_transport_errors) self.appendError(cid, rid, self.fmt("graff exited before {s} control acknowledged", .{ack_type}));
                 return false;
             };
             const line = std.mem.trim(u8, ev_line, " \t\r\n");
@@ -1984,7 +2162,7 @@ pub const Runtime = struct {
                 return false;
             }
             if (std.mem.eql(u8, ty, ack_type)) {
-                _ = self.handleProtocolAck(cid, rid, ty, event);
+                if (handle_ack) _ = self.handleProtocolAck(cid, rid, ty, event);
                 return true;
             }
             const raw = self.valueJson(event) catch line;
@@ -2399,20 +2577,13 @@ pub const Runtime = struct {
         const conv = self.conversations.get(conversation_id);
         const session_provider = if (conv) |c| c.session_provider else null;
         const session_model = if (conv) |c| c.session_model else null;
-        if (session_provider != null or session_model != null) {
-            const provider = session_provider orelse self.settings.selected_provider;
-            const model = session_model orelse self.settings.selected_model;
-            return .{
-                .provider = provider,
-                .model = model,
-                .effort = effectiveReasoningEffort(provider, model, self.settings.selected_effort),
-                .send_model_control = false,
-            };
-        }
+        const provider = self.settings.selected_provider orelse session_provider;
+        const model = self.settings.selected_model orelse session_model;
         return .{
-            .provider = self.settings.selected_provider,
-            .model = self.settings.selected_model,
-            .effort = effectiveReasoningEffort(self.settings.selected_provider, self.settings.selected_model, self.settings.selected_effort),
+            .provider = provider,
+            .model = model,
+            .effort = effectiveReasoningEffort(provider, model, self.settings.selected_effort),
+            .fast_enabled = self.settings.fast_enabled,
             .send_model_control = true,
         };
     }
@@ -2840,9 +3011,9 @@ pub const Runtime = struct {
         ensureDirectory(self.allocator, conv.workspace_path) catch {};
         const path = sessionFilePath(self.allocator, conv.workspace_path, conv.session_name) catch return;
         defer self.allocator.free(path);
-        const provider = self.settings.selected_provider orelse "codegraff";
-        const selected_model = self.settings.selected_model orelse "deepseek-v4-pro";
-        const model = if (selected_model.len == 0 or std.mem.eql(u8, selected_model, "default")) "deepseek-v4-pro" else selected_model;
+        const provider = self.settings.selected_provider orelse conv.session_provider orelse "codegraff";
+        const selected_model = self.settings.selected_model orelse conv.session_model orelse "deepseek-v4-pro";
+        const model = if (selected_model.len == 0) "deepseek-v4-pro" else selected_model;
         const data = self.conversationSessionJsonLocked(conv, provider, model) catch return;
         defer self.allocator.free(data);
 
@@ -2855,9 +3026,9 @@ pub const Runtime = struct {
         defer out.deinit();
         const w = &out.writer;
         try w.writeAll("{\"provider\":");
-        try writeString(w, conv.session_provider orelse provider);
+        try writeString(w, provider);
         try w.writeAll(",\"model\":");
-        try writeString(w, conv.session_model orelse model);
+        try writeString(w, model);
         try w.writeAll(",\"strict\":");
         try w.writeAll(if (conv.session_strict) "true" else "false");
         try w.writeAll(",\"ultracode_mode\":");
@@ -2972,7 +3143,7 @@ pub const Runtime = struct {
 };
 
 fn graffTurnThread(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session_name: []const u8, workspace: []const u8, prompt: []const u8, agent_id: []const u8, plan_mode: bool) void {
-    self.streamGraffTurn(conversation_id, request_id, session_name, workspace, prompt, agent_id, plan_mode) catch |err| {
+    self.streamGraffTurn(conversation_id, request_id, session_name, workspace, prompt, agent_id, plan_mode, true) catch |err| {
         self.mutex.lockUncancelable(mer_runtime.io);
         if (self.conversations.get(conversation_id)) |conv| {
             if (self.requestActiveLocked(conversation_id, request_id)) {
@@ -3028,6 +3199,14 @@ fn boolField(v: Value, key: []const u8) ?bool {
         .bool => |b| b,
         else => null,
     };
+}
+
+fn optionalStringEql(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a) |aa| {
+        if (b) |bb| return std.mem.eql(u8, aa, bb);
+        return false;
+    }
+    return b == null;
 }
 
 fn intField(v: Value, key: []const u8, default: i64) i64 {
@@ -3194,6 +3373,7 @@ const TurnPromptSelection = struct {
     provider: ?[]const u8,
     model: ?[]const u8,
     effort: ?[]const u8,
+    fast_enabled: bool,
     send_model_control: bool,
 };
 
@@ -4837,7 +5017,7 @@ test "conversationSessionJsonLocked writes CLI-readable session JSON" {
     try std.testing.expectEqualStrings("persisted", stringField(messages.items[1], "content").?);
 }
 
-test "turnPromptSelectionLocked does not set_model for imported CLI sessions" {
+test "turnPromptSelectionLocked reconciles selected model over imported CLI sessions" {
     var rt = try Runtime.init(std.testing.allocator);
     defer rt.deinit();
 
@@ -4848,9 +5028,9 @@ test "turnPromptSelectionLocked does not set_model for imported CLI sessions" {
     conv.session_model = "gpt-5";
 
     const selection = rt.turnPromptSelectionLocked(conv.conversation_id);
-    try std.testing.expectEqualStrings("codex", selection.provider.?);
-    try std.testing.expectEqualStrings("gpt-5", selection.model.?);
-    try std.testing.expect(!selection.send_model_control);
+    try std.testing.expectEqualStrings("codegraff", selection.provider.?);
+    try std.testing.expectEqualStrings("deepseek-v4-pro", selection.model.?);
+    try std.testing.expect(selection.send_model_control);
 }
 
 test "conversationSessionJsonLocked preserves imported CLI-native messages" {
@@ -4874,7 +5054,7 @@ test "conversationSessionJsonLocked preserves imported CLI-native messages" {
     const conv = rt.conversations.get(cid) orelse return error.TestExpectedEqual;
     conv.messages.append(rt.arena, .{ .kind = .tool_start, .id = "gui-tool", .request_id = "r", .name = "read_file", .call_id = "call-1", .tool_detail_json = "{\"kind\":\"file_read\",\"path\":\"src/main.zig\",\"startLine\":null,\"endLine\":null}" }) catch {};
 
-    const written = try rt.conversationSessionJsonLocked(conv, "codegraff", "deepseek-v4-pro");
+    const written = try rt.conversationSessionJsonLocked(conv, "codex", "gpt-5");
     defer rt.allocator.free(written);
     var check_tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer check_tmp.deinit();
