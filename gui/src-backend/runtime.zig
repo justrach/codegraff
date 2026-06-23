@@ -10,6 +10,8 @@ const default_reasoning_effort = "medium";
 const session_ext = ".session.json";
 const terminal_scrollback_limit = 1024 * 1024;
 const sse_event_replay_limit = 1000;
+const session_scan_cache_ttl_ms = 10_000;
+const runtime_status_cache_ttl_ms = 10_000;
 
 pub var instance: ?*Runtime = null;
 
@@ -121,6 +123,10 @@ const RuntimeStatusCacheEntry = struct {
     expires_ms: i64,
 };
 
+const SessionScanCacheEntry = struct {
+    scanned_ms: i64,
+};
+
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     arena_state: std.heap.ArenaAllocator,
@@ -133,6 +139,8 @@ pub const Runtime = struct {
     terminals: std.StringHashMap(*TerminalSessionState),
     active_children: std.StringHashMap(*std.process.Child),
     runtime_status_cache: std.StringHashMap(RuntimeStatusCacheEntry),
+    runtime_status_generation: u64 = 0,
+    session_scan_cache: std.StringHashMap(SessionScanCacheEntry),
     event_mutex: std.Io.Mutex = .init,
     events: std.ArrayList(SseEvent) = .empty,
     next_event_seq: u64 = 1,
@@ -156,6 +164,7 @@ pub const Runtime = struct {
             .terminals = std.StringHashMap(*TerminalSessionState).init(allocator),
             .active_children = std.StringHashMap(*std.process.Child).init(allocator),
             .runtime_status_cache = std.StringHashMap(RuntimeStatusCacheEntry).init(allocator),
+            .session_scan_cache = std.StringHashMap(SessionScanCacheEntry).init(allocator),
         };
         rt.arena = rt.arena_state.allocator();
         instance = rt;
@@ -174,6 +183,9 @@ pub const Runtime = struct {
             self.allocator.free(entry.value_ptr.json);
         }
         self.runtime_status_cache.deinit();
+        var scan_it = self.session_scan_cache.iterator();
+        while (scan_it.next()) |entry| self.allocator.free(entry.key_ptr.*);
+        self.session_scan_cache.deinit();
         for (self.events.items) |event| self.freeSseEvent(event);
         self.events.deinit(self.allocator);
         self.conversations.deinit();
@@ -190,7 +202,7 @@ pub const Runtime = struct {
 
         if (std.mem.eql(u8, cmd, "get_session_snapshot")) {
             self.mutex.lockUncancelable(mer_runtime.io);
-            self.refreshWorkspaceSessionsLocked();
+            self.refreshWorkspaceSessionsLocked(false);
             self.mutex.unlock(mer_runtime.io);
             return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
         }
@@ -258,7 +270,7 @@ pub const Runtime = struct {
         self.mutex.lockUncancelable(mer_runtime.io);
         const owned = self.dupe(path);
         self.activateWorkspaceLocked(owned);
-        self.scanWorkspaceSessionsLocked(owned);
+        self.scanWorkspaceSessionsLocked(owned, true);
         self.ensureWorkspaceSelectionLocked(owned);
         self.active_conversation_id = self.selected_by_workspace.get(owned);
         self.bumpLocked();
@@ -406,6 +418,8 @@ pub const Runtime = struct {
 
         self.mutex.lockUncancelable(mer_runtime.io);
         const owned_workspace = self.dupe(target_workspace);
+        self.invalidateRuntimeStatusLocked(source_workspace);
+        self.invalidateRuntimeStatusLocked(owned_workspace);
         self.activateWorkspaceLocked(owned_workspace);
         const conversation = if (source_conversation_id) |cid| conv: {
             if (self.conversations.get(cid)) |existing| {
@@ -421,7 +435,8 @@ pub const Runtime = struct {
         self.active_conversation_id = conversation.conversation_id;
         self.selected_by_workspace.put(conversation.workspace_path, conversation.conversation_id) catch {};
         self.writeConversationSessionFileLocked(conversation);
-        self.scanWorkspaceSessionsLocked(owned_workspace);
+        self.invalidateSessionScanLocked(owned_workspace);
+        self.scanWorkspaceSessionsLocked(owned_workspace, true);
         self.bumpLocked();
         self.saveGuiStateLocked();
         self.mutex.unlock(mer_runtime.io);
@@ -1268,6 +1283,9 @@ pub const Runtime = struct {
         const input = objectField(root, "input") orelse root;
         const workspace = stringField(input, "workspacePath") orelse stringField(root, "workspacePath") orelse "";
         _ = cmd;
+        self.mutex.lockUncancelable(mer_runtime.io);
+        self.invalidateRuntimeStatusLocked(if (workspace.len == 0) null else workspace);
+        self.mutex.unlock(mer_runtime.io);
         return self.runtimeStatusJson(req.allocator, workspace) catch oom();
     }
 
@@ -2132,6 +2150,7 @@ pub const Runtime = struct {
         const p = path orelse "";
         const now = nowMillis();
         self.mutex.lockUncancelable(mer_runtime.io);
+        const generation = self.runtime_status_generation;
         if (self.runtime_status_cache.get(p)) |entry| {
             if (entry.expires_ms > now) {
                 const cached = alloc.dupe(u8, entry.json) catch {
@@ -2151,17 +2170,42 @@ pub const Runtime = struct {
         errdefer self.allocator.free(value);
 
         self.mutex.lockUncancelable(mer_runtime.io);
+        if (!self.storeRuntimeStatusCacheLocked(p, key, value, now + runtime_status_cache_ttl_ms, generation)) {
+            self.mutex.unlock(mer_runtime.io);
+            self.allocator.free(key);
+            self.allocator.free(value);
+            return mer.json(rendered);
+        }
+        self.mutex.unlock(mer_runtime.io);
+
+        return mer.json(rendered);
+    }
+
+    fn storeRuntimeStatusCacheLocked(self: *Runtime, p: []const u8, key: []const u8, value: []const u8, expires_ms: i64, generation: u64) bool {
+        if (self.runtime_status_generation != generation) return false;
         if (self.runtime_status_cache.fetchRemove(p)) |old| {
             self.allocator.free(old.key);
             self.allocator.free(old.value.json);
         }
-        self.runtime_status_cache.put(key, .{ .json = value, .expires_ms = now + 2000 }) catch {
-            self.mutex.unlock(mer_runtime.io);
-            return mer.json(rendered);
-        };
-        self.mutex.unlock(mer_runtime.io);
+        self.runtime_status_cache.put(key, .{ .json = value, .expires_ms = expires_ms }) catch return false;
+        return true;
+    }
 
-        return mer.json(rendered);
+    fn invalidateRuntimeStatusLocked(self: *Runtime, path: ?[]const u8) void {
+        self.runtime_status_generation +%= 1;
+        if (path) |p| {
+            if (self.runtime_status_cache.fetchRemove(p)) |old| {
+                self.allocator.free(old.key);
+                self.allocator.free(old.value.json);
+            }
+            return;
+        }
+        var it = self.runtime_status_cache.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.json);
+        }
+        self.runtime_status_cache.clearRetainingCapacity();
     }
 
     fn promptSettingsJson(self: *Runtime, alloc: std.mem.Allocator) ![]const u8 {
@@ -2212,14 +2256,15 @@ pub const Runtime = struct {
     }
 
     fn createConversationLocked(self: *Runtime, workspace: []const u8, cid_raw: []const u8, title_raw: []const u8) *Conversation {
-        return self.createConversationWithSessionLocked(workspace, cid_raw, cid_raw, title_raw);
+        const conv = self.createConversationWithSessionLocked(workspace, cid_raw, cid_raw, title_raw);
+        self.setActiveWorkspaceLocked(conv.workspace_path);
+        return conv;
     }
 
     fn createConversationWithSessionLocked(self: *Runtime, workspace: []const u8, cid_raw: []const u8, session_raw: []const u8, title_raw: []const u8) *Conversation {
         const wpath = self.dupe(workspace);
         const cid = self.dupe(cid_raw);
         const session_name = self.dupe(session_raw);
-        self.setActiveWorkspaceLocked(wpath);
         const conv = self.arena.create(Conversation) catch @panic("oom");
         conv.* = .{
             .workspace_path = wpath,
@@ -2340,7 +2385,7 @@ pub const Runtime = struct {
                 if (stringField(item, "selectedConversationId")) |selected| {
                     self.selected_by_workspace.put(owned_path, self.dupe(selected)) catch {};
                 }
-                self.scanWorkspaceSessionsLocked(owned_path);
+                self.scanWorkspaceSessionsLocked(owned_path, true);
                 self.ensureWorkspaceSelectionLocked(owned_path);
             }
         }
@@ -2418,7 +2463,13 @@ pub const Runtime = struct {
         return true;
     }
 
-    fn scanWorkspaceSessionsLocked(self: *Runtime, workspace_path: []const u8) void {
+    fn scanWorkspaceSessionsLocked(self: *Runtime, workspace_path: []const u8, force: bool) void {
+        const now = nowMillis();
+        if (!force) {
+            if (self.session_scan_cache.get(workspace_path)) |entry| {
+                if (entry.scanned_ms + session_scan_cache_ttl_ms > now) return;
+            }
+        }
         var dir = std.Io.Dir.cwd().openDir(mer_runtime.io, workspace_path, .{ .iterate = true }) catch return;
         defer dir.close(mer_runtime.io);
         var it = dir.iterate();
@@ -2431,7 +2482,18 @@ pub const Runtime = struct {
             self.importSessionFileLocked(workspace_path, base, full_path);
             self.allocator.free(full_path);
         }
+        self.markSessionScanLocked(workspace_path, now);
         self.ensureWorkspaceSelectionLocked(workspace_path);
+    }
+
+    fn markSessionScanLocked(self: *Runtime, workspace_path: []const u8, scanned_ms: i64) void {
+        const key = self.allocator.dupe(u8, workspace_path) catch return;
+        if (self.session_scan_cache.fetchRemove(workspace_path)) |old| self.allocator.free(old.key);
+        self.session_scan_cache.put(key, .{ .scanned_ms = scanned_ms }) catch self.allocator.free(key);
+    }
+
+    fn invalidateSessionScanLocked(self: *Runtime, workspace_path: []const u8) void {
+        if (self.session_scan_cache.fetchRemove(workspace_path)) |old| self.allocator.free(old.key);
     }
 
     fn importSessionFileLocked(self: *Runtime, workspace_path: []const u8, session_name: []const u8, full_path: []const u8) void {
@@ -2595,9 +2657,9 @@ pub const Runtime = struct {
         return out.written();
     }
 
-    fn refreshWorkspaceSessionsLocked(self: *Runtime) void {
+    fn refreshWorkspaceSessionsLocked(self: *Runtime, force: bool) void {
         for (self.workspaces.items) |workspace| {
-            self.scanWorkspaceSessionsLocked(workspace.path);
+            self.scanWorkspaceSessionsLocked(workspace.path, force);
         }
     }
 
@@ -2689,6 +2751,7 @@ pub const Runtime = struct {
         defer self.allocator.free(data);
 
         std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = data }) catch {};
+        self.invalidateSessionScanLocked(conv.workspace_path);
     }
 
     fn conversationSessionJsonLocked(self: *Runtime, conv: *Conversation, provider: []const u8, model: []const u8) ![]const u8 {
@@ -2743,6 +2806,7 @@ pub const Runtime = struct {
         const path = sessionFilePath(self.allocator, conv.workspace_path, conv.session_name) catch return;
         defer self.allocator.free(path);
         std.Io.Dir.cwd().deleteFile(mer_runtime.io, path) catch {};
+        self.invalidateSessionScanLocked(conv.workspace_path);
     }
 
     fn loadPromptSettings(self: *Runtime) void {
@@ -4272,6 +4336,68 @@ test "activateWorkspaceLocked clears stale conversation and restores workspace s
     rt.activateWorkspaceLocked(conv.workspace_path);
     try std.testing.expectEqualStrings(first_workspace, rt.active_workspace_path.?);
     try std.testing.expectEqualStrings("chat-one", rt.active_conversation_id.?);
+}
+
+test "passive session import does not change active workspace" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const active = rt.createConversationLocked("/tmp/codegraff-active-workspace", "chat-active", "Active");
+    rt.active_conversation_id = active.conversation_id;
+    try rt.selected_by_workspace.put(active.workspace_path, active.conversation_id);
+
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const parsed = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"provider\":\"codegraff\",\"model\":\"deepseek-v4-pro\",\"title\":\"Imported\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", .{ .allocate = .alloc_always });
+    rt.importSessionValueLocked("/tmp/codegraff-inactive-workspace", "imported", parsed, tmp.allocator());
+
+    try std.testing.expectEqualStrings("/tmp/codegraff-active-workspace", rt.active_workspace_path.?);
+    try std.testing.expectEqualStrings("chat-active", rt.active_conversation_id.?);
+}
+
+test "session scan cache throttles and invalidates workspace scans" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const workspace = "/tmp/codegraff-gui-scan-cache";
+    try std.testing.expect(rt.session_scan_cache.get(workspace) == null);
+    rt.markSessionScanLocked(workspace, 1000);
+    try std.testing.expectEqual(@as(i64, 1000), rt.session_scan_cache.get(workspace).?.scanned_ms);
+    rt.markSessionScanLocked(workspace, 2000);
+    try std.testing.expectEqual(@as(usize, 1), rt.session_scan_cache.count());
+    try std.testing.expectEqual(@as(i64, 2000), rt.session_scan_cache.get(workspace).?.scanned_ms);
+    rt.invalidateSessionScanLocked(workspace);
+    try std.testing.expect(rt.session_scan_cache.get(workspace) == null);
+}
+
+test "runtime status cache rejects stale stores after invalidation" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const generation = rt.runtime_status_generation;
+    rt.invalidateRuntimeStatusLocked("/tmp/workspace");
+    const stale_key = try rt.allocator.dupe(u8, "/tmp/workspace");
+    const stale_value = try rt.allocator.dupe(u8, "{\"branch\":\"old\"}");
+    defer rt.allocator.free(stale_key);
+    defer rt.allocator.free(stale_value);
+    try std.testing.expect(!rt.storeRuntimeStatusCacheLocked("/tmp/workspace", stale_key, stale_value, 100, generation));
+    try std.testing.expect(rt.runtime_status_cache.get("/tmp/workspace") == null);
+}
+
+test "runtime status cache invalidates one workspace or all workspaces" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const key_a = try rt.allocator.dupe(u8, "/tmp/a");
+    const key_b = try rt.allocator.dupe(u8, "/tmp/b");
+    try rt.runtime_status_cache.put(key_a, .{ .json = try rt.allocator.dupe(u8, "{\"a\":true}"), .expires_ms = 10 });
+    try rt.runtime_status_cache.put(key_b, .{ .json = try rt.allocator.dupe(u8, "{\"b\":true}"), .expires_ms = 10 });
+
+    rt.invalidateRuntimeStatusLocked("/tmp/a");
+    try std.testing.expect(rt.runtime_status_cache.get("/tmp/a") == null);
+    try std.testing.expect(rt.runtime_status_cache.get("/tmp/b") != null);
+    rt.invalidateRuntimeStatusLocked(null);
+    try std.testing.expectEqual(@as(usize, 0), rt.runtime_status_cache.count());
 }
 
 test "emitSseEvent evicts and frees replay payloads" {
