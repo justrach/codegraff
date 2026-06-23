@@ -119,6 +119,12 @@ const GraffSession = struct {
     session_name: []const u8,
     desired_provider: ?[]const u8 = null,
     desired_model: ?[]const u8 = null,
+    acked_provider: ?[]const u8 = null,
+    acked_model: ?[]const u8 = null,
+    acked_effort: ?[]const u8 = null,
+    acked_fast: ?bool = null,
+    acked_agent: ?[]const u8 = null,
+    acked_mode: ?[]const u8 = null,
     child: *std.process.Child,
     yolo_enabled: bool = false,
     stdin_mutex: std.Io.Mutex = .init,
@@ -1755,7 +1761,7 @@ pub const Runtime = struct {
         var protocol_warning_count: usize = 0;
 
         if (prompt_selection.send_model_control) if (provider) |p| if (model) |m| {
-            if (p.len > 0 and m.len > 0 and !std.mem.eql(u8, m, "default")) {
+            if (p.len > 0 and m.len > 0 and !std.mem.eql(u8, m, "default") and (!optionalStringEql(session.acked_provider, provider) or !optionalStringEql(session.acked_model, model))) {
                 var control: std.Io.Writer.Allocating = .init(self.allocator);
                 defer control.deinit();
                 try control.writer.writeAll("{\"type\":\"set_model\",\"name\":");
@@ -1766,49 +1772,55 @@ pub const Runtime = struct {
                     drop_session_on_return = true;
                     return;
                 }
+                session.acked_provider = self.dupe(p);
+                session.acked_model = self.dupe(m);
             }
         };
         if (effort) |level| {
-            var control: std.Io.Writer.Allocating = .init(self.allocator);
-            defer control.deinit();
-            try control.writer.writeAll("{\"type\":\"set_effort\",\"level\":");
-            try writeString(&control.writer, level);
-            try control.writer.writeByte('}');
-            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "effort", &protocol_warning_count, retry_on_setup_failure, true)) {
+            if (!optionalStringEql(session.acked_effort, effort)) {
+                var control: std.Io.Writer.Allocating = .init(self.allocator);
+                defer control.deinit();
+                try control.writer.writeAll("{\"type\":\"set_effort\",\"level\":");
+                try writeString(&control.writer, level);
+                try control.writer.writeByte('}');
+                if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "effort", &protocol_warning_count, retry_on_setup_failure, true)) {
+                    if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
+                    drop_session_on_return = true;
+                    return;
+                }
+                session.acked_effort = self.dupe(level);
+            }
+        }
+        if (session.acked_fast == null or session.acked_fast.? != fast_enabled) {
+            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, if (fast_enabled) "{\"type\":\"set_fast\",\"on\":true}" else "{\"type\":\"set_fast\",\"on\":false}", "fast", &protocol_warning_count, retry_on_setup_failure, true)) {
                 if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
                 drop_session_on_return = true;
                 return;
             }
+            session.acked_fast = fast_enabled;
         }
-        if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, if (fast_enabled) "{\"type\":\"set_fast\",\"on\":true}" else "{\"type\":\"set_fast\",\"on\":false}", "fast", &protocol_warning_count, retry_on_setup_failure, true)) {
-            if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
-            drop_session_on_return = true;
-            return;
-        }
-        {
+        const core_agent = guiAgentCoreAgent(agent_id) orelse "";
+        if (!optionalStringEql(session.acked_agent, core_agent)) {
             var control: std.Io.Writer.Allocating = .init(self.allocator);
             defer control.deinit();
             try control.writer.writeAll("{\"type\":\"set_agent\",\"id\":");
-            try writeString(&control.writer, guiAgentCoreAgent(agent_id) orelse "");
+            try writeString(&control.writer, core_agent);
             try control.writer.writeByte('}');
             if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "agent", &protocol_warning_count, retry_on_setup_failure, true)) {
                 if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
                 drop_session_on_return = true;
                 return;
             }
+            session.acked_agent = self.dupe(core_agent);
         }
-        if (plan_mode) {
-            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, "{\"type\":\"set_mode\",\"mode\":\"plan\"}", "mode", &protocol_warning_count, retry_on_setup_failure, true)) {
+        const mode = if (plan_mode) "plan" else "normal";
+        if (!optionalStringEql(session.acked_mode, mode)) {
+            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, if (plan_mode) "{\"type\":\"set_mode\",\"mode\":\"plan\"}" else "{\"type\":\"set_mode\",\"mode\":\"normal\"}", "mode", &protocol_warning_count, retry_on_setup_failure, true)) {
                 if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
                 drop_session_on_return = true;
                 return;
             }
-        } else {
-            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, "{\"type\":\"set_mode\",\"mode\":\"normal\"}", "mode", &protocol_warning_count, retry_on_setup_failure, true)) {
-                if (retry_on_setup_failure and !self.requestHasMessageKind(conversation_id, request_id, .@"error")) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
-                drop_session_on_return = true;
-                return;
-            }
+            session.acked_mode = self.dupe(mode);
         }
 
         var user_req: std.Io.Writer.Allocating = .init(self.allocator);
@@ -1935,10 +1947,12 @@ pub const Runtime = struct {
                 self.appendStatusOutput(conversation_id, request_id, self.fmt("{s}-unknown-event-{d}", .{ request_id, event_count }), self.fmt("Unhandled graff event: {s}", .{ty}), raw);
             }
         }
-        if (saw_turn) {
+        if (saw_turn and (session.acked_fast == null or session.acked_fast.? != fast_enabled)) {
             var post_turn_warnings: usize = protocol_warning_count;
             if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, if (fast_enabled) "{\"type\":\"set_fast\",\"on\":true}" else "{\"type\":\"set_fast\",\"on\":false}", "fast", &post_turn_warnings, true, false)) {
                 session_failed = true;
+            } else {
+                session.acked_fast = fast_enabled;
             }
         }
 
@@ -4642,7 +4656,7 @@ pub fn handleEvents(
         break :blk if (self.next_event_seq > 0) self.next_event_seq - 1 else 0;
     };
     while (true) {
-        _ = io.sleep(.fromMilliseconds(100), .awake) catch break;
+        _ = io.sleep(.fromMilliseconds(16), .awake) catch break;
 
         var pending: std.ArrayList(SseEvent) = .empty;
         self.event_mutex.lockUncancelable(io);
