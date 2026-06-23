@@ -26,6 +26,16 @@ export function TerminalPane({
     }, 1500);
   }, []);
 
+  // Tap/click the toast to dismiss it immediately instead of waiting for the
+  // 1.5s auto-hide.
+  const dismissCopiedPopup = useCallback(() => {
+    if (copiedPopupTimerRef.current != null) {
+      window.clearTimeout(copiedPopupTimerRef.current);
+      copiedPopupTimerRef.current = null;
+    }
+    setIsCopiedPopupVisible(false);
+  }, []);
+
   useEffect(() => {
     return () => {
       if (copiedPopupTimerRef.current != null) {
@@ -51,9 +61,14 @@ export function TerminalPane({
         ) : null}
         {isCopiedPopupVisible ? (
           <div className="pointer-events-none absolute inset-x-4 bottom-4 flex justify-center">
-            <div className="rounded-md border border-border bg-popover px-3 py-1.5 text-xs text-popover-foreground shadow-lg dark:bg-popover">
+            <button
+              type="button"
+              onClick={dismissCopiedPopup}
+              aria-label="Dismiss copied notification"
+              className="pointer-events-auto cursor-pointer rounded-md border border-border bg-popover px-3 py-1.5 text-xs text-popover-foreground shadow-lg transition hover:opacity-80 dark:bg-popover"
+            >
               Copied to clipboard
-            </div>
+            </button>
           </div>
         ) : null}
       </div>
