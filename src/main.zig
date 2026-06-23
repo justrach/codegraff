@@ -2459,10 +2459,20 @@ fn runHookCmd(gpa: Allocator, io: Io, command: []const u8, payload: []const u8, 
             break;
         }
         if (r.interface.buffered().len == 0) {
-            var fds = [_]std.posix.pollfd{.{ .fd = child.stderr.?.handle, .events = std.posix.POLL.IN, .revents = 0 }};
-            const ready = std.posix.poll(&fds, 100) catch break;
-            if (ready == 0) continue;
-            if (fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0 and fds[0].revents & std.posix.POLL.IN == 0) break;
+            if (builtin.os.tag == .windows) {
+                // No pollfd on Windows; peek the pipe for available bytes.
+                var avail: u32 = 0;
+                if (win.PeekNamedPipe(child.stderr.?.handle, null, 0, null, &avail, null) == 0) break; // broken pipe = EOF
+                if (avail == 0) {
+                    io.sleep(.fromMilliseconds(50), .awake) catch {};
+                    continue;
+                }
+            } else {
+                var fds = [_]std.posix.pollfd{.{ .fd = child.stderr.?.handle, .events = std.posix.POLL.IN, .revents = 0 }};
+                const ready = std.posix.poll(&fds, 100) catch break;
+                if (ready == 0) continue;
+                if (fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0 and fds[0].revents & std.posix.POLL.IN == 0) break;
+            }
         }
         const b = r.interface.takeByte() catch break; // EOF: hook exited
         if (err_text.items.len < 4096) err_text.append(gpa, b) catch break;
@@ -3372,20 +3382,207 @@ fn parseDsrCol(seq: []const u8) ?usize {
     return if (col == 0) null else col;
 }
 
-/// Terminal column count (TIOCGWINSZ); 80 on any failure.
+const win = struct {
+    const HANDLE = *anyopaque;
+    const BOOL = i32;
+    const DWORD = u32;
+    const WORD = u16;
+    const WCHAR = u16;
+    const SHORT = i16;
+
+    const STD_INPUT_HANDLE: DWORD = 0xFFFFFFF6; // (DWORD)-10
+    const STD_OUTPUT_HANDLE: DWORD = 0xFFFFFFF5; // (DWORD)-11
+
+    const ENABLE_PROCESSED_INPUT: DWORD = 0x0001;
+    const ENABLE_LINE_INPUT: DWORD = 0x0002;
+    const ENABLE_ECHO_INPUT: DWORD = 0x0004;
+    const ENABLE_VIRTUAL_TERMINAL_INPUT: DWORD = 0x0200;
+    const ENABLE_PROCESSED_OUTPUT: DWORD = 0x0001;
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: DWORD = 0x0004;
+
+    const WAIT_OBJECT_0: DWORD = 0x0;
+    const INFINITE: DWORD = 0xFFFFFFFF;
+    const KEY_EVENT: WORD = 0x0001;
+
+    const COORD = extern struct { X: SHORT, Y: SHORT };
+    const SMALL_RECT = extern struct { Left: SHORT, Top: SHORT, Right: SHORT, Bottom: SHORT };
+    const CONSOLE_SCREEN_BUFFER_INFO = extern struct {
+        dwSize: COORD,
+        dwCursorPosition: COORD,
+        wAttributes: WORD,
+        srWindow: SMALL_RECT,
+        dwMaximumWindowSize: COORD,
+    };
+    const KEY_EVENT_RECORD = extern struct {
+        bKeyDown: BOOL,
+        wRepeatCount: WORD,
+        wVirtualKeyCode: WORD,
+        wVirtualScanCode: WORD,
+        UnicodeChar: WCHAR,
+        dwControlKeyState: DWORD,
+    };
+    // EventType (WORD) + ABI padding + the 16-byte event union, modeled as its
+    // largest relevant member (KEY_EVENT_RECORD), totals 20 bytes — the C size.
+    const INPUT_RECORD = extern struct {
+        EventType: WORD,
+        KeyEvent: KEY_EVENT_RECORD,
+    };
+
+    extern "kernel32" fn GetStdHandle(nStdHandle: DWORD) callconv(.winapi) HANDLE;
+    extern "kernel32" fn GetConsoleMode(hConsoleHandle: HANDLE, lpMode: *DWORD) callconv(.winapi) BOOL;
+    extern "kernel32" fn SetConsoleMode(hConsoleHandle: HANDLE, dwMode: DWORD) callconv(.winapi) BOOL;
+    extern "kernel32" fn GetConsoleScreenBufferInfo(hConsoleOutput: HANDLE, lpInfo: *CONSOLE_SCREEN_BUFFER_INFO) callconv(.winapi) BOOL;
+    extern "kernel32" fn GetNumberOfConsoleInputEvents(hConsoleInput: HANDLE, lpNumberOfEvents: *DWORD) callconv(.winapi) BOOL;
+    extern "kernel32" fn ReadConsoleInputW(hConsoleInput: HANDLE, lpBuffer: [*]INPUT_RECORD, nLength: DWORD, lpRead: *DWORD) callconv(.winapi) BOOL;
+    extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
+    extern "kernel32" fn PeekNamedPipe(hNamedPipe: HANDLE, lpBuffer: ?*anyopaque, nBufferSize: DWORD, lpBytesRead: ?*DWORD, lpTotalBytesAvail: ?*DWORD, lpBytesLeftThisMessage: ?*DWORD) callconv(.winapi) BOOL;
+};
+
+/// Cross-platform terminal control. POSIX uses termios + ioctl(TIOCGWINSZ) +
+/// poll; Windows uses the console API (Get/SetConsoleMode, screen-buffer info,
+/// WaitForSingleObject + ReadConsoleInput). The TUI's raw-mode, window-size,
+/// and non-blocking stdin paths all go through here so the harness builds and
+/// runs the same on both. ENABLE_VIRTUAL_TERMINAL_INPUT makes Windows deliver
+/// arrow/function keys as the VT escape sequences the POSIX parser understands.
+const tty = struct {
+    const is_windows = builtin.os.tag == .windows;
+
+    /// Saved terminal state for restore(): termios on POSIX, the prior console
+    /// input-mode word on Windows.
+    const RawState = if (is_windows) struct { in_mode: u32 } else std.posix.termios;
+
+    /// One-time: let the Windows console interpret ANSI/VT escapes. No-op
+    /// elsewhere. Call once from main before any styled output.
+    fn enableVtOutput() void {
+        if (!is_windows) return;
+        const h = win.GetStdHandle(win.STD_OUTPUT_HANDLE);
+        var mode: u32 = 0;
+        if (win.GetConsoleMode(h, &mode) == 0) return;
+        _ = win.SetConsoleMode(h, mode | win.ENABLE_VIRTUAL_TERMINAL_PROCESSING | win.ENABLE_PROCESSED_OUTPUT);
+    }
+
+    /// Terminal width in columns; 80 on any failure.
+    fn cols() usize {
+        if (is_windows) {
+            var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+            if (win.GetConsoleScreenBufferInfo(win.GetStdHandle(win.STD_OUTPUT_HANDLE), &info) == 0) return 80;
+            const w = @as(i32, info.srWindow.Right) - info.srWindow.Left + 1;
+            return if (w <= 0) 80 else @intCast(w);
+        }
+        var ws: std.posix.winsize = undefined;
+        const rc = std.posix.system.ioctl(std.posix.STDOUT_FILENO, std.posix.T.IOCGWINSZ, @intFromPtr(&ws));
+        if (rc != 0 or ws.col == 0) return 80;
+        return ws.col;
+    }
+
+    /// Terminal height in rows; 24 on any failure.
+    fn rows() usize {
+        if (is_windows) {
+            var info: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+            if (win.GetConsoleScreenBufferInfo(win.GetStdHandle(win.STD_OUTPUT_HANDLE), &info) == 0) return 24;
+            const h = @as(i32, info.srWindow.Bottom) - info.srWindow.Top + 1;
+            return if (h <= 0) 24 else @intCast(h);
+        }
+        var ws: std.posix.winsize = undefined;
+        const rc = std.posix.system.ioctl(std.posix.STDOUT_FILENO, std.posix.T.IOCGWINSZ, @intFromPtr(&ws));
+        if (rc != 0 or ws.row == 0) return 24;
+        return ws.row;
+    }
+
+    /// Enter raw mode on stdin. blocking=true → reads block for >=1 byte and
+    /// Ctrl-C arrives as a byte (line editor, pickers); blocking=false → VMIN=0
+    /// non-blocking and Ctrl-C still raises SIGINT (the Esc watcher). Returns
+    /// the prior state for restore(), or null when off-tty.
+    fn enterRaw(blocking: bool) ?RawState {
+        if (is_windows) {
+            const h = win.GetStdHandle(win.STD_INPUT_HANDLE);
+            var mode: u32 = 0;
+            if (win.GetConsoleMode(h, &mode) == 0) return null;
+            var raw = mode & ~@as(u32, win.ENABLE_LINE_INPUT | win.ENABLE_ECHO_INPUT);
+            raw |= win.ENABLE_VIRTUAL_TERMINAL_INPUT;
+            if (blocking) raw &= ~@as(u32, win.ENABLE_PROCESSED_INPUT) else raw |= win.ENABLE_PROCESSED_INPUT;
+            if (win.SetConsoleMode(h, raw) == 0) return null;
+            return .{ .in_mode = mode };
+        }
+        const fd = std.posix.STDIN_FILENO;
+        const orig = std.posix.tcgetattr(fd) catch return null;
+        var raw = orig;
+        raw.lflag.ICANON = false;
+        raw.lflag.ECHO = false;
+        if (blocking) {
+            raw.lflag.ISIG = false;
+            raw.lflag.IEXTEN = false; // so Ctrl-V (0x16) reaches us, not the tty's lnext
+        }
+        raw.cc[@intFromEnum(std.posix.V.MIN)] = if (blocking) 1 else 0;
+        raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+        std.posix.tcsetattr(fd, .NOW, raw) catch return null;
+        return orig;
+    }
+
+    /// Restore the mode captured by enterRaw().
+    fn restore(state: RawState) void {
+        if (is_windows) {
+            _ = win.SetConsoleMode(win.GetStdHandle(win.STD_INPUT_HANDLE), state.in_mode);
+            return;
+        }
+        std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, state) catch {};
+    }
+
+    /// True if stdin has input ready within timeout_ms (0 = instant poll,
+    /// negative = block indefinitely).
+    fn poll(timeout_ms: i32) bool {
+        if (is_windows) {
+            const h = win.GetStdHandle(win.STD_INPUT_HANDLE);
+            var n: u32 = 0;
+            if (win.GetNumberOfConsoleInputEvents(h, &n) != 0 and n > 0) return true;
+            const ms: u32 = if (timeout_ms < 0) win.INFINITE else @intCast(timeout_ms);
+            if (win.WaitForSingleObject(h, ms) != win.WAIT_OBJECT_0) return false;
+            return win.GetNumberOfConsoleInputEvents(h, &n) != 0 and n > 0;
+        }
+        var fds = [_]std.posix.pollfd{.{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 }};
+        const n = std.posix.poll(&fds, timeout_ms) catch return false;
+        return n > 0;
+    }
+
+    /// Non-blocking read of pending raw stdin bytes (terminal already in raw
+    /// mode); returns the byte count. On Windows it drains queued console
+    /// records and emits the ASCII byte of each key-down (Esc->0x1b,
+    /// Enter->0x0d, Backspace, printables); arrow/modifier/non-key events yield
+    /// nothing, so it never blocks — matching the POSIX VMIN=0 read the Esc
+    /// watcher relies on.
+    fn readStdin(buf: []u8) usize {
+        if (is_windows) {
+            const h = win.GetStdHandle(win.STD_INPUT_HANDLE);
+            var avail: u32 = 0;
+            if (win.GetNumberOfConsoleInputEvents(h, &avail) == 0 or avail == 0) return 0;
+            var recs: [64]win.INPUT_RECORD = undefined;
+            const want: u32 = @intCast(@min(recs.len, @as(usize, avail)));
+            var got: u32 = 0;
+            if (win.ReadConsoleInputW(h, &recs, want, &got) == 0) return 0;
+            var out: usize = 0;
+            var i: u32 = 0;
+            while (i < got and out < buf.len) : (i += 1) {
+                const rec = recs[i];
+                if (rec.EventType != win.KEY_EVENT or rec.KeyEvent.bKeyDown == 0) continue;
+                const ch = rec.KeyEvent.UnicodeChar;
+                if (ch == 0 or ch > 0x7f) continue; // arrows/fn/modifiers + non-ASCII
+                buf[out] = @intCast(ch);
+                out += 1;
+            }
+            return out;
+        }
+        return std.posix.read(std.posix.STDIN_FILENO, buf) catch 0;
+    }
+};
+
+/// Terminal column count; 80 on any failure.
 fn termCols() usize {
-    var ws: std.posix.winsize = undefined;
-    const rc = std.posix.system.ioctl(std.posix.STDOUT_FILENO, std.posix.T.IOCGWINSZ, @intFromPtr(&ws));
-    if (rc != 0 or ws.col == 0) return 80;
-    return ws.col;
+    return tty.cols();
 }
 
-/// Terminal row count (TIOCGWINSZ); 24 on any failure.
+/// Terminal row count; 24 on any failure.
 fn termRows() usize {
-    var ws: std.posix.winsize = undefined;
-    const rc = std.posix.system.ioctl(std.posix.STDOUT_FILENO, std.posix.T.IOCGWINSZ, @intFromPtr(&ws));
-    if (rc != 0 or ws.row == 0) return 24;
-    return ws.row;
+    return tty.rows();
 }
 
 /// Advance (rows, col) as `chunk` of plain text is printed in a `cols`-wide
@@ -3424,18 +3621,14 @@ test "advanceThinkingRows counts hard newlines and soft wraps" {
     try std.testing.expectEqual(@as(usize, 5), c2);
 }
 
-fn inputPending(fd: std.posix.fd_t) bool {
-    var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
-    const n = std.posix.poll(&fds, 50) catch return false;
-    return n > 0;
+fn inputPending() bool {
+    return tty.poll(50);
 }
 
 /// Like inputPending but with a configurable poll timeout (ms). Used by the
 /// ultracode wave to tick at a slower, calmer cadence than the 50ms default.
-fn inputPendingTimed(fd: std.posix.fd_t, timeout_ms: i32) bool {
-    var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
-    const n = std.posix.poll(&fds, timeout_ms) catch return false;
-    return n > 0;
+fn inputPendingTimed(timeout_ms: i32) bool {
+    return tty.poll(timeout_ms);
 }
 
 /// Raw RGB stops for the ultracode wave (mirrors ultracode_rainbow's hues).
@@ -3642,17 +3835,8 @@ fn readLine(
     history: *std.ArrayList([]const u8),
     buf: *std.ArrayList(u8),
 ) !?[]const u8 {
-    const fd = std.posix.STDIN_FILENO;
-    const orig = std.posix.tcgetattr(fd) catch return in.takeDelimiter('\n');
-    var raw = orig;
-    raw.lflag.ICANON = false;
-    raw.lflag.ECHO = false;
-    raw.lflag.ISIG = false;
-    raw.lflag.IEXTEN = false; // so Ctrl-V (0x16) reaches us instead of the tty's lnext "quote next char"
-    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
-    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
-    std.posix.tcsetattr(fd, .NOW, raw) catch return in.takeDelimiter('\n');
-    defer std.posix.tcsetattr(fd, .NOW, orig) catch {};
+    const raw_state = tty.enterRaw(true) orelse return in.takeDelimiter('\n');
+    defer tty.restore(raw_state);
 
     buf.clearRetainingCapacity();
     var cur: usize = 0; // cursor index within buf
@@ -3681,7 +3865,7 @@ fn readLine(
         var n: usize = 0;
         var in_esc = false;
         while (true) {
-            if (in.buffered().len == 0 and !inputPending(fd)) { // 50ms poll
+            if (in.buffered().len == 0 and !inputPending()) { // 50ms poll
                 polls += 1;
                 if (polls >= 10) break :dsr; // no reply in ~500ms: fall back
                 // to column 1 — a later reply is still adopted (CSI 'R').
@@ -3923,7 +4107,7 @@ fn readLine(
             // glides and breathes (~9fps, calm + rhythmic rather than a fast
             // flicker).
             while (std.ascii.indexOfIgnoreCase(buf.items, "ultracode") != null) {
-                if (inputPendingTimed(fd, 110)) break; // keystroke ready — read it below
+                if (inputPendingTimed(110)) break; // keystroke ready — read it below
                 g_shine_phase +%= 1;
                 redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
             }
@@ -4053,7 +4237,7 @@ fn readLine(
                 // A bare Esc (no byte follows) clears the line — without
                 // this the chord read below would block and silently eat
                 // the next keypress.
-                if (in.buffered().len == 0 and !inputPending(fd)) {
+                if (in.buffered().len == 0 and !inputPending()) {
                     buf.clearRetainingCapacity();
                     cur = 0;
                     redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
@@ -4673,6 +4857,10 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
 
+    // Windows: let the console interpret ANSI/VT escapes so the harness's
+    // color and cursor sequences render instead of printing as literal text.
+    if (builtin.os.tag == .windows) tty.enableVtOutput();
+
     // CLI flags. --yolo starts with the permission gate fully open (same as
     // typing /yolo once you're in) — skips every bash/tool/MCP approval prompt.
     var yolo_flag = false;
@@ -4793,7 +4981,7 @@ pub fn main(init: std.process.Init) !void {
     // `harness key set <provider> <key>` / `harness key list`: safe key store
     // (macOS Keychain, else a 0600 file). Exits after.
     if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "key")) {
-        const home = init.environ_map.get("HOME") orelse std.process.fatal("no HOME", .{});
+        const home = homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
         try keyCommand(io, gpa, arena, home, positionals.items[1..]);
         return;
     }
@@ -4802,7 +4990,7 @@ pub fn main(init: std.process.Init) !void {
     // codegraff (device-code flow, writes ~/.simple-harness-codegraff.json);
     // `codex` (or --refresh) runs the ChatGPT PKCE/refresh flow → ~/.codex/auth.json.
     if (login_flag) {
-        const home = init.environ_map.get("HOME") orelse std.process.fatal("no HOME", .{});
+        const home = homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
         if (kimi_login) try kimiLogin(io, gpa, arena, home) else if (codex_login or refresh_flag) try codexLogin(io, gpa, arena, home, refresh_flag) else try codegraffLogin(io, gpa, arena, home);
         return;
     }
@@ -4853,7 +5041,7 @@ pub fn main(init: std.process.Init) !void {
     // Codegraff "login": if CODEGRAFF_API_KEY isn't set, pick up a key from
     // `harness login codegraff` (~/.simple-harness-codegraff.json) or graff's
     // own store (~/forge/.credentials.json) — read-only, env always wins.
-    if (init.environ_map.get("HOME")) |home| {
+    if (homeEnv(init.environ_map)) |home| {
         for (provider_specs, &keys.values) |spec, *value| {
             if (std.mem.eql(u8, spec.id, "codegraff") and value.* == null)
                 value.* = loadCodegraffKey(io, arena, home);
@@ -4863,7 +5051,7 @@ pub fn main(init: std.process.Init) !void {
     // (written by the Codex CLI) instead of an env var — same on-disk
     // credential pattern as the codegraff key in ~/forge/.credentials.json.
     var codex_account: ?[]const u8 = null;
-    if (init.environ_map.get("HOME")) |home| {
+    if (homeEnv(init.environ_map)) |home| {
         if (loadCodexAuth(io, arena, home)) |auth| {
             for (provider_specs, &keys.values) |spec, *value| {
                 if (std.mem.eql(u8, spec.id, "codex")) value.* = auth.token;
@@ -4875,7 +5063,7 @@ pub fn main(init: std.process.Init) !void {
     // Kimi "login": OAuth device-flow token from `graff login kimi`
     // (~/.kimi/credentials/graff-oauth.json), refreshed in place when near
     // expiry. Same on-disk-credential pattern as codex/codegraff; env wins.
-    if (init.environ_map.get("HOME")) |home| {
+    if (homeEnv(init.environ_map)) |home| {
         for (provider_specs, &keys.values) |spec, *value| {
             if (std.mem.eql(u8, spec.id, "kimi") and value.* == null)
                 value.* = loadKimiOAuth(io, gpa, arena, home);
@@ -4883,7 +5071,7 @@ pub fn main(init: std.process.Init) !void {
     }
     // Stored keys (macOS Keychain / 0600 file via `harness key set`): fill any
     // provider slot still empty after env + the login loaders. env always wins.
-    if (init.environ_map.get("HOME")) |home| {
+    if (homeEnv(init.environ_map)) |home| {
         for (provider_specs, &keys.values) |spec, *value| {
             if (value.* == null) value.* = loadStoredKey(io, arena, home, spec.id);
         }
@@ -4908,7 +5096,7 @@ pub fn main(init: std.process.Init) !void {
         };
         const nm = resolveModelName(keys, mname) orelse mname;
         default_provider = keys.providerFor(nm) catch std.process.fatal("no key/login for --model '{s}' — see /models", .{mname});
-    } else if (loadModel(io, arena, init.environ_map.get("HOME") orelse "")) |saved| {
+    } else if (loadModel(io, arena, homeEnv(init.environ_map) orelse "")) |saved| {
         // No --model flag: resume the model chosen last session only if that
         // exact provider/model pair is still in the catalog; model names can be
         // shared by providers with different support.
@@ -5025,7 +5213,7 @@ pub fn main(init: std.process.Init) !void {
         init.environ_map.get("OTEL_EXPORTER_OTLP_ENDPOINT") orelse
             init.environ_map.get("GRAFF_OTEL_ENDPOINT") orelse
             default_telemetry_endpoint;
-    const telem_home = init.environ_map.get("HOME") orelse "";
+    const telem_home = homeEnv(init.environ_map) orelse "";
     var telem: Telemetry = .{
         .io = io,
         .gpa = gpa,
@@ -5176,7 +5364,7 @@ pub fn main(init: std.process.Init) !void {
         .io = io,
         .client = &client,
         .provider = default_provider,
-        .home = init.environ_map.get("HOME") orelse "",
+        .home = homeEnv(init.environ_map) orelse "",
         .messages = std.json.Array.init(arena),
         .sub = false,
         .label = "main",
@@ -5242,9 +5430,9 @@ pub fn main(init: std.process.Init) !void {
     // Input-line history (persisted to ~/.simple-harness-history) + editor buffer.
     var history: std.ArrayList([]const u8) = .empty;
     var linebuf: std.ArrayList(u8) = .empty;
-    if (init.environ_map.get("HOME")) |home| loadHistory(io, gpa, home, &history);
+    if (homeEnv(init.environ_map)) |home| loadHistory(io, gpa, home, &history);
     defer {
-        if (init.environ_map.get("HOME")) |home| saveHistory(io, arena, home, history.items);
+        if (homeEnv(init.environ_map)) |home| saveHistory(io, arena, home, history.items);
         for (history.items) |h| gpa.free(h);
         history.deinit(gpa);
         linebuf.deinit(gpa);
@@ -5994,17 +6182,8 @@ fn scoredLess(_: void, a: Scored, b: Scored) bool {
 /// Ctrl-C to cancel. Returns the chosen model_table index, or null.
 fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer) ?usize {
     const in = root.in orelse return null;
-    const fd = std.posix.STDIN_FILENO;
-    const orig = std.posix.tcgetattr(fd) catch return null;
-    var raw = orig;
-    raw.lflag.ICANON = false;
-    raw.lflag.ECHO = false;
-    raw.lflag.ISIG = false;
-    raw.lflag.IEXTEN = false;
-    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
-    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
-    std.posix.tcsetattr(fd, .NOW, raw) catch return null;
-    defer std.posix.tcsetattr(fd, .NOW, orig) catch {};
+    const raw_state = tty.enterRaw(true) orelse return null;
+    defer tty.restore(raw_state);
     out.writeAll("\x1b[?1049h") catch {}; // alternate screen
     defer {
         out.writeAll("\x1b[?1049l") catch {};
@@ -6097,17 +6276,8 @@ const PickItem = struct { name: []const u8, desc: []const u8 = "" };
 fn listPicker(root: *Agent, arena: Allocator, out: *Io.Writer, title: []const u8, items: []const PickItem) ?usize {
     const in = root.in orelse return null;
     if (items.len == 0) return null;
-    const fd = std.posix.STDIN_FILENO;
-    const orig = std.posix.tcgetattr(fd) catch return null;
-    var raw = orig;
-    raw.lflag.ICANON = false;
-    raw.lflag.ECHO = false;
-    raw.lflag.ISIG = false;
-    raw.lflag.IEXTEN = false;
-    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
-    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
-    std.posix.tcsetattr(fd, .NOW, raw) catch return null;
-    defer std.posix.tcsetattr(fd, .NOW, orig) catch {};
+    const raw_state = tty.enterRaw(true) orelse return null;
+    defer tty.restore(raw_state);
     out.writeAll("\x1b[?1049h") catch {}; // alternate screen
     defer {
         out.writeAll("\x1b[?1049l") catch {};
@@ -8519,6 +8689,17 @@ fn loadCodegraffKey(io: Io, arena: Allocator, home: []const u8) ?[]const u8 {
 const keychain_service = "simple-harness";
 const keys_file = ".simple-harness-keys.json";
 
+/// User home directory env value: $HOME, or %USERPROFILE% on Windows (which has
+/// no HOME). Key storage, sessions, history, login credentials, and saved model
+/// all hang off this, so the Windows fallback is what makes them work there.
+fn homeEnv(env: anytype) ?[]const u8 {
+    if (env.get("HOME")) |h| return h;
+    if (builtin.os.tag == .windows) {
+        if (env.get("USERPROFILE")) |h| return h;
+    }
+    return null;
+}
+
 fn storeKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider: []const u8, key: []const u8) bool {
     if (builtin.os.tag == .macos) {
         var child = std.process.spawn(io, .{
@@ -9475,7 +9656,7 @@ const Agent = struct {
             // the join (see esc_cancel). Subagents notice the flag mid-flight;
             // the root aborts the turn at its next runTurn iteration.
             const esc_watch = !self.sub and self.in != null and use_color and !json_mode;
-            var esc_tio: ?std.posix.termios = null;
+            var esc_tio: ?tty.RawState = null;
             var esc_fut: ?Io.Future(void) = null;
             if (esc_watch) if (rawNonblockStdin()) |tio| {
                 esc_tio = tio;
@@ -9486,7 +9667,7 @@ const Agent = struct {
                 esc_watch_done.store(true, .release);
                 if (esc_fut) |*f| f.await(self.io);
                 drainStdin();
-                std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, tio) catch {};
+                tty.restore(tio);
             };
             // Join ALL futures before any fallible work: an early error
             // return would otherwise free the futures while pool tasks are
@@ -10241,11 +10422,11 @@ const Agent = struct {
         // bytes are drained before canonical mode returns, so gate prompts
         // and the line editor see a clean tty.
         const watch_esc = !self.sub and self.in != null and use_color and !json_mode;
-        var orig_tio: ?std.posix.termios = null;
+        var orig_tio: ?tty.RawState = null;
         if (watch_esc) orig_tio = rawNonblockStdin();
         defer if (orig_tio) |o| {
             _ = drainSteerStdin(true);
-            std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, o) catch {};
+            tty.restore(o);
         };
         var req = try self.client.request(.POST, try std.Uri.parse(provider.url), .{
             .redirect_behavior = .unhandled,
@@ -10425,9 +10606,7 @@ const Agent = struct {
 
     fn escWatchTask() void {
         while (!esc_watch_done.load(.acquire)) {
-            var fds = [_]std.posix.pollfd{.{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 }};
-            const n = std.posix.poll(&fds, 100) catch return;
-            if (n > 0 and escPressed(false)) {
+            if (tty.poll(100) and escPressed(false)) {
                 esc_cancel.store(true, .release);
                 return;
             }
@@ -10445,7 +10624,7 @@ const Agent = struct {
     /// force-interrupts the current turn so the queue drains immediately.
     fn escPressed(echo: bool) bool {
         var buf: [64]u8 = undefined;
-        const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return false;
+        const n = tty.readStdin(&buf);
         var esc_found = false;
         var i: usize = 0;
         while (i < n) : (i += 1) {
@@ -10527,9 +10706,7 @@ const Agent = struct {
     fn drainSteerStdin(echo: bool) bool {
         var esc_found = false;
         while (true) {
-            var fds = [_]std.posix.pollfd{.{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 }};
-            const n = std.posix.poll(&fds, 0) catch return esc_found;
-            if (n <= 0 or (fds[0].revents & std.posix.POLL.IN) == 0) return esc_found;
+            if (!tty.poll(0)) return esc_found;
             if (escPressed(echo)) esc_found = true;
         }
     }
@@ -10540,24 +10717,16 @@ const Agent = struct {
 
     /// Put stdin into raw non-blocking no-echo mode (VMIN=0) for Esc
     /// watching. Returns the termios to restore, or null off-tty.
-    fn rawNonblockStdin() ?std.posix.termios {
-        const fd = std.posix.STDIN_FILENO;
-        const orig = std.posix.tcgetattr(fd) catch return null;
-        var traw = orig;
-        traw.lflag.ICANON = false;
-        traw.lflag.ECHO = false;
-        traw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
-        traw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
-        std.posix.tcsetattr(fd, .NOW, traw) catch return null;
-        return orig;
+    fn rawNonblockStdin() ?tty.RawState {
+        return tty.enterRaw(false);
     }
 
     /// Sleep `ms` watching stdin for Esc (when the root is on a TTY), so the
     /// user can cancel a retry backoff instead of waiting it out.
     fn sleepInterruptible(self: *Agent, ms: u64) error{Interrupted}!void {
         const watch = !self.sub and self.in != null and use_color and !json_mode;
-        const orig_tio: ?std.posix.termios = if (watch) rawNonblockStdin() else null;
-        defer if (orig_tio) |o| std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, o) catch {};
+        const orig_tio: ?tty.RawState = if (watch) rawNonblockStdin() else null;
+        defer if (orig_tio) |o| tty.restore(o);
         var left = ms;
         while (left > 0) {
             const chunk = @min(left, 100);
