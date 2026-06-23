@@ -3380,6 +3380,50 @@ fn termCols() usize {
     return ws.col;
 }
 
+/// Terminal row count (TIOCGWINSZ); 24 on any failure.
+fn termRows() usize {
+    var ws: std.posix.winsize = undefined;
+    const rc = std.posix.system.ioctl(std.posix.STDOUT_FILENO, std.posix.T.IOCGWINSZ, @intFromPtr(&ws));
+    if (rc != 0 or ws.row == 0) return 24;
+    return ws.row;
+}
+
+/// Advance (rows, col) as `chunk` of plain text is printed in a `cols`-wide
+/// terminal: hard newlines and soft wraps each start a new row, and UTF-8
+/// continuation bytes share a glyph cell so they do not advance the column.
+/// Sizes the live "Thinking" block so it can be collapsed in place (#75).
+fn advanceThinkingRows(rows: *usize, col: *usize, cols: usize, chunk: []const u8) void {
+    for (chunk) |b| {
+        if (b == '\n') {
+            rows.* += 1;
+            col.* = 0;
+            continue;
+        }
+        if (b & 0xC0 == 0x80) continue; // UTF-8 continuation byte
+        col.* += 1;
+        if (cols != 0 and col.* >= cols) {
+            rows.* += 1;
+            col.* = 0;
+        }
+    }
+}
+
+test "advanceThinkingRows counts hard newlines and soft wraps" {
+    var rows: usize = 1;
+    var col: usize = 0;
+    advanceThinkingRows(&rows, &col, 80, "hello");
+    try std.testing.expectEqual(@as(usize, 1), rows);
+    try std.testing.expectEqual(@as(usize, 5), col);
+    advanceThinkingRows(&rows, &col, 80, "\nworld\n");
+    try std.testing.expectEqual(@as(usize, 3), rows);
+    try std.testing.expectEqual(@as(usize, 0), col);
+    var r2: usize = 1;
+    var c2: usize = 0;
+    advanceThinkingRows(&r2, &c2, 10, "0123456789012345678901234");
+    try std.testing.expectEqual(@as(usize, 3), r2);
+    try std.testing.expectEqual(@as(usize, 5), c2);
+}
+
 fn inputPending(fd: std.posix.fd_t) bool {
     var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
     const n = std.posix.poll(&fds, 50) catch return false;
@@ -8787,6 +8831,9 @@ const Agent = struct {
     stream_quiet: bool = false, // suppress live streaming (compaction summary)
     streamed_text: bool = false, // the last request printed its text live
     thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
+    thinking_rows: usize = 0, // on-screen rows the live Thinking block spans (#75 collapse)
+    thinking_col: usize = 0, // running column within the block, for soft-wrap counting
+    thinking_overflow: bool = false, // block scrolled past the screen -> don't erase on collapse
     ai_title_done: bool = false, // the one-time AI tab-title call has run this session
     arg_live: ArgLive = .{}, // live attempt_completion/ask_user argument text
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
@@ -10118,27 +10165,40 @@ const Agent = struct {
 
     /// Stream a chunk of the model's reasoning into a live, dimmed "Thinking"
     /// block in the terminal, opening the block (and handing the line off from
-    /// the spinner) on the first chunk. Gated by /thinking; when off the block
-    /// is never opened and the spinner stands in for it. Append-only: reasoning
-    /// is shown as it arrives rather than retro-collapsing a printed block.
+    /// the spinner) on the first chunk. Gated by /thinking; when off the block is
+    /// never opened and the spinner stands in for it. We track the block's
+    /// on-screen height as it streams so closeThinkingBlock can collapse it to a
+    /// one-line summary when the answer starts (#75).
     fn streamThinking(self: *Agent, chunk: []const u8) void {
         const w = self.out orelse return;
         if (!self.thinking_open) {
             self.spinnerStop();
             w.print("{s}Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
             self.thinking_open = true;
+            self.thinking_rows = 1; // the header newline already moved us down one line
+            self.thinking_col = 0;
+            self.thinking_overflow = false;
         }
         w.writeAll(chunk) catch return;
         w.flush() catch return;
+        advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), chunk);
+        if (self.thinking_rows + 1 >= termRows()) self.thinking_overflow = true;
     }
 
-    /// Close an open "Thinking" block before normal output (or at stream end).
+    /// Close an open "Thinking" block. If it still fits on screen, collapse it in
+    /// place to a one-line "Thought" summary (#75); if it has scrolled off
+    /// (overflow) leave the reasoning and just append the summary, so we never
+    /// erase the user's earlier output. Runs on the reasoning->answer transition
+    /// and at stream end.
     fn closeThinkingBlock(self: *Agent) void {
         if (!self.thinking_open) return;
         self.thinking_open = false;
         const w = self.out orelse return;
-        w.writeAll(style.reset) catch return;
-        w.writeAll("\n\n") catch return;
+        if (!self.thinking_overflow and self.thinking_rows >= 1 and use_color) {
+            w.print("\x1b[{d}F\x1b[0J{s}✓ Thought{s}\n\n", .{ self.thinking_rows, style.dim, style.reset }) catch return;
+        } else {
+            w.print("{s}\n{s}✓ Thought{s}\n\n", .{ style.reset, style.dim, style.reset }) catch return;
+        }
         w.flush() catch return;
     }
 
@@ -10146,6 +10206,9 @@ const Agent = struct {
         self.spinnerStart();
         defer self.spinnerStop();
         self.thinking_open = false; // fresh "Thinking" block state per request
+        self.thinking_rows = 0;
+        self.thinking_col = 0;
+        self.thinking_overflow = false;
         defer self.closeThinkingBlock(); // close a reasoning-only turn's block
         const gpa = self.gpa;
         const provider = self.provider;
