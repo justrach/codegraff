@@ -14,6 +14,7 @@ const HEADER_CLASS =
   "flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1.5";
 const LABEL_CLASS = "text-[11px] font-medium text-muted-foreground";
 const CODE_CLASS = "m-0 overflow-x-auto px-3 py-3 text-xs leading-relaxed";
+const HIGHLIGHT_CHAR_LIMIT = 50_000;
 
 interface CodeBlockProps {
   value: string;
@@ -24,13 +25,19 @@ interface CodeBlockProps {
 // in a monospace font (see the --font-* theme), so unhighlighted text still
 // reads as code; the token spans add color via the `.sh-*` classes in index.css.
 export function CodeBlock({ value, lang }: CodeBlockProps) {
-  const tokens = useMemo(() => tokenizeCode(value), [value]);
+  const shouldHighlight = value.length <= HIGHLIGHT_CHAR_LIMIT;
+  const tokens = useMemo(
+    () => (shouldHighlight ? tokenizeCode(value) : []),
+    [shouldHighlight, value],
+  );
   const { copied, copy } = useCopyToClipboard();
 
   return (
     <div className={CARD_CLASS}>
       <div className={HEADER_CLASS}>
-        <span className={LABEL_CLASS}>{lang ?? "code"}</span>
+        <span className={LABEL_CLASS}>
+          {lang ?? "code"}{shouldHighlight ? "" : " · plain"}
+        </span>
         <Button
           variant="ghost"
           size="xs"
@@ -44,16 +51,18 @@ export function CodeBlock({ value, lang }: CodeBlockProps) {
         </Button>
       </div>
       <pre className={CODE_CLASS} data-lang={lang ?? undefined}>
-        {tokens.map((token, index) => {
-          if (token.className === "sh-break" || token.className === "sh-space") {
-            return <Fragment key={index}>{token.value}</Fragment>;
-          }
-          return (
-            <span key={index} className={token.className}>
-              {token.value}
-            </span>
-          );
-        })}
+        {shouldHighlight
+          ? tokens.map((token, index) => {
+              if (token.className === "sh-break" || token.className === "sh-space") {
+                return <Fragment key={index}>{token.value}</Fragment>;
+              }
+              return (
+                <span key={index} className={token.className}>
+                  {token.value}
+                </span>
+              );
+            })
+          : value}
       </pre>
     </div>
   );

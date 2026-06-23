@@ -1,4 +1,4 @@
-import { Fragment, useMemo } from "react";
+import { Fragment, useMemo, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 
 import { cn } from "@/utils/cn";
@@ -16,6 +16,7 @@ import { dropRedundantCodeHeadings, parseMarkdown } from "./parser";
 import type { MdBlock, MdInline, MdListItem, TableAlign } from "./types";
 
 const headingClassName = cn("m-0 font-medium text-current", CHAT_BODY_TEXT_CLASS);
+const RICH_MARKDOWN_CHAR_LIMIT = 80_000;
 
 interface MarkdownRendererProps {
   text: string;
@@ -23,7 +24,32 @@ interface MarkdownRendererProps {
 }
 
 export function MarkdownRenderer({ text, workspacePath }: MarkdownRendererProps) {
-  const blocks = useMemo(() => dropRedundantCodeHeadings(parseMarkdown(text)), [text]);
+  const [forceRich, setForceRich] = useState(false);
+  const shouldRenderPlain = text.length > RICH_MARKDOWN_CHAR_LIMIT && !forceRich;
+  const blocks = useMemo(
+    () => (shouldRenderPlain ? [] : dropRedundantCodeHeadings(parseMarkdown(text))),
+    [shouldRenderPlain, text],
+  );
+
+  if (shouldRenderPlain) {
+    return (
+      <div className="space-y-3">
+        <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+          Large response shown as plain text to keep the UI responsive.
+          <button
+            type="button"
+            className="ml-2 font-medium text-[color:var(--accent)] hover:underline"
+            onClick={() => setForceRich(true)}
+          >
+            Render rich markdown
+          </button>
+        </div>
+        <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-foreground">
+          {text}
+        </pre>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3 [&_ol]:ml-5 [&_ol]:list-decimal [&_ul]:ml-5 [&_ul]:list-disc">

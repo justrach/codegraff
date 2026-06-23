@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { parsePatch } from "../parse";
 import type { FileDiff } from "../types";
@@ -17,6 +17,9 @@ export interface PatchDiffProps {
   className?: string;
   options?: PatchDiffOptions;
 }
+
+const LARGE_PATCH_CHAR_LIMIT = 200_000;
+const WORD_DIFF_CHAR_LIMIT = 60_000;
 
 function FileHeader({ file }: { file: FileDiff }): ReactNode {
   const tag = file.isNew
@@ -39,18 +42,39 @@ function FileHeader({ file }: { file: FileDiff }): ReactNode {
 }
 
 export function PatchDiff({ patch, className, options }: PatchDiffProps) {
-  const parsed = useMemo(() => parsePatch(patch), [patch]);
+  const [forceFullDiff, setForceFullDiff] = useState(false);
+  const isLargePatch = patch.length > LARGE_PATCH_CHAR_LIMIT;
+  const shouldRenderSummary = isLargePatch && !forceFullDiff;
+  const parsed = useMemo(
+    () => (shouldRenderSummary ? null : parsePatch(patch)),
+    [patch, shouldRenderSummary],
+  );
   const showFileHeader = options?.showFileHeader ?? true;
   const lineDiffType = options?.lineDiffType ?? "word";
+  const effectiveLineDiffType =
+    patch.length > WORD_DIFF_CHAR_LIMIT && lineDiffType === "word" ? "none" : lineDiffType;
 
   const rootClassName = className != null ? `cgd-root ${className}` : "cgd-root";
 
+  if (shouldRenderSummary) {
+    return (
+      <div className={rootClassName}>
+        <div className="cgd-empty">
+          Large diff hidden to keep the UI responsive ({patch.length.toLocaleString()} chars).
+          <button type="button" onClick={() => setForceFullDiff(true)}>
+            Render full diff
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={rootClassName}>
-      {parsed.files.map((file, index) => (
+      {parsed!.files.map((file, index) => (
         <div key={`${file.path}-${index}`} className="cgd-file">
           {showFileHeader ? <FileHeader file={file} /> : null}
-          <DiffBody file={file} lineDiffType={lineDiffType} />
+          <DiffBody file={file} lineDiffType={effectiveLineDiffType} />
         </div>
       ))}
     </div>
