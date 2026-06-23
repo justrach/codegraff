@@ -49,6 +49,11 @@ const Conversation = struct {
     goal: ?[]const u8 = null,
     updated_at: i64 = 0,
     followup: ?Followup = null,
+    session_provider: ?[]const u8 = null,
+    session_model: ?[]const u8 = null,
+    session_strict: bool = false,
+    session_ultracode_mode: bool = false,
+    cli_messages_json: ?[]const u8 = null,
 };
 
 const FollowupOption = struct {
@@ -1535,9 +1540,10 @@ pub const Runtime = struct {
         const io = mer_runtime.io;
         const bin = self.codegraffBinary();
         self.ensurePromptSettingsLoaded();
-        const model = self.selectedModelLocked();
-        const provider = self.selectedProviderLocked();
-        const effort = self.selectedEffortFor(provider, model);
+        const prompt_selection = self.turnPromptSelectionLocked(conversation_id);
+        const model = prompt_selection.model;
+        const provider = prompt_selection.provider;
+        const effort = prompt_selection.effort;
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.append(self.allocator, "/usr/bin/env");
         try argv.append(self.allocator, try std.fmt.allocPrint(self.allocator, "HOME={s}", .{homeDir()}));
@@ -1576,7 +1582,7 @@ pub const Runtime = struct {
         var cw = child.stdin.?.writerStreaming(io, &wbuf);
         var req_buf: std.Io.Writer.Allocating = .init(self.allocator);
         defer req_buf.deinit();
-        if (provider) |p| if (model) |m| {
+        if (prompt_selection.send_model_control) if (provider) |p| if (model) |m| {
             if (p.len > 0 and m.len > 0 and !std.mem.eql(u8, m, "default")) {
                 try req_buf.writer.writeAll("{\"type\":\"set_model\",\"name\":");
                 try writeString(&req_buf.writer, self.fmt("{s}/{s}", .{ p, m }));
@@ -2187,6 +2193,30 @@ pub const Runtime = struct {
         return null;
     }
 
+    fn turnPromptSelectionLocked(self: *Runtime, conversation_id: []const u8) TurnPromptSelection {
+        self.mutex.lockUncancelable(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        const conv = self.conversations.get(conversation_id);
+        const session_provider = if (conv) |c| c.session_provider else null;
+        const session_model = if (conv) |c| c.session_model else null;
+        if (session_provider != null or session_model != null) {
+            const provider = session_provider orelse self.settings.selected_provider;
+            const model = session_model orelse self.settings.selected_model;
+            return .{
+                .provider = provider,
+                .model = model,
+                .effort = effectiveReasoningEffort(provider, model, self.settings.selected_effort),
+                .send_model_control = false,
+            };
+        }
+        return .{
+            .provider = self.settings.selected_provider,
+            .model = self.settings.selected_model,
+            .effort = effectiveReasoningEffort(self.settings.selected_provider, self.settings.selected_model, self.settings.selected_effort),
+            .send_model_control = true,
+        };
+    }
+
     fn selectedModelLocked(self: *Runtime) ?[]const u8 {
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
@@ -2366,11 +2396,24 @@ pub const Runtime = struct {
         conv.title = self.dupe(initial_title);
         conv.updated_at = intField(parsed, "updated_ms", conv.updated_at);
         conv.goal = if (stringField(parsed, "goal")) |goal| (if (goal.len > 0) self.dupe(goal) else null) else null;
+        conv.session_provider = if (stringField(parsed, "provider")) |provider| self.dupe(provider) else conv.session_provider;
+        conv.session_model = if (stringField(parsed, "model")) |model| self.dupe(model) else conv.session_model;
+        conv.session_strict = boolField(parsed, "strict") orelse conv.session_strict;
+        conv.session_ultracode_mode = boolField(parsed, "ultracode_mode") orelse conv.session_ultracode_mode;
+        if (parsed.object.get("messages")) |messages_value| {
+            conv.cli_messages_json = self.valueJson(messages_value) catch null;
+        }
 
         if (conv.active_request_ids.items.len > 0) return;
         conv.messages.clearRetainingCapacity();
         var first_user_title: ?[]const u8 = null;
-        if (arrayField(parsed, "messages")) |messages| {
+        if (arrayField(parsed, "guiMessages")) |gui_messages| {
+            for (gui_messages.items, 0..) |message, idx| {
+                if (self.importGuiMessageLocked(conv, message, idx)) |user_title| {
+                    if (first_user_title == null) first_user_title = user_title;
+                }
+            }
+        } else if (arrayField(parsed, "messages")) |messages| {
             for (messages.items, 0..) |message, idx| {
                 if (message != .object) continue;
                 const role = stringField(message, "role") orelse continue;
@@ -2408,11 +2451,84 @@ pub const Runtime = struct {
                 }
             }
         }
+        if (objectField(parsed, "followup")) |followup| {
+            conv.followup = self.importFollowupLocked(conv, followup);
+        } else conv.followup = null;
         if (title_needs_prompt and first_user_title != null) {
             conv.title = first_user_title.?;
             self.renameManagedChatWorkspaceLocked(workspace_path, conv.title);
             self.writeConversationSessionFileLocked(conv);
         }
+    }
+
+    fn importGuiMessageLocked(self: *Runtime, conv: *Conversation, value: Value, idx: usize) ?[]const u8 {
+        if (value != .object) return null;
+        const kind_name = stringField(value, "kind") orelse return null;
+        const kind = messageKindFromString(kind_name) orelse return null;
+        const rid = if (stringField(value, "requestId")) |request_id| self.dupe(request_id) else self.fmt("{s}-loaded-{d}", .{ conv.conversation_id, idx });
+        const id = if (stringField(value, "id")) |message_id| self.dupe(message_id) else self.fmt("{s}-{s}", .{ rid, kind_name });
+        var message = Message{
+            .kind = kind,
+            .id = id,
+            .request_id = rid,
+        };
+        switch (kind) {
+            .user, .context_compacted, .assistant, .reasoning => {
+                message.text = if (stringField(value, "text")) |text| self.dupe(text) else "";
+            },
+            .tool_start => {
+                message.name = if (stringField(value, "name")) |name| self.dupe(name) else "tool";
+                message.call_id = if (stringField(value, "callId")) |call_id| self.dupe(call_id) else null;
+                message.question = if (stringField(value, "question")) |question| self.dupe(question) else "";
+                if (objectField(value, "detail")) |detail| message.tool_detail_json = self.valueJson(detail) catch null;
+            },
+            .tool_end => {
+                message.name = if (stringField(value, "name")) |name| self.dupe(name) else "tool";
+                message.call_id = if (stringField(value, "callId")) |call_id| self.dupe(call_id) else null;
+                message.summary = if (stringField(value, "summary")) |summary| self.dupe(summary) else null;
+                message.is_error = boolField(value, "isError") orelse false;
+                message.text = if (stringField(value, "text")) |text| self.dupe(text) else "";
+                if (objectField(value, "detail")) |detail| message.result_detail_json = self.valueJson(detail) catch null;
+            },
+            .@"error" => {
+                message.error_message = if (stringField(value, "message")) |msg| self.dupe(msg) else "";
+            },
+        }
+        conv.messages.append(self.arena, message) catch return null;
+        if (kind == .user and message.text.len > 0) return titleFromPrompt(self.arena, message.text);
+        return null;
+    }
+
+    fn importFollowupLocked(self: *Runtime, conv: *Conversation, value: Value) ?Followup {
+        if (value != .object) return null;
+        const followup_id = stringField(value, "followupId") orelse return null;
+        const question = stringField(value, "question") orelse "";
+        var options: std.ArrayList(FollowupOption) = .empty;
+        if (arrayField(value, "options")) |raw_options| {
+            for (raw_options.items) |item| {
+                if (item != .object) continue;
+                const id = stringField(item, "id") orelse continue;
+                const label = stringField(item, "label") orelse continue;
+                options.append(self.arena, .{ .id = self.dupe(id), .label = self.dupe(label) }) catch {};
+            }
+        }
+        return .{
+            .followup_id = self.dupe(followup_id),
+            .workspace_path = self.dupe(stringField(value, "workspacePath") orelse conv.workspace_path),
+            .conversation_id = conv.conversation_id,
+            .request_id = self.dupe(stringField(value, "requestId") orelse ""),
+            .kind = self.dupe(stringField(value, "kind") orelse "text"),
+            .question = self.dupe(question),
+            .options = options.toOwnedSlice(self.arena) catch &.{},
+            .call_id = if (stringField(value, "callId")) |call_id| self.dupe(call_id) else self.dupe(followup_id),
+        };
+    }
+
+    fn valueJson(self: *Runtime, value: Value) ![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(self.arena);
+        var s: std.json.Stringify = .{ .writer = &out.writer };
+        try s.write(value);
+        return out.written();
     }
 
     fn refreshWorkspaceSessionsLocked(self: *Runtime) void {
@@ -2479,6 +2595,24 @@ pub const Runtime = struct {
         self.writeConversationSessionFileLocked(conv);
     }
 
+    fn refreshCanonicalSessionEnvelopeLocked(self: *Runtime, conv: *Conversation) void {
+        if (conv.session_name.len == 0 or std.mem.indexOfAny(u8, conv.session_name, "/\\") != null) return;
+        const path = sessionFilePath(self.allocator, conv.workspace_path, conv.session_name) catch return;
+        defer self.allocator.free(path);
+        var tmp = std.heap.ArenaAllocator.init(self.allocator);
+        defer tmp.deinit();
+        const data = std.Io.Dir.cwd().readFileAlloc(mer_runtime.io, path, tmp.allocator(), .limited(8 * 1024 * 1024)) catch return;
+        const parsed = std.json.parseFromSliceLeaky(Value, tmp.allocator(), data, .{ .allocate = .alloc_always }) catch return;
+        if (parsed != .object) return;
+        if (stringField(parsed, "provider")) |provider| conv.session_provider = self.dupe(provider);
+        if (stringField(parsed, "model")) |model| conv.session_model = self.dupe(model);
+        conv.session_strict = boolField(parsed, "strict") orelse conv.session_strict;
+        conv.session_ultracode_mode = boolField(parsed, "ultracode_mode") orelse conv.session_ultracode_mode;
+        const messages_value = parsed.object.get("messages") orelse return;
+        if (messages_value != .array) return;
+        conv.cli_messages_json = self.valueJson(messages_value) catch conv.cli_messages_json;
+    }
+
     fn writeConversationSessionFileLocked(self: *Runtime, conv: *Conversation) void {
         if (conv.session_name.len == 0 or std.mem.indexOfAny(u8, conv.session_name, "/\\") != null) return;
         ensureDirectory(self.allocator, conv.workspace_path) catch {};
@@ -2498,32 +2632,46 @@ pub const Runtime = struct {
         defer out.deinit();
         const w = &out.writer;
         try w.writeAll("{\"provider\":");
-        try writeString(w, provider);
+        try writeString(w, conv.session_provider orelse provider);
         try w.writeAll(",\"model\":");
-        try writeString(w, model);
-        try w.writeAll(",\"strict\":false,\"ultracode_mode\":false,\"goal\":");
+        try writeString(w, conv.session_model orelse model);
+        try w.writeAll(",\"strict\":");
+        try w.writeAll(if (conv.session_strict) "true" else "false");
+        try w.writeAll(",\"ultracode_mode\":");
+        try w.writeAll(if (conv.session_ultracode_mode) "true" else "false");
+        try w.writeAll(",\"goal\":");
         try writeNullableString(w, conv.goal);
         try w.writeAll(",\"title\":");
         try writeString(w, conv.title);
         try w.writeAll(",\"updated_ms\":");
         try w.print("{d}", .{if (conv.updated_at > 0) conv.updated_at else nowMillis()});
-        try w.writeAll(",\"messages\":[");
-        var first = true;
-        for (conv.messages.items) |message| {
-            const role: []const u8 = switch (message.kind) {
-                .user => "user",
-                .assistant => "assistant",
-                else => continue,
-            };
-            if (!first) try w.writeByte(',');
-            first = false;
-            try w.writeAll("{\"role\":");
-            try writeString(w, role);
-            try w.writeAll(",\"content\":");
-            try writeString(w, message.text);
-            try w.writeAll("}");
+        try w.writeAll(",\"messages\":");
+        if (conv.cli_messages_json) |messages_json| {
+            try w.writeAll(messages_json);
+        } else {
+            try w.writeByte('[');
+            var first = true;
+            for (conv.messages.items) |message| {
+                const role: []const u8 = switch (message.kind) {
+                    .user => "user",
+                    .assistant => "assistant",
+                    else => continue,
+                };
+                if (!first) try w.writeByte(',');
+                first = false;
+                try w.writeAll("{\"role\":");
+                try writeString(w, role);
+                try w.writeAll(",\"content\":");
+                try writeString(w, message.text);
+                try w.writeAll("}");
+            }
+            try w.writeByte(']');
         }
-        try w.writeAll("]}");
+        try w.writeAll(",\"guiMessages\":");
+        try self.writeMessages(w, conv.messages.items);
+        try w.writeAll(",\"followup\":");
+        try self.writeFollowup(w, conv.followup);
+        try w.writeAll("}");
         return try self.allocator.dupe(u8, out.written());
     }
 
@@ -2622,6 +2770,7 @@ fn graffTurnThread(self: *Runtime, conversation_id: []const u8, request_id: []co
         const was_active = self.requestActiveLocked(conversation_id, request_id);
         removeString(&conv.active_request_ids, request_id);
         conv.followup = null;
+        self.refreshCanonicalSessionEnvelopeLocked(conv);
         self.writeConversationSessionFileLocked(conv);
         if (was_active) self.emitRequestEventLocked("request-finished", conv, request_id);
     }
@@ -2815,6 +2964,13 @@ fn writeAnswerLine(child: *std.process.Child, line: []const u8) !void {
 const PromptSelection = struct {
     provider: ?[]const u8,
     model: ?[]const u8,
+};
+
+const TurnPromptSelection = struct {
+    provider: ?[]const u8,
+    model: ?[]const u8,
+    effort: ?[]const u8,
+    send_model_control: bool,
 };
 
 fn schemaValue(alloc: std.mem.Allocator, graff_bin: []const u8) !Value {
@@ -3467,6 +3623,13 @@ fn removeMcpServerFromConfig(alloc: std.mem.Allocator, workspace: []const u8, na
     try std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = out.written() });
 }
 
+fn messageKindFromString(value: []const u8) ?Message.Kind {
+    inline for (.{ "user", "context_compacted", "assistant", "reasoning", "tool_start", "tool_end", "error" }) |name| {
+        if (std.mem.eql(u8, value, name)) return std.meta.stringToEnum(Message.Kind, name).?;
+    }
+    return null;
+}
+
 fn isGuiChatSessionName(value: []const u8) bool {
     if (!std.mem.startsWith(u8, value, "chat-")) return false;
     const suffix = value["chat-".len..];
@@ -4116,6 +4279,106 @@ test "conversationSessionJsonLocked writes CLI-readable session JSON" {
     try std.testing.expectEqualStrings("persist me", stringField(messages.items[0], "content").?);
     try std.testing.expectEqualStrings("assistant", stringField(messages.items[1], "role").?);
     try std.testing.expectEqualStrings("persisted", stringField(messages.items[1], "content").?);
+}
+
+test "turnPromptSelectionLocked does not set_model for imported CLI sessions" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    rt.settings.selected_provider = "codegraff";
+    rt.settings.selected_model = "deepseek-v4-pro";
+    const conv = rt.createConversationLocked("/tmp/codegraff-gui-turn-selection", "chat-3333333333333333", "Imported");
+    conv.session_provider = "codex";
+    conv.session_model = "gpt-5";
+
+    const selection = rt.turnPromptSelectionLocked(conv.conversation_id);
+    try std.testing.expectEqualStrings("codex", selection.provider.?);
+    try std.testing.expectEqualStrings("gpt-5", selection.model.?);
+    try std.testing.expect(!selection.send_model_control);
+}
+
+test "conversationSessionJsonLocked preserves imported CLI-native messages" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const data =
+        \\{"provider":"codex","model":"gpt-5","strict":true,"ultracode_mode":true,"title":"Native","messages":[
+        \\{"role":"user","content":"inspect"},
+        \\{"role":"assistant","content":[{"type":"text","text":"I will read"},{"type":"tool_use","id":"call-1","name":"read_file","input":{"path":"src/main.zig"}}]},
+        \\{"role":"tool","tool_call_id":"call-1","content":"file contents"}
+        \\]}
+    ;
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const parsed = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), data, .{ .allocate = .alloc_always });
+
+    const workspace = "/tmp/codegraff-gui-native-preserve";
+    rt.importSessionValueLocked(workspace, "native", parsed, tmp.allocator());
+    const cid = rt.conversationIdForSession(workspace, "native");
+    const conv = rt.conversations.get(cid) orelse return error.TestExpectedEqual;
+    conv.messages.append(rt.arena, .{ .kind = .tool_start, .id = "gui-tool", .request_id = "r", .name = "read_file", .call_id = "call-1", .tool_detail_json = "{\"kind\":\"file_read\",\"path\":\"src/main.zig\",\"startLine\":null,\"endLine\":null}" }) catch {};
+
+    const written = try rt.conversationSessionJsonLocked(conv, "codegraff", "deepseek-v4-pro");
+    defer rt.allocator.free(written);
+    var check_tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer check_tmp.deinit();
+    const saved = try std.json.parseFromSliceLeaky(Value, check_tmp.allocator(), written, .{ .allocate = .alloc_always });
+    try std.testing.expectEqualStrings("codex", stringField(saved, "provider").?);
+    try std.testing.expectEqualStrings("gpt-5", stringField(saved, "model").?);
+    try std.testing.expect(boolField(saved, "strict").?);
+    try std.testing.expect(boolField(saved, "ultracode_mode").?);
+    const messages = arrayField(saved, "messages").?;
+    try std.testing.expectEqual(@as(usize, 3), messages.items.len);
+    try std.testing.expectEqualStrings("tool", stringField(messages.items[2], "role").?);
+    try std.testing.expectEqualStrings("call-1", stringField(messages.items[2], "tool_call_id").?);
+    const gui_messages = arrayField(saved, "guiMessages").?;
+    try std.testing.expect(gui_messages.items.len >= 1);
+}
+
+test "conversationSessionJsonLocked round-trips rich GUI messages" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const workspace = "/tmp/codegraff-gui-rich-session";
+    const conv = rt.createConversationLocked(workspace, "chat-1111111111111111", "Rich chat");
+    conv.updated_at = 456;
+    conv.goal = "preserve display state";
+    conv.messages.append(rt.arena, .{ .kind = .user, .id = "u", .request_id = "r", .text = "inspect" }) catch {};
+    conv.messages.append(rt.arena, .{ .kind = .reasoning, .id = "reason", .request_id = "r", .text = "thinking" }) catch {};
+    conv.messages.append(rt.arena, .{ .kind = .tool_start, .id = "ts", .request_id = "r", .name = "read_file", .call_id = "call-1", .tool_detail_json = "{\"kind\":\"file_read\",\"path\":\"src/main.zig\",\"startLine\":null,\"endLine\":null}" }) catch {};
+    conv.messages.append(rt.arena, .{ .kind = .tool_end, .id = "te", .request_id = "r", .name = "read_file", .call_id = "call-1", .summary = "read file", .is_error = false, .result_detail_json = "{\"kind\":\"text\",\"text\":\"contents\"}" }) catch {};
+    conv.messages.append(rt.arena, .{ .kind = .@"error", .id = "err", .request_id = "r", .error_message = "boom" }) catch {};
+
+    const data = try rt.conversationSessionJsonLocked(conv, "codegraff", "deepseek-v4-pro");
+    defer rt.allocator.free(data);
+
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const parsed = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), data, .{ .allocate = .alloc_always });
+    const cli_messages = arrayField(parsed, "messages").?;
+    try std.testing.expectEqual(@as(usize, 1), cli_messages.items.len);
+    const gui_messages = arrayField(parsed, "guiMessages").?;
+    try std.testing.expectEqual(@as(usize, 5), gui_messages.items.len);
+    try std.testing.expectEqualStrings("reasoning", stringField(gui_messages.items[1], "kind").?);
+    try std.testing.expectEqualStrings("tool_start", stringField(gui_messages.items[2], "kind").?);
+    try std.testing.expectEqualStrings("call-1", stringField(gui_messages.items[2], "callId").?);
+    try std.testing.expectEqualStrings("tool_end", stringField(gui_messages.items[3], "kind").?);
+    try std.testing.expectEqualStrings("error", stringField(gui_messages.items[4], "kind").?);
+
+    rt.importSessionValueLocked(workspace, "chat-2222222222222222", parsed, tmp.allocator());
+    const restored = rt.conversations.get("chat-2222222222222222") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 5), restored.messages.items.len);
+    try std.testing.expectEqual(.reasoning, restored.messages.items[1].kind);
+    try std.testing.expectEqualStrings("thinking", restored.messages.items[1].text);
+    try std.testing.expectEqual(.tool_start, restored.messages.items[2].kind);
+    try std.testing.expectEqualStrings("read_file", restored.messages.items[2].name);
+    try std.testing.expectEqualStrings("call-1", restored.messages.items[2].call_id.?);
+    try std.testing.expect(restored.messages.items[2].tool_detail_json != null);
+    try std.testing.expectEqual(.tool_end, restored.messages.items[3].kind);
+    try std.testing.expectEqualStrings("read file", restored.messages.items[3].summary.?);
+    try std.testing.expect(restored.messages.items[3].result_detail_json != null);
+    try std.testing.expectEqual(.@"error", restored.messages.items[4].kind);
+    try std.testing.expectEqualStrings("boom", restored.messages.items[4].error_message);
 }
 
 test "writeFollowup serializes options and kind" {
