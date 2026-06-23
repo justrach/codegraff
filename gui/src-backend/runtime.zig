@@ -21,6 +21,9 @@ const Message = struct {
     call_id: ?[]const u8 = null,
     question: []const u8 = "",
     summary: ?[]const u8 = null,
+    title: []const u8 = "",
+    subtitle: ?[]const u8 = null,
+    category: []const u8 = "info",
     is_error: bool = false,
     error_message: []const u8 = "",
     tool_detail_json: ?[]const u8 = null,
@@ -31,6 +34,8 @@ const Message = struct {
         context_compacted,
         assistant,
         reasoning,
+        status,
+        status_output,
         tool_start,
         tool_end,
         @"error",
@@ -1704,6 +1709,9 @@ pub const Runtime = struct {
                 break;
             } else if (std.mem.eql(u8, ty, "turn")) {
                 break;
+            } else {
+                const raw = self.valueJson(event) catch line;
+                self.appendStatusOutput(conversation_id, request_id, self.fmt("{s}-unknown-event-{d}", .{ request_id, event_count }), self.fmt("Unhandled graff event: {s}", .{ty}), raw);
             }
         }
         self.mutex.lockUncancelable(io);
@@ -1852,6 +1860,18 @@ pub const Runtime = struct {
         return out.written();
     }
 
+    fn appendStatusOutput(self: *Runtime, cid: []const u8, rid: []const u8, id: []const u8, title: []const u8, output: []const u8) void {
+        self.mutex.lockUncancelable(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        if (self.conversations.get(cid)) |conv| {
+            if (!self.requestActiveLocked(cid, rid)) return;
+            conv.messages.append(self.arena, .{ .kind = .status, .id = id, .request_id = rid, .title = self.dupe(title), .subtitle = "Preserved raw event for protocol compatibility.", .category = "debug" }) catch {};
+            conv.messages.append(self.arena, .{ .kind = .status_output, .id = self.fmt("{s}-output", .{id}), .request_id = rid, .text = self.dupe(output) }) catch {};
+            self.writeConversationSessionFileLocked(conv);
+            self.bumpLocked();
+        }
+    }
+
     fn appendError(self: *Runtime, cid: []const u8, rid: []const u8, msg: []const u8) void {
         self.mutex.lockUncancelable(mer_runtime.io);
         defer self.mutex.unlock(mer_runtime.io);
@@ -1998,9 +2018,17 @@ pub const Runtime = struct {
             try w.writeAll(",\"requestId\":");
             try writeString(w, message.request_id);
             switch (message.kind) {
-                .user, .context_compacted, .assistant, .reasoning => {
+                .user, .context_compacted, .assistant, .reasoning, .status_output => {
                     try w.writeAll(",\"text\":");
                     try writeString(w, message.text);
+                },
+                .status => {
+                    try w.writeAll(",\"title\":");
+                    try writeString(w, message.title);
+                    try w.writeAll(",\"subtitle\":");
+                    try writeNullableString(w, message.subtitle);
+                    try w.writeAll(",\"category\":");
+                    try writeString(w, message.category);
                 },
                 .tool_start => {
                     try w.writeAll(",\"name\":");
@@ -2473,8 +2501,13 @@ pub const Runtime = struct {
             .request_id = rid,
         };
         switch (kind) {
-            .user, .context_compacted, .assistant, .reasoning => {
+            .user, .context_compacted, .assistant, .reasoning, .status_output => {
                 message.text = if (stringField(value, "text")) |text| self.dupe(text) else "";
+            },
+            .status => {
+                message.title = if (stringField(value, "title")) |title| self.dupe(title) else "Status";
+                message.subtitle = if (stringField(value, "subtitle")) |subtitle| self.dupe(subtitle) else null;
+                message.category = if (stringField(value, "category")) |category| self.dupe(category) else "info";
             },
             .tool_start => {
                 message.name = if (stringField(value, "name")) |name| self.dupe(name) else "tool";
@@ -3624,7 +3657,7 @@ fn removeMcpServerFromConfig(alloc: std.mem.Allocator, workspace: []const u8, na
 }
 
 fn messageKindFromString(value: []const u8) ?Message.Kind {
-    inline for (.{ "user", "context_compacted", "assistant", "reasoning", "tool_start", "tool_end", "error" }) |name| {
+    inline for (.{ "user", "context_compacted", "assistant", "reasoning", "status", "status_output", "tool_start", "tool_end", "error" }) |name| {
         if (std.mem.eql(u8, value, name)) return std.meta.stringToEnum(Message.Kind, name).?;
     }
     return null;
@@ -4345,6 +4378,8 @@ test "conversationSessionJsonLocked round-trips rich GUI messages" {
     conv.goal = "preserve display state";
     conv.messages.append(rt.arena, .{ .kind = .user, .id = "u", .request_id = "r", .text = "inspect" }) catch {};
     conv.messages.append(rt.arena, .{ .kind = .reasoning, .id = "reason", .request_id = "r", .text = "thinking" }) catch {};
+    conv.messages.append(rt.arena, .{ .kind = .status, .id = "st", .request_id = "r", .title = "Unhandled graff event: protocol_extension", .subtitle = "Preserved raw event for protocol compatibility.", .category = "debug" }) catch {};
+    conv.messages.append(rt.arena, .{ .kind = .status_output, .id = "sto", .request_id = "r", .text = "{\"type\":\"protocol_extension\",\"value\":1}" }) catch {};
     conv.messages.append(rt.arena, .{ .kind = .tool_start, .id = "ts", .request_id = "r", .name = "read_file", .call_id = "call-1", .tool_detail_json = "{\"kind\":\"file_read\",\"path\":\"src/main.zig\",\"startLine\":null,\"endLine\":null}" }) catch {};
     conv.messages.append(rt.arena, .{ .kind = .tool_end, .id = "te", .request_id = "r", .name = "read_file", .call_id = "call-1", .summary = "read file", .is_error = false, .result_detail_json = "{\"kind\":\"text\",\"text\":\"contents\"}" }) catch {};
     conv.messages.append(rt.arena, .{ .kind = .@"error", .id = "err", .request_id = "r", .error_message = "boom" }) catch {};
@@ -4358,27 +4393,35 @@ test "conversationSessionJsonLocked round-trips rich GUI messages" {
     const cli_messages = arrayField(parsed, "messages").?;
     try std.testing.expectEqual(@as(usize, 1), cli_messages.items.len);
     const gui_messages = arrayField(parsed, "guiMessages").?;
-    try std.testing.expectEqual(@as(usize, 5), gui_messages.items.len);
+    try std.testing.expectEqual(@as(usize, 7), gui_messages.items.len);
     try std.testing.expectEqualStrings("reasoning", stringField(gui_messages.items[1], "kind").?);
-    try std.testing.expectEqualStrings("tool_start", stringField(gui_messages.items[2], "kind").?);
-    try std.testing.expectEqualStrings("call-1", stringField(gui_messages.items[2], "callId").?);
-    try std.testing.expectEqualStrings("tool_end", stringField(gui_messages.items[3], "kind").?);
-    try std.testing.expectEqualStrings("error", stringField(gui_messages.items[4], "kind").?);
+    try std.testing.expectEqualStrings("status", stringField(gui_messages.items[2], "kind").?);
+    try std.testing.expectEqualStrings("debug", stringField(gui_messages.items[2], "category").?);
+    try std.testing.expectEqualStrings("status_output", stringField(gui_messages.items[3], "kind").?);
+    try std.testing.expectEqualStrings("tool_start", stringField(gui_messages.items[4], "kind").?);
+    try std.testing.expectEqualStrings("call-1", stringField(gui_messages.items[4], "callId").?);
+    try std.testing.expectEqualStrings("tool_end", stringField(gui_messages.items[5], "kind").?);
+    try std.testing.expectEqualStrings("error", stringField(gui_messages.items[6], "kind").?);
 
     rt.importSessionValueLocked(workspace, "chat-2222222222222222", parsed, tmp.allocator());
     const restored = rt.conversations.get("chat-2222222222222222") orelse return error.TestExpectedEqual;
-    try std.testing.expectEqual(@as(usize, 5), restored.messages.items.len);
+    try std.testing.expectEqual(@as(usize, 7), restored.messages.items.len);
     try std.testing.expectEqual(.reasoning, restored.messages.items[1].kind);
     try std.testing.expectEqualStrings("thinking", restored.messages.items[1].text);
-    try std.testing.expectEqual(.tool_start, restored.messages.items[2].kind);
-    try std.testing.expectEqualStrings("read_file", restored.messages.items[2].name);
-    try std.testing.expectEqualStrings("call-1", restored.messages.items[2].call_id.?);
-    try std.testing.expect(restored.messages.items[2].tool_detail_json != null);
-    try std.testing.expectEqual(.tool_end, restored.messages.items[3].kind);
-    try std.testing.expectEqualStrings("read file", restored.messages.items[3].summary.?);
-    try std.testing.expect(restored.messages.items[3].result_detail_json != null);
-    try std.testing.expectEqual(.@"error", restored.messages.items[4].kind);
-    try std.testing.expectEqualStrings("boom", restored.messages.items[4].error_message);
+    try std.testing.expectEqual(.status, restored.messages.items[2].kind);
+    try std.testing.expectEqualStrings("Unhandled graff event: protocol_extension", restored.messages.items[2].title);
+    try std.testing.expectEqualStrings("debug", restored.messages.items[2].category);
+    try std.testing.expectEqual(.status_output, restored.messages.items[3].kind);
+    try std.testing.expectEqualStrings("{\"type\":\"protocol_extension\",\"value\":1}", restored.messages.items[3].text);
+    try std.testing.expectEqual(.tool_start, restored.messages.items[4].kind);
+    try std.testing.expectEqualStrings("read_file", restored.messages.items[4].name);
+    try std.testing.expectEqualStrings("call-1", restored.messages.items[4].call_id.?);
+    try std.testing.expect(restored.messages.items[4].tool_detail_json != null);
+    try std.testing.expectEqual(.tool_end, restored.messages.items[5].kind);
+    try std.testing.expectEqualStrings("read file", restored.messages.items[5].summary.?);
+    try std.testing.expect(restored.messages.items[5].result_detail_json != null);
+    try std.testing.expectEqual(.@"error", restored.messages.items[6].kind);
+    try std.testing.expectEqualStrings("boom", restored.messages.items[6].error_message);
 }
 
 test "writeFollowup serializes options and kind" {
