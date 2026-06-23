@@ -191,7 +191,7 @@ function ActivityOperationRow({
 
 export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
   const [open, setOpen] = useState(
-    item.isThinking ? false : item.isRunning || item.hasError,
+    item.isThinking ? true : item.isRunning || item.hasError,
   );
   const previousRunningRef = useRef(item.isRunning);
 

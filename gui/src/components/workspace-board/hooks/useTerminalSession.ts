@@ -27,17 +27,27 @@ import {
   waitForStableTerminalSize,
 } from "../utils/terminal";
 
+type UseTerminalSessionOptions = {
+  onSelectionCopied?: () => void;
+};
+
 export function useTerminalSession(
   params: TerminalPaneParams,
   containerRef: RefObject<HTMLDivElement | null>,
+  options: UseTerminalSessionOptions = {},
 ) {
   const terminalRef = useRef<WTerm | null>(null);
   const openedRef = useRef(false);
+  const onSelectionCopiedRef = useRef(options.onSelectionCopied);
   const [restartNonce, setRestartNonce] = useState(0);
   const [status, setStatus] = useState<TerminalStatus>({
     kind: "connecting",
     message: TERMINAL_CONNECTING_MESSAGE,
   });
+  useEffect(() => {
+    onSelectionCopiedRef.current = options.onSelectionCopied;
+  }, [options.onSelectionCopied]);
+
   const terminalId = useMemo(() => {
     return createTerminalSessionId(
       {
@@ -82,6 +92,109 @@ export function useTerminalSession(
     let resizeObserver: ResizeObserver | null = null;
     let resizeFrameId: number | null = null;
     let syncedBackendSize: TerminalGridSize | null = null;
+    let selectionDragStart: { x: number; y: number } | null = null;
+    let selectionDragMoved = false;
+
+    const selectionBelongsToContainer = (selection: Selection) => {
+      const nodeBelongsToContainer = (node: Node | null) => {
+        if (node == null) {
+          return false;
+        }
+
+        return container.contains(
+          node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement,
+        );
+      };
+
+      if (
+        nodeBelongsToContainer(selection.anchorNode) ||
+        nodeBelongsToContainer(selection.focusNode)
+      ) {
+        return true;
+      }
+
+      for (let index = 0; index < selection.rangeCount; index += 1) {
+        const range = selection.getRangeAt(index);
+        if (nodeBelongsToContainer(range.commonAncestorContainer)) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    const copyTerminalSelection = async () => {
+      const selection = window.getSelection();
+      if (
+        selection == null ||
+        selection.isCollapsed ||
+        !selectionBelongsToContainer(selection)
+      ) {
+        return;
+      }
+
+      const selectedText = selection.toString();
+      if (selectedText.length === 0) {
+        return;
+      }
+
+      if (navigator.clipboard == null) {
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(selectedText);
+        onSelectionCopiedRef.current?.();
+      } catch {
+        // Clipboard writes require browser permission/activation. Ignore failures
+        // so terminal input and native selection behavior are unaffected.
+      }
+    };
+
+    const handleSelectionMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      selectionDragStart = {
+        x: event.clientX,
+        y: event.clientY,
+      };
+      selectionDragMoved = false;
+    };
+
+    const handleSelectionMouseMove = (event: MouseEvent) => {
+      if (selectionDragStart == null) {
+        return;
+      }
+
+      if (
+        Math.abs(event.clientX - selectionDragStart.x) >= 3 ||
+        Math.abs(event.clientY - selectionDragStart.y) >= 3
+      ) {
+        selectionDragMoved = true;
+      }
+    };
+
+    const handleSelectionMouseUp = () => {
+      if (selectionDragStart == null) {
+        return;
+      }
+
+      const wasSelectionDrag = selectionDragMoved;
+      selectionDragStart = null;
+      selectionDragMoved = false;
+
+      if (!wasSelectionDrag) {
+        return;
+      }
+
+      void copyTerminalSelection();
+    };
+
+    container.addEventListener("mousedown", handleSelectionMouseDown);
+    window.addEventListener("mousemove", handleSelectionMouseMove);
+    window.addEventListener("mouseup", handleSelectionMouseUp);
 
     const syncTerminalSize = async (
       nextSize: TerminalGridSize,
@@ -253,6 +366,10 @@ export function useTerminalSession(
     return () => {
       disposed = true;
       openedRef.current = false;
+
+      container.removeEventListener("mousedown", handleSelectionMouseDown);
+      window.removeEventListener("mousemove", handleSelectionMouseMove);
+      window.removeEventListener("mouseup", handleSelectionMouseUp);
 
       if (delayedResizeObserverId != null) {
         window.clearTimeout(delayedResizeObserverId);

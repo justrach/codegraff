@@ -53,3 +53,30 @@ jobs:
           python3 sdk/generate.py --harness ./zig-out/bin/graff
           git diff --exit-code sdk/ \
             || (echo "::error::SDKs are stale — run: python3 sdk/generate.py --harness ./zig-out/bin/graff" && exit 1)
+
+  # Windows build + smoke — the harness has a Win32 console backend, so verify
+  # it compiles, passes tests, and the binary loads + runs on a real Windows
+  # runner (the macOS/Linux jobs above can't exercise the console backend).
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: zig build
+        run: zig build
+
+      - name: zig build test
+        run: zig build test --summary all
+
+      - name: smoke --version
+        shell: cmd
+        run: zig-out\bin\graff.exe --version
+
+      - name: smoke --help
+        shell: cmd
+        run: zig-out\bin\graff.exe --help
