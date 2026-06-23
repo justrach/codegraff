@@ -12,6 +12,7 @@ const terminal_scrollback_limit = 1024 * 1024;
 const sse_event_replay_limit = 1000;
 const session_scan_cache_ttl_ms = 10_000;
 const runtime_status_cache_ttl_ms = 10_000;
+const protocol_warning_limit_per_turn = 5;
 
 pub var instance: ?*Runtime = null;
 
@@ -1558,6 +1559,16 @@ pub const Runtime = struct {
         return false;
     }
 
+    fn requestHasMessageKind(self: *Runtime, cid: []const u8, rid: []const u8, kind: Message.Kind) bool {
+        self.mutex.lockUncancelable(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        const conv = self.conversations.get(cid) orelse return false;
+        for (conv.messages.items) |message| {
+            if (message.kind == kind and std.mem.eql(u8, message.request_id, rid)) return true;
+        }
+        return false;
+    }
+
     fn workspaceStatusCommand(self: *Runtime, req: mer.Request, root: Value) mer.Response {
         _ = self;
         const workspace = stringField(root, "workspacePath") orelse "";
@@ -1622,45 +1633,55 @@ pub const Runtime = struct {
 
         var wbuf: [4096]u8 = undefined;
         var cw = child.stdin.?.writerStreaming(io, &wbuf);
-        var req_buf: std.Io.Writer.Allocating = .init(self.allocator);
-        defer req_buf.deinit();
-        if (prompt_selection.send_model_control) if (provider) |p| if (model) |m| {
-            if (p.len > 0 and m.len > 0 and !std.mem.eql(u8, m, "default")) {
-                try req_buf.writer.writeAll("{\"type\":\"set_model\",\"name\":");
-                try writeString(&req_buf.writer, self.fmt("{s}/{s}", .{ p, m }));
-                try req_buf.writer.writeAll("}\n");
-            }
-        };
-        if (effort) |level| {
-            try req_buf.writer.writeAll("{\"type\":\"set_effort\",\"level\":");
-            try writeString(&req_buf.writer, level);
-            try req_buf.writer.writeAll("}\n");
-        }
-        if (guiAgentCoreAgent(agent_id)) |core_agent| {
-            try req_buf.writer.writeAll("{\"type\":\"set_agent\",\"id\":");
-            try writeString(&req_buf.writer, core_agent);
-            try req_buf.writer.writeAll("}\n");
-        }
-        if (plan_mode) {
-            try req_buf.writer.writeAll("{\"type\":\"set_mode\",\"mode\":\"plan\"}\n");
-        }
-        try req_buf.writer.writeAll("{\"type\":\"user\",\"text\":");
-        try writeString(&req_buf.writer, prompt);
-        try req_buf.writer.writeAll("}");
-        try cw.interface.writeAll(req_buf.written());
-        try cw.interface.writeByte('\n');
-        try cw.interface.flush();
-
         const rbuf = try self.allocator.alloc(u8, 1024 * 1024);
         defer self.allocator.free(rbuf);
         var rdr = child.stdout.?.readerStreaming(io, rbuf);
+        var protocol_warning_count: usize = 0;
+
+        if (prompt_selection.send_model_control) if (provider) |p| if (model) |m| {
+            if (p.len > 0 and m.len > 0 and !std.mem.eql(u8, m, "default")) {
+                var control: std.Io.Writer.Allocating = .init(self.allocator);
+                defer control.deinit();
+                try control.writer.writeAll("{\"type\":\"set_model\",\"name\":");
+                try writeString(&control.writer, self.fmt("{s}/{s}", .{ p, m }));
+                try control.writer.writeByte('}');
+                if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "model", &protocol_warning_count)) return;
+            }
+        };
+        if (effort) |level| {
+            var control: std.Io.Writer.Allocating = .init(self.allocator);
+            defer control.deinit();
+            try control.writer.writeAll("{\"type\":\"set_effort\",\"level\":");
+            try writeString(&control.writer, level);
+            try control.writer.writeByte('}');
+            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "effort", &protocol_warning_count)) return;
+        }
+        if (guiAgentCoreAgent(agent_id)) |core_agent| {
+            var control: std.Io.Writer.Allocating = .init(self.allocator);
+            defer control.deinit();
+            try control.writer.writeAll("{\"type\":\"set_agent\",\"id\":");
+            try writeString(&control.writer, core_agent);
+            try control.writer.writeByte('}');
+            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, control.written(), "agent", &protocol_warning_count)) return;
+        }
+        if (plan_mode) {
+            if (!try self.sendControlAndWait(&rdr, &cw, conversation_id, request_id, "{\"type\":\"set_mode\",\"mode\":\"plan\"}", "mode", &protocol_warning_count)) return;
+        }
+
+        var user_req: std.Io.Writer.Allocating = .init(self.allocator);
+        defer user_req.deinit();
+        try user_req.writer.writeAll("{\"type\":\"user\",\"text\":");
+        try writeString(&user_req.writer, prompt);
+        try user_req.writer.writeByte('}');
+        try cw.interface.writeAll(user_req.written());
+        try cw.interface.writeByte('\n');
+        try cw.interface.flush();
+
         var assistant_seq: usize = 0;
         var reasoning_seq: usize = 0;
         var current_assistant: ?[]const u8 = null;
         var current_reasoning: ?[]const u8 = null;
         var event_count: usize = 0;
-        var first_unparsed_line: ?[]const u8 = null;
-        defer if (first_unparsed_line) |line| self.allocator.free(line);
         while (true) {
             const ev_line = rdr.interface.takeDelimiter('\n') catch |err| {
                 self.mutex.lockUncancelable(io);
@@ -1685,16 +1706,15 @@ pub const Runtime = struct {
             defer turn_arena.deinit();
             const event = std.json.parseFromSliceLeaky(Value, turn_arena.allocator(), line, .{}) catch |err| {
                 log.warn("graff event parse failed: {}", .{err});
-                if (first_unparsed_line == null) {
-                    first_unparsed_line = try self.allocator.dupe(u8, line);
-                }
+                event_count += 1;
+                protocol_warning_count = self.appendProtocolWarningLimited(conversation_id, request_id, protocol_warning_count, self.fmt("{s}-malformed-event-{d}", .{ request_id, event_count }), "Malformed graff JSONL event", line);
                 continue;
             };
             const ty = stringField(event, "type") orelse {
                 log.warn("graff event missing type", .{});
-                if (first_unparsed_line == null) {
-                    first_unparsed_line = try self.allocator.dupe(u8, line);
-                }
+                event_count += 1;
+                const raw = self.valueJson(event) catch line;
+                protocol_warning_count = self.appendProtocolWarningLimited(conversation_id, request_id, protocol_warning_count, self.fmt("{s}-missing-type-event-{d}", .{ request_id, event_count }), "Graff JSONL event missing type", raw);
                 continue;
             };
             event_count += 1;
@@ -1740,11 +1760,17 @@ pub const Runtime = struct {
                 const is_error = boolField(event, "is_error") orelse false;
                 const call_id = stringField(event, "call_id") orelse stringField(event, "id");
                 self.appendToolEnd(conversation_id, request_id, self.fmt("{s}-toolend-{d}", .{ request_id, nowMillis() }), name, call_id, text, is_error);
+            } else if (self.handleProtocolAck(conversation_id, request_id, ty, event)) {
+                current_assistant = null;
             } else if (std.mem.eql(u8, ty, "error")) {
                 const msg = stringField(event, "message") orelse "graff error";
                 self.appendError(conversation_id, request_id, msg);
                 break;
             } else if (std.mem.eql(u8, ty, "turn")) {
+                const final_text = stringField(event, "text") orelse "";
+                if (final_text.len > 0 and !self.requestHasMessageKind(conversation_id, request_id, .assistant)) {
+                    self.appendDelta(conversation_id, request_id, self.fmt("{s}-assistant-final", .{request_id}), .assistant, final_text);
+                }
                 break;
             } else {
                 const raw = self.valueJson(event) catch line;
@@ -1755,12 +1781,7 @@ pub const Runtime = struct {
         const completed_still_active = self.requestActiveLocked(conversation_id, request_id);
         self.mutex.unlock(io);
         if (event_count == 0 and completed_still_active) {
-            const stdout_detail = if (first_unparsed_line) |line| std.mem.trim(u8, line, " \t\r\n") else "";
-            if (stdout_detail.len > 0) {
-                self.appendError(conversation_id, request_id, self.fmt("graff exited before producing a response: {s}", .{stdout_detail}));
-            } else {
-                self.appendError(conversation_id, request_id, "graff exited before producing a response");
-            }
+            self.appendError(conversation_id, request_id, "graff exited before producing a response");
         }
     }
 
@@ -1907,6 +1928,93 @@ pub const Runtime = struct {
             self.writeConversationSessionFileLocked(conv);
             self.bumpLocked();
         }
+    }
+
+    fn appendProtocolWarning(self: *Runtime, cid: []const u8, rid: []const u8, id: []const u8, title: []const u8, raw: []const u8) void {
+        var allocated = false;
+        const text = if (std.unicode.utf8ValidateSlice(raw)) raw else blk: {
+            const sanitized = sanitizeTerminalOutput(self.allocator, raw) catch break :blk "<invalid protocol output>";
+            allocated = true;
+            break :blk sanitized;
+        };
+        defer if (allocated) self.allocator.free(text);
+        self.appendStatusOutput(cid, rid, id, title, text);
+    }
+
+    fn appendProtocolWarningLimited(self: *Runtime, cid: []const u8, rid: []const u8, count: usize, id: []const u8, title: []const u8, raw: []const u8) usize {
+        if (count < protocol_warning_limit_per_turn) {
+            self.appendProtocolWarning(cid, rid, id, title, raw);
+        } else if (count == protocol_warning_limit_per_turn) {
+            self.appendProtocolWarning(cid, rid, id, "Additional graff protocol events suppressed", "Further malformed or untyped graff JSONL events were omitted to keep the GUI transcript bounded.");
+        }
+        return count + 1;
+    }
+
+    fn sendControlAndWait(self: *Runtime, rdr: anytype, cw: anytype, cid: []const u8, rid: []const u8, request_line: []const u8, ack_type: []const u8, warning_count: *usize) !bool {
+        try cw.interface.writeAll(request_line);
+        try cw.interface.writeByte('\n');
+        try cw.interface.flush();
+
+        while (true) {
+            const ev_line = rdr.interface.takeDelimiter('\n') catch |err| {
+                log.warn("graff control read ended with {}", .{err});
+                self.appendError(cid, rid, self.fmt("graff {s} control did not acknowledge", .{ack_type}));
+                return false;
+            } orelse {
+                self.appendError(cid, rid, self.fmt("graff exited before {s} control acknowledged", .{ack_type}));
+                return false;
+            };
+            const line = std.mem.trim(u8, ev_line, " \t\r\n");
+            if (line.len == 0) continue;
+
+            var control_arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer control_arena.deinit();
+            const event = std.json.parseFromSliceLeaky(Value, control_arena.allocator(), line, .{}) catch |err| {
+                log.warn("graff control event parse failed: {}", .{err});
+                warning_count.* = self.appendProtocolWarningLimited(cid, rid, warning_count.*, self.fmt("{s}-control-malformed-{d}", .{ rid, warning_count.* + 1 }), "Malformed graff JSONL event", line);
+                continue;
+            };
+            const ty = stringField(event, "type") orelse {
+                const raw = self.valueJson(event) catch line;
+                warning_count.* = self.appendProtocolWarningLimited(cid, rid, warning_count.*, self.fmt("{s}-control-missing-type-{d}", .{ rid, warning_count.* + 1 }), "Graff JSONL event missing type", raw);
+                continue;
+            };
+            if (std.mem.eql(u8, ty, "error")) {
+                self.appendError(cid, rid, stringField(event, "message") orelse self.fmt("graff {s} control failed", .{ack_type}));
+                return false;
+            }
+            if (std.mem.eql(u8, ty, ack_type)) {
+                _ = self.handleProtocolAck(cid, rid, ty, event);
+                return true;
+            }
+            const raw = self.valueJson(event) catch line;
+            warning_count.* = self.appendProtocolWarningLimited(cid, rid, warning_count.*, self.fmt("{s}-control-unexpected-{d}", .{ rid, warning_count.* + 1 }), self.fmt("Unexpected graff setup event: {s}", .{ty}), raw);
+        }
+    }
+
+    fn handleProtocolAck(self: *Runtime, cid: []const u8, rid: []const u8, ty: []const u8, event: Value) bool {
+        if (!isProtocolAckEvent(ty)) return false;
+        if (!(boolField(event, "ok") orelse true)) {
+            self.appendError(cid, rid, self.fmt("graff {s} control failed", .{ty}));
+            return true;
+        }
+
+        self.mutex.lockUncancelable(mer_runtime.io);
+        defer self.mutex.unlock(mer_runtime.io);
+        const conv = self.conversations.get(cid) orelse return true;
+        if (!self.requestActiveLocked(cid, rid)) return true;
+        if (std.mem.eql(u8, ty, "model")) {
+            if (stringField(event, "provider")) |provider| conv.session_provider = self.dupe(provider);
+            if (stringField(event, "model")) |model| conv.session_model = self.dupe(model);
+        } else if (std.mem.eql(u8, ty, "mode")) {
+            if (stringField(event, "mode")) |mode| conv.plan_mode = std.mem.eql(u8, mode, "plan");
+        } else if (std.mem.eql(u8, ty, "ultracode")) {
+            if (boolField(event, "on")) |on| conv.session_ultracode_mode = on;
+        }
+        conv.updated_at = nowMillis();
+        self.writeConversationSessionFileLocked(conv);
+        self.bumpLocked();
+        return true;
     }
 
     fn appendError(self: *Runtime, cid: []const u8, rid: []const u8, msg: []const u8) void {
@@ -3361,6 +3469,13 @@ fn guiAgentCoreAgent(agent_id: []const u8) ?[]const u8 {
     return null;
 }
 
+fn isProtocolAckEvent(ty: []const u8) bool {
+    inline for (.{ "system_prompt", "model", "compact", "mode", "agent", "effort", "fast", "ultracode", "score" }) |name| {
+        if (std.mem.eql(u8, ty, name)) return true;
+    }
+    return false;
+}
+
 fn validReasoningEffort(level: []const u8) bool {
     return std.mem.eql(u8, level, "low") or
         std.mem.eql(u8, level, "medium") or
@@ -4425,6 +4540,66 @@ fn writeFrame(bw: *std.http.BodyWriter, frame: []const u8) bool {
     bw.writer.flush() catch return false;
     bw.http_protocol_output.flush() catch return false;
     return true;
+}
+
+test "protocol ack events from core schema are consumed without unknown rows" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const conv = rt.createConversationLocked("/tmp/codegraff-gui-protocol-ack", "chat-protocol-ack", "Protocol ack");
+    conv.session_name = "";
+    try conv.active_request_ids.append(rt.arena, "request-1");
+
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const model_ack = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"type\":\"model\",\"ok\":true,\"provider\":\"codex\",\"model\":\"gpt-5\",\"context\":1000}", .{ .allocate = .alloc_always });
+    try std.testing.expect(rt.handleProtocolAck(conv.conversation_id, "request-1", "model", model_ack));
+    try std.testing.expectEqual(@as(usize, 0), conv.messages.items.len);
+    try std.testing.expectEqualStrings("codex", conv.session_provider.?);
+    try std.testing.expectEqualStrings("gpt-5", conv.session_model.?);
+
+    const mode_ack = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"type\":\"mode\",\"ok\":true,\"mode\":\"plan\"}", .{ .allocate = .alloc_always });
+    try std.testing.expect(rt.handleProtocolAck(conv.conversation_id, "request-1", "mode", mode_ack));
+    try std.testing.expect(conv.plan_mode);
+
+    inline for (.{ "system_prompt", "compact", "agent", "effort", "fast", "ultracode", "score" }) |ty| {
+        const event = try std.json.parseFromSliceLeaky(Value, tmp.allocator(), "{\"type\":\"ack\",\"ok\":true}", .{ .allocate = .alloc_always });
+        try std.testing.expect(rt.handleProtocolAck(conv.conversation_id, "request-1", ty, event));
+    }
+    try std.testing.expectEqual(@as(usize, 0), conv.messages.items.len);
+    try std.testing.expect(!rt.handleProtocolAck(conv.conversation_id, "request-1", "future_event", model_ack));
+}
+
+test "appendProtocolWarning preserves malformed protocol rows" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const conv = rt.createConversationLocked("/tmp/codegraff-gui-protocol-warning", "chat-protocol", "Protocol warning");
+    conv.session_name = "";
+    try conv.active_request_ids.append(rt.arena, "request-1");
+
+    rt.appendProtocolWarning(conv.conversation_id, "request-1", "warning-1", "Malformed graff JSONL event", "not json");
+
+    try std.testing.expectEqual(@as(usize, 2), conv.messages.items.len);
+    try std.testing.expectEqual(.status, conv.messages.items[0].kind);
+    try std.testing.expectEqualStrings("Malformed graff JSONL event", conv.messages.items[0].title);
+    try std.testing.expectEqualStrings("debug", conv.messages.items[0].category);
+    try std.testing.expectEqual(.status_output, conv.messages.items[1].kind);
+    try std.testing.expectEqualStrings("not json", conv.messages.items[1].text);
+
+    const invalid = [_]u8{0xff};
+    rt.appendProtocolWarning(conv.conversation_id, "request-1", "warning-2", "Malformed graff JSONL event", invalid[0..]);
+    try std.testing.expectEqualStrings("�", conv.messages.items[3].text);
+
+    const capped = rt.createConversationLocked("/tmp/codegraff-gui-protocol-warning-cap", "chat-protocol-cap", "Protocol warning cap");
+    capped.session_name = "";
+    try capped.active_request_ids.append(rt.arena, "request-2");
+    var count: usize = 0;
+    for (0..protocol_warning_limit_per_turn + 3) |idx| {
+        count = rt.appendProtocolWarningLimited(capped.conversation_id, "request-2", count, rt.fmt("warning-{d}", .{idx}), "Malformed graff JSONL event", "bad line");
+    }
+    try std.testing.expectEqual(@as(usize, (protocol_warning_limit_per_turn + 1) * 2), capped.messages.items.len);
+    try std.testing.expectEqualStrings("Additional graff protocol events suppressed", capped.messages.items[protocol_warning_limit_per_turn * 2].title);
 }
 
 test "git mutation validation fails before shelling out" {
