@@ -49,3 +49,12 @@ test("allows markdown links to workspace file paths", () => {
   expect(html).toContain('href="src/app.ts"');
   expect(html).toContain('href="/Users/example/project/src/app.ts"');
 });
+
+test("renders very large markdown as plain text until explicitly requested", () => {
+  const largeMarkdown = `${"x".repeat(80_001)}\n\n[docs](https://react.dev/learn)`;
+  const html = renderToStaticMarkup(<MarkdownRenderer text={largeMarkdown} />);
+
+  expect(html).toContain("Large response shown as plain text");
+  expect(html).toContain("Render rich markdown");
+  expect(html).not.toContain('href="https://react.dev/learn"');
+});

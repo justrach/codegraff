@@ -10,6 +10,7 @@ export interface RenderableFileDiffInput {
   path: string;
   patch: string;
   operation?: FileOperation | null;
+  readFile?: typeof readWorkspaceFile;
 }
 
 export type ResolvedFileDiff =
@@ -20,6 +21,7 @@ const WRITE_OPERATIONS: ReadonlySet<FileOperation> = new Set<FileOperation>([
   "create",
   "overwrite",
 ]);
+const SYNTHESIZED_DIFF_BYTE_LIMIT = 200_000;
 
 /** Extract the byte count from a harness "wrote N bytes to <path>" summary. */
 export function parseByteCount(summary: string): number | null {
@@ -50,7 +52,7 @@ export function resolveSyncFileDiff(path: string, patch: string): ResolvedFileDi
 export async function resolveRenderableFileDiff(
   input: RenderableFileDiffInput,
 ): Promise<ResolvedFileDiff> {
-  const { workspacePath, path, patch, operation } = input;
+  const { workspacePath, path, patch, operation, readFile = readWorkspaceFile } = input;
 
   const syncDiff = resolveSyncFileDiff(path, patch);
   if (syncDiff != null) {
@@ -58,8 +60,13 @@ export async function resolveRenderableFileDiff(
   }
 
   if (workspacePath != null && operation != null && WRITE_OPERATIONS.has(operation)) {
+    const byteCount = parseByteCount(patch);
+    if (byteCount != null && byteCount > SYNTHESIZED_DIFF_BYTE_LIMIT) {
+      return { status: "placeholder", operation, byteCount };
+    }
+
     try {
-      const content = await readWorkspaceFile(workspacePath, path);
+      const content = await readFile(workspacePath, path);
       const synthesized = buildAdditionPatchFromContent(path, content);
       const stats = getPatchStats(synthesized) ?? { additions: 0, deletions: 0 };
       return { status: "diff", patch: synthesized, ...stats };
