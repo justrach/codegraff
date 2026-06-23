@@ -1,4 +1,5 @@
 import { cn } from "@/utils/cn";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { CHAT_BODY_TEXT_CLASS } from "./constants/chatStyles";
 import { MarkdownRenderer } from "./markdown/MarkdownRenderer";
 import type { ChatMarkdownProps } from "./types/chatComponents";
@@ -12,7 +13,16 @@ export function ChatMarkdown({ text, className, workspacePath }: ChatMarkdownPro
         className,
       )}
     >
-      <MarkdownRenderer text={text} workspacePath={workspacePath} />
+      <ErrorBoundary
+        resetKey={text}
+        fallback={
+          <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-muted-foreground">
+            {text}
+          </pre>
+        }
+      >
+        <MarkdownRenderer text={text} workspacePath={workspacePath} />
+      </ErrorBoundary>
     </div>
   );
 }

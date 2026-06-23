@@ -8,6 +8,7 @@ import {
   appTargets,
 } from "@/components/conversation-panel/constants/conversationHeader";
 import { usePreferredOpenTarget } from "@/components/conversation-panel/hooks/usePreferredOpenTarget";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useWorkspaceMeta } from "@/hooks/useSession";
 import { ActivityResultCard } from "./ActivityResultCard";
@@ -127,11 +128,20 @@ export function FileDiffResult({ result, workspacePath }: FileDiffResultProps) {
     >
       {rendered.status === "diff" ? (
         <div className="px-1 py-1.5">
-          <PatchDiff
-            patch={rendered.patch}
-            className="block max-w-full overflow-hidden text-xs/relaxed"
-            options={{ lineDiffType: "word", showFileHeader: false }}
-          />
+          <ErrorBoundary
+            resetKey={rendered.patch}
+            fallback={
+              <div className="px-3 py-3 text-xs text-muted-foreground">
+                Diff rendering failed. The raw patch is still available from the copy button.
+              </div>
+            }
+          >
+            <PatchDiff
+              patch={rendered.patch}
+              className="block max-w-full overflow-hidden text-xs/relaxed"
+              options={{ lineDiffType: "word", showFileHeader: false }}
+            />
+          </ErrorBoundary>
         </div>
       ) : rendered.status === "loading" ? (
         <FileDiffLoadingBody />

@@ -29,6 +29,7 @@ import {
 } from "@/components/chat/activity-results/utils/renderableFileDiff";
 import { cn } from "@/utils/cn";
 import { Button } from "@/components/ui/Button";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { ButtonGroup } from "@/components/ui/ButtonGroup";
 import {
   Collapsible,
@@ -143,11 +144,20 @@ function ChangeRow({
           {resolved == null ? (
             <div className="px-3 py-3 text-xs text-muted-foreground">Loading diff…</div>
           ) : resolved.status === "diff" ? (
-            <PatchDiff
-              patch={resolved.patch}
-              className="block max-w-full overflow-hidden text-xs"
-              options={{ lineDiffType: "word", showFileHeader: false }}
-            />
+            <ErrorBoundary
+              resetKey={resolved.patch}
+              fallback={
+                <div className="px-3 py-3 text-xs text-muted-foreground">
+                  Diff rendering failed. Collapse this row or open the file in your editor.
+                </div>
+              }
+            >
+              <PatchDiff
+                patch={resolved.patch}
+                className="block max-w-full overflow-hidden text-xs"
+                options={{ lineDiffType: "word", showFileHeader: false }}
+              />
+            </ErrorBoundary>
           ) : (
             <PlaceholderBody operation={resolved.operation} byteCount={resolved.byteCount} />
           )}
