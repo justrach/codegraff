@@ -328,28 +328,12 @@ pub const Runtime = struct {
     }
 
     fn listProviders(self: *Runtime, req: mer.Request) mer.Response {
+        const schema = self.cachedSchemaValue(req.allocator);
         var out: std.Io.Writer.Allocating = .init(req.allocator);
         const w = &out.writer;
-        w.writeAll("[") catch return oom();
-        var first = true;
-        for (fallback_providers) |p| {
-            if (!first) w.writeByte(',') catch return oom();
-            first = false;
-            w.writeAll("{\"id\":") catch return oom();
-            writeString(w, p.id) catch return oom();
-            w.writeAll(",\"name\":") catch return oom();
-            writeString(w, p.name) catch return oom();
-            w.writeAll(",\"configured\":") catch return oom();
-            w.writeAll(if (providerConfiguredById(p.id, p.env_key)) "true" else "false") catch return oom();
-            w.writeAll(",\"authMethods\":[{\"kind\":") catch return oom();
-            writeString(w, p.auth_kind) catch return oom();
-            w.writeAll(",\"label\":") catch return oom();
-            writeString(w, p.auth_label) catch return oom();
-            w.writeAll("}],\"envOverride\":") catch return oom();
-            writeEnvOverride(w, p.env_key) catch return oom();
-            w.writeAll("}") catch return oom();
+        if (!writeProviderSummariesFromSchema(w, schema)) {
+            writeFallbackProviderSummaries(w) catch return oom();
         }
-        w.writeAll("]") catch return oom();
         return self.jsonResponse(req, out.written());
     }
 
@@ -4029,7 +4013,7 @@ fn providerConfigured(env_key: ?[]const u8) bool {
 }
 
 fn writeEnvOverride(w: *std.Io.Writer, env_key: ?[]const u8) !void {
-    const key = env_key orelse {
+    const key = providerCredentialEnvKey(env_key) orelse {
         try w.writeAll("null");
         return;
     };
@@ -4042,8 +4026,17 @@ fn writeEnvOverride(w: *std.Io.Writer, env_key: ?[]const u8) !void {
     try w.writeAll(",\"filePath\":null,\"line\":null}");
 }
 
+fn providerCredentialEnvKey(env_key: ?[]const u8) ?[]const u8 {
+    const key = env_key orelse return null;
+    // Core schema exposes CODEX_DISABLED as an implementation sentinel, not a
+    // credential source. Codex auth is read from ~/.codex/auth.json instead.
+    if (std.mem.eql(u8, key, "CODEX_DISABLED")) return null;
+    return key;
+}
+
 fn providerConfiguredById(id: []const u8, env_key: ?[]const u8) bool {
-    if (providerConfigured(env_key)) return true;
+    if (providerConfigured(providerCredentialEnvKey(env_key))) return true;
+    if (builtin.is_test) return false;
     const alloc = std.heap.page_allocator;
     if (std.mem.eql(u8, id, "codegraff")) return codegraffStored(alloc);
     if (std.mem.eql(u8, id, "codex")) return codexStored(alloc);
@@ -4138,22 +4131,74 @@ fn removeStoredProvider(alloc: std.mem.Allocator, provider: []const u8) !void {
     try std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = out.written() });
 }
 
+fn writeProviderSummariesFromSchema(w: *std.Io.Writer, schema: ?Value) bool {
+    const s = schema orelse return false;
+    const providers = arrayField(s, "providers") orelse return false;
+    w.writeByte('[') catch return false;
+    var first = true;
+    for (providers.items) |provider_value| {
+        if (provider_value != .object) continue;
+        const id = strFieldObj(provider_value.object, "id") orelse continue;
+        const name = strFieldObj(provider_value.object, "name") orelse id;
+        const login = strFieldObj(provider_value.object, "login") orelse providerInfo(id).auth_kind;
+        const env_key = strFieldObj(provider_value.object, "env_key");
+        if (!first) w.writeByte(',') catch return false;
+        first = false;
+        writeProviderSummary(w, id, name, login, env_key) catch return false;
+    }
+    w.writeByte(']') catch return false;
+    return true;
+}
+
+fn writeFallbackProviderSummaries(w: *std.Io.Writer) !void {
+    try w.writeByte('[');
+    for (fallback_providers, 0..) |p, idx| {
+        if (idx > 0) try w.writeByte(',');
+        try writeProviderSummary(w, p.id, p.name, p.auth_kind, p.env_key);
+    }
+    try w.writeByte(']');
+}
+
+fn writeProviderSummary(w: *std.Io.Writer, id: []const u8, name: []const u8, auth_kind: []const u8, env_key: ?[]const u8) !void {
+    try w.writeAll("{\"id\":");
+    try writeString(w, id);
+    try w.writeAll(",\"name\":");
+    try writeString(w, name);
+    try w.writeAll(",\"configured\":");
+    try w.writeAll(if (providerConfiguredById(id, env_key)) "true" else "false");
+    try w.writeAll(",\"authMethods\":[{\"kind\":");
+    try writeString(w, auth_kind);
+    try w.writeAll(",\"label\":");
+    try writeProviderAuthLabel(w, id, auth_kind, env_key);
+    try w.writeAll("}],\"envOverride\":");
+    try writeEnvOverride(w, env_key);
+    try w.writeAll("}");
+}
+
+fn writeProviderAuthLabel(w: *std.Io.Writer, id: []const u8, auth_kind: []const u8, env_key: ?[]const u8) !void {
+    if (std.mem.eql(u8, auth_kind, "codegraff_device")) return writeString(w, "Codegraff device login");
+    if (std.mem.eql(u8, auth_kind, "kimi_device")) return writeString(w, "Kimi device login");
+    if (std.mem.eql(u8, auth_kind, "codex_device")) return writeString(w, "Shared Codex CLI login (~/.codex/auth.json)");
+    if (std.mem.eql(u8, auth_kind, "api_key")) {
+        if (providerCredentialEnvKey(env_key)) |key| {
+            var label: std.Io.Writer.Allocating = .init(std.heap.page_allocator);
+            defer label.deinit();
+            try label.writer.writeAll("API key (");
+            try label.writer.writeAll(key);
+            try label.writer.writeAll(" or graff key set ");
+            try label.writer.writeAll(id);
+            try label.writer.writeByte(')');
+            return writeString(w, label.written());
+        }
+        return writeString(w, "API key (graff key set)");
+    }
+    return writeString(w, auth_kind);
+}
+
 fn providerSummaryResponse(req: mer.Request, provider: []const u8) mer.Response {
     var out: std.Io.Writer.Allocating = .init(req.allocator);
     const info = providerInfo(provider);
-    out.writer.writeAll("{\"id\":") catch return oom();
-    writeString(&out.writer, provider) catch return oom();
-    out.writer.writeAll(",\"name\":") catch return oom();
-    writeString(&out.writer, info.name) catch return oom();
-    out.writer.writeAll(",\"configured\":") catch return oom();
-    out.writer.writeAll(if (providerConfiguredById(provider, info.env_key)) "true" else "false") catch return oom();
-    out.writer.writeAll(",\"authMethods\":[{\"kind\":") catch return oom();
-    writeString(&out.writer, info.auth_kind) catch return oom();
-    out.writer.writeAll(",\"label\":") catch return oom();
-    writeString(&out.writer, info.auth_label) catch return oom();
-    out.writer.writeAll("}],\"envOverride\":") catch return oom();
-    writeEnvOverride(&out.writer, info.env_key) catch return oom();
-    out.writer.writeAll("}") catch return oom();
+    writeProviderSummary(&out.writer, provider, info.name, info.auth_kind, info.env_key) catch return oom();
     return mer.json(out.written());
 }
 
@@ -4166,6 +4211,7 @@ const fallback_providers = [_]Provider{
     .{ .id = "minimax", .name = "MiniMax", .env_key = "MINIMAX_API_KEY", .auth_kind = "api_key", .auth_label = "API key (MINIMAX_API_KEY or graff key set minimax)" },
     .{ .id = "xiaomi", .name = "Xiaomi", .env_key = "XIAOMI_API_KEY", .auth_kind = "api_key", .auth_label = "API key (XIAOMI_API_KEY or graff key set xiaomi)" },
     .{ .id = "kimi", .name = "Kimi", .env_key = "KIMI_API_KEY", .auth_kind = "kimi_device", .auth_label = "Kimi device login" },
+    .{ .id = "moonshot", .name = "Moonshot", .env_key = "MOONSHOT_API_KEY", .auth_kind = "api_key", .auth_label = "API key (MOONSHOT_API_KEY or graff key set moonshot)" },
     .{ .id = "xai", .name = "xAI", .env_key = "XAI_API_KEY", .auth_kind = "api_key", .auth_label = "API key (XAI_API_KEY or graff key set xai)" },
     .{ .id = "zai", .name = "Z.AI", .env_key = "ZAI_API_KEY", .auth_kind = "api_key", .auth_label = "API key (ZAI_API_KEY or graff key set zai)" },
     .{ .id = "codex", .name = "Codex / ChatGPT", .env_key = null, .auth_kind = "codex_device", .auth_label = "Shared Codex CLI login (~/.codex/auth.json)" },
@@ -4317,6 +4363,28 @@ fn writeFrame(bw: *std.http.BodyWriter, frame: []const u8) bool {
     bw.writer.flush() catch return false;
     bw.http_protocol_output.flush() catch return false;
     return true;
+}
+
+test "provider summaries are generated from core schema" {
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const parsed = try std.json.parseFromSliceLeaky(Value, tmp.allocator(),
+        \\{"providers":[
+        \\{"id":"moonshot","name":"Moonshot","env_key":"MOONSHOT_API_KEY","login":"api_key"},
+        \\{"id":"codex","name":"Codex (ChatGPT)","env_key":"CODEX_DISABLED","login":"codex_device"}
+        \\]}
+    , .{ .allocate = .alloc_always });
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expect(writeProviderSummariesFromSchema(&out.writer, parsed));
+
+    const json = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"id\":\"moonshot\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "MOONSHOT_API_KEY or graff key set moonshot") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"id\":\"codex\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Shared Codex CLI login") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"envKey\":\"CODEX_DISABLED\"") == null);
 }
 
 test "activateWorkspaceLocked clears stale conversation and restores workspace selection" {
