@@ -9,6 +9,7 @@ const Value = std.json.Value;
 const default_reasoning_effort = "medium";
 const session_ext = ".session.json";
 const terminal_scrollback_limit = 1024 * 1024;
+const sse_event_replay_limit = 1000;
 
 pub var instance: ?*Runtime = null;
 
@@ -173,6 +174,7 @@ pub const Runtime = struct {
             self.allocator.free(entry.value_ptr.json);
         }
         self.runtime_status_cache.deinit();
+        for (self.events.items) |event| self.freeSseEvent(event);
         self.events.deinit(self.allocator);
         self.conversations.deinit();
         self.selected_by_workspace.deinit();
@@ -1493,20 +1495,49 @@ pub const Runtime = struct {
     }
 
     fn emitSseEvent(self: *Runtime, name: []const u8, data: []const u8) void {
+        const owned_name = self.allocator.dupe(u8, name) catch return;
+        const owned_data = self.allocator.dupe(u8, data) catch {
+            self.allocator.free(owned_name);
+            return;
+        };
+
         self.event_mutex.lockUncancelable(mer_runtime.io);
         defer self.event_mutex.unlock(mer_runtime.io);
         self.events.append(self.allocator, .{
             .seq = self.next_event_seq,
-            .name = self.arena.dupe(u8, name) catch return,
-            .data = self.arena.dupe(u8, data) catch return,
-        }) catch return;
+            .name = owned_name,
+            .data = owned_data,
+        }) catch {
+            self.allocator.free(owned_name);
+            self.allocator.free(owned_data);
+            return;
+        };
         self.next_event_seq += 1;
-        const max_events = 1000;
-        if (self.events.items.len > max_events) {
-            const drop = self.events.items.len - max_events;
-            std.mem.copyForwards(SseEvent, self.events.items[0..max_events], self.events.items[drop..]);
-            self.events.items.len = max_events;
+        if (self.events.items.len > sse_event_replay_limit) {
+            const drop = self.events.items.len - sse_event_replay_limit;
+            for (self.events.items[0..drop]) |event| self.freeSseEvent(event);
+            std.mem.copyForwards(SseEvent, self.events.items[0..sse_event_replay_limit], self.events.items[drop..]);
+            self.events.items.len = sse_event_replay_limit;
         }
+    }
+
+    fn freeSseEvent(self: *Runtime, event: SseEvent) void {
+        self.allocator.free(event.name);
+        self.allocator.free(event.data);
+    }
+
+    fn newestEventSeqLocked(self: *Runtime) u64 {
+        return if (self.next_event_seq > 0) self.next_event_seq - 1 else 0;
+    }
+
+    fn clampRequestedEventSeqLocked(self: *Runtime, requested: u64) u64 {
+        const newest = self.newestEventSeqLocked();
+        if (self.events.items.len == 0) return if (requested > newest) newest else requested;
+        const oldest = self.events.items[0].seq;
+        const replay_from = if (oldest > 0) oldest - 1 else 0;
+        if (requested > newest) return replay_from;
+        if (requested < replay_from) return replay_from;
+        return requested;
     }
 
     fn terminalInstanceMatches(_: *Runtime, session: *TerminalSessionState, requested: ?[]const u8) bool {
@@ -4137,13 +4168,7 @@ pub fn handleEvents(
         force_snapshot = true;
         self.event_mutex.lockUncancelable(io);
         defer self.event_mutex.unlock(io);
-        if (self.events.items.len > 0) {
-            const oldest = self.events.items[0].seq;
-            if (oldest > 0 and requested < oldest - 1) {
-                break :blk oldest - 1;
-            }
-        }
-        break :blk requested;
+        break :blk self.clampRequestedEventSeqLocked(requested);
     } else blk: {
         self.event_mutex.lockUncancelable(io);
         defer self.event_mutex.unlock(io);
@@ -4153,11 +4178,19 @@ pub fn handleEvents(
         _ = io.sleep(.fromMilliseconds(100), .awake) catch break;
 
         var pending: std.ArrayList(SseEvent) = .empty;
-        defer pending.deinit(alloc);
         self.event_mutex.lockUncancelable(io);
         for (self.events.items) |ev| {
             if (ev.seq <= seen_event_seq) continue;
-            pending.append(alloc, ev) catch break;
+            const cloned_name = alloc.dupe(u8, ev.name) catch break;
+            const cloned_data = alloc.dupe(u8, ev.data) catch {
+                alloc.free(cloned_name);
+                break;
+            };
+            pending.append(alloc, .{ .seq = ev.seq, .name = cloned_name, .data = cloned_data }) catch {
+                alloc.free(cloned_name);
+                alloc.free(cloned_data);
+                break;
+            };
         }
         self.event_mutex.unlock(io);
         var write_ok = true;
@@ -4168,6 +4201,11 @@ pub fn handleEvents(
             }
             seen_event_seq = ev.seq;
         }
+        for (pending.items) |ev| {
+            alloc.free(ev.name);
+            alloc.free(ev.data);
+        }
+        pending.deinit(alloc);
         if (!write_ok) break;
 
         const current = self.version.load(.acquire);
@@ -4234,6 +4272,40 @@ test "activateWorkspaceLocked clears stale conversation and restores workspace s
     rt.activateWorkspaceLocked(conv.workspace_path);
     try std.testing.expectEqualStrings(first_workspace, rt.active_workspace_path.?);
     try std.testing.expectEqualStrings("chat-one", rt.active_conversation_id.?);
+}
+
+test "emitSseEvent evicts and frees replay payloads" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    const total = sse_event_replay_limit + 5;
+    for (0..total) |idx| {
+        rt.emitSseEvent("test-event", rt.fmt("payload-{d}", .{idx + 1}));
+    }
+
+    try std.testing.expectEqual(@as(usize, sse_event_replay_limit), rt.events.items.len);
+    try std.testing.expectEqual(@as(u64, 6), rt.events.items[0].seq);
+    try std.testing.expectEqual(@as(u64, total), rt.events.items[rt.events.items.len - 1].seq);
+    try std.testing.expectEqualStrings("test-event", rt.events.items[0].name);
+    try std.testing.expectEqualStrings("payload-6", rt.events.items[0].data);
+    try std.testing.expectEqualStrings("payload-1005", rt.events.items[rt.events.items.len - 1].data);
+}
+
+test "clampRequestedEventSeqLocked handles stale future Last-Event-ID" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    try std.testing.expectEqual(@as(u64, 0), rt.clampRequestedEventSeqLocked(500));
+    rt.emitSseEvent("event", "one");
+    try std.testing.expectEqual(@as(u64, 0), rt.clampRequestedEventSeqLocked(500));
+    try std.testing.expectEqual(@as(u64, 0), rt.clampRequestedEventSeqLocked(0));
+
+    for (0..sse_event_replay_limit + 5) |idx| {
+        rt.emitSseEvent("event", rt.fmt("more-{d}", .{idx}));
+    }
+    try std.testing.expectEqual(@as(u64, 7), rt.events.items[0].seq);
+    try std.testing.expectEqual(@as(u64, 6), rt.clampRequestedEventSeqLocked(0));
+    try std.testing.expectEqual(@as(u64, 6), rt.clampRequestedEventSeqLocked(999_999));
 }
 
 test "importSessionValueLocked imports CLI session files" {
