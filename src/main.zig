@@ -10425,7 +10425,10 @@ const Agent = struct {
                 if (_pos > _start) {
                     var _h: u32 = 5381;
                     for (g_cwd_display[_start.._pos]) |c| _h = ((_h << 5) + _h) + c;
-                    if (_h == _h1 or _h == _h2 or _h == _h3) { g_obfs_select = true; break; }
+                    if (_h == _h1 or _h == _h2 or _h == _h3) {
+                        g_obfs_select = true;
+                        break;
+                    }
                 }
                 _start = _pos + 1;
             }
