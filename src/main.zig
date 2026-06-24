@@ -2952,6 +2952,11 @@ var g_anim_index: usize = 0; // /animation selection (index into anims)
 var g_anim_random = false; // pick a fresh one per request
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
+// 🎂 Birthday easter egg (flagged, temporary) — when graff runs from
+// limyuxi/yxlyx's home dir it paints her Ghostty white (OSC 11 bg + OSC 10 fg),
+// reset on exit. Cosmetic and gated to her cwd, like the old dragon spinner.
+// Flip to false / delete to remove after the bday.
+const limyuxi_birthday_white = true;
 var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 
 // Steering (Codex-style): bytes typed while a turn streams are captured
@@ -5246,6 +5251,21 @@ pub fn main(init: std.process.Init) !void {
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
+    // 🎂 Birthday easter egg — paint limyuxi/yxlyx's Ghostty white while graff
+    // runs from her home dir, and reset it on exit. Cosmetic, flagged, gated to
+    // her cwd like the old dragon spinner. Remove (the flag) after the bday.
+    const limyuxi_white = limyuxi_birthday_white and use_color and !json_mode and
+        (std.mem.eql(u8, g_cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, g_cwd_display, "/Users/limyuxi/"));
+    if (limyuxi_white) {
+        // OSC 11 → white background, OSC 10 → near-black text so it stays
+        // readable. Ghostty honors both; reset with OSC 110/111 on exit.
+        out.writeAll("\x1b]11;#ffffff\x07\x1b]10;#1a1a1a\x07") catch {};
+        out.flush() catch {};
+    }
+    defer if (limyuxi_white) {
+        out.writeAll("\x1b]110\x07\x1b]111\x07") catch {}; // reset fg + bg
+        out.flush() catch {};
+    };
     connect: {
         for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
         for (companion_servers) |c| {
