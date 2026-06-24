@@ -191,6 +191,232 @@ describe("sessionStore", () => {
     );
   });
 
+  test("applySessionSnapshot preserves pending optimistic in-chat submits across stale snapshots", () => {
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        conversationViews: [
+          {
+            activeRequestIds: [],
+            conversationId: "chat-1",
+            followup: null,
+            messages: [
+              {
+                id: "user-old",
+                kind: "user",
+                requestId: "req-old",
+                text: "previous",
+              },
+            ],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+    sessionStore.getState().appendOptimisticUserMessage(
+      { conversationId: "chat-1", workspacePath: "/workspace/codegraff-gui" },
+      "optimistic-1",
+      "new prompt",
+      "forge",
+    );
+
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        conversationViews: [
+          {
+            activeRequestIds: [],
+            conversationId: "chat-1",
+            followup: null,
+            messages: [
+              {
+                id: "user-old",
+                kind: "user",
+                requestId: "req-old",
+                text: "previous",
+              },
+            ],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+
+    const view = sessionStore.getState().conversationViewsByKey[
+      "/workspace/codegraff-gui::chat-1"
+    ];
+    expect(view?.messages.map((message) => message.id)).toEqual([
+      "user-old",
+      "optimistic-1-user",
+    ]);
+    expect(view?.activeRequestIds).toContain("optimistic-1");
+  });
+
+  test("applySessionSnapshot preserves optimistic submit when stale snapshot grows with old same-text turn", () => {
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        conversationViews: [
+          {
+            activeRequestIds: [],
+            conversationId: "chat-1",
+            followup: null,
+            messages: [
+              {
+                id: "user-old",
+                kind: "user",
+                requestId: "req-old",
+                text: "retry",
+              },
+            ],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+    sessionStore.getState().appendOptimisticUserMessage(
+      { conversationId: "chat-1", workspacePath: "/workspace/codegraff-gui" },
+      "optimistic-1",
+      "retry",
+      "forge",
+    );
+
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        conversationViews: [
+          {
+            activeRequestIds: [],
+            conversationId: "chat-1",
+            followup: null,
+            messages: [
+              {
+                id: "user-old",
+                kind: "user",
+                requestId: "req-old",
+                text: "retry",
+              },
+              {
+                id: "assistant-old",
+                kind: "assistant",
+                requestId: "req-old",
+                text: "done",
+              },
+            ],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+
+    const view = sessionStore.getState().conversationViewsByKey[
+      "/workspace/codegraff-gui::chat-1"
+    ];
+    expect(view?.messages.map((message) => message.id)).toEqual([
+      "user-old",
+      "assistant-old",
+      "optimistic-1-user",
+    ]);
+  });
+
+  test("applySessionSnapshot replaces optimistic submits with accepted completed backend messages", () => {
+    sessionStore.getState().applySessionSnapshot(createSnapshot());
+    sessionStore.getState().appendOptimisticUserMessage(
+      { conversationId: "chat-1", workspacePath: "/workspace/codegraff-gui" },
+      "optimistic-1",
+      "quick response",
+      "forge",
+    );
+
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        conversationViews: [
+          {
+            activeRequestIds: [],
+            conversationId: "chat-1",
+            followup: null,
+            messages: [
+              {
+                id: "user-real",
+                kind: "user",
+                requestId: "req-real",
+                text: "quick response",
+              },
+              {
+                id: "assistant-real",
+                kind: "assistant",
+                requestId: "req-real",
+                text: "done",
+              },
+            ],
+            requestAgentIds: { "req-real": "forge" },
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+
+    const view = sessionStore.getState().conversationViewsByKey[
+      "/workspace/codegraff-gui::chat-1"
+    ];
+    expect(view?.messages.map((message) => message.id)).toEqual([
+      "user-real",
+      "assistant-real",
+    ]);
+    expect(view?.activeRequestIds).toEqual([]);
+  });
+
+  test("applySessionSnapshot replaces optimistic submits with accepted backend messages", () => {
+    sessionStore.getState().applySessionSnapshot(createSnapshot());
+    sessionStore.getState().appendOptimisticUserMessage(
+      { conversationId: "chat-1", workspacePath: "/workspace/codegraff-gui" },
+      "optimistic-1",
+      "new prompt",
+      "forge",
+    );
+
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        conversationViews: [
+          {
+            activeRequestIds: ["req-real"],
+            conversationId: "chat-1",
+            followup: null,
+            messages: [
+              {
+                id: "user-real",
+                kind: "user",
+                requestId: "req-real",
+                text: "new prompt",
+              },
+            ],
+            requestAgentIds: { "req-real": "forge" },
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+
+    const view = sessionStore.getState().conversationViewsByKey[
+      "/workspace/codegraff-gui::chat-1"
+    ];
+    expect(view?.messages).toEqual([
+      {
+        id: "user-real",
+        kind: "user",
+        requestId: "req-real",
+        text: "new prompt",
+      },
+    ]);
+    expect(view?.activeRequestIds).toEqual(["req-real"]);
+  });
+
   test("applySessionSnapshot preserves saved workspace selection", () => {
     sessionStore.getState().setBoardSelection({
       activeChat: {

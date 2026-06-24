@@ -289,6 +289,82 @@ function buildMessageIndexById(messages: ConversationViewSnapshot["messages"]) {
   return indexById;
 }
 
+function isOptimisticRequestId(requestId: string): boolean {
+  return requestId.startsWith("optimistic-");
+}
+
+function viewLatestUserMessage(view: ConversationViewSnapshot) {
+  return view.messages.findLast((message) => message.kind === "user") ?? null;
+}
+
+function shouldPreserveOptimisticMessage(
+  optimisticMessage: ConversationViewSnapshot["messages"][number],
+  previousView: ConversationViewSnapshot,
+  incomingView: ConversationViewSnapshot,
+): boolean {
+  if (!isOptimisticRequestId(optimisticMessage.requestId)) {
+    return false;
+  }
+  if (incomingView.messages.some((message) => message.id === optimisticMessage.id)) {
+    return false;
+  }
+  const previousNonOptimisticMessages = previousView.messages.filter(
+    (message) => !isOptimisticRequestId(message.requestId),
+  );
+  const previousNonOptimisticRequestIds = new Set(
+    previousNonOptimisticMessages.map((message) => message.requestId),
+  );
+  const incomingLatestUserMessage = viewLatestUserMessage(incomingView);
+  const incomingLatestUserIsNewBackendMessage =
+    incomingLatestUserMessage != null &&
+    !isOptimisticRequestId(incomingLatestUserMessage.requestId) &&
+    !previousNonOptimisticRequestIds.has(incomingLatestUserMessage.requestId);
+  const incomingHasAcceptedReplacement =
+    incomingView.messages.length > previousNonOptimisticMessages.length &&
+    incomingLatestUserMessage?.kind === "user" &&
+    optimisticMessage.kind === "user" &&
+    incomingLatestUserIsNewBackendMessage &&
+    incomingLatestUserMessage.text === optimisticMessage.text;
+  return !incomingHasAcceptedReplacement;
+}
+
+function mergeOptimisticRequestsIntoSnapshotView(
+  previousView: ConversationViewSnapshot | undefined,
+  incomingView: ConversationViewSnapshot,
+): ConversationViewSnapshot {
+  if (previousView == null) {
+    return incomingView;
+  }
+
+  const optimisticMessages = previousView.messages.filter((message) =>
+    shouldPreserveOptimisticMessage(message, previousView, incomingView),
+  );
+  if (optimisticMessages.length === 0) {
+    return incomingView;
+  }
+
+  const optimisticRequestIds = optimisticMessages.map((message) => message.requestId);
+  return {
+    ...incomingView,
+    activeRequestIds: [
+      ...incomingView.activeRequestIds,
+      ...optimisticRequestIds.filter(
+        (requestId) => !incomingView.activeRequestIds.includes(requestId),
+      ),
+    ],
+    messages: [...incomingView.messages, ...optimisticMessages],
+    requestAgentIds: {
+      ...incomingView.requestAgentIds,
+      ...Object.fromEntries(
+        optimisticRequestIds.flatMap((requestId) => {
+          const agentId = previousView.requestAgentIds[requestId];
+          return agentId == null ? [] : [[requestId, agentId]];
+        }),
+      ),
+    },
+  };
+}
+
 function bumpConversationVersion(
   versions: Record<string, number>,
   key: string,
@@ -455,8 +531,9 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
         for (const view of nextViews) {
           const key = getConversationStoreKey(view.workspacePath, view.conversationId);
           const previousView = current.conversationViewsByKey[key];
-          nextConversationViewsByKey[key] = view;
-          if (previousView !== view) {
+          const nextView = mergeOptimisticRequestsIntoSnapshotView(previousView, view);
+          nextConversationViewsByKey[key] = nextView;
+          if (previousView !== nextView) {
             if (
               nextConversationMessageIndicesByKey ===
               current.conversationMessageIndicesByKey
@@ -466,7 +543,7 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
               };
             }
             nextConversationMessageIndicesByKey[key] = buildMessageIndexById(
-              view.messages,
+              nextView.messages,
             );
             nextConversationVersionsByKey = bumpConversationVersion(
               nextConversationVersionsByKey,
