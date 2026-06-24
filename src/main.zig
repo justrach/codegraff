@@ -2791,36 +2791,32 @@ fn cleanTitle(raw: []const u8) ?[]const u8 {
     return titleFromPrompt(s);
 }
 
-/// Asks the model the user is on for a terse tab-label title summarizing the
-/// session's first prompt, on a throwaway one-message list so the real
-/// conversation (and its token/compaction accounting) is left untouched. Returns
-/// an arena-owned title, or null on any failure (caller keeps the mechanical one).
-fn generateSessionTitle(self: *Agent, prompt: []const u8) ?[]const u8 {
-    const saved_msgs = self.messages;
-    const saved_quiet = self.stream_quiet;
-    const saved_strict = self.strict;
-    const saved_ctx = self.last_context_tokens;
-    defer {
-        self.messages = saved_msgs;
-        self.stream_quiet = saved_quiet;
-        self.strict = saved_strict;
-        self.last_context_tokens = saved_ctx;
-    }
-    self.stream_quiet = true; // internal call: never stream to the terminal
-    self.strict = false; // plain text reply, no meta-tool wrapping
-    const instr = std.fmt.allocPrint(self.arena,
-        \\Write a terse tab-label title for this task: 3-6 words, Title Case, no
-        \\quotes, no trailing punctuation, no preamble. Reply with ONLY the title.
-        \\
-        \\Task:
-        \\{s}
-    , .{prompt}) catch return null;
-    var tmp = std.json.Array.init(self.arena);
-    tmp.append(textMessage(self.arena, "user", instr) catch return null) catch return null;
-    self.messages = tmp;
-    const root = self.request(null) catch return null;
-    const cleaned = cleanTitle(assistantText(self.provider.kind, root)) orelse return null;
-    return self.arena.dupe(u8, cleaned) catch null;
+/// Generate a terse tab-label title for the turn's first prompt — runs on its
+/// own arena + a throwaway one-message sub-Agent, so it can be spawned via
+/// io.async and overlap the real turn instead of blocking after it. Returns a
+/// gpa-owned title (caller frees), or null on any failure.
+fn titleTask(gpa: Allocator, io: Io, client: *std.http.Client, provider: Provider, prompt: []const u8) ?[]const u8 {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = gpa,
+        .arena = arena,
+        .io = io,
+        .client = client,
+        .provider = provider,
+        .messages = std.json.Array.init(arena),
+        .sub = true, // pool thread: never touches stdout or the main agent's state
+        .label = "title",
+        .out = null,
+        .sys_override = "You write short, literal tab-label titles for a coding session. Reply with only the title.",
+    };
+    defer agent.tools_used.deinit(gpa);
+    const instr = std.fmt.allocPrint(arena, "Write a terse tab-label title for this task: 3-6 words, Title Case, no quotes, no trailing punctuation, no preamble. Reply with ONLY the title.\n\nTask:\n{s}", .{prompt}) catch return null;
+    agent.messages.append(textMessage(arena, "user", instr) catch return null) catch return null;
+    const root = agent.request(null) catch return null;
+    const cleaned = cleanTitle(assistantText(provider.kind, root)) orelse return null;
+    return gpa.dupe(u8, cleaned) catch null;
 }
 fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, g_path_env, ':');
@@ -5888,6 +5884,19 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        // Generate the AI tab-title concurrently with the turn (io.async) instead
+        // of a blocking call after it — by the time the answer lands the title is
+        // usually ready. Applied after the turn (below); this defer reaps the
+        // future if the turn bails out early (errored/interrupted `continue`).
+        var title_fut: ?Io.Future(?[]const u8) = null;
+        if (!json_mode and root.ai_title and !root.ai_title_done) {
+            root.ai_title_done = true;
+            title_fut = io.async(titleTask, .{ gpa, io, root.client, root.provider, base_msg });
+        }
+        defer if (title_fut) |*f| {
+            _ = f.await(io);
+        };
+
         // "ultracode" codeword or persistent /ultracode mode: opt turns into multi-agent workflow mode.
         const ultracode_msg = try applyUltracodeSteering(arena, msg, root.ultracode_mode);
         if (ultracode_msg.explicit) {
@@ -6014,16 +6023,16 @@ pub fn main(init: std.process.Init) !void {
             root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = true, .metadata_complete = root.last_context_tokens > 0 });
         }
 
-        // After the first successful turn, replace the mechanical tab title with
-        // an AI summary of the task (one cheap call on the user's current model).
-        // The answer already streamed, so this resolves while the user reads it;
-        // any failure just keeps the mechanical title. Toggle with /title off.
-        if (!json_mode and root.ai_title and !root.ai_title_done) {
-            root.ai_title_done = true;
-            if (generateSessionTitle(&root, base_msg)) |t| {
-                root.session_title = arena.dupe(u8, t) catch t;
-                setTerminalTitle(out, t, g_cwd_display);
+        // Apply the AI summary title that was spawned at the turn's start
+        // (io.async, overlapping the turn). It's usually already done by now;
+        // null the future so the reap-defer above doesn't await it twice.
+        if (title_fut) |*f| {
+            if (f.await(io)) |t| {
+                root.session_title = arena.dupe(u8, t) catch null;
+                gpa.free(t);
+                if (root.session_title) |st| setTerminalTitle(out, st, g_cwd_display);
             }
+            title_fut = null;
         }
 
         // turn_end lifecycle hooks (best-effort; interrupted/errored turns
