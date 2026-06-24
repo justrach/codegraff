@@ -617,8 +617,17 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
             startedAtMs: timing?.startedAtMs ?? now,
           },
         };
+        const existingSummary = current.conversationSummariesByKey[key];
+        const nextConversationSummariesByKey =
+          existingSummary?.isRunning === true
+            ? {
+                ...current.conversationSummariesByKey,
+                [key]: { ...existingSummary, isRunning: false },
+              }
+            : current.conversationSummariesByKey;
         if (existing == null) {
           return {
+            conversationSummariesByKey: nextConversationSummariesByKey,
             requestTimingsByConversationId: {
               ...current.requestTimingsByConversationId,
               [event.conversationId]: nextTimings,
@@ -626,6 +635,7 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
           };
         }
         return {
+          conversationSummariesByKey: nextConversationSummariesByKey,
           conversationVersionsByKey: bumpConversationVersion(
             current.conversationVersionsByKey,
             key,

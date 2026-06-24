@@ -27,6 +27,7 @@ let lastSendPromptInput:
 let sendPromptImpl: (
   input: import("../services/desktop/types/contracts").SendPromptInput,
 ) => Promise<SessionSnapshot>;
+let getSessionSnapshotImpl: () => Promise<SessionSnapshot>;
 let createManagedChatImpl: () => Promise<SessionSnapshot>;
 let handoffChatImpl: (
   input: import("../services/desktop/types/contracts").HandoffChatInput,
@@ -164,8 +165,7 @@ mock.module("../services/desktop/client", () => ({
     getRuntimeStatusCallCount += 1;
     return runtimeStatusFixture;
   },
-  getSessionSnapshot: async () =>
-    createSnapshot("/workspace/codegraff-gui", "chat-1"),
+  getSessionSnapshot: async () => await getSessionSnapshotImpl(),
   renameWorkspace: async (
     workspacePath: string,
     displayName: string | null,
@@ -241,6 +241,8 @@ describe("SessionProvider", () => {
     lastSendPromptInput = null;
     sendPromptImpl = async (input) =>
       createSnapshot(input.workspacePath, input.conversationId ?? "chat-1");
+    getSessionSnapshotImpl = async () =>
+      createSnapshot("/workspace/codegraff-gui", "chat-1");
     createManagedChatImpl = async () =>
       createSnapshot("/workspace/managed-chat", "chat-1", {
         activeConversationId: null,
@@ -1109,6 +1111,284 @@ describe("SessionProvider", () => {
     ).toEqual({
       "req-plan-complete": "muse",
     });
+  });
+
+  test("active prompt conflicts queue the draft instead of restoring it for repeated Enter", async () => {
+    const promptDraftKey = getPromptDraftKey("/workspace/codegraff-gui", "chat-1");
+    if (promptDraftKey == null) {
+      throw new Error("Expected a prompt draft key");
+    }
+    sessionStore
+      .getState()
+      .applySessionSnapshot(createSnapshot("/workspace/codegraff-gui", "chat-1"));
+    sessionStore.getState().setPromptDraftValue(promptDraftKey, "Run the task");
+    sendPromptImpl = async () => {
+      throw new Error("conversation already has an active prompt");
+    };
+    getSessionSnapshotImpl = async () =>
+      createSnapshot("/workspace/codegraff-gui", "chat-1", {
+        conversationViews: [
+          {
+            activeRequestIds: ["req-active"],
+            conversationId: "chat-1",
+            followup: null,
+            messages: [],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+        visibleActiveRequestIds: ["req-active"],
+        workspaces: [
+          {
+            configurationError: null,
+            configured: true,
+            conversations: [
+              {
+                conversationId: "chat-1",
+                hasPendingFollowup: false,
+                isDraft: false,
+                isRunning: true,
+                title: "Selected chat",
+                updatedAt: "2026-04-21T00:00:00.000Z",
+              },
+            ],
+            kind: "project",
+            selectedConversationId: "chat-1",
+            workspaceName: "Agent UI",
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      });
+
+    let capturedActions: SessionActionsContextValue | null = null;
+
+    function CaptureActions() {
+      capturedActions = useContext(SessionActionsContext);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      <SessionProvider>
+        <CaptureActions />
+      </SessionProvider>,
+    );
+
+    if (capturedActions == null) {
+      throw new Error("Expected session actions to be available");
+    }
+
+    const actions = capturedActions as SessionActionsContextValue;
+
+    await actions.submitPrompt();
+
+    expect(sendPromptCallCount).toBe(1);
+    expect(
+      sessionStore.getState().promptDraftsByKey[promptDraftKey]?.value ?? "",
+    ).toBe("");
+    expect(
+      sessionStore.getState().promptDraftsByKey[promptDraftKey]?.isPending ?? false,
+    ).toBe(false);
+    expect(sessionStore.getState().queuedPromptsByKey[promptDraftKey]).toEqual([
+      {
+        attachments: [],
+        isPlanningMode: false,
+        isUltraMode: false,
+        value: "Run the task",
+      },
+    ]);
+  });
+
+  test("active prompt conflicts queue hidden running conversations from workspace summaries", async () => {
+    const promptDraftKey = getPromptDraftKey("/workspace/codegraff-gui", "chat-1");
+    if (promptDraftKey == null) {
+      throw new Error("Expected a prompt draft key");
+    }
+    sessionStore
+      .getState()
+      .applySessionSnapshot(createSnapshot("/workspace/codegraff-gui", "chat-1"));
+    sessionStore.getState().setPromptDraftValue(promptDraftKey, "Run hidden task");
+    sendPromptImpl = async () => {
+      throw new Error("conversation already has an active prompt");
+    };
+    getSessionSnapshotImpl = async () =>
+      createSnapshot("/workspace/codegraff-gui", "chat-visible", {
+        activeConversationId: "chat-visible",
+        conversationViews: [
+          {
+            activeRequestIds: [],
+            conversationId: "chat-visible",
+            followup: null,
+            messages: [],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+        workspaces: [
+          {
+            configurationError: null,
+            configured: true,
+            conversations: [
+              {
+                conversationId: "chat-1",
+                hasPendingFollowup: false,
+                isDraft: false,
+                isRunning: true,
+                title: "Hidden running chat",
+                updatedAt: "2026-04-21T00:00:00.000Z",
+              },
+            ],
+            kind: "project",
+            selectedConversationId: "chat-visible",
+            workspaceName: "Agent UI",
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      });
+
+    let capturedActions: SessionActionsContextValue | null = null;
+
+    function CaptureActions() {
+      capturedActions = useContext(SessionActionsContext);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      <SessionProvider>
+        <CaptureActions />
+      </SessionProvider>,
+    );
+
+    if (capturedActions == null) {
+      throw new Error("Expected session actions to be available");
+    }
+
+    const actions = capturedActions as SessionActionsContextValue;
+
+    await actions.submitPrompt();
+
+    expect(sendPromptCallCount).toBe(1);
+    expect(
+      sessionStore.getState().promptDraftsByKey[promptDraftKey]?.value ?? "",
+    ).toBe("");
+    expect(sessionStore.getState().queuedPromptsByKey[promptDraftKey]).toEqual([
+      {
+        attachments: [],
+        isPlanningMode: false,
+        isUltraMode: false,
+        value: "Run hidden task",
+      },
+    ]);
+  });
+
+  test("known running conversation summaries queue prompts without sending", async () => {
+    const promptDraftKey = getPromptDraftKey("/workspace/codegraff-gui", "chat-1");
+    if (promptDraftKey == null) {
+      throw new Error("Expected a prompt draft key");
+    }
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot("/workspace/codegraff-gui", "chat-1", {
+        workspaces: [
+          {
+            configurationError: null,
+            configured: true,
+            conversations: [
+              {
+                conversationId: "chat-1",
+                hasPendingFollowup: false,
+                isDraft: false,
+                isRunning: true,
+                title: "Selected chat",
+                updatedAt: "2026-04-21T00:00:00.000Z",
+              },
+            ],
+            kind: "project",
+            selectedConversationId: "chat-1",
+            workspaceName: "Agent UI",
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+    sessionStore.getState().setPromptDraftValue(promptDraftKey, "Queue me");
+
+    let capturedActions: SessionActionsContextValue | null = null;
+
+    function CaptureActions() {
+      capturedActions = useContext(SessionActionsContext);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      <SessionProvider>
+        <CaptureActions />
+      </SessionProvider>,
+    );
+
+    if (capturedActions == null) {
+      throw new Error("Expected session actions to be available");
+    }
+
+    const actions = capturedActions as SessionActionsContextValue;
+
+    await actions.submitPrompt();
+
+    expect(sendPromptCallCount).toBe(0);
+    expect(
+      sessionStore.getState().promptDraftsByKey[promptDraftKey]?.value ?? "",
+    ).toBe("");
+    expect(sessionStore.getState().queuedPromptsByKey[promptDraftKey]).toEqual([
+      {
+        attachments: [],
+        isPlanningMode: false,
+        isUltraMode: false,
+        value: "Queue me",
+      },
+    ]);
+  });
+
+  test("unconfirmed active prompt conflicts restore drafts instead of queueing", async () => {
+    const promptDraftKey = getPromptDraftKey("/workspace/codegraff-gui", "chat-1");
+    if (promptDraftKey == null) {
+      throw new Error("Expected a prompt draft key");
+    }
+    sessionStore
+      .getState()
+      .applySessionSnapshot(createSnapshot("/workspace/codegraff-gui", "chat-1"));
+    sessionStore.getState().setPromptDraftValue(promptDraftKey, "Restore me");
+    sendPromptImpl = async () => {
+      throw new Error("conversation already has an active prompt");
+    };
+    getSessionSnapshotImpl = async () =>
+      createSnapshot("/workspace/codegraff-gui", "chat-1");
+
+    let capturedActions: SessionActionsContextValue | null = null;
+
+    function CaptureActions() {
+      capturedActions = useContext(SessionActionsContext);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      <SessionProvider>
+        <CaptureActions />
+      </SessionProvider>,
+    );
+
+    if (capturedActions == null) {
+      throw new Error("Expected session actions to be available");
+    }
+
+    const actions = capturedActions as SessionActionsContextValue;
+
+    await actions.submitPrompt();
+
+    expect(sendPromptCallCount).toBe(1);
+    expect(sessionStore.getState().promptDraftsByKey[promptDraftKey]?.value).toBe(
+      "Restore me",
+    );
+    expect(sessionStore.getState().queuedPromptsByKey[promptDraftKey]).toBeUndefined();
   });
 
   test("renaming a project updates the workspace label in session state", async () => {
