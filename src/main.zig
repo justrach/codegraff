@@ -4722,6 +4722,7 @@ const usage_text =
     \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
     \\                                   (--host/--port/--token; sessions are --json children)
     \\  graff update [--force|--check]   update graff to the latest GitHub release
+    \\  graff title <prompt>            print the AI tab-title for a prompt (test title styles)
     \\
     \\flags:
     \\  --model <name>   start on this model (same fuzzy resolution as /model)
@@ -5055,7 +5056,7 @@ pub fn main(init: std.process.Init) !void {
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     const is_subcommand = positionals.items.len > 0 and
         (std.mem.eql(u8, positionals.items[0], "login") or std.mem.eql(u8, positionals.items[0], "key") or
-            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update"));
+            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title"));
     var oneshot_prompt: ?[]const u8 = null;
     if (!is_subcommand and positionals.items.len > 0) {
         oneshot_prompt = try std.mem.join(arena, " ", positionals.items);
@@ -5210,6 +5211,19 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const out = &stdout_writer.interface;
     g_out = out;
+
+    // `graff title <prompt>` — print the tab-title the model would generate for
+    // that prompt (one title call, no session). For A/B-ing title prompts/styles.
+    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "title")) {
+        if (positionals.items.len < 2) std.process.fatal("usage: graff title <prompt>", .{});
+        const tprompt = try std.mem.join(arena, " ", positionals.items[1..]);
+        if (titleTask(gpa, io, &client, default_provider, tprompt)) |t| {
+            defer gpa.free(t);
+            try out.print("{s}\n", .{t});
+        } else try out.writeAll("(title generation failed — check your model/key)\n");
+        try out.flush();
+        return;
+    }
 
     // Color only on an interactive terminal, and honor NO_COLOR.
     if (init.environ_map.get("NO_COLOR") == null and (Io.File.stdout().isTty(io) catch false)) {
