@@ -3114,6 +3114,7 @@ var g_steer_visible: std.atomic.Value(bool) = .init(false); // visible live stee
 var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
 var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + Agent.emit)
 var g_force_interrupt = false; // Force-prompt path caused the last interrupt (Ctrl-F/double-enter).
+var g_thinking_fold_request: bool = false; // Ctrl-T in escPressed → fold/unfold the live Thinking block (#92)
 var g_5xx_body_buf: [600]u8 = undefined; // snippet of the last 5xx/429 error body
 var g_5xx_body_len: usize = 0; // 0 = no body captured
 
@@ -9331,6 +9332,8 @@ const Agent = struct {
     thinking_rows: usize = 0, // on-screen rows the live Thinking block spans (#75 collapse)
     thinking_col: usize = 0, // running column within the block, for soft-wrap counting
     thinking_overflow: bool = false, // block scrolled past the screen -> don't erase on collapse
+    thinking_folded: bool = false, // user folded the live Thinking block (#92)
+    thinking_text: std.ArrayList(u8) = .empty, // buffered reasoning, so a fold can unfold (#92)
     ai_title_done: bool = false, // the one-time AI tab-title call has run this session
     arg_live: ArgLive = .{}, // live attempt_completion/ask_user argument text
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
@@ -10702,6 +10705,8 @@ const Agent = struct {
             self.thinking_col = 0;
             self.thinking_overflow = false;
         }
+        self.thinking_text.appendSlice(self.gpa, chunk) catch {};
+        if (self.thinking_folded) return; // folded: buffer only, don't draw the live block
         w.writeAll(chunk) catch return;
         w.flush() catch return;
         advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), chunk);
@@ -10716,11 +10721,35 @@ const Agent = struct {
     fn closeThinkingBlock(self: *Agent) void {
         if (!self.thinking_open) return;
         self.thinking_open = false;
+        self.thinking_folded = false;
         const w = self.out orelse return;
         if (!self.thinking_overflow and self.thinking_rows >= 1 and use_color) {
             w.print("\x1b[{d}F\x1b[0J{s}✓ Thought{s}\n\n", .{ self.thinking_rows, style.dim, style.reset }) catch return;
         } else {
             w.print("{s}\n{s}✓ Thought{s}\n\n", .{ style.reset, style.dim, style.reset }) catch return;
+        }
+        w.flush() catch return;
+    }
+
+    /// Ctrl-T: fold/unfold the live "Thinking" block in place (#92/#85). Only
+    /// acts on an open, on-screen block; folding erases it to a one-line marker,
+    /// unfolding re-streams the buffered reasoning. Cursor math mirrors
+    /// closeThinkingBlock (erase `thinking_rows` lines up, clear to end).
+    fn toggleThinkingFold(self: *Agent) void {
+        if (!self.thinking_open or self.thinking_overflow or !use_color) return;
+        const w = self.out orelse return;
+        if (!self.thinking_folded) {
+            w.print("\x1b[{d}F\x1b[0J{s}[+] Thinking (folded · ^T){s}\n", .{ self.thinking_rows, style.dim, style.reset }) catch return;
+            self.thinking_folded = true;
+            self.thinking_rows = 1;
+            self.thinking_col = 0;
+        } else {
+            w.print("\x1b[1F\x1b[0J{s}Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
+            self.thinking_folded = false;
+            self.thinking_rows = 1;
+            self.thinking_col = 0;
+            w.writeAll(self.thinking_text.items) catch return;
+            advanceThinkingRows(&self.thinking_rows, &self.thinking_col, termCols(), self.thinking_text.items);
         }
         w.flush() catch return;
     }
@@ -10731,6 +10760,8 @@ const Agent = struct {
         self.thinking_open = false; // fresh "Thinking" block state per request
         self.thinking_rows = 0;
         self.thinking_col = 0;
+        self.thinking_folded = false;
+        self.thinking_text.clearRetainingCapacity();
         self.thinking_overflow = false;
         defer self.closeThinkingBlock(); // close a reasoning-only turn's block
         const gpa = self.gpa;
@@ -10915,6 +10946,10 @@ const Agent = struct {
             try full.writer.writeAll(line.writer.buffered());
             try full.writer.writeByte('\n');
             self.printDelta(line.writer.buffered());
+            if (g_thinking_fold_request) {
+                g_thinking_fold_request = false;
+                self.toggleThinkingFold();
+            }
             line.clearRetainingCapacity();
             if ((orig_tio != null and escPressed(true)) or (self.sub and esc_cancel.load(.acquire))) {
                 self.flushStreamTail();
@@ -11041,6 +11076,9 @@ const Agent = struct {
                     _ = g_steer_buf.pop();
                     if (echo) steerEcho("\x08 \x08");
                 }
+                continue;
+            } else if (c == 0x14) { // Ctrl-T: fold/unfold the live Thinking block (#92)
+                g_thinking_fold_request = true;
                 continue;
             } else if (c < 0x20) {
                 continue; // other control bytes: ignore
