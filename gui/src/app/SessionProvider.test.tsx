@@ -216,6 +216,7 @@ mock.module("../services/desktop/client", () => ({
 
 const { SessionActionsContext } = await import("./SessionContext");
 const { SessionProvider } = await import("./SessionProvider");
+const { resetPromptSubmitLocksForTest } = await import("./promptSubmitLock");
 const { getPromptDraftKey } = await import("./sessionSnapshot");
 const { resetSessionStore, sessionStore } = await import("./sessionStore");
 
@@ -368,6 +369,7 @@ describe("SessionProvider", () => {
       createSnapshot("/workspace/codegraff-gui", "chat-1", {
         savedWorkspaces: [{ id: workspaceId, name, updatedAt: 2 }],
       });
+    resetPromptSubmitLocksForTest();
     resetSessionStore();
   });
 
@@ -1111,6 +1113,88 @@ describe("SessionProvider", () => {
     ).toEqual({
       "req-plan-complete": "muse",
     });
+  });
+
+  test("duplicate prompt submissions for the same draft key are ignored while in flight", async () => {
+    const promptDraftKey = getPromptDraftKey("/workspace/codegraff-gui", null);
+    if (promptDraftKey == null) {
+      throw new Error("Expected a prompt draft key");
+    }
+    const sendRequest = deferred<SessionSnapshot>();
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot("/workspace/codegraff-gui", "unused", {
+        activeConversationId: null,
+        conversationViews: [],
+        workspaces: [
+          {
+            configurationError: null,
+            configured: true,
+            conversations: [],
+            kind: "project",
+            selectedConversationId: null,
+            workspaceName: "Agent UI",
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+    sessionStore.getState().setBoardSelection({
+      kind: "workspace-draft",
+      workspacePath: "/workspace/codegraff-gui",
+    });
+    sessionStore.getState().setPromptDraftValue(promptDraftKey, "Send once");
+    sendPromptImpl = async () => await sendRequest.promise;
+
+    let capturedActions: SessionActionsContextValue | null = null;
+
+    function CaptureActions() {
+      capturedActions = useContext(SessionActionsContext);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      <SessionProvider>
+        <CaptureActions />
+      </SessionProvider>,
+    );
+
+    if (capturedActions == null) {
+      throw new Error("Expected session actions to be available");
+    }
+
+    const actions = capturedActions as SessionActionsContextValue;
+    const firstSubmit = actions.submitPrompt({
+      draft: "Send once",
+      workspacePath: "/workspace/codegraff-gui",
+      conversationId: null,
+    });
+    const secondSubmit = actions.submitPrompt({
+      draft: "Send once",
+      workspacePath: "/workspace/codegraff-gui",
+      conversationId: null,
+    });
+
+    expect(sendPromptCallCount).toBe(1);
+    await secondSubmit;
+    sendRequest.resolve(
+      createSnapshot("/workspace/codegraff-gui", "chat-2", {
+        activeConversationId: "chat-2",
+        conversationViews: [
+          {
+            activeRequestIds: ["req-1"],
+            conversationId: "chat-2",
+            followup: null,
+            messages: [],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+    await firstSubmit;
+
+    expect(sendPromptCallCount).toBe(1);
   });
 
   test("active prompt conflicts queue the draft instead of restoring it for repeated Enter", async () => {

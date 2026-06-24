@@ -47,6 +47,7 @@ import {
   finishPromptQueueDrain,
   tryBeginPromptQueueDrain,
 } from "./promptQueueDrain";
+import { beginPromptSubmit, finishPromptSubmit } from "./promptSubmitLock";
 import type { SessionProviderProps } from "./types/app";
 import { useSessionBootstrap } from "../hooks/useSessionBootstrap";
 
@@ -631,6 +632,10 @@ export function SessionProvider({ children }: SessionProviderProps) {
           store.clearAttachments(promptDraftKey);
           return;
         }
+        if (!beginPromptSubmit(promptDraftKey)) {
+          return;
+        }
+        try {
         const prompt = appendAttachmentsToPrompt(trimmedPrompt, attachments);
         const restorePromptDraft = () => {
           const store = sessionStore.getState();
@@ -730,6 +735,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
           sessionStore
             .getState()
             .setPromptDraftPending(nextPromptDraftKey, false);
+        }
+        } finally {
+          finishPromptSubmit(promptDraftKey);
         }
       },
       updatePromptSettings: async (input: {

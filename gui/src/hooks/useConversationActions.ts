@@ -23,6 +23,7 @@ import {
   finishPromptQueueDrain,
   tryBeginPromptQueueDrain,
 } from "@/app/promptQueueDrain";
+import { beginPromptSubmit, finishPromptSubmit } from "@/app/promptSubmitLock";
 import * as desktopClient from "@/services/desktop/client";
 import type { SubmitPromptInput } from "@/app/types/sessionContext";
 import type { ChatBinding } from "@/services/desktop/types/contracts";
@@ -67,6 +68,10 @@ export function useConversationActions(binding?: ChatBinding | null) {
       attachments: ReturnType<typeof getAttachments>,
     ) => {
       if (key == null) {
+        return;
+      }
+
+      if (!beginPromptSubmit(key)) {
         return;
       }
 
@@ -123,6 +128,7 @@ export function useConversationActions(binding?: ChatBinding | null) {
         return;
       } finally {
         sessionStore.getState().setPromptDraftPending(key, false);
+        finishPromptSubmit(key);
       }
     };
 
