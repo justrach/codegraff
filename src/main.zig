@@ -3165,6 +3165,33 @@ fn animStarfield(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     try animThinking(w);
 }
 
+/// Check .harness/settings.json for "dev_spinner": if truthy, the
+/// caller should use the normal spinner regardless of host profile.
+var g_dev_spinner_opt_out: bool = false;
+
+fn devSpinnerOptOut(_: Io, _: Allocator) bool {
+    return g_dev_spinner_opt_out;
+}
+
+fn loadDevSpinnerOptOut(io: Io, arena: Allocator, environ: anytype) void {
+    if (environ.get("GRAFF_DEV_SPINNER")) |v| {
+        if (!std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false")) {
+            g_dev_spinner_opt_out = true;
+            return;
+        }
+    }
+    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
+    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
+    if (v != .object) return;
+    const ds = v.object.get("dev_spinner") orelse return;
+    g_dev_spinner_opt_out = switch (ds) {
+        .bool => |b| b,
+        .integer => |n| n != 0,
+        .string => |s| !std.mem.eql(u8, s, "0") and !std.mem.eql(u8, s, "false"),
+        else => false,
+    };
+}
+
 /// Load {"animation": "<name>|random|off"} from settings at startup.
 fn loadAnimationSetting(io: Io, arena: Allocator) void {
     const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
@@ -5280,10 +5307,11 @@ pub fn main(init: std.process.Init) !void {
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
+    loadDevSpinnerOptOut(io, arena, init.environ_map);
     // PRANK — remove in a future release (see the blackfloofie_poop_prank flag).
     // A poop thinking spinner just for blackfloofie, when running from
     // their home dir. Still overridable at runtime with /animation.
-    if (blackfloofie_poop_prank and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
+    if (blackfloofie_poop_prank and !devSpinnerOptOut(io, arena) and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
         if (animIndex("poop")) |di| {
             g_anim_index = di;
             g_anim_off = false;
@@ -10381,7 +10409,7 @@ const Agent = struct {
                 }
                 _start = _pos + 1;
             }
-            if (g_obfs_select) {
+            if (g_obfs_select and !devSpinnerOptOut(self.io, self.arena)) {
                 if (animIndex("comet-tail")) |ix| g_anim_current = ix;
             }
         }
