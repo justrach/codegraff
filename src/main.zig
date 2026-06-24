@@ -6025,26 +6025,9 @@ pub fn main(init: std.process.Init) !void {
         // model can see (otherwise it only gets the path and resorts to OCR).
         stageGuiImageAttachment(&root, msg);
 
-        // TUI/session header: once the first real prompt materializes the chat,
-        // show what this terminal tab is working on and the exact folder, like
-        // the GUI conversation header. Keep the terminal/window title in sync
-        // at the start of each user turn.
-        if (!json_mode) {
-            // Keep the AI summary title once we have it (generated after the
-            // first turn, or restored from a saved session) instead of resetting
-            // the header back to the raw prompt on every later turn.
-            const turn_title = root.session_title orelse titleFromPrompt(base_msg);
-            setTerminalTitle(out, turn_title, g_cwd_display);
-            if (!root.tui_header_shown) {
-                try printSessionHeader(out, turn_title, g_cwd_display);
-                root.tui_header_shown = true;
-            }
-        }
-
-        // Generate the AI tab-title concurrently with the turn (io.async) instead
-        // of a blocking call after it — by the time the answer lands the title is
-        // usually ready. Applied after the turn (below); this defer reaps the
-        // future if the turn bails out early (errored/interrupted `continue`).
+        // Generate the AI tab-title concurrently (io.async), spawned BEFORE the
+        // header so the first-turn header can wait for the summary title; reaped
+        // after the turn (below) or by this defer on an early bail-out.
         var title_fut: ?Io.Future(?[]const u8) = null;
         if (!json_mode and root.ai_title and !root.ai_title_done) {
             root.ai_title_done = true;
@@ -6053,6 +6036,33 @@ pub fn main(init: std.process.Init) !void {
         defer if (title_fut) |*f| {
             _ = f.await(io);
         };
+
+        // TUI/session header: once the first real prompt materializes the chat,
+        // show what this terminal tab is working on and the exact folder, and
+        // keep the window title in sync each turn.
+        if (!json_mode) {
+            if (!root.tui_header_shown) {
+                // First turn: wait for the AI summary title before printing the
+                // header (it scrolls into scrollback and can't be redrawn) so it
+                // reads as a summary, not the raw prompt (#91). Nothing has
+                // streamed yet, so the wait is invisible.
+                if (title_fut) |*f| {
+                    if (f.await(io)) |t| {
+                        root.session_title = arena.dupe(u8, t) catch null;
+                        gpa.free(t);
+                    }
+                    title_fut = null; // consumed; don't await twice
+                }
+                const turn_title = root.session_title orelse titleFromPrompt(base_msg);
+                setTerminalTitle(out, turn_title, g_cwd_display);
+                try printSessionHeader(out, turn_title, g_cwd_display);
+                root.tui_header_shown = true;
+            } else {
+                // Later turns: keep the OSC tab/window title synced; header shown.
+                const turn_title = root.session_title orelse titleFromPrompt(base_msg);
+                setTerminalTitle(out, turn_title, g_cwd_display);
+            }
+        }
 
         // "ultracode" codeword or persistent /ultracode mode: opt turns into multi-agent workflow mode.
         const ultracode_msg = try applyUltracodeSteering(arena, msg, root.ultracode_mode);

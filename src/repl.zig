@@ -222,6 +222,12 @@ pub const Model = struct {
     goal: ?[]const u8 = null, // owned
     anim: Anim = .braille,
     scroll: usize = 0,
+    // Mouse drag-selection → auto-copy (OSC52). Screen rows, 0-based.
+    sel_anchor_row: ?usize = null,
+    sel_cur_row: ?usize = null,
+    view_start: usize = 0,
+    view_rows: usize = 0,
+    visible_text: std.array_list.Managed([]const u8) = undefined, // owned plaintext of visible rows
     dump_next: bool = false,
     quit_requested: bool = false,
     keepcontext: bool = true,
@@ -242,6 +248,7 @@ pub const Model = struct {
             .alloc = alloc,
             .input = zz.TextInput.init(alloc),
             .history = std.array_list.Managed(Entry).init(alloc),
+            .visible_text = std.array_list.Managed([]const u8).init(alloc),
             .chat = g_turn_fn != null,
         };
         self.input.setPrompt("> ");
@@ -268,6 +275,8 @@ pub const Model = struct {
         self.history.deinit();
         if (self.goal) |g| self.alloc.free(g);
         if (self.session_name) |s| self.alloc.free(s);
+        for (self.visible_text.items) |l| self.alloc.free(l);
+        self.visible_text.deinit();
         self.input.deinit();
     }
 
@@ -547,7 +556,7 @@ pub const Model = struct {
         self.session_name = if (name.len > 0) (self.alloc.dupe(u8, name) catch null) else null;
     }
 
-    pub fn update(self: *Model, msg: Msg, _: *zz.Context) zz.Cmd(Msg) {
+    pub fn update(self: *Model, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
         switch (msg) {
             .key => |k| switch (k.key) {
                 .page_up => self.scroll +|= 10,
@@ -573,12 +582,28 @@ pub const Model = struct {
                 }
                 return .none;
             },
-            .mouse => |m| if (m.event_type == .press) {
-                if (m.button == .wheel_up) {
-                    self.scroll +|= 3;
-                } else if (m.button == .wheel_down) {
-                    self.scroll -|= 3;
-                }
+            .mouse => |m| switch (m.event_type) {
+                .press => {
+                    if (m.button == .wheel_up) {
+                        self.scroll +|= 3;
+                    } else if (m.button == .wheel_down) {
+                        self.scroll -|= 3;
+                    } else if (m.button == .left) {
+                        self.sel_anchor_row = m.y; // begin a drag-selection
+                        self.sel_cur_row = m.y;
+                    }
+                },
+                .drag => {
+                    if (m.button == .left and self.sel_anchor_row != null) self.sel_cur_row = m.y;
+                },
+                .release => {
+                    if (self.sel_anchor_row) |a0| {
+                        self.copySelection(ctx, a0, self.sel_cur_row orelse a0);
+                        self.sel_anchor_row = null;
+                        self.sel_cur_row = null;
+                    }
+                },
+                .move => {},
             },
         }
         return .none;
@@ -686,17 +711,30 @@ pub const Model = struct {
         const n = lines.items.len;
 
         var out = std.array_list.Managed(u8).init(a);
+        // Reset the per-frame visible-row snapshot (Model-owned plaintext, so a
+        // mouse row can be mapped back to conversation text for copy — #91).
+        for (self.visible_text.items) |l| self.alloc.free(l);
+        self.visible_text.clearRetainingCapacity();
+        self.view_start = 0;
+        self.view_rows = 0;
         if (n <= view_h) {
             self.scroll = 0;
             try out.appendSlice(top.items);
             for (0..(view_h - n)) |_| try out.append('\n');
+            self.view_rows = n;
+            for (lines.items[0..n]) |ln| {
+                self.visible_text.append(self.alloc.dupe(u8, stripControl(a, ln)) catch continue) catch {};
+            }
         } else {
             const max_scroll = n - view_h;
             if (self.scroll > max_scroll) self.scroll = max_scroll;
             const start = max_scroll - self.scroll;
+            self.view_start = start;
+            self.view_rows = view_h;
             for (lines.items[start .. start + view_h]) |ln| {
                 try out.appendSlice(ln);
                 try out.append('\n');
+                self.visible_text.append(self.alloc.dupe(u8, stripControl(a, ln)) catch continue) catch {};
             }
         }
         try out.appendSlice(bottom.items);
@@ -709,6 +747,32 @@ pub const Model = struct {
 
     pub fn view(self: *Model, ctx: *const zz.Context) []const u8 {
         return self.render(ctx.allocator, ctx.width, ctx.height, ctx.elapsed / std.time.ns_per_ms) catch "repl: render error";
+    }
+
+    /// Copy the conversation lines spanned by a drag-selection (screen rows
+    /// r0..r1 inclusive, 0-based) to the clipboard via OSC52. Line-granular —
+    /// restores copy after mouse mode disabled native terminal selection (#91).
+    fn copySelection(self: *Model, ctx: *zz.Context, r0: usize, r1: usize) void {
+        if (self.view_rows == 0 or self.visible_text.items.len == 0) return;
+        const lo = @min(r0, r1);
+        var hi = @max(r0, r1);
+        if (lo >= self.view_rows) return; // selection started below the conversation
+        if (hi >= self.view_rows) hi = self.view_rows - 1;
+        if (hi >= self.visible_text.items.len) hi = self.visible_text.items.len - 1;
+
+        var buf = std.array_list.Managed(u8).init(self.alloc);
+        defer buf.deinit();
+        var r = lo;
+        while (r <= hi) : (r += 1) {
+            const ln = std.mem.trimEnd(u8, self.visible_text.items[r], " \t");
+            buf.appendSlice(ln) catch return;
+            if (r != hi) buf.append('\n') catch return;
+        }
+        const text = std.mem.trim(u8, buf.items, " \t\r\n");
+        if (text.len == 0) return;
+        _ = ctx.setClipboard(text) catch false;
+        // render() is hash-gated and may skip its flush; push the OSC52 out now.
+        if (ctx._terminal) |term| term.flush() catch {};
     }
 };
 
