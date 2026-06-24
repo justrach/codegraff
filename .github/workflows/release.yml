@@ -29,7 +29,7 @@ jobs:
           # (anonymous, opt out with --no-telemetry / GRAFF_NO_TELEMETRY).
           TELEMETRY_ENDPOINT="https://harness-telemetry.rachpradhan.workers.dev"
           for target in aarch64-macos x86_64-macos x86_64-linux aarch64-linux x86_64-windows aarch64-windows; do
-            zig build -Doptimize=ReleaseSafe -Dtarget="$target" -Dversion="$VERSION" -Dtelemetry-endpoint="$TELEMETRY_ENDPOINT"
+            zig build -Doptimize=ReleaseFast -Dtarget="$target" -Dversion="$VERSION" -Dtelemetry-endpoint="$TELEMETRY_ENDPOINT"
             name="graff-$target"
             mkdir "$name"
             # Windows targets emit graff.exe; every other target emits graff.

@@ -2374,7 +2374,7 @@ fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
     g_codedb_file_mu.unlock(io);
     // Cache miss: probe once, then store. On error, assume indexed (safe:
     // the guard still redirects to codedb, which is the status-quo behavior).
-    const run = runCapped(gpa, io, &.{ "codedb", "outline", path }, 512, 256) catch return true;
+    const run = runCapped(gpa, io, &.{ "codedb", "outline", path }, 512, 256, 0) catch return true;
     defer gpa.free(run.stdout);
     defer gpa.free(run.stderr);
     const not_indexed = std.mem.indexOf(u8, run.stdout, "not indexed") != null or
@@ -2876,7 +2876,7 @@ var g_codedbpro_licensed: bool = false;
 /// Run the companion's `probe` — its own harness-gating capability check, the
 /// same gate the codedb-pro CLI hooks use. Exit 0 == licensed and usable.
 fn probeCodedbproLicensed(gpa: Allocator, io: Io) bool {
-    const run = runCapped(gpa, io, &.{ "codedb-pro", "probe" }, 256, 256) catch return false;
+    const run = runCapped(gpa, io, &.{ "codedb-pro", "probe" }, 256, 256, 0) catch return false;
     defer {
         gpa.free(run.stdout);
         gpa.free(run.stderr);
@@ -2954,6 +2954,11 @@ var g_anim_index: usize = 0; // /animation selection (index into anims)
 var g_anim_random = false; // pick a fresh one per request
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
+// 🎂 Birthday easter egg (flagged, temporary) — when graff runs from
+// limyuxi/yxlyx's home dir it paints her Ghostty white (OSC 11 bg + OSC 10 fg),
+// reset on exit. Cosmetic and gated to her cwd, like the old dragon spinner.
+// Flip to false / delete to remove after the bday.
+const limyuxi_birthday_white = true;
 var g_obfs_select: bool = false; // auto-detect for legacy host profiles
 // PRANK — remove in a future release. Gives blackfloofie a poop
 // thinking spinner when graff runs from their home dir (/Users/blackfloofie). To
@@ -3769,7 +3774,7 @@ fn isImagePath(name: []const u8) bool {
 /// walk below. Returns false when codedb is missing, errors, or knows no
 /// files — the caller falls back to the walk. Entries are gpa-owned.
 fn collectCodedbFiles(io: Io, gpa: Allocator, files: *std.ArrayList([]const u8)) bool {
-    const run = runCapped(gpa, io, &.{ "codedb", "glob", "**/*" }, bash_stdout_cap, 4096) catch return false;
+    const run = runCapped(gpa, io, &.{ "codedb", "glob", "**/*" }, bash_stdout_cap, 4096, 0) catch return false;
     defer {
         gpa.free(run.stdout);
         gpa.free(run.stderr);
@@ -5307,6 +5312,21 @@ pub fn main(init: std.process.Init) !void {
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
+    // 🎂 Birthday easter egg — paint limyuxi/yxlyx's Ghostty white while graff
+    // runs from her home dir, and reset it on exit. Cosmetic, flagged, gated to
+    // her cwd like the old dragon spinner. Remove (the flag) after the bday.
+    const limyuxi_white = limyuxi_birthday_white and use_color and !json_mode and
+        (std.mem.eql(u8, g_cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, g_cwd_display, "/Users/limyuxi/"));
+    if (limyuxi_white) {
+        // OSC 11 → white background, OSC 10 → near-black text so it stays
+        // readable. Ghostty honors both; reset with OSC 110/111 on exit.
+        out.writeAll("\x1b]11;#ffffff\x07\x1b]10;#1a1a1a\x07") catch {};
+        out.flush() catch {};
+    }
+    defer if (limyuxi_white) {
+        out.writeAll("\x1b]110\x07\x1b]111\x07") catch {}; // reset fg + bg
+        out.flush() catch {};
+    };
     loadDevSpinnerOptOut(io, arena, init.environ_map);
     // PRANK — remove in a future release (see the blackfloofie_poop_prank flag).
     // A poop thinking spinner just for blackfloofie, when running from
@@ -12933,12 +12953,20 @@ fn rawFetch(gpa: Allocator, client: *std.http.Client, url: []const u8) ToolOutpu
     return .{ .text = aw.toOwnedSlice() catch return .{ .is_error = true } };
 }
 
+/// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
+/// threads with no TTY, so there is no Esc to kill a runaway command — without
+/// this, a codedb refusal that pushes a subagent onto an unfiltered `grep ~/`
+/// hangs the whole workflow for ~48 min (#93). The root keeps its Esc-only,
+/// no-deadline behavior (a human is watching and may want a long build).
+const subagent_bash_deadline_ms: u64 = 120 * 1000;
+
 const CappedRun = struct {
     term: std.process.Child.Term,
     stdout: []u8,
     stderr: []u8,
     stdout_truncated: bool,
     stderr_truncated: bool,
+    timed_out: bool,
 };
 
 /// Like `std.process.run`, but hitting an output cap *truncates* instead of
@@ -12947,7 +12975,12 @@ const CappedRun = struct {
 /// still runs to completion so its exit code is real. A chatty `python`
 /// (or an accidental `cat` of something huge) costs the child's own
 /// process memory, never the harness's.
-fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize, stderr_cap: usize) !CappedRun {
+///
+/// `deadline_ms` is a wall-clock kill switch: 0 means "no deadline" (the
+/// root's Esc is the only stop), non-zero kills the child once it has run
+/// that long and reports `timed_out`. Subagents pass a real deadline since
+/// they have no Esc (#93).
+fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize, stderr_cap: usize, deadline_ms: u64) !CappedRun {
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .stdin = .ignore,
@@ -12968,8 +13001,12 @@ fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize
 
     // Fill in 200ms ticks so a root Esc (Agent.esc_cancel, set by the
     // tool-join watcher) kills a long-running child instead of waiting it
-    // out — this is where a hung `sleep`-style command actually dies.
+    // out — this is where a hung `sleep`-style command actually dies. A
+    // non-zero deadline_ms is the same kill switch on a wall clock, for
+    // subagents that have no Esc to press (#93).
     var esc_killed = false;
+    var timed_out = false;
+    const t0: Io.Timestamp = .now(io, .awake);
     loop: while (true) {
         multi_reader.fill(64, .{ .duration = .{ .raw = .fromMilliseconds(200), .clock = .awake } }) catch |err| switch (err) {
             error.EndOfStream => break :loop,
@@ -12986,11 +13023,16 @@ fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize
             child.kill(io);
             break :loop;
         }
+        if (deadline_ms > 0 and t0.untilNow(io, .awake).toMilliseconds() >= deadline_ms) {
+            timed_out = true;
+            child.kill(io);
+            break :loop;
+        }
     }
-    if (!esc_killed) try multi_reader.checkAnyError(); // killed streams error by design
+    if (!esc_killed and !timed_out) try multi_reader.checkAnyError(); // killed streams error by design
 
     // kill() already reaped the child (wait would assert on id == null).
-    const term: std.process.Child.Term = if (esc_killed) .{ .signal = .TERM } else try child.wait(io);
+    const term: std.process.Child.Term = if (esc_killed or timed_out) .{ .signal = .TERM } else try child.wait(io);
     const stdout = if (saved[0]) |b| b else try gpa.dupe(u8, readers[0].buffered());
     errdefer gpa.free(stdout);
     const stderr = if (saved[1]) |b| b else try gpa.dupe(u8, readers[1].buffered());
@@ -13000,6 +13042,7 @@ fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize
         .stderr = stderr,
         .stdout_truncated = saved[0] != null,
         .stderr_truncated = saved[1] != null,
+        .timed_out = timed_out,
     };
 }
 
@@ -13309,7 +13352,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.", .{ job.id, job.cmd, job.id }) };
         }
         const sh = shellArgv(cmd);
-        const run = try runCapped(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap);
+        const run = try runCapped(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, if (ctx.from_sub) subagent_bash_deadline_ms else 0);
         defer gpa.free(run.stdout);
         defer gpa.free(run.stderr);
 
@@ -13324,7 +13367,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (run.stdout_truncated) try w.print("\n[stdout truncated at {d} KB]", .{bash_stdout_cap / 1024});
         if (run.stderr.len > 0) try w.print("\n[stderr]\n{s}", .{run.stderr});
         if (run.stderr_truncated) try w.print("\n[stderr truncated at {d} KB]", .{bash_stderr_cap / 1024});
-        if (exit_code) |code| {
+        if (run.timed_out) {
+            try w.print("\n[timed out after {d}s and was killed — too long for a subagent. Don't retry as-is: scope it to specific paths or globs instead of scanning the whole directory, or report back what you need run.]", .{subagent_bash_deadline_ms / 1000});
+        } else if (exit_code) |code| {
             if (code != 0) try w.print("\n[exit code {d}]", .{code});
         } else try w.writeAll("\n[terminated abnormally]");
         if (run.stdout.len == 0 and run.stderr.len == 0 and exit_code == 0) try w.writeAll("(no output)");
@@ -13352,7 +13397,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // SPAs come back blank — any failure or empty result falls through
         // to the harness's own HTTP client below.
         if (!skillDisabled("kuri") and binOnPath(io, "kuri-fetch")) kuri: {
-            const run = runCapped(gpa, io, &.{ "kuri-fetch", "-q", "--no-color", url }, webfetch_cap, 4096) catch break :kuri;
+            const run = runCapped(gpa, io, &.{ "kuri-fetch", "-q", "--no-color", url }, webfetch_cap, 4096, 0) catch break :kuri;
             defer {
                 gpa.free(run.stdout);
                 gpa.free(run.stderr);
@@ -13446,7 +13491,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // failure, including the tool simply not being on PATH, falls back
         // to the native in-place write below.
         zp: {
-            const run = runCapped(gpa, io, &.{ "zigpatch", path, "-p", old, "--all", "--content", new }, 4096, 4096) catch break :zp;
+            const run = runCapped(gpa, io, &.{ "zigpatch", path, "-p", old, "--all", "--content", new }, 4096, 4096, 0) catch break :zp;
             defer {
                 gpa.free(run.stdout);
                 gpa.free(run.stderr);
