@@ -2809,10 +2809,10 @@ fn titleTask(gpa: Allocator, io: Io, client: *std.http.Client, provider: Provide
         .sub = true, // pool thread: never touches stdout or the main agent's state
         .label = "title",
         .out = null,
-        .sys_override = "You write short, literal tab-label titles for a coding session. Reply with only the title.",
+        .sys_override = "You summarize what a coding session is about in a short, natural phrase. Reply with only the phrase.",
     };
     defer agent.tools_used.deinit(gpa);
-    const instr = std.fmt.allocPrint(arena, "Write a terse tab-label title for this task: 3-6 words, Title Case, no quotes, no trailing punctuation, no preamble. Reply with ONLY the title.\n\nTask:\n{s}", .{prompt}) catch return null;
+    const instr = std.fmt.allocPrint(arena, "In a short natural phrase (about 3-8 words, sentence case, no quotes, no period), say what the user is working on — e.g. 'defining what a dragon is', 'fixing the login bug', 'planning the release'. Reply with ONLY the phrase.\n\nTask:\n{s}", .{prompt}) catch return null;
     agent.messages.append(textMessage(arena, "user", instr) catch return null) catch return null;
     const root = agent.request(null) catch return null;
     const cleaned = cleanTitle(assistantText(provider.kind, root)) orelse return null;
