@@ -5386,8 +5386,12 @@ pub fn main(init: std.process.Init) !void {
 
     // Save from the start: if the harness is killed (Ctrl+C / SIGINT) before
     // any turn completes, the session file is already on disk with the initial
-    // state (provider, model, settings) so nothing is lost.
-    saveSession(&root, arena, root.session_name) catch {};
+    // state (provider, model, settings) so nothing is lost. EXCEPT when
+    // resuming: the resume target already holds the real conversation and
+    // loadSession below restores it — writing the empty initial state here
+    // would clobber the very session we're about to read back (data loss).
+    const will_resume = resume_flag != null and !new_session_flag and !no_resume_flag;
+    if (!will_resume) saveSession(&root, arena, root.session_name) catch {};
 
     if (oneshot_prompt != null and resume_flag != null and !new_session_flag and !no_resume_flag) {
         loadSession(&root, keys, arena, root.session_name) catch {};
@@ -5467,7 +5471,9 @@ pub fn main(init: std.process.Init) !void {
                 const est_path = try std.fmt.allocPrint(arena, "{s}{s}", .{ root.session_name, session_ext });
                 const est: u64 = if (Io.Dir.cwd().statFile(io, est_path, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
                 if (!json_mode) {
-                    const restored_title = firstUserTitle(arena, root.messages);
+                    // Prefer the saved AI summary; fall back to the first user
+                    // message only for older sessions that have no saved title.
+                    const restored_title = root.session_title orelse firstUserTitle(arena, root.messages);
                     setTerminalTitle(out, restored_title, g_cwd_display);
                     try printSessionHeader(out, restored_title, g_cwd_display);
                     root.tui_header_shown = true;
@@ -5753,7 +5759,10 @@ pub fn main(init: std.process.Init) !void {
         // the GUI conversation header. Keep the terminal/window title in sync
         // at the start of each user turn.
         if (!json_mode) {
-            const turn_title = titleFromPrompt(base_msg);
+            // Keep the AI summary title once we have it (generated after the
+            // first turn, or restored from a saved session) instead of resetting
+            // the header back to the raw prompt on every later turn.
+            const turn_title = root.session_title orelse titleFromPrompt(base_msg);
             setTerminalTitle(out, turn_title, g_cwd_display);
             if (!root.tui_header_shown) {
                 try printSessionHeader(out, turn_title, g_cwd_display);
@@ -6591,6 +6600,8 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.last_context_tokens = 0;
         root.last_cache_read = 0;
         root.tui_header_shown = false;
+        root.session_title = null; // re-summarize the now-empty conversation
+        root.ai_title_done = false;
         root.todos.clearRetainingCapacity();
         saveSession(root, arena, root.session_name) catch {};
         setTerminalTitle(out, "Chat", g_cwd_display);
@@ -6606,6 +6617,8 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.goal = null;
         root.ultracode_mode = false;
         root.session_title = null;
+        root.ai_title_done = false; // let the new session earn its own AI title
+        root.tui_header_shown = false;
         root.session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(root.io)});
         saveSession(root, arena, root.session_name) catch {};
         try out.print("new session → {s}{s}\n", .{ root.session_name, session_ext });
@@ -6618,6 +6631,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.writeAll("usage: /rename <title>\n");
         } else {
             root.session_title = try arena.dupe(u8, title);
+            root.ai_title_done = true; // a manual /rename wins over the auto-titler
             saveSession(root, arena, root.session_name) catch {};
             try out.print("session title → {s}\n", .{title});
         }
