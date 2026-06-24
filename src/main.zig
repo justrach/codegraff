@@ -2953,8 +2953,8 @@ var g_anim_index: usize = 0; // /animation selection (index into anims)
 var g_anim_random = false; // pick a fresh one per request
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
-// PRANK — remove in a future release. Gives blackfloofie (Rach) a poop
-// thinking spinner when graff runs from their home dir (/Users/rach). To
+// PRANK — remove in a future release. Gives blackfloofie a poop
+// thinking spinner when graff runs from their home dir (/Users/blackfloofie). To
 // remove: delete this flag, animPoop, the "poop" anims entry, and the cwd
 // hook in main.
 const blackfloofie_poop_prank = true;
@@ -5262,9 +5262,9 @@ pub fn main(init: std.process.Init) !void {
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     // PRANK — remove in a future release (see the blackfloofie_poop_prank flag).
-    // A poop thinking spinner just for blackfloofie (Rach), when running from
+    // A poop thinking spinner just for blackfloofie, when running from
     // their home dir. Still overridable at runtime with /animation.
-    if (blackfloofie_poop_prank and (std.mem.eql(u8, g_cwd_display, "/Users/rach") or std.mem.startsWith(u8, g_cwd_display, "/Users/rach/"))) {
+    if (blackfloofie_poop_prank and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
         if (animIndex("poop")) |di| {
             g_anim_index = di;
             g_anim_off = false;
