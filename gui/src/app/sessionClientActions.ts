@@ -7,6 +7,8 @@ import type {
   WorkspacePromptSettingsUpdateInput,
 } from "./types/sessionClientActions";
 
+const promptSettingsUpdateSeqByWorkspace = new Map<string, number>();
+
 export async function runWorkspaceRuntimeStatusAction(
   workspacePath: string,
   action: () => Promise<RuntimeStatus>,
@@ -64,6 +66,13 @@ export async function updateWorkspacePromptSettings(
   workspacePath: string,
   input: WorkspacePromptSettingsUpdateInput,
 ) {
+  const requestSeq =
+    (promptSettingsUpdateSeqByWorkspace.get(workspacePath) ?? 0) + 1;
+  promptSettingsUpdateSeqByWorkspace.set(workspacePath, requestSeq);
+
+  const isLatestRequest = () =>
+    promptSettingsUpdateSeqByWorkspace.get(workspacePath) === requestSeq;
+
   try {
     const promptSettings = await desktopClient.updatePromptSettings({
       modelId: input.modelId,
@@ -71,12 +80,20 @@ export async function updateWorkspacePromptSettings(
       reasoningEffort: input.reasoningEffort ?? null,
       workspacePath,
     });
+    if (!isLatestRequest()) {
+      return promptSettings;
+    }
+
     sessionStore.getState().setWorkspacePromptSettings(workspacePath, promptSettings);
     try {
       const runtimeStatus = await desktopClient.getRuntimeStatus(workspacePath);
-      sessionStore.getState().setWorkspaceRuntimeStatus(workspacePath, runtimeStatus);
+      if (isLatestRequest()) {
+        sessionStore.getState().setWorkspaceRuntimeStatus(workspacePath, runtimeStatus);
+      }
     } catch {
-      sessionStore.getState().setWorkspaceRuntimeStatus(workspacePath, null);
+      if (isLatestRequest()) {
+        sessionStore.getState().setWorkspaceRuntimeStatus(workspacePath, null);
+      }
     }
     return promptSettings;
   } catch {

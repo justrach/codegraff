@@ -225,7 +225,10 @@ export function useConversationActions(binding?: ChatBinding | null) {
         modelId: string;
         reasoningEffort?: string | null;
       }) => {
-        await updateWorkspacePromptSettings(workspacePath, input);
+        const promptSettings = await updateWorkspacePromptSettings(workspacePath, input);
+        if (promptSettings == null) {
+          throw new Error("Failed to update prompt settings");
+        }
       },
     };
   }, [binding, rootActions]);

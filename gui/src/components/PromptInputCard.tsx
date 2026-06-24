@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type FormEvent,
   type KeyboardEvent,
 } from "react";
 import {
@@ -50,7 +51,6 @@ import {
 } from "@/components/attachments/attachmentTransfer";
 import {
   classifyPath,
-  parseAttachmentBlock,
   type Attachment,
 } from "@/components/attachments/attachmentTypes";
 import { parseChoiceCommand } from "@/components/commandChoices";
@@ -75,7 +75,9 @@ import {
 } from "@/utils/reasoning";
 import type { PromptInputCardProps } from "./types/prompt";
 
-const EMPTY_PROMPT_HISTORY: string[] = [];
+const EMPTY_PROMPT_HISTORY: Array<{ attachments: Attachment[]; draft: string }> = [];
+const EMPTY_ATTACHMENTS: Attachment[] = [];
+const POST_ENTER_LINEBREAK_SUPPRESSION_MS = 700;
 
 interface PlanningModeShortcutEvent {
   key: string;
@@ -83,6 +85,23 @@ interface PlanningModeShortcutEvent {
   altKey: boolean;
   ctrlKey: boolean;
   metaKey: boolean;
+}
+
+interface EnterKeyEvent {
+  key?: string;
+  code?: string;
+  keyCode?: number;
+  which?: number;
+}
+
+export function isEnterKeyEvent(event: EnterKeyEvent): boolean {
+  return (
+    event.key === "Enter" ||
+    event.code === "Enter" ||
+    event.code === "NumpadEnter" ||
+    event.keyCode === 13 ||
+    event.which === 13
+  );
 }
 
 export function shouldHandlePlanningModeShortcut(
@@ -155,7 +174,13 @@ export function PromptInputCard({
   const handledPasteAtRef = useRef(0);
   const isComposingRef = useRef(false);
   const enterSubmitLockedRef = useRef(false);
-  const { attachments, addAttachments, removeAttachment, replaceAttachments } =
+  const lastEnterSubmitRef = useRef<{
+    at: number;
+    selectionEnd: number;
+    selectionStart: number;
+    value: string;
+  } | null>(null);
+  const { attachments, addAttachments, removeAttachment } =
     useAttachments(binding);
   const isActiveDropTarget = useSessionStore((state) => {
     if (binding == null) {
@@ -216,16 +241,26 @@ export function PromptInputCard({
   );
   const [historyCursor, setHistoryCursor] = useState<PromptHistoryCursor>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState("");
-  // Live attachment tray captured when entering history, restored on the way out.
-  const [attachmentsBeforeHistory, setAttachmentsBeforeHistory] = useState<
-    Attachment[]
-  >([]);
+  const [attachmentsBeforeHistory, setAttachmentsBeforeHistory] =
+    useState<Attachment[]>(EMPTY_ATTACHMENTS);
   const promptHistoryLengthRef = useRef(promptHistory.length);
 
   function resetHistoryNavigation() {
     setHistoryCursor(null);
     setDraftBeforeHistory("");
-    setAttachmentsBeforeHistory([]);
+    setAttachmentsBeforeHistory(EMPTY_ATTACHMENTS);
+  }
+
+  function handleRemoveAttachment(id: string) {
+    resetHistoryNavigation();
+    removeAttachment(id);
+  }
+
+  function replaceAttachments(nextAttachments: Attachment[]) {
+    for (const attachment of attachments) {
+      removeAttachment(attachment.id);
+    }
+    addAttachments(nextAttachments);
   }
 
   useEffect(() => {
@@ -323,8 +358,34 @@ export function PromptInputCard({
     }
 
     if (accepted.length > 0) {
+      resetHistoryNavigation();
       addAttachments(accepted);
     }
+  }
+
+  function getRecentEnterSubmit() {
+    const submitted = lastEnterSubmitRef.current;
+    if (
+      submitted == null ||
+      performance.now() - submitted.at >= POST_ENTER_LINEBREAK_SUPPRESSION_MS
+    ) {
+      return null;
+    }
+    return submitted;
+  }
+
+  function getPostEnterLineBreakValues() {
+    const submitted = getRecentEnterSubmit();
+    if (submitted == null) {
+      return [];
+    }
+    const before = submitted.value.slice(0, submitted.selectionStart);
+    const after = submitted.value.slice(submitted.selectionEnd);
+    return [`${before}\n${after}`, `${before}\r\n${after}`];
+  }
+
+  function isPostEnterLineBreakValue(value: string) {
+    return getPostEnterLineBreakValues().includes(value);
   }
 
   function handleSubmit(draftOverride = promptDraft) {
@@ -335,9 +396,24 @@ export function PromptInputCard({
     submitCurrentDraft(draftOverride);
   }
 
+  function handleGuiOnlyCommandDraft(value: string) {
+    const match = /^\/ultracode(?:\s+(on|off))?\s*$/i.exec(value.trim());
+    if (match == null) {
+      return false;
+    }
+
+    setUltraMode(match[1] == null ? !isUltraMode : match[1].toLowerCase() === "on");
+    setPromptDraft("");
+    resetHistoryNavigation();
+    return true;
+  }
+
   function submitCurrentDraft(value: string) {
     const trimmed = value.trim();
     if (trimmed.length === 0 || isInputDisabled) {
+      return;
+    }
+    if (handleGuiOnlyCommandDraft(value)) {
       return;
     }
     // If the composer is genuinely unavailable, ignore Enter. A running request
@@ -348,7 +424,14 @@ export function PromptInputCard({
     if (enterSubmitLockedRef.current) {
       return;
     }
+    const textarea = textareaRef.current;
     enterSubmitLockedRef.current = true;
+    lastEnterSubmitRef.current = {
+      at: performance.now(),
+      selectionEnd: textarea?.selectionEnd ?? value.length,
+      selectionStart: textarea?.selectionStart ?? value.length,
+      value,
+    };
     window.setTimeout(() => {
       enterSubmitLockedRef.current = false;
     }, 150);
@@ -367,6 +450,14 @@ export function PromptInputCard({
   }
 
   function handleDraftChange(value: string) {
+    // WKWebView can still dispatch an input/change for the textarea's default
+    // line-break insertion after our Enter keydown handler has already submitted
+    // and cleared the draft. If that late change is allowed through, it writes
+    // the just-submitted prompt plus a newline back into the controlled store,
+    // which looks like a send that briefly happened and then reverted.
+    if (isPostEnterLineBreakValue(value)) {
+      return;
+    }
     resetHistoryNavigation();
     setPromptDraft(value);
   }
@@ -418,6 +509,9 @@ export function PromptInputCard({
     const effectiveDraftBeforeHistory = didHistoryLengthChange
       ? ""
       : draftBeforeHistory;
+    const effectiveAttachmentsBeforeHistory = didHistoryLengthChange
+      ? EMPTY_ATTACHMENTS
+      : attachmentsBeforeHistory;
     promptHistoryLengthRef.current = promptHistory.length;
 
     const result = getPromptHistoryNavigationResult({
@@ -425,39 +519,20 @@ export function PromptInputCard({
       promptHistory,
       cursor: effectiveCursor,
       currentDraft: promptDraft,
+      currentAttachments: attachments,
       draftBeforeHistory: effectiveDraftBeforeHistory,
+      attachmentsBeforeHistory: effectiveAttachmentsBeforeHistory,
     });
     if (result == null) {
       return false;
     }
 
     event.preventDefault();
-
-    // Mirror the draft preservation for attachments: snapshot the live tray when
-    // entering history so ArrowDown back out restores it, and rehydrate the
-    // attachment cards from the stored `Attached files:` block on each entry.
-    const enteringHistory = effectiveCursor == null && result.cursor != null;
-    if (enteringHistory) {
-      setAttachmentsBeforeHistory(attachments);
-    }
-
     setHistoryCursor(result.cursor);
     setDraftBeforeHistory(result.draftBeforeHistory);
-
-    if (result.cursor == null) {
-      // Exited history — restore the live draft and its attachments.
-      setPromptDraft(result.draft);
-      replaceAttachments(attachmentsBeforeHistory);
-      setAttachmentsBeforeHistory([]);
-    } else {
-      const { body, paths } = parseAttachmentBlock(result.draft);
-      setPromptDraft(body);
-      replaceAttachments(
-        paths
-          .map((path) => classifyPath(path))
-          .filter((item): item is Attachment => item != null),
-      );
-    }
+    setAttachmentsBeforeHistory(result.attachmentsBeforeHistory);
+    setPromptDraft(result.draft);
+    replaceAttachments(result.attachments);
     moveCaretToEndOnNextFrame();
     return true;
   }
@@ -553,6 +628,51 @@ export function PromptInputCard({
     await attachTransferItems(items);
   }
 
+  function suppressPostEnterLineBreakEvent(
+    event: FormEvent<HTMLTextAreaElement>,
+  ) {
+    const inputType = (event.nativeEvent as InputEvent).inputType;
+    if (inputType !== "insertLineBreak") {
+      return false;
+    }
+
+    const submitted = getRecentEnterSubmit();
+    if (submitted == null) {
+      return false;
+    }
+
+    const textarea = event.currentTarget;
+    const isPreMutationStaleLineBreak =
+      textarea.value === submitted.value &&
+      textarea.selectionStart === submitted.selectionStart &&
+      textarea.selectionEnd === submitted.selectionEnd;
+    const isPostMutationStaleLineBreak = isPostEnterLineBreakValue(
+      textarea.value,
+    );
+    if (!isPreMutationStaleLineBreak && !isPostMutationStaleLineBreak) {
+      return false;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const nativeEvent = event.nativeEvent as InputEvent & {
+      stopImmediatePropagation?: () => void;
+    };
+    nativeEvent.stopImmediatePropagation?.();
+    if (isPostMutationStaleLineBreak) {
+      textarea.value = "";
+    }
+    return true;
+  }
+
+  function handleBeforeInput(event: FormEvent<HTMLTextAreaElement>) {
+    suppressPostEnterLineBreakEvent(event);
+  }
+
+  function handleInputCapture(event: FormEvent<HTMLTextAreaElement>) {
+    suppressPostEnterLineBreakEvent(event);
+  }
+
   return (
     <div ref={dropZoneRef} className="relative mx-auto w-full max-w-3xl">
       {isDropActive ? <DropOverlay /> : null}
@@ -599,7 +719,7 @@ export function PromptInputCard({
           {attachments.length > 0 ? (
             <AttachmentTray
               attachments={attachments}
-              onRemove={removeAttachment}
+              onRemove={handleRemoveAttachment}
               className="m-1 mb-2"
             />
           ) : null}
@@ -632,7 +752,13 @@ export function PromptInputCard({
                     : placeholder
               }
               value={promptDraft}
+              autoCapitalize="off"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
               onChange={(event) => handleDraftChange(event.target.value)}
+              onBeforeInput={handleBeforeInput}
+              onInputCapture={handleInputCapture}
               onPaste={handlePaste}
               onCompositionStart={() => {
                 isComposingRef.current = true;
@@ -654,7 +780,7 @@ export function PromptInputCard({
                   handlePlanningModeShortcut(event);
                   return;
                 }
-                if (event.key === "Enter") {
+                if (isEnterKeyEvent(event)) {
                   // Let the slash-command menu consume Enter first when it has
                   // an active completion. Otherwise plain Enter is submit.
                   if (commandAutocomplete.handleKeyDown(event)) {
@@ -713,7 +839,7 @@ export function PromptInputCard({
                 <ChevronDownIcon className="shrink-0" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="max-h-80 w-72 pt-0">
-                <div className="sticky z-10 top-0 bg-popover -mx-1 p-1.5">
+                <div className="sticky top-0 z-10 -mx-1 bg-popover p-1.5">
                   <Input
                     value={modelSearchQuery}
                     placeholder="Search models"
@@ -737,19 +863,34 @@ export function PromptInputCard({
                         No models match your search.
                       </div>
                     ) : (
-                      visibleModels.map((option) => (
-                        <DropdownMenuRadioItem
-                          key={`${option.providerId}:${option.modelId}`}
-                          value={`${option.providerId}:${option.modelId}`}
-                        >
-                          <span className="truncate">
-                            {option.modelName ?? option.modelId}
-                          </span>
-                          <span className="ml-auto text-muted-foreground">
-                            {option.providerName}
-                          </span>
-                        </DropdownMenuRadioItem>
-                      ))
+                      visibleModels.map((option) => {
+                        const modelValue = `${option.providerId}:${option.modelId}`;
+                        return (
+                          <DropdownMenuRadioItem
+                            key={modelValue}
+                            value={modelValue}
+                            onPointerDownCapture={(event) => {
+                              if (event.button !== 0) {
+                                return;
+                              }
+                              // WKWebView can blur/close the portalled Base UI menu
+                              // before the radio group's value-change callback runs.
+                              // Commit in the capture phase as a native-shell fallback;
+                              // the hook dedupes the later radio callback when WebKit
+                              // delivers both.
+                              event.preventDefault();
+                              handleModelChange(modelValue);
+                            }}
+                          >
+                            <span className="truncate">
+                              {option.modelName ?? option.modelId}
+                            </span>
+                            <span className="ml-auto text-muted-foreground">
+                              {option.providerName}
+                            </span>
+                          </DropdownMenuRadioItem>
+                        );
+                      })
                     )}
                   </DropdownMenuRadioGroup>
                 </DropdownMenuGroup>

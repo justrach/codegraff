@@ -689,7 +689,10 @@ export function SessionProvider({ children }: SessionProviderProps) {
           return;
         }
 
-        await updateWorkspacePromptSettings(workspacePath, input);
+        const promptSettings = await updateWorkspacePromptSettings(workspacePath, input);
+        if (promptSettings == null) {
+          throw new Error("Failed to update prompt settings");
+        }
       },
     }),
     [
