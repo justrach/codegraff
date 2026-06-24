@@ -235,7 +235,7 @@ pub const Model = struct {
     chars_out: usize = 0,
 
     pub const Tick = struct { timestamp: u64, delta: u64 };
-    pub const Msg = union(enum) { key: zz.KeyEvent, tick: Tick };
+    pub const Msg = union(enum) { key: zz.KeyEvent, tick: Tick, mouse: zz.MouseEvent };
 
     pub fn setup(self: *Model, alloc: std.mem.Allocator) void {
         self.* = .{
@@ -573,6 +573,13 @@ pub const Model = struct {
                 }
                 return .none;
             },
+            .mouse => |m| if (m.event_type == .press) {
+                if (m.button == .wheel_up) {
+                    self.scroll +|= 3;
+                } else if (m.button == .wheel_down) {
+                    self.scroll -|= 3;
+                }
+            },
         }
         return .none;
     }
@@ -884,7 +891,7 @@ pub fn run(
     g_model_name = model_name;
     g_debug = environ_map.get("GRAFF_REPL_DEBUG") != null;
     g_models = models;
-    var program = zz.Program(Model).init(gpa, io, environ_map);
+    var program = zz.Program(Model).initWithOptions(gpa, io, environ_map, .{ .mouse = true });
     defer program.deinit();
     try program.run();
 }

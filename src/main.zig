@@ -9451,6 +9451,8 @@ const Agent = struct {
     fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
         var force = self.strict and tools != null;
         var stream_usage = true; // openai stream_options; dropped if rejected
+        // #95: scrub any malformed function_call_output before it hits the wire.
+        if (self.provider.kind == .responses) normalizeResponsesHistory(self.arena, &self.messages);
         while (true) {
             const live = !self.sub and self.out != null and !self.stream_quiet;
             self.streamed_text = false;
@@ -12371,6 +12373,62 @@ fn toolResultMessage(arena: Allocator, kind: Provider.Kind, call_id: []const u8,
         },
     }
     return .{ .object = obj };
+}
+
+/// #95: coerce any malformed Responses `function_call_output.output` in
+/// `messages` to a valid JSON string, in place. The Responses API rejects
+/// scalar/array outputs ("input[N].output[0]: expected an object, got an
+/// integer") — a scalar tool result (e.g. from an ultracode subagent) packed
+/// into output[] poisons history and bricks the gpt-5.5 session, replayed every
+/// turn. toolResultMessage already emits strings; this is the send-time safety
+/// net for any item that reached history malformed. No-op for valid strings.
+fn normalizeResponsesHistory(arena: Allocator, messages: *std.json.Array) void {
+    for (messages.items) |*m| {
+        if (m.* != .object) continue;
+        const t = m.object.get("type") orelse continue;
+        if (t != .string or !std.mem.eql(u8, t.string, "function_call_output")) continue;
+        const out = m.object.get("output") orelse continue;
+        if (out == .string) continue; // already valid — leave it
+        m.object.put(arena, "output", .{ .string = jsonValueString(arena, out) }) catch {};
+    }
+}
+
+/// JSON-encode a Value to an owned string (best-effort; "" on failure).
+fn jsonValueString(arena: Allocator, v: Value) []const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    s.write(v) catch return "";
+    return aw.toOwnedSlice() catch "";
+}
+
+test "normalizeResponsesHistory: scalar/array outputs coerced to string (#95)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var msgs = std.json.Array.init(arena);
+    var scalar: std.json.ObjectMap = .empty; // the poisoned item: output is a bare integer
+    try scalar.put(arena, "type", .{ .string = "function_call_output" });
+    try scalar.put(arena, "output", .{ .integer = 42 });
+    try msgs.append(.{ .object = scalar });
+    var arr: std.json.ObjectMap = .empty; // output as an array → "[42]"
+    try arr.put(arena, "type", .{ .string = "function_call_output" });
+    var inner = std.json.Array.init(arena);
+    try inner.append(.{ .integer = 42 });
+    try arr.put(arena, "output", .{ .array = inner });
+    try msgs.append(.{ .object = arr });
+    var ok: std.json.ObjectMap = .empty; // valid string → untouched
+    try ok.put(arena, "type", .{ .string = "function_call_output" });
+    try ok.put(arena, "output", .{ .string = "hello" });
+    try msgs.append(.{ .object = ok });
+
+    normalizeResponsesHistory(arena, &msgs);
+
+    try std.testing.expect(msgs.items[0].object.get("output").? == .string);
+    try std.testing.expectEqualStrings("42", msgs.items[0].object.get("output").?.string);
+    try std.testing.expect(msgs.items[1].object.get("output").? == .string);
+    try std.testing.expectEqualStrings("[42]", msgs.items[1].object.get("output").?.string);
+    try std.testing.expectEqualStrings("hello", msgs.items[2].object.get("output").?.string);
 }
 
 /// A base64-encoded image staged by `/image`, sent with the next user turn.
