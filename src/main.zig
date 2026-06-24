@@ -2655,7 +2655,7 @@ fn setTerminalTitle(w: *Io.Writer, title: []const u8, folder: []const u8) void {
     const folder_name = folderBasename(folder);
     // OSC 0 is conventional xterm title; OSC 1/2 make iTerm/Ghostty-style tab
     // and window titles update too instead of leaving the launch command there.
-    w.print("\x1b]0;Codegraff: {s} — {s}\x07\x1b]1;Codegraff: {s} — {s}\x07\x1b]2;Codegraff: {s} — {s}\x07", .{ title, folder_name, title, folder_name, title, folder_name }) catch return;
+    w.print("\x1b]0;{s} — {s}\x07\x1b]1;{s} — {s}\x07\x1b]2;{s} — {s}\x07", .{ title, folder_name, title, folder_name, title, folder_name }) catch return;
     w.flush() catch return;
 }
 
@@ -15173,7 +15173,7 @@ test "setTerminalTitle emits OSC title with folder basename, gated by color/json
     defer on.deinit();
     setTerminalTitle(&on.writer, "Add dark mode", "/a/b/myproj");
     const s = on.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, s, "Codegraff: Add dark mode — myproj") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "Add dark mode — myproj") != null);
     try std.testing.expect(std.mem.indexOf(u8, s, "\x1b]0;") != null); // window title
     try std.testing.expect(std.mem.indexOf(u8, s, "\x1b]2;") != null); // tab title
 
