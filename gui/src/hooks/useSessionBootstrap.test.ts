@@ -112,7 +112,7 @@ function createSnapshot(input: {
   };
 }
 
-function startHarness() {
+function startHarness(options: { cliSessionSyncIntervalMs?: number } = {}) {
   const snapshots: SessionSnapshot[] = [];
   let readyCount = 0;
   const cleanup = startSessionBootstrap(
@@ -125,6 +125,7 @@ function startHarness() {
         readyCount += 1;
         sessionStore.getState().setIsBootstrapped(true);
       },
+      cliSessionSyncIntervalMs: options.cliSessionSyncIntervalMs,
     },
     {
       getSessionSnapshot: () => getSessionSnapshotImpl(),
@@ -371,6 +372,104 @@ describe("startSessionBootstrap", () => {
     ]);
     expect(harness.readyCount()).toBeGreaterThan(0);
     harness.cleanup();
+  });
+
+  test("polls snapshots after bootstrap so file-backed CLI sessions appear while the GUI is open", async () => {
+    let calls = 0;
+    getSessionSnapshotImpl = () => {
+      calls += 1;
+      return Promise.resolve(
+        createSnapshot({ id: calls === 1 ? "initial" : "cli-session-imported" }),
+      );
+    };
+
+    const harness = startHarness({ cliSessionSyncIntervalMs: 10 });
+    await sleep(35);
+    harness.cleanup();
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(harness.snapshots.map((snapshot) => snapshot.uiError)).toContain(
+      "cli-session-imported",
+    );
+    expect(sessionStore.getState().uiError).toBe("cli-session-imported");
+  });
+
+  test("does not let a stale CLI session poll overwrite newer GUI state", async () => {
+    const poll = deferred<SessionSnapshot>();
+    let calls = 0;
+    getSessionSnapshotImpl = () => {
+      calls += 1;
+      return calls === 1
+        ? Promise.resolve(createSnapshot({ id: "initial" }))
+        : poll.promise;
+    };
+
+    const harness = startHarness({ cliSessionSyncIntervalMs: 5 });
+    await sleep(20);
+    expect(calls).toBeGreaterThanOrEqual(2);
+
+    sessionStore
+      .getState()
+      .applySessionSnapshot(createSnapshot({ id: "newer-gui-state", activeRequestIds: ["req-new"] }));
+    poll.resolve(createSnapshot({ id: "stale-poll" }));
+    await Promise.resolve();
+    harness.cleanup();
+
+    expect(sessionStore.getState().uiError).toBe("newer-gui-state");
+    const key = getConversationStoreKey("/workspace/app", "chat-1");
+    expect(sessionStore.getState().conversationViewsByKey[key]?.activeRequestIds).toEqual([
+      "req-new",
+    ]);
+  });
+
+  test("does not let a stale CLI session poll overwrite a newer full session update", async () => {
+    const poll = deferred<SessionSnapshot>();
+    let calls = 0;
+    getSessionSnapshotImpl = () => {
+      calls += 1;
+      return calls === 1
+        ? Promise.resolve(createSnapshot({ id: "initial" }))
+        : poll.promise;
+    };
+
+    const harness = startHarness({ cliSessionSyncIntervalMs: 5 });
+    await sleep(20);
+    expect(calls).toBeGreaterThanOrEqual(2);
+
+    sessionUpdateHandler?.(
+      createSnapshot({
+        id: "newer-session-update",
+        messages: [
+          {
+            id: "msg-1",
+            kind: "assistant",
+            requestId: "req-1",
+            text: "new text",
+          },
+        ],
+      }),
+    );
+    poll.resolve(
+      createSnapshot({
+        id: "stale-poll",
+        messages: [
+          {
+            id: "msg-1",
+            kind: "assistant",
+            requestId: "req-1",
+            text: "old text",
+          },
+        ],
+      }),
+    );
+    await Promise.resolve();
+    harness.cleanup();
+
+    expect(sessionStore.getState().uiError).toBe("newer-session-update");
+    const key = getConversationStoreKey("/workspace/app", "chat-1");
+    expect(sessionStore.getState().conversationViewsByKey[key]?.messages).toEqual([
+      { id: "msg-1", kind: "assistant", requestId: "req-1", text: "new text" },
+    ]);
   });
 
   test("lifecycle-only events can mark the app ready without skipping the initial snapshot", async () => {

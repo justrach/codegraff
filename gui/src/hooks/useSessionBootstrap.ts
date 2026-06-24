@@ -7,6 +7,8 @@ import type { UseSessionBootstrapOptions } from './types/sessionBootstrap'
 
 type MessageDelta = desktopClient.MessageDeltaEvent
 
+const DEFAULT_CLI_SESSION_SYNC_INTERVAL_MS = 5_000
+
 function deltaBatchKey(delta: MessageDelta): string {
   return [
     delta.workspacePath,
@@ -15,6 +17,20 @@ function deltaBatchKey(delta: MessageDelta): string {
     delta.messageId,
     delta.kind,
   ].join('\u0000')
+}
+
+function sessionStoreSyncFingerprint(): string {
+  const state = sessionStore.getState()
+  return JSON.stringify({
+    activeConversationId: state.activeConversationId,
+    activeWorkspacePath: state.activeWorkspacePath,
+    conversationSummariesByKey: state.conversationSummariesByKey,
+    conversationViewsByKey: state.conversationViewsByKey,
+    savedWorkspaces: state.savedWorkspaces,
+    selection: state.selection,
+    uiError: state.uiError,
+    workspaces: state.workspaces,
+  })
 }
 
 function createMessageDeltaBatcher() {
@@ -99,6 +115,7 @@ export function startSessionBootstrap(
   {
     setSessionSnapshot,
     onReady,
+    cliSessionSyncIntervalMs = DEFAULT_CLI_SESSION_SYNC_INTERVAL_MS,
   }: UseSessionBootstrapOptions,
   client: SessionBootstrapClient = desktopClient,
 ): () => void {
@@ -113,6 +130,8 @@ export function startSessionBootstrap(
   let initialBootstrapSettled = false
   let liveEventSeq = 0
   let baselineRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  let cliSessionSyncTimer: ReturnType<typeof setTimeout> | null = null
+  let cliSessionSyncInFlight = false
   const isMounted = () => !cancelled
   const replayBufferedLifecycleEvents = () => {
     if (bufferedLifecycleEvents.length === 0) {
@@ -128,6 +147,7 @@ export function startSessionBootstrap(
     setSessionSnapshot(snapshot)
     initialBootstrapSettled = true
     replayBufferedLifecycleEvents()
+    scheduleCliSessionSync()
   }
   const scheduleBaselineRefresh = () => {
     if (initialBootstrapSettled || baselineRefreshTimer != null) {
@@ -156,6 +176,55 @@ export function startSessionBootstrap(
       })()
     }, 50)
   }
+  const isDocumentVisible = () =>
+    typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  const scheduleCliSessionSync = (delayMs = cliSessionSyncIntervalMs) => {
+    if (cliSessionSyncIntervalMs <= 0 || cliSessionSyncTimer != null || !isMounted()) {
+      return
+    }
+    cliSessionSyncTimer = setTimeout(() => {
+      cliSessionSyncTimer = null
+      if (!isMounted()) {
+        return
+      }
+      if (!initialBootstrapSettled || !isDocumentVisible() || cliSessionSyncInFlight) {
+        scheduleCliSessionSync()
+        return
+      }
+      cliSessionSyncInFlight = true
+      deltaBatcher.flush()
+      const startedWithStoreFingerprint = sessionStoreSyncFingerprint()
+      const startedWithLiveEventSeq = liveEventSeq
+      void (async () => {
+        try {
+          const snapshot = await client.getSessionSnapshot({ forceSessionScan: true })
+          if (!isMounted()) {
+            return
+          }
+          if (
+            liveEventSeq !== startedWithLiveEventSeq ||
+            sessionStoreSyncFingerprint() !== startedWithStoreFingerprint
+          ) {
+            return
+          }
+          setSessionSnapshot(snapshot)
+        } catch {
+          // Best-effort only: browser previews or a transient backend failure
+          // should not disturb the live SSE session.
+        } finally {
+          cliSessionSyncInFlight = false
+          scheduleCliSessionSync()
+        }
+      })()
+    }, Math.max(0, delayMs))
+  }
+  const syncCliSessionsSoon = () => {
+    if (cliSessionSyncTimer != null) {
+      clearTimeout(cliSessionSyncTimer)
+      cliSessionSyncTimer = null
+    }
+    scheduleCliSessionSync(0)
+  }
   const installCleanup = (cleanup: () => void, assign: (cleanup: () => void) => void) => {
     if (isMounted() === false) {
       cleanup()
@@ -181,9 +250,11 @@ export function startSessionBootstrap(
       }
       deltaBatcher.flush()
       receivedLiveEvent = true
+      liveEventSeq += 1
       setSessionSnapshot(payload)
       initialBootstrapSettled = true
       replayBufferedLifecycleEvents()
+      scheduleCliSessionSync()
     }).then((cleanup) => {
       installCleanup(cleanup, (value) => {
         stopListening = value
@@ -234,6 +305,11 @@ export function startSessionBootstrap(
 
   void listenerSetup
 
+  const visibilityTarget = typeof document === 'undefined' ? null : document
+  const focusTarget = typeof window === 'undefined' ? null : window
+  visibilityTarget?.addEventListener('visibilitychange', syncCliSessionsSoon)
+  focusTarget?.addEventListener('focus', syncCliSessionsSoon)
+
   void (async () => {
     try {
       const snapshot = await client.getSessionSnapshot()
@@ -270,6 +346,7 @@ export function startSessionBootstrap(
 
       initialBootstrapSettled = true
       replayBufferedLifecycleEvents()
+      scheduleCliSessionSync()
       onReady?.()
     }
   })()
@@ -283,6 +360,12 @@ export function startSessionBootstrap(
       clearTimeout(baselineRefreshTimer)
       baselineRefreshTimer = null
     }
+    if (cliSessionSyncTimer != null) {
+      clearTimeout(cliSessionSyncTimer)
+      cliSessionSyncTimer = null
+    }
+    visibilityTarget?.removeEventListener('visibilitychange', syncCliSessionsSoon)
+    focusTarget?.removeEventListener('focus', syncCliSessionsSoon)
     stopRequestFinishedListening?.()
     stopRequestCancelledListening?.()
   }

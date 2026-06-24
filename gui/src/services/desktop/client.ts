@@ -697,8 +697,12 @@ export function getRuntimeStatus(
   });
 }
 
-export function getSessionSnapshot(): Promise<SessionSnapshot> {
-  return invokeCommand("get_session_snapshot");
+export function getSessionSnapshot(options?: {
+  forceSessionScan?: boolean;
+}): Promise<SessionSnapshot> {
+  return invokeCommand("get_session_snapshot", {
+    forceSessionScan: options?.forceSessionScan ?? false,
+  });
 }
 
 export function getPromptSettings(

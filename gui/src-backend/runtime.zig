@@ -224,8 +224,10 @@ pub const Runtime = struct {
         const cmd = commandName(req.path);
 
         if (std.mem.eql(u8, cmd, "get_session_snapshot")) {
+            const root = parse(req) catch null;
+            const force_session_scan = if (root) |value| boolField(value, "forceSessionScan") orelse false else false;
             self.mutex.lockUncancelable(mer_runtime.io);
-            self.refreshWorkspaceSessionsLocked(false);
+            self.refreshWorkspaceSessionsLocked(force_session_scan);
             self.mutex.unlock(mer_runtime.io);
             return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
         }
