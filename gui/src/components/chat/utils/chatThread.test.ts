@@ -43,6 +43,24 @@ function toolStartMessage(
   };
 }
 
+function statusMessage(
+  id: string,
+  requestId: string,
+  title: string,
+  subtitle: string | null,
+  category: Extract<TranscriptMessage, { kind: "status" }>["category"] = "debug",
+): Extract<TranscriptMessage, { kind: "status" }> {
+  return { kind: "status", id, requestId, title, subtitle, category };
+}
+
+function statusOutputMessage(
+  id: string,
+  requestId: string,
+  text: string,
+): Extract<TranscriptMessage, { kind: "status_output" }> {
+  return { kind: "status_output", id, requestId, text };
+}
+
 function toolEndMessage(
   id: string,
   requestId: string,
@@ -69,6 +87,37 @@ function requestWorkItems(items: ReturnType<typeof buildChatThreadItems>) {
 }
 
 describe("buildChatThreadItems", () => {
+  test("hides raw protocol compatibility events from the main chat timeline", () => {
+    const items = buildChatThreadItems(
+      [
+        userMessage("user-1", "req-1", "hello"),
+        statusMessage(
+          "raw-1",
+          "req-1",
+          "Unhandled graff event: started",
+          "Preserved raw event for protocol compatibility.",
+        ),
+        statusOutputMessage(
+          "raw-1-output",
+          "req-1",
+          '{"type":"started","provider":"codegraff"}',
+        ),
+        assistantMessage("assistant-1", "req-1", "Hi there."),
+      ],
+      [],
+    );
+
+    expect(items).toHaveLength(2);
+    expect(items.map((item) => item.kind)).toEqual(["message", "message"]);
+    expect(
+      items.some(
+        (item) =>
+          item.kind === "message" &&
+          (item.message.kind === "status" || item.message.kind === "status_output"),
+      ),
+    ).toBe(false);
+  });
+
   test("interleaves work segments chronologically between assistant texts", () => {
     const items = buildChatThreadItems(
       [

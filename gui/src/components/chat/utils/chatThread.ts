@@ -146,6 +146,7 @@ export function buildChatThreadItems(
   const currentScopeIndexByRequestId = new Map<string, number>();
   // Per-scope segment counter so each emitted work segment gets a unique key.
   const segmentIndexByScopeId = new Map<string, number>();
+  const hiddenStatusOutputIds = new Set<string>();
   let currentGroup: ActivityGroupBuilder | null = null;
 
   const buildScopeId = (requestId: string, scopeIndex: number) =>
@@ -335,7 +336,8 @@ export function buildChatThreadItems(
         break;
       }
       case "status":
-        if (isDecorativeToolStatus(message)) {
+        if (isDecorativeToolStatus(message) || isRawProtocolCompatibilityStatus(message)) {
+          hiddenStatusOutputIds.add(`${message.id}-output`);
           break;
         }
 
@@ -350,6 +352,10 @@ export function buildChatThreadItems(
         });
         break;
       case "status_output": {
+        if (hiddenStatusOutputIds.has(message.id)) {
+          break;
+        }
+
         const operation = findOperationForStatusOutput(currentGroup, message);
         if (operation != null) {
           operation.outputText = mergeOutputText(
@@ -507,6 +513,16 @@ function isDecorativeToolStatus(
     (TOOL_DEBUG_TITLES.has(message.title) ||
       message.title.startsWith("Execute [") ||
       message.title.startsWith("Search for '"))
+  );
+}
+
+function isRawProtocolCompatibilityStatus(
+  message: Extract<TranscriptMessage, { kind: "status" }>,
+): boolean {
+  return (
+    message.category === "debug" &&
+    message.subtitle === "Preserved raw event for protocol compatibility." &&
+    message.title.startsWith("Unhandled graff event:")
   );
 }
 
