@@ -1,6 +1,7 @@
 # build output
 .zig-cache/
 zig-out/
+zig-pkg/
 target/
 node_modules/
 

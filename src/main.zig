@@ -35,6 +35,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
+const repl = @import("repl.zig");
 
 const builtin = @import("builtin");
 
@@ -2818,6 +2819,124 @@ fn titleTask(gpa: Allocator, io: Io, client: *std.http.Client, provider: Provide
     const cleaned = cleanTitle(assistantText(provider.kind, root)) orelse return null;
     return gpa.dupe(u8, cleaned) catch null;
 }
+
+/// Opaque context handed to repl.run so the REPL can run a real agent turn —
+/// reuses the root agent's tool set, MCP registry, and system prompt (built in
+/// main()). No harness internals leak into repl.zig; it only sees a callback.
+const ReplCtx = struct {
+    io: Io,
+    client: *std.http.Client,
+    provider: Provider,
+    registry: ?*mcp.Registry,
+    sys_normal: []const u8,
+    tools_anthropic: []const u8,
+    tools_openai: []const u8,
+    tools_responses: []const u8,
+};
+
+/// A thread-safe sink the worker writes the agent's output to and the repl's
+/// render loop polls — this is what makes `graff repl` stream live. Custom
+/// Io.Writer whose drain appends (under the StreamBuf mutex) to the repl buffer.
+const ReplStreamSink = struct {
+    target: *repl.StreamBuf,
+    buf: [4096]u8 = undefined,
+    writer: Io.Writer = undefined,
+
+    const vtable: Io.Writer.VTable = .{ .drain = drain };
+
+    fn init(self: *ReplStreamSink, target: *repl.StreamBuf) void {
+        self.target = target;
+        self.writer = .{ .vtable = &vtable, .buffer = &self.buf, .end = 0 };
+    }
+
+    fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
+        const self: *ReplStreamSink = @alignCast(@fieldParentPtr("writer", w));
+        self.target.appendBytes(w.buffer[0..w.end]);
+        w.end = 0;
+        const slices = data[0 .. data.len - 1];
+        const pattern = data[data.len - 1];
+        var written: usize = 0;
+        for (slices) |b| {
+            self.target.appendBytes(b);
+            written += b.len;
+        }
+        var i: usize = 0;
+        while (i < splat) : (i += 1) self.target.appendBytes(pattern);
+        written += pattern.len * splat;
+        return written;
+    }
+};
+
+/// repl.TurnFn — run a full ROOT agent turn (tools + MCP) for `graff repl`, so
+/// the model can read files, run bash, search the codebase, etc. — not a bare
+/// completion. Auto-approves tools (yolo: the chat repl has no permission UI),
+/// in=null (never blocks on a prompt). Output streams into a thread-safe sink
+/// the repl polls to render live; the clean final text is runTurn's return
+/// value. Returns the final assistant text (raw markdown, owned by gpa) or null.
+fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Turn, params: repl.Params, stream: *repl.StreamBuf) ?[]const u8 {
+    const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var sink: ReplStreamSink = undefined;
+    sink.init(stream); // agent output streams into the repl's live pane (thread-safe)
+    var approvals: Approvals = .{ .yolo = true };
+    const sys = if (params.goal.len > 0)
+        (std.fmt.allocPrint(arena, "{s}\n\n# Standing goal (from the user)\n{s}", .{ c.sys_normal, params.goal }) catch c.sys_normal)
+    else
+        c.sys_normal;
+    var agent: Agent = .{
+        .gpa = gpa,
+        .arena = arena,
+        .io = c.io,
+        .client = c.client,
+        .provider = c.provider,
+        .messages = std.json.Array.init(arena),
+        .sub = false, // root: enables the full tool set + agentic loop
+        .label = "repl",
+        .out = &sink.writer,
+        .in = null, // never prompt for tool approval / ask_user
+        .stream_quiet = false, // stream tokens live into the repl pane
+        .registry = c.registry,
+        .approvals = &approvals,
+        .sys_normal = sys,
+        .tools_anthropic = c.tools_anthropic,
+        .tools_openai = c.tools_openai,
+        .tools_responses = c.tools_responses,
+        .reasoning = switch (params.effort) {
+            .low => .low,
+            .medium => .medium,
+            .high => .high,
+        },
+        .fast = params.fast,
+        .ultracode_mode = params.ultracode,
+        .show_thinking = params.thinking,
+    };
+    defer agent.tools_used.deinit(gpa);
+    for (history) |t| {
+        const role = switch (t.role) {
+            .user => "user",
+            .assistant => "assistant",
+        };
+        agent.messages.append(textMessage(arena, role, t.text) catch return null) catch return null;
+    }
+    const final = agent.runTurn() catch return null;
+    const trimmed = std.mem.trim(u8, final, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return gpa.dupe(u8, trimmed) catch null;
+}
+
+/// repl.ModelFn adapter — switch the active model by name. Keeps the working
+/// provider resolved at startup (its url/key/kind — e.g. the codegraff gateway
+/// login) and only swaps the model field; re-resolving via providerFor can pick
+/// a different, unauthenticated provider for the same model name. Returns the
+/// new model name, or null on failure.
+fn replModelCb(ctx_ptr: ?*anyopaque, gpa: Allocator, name: []const u8) ?[]const u8 {
+    const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
+    c.provider.model = gpa.dupe(u8, name) catch return null;
+    c.provider.context = contextFor(c.provider.id, c.provider.model);
+    return gpa.dupe(u8, name) catch null;
+}
 fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, g_path_env, ':');
     var buf: [1024]u8 = undefined;
@@ -5056,7 +5175,7 @@ pub fn main(init: std.process.Init) !void {
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     const is_subcommand = positionals.items.len > 0 and
         (std.mem.eql(u8, positionals.items[0], "login") or std.mem.eql(u8, positionals.items[0], "key") or
-            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title"));
+            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title") or std.mem.eql(u8, positionals.items[0], "repl"));
     var oneshot_prompt: ?[]const u8 = null;
     if (!is_subcommand and positionals.items.len > 0) {
         oneshot_prompt = try std.mem.join(arena, " ", positionals.items);
@@ -5525,6 +5644,30 @@ pub fn main(init: std.process.Init) !void {
         loadSession(&root, keys, arena, root.session_name) catch {};
     }
 
+    // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL
+    // agent loop — each prompt runs a full root turn (tools + MCP) via
+    // replTurnCb, reusing the root agent's tool set + registry + system prompt.
+    // Self-contained — exits after.
+    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "repl")) {
+        var repl_ctx = ReplCtx{
+            .io = io,
+            .client = &client,
+            .provider = root.provider,
+            .registry = root.registry,
+            .sys_normal = root.sys_normal,
+            .tools_anthropic = root.tools_anthropic,
+            .tools_openai = root.tools_openai,
+            .tools_responses = root.tools_responses,
+        };
+        var models_buf = std.array_list.Managed(u8).init(arena);
+        for (model_table) |mi| {
+            if (mi.name.len == 0) continue;
+            if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
+            models_buf.appendSlice(mi.name) catch {};
+        }
+        try repl.run(gpa, io, init.environ_map, &repl_ctx, replTurnCb, replModelCb, root.provider.model, models_buf.items);
+        return;
+    }
     // One-shot print mode: run the single prompt to completion, print the
     // final text to stdout, exit. Tool progress goes to stderr (say() with no
     // out writer), streaming stays quiet, and the gate denies anything not
