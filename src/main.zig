@@ -10987,7 +10987,24 @@ const Agent = struct {
                     // ESC O <final>. Swallow the whole sequence.
                     i = @min(i + 2, n - 1);
                     continue;
+                } else if (i + 1 >= n) {
+                    // ESC is the LAST byte of this chunk — it may be the truncated
+                    // head of a split CSI/SS3/DSR sequence (e.g. a delayed
+                    // `\x1b[<row>;<col>R` cursor-position reply to our `\x1b[6n`)
+                    // read across two VMIN=0 reads, NOT a real Esc keypress (#94).
+                    // Briefly wait for a continuation before concluding it's an Esc.
+                    if (tty.poll(50)) {
+                        var more: [64]u8 = undefined;
+                        if (tty.readStdin(&more) > 0) {
+                            i = n; // a sequence/alt-chord followed — not a lone Esc
+                            continue;
+                        }
+                    }
+                    // Nothing followed within the grace window: a genuine lone Esc.
+                    esc_found = true;
+                    g_force_interrupt = false;
                 } else {
+                    // ESC + a non-CSI/SS3 byte in the same chunk: a real Esc.
                     esc_found = true;
                     g_force_interrupt = false;
                 }
