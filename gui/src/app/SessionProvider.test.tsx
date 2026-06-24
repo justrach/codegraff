@@ -1432,6 +1432,80 @@ describe("SessionProvider", () => {
     ]);
   });
 
+  test("send errors do not restore drafts when refresh shows the prompt was accepted", async () => {
+    const promptDraftKey = getPromptDraftKey("/workspace/codegraff-gui", "chat-1");
+    if (promptDraftKey == null) {
+      throw new Error("Expected a prompt draft key");
+    }
+    sessionStore
+      .getState()
+      .applySessionSnapshot(createSnapshot("/workspace/codegraff-gui", "chat-1"));
+    sessionStore.getState().setPromptDraftValue(promptDraftKey, "Accepted despite error");
+    sendPromptImpl = async () => {
+      throw new Error("native fetch failed after backend accepted prompt");
+    };
+    getSessionSnapshotImpl = async () =>
+      createSnapshot("/workspace/codegraff-gui", "chat-1", {
+        conversationViews: [
+          {
+            activeRequestIds: ["req-accepted"],
+            conversationId: "chat-1",
+            followup: null,
+            messages: [
+              {
+                id: "user-accepted",
+                kind: "user",
+                requestId: "req-accepted",
+                text: "Accepted despite error",
+              },
+            ],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+        visibleActiveRequestIds: ["req-accepted"],
+      });
+
+    let capturedActions: SessionActionsContextValue | null = null;
+
+    function CaptureActions() {
+      capturedActions = useContext(SessionActionsContext);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      <SessionProvider>
+        <CaptureActions />
+      </SessionProvider>,
+    );
+
+    if (capturedActions == null) {
+      throw new Error("Expected session actions to be available");
+    }
+
+    const actions = capturedActions as SessionActionsContextValue;
+
+    await actions.submitPrompt();
+
+    expect(sendPromptCallCount).toBe(1);
+    expect(
+      sessionStore.getState().promptDraftsByKey[promptDraftKey]?.value ?? "",
+    ).toBe("");
+    expect(
+      sessionStore.getState().conversationViewsByKey[
+        "/workspace/codegraff-gui::chat-1"
+      ]?.messages,
+    ).toEqual([
+      {
+        id: "user-accepted",
+        kind: "user",
+        requestId: "req-accepted",
+        text: "Accepted despite error",
+      },
+    ]);
+  });
+
   test("unconfirmed active prompt conflicts restore drafts instead of queueing", async () => {
     const promptDraftKey = getPromptDraftKey("/workspace/codegraff-gui", "chat-1");
     if (promptDraftKey == null) {

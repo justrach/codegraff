@@ -79,9 +79,6 @@ export function NewChatPromptSection({
   const handleSubmit = useCallback(
     async (input?: SubmitPromptInput) => {
       const draft = typeof input === "string" ? input : input?.draft ?? promptDraft;
-      if (input != null) {
-        setPromptDraft(draft);
-      }
       if (trySubmitAsCommand(draft)) {
         return;
       }
@@ -104,7 +101,6 @@ export function NewChatPromptSection({
       commandWorkspacePath,
       promptDraft,
       sessionWorkspacePath,
-      setPromptDraft,
       submitPrompt,
       trySubmitAsCommand,
     ],

@@ -41,6 +41,7 @@ import {
 import { appendAttachmentsToPrompt } from "@/components/attachments/attachmentTypes";
 import {
   isActivePromptConflictError,
+  snapshotConfirmsPromptAccepted,
   snapshotHasActiveRequest,
 } from "./promptSubmitErrors";
 import {
@@ -682,15 +683,15 @@ export function SessionProvider({ children }: SessionProviderProps) {
               optimisticBinding,
               optimisticRequestId,
             );
+            const refreshedSnapshot = await desktopClient
+              .getSessionSnapshot()
+              .catch(() => null);
+            if (refreshedSnapshot != null) {
+              applySessionSnapshot(refreshedSnapshot);
+            }
             if (isActivePromptConflictError(error)) {
               const conflictBinding =
                 conversationId == null ? null : { workspacePath, conversationId };
-              const refreshedSnapshot = await desktopClient
-                .getSessionSnapshot()
-                .catch(() => null);
-              if (refreshedSnapshot != null) {
-                applySessionSnapshot(refreshedSnapshot);
-              }
               if (
                 conflictBinding != null &&
                 snapshotHasActiveRequest(refreshedSnapshot, conflictBinding)
@@ -703,6 +704,15 @@ export function SessionProvider({ children }: SessionProviderProps) {
                 });
                 return null;
               }
+            }
+            if (
+              snapshotConfirmsPromptAccepted(
+                refreshedSnapshot,
+                { workspacePath, conversationId },
+                prompt,
+              )
+            ) {
+              return null;
             }
             restorePromptDraft();
             return null;

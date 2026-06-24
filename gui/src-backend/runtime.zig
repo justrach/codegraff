@@ -4643,7 +4643,11 @@ pub fn handleEvents(
 
     if (!writeFrame(&bw, ": connected\n\n")) return true;
     var seen = self.version.load(.acquire);
-    var force_snapshot = false;
+    // Send a current snapshot on every new stream. WKWebView can establish the
+    // EventSource after a version bump but before another change; starting at
+    // the current version would otherwise leave the native UI stale until the
+    // next event.
+    var force_snapshot = true;
     var seen_event_seq: u64 = if (requestHeaderValue(std_req.head_buffer, "last-event-id")) |last_id| blk: {
         const requested = std.fmt.parseInt(u64, std.mem.trim(u8, last_id, " \t\r\n"), 10) catch 0;
         // Any reconnect may have missed version-only snapshot changes (tool_start,

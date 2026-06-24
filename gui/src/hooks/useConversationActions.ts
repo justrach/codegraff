@@ -17,6 +17,7 @@ import { getPromptDraftKey } from "@/app/sessionSnapshot";
 import { appendAttachmentsToPrompt } from "@/components/attachments/attachmentTypes";
 import {
   isActivePromptConflictError,
+  snapshotConfirmsPromptAccepted,
   snapshotHasActiveRequest,
 } from "@/app/promptSubmitErrors";
 import {
@@ -109,11 +110,11 @@ export function useConversationActions(binding?: ChatBinding | null) {
       } catch (error) {
         const currentStore = sessionStore.getState();
         currentStore.removeOptimisticRequest(target, optimisticRequestId);
+        const snapshot = await desktopClient.getSessionSnapshot().catch(() => null);
+        if (snapshot != null) {
+          sessionStore.getState().applySessionSnapshot(snapshot);
+        }
         if (isActivePromptConflictError(error)) {
-          const snapshot = await desktopClient.getSessionSnapshot().catch(() => null);
-          if (snapshot != null) {
-            sessionStore.getState().applySessionSnapshot(snapshot);
-          }
           if (snapshotHasActiveRequest(snapshot, target)) {
             sessionStore.getState().enqueuePrompt(key, {
               attachments,
@@ -123,6 +124,9 @@ export function useConversationActions(binding?: ChatBinding | null) {
             });
             return;
           }
+        }
+        if (snapshotConfirmsPromptAccepted(snapshot, target, prompt)) {
+          return;
         }
         restorePromptDraft(key, value, isPlanningMode, isUltraMode, attachments);
         return;
