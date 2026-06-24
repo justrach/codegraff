@@ -2947,6 +2947,7 @@ const anims = [_]Anim{
     .{ .name = "pacman", .desc = "pac-man eating dots", .frame = animPacman },
     .{ .name = "starfield", .desc = "parallax stars", .frame = animStarfield },
     .{ .name = "comet-tail", .desc = "streaking comet indicator", .frame = animCometTail },
+    .{ .name = "poop", .desc = "a stinky poop wobbling", .frame = animPoop }, // PRANK: blackfloofie_poop_prank
 };
 
 var g_anim_index: usize = 0; // /animation selection (index into anims)
@@ -2954,6 +2955,11 @@ var g_anim_random = false; // pick a fresh one per request
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
 var g_obfs_select: bool = false; // auto-detect for legacy host profiles
+// PRANK — remove in a future release. Gives blackfloofie a poop
+// thinking spinner when graff runs from their home dir (/Users/blackfloofie). To
+// remove: delete this flag, animPoop, the "poop" anims entry, and the cwd
+// hook in main.
+const blackfloofie_poop_prank = true;
 var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 
 // Steering (Codex-style): bytes typed while a turn streams are captured
@@ -3038,6 +3044,15 @@ fn animIndex(name: []const u8) ?usize {
 
 fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
     try w.print(" {s}thinking…{s}", .{ style.dim, style.reset });
+}
+
+fn animPoop(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    // PRANK (blackfloofie_poop_prank): a wobbly poop with stink lines.
+    const wobble = [_][]const u8{ "", " ", "  ", " ", "" };
+    const stink = [_][]const u8{ "Ë", "Ë", "Ë", "Â·", "Ë" };
+    try w.print("{s}{s}{s}{s}{s}{s}", .{ style.dim, stink[i % stink.len], style.reset, wobble[i % wobble.len], style.dim, stink[(i + 2) % stink.len] });
+    try w.print("{s}{s}{s}{s}", .{ style.bold, style.yellow, "ð©", style.reset });
+    try animThinking(w);
 }
 
 fn animCometTail(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -5265,6 +5280,16 @@ pub fn main(init: std.process.Init) !void {
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
+    // PRANK — remove in a future release (see the blackfloofie_poop_prank flag).
+    // A poop thinking spinner just for blackfloofie, when running from
+    // their home dir. Still overridable at runtime with /animation.
+    if (blackfloofie_poop_prank and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
+        if (animIndex("poop")) |di| {
+            g_anim_index = di;
+            g_anim_off = false;
+            g_anim_random = false;
+        }
+    }
     connect: {
         for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
         for (companion_servers) |c| {
