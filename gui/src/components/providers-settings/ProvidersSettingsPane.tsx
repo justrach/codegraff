@@ -39,6 +39,13 @@ function basename(path: string): string {
   return index >= 0 ? path.slice(index + 1) : path;
 }
 
+function formatProviderLoadError(message: string) {
+  if (/404 at \/api\//.test(message)) {
+    return "Provider settings are unavailable in this preview. Check that the local Codegraff service is running, then try again.";
+  }
+  return message;
+}
+
 function envOverrideRemovalError(message: string | null) {
   if (message == null || !message.includes("credential removed")) {
     return null;
@@ -213,8 +220,13 @@ export function ProvidersSettingsPane() {
                   </div>
                 </div>
               ) : (
-                <div className="px-4 py-4 text-sm text-destructive">
-                  {providerSetup.providersError}
+                <div className="px-4 py-4">
+                  <div className="rounded-xl border border-warn/25 bg-warn/10 px-4 py-3 text-sm text-foreground">
+                    <div className="font-medium">Providers couldn’t be loaded</div>
+                    <p className="mt-1 text-muted-foreground">
+                      {formatProviderLoadError(providerSetup.providersError)}
+                    </p>
+                  </div>
                 </div>
               )
             ) : visibleProviders.length === 0 ? (

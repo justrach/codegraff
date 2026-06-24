@@ -256,6 +256,10 @@
         text-rendering: optimizeLegibility;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
+        background:
+            radial-gradient(circle at 56% 8%, color-mix(in oklab, var(--accent) 10%, transparent), transparent 32rem),
+            radial-gradient(circle at 88% 78%, color-mix(in oklab, var(--foreground) 4%, transparent), transparent 30rem),
+            var(--background);
     }
 
     button,

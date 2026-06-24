@@ -228,9 +228,12 @@ function NewChatScreenContent({
       >
         {!hasCommandResults ? (
           <div className="flex w-full max-w-3xl flex-col items-center text-center">
-            <h2 className="text-3xl font-semibold tracking-tight text-foreground">
+            <h2 className="text-4xl font-semibold tracking-[-0.045em] text-foreground sm:text-5xl">
               {heading}
             </h2>
+            <p className="mt-3 max-w-xl text-sm/relaxed text-muted-foreground">
+              A calm workspace for planning, editing, and shipping with your local agent.
+            </p>
           </div>
         ) : (
           <section className="min-h-0 flex-1 overflow-hidden select-text">
@@ -248,8 +251,8 @@ function NewChatScreenContent({
         {visibleError ? (
           <div className="w-full max-w-3xl">
             <p
-              className="rounded-full border border-destructive/20 bg-destructive/10 px-4 py-2 text-sm text-destructive"
-              role="alert"
+              className="rounded-xl border border-warn/25 bg-warn/10 px-4 py-3 text-sm/relaxed text-foreground"
+              role="status"
             >
               {visibleError}
             </p>

@@ -32,6 +32,13 @@ import { Textarea } from "@/components/ui/Textarea";
 
 type McpScope = "user" | "local";
 
+function formatMcpLoadError(message: string) {
+  if (/404 at \/api\//.test(message)) {
+    return "MCP settings are unavailable in this preview. Check that the local Codegraff service is running, then try again.";
+  }
+  return message;
+}
+
 export function McpSettingsPane() {
   const workspacePath = useSessionStore((state) =>
     getUiActiveWorkspacePath(state),
@@ -121,8 +128,9 @@ export function McpSettingsPane() {
         </div>
 
         {actionError != null ? (
-          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-            {actionError}
+          <div className="rounded-xl border border-warn/25 bg-warn/10 px-4 py-3 text-sm text-foreground">
+            <div className="font-medium">MCP servers couldn’t be loaded</div>
+            <p className="mt-1 text-muted-foreground">{formatMcpLoadError(actionError)}</p>
           </div>
         ) : null}
 

@@ -75,11 +75,11 @@ function LaunchCard({
     >
       <Card
         size="sm"
-        className="h-full border border-border bg-card transition-colors hover:border-accent/40 hover:bg-secondary"
+        className="h-full rounded-2xl border border-border/80 bg-card/80 shadow-[0_18px_55px_-38px_color-mix(in_oklab,var(--foreground)_55%,transparent),inset_0_1px_0_color-mix(in_oklab,var(--background)_75%,transparent)] backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/45 hover:bg-card hover:shadow-[0_22px_70px_-36px_color-mix(in_oklab,var(--foreground)_65%,transparent)]"
       >
         <CardHeader className="gap-2">
           <CardAction className="justify-self-start">
-            <div className="flex size-8 items-center justify-center rounded-md border border-accent/20 bg-accent/10 text-accent">
+            <div className="flex size-9 items-center justify-center rounded-xl border border-accent/25 bg-accent/10 text-accent shadow-[inset_0_1px_0_color-mix(in_oklab,var(--background)_70%,transparent)]">
               <Icon strokeWidth={2} className="size-4" />
             </div>
           </CardAction>

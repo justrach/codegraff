@@ -8,6 +8,9 @@ import wasm from "vite-plugin-wasm";
 import topLevelAwait from "vite-plugin-top-level-await";
 
 export default defineConfig({
+  server: {
+    allowedHosts: [".trycloudflare.com"],
+  },
   plugins: [
     tailwindcss(),
     react(),

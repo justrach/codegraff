@@ -585,7 +585,7 @@ export function PromptInputCard({
       ) : null}
       <Card
         className={cn(
-          "relative gap-0 rounded-2xl border border-foreground/5 bg-background/50 p-2 transition-colors transition-shadow ring-0",
+          "relative gap-0 rounded-[1.35rem] border border-foreground/10 bg-card/85 p-3 shadow-[0_24px_80px_-32px_color-mix(in_oklab,var(--foreground)_45%,transparent),inset_0_1px_0_color-mix(in_oklab,var(--background)_78%,transparent)] ring-0 backdrop-blur-xl transition-colors transition-shadow",
           isPlanningMode &&
             "border-[color:var(--accent)] ring-5 ring-[color:color-mix(in_oklab,var(--accent)_14%,transparent)] border-dashed",
           isUltraMode && "cg-ultra-shine border-transparent",
@@ -620,7 +620,7 @@ export function PromptInputCard({
               ref={textareaRef}
               id="prompt"
               className={cn(
-                "max-h-80 overflow-y-auto rounded-none border-0 bg-transparent px-0 py-0 text-sm shadow-none outline-none ring-0 placeholder:text-muted-foreground/80 focus-visible:border-transparent focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
+                "max-h-80 min-h-22 overflow-y-auto rounded-none border-0 bg-transparent px-0 py-0 text-[15px] leading-relaxed shadow-none outline-none ring-0 placeholder:text-muted-foreground/70 focus-visible:border-transparent focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
                 commandMatch &&
                   "text-transparent caret-[color:var(--foreground)]",
               )}

@@ -477,6 +477,10 @@ function hasMerInvoke(): boolean {
   return getMerInvoke() != null;
 }
 
+export function isNativeBridgeAvailable(): boolean {
+  return hasMerInvoke();
+}
+
 function openExternalInBrowser(url: string): void {
   window.open(url, "_blank", "noopener,noreferrer");
 }

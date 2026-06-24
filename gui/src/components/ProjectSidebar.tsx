@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import {
   FolderPlus,
@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 
 import { BrandMark } from "./BrandMark";
-import { openExternalUrl } from "../services/desktop/client";
+import { isNativeBridgeAvailable, openExternalUrl } from "../services/desktop/client";
 import { useExpandedProjectPaths } from "../hooks/useExpandedProjectPaths";
 import {
   useSessionActions,
@@ -92,6 +92,7 @@ export function ProjectSidebar({
     savedWorkspaces,
     workspaces,
   } = useSidebarSession();
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const projectWorkspaces = useMemo(
     () => workspaces.filter((workspace) => workspace.kind === "project"),
     [workspaces],
@@ -107,6 +108,11 @@ export function ProjectSidebar({
   );
 
   async function handleOpenWorkspacePicker() {
+    setActionNotice(null);
+    if (!isNativeBridgeAvailable()) {
+      setActionNotice("Open project requires the desktop app in this preview.");
+      return;
+    }
     const selectedPath = await openWorkspacePicker();
     if (selectedPath == null) {
       return;
@@ -245,6 +251,11 @@ export function ProjectSidebar({
         <ProjectSidebarActions
           onOpenWorkspacePicker={() => void handleOpenWorkspacePicker()}
         />
+        {actionNotice != null ? (
+          <div className="mx-2 rounded-xl border border-warn/25 bg-warn/10 px-3 py-2 text-xs/relaxed text-sidebar-foreground">
+            {actionNotice}
+          </div>
+        ) : null}
       </SidebarHeader>
 
       <SidebarContent className="select-none pb-24">

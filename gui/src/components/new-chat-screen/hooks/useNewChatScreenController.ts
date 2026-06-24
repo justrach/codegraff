@@ -248,6 +248,12 @@ export function useNewChatScreenController({
 
   async function handleOpenWorkspacePicker() {
     clearActionError();
+    if (!desktopClient.isNativeBridgeAvailable()) {
+      setActionError(
+        "Opening a local folder requires the Codegraff desktop app. In this browser preview, use Clone from Git or Quick start to inspect the setup flow.",
+      );
+      return;
+    }
     await openWorkspacePicker();
   }
 

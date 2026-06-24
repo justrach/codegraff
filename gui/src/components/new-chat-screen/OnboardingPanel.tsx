@@ -56,11 +56,11 @@ export function OnboardingPanel({
   const apiKeyProvider = findApiKeyProvider(providers);
 
   return (
-    <Card className="w-full border border-border/80 bg-card/95 shadow-sm">
-      <CardContent className="flex flex-col gap-4 px-4">
+    <Card className="w-full rounded-2xl border border-border/70 bg-card/85 shadow-[0_20px_70px_-42px_color-mix(in_oklab,var(--foreground)_55%,transparent),inset_0_1px_0_color-mix(in_oklab,var(--background)_78%,transparent)] backdrop-blur">
+      <CardContent className="flex flex-col gap-4 px-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm font-medium text-foreground">
+            <div className="text-base font-semibold tracking-tight text-foreground">
               Set up the fastest path
             </div>
             <p className="mt-1 max-w-2xl text-xs/relaxed text-muted-foreground">
@@ -107,7 +107,9 @@ export function OnboardingPanel({
                   type="button"
                   disabled={isLoadingProviders}
                   onClick={() => {
-                    onOpenProviderSetup("codegraff", "codegraff_device");
+                    if (!onOpenProviderSetup("codegraff", "codegraff_device")) {
+                      onOpenSettings();
+                    }
                   }}
                 >
                   Connect Codegraff
@@ -117,7 +119,9 @@ export function OnboardingPanel({
                   variant="outline"
                   disabled={isLoadingProviders}
                   onClick={() => {
-                    onOpenProviderSetup("codex", "codex_device");
+                    if (!onOpenProviderSetup("codex", "codex_device")) {
+                      onOpenSettings();
+                    }
                   }}
                 >
                   Use Codex
@@ -128,7 +132,11 @@ export function OnboardingPanel({
                   disabled={apiKeyProvider == null || isLoadingProviders}
                   onClick={() => {
                     if (apiKeyProvider != null) {
-                      onOpenProviderSetup(apiKeyProvider, "api_key");
+                      if (!onOpenProviderSetup(apiKeyProvider, "api_key")) {
+                        onOpenSettings();
+                      }
+                    } else {
+                      onOpenSettings();
                     }
                   }}
                 >
@@ -221,8 +229,8 @@ function ChecklistItem({
   return (
     <div
       className={cn(
-        "grid gap-3 rounded-lg border border-border/70 bg-background/60 p-3 sm:grid-cols-[auto_1fr]",
-        complete ? "border-accent/30" : null,
+        "grid gap-3 rounded-xl border border-border/65 bg-background/55 p-3.5 shadow-[inset_0_1px_0_color-mix(in_oklab,var(--background)_80%,transparent)] transition-colors sm:grid-cols-[auto_1fr]",
+        complete ? "border-accent/35 bg-[color:color-mix(in_oklab,var(--accent)_7%,var(--background))]" : null,
       )}
     >
       <div className="flex items-center gap-2 text-muted-foreground">
