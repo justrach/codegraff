@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import {
   openWorkspaceInTarget,
@@ -8,23 +8,12 @@ import {
 } from "@/app/sessionClientActions";
 import {
   getAttachments,
-  getConversationSummary,
   getConversationView,
   getPromptDraftState,
   sessionStore,
 } from "@/app/sessionStore";
 import { getPromptDraftKey } from "@/app/sessionSnapshot";
 import { appendAttachmentsToPrompt } from "@/components/attachments/attachmentTypes";
-import {
-  isActivePromptConflictError,
-  snapshotConfirmsPromptAccepted,
-  snapshotHasActiveRequest,
-} from "@/app/promptSubmitErrors";
-import {
-  finishPromptQueueDrain,
-  tryBeginPromptQueueDrain,
-} from "@/app/promptQueueDrain";
-import { beginPromptSubmit, finishPromptSubmit } from "@/app/promptSubmitLock";
 import * as desktopClient from "@/services/desktop/client";
 import type { SubmitPromptInput } from "@/app/types/sessionContext";
 import type { ChatBinding } from "@/services/desktop/types/contracts";
@@ -33,6 +22,7 @@ import { useSessionActions } from "./useSession";
 
 export function useConversationActions(binding?: ChatBinding | null) {
   const rootActions = useSessionActions();
+  const queuedDrainRunningRef = useRef(false);
 
   const actions = useMemo(() => {
     if (binding == null) {
@@ -72,10 +62,6 @@ export function useConversationActions(binding?: ChatBinding | null) {
         return;
       }
 
-      if (!beginPromptSubmit(key)) {
-        return;
-      }
-
       let prompt = appendAttachmentsToPrompt(value.trim(), attachments);
 
       // Ultra mode: inject the `ultracode` codeword the harness watches for
@@ -107,32 +93,15 @@ export function useConversationActions(binding?: ChatBinding | null) {
           workspacePath: target.workspacePath,
         });
         sessionStore.getState().applySessionSnapshot(snapshot);
-      } catch (error) {
-        const currentStore = sessionStore.getState();
-        currentStore.removeOptimisticRequest(target, optimisticRequestId);
-        const snapshot = await desktopClient.getSessionSnapshot().catch(() => null);
-        if (snapshot != null) {
-          sessionStore.getState().applySessionSnapshot(snapshot);
-        }
-        if (isActivePromptConflictError(error)) {
-          if (snapshotHasActiveRequest(snapshot, target)) {
-            sessionStore.getState().enqueuePrompt(key, {
-              attachments,
-              isPlanningMode,
-              isUltraMode,
-              value,
-            });
-            return;
-          }
-        }
-        if (snapshotConfirmsPromptAccepted(snapshot, target, prompt)) {
-          return;
-        }
+      } catch {
+        sessionStore.getState().removeOptimisticRequest(
+          target,
+          optimisticRequestId,
+        );
         restorePromptDraft(key, value, isPlanningMode, isUltraMode, attachments);
         return;
       } finally {
         sessionStore.getState().setPromptDraftPending(key, false);
-        finishPromptSubmit(key);
       }
     };
 
@@ -226,10 +195,9 @@ export function useConversationActions(binding?: ChatBinding | null) {
         }
 
         const attachments = getAttachments(targetPromptDraftKey);
-        const targetIsKnownRunning =
-          (getConversationView(target)?.activeRequestIds.length ?? 0) > 0 ||
-          (getConversationSummary(target)?.isRunning ?? false);
-        if (targetIsKnownRunning) {
+        const activeRequestCount =
+          getConversationView(target)?.activeRequestIds.length ?? 0;
+        if (activeRequestCount > 0) {
           const store = sessionStore.getState();
           store.enqueuePrompt(targetPromptDraftKey, {
             attachments,
@@ -273,8 +241,25 @@ export function useConversationActions(binding?: ChatBinding | null) {
       return;
     }
 
-    return sessionStore.subscribe(() => {
-      const next = tryBeginPromptQueueDrain(promptDraftKey, binding);
+    return sessionStore.subscribe((state) => {
+      if (queuedDrainRunningRef.current) {
+        return;
+      }
+
+      const view = getConversationView(binding);
+      const activeRequestCount = view?.activeRequestIds.length ?? 0;
+      const draft = state.promptDraftsByKey[promptDraftKey] ?? null;
+      const queue = state.queuedPromptsByKey[promptDraftKey] ?? [];
+      if (
+        activeRequestCount > 0 ||
+        queue.length === 0 ||
+        (draft?.isPending ?? false) ||
+        (draft?.value ?? "").trim().length > 0
+      ) {
+        return;
+      }
+
+      const next = sessionStore.getState().dequeuePrompt(promptDraftKey);
       if (next == null) {
         return;
       }
@@ -285,9 +270,10 @@ export function useConversationActions(binding?: ChatBinding | null) {
       store.setPromptDraftUltraMode(promptDraftKey, next.isUltraMode);
       store.clearAttachments(promptDraftKey);
       store.addAttachments(promptDraftKey, next.attachments);
+      queuedDrainRunningRef.current = true;
       queueMicrotask(() => {
         void actions.submitPrompt().finally(() => {
-          finishPromptQueueDrain(promptDraftKey);
+          queuedDrainRunningRef.current = false;
         });
       });
     });

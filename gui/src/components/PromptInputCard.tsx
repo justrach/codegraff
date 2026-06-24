@@ -674,10 +674,6 @@ export function PromptInputCard({
                   if (isComposingRef.current || event.nativeEvent.isComposing) {
                     return;
                   }
-                  if (event.repeat) {
-                    event.preventDefault();
-                    return;
-                  }
                   event.preventDefault();
                   submitCurrentDraft(event.currentTarget.value);
                   return;

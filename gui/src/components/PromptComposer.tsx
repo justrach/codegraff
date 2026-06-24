@@ -85,6 +85,9 @@ export function PromptComposer({
   const handleSubmit = useCallback(
     async (input?: SubmitPromptInput) => {
       const draft = typeof input === "string" ? input : input?.draft ?? promptDraft;
+      if (input != null) {
+        setPromptDraft(draft);
+      }
       if (trySubmitAsCommand(draft)) {
         return;
       }
@@ -98,7 +101,7 @@ export function PromptComposer({
             },
       );
     },
-    [binding, promptDraft, submitPrompt, trySubmitAsCommand, workspacePath],
+    [binding, promptDraft, setPromptDraft, submitPrompt, trySubmitAsCommand, workspacePath],
   );
 
   // The goal chip mutates `/goal` directly (set/clear). The backend persists

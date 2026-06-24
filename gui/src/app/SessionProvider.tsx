@@ -23,7 +23,6 @@ import {
   ensureWorkspacePromptSettingsLoaded,
   ensureWorkspaceRuntimeStatusLoaded,
   getAttachments,
-  getConversationSummary,
   getConversationView,
   getSelectionFromSnapshot,
   isLatestConversationSelectionRequest,
@@ -39,16 +38,6 @@ import {
   LATEST_WORKSPACE_STORAGE_KEY,
 } from "./sessionSnapshot";
 import { appendAttachmentsToPrompt } from "@/components/attachments/attachmentTypes";
-import {
-  isActivePromptConflictError,
-  snapshotConfirmsPromptAccepted,
-  snapshotHasActiveRequest,
-} from "./promptSubmitErrors";
-import {
-  finishPromptQueueDrain,
-  tryBeginPromptQueueDrain,
-} from "./promptQueueDrain";
-import { beginPromptSubmit, finishPromptSubmit } from "./promptSubmitLock";
 import type { SessionProviderProps } from "./types/app";
 import { useSessionBootstrap } from "../hooks/useSessionBootstrap";
 
@@ -614,29 +603,6 @@ export function SessionProvider({ children }: SessionProviderProps) {
         // append them so they ride the first message, mirroring the bound-chat
         // submit path in useConversationActions.
         const attachments = getAttachments(promptDraftKey);
-        const targetBinding =
-          conversationId == null ? null : { workspacePath, conversationId };
-        const targetIsKnownRunning =
-          targetBinding != null &&
-          ((getConversationView(targetBinding)?.activeRequestIds.length ?? 0) > 0 ||
-            (getConversationSummary(targetBinding)?.isRunning ?? false));
-        if (targetIsKnownRunning) {
-          const store = sessionStore.getState();
-          store.enqueuePrompt(promptDraftKey, {
-            attachments,
-            isPlanningMode: draftState.isPlanningMode,
-            isUltraMode: draftState.isUltraMode,
-            value: trimmedPrompt,
-          });
-          store.clearPromptDraft(promptDraftKey);
-          store.setPromptDraftUltraMode(promptDraftKey, false);
-          store.clearAttachments(promptDraftKey);
-          return;
-        }
-        if (!beginPromptSubmit(promptDraftKey)) {
-          return;
-        }
-        try {
         const prompt = appendAttachmentsToPrompt(trimmedPrompt, attachments);
         const restorePromptDraft = () => {
           const store = sessionStore.getState();
@@ -662,10 +628,6 @@ export function SessionProvider({ children }: SessionProviderProps) {
           conversationId: conversationId ?? `optimistic-chat-${Date.now()}`,
           workspacePath,
         };
-        const optimisticPromptDraftKey = getPromptDraftKey(
-          optimisticBinding.workspacePath,
-          optimisticBinding.conversationId,
-        );
         store.setPromptDraftPending(promptDraftKey, true);
         store.appendOptimisticUserMessage(
           optimisticBinding,
@@ -681,67 +643,18 @@ export function SessionProvider({ children }: SessionProviderProps) {
             prompt,
             workspacePath,
           })
-          .catch(async (error) => {
-            const currentStore = sessionStore.getState();
-            currentStore.removeOptimisticRequest(
-              optimisticBinding,
-              optimisticRequestId,
-            );
-            const refreshedSnapshot = await desktopClient
-              .getSessionSnapshot()
-              .catch(() => null);
-            if (refreshedSnapshot != null) {
-              applySessionSnapshot(refreshedSnapshot);
-            }
-            if (isActivePromptConflictError(error)) {
-              const conflictBinding =
-                conversationId == null ? null : { workspacePath, conversationId };
-              if (
-                conflictBinding != null &&
-                snapshotHasActiveRequest(refreshedSnapshot, conflictBinding)
-              ) {
-                sessionStore.getState().enqueuePrompt(promptDraftKey, {
-                  attachments,
-                  isPlanningMode: draftState.isPlanningMode,
-                  isUltraMode: draftState.isUltraMode,
-                  value: trimmedPrompt,
-                });
-                return null;
-              }
-            }
-            if (
-              snapshotConfirmsPromptAccepted(
-                refreshedSnapshot,
-                { workspacePath, conversationId },
-                prompt,
-              )
-            ) {
-              if (refreshedSnapshot != null) {
-                if (sessionStore.getState().selection.kind !== "saved-workspace") {
-                  syncBoardSelectionFromSnapshot(refreshedSnapshot);
-                }
-                sessionStore.getState().moveQueuedPrompts(
-                  optimisticPromptDraftKey,
-                  getPromptDraftKey(
-                    refreshedSnapshot.activeWorkspacePath,
-                    refreshedSnapshot.activeConversationId,
-                  ),
-                );
-              }
-              return null;
-            }
-            restorePromptDraft();
-            return null;
-          });
+          .catch(() => null);
         if (snapshot == null) {
+          sessionStore.getState().removeOptimisticRequest(
+            optimisticBinding,
+            optimisticRequestId,
+          );
+          restorePromptDraft();
           sessionStore.getState().setPromptDraftPending(promptDraftKey, false);
           return;
         }
         if (snapshot != null) {
           applySessionSnapshot(snapshot);
-          if (sessionStore.getState().selection.kind !== "saved-workspace") {
-            syncBoardSelectionFromSnapshot(snapshot);
-          }
           nextPromptDraftKey = getPromptDraftKey(
             snapshot.activeWorkspacePath,
             snapshot.activeConversationId,
@@ -755,9 +668,6 @@ export function SessionProvider({ children }: SessionProviderProps) {
           sessionStore
             .getState()
             .moveAttachments(promptDraftKey, nextPromptDraftKey);
-          sessionStore
-            .getState()
-            .moveQueuedPrompts(optimisticPromptDraftKey, nextPromptDraftKey);
           sessionStore.getState().clearPromptDraft(nextPromptDraftKey);
           sessionStore.getState().clearAttachments(nextPromptDraftKey);
         }
@@ -767,9 +677,6 @@ export function SessionProvider({ children }: SessionProviderProps) {
           sessionStore
             .getState()
             .setPromptDraftPending(nextPromptDraftKey, false);
-        }
-        } finally {
-          finishPromptSubmit(promptDraftKey);
         }
       },
       updatePromptSettings: async (input: {
@@ -794,44 +701,6 @@ export function SessionProvider({ children }: SessionProviderProps) {
       syncBoardSelectionFromSnapshot,
     ],
   );
-
-  useEffect(() => {
-    return sessionStore.subscribe((state) => {
-      const binding = getUiActiveBinding(state);
-      if (binding == null) {
-        return;
-      }
-      const promptDraftKey = getPromptDraftKey(
-        binding.workspacePath,
-        binding.conversationId,
-      );
-      if (promptDraftKey == null) {
-        return;
-      }
-
-      const next = tryBeginPromptQueueDrain(promptDraftKey, binding);
-      if (next == null) {
-        return;
-      }
-      const store = sessionStore.getState();
-      store.setPromptDraftValue(promptDraftKey, next.value);
-      store.setPromptDraftPlanningMode(promptDraftKey, next.isPlanningMode);
-      store.setPromptDraftUltraMode(promptDraftKey, next.isUltraMode);
-      store.clearAttachments(promptDraftKey);
-      store.addAttachments(promptDraftKey, next.attachments);
-      queueMicrotask(() => {
-        void actionState
-          .submitPrompt({
-            conversationId: binding.conversationId,
-            draft: next.value,
-            workspacePath: binding.workspacePath,
-          })
-          .finally(() => {
-            finishPromptQueueDrain(promptDraftKey);
-          });
-      });
-    });
-  }, [actionState]);
 
   return (
     <SessionActionsContext.Provider value={actionState}>
