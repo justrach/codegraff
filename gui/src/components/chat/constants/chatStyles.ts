@@ -10,5 +10,5 @@ export const CHAT_REASONING_TONE_CLASS =
  * than final answers without tiny italic styling.
  */
 export const CHAT_THINKING_TONE_CLASS =
-  "border-l border-accent/25 pl-4 text-sm/7 text-muted-foreground/78";
+  "text-sm/7 text-muted-foreground/78";
 export const CHAT_BADGE_TEXT_CLASS = "text-xs font-medium uppercase tracking-widest";
