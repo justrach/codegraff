@@ -2948,6 +2948,8 @@ const anims = [_]Anim{
     .{ .name = "starfield", .desc = "parallax stars", .frame = animStarfield },
     .{ .name = "comet-tail", .desc = "streaking comet indicator", .frame = animCometTail },
     .{ .name = "poop", .desc = "a stinky poop wobbling", .frame = animPoop }, // PRANK: blackfloofie_poop_prank
+    .{ .name = "glitter", .desc = "glittery pink sparkles", .frame = animGlitter }, // EGG: limyuxi_birthday_white
+    .{ .name = "dragon", .desc = "a wee fire-breathing dragon", .frame = animDragon }, // EGG: limyuxi_birthday_white
 };
 
 var g_anim_index: usize = 0; // /animation selection (index into anims)
@@ -2959,6 +2961,20 @@ var g_anim_current: usize = 0; // what spinnerTask draws right now
 // reset on exit. Cosmetic and gated to her cwd, like the old dragon spinner.
 // Flip to false / delete to remove after the bday.
 const limyuxi_birthday_white = true;
+
+// 🎂 yxlyx's birthday glam: a pastel-pink Ghostty theme — light pink bg, dark
+// plum text, and a pink-leaning ANSI palette so graff's colored UI stays legible
+// (every entry is dark/saturated enough to read on light pink). Reset with OSC
+// 104/110/111/112 on exit. Paired with the "glitter" spinner; gated by the flag.
+const limyuxi_theme =
+    "\x1b]11;#fce4ec\x07" ++ // bg: pastel pink
+    "\x1b]10;#4a1942\x07" ++ // fg: dark plum (~9:1 contrast)
+    "\x1b]12;#d81b60\x07" ++ // cursor: hot pink
+    "\x1b]4;0;#4a1942\x07\x1b]4;1;#c2185b\x07\x1b]4;2;#2e7d32\x07\x1b]4;3;#b26a00\x07" ++
+    "\x1b]4;4;#6a1b9a\x07\x1b]4;5;#ad1457\x07\x1b]4;6;#00796b\x07\x1b]4;7;#5d4357\x07" ++
+    "\x1b]4;8;#8a6680\x07\x1b]4;9;#e91e63\x07\x1b]4;10;#388e3c\x07\x1b]4;11;#c77800\x07" ++
+    "\x1b]4;12;#8e24aa\x07\x1b]4;13;#d81b60\x07\x1b]4;14;#00897b\x07\x1b]4;15;#3a1133\x07";
+const limyuxi_reset = "\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07"; // palette, fg, bg, cursor
 var g_obfs_select: bool = false; // auto-detect for legacy host profiles
 // PRANK — remove in a future release. Gives blackfloofie a poop
 // thinking spinner when graff runs from their home dir (/Users/blackfloofie). To
@@ -3057,6 +3073,42 @@ fn animPoop(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     const stink = [_][]const u8{ "Ë", "Ë", "Ë", "Â·", "Ë" };
     try w.print("{s}{s}{s}{s}{s}{s}", .{ style.dim, stink[i % stink.len], style.reset, wobble[i % wobble.len], style.dim, stink[(i + 2) % stink.len] });
     try w.print("{s}{s}{s}{s}", .{ style.bold, style.yellow, "ð©", style.reset });
+    try animThinking(w);
+}
+
+fn animGlitter(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    // 🎂 EGG (limyuxi_birthday_white): a glittery pink sparkle spinner. Saturated
+    // pinks/purples/gold pop on the pastel-pink bg; "thinking…" in deep plum
+    // stays legible.
+    const sparks = [_][]const u8{ "✨", "✧", "⋆", "˖", "✦", "♡", "⭒", "·" };
+    const cols = [_][]const u8{
+        "\x1b[38;2;255;20;147m", // deep pink
+        "\x1b[38;2;233;30;99m", // pink
+        "\x1b[38;2;156;39;176m", // purple
+        "\x1b[38;2;255;152;0m", // gold
+        "\x1b[38;2;216;27;96m", // magenta
+    };
+    var j: usize = 0;
+    while (j < 3) : (j += 1) {
+        try w.writeAll(cols[(i +% j) % cols.len]);
+        try w.writeAll(sparks[(i *% 2 +% j *% 3) % sparks.len]);
+        if (j + 1 < 3) try w.writeAll(" ");
+    }
+    try w.writeAll("\x1b[0m \x1b[38;2;106;27;90mthinking…\x1b[0m");
+}
+
+fn animDragon(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    // 🎂 EGG (limyuxi_birthday_white): a wee ASCII fire-breathing dragon for
+    // yxlyx — brought back, but drawn (no emoji). Spiky body undulates, the head
+    // breathes a flickering flame. style.yellow → legible amber on her pink bg,
+    // bright yellow on a dark terminal.
+    const body = [_][]const u8{ "_^_^_^", "^_^_^_", "_^^_^^", "^^_^^_" };
+    const flame = [_][]const u8{ "~", "=", "<", "*", "" };
+    try w.print("{s}{s}", .{ style.bold, style.yellow });
+    try w.writeAll(body[i % body.len]);
+    try w.writeAll("(O>");
+    try w.writeAll(flame[i % flame.len]);
+    try w.writeAll(style.reset);
     try animThinking(w);
 }
 
@@ -5312,19 +5364,23 @@ pub fn main(init: std.process.Init) !void {
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
-    // 🎂 Birthday easter egg — paint limyuxi/yxlyx's Ghostty white while graff
-    // runs from her home dir, and reset it on exit. Cosmetic, flagged, gated to
-    // her cwd like the old dragon spinner. Remove (the flag) after the bday.
-    const limyuxi_white = limyuxi_birthday_white and use_color and !json_mode and
+    // 🎂 yxlyx's birthday glam — when graff runs from her home dir, dress her
+    // Ghostty in the pastel-pink theme (limyuxi_theme: light pink bg, dark plum
+    // text, pink-leaning palette) and switch the spinner to glittery sparkles.
+    // Cosmetic, flagged, gated to her cwd; resets everything on exit.
+    const limyuxi_glam = limyuxi_birthday_white and use_color and !json_mode and
         (std.mem.eql(u8, g_cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, g_cwd_display, "/Users/limyuxi/"));
-    if (limyuxi_white) {
-        // OSC 11 → white background, OSC 10 → near-black text so it stays
-        // readable. Ghostty honors both; reset with OSC 110/111 on exit.
-        out.writeAll("\x1b]11;#ffffff\x07\x1b]10;#1a1a1a\x07") catch {};
+    if (limyuxi_glam) {
+        out.writeAll(limyuxi_theme) catch {};
         out.flush() catch {};
+        if (animIndex("dragon")) |gi| {
+            g_anim_index = gi;
+            g_anim_off = false;
+            g_anim_random = false;
+        }
     }
-    defer if (limyuxi_white) {
-        out.writeAll("\x1b]110\x07\x1b]111\x07") catch {}; // reset fg + bg
+    defer if (limyuxi_glam) {
+        out.writeAll(limyuxi_reset) catch {};
         out.flush() catch {};
     };
     loadDevSpinnerOptOut(io, arena, init.environ_map);
