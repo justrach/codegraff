@@ -79,6 +79,7 @@ export interface SessionStoreState {
   dequeuePrompt: (key: string | null) => QueuedPromptEntry | null;
   enqueuePrompt: (key: string | null, entry: QueuedPromptEntry) => void;
   movePromptDraft: (fromKey: string | null, toKey: string | null) => void;
+  moveQueuedPrompts: (fromKey: string | null, toKey: string | null) => void;
   setBoardSelection: (selection: WorkspaceBoardSelection) => void;
   setIsBootstrapped: (value: boolean) => void;
   setIsOpeningProject: (value: boolean) => void;

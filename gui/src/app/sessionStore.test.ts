@@ -254,6 +254,251 @@ describe("sessionStore", () => {
     expect(view?.activeRequestIds).toContain("optimistic-1");
   });
 
+  test("applySessionSnapshot preserves optimistic in-chat selection when stale native snapshot omits the view", () => {
+    sessionStore.getState().applySessionSnapshot(createSnapshot());
+    sessionStore.getState().appendOptimisticUserMessage(
+      { conversationId: "chat-1", workspacePath: "/workspace/codegraff-gui" },
+      "optimistic-1",
+      "native enter",
+      "forge",
+    );
+
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        activeConversationId: "chat-2",
+        conversationViews: [
+          {
+            activeRequestIds: [],
+            conversationId: "chat-2",
+            followup: null,
+            messages: [],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+        workspaces: [
+          {
+            configurationError: null,
+            configured: true,
+            conversations: [
+              {
+                conversationId: "chat-1",
+                hasPendingFollowup: false,
+                isDraft: false,
+                isRunning: false,
+                title: "Chat 1",
+                updatedAt: "2026-04-21T00:00:00.000Z",
+              },
+              {
+                conversationId: "chat-2",
+                hasPendingFollowup: false,
+                isDraft: false,
+                isRunning: false,
+                title: "Chat 2",
+                updatedAt: "2026-04-21T00:00:00.000Z",
+              },
+            ],
+            kind: "project",
+            selectedConversationId: "chat-2",
+            workspaceName: "Agent UI",
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+
+    expect(getUiActiveConversationId()).toBe("chat-1");
+    const view = sessionStore.getState().conversationViewsByKey[
+      "/workspace/codegraff-gui::chat-1"
+    ];
+    expect(view?.messages.map((message) => message.id)).toContain(
+      "optimistic-1-user",
+    );
+  });
+
+  test("applySessionSnapshot preserves optimistic new-chat selection across stale native workspace snapshots", () => {
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        activeConversationId: null,
+        conversationViews: [],
+        visibleMessages: [],
+      }),
+    );
+    sessionStore.getState().appendOptimisticUserMessage(
+      {
+        conversationId: "optimistic-chat-1",
+        workspacePath: "/workspace/codegraff-gui",
+      },
+      "optimistic-1",
+      "first native prompt",
+      "forge",
+    );
+
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        activeConversationId: null,
+        conversationViews: [],
+        visibleMessages: [],
+      }),
+    );
+
+    expect(getUiActiveConversationId()).toBe("optimistic-chat-1");
+    const view = sessionStore.getState().conversationViewsByKey[
+      "/workspace/codegraff-gui::optimistic-chat-1"
+    ];
+    expect(view?.messages.map((message) => message.id)).toEqual([
+      "optimistic-1-user",
+    ]);
+  });
+
+  test("applySessionSnapshot does not treat stale same-text active chats as accepted optimistic submits", () => {
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        activeConversationId: "chat-2",
+        conversationViews: [
+          {
+            activeRequestIds: [],
+            conversationId: "chat-2",
+            followup: null,
+            messages: [
+              {
+                id: "req-old-user",
+                kind: "user",
+                requestId: "req-old",
+                text: "continue",
+              },
+            ],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+        workspaces: [
+          {
+            configurationError: null,
+            configured: true,
+            conversations: [
+              {
+                conversationId: "chat-1",
+                hasPendingFollowup: false,
+                isDraft: false,
+                isRunning: false,
+                title: "Chat 1",
+                updatedAt: "2026-04-21T00:00:00.000Z",
+              },
+              {
+                conversationId: "chat-2",
+                hasPendingFollowup: false,
+                isDraft: false,
+                isRunning: false,
+                title: "Chat 2",
+                updatedAt: "2026-04-21T00:00:00.000Z",
+              },
+            ],
+            kind: "project",
+            selectedConversationId: "chat-2",
+            workspaceName: "Agent UI",
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+    sessionStore.getState().setBoardSelection({
+      kind: "single-chat",
+      chat: { conversationId: "chat-1", workspacePath: "/workspace/codegraff-gui" },
+    });
+    sessionStore.getState().appendOptimisticUserMessage(
+      { conversationId: "chat-1", workspacePath: "/workspace/codegraff-gui" },
+      "optimistic-1",
+      "continue",
+      "forge",
+    );
+
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        activeConversationId: "chat-2",
+        conversationViews: [
+          {
+            activeRequestIds: [],
+            conversationId: "chat-2",
+            followup: null,
+            messages: [
+              {
+                id: "req-old-user",
+                kind: "user",
+                requestId: "req-old",
+                text: "continue",
+              },
+            ],
+            requestAgentIds: {},
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+
+    expect(getUiActiveConversationId()).toBe("chat-1");
+  });
+
+  test("applySessionSnapshot keeps optimistic new-chat selection until submit command syncs accepted snapshot", () => {
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        activeConversationId: null,
+        conversationViews: [],
+        visibleMessages: [],
+      }),
+    );
+    sessionStore.getState().appendOptimisticUserMessage(
+      {
+        conversationId: "optimistic-chat-1",
+        workspacePath: "/workspace/codegraff-gui",
+      },
+      "optimistic-1",
+      "first native prompt",
+      "forge",
+    );
+
+    sessionStore.getState().applySessionSnapshot(
+      createSnapshot({
+        activeConversationId: "chat-real",
+        conversationViews: [
+          {
+            activeRequestIds: ["req-real"],
+            conversationId: "chat-real",
+            followup: null,
+            messages: [
+              {
+                id: "req-real-user",
+                kind: "user",
+                requestId: "req-real",
+                text: "first native prompt",
+              },
+            ],
+            requestAgentIds: { "req-real": "forge" },
+            todos: [],
+            workspacePath: "/workspace/codegraff-gui",
+          },
+        ],
+      }),
+    );
+
+    expect(getUiActiveConversationId()).toBe("optimistic-chat-1");
+    const view = sessionStore.getState().conversationViewsByKey[
+      "/workspace/codegraff-gui::chat-real"
+    ];
+    expect(view?.messages.map((message) => message.id)).toEqual([
+      "req-real-user",
+    ]);
+
+    sessionStore.getState().setBoardSelection({
+      kind: "single-chat",
+      chat: { conversationId: "chat-real", workspacePath: "/workspace/codegraff-gui" },
+    });
+    expect(getUiActiveConversationId()).toBe("chat-real");
+  });
+
   test("applySessionSnapshot preserves optimistic submit when stale snapshot grows with old same-text turn", () => {
     sessionStore.getState().applySessionSnapshot(
       createSnapshot({
@@ -417,6 +662,32 @@ describe("sessionStore", () => {
     expect(view?.activeRequestIds).toEqual(["req-real"]);
   });
 
+  test("appendOptimisticUserMessage preserves saved workspace selection for active panel chat", () => {
+    const savedSelection = {
+      activeChat: {
+        conversationId: "chat-1",
+        workspacePath: "/workspace/codegraff-gui",
+      },
+      kind: "saved-workspace" as const,
+      workspace: {
+        id: "saved-1",
+        layoutJson: "{\"grid\":true}",
+        name: "Workspace",
+        updatedAt: 1,
+      },
+    };
+    sessionStore.getState().setBoardSelection(savedSelection);
+
+    sessionStore.getState().appendOptimisticUserMessage(
+      { conversationId: "chat-1", workspacePath: "/workspace/codegraff-gui" },
+      "optimistic-1",
+      "panel prompt",
+      "forge",
+    );
+
+    expect(sessionStore.getState().selection).toEqual(savedSelection);
+  });
+
   test("applySessionSnapshot preserves saved workspace selection", () => {
     sessionStore.getState().setBoardSelection({
       activeChat: {
@@ -561,6 +832,25 @@ describe("sessionStore", () => {
       isUltraMode: true,
       value: "describe the job",
     });
+  });
+
+  test("queued prompts move from optimistic new-chat key to materialized conversation key", () => {
+    const sourceKey = "conversation:optimistic-chat-1";
+    const destinationKey = "conversation:chat-real";
+    const queued = {
+      attachments: [],
+      isPlanningMode: false,
+      isUltraMode: true,
+      value: "follow up",
+    };
+
+    sessionStore.getState().enqueuePrompt(sourceKey, queued);
+    sessionStore.getState().moveQueuedPrompts(sourceKey, destinationKey);
+
+    expect(sessionStore.getState().queuedPromptsByKey[sourceKey]).toBeUndefined();
+    expect(sessionStore.getState().queuedPromptsByKey[destinationKey]).toEqual([
+      queued,
+    ]);
   });
 
   test("attachments move from the workspace draft key to the conversation key without being lost", () => {

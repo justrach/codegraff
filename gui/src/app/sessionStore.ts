@@ -365,6 +365,51 @@ function mergeOptimisticRequestsIntoSnapshotView(
   };
 }
 
+function pendingOptimisticMessages(view: ConversationViewSnapshot | undefined) {
+  if (view == null) {
+    return [];
+  }
+
+  const activeRequestIds = new Set(view.activeRequestIds);
+  return view.messages.filter(
+    (message) =>
+      isOptimisticRequestId(message.requestId) && activeRequestIds.has(message.requestId),
+  );
+}
+
+function shouldPreserveOptimisticSelection(
+  current: SessionStoreState,
+  snapshot: SessionSnapshot,
+  nextViews: ConversationViewSnapshot[],
+): boolean {
+  if (current.selection.kind !== "single-chat") {
+    return false;
+  }
+
+  const currentBinding = current.selection.chat;
+  const currentView = current.conversationViewsByKey[
+    getConversationStoreKeyForBinding(currentBinding)
+  ];
+  const optimisticMessages = pendingOptimisticMessages(currentView);
+  if (optimisticMessages.length === 0) {
+    return false;
+  }
+
+  if (
+    snapshot.activeWorkspacePath === currentBinding.workspacePath &&
+    snapshot.activeConversationId === currentBinding.conversationId
+  ) {
+    return false;
+  }
+
+  // Any snapshot that points somewhere else can be a delayed native/SSE
+  // baseline. Keep the pending optimistic selection here; command paths that
+  // know they are applying the direct send_prompt response explicitly sync the
+  // board selection from that accepted snapshot after applying it.
+  void nextViews;
+  return true;
+}
+
 function bumpConversationVersion(
   versions: Record<string, number>,
   key: string,
@@ -552,9 +597,43 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
           }
         }
 
+        const preserveOptimisticSelection = shouldPreserveOptimisticSelection(
+          current,
+          snapshot,
+          nextViews,
+        );
+        const nextSelection = (() => {
+          if (preserveOptimisticSelection) {
+            return current.selection;
+          }
+
+          if (current.selection.kind === "saved-workspace") {
+            const savedWorkspaceSelection = current.selection;
+            const matchingSavedWorkspace = snapshot.savedWorkspaces.find(
+              (workspace) => workspace.id === savedWorkspaceSelection.workspace.id,
+            );
+            return matchingSavedWorkspace == null
+              ? getSelectionFromSnapshot(snapshot)
+              : {
+                  ...savedWorkspaceSelection,
+                  workspace: {
+                    ...savedWorkspaceSelection.workspace,
+                    name: matchingSavedWorkspace.name,
+                    updatedAt: matchingSavedWorkspace.updatedAt,
+                  },
+                };
+          }
+
+          return getSelectionFromSnapshot(snapshot);
+        })();
+
         return {
-          activeConversationId: snapshot.activeConversationId,
-          activeWorkspacePath: snapshot.activeWorkspacePath,
+          activeConversationId: preserveOptimisticSelection
+            ? current.activeConversationId
+            : snapshot.activeConversationId,
+          activeWorkspacePath: preserveOptimisticSelection
+            ? current.activeWorkspacePath
+            : snapshot.activeWorkspacePath,
           conversationSummariesByKey: buildConversationSummariesByKey(
             snapshot.workspaces,
           ),
@@ -563,26 +642,7 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
           conversationViewsByKey: nextConversationViewsByKey,
           requestTimingsByConversationId: nextRequestTimingsByConversationId,
           savedWorkspaces: snapshot.savedWorkspaces,
-          selection: (() => {
-            if (current.selection.kind === "saved-workspace") {
-              const savedWorkspaceSelection = current.selection;
-              const matchingSavedWorkspace = snapshot.savedWorkspaces.find(
-                (workspace) => workspace.id === savedWorkspaceSelection.workspace.id,
-              );
-              return matchingSavedWorkspace == null
-                ? getSelectionFromSnapshot(snapshot)
-                : {
-                    ...savedWorkspaceSelection,
-                    workspace: {
-                      ...savedWorkspaceSelection.workspace,
-                      name: matchingSavedWorkspace.name,
-                      updatedAt: matchingSavedWorkspace.updatedAt,
-                    },
-                  };
-            }
-
-            return getSelectionFromSnapshot(snapshot);
-          })(),
+          selection: nextSelection,
           uiError: snapshot.uiError,
           workspaces: snapshot.workspaces,
           workspacesByPath: buildWorkspacesByPath(snapshot.workspaces),
@@ -791,10 +851,14 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
                   : { ...existing.requestAgentIds, [requestId]: agentId },
             },
           },
-          selection: {
-            kind: "single-chat",
-            chat: binding,
-          },
+          selection:
+            current.selection.kind === "saved-workspace" &&
+            areChatBindingsEqual(current.selection.activeChat, binding)
+              ? current.selection
+              : {
+                  kind: "single-chat",
+                  chat: binding,
+                },
         };
       });
     },
@@ -997,6 +1061,23 @@ function createSessionStoreState(set: SessionStoreSetter): SessionStoreState {
         ];
 
         return { attachmentsByKey: nextByKey };
+      });
+    },
+    moveQueuedPrompts: (fromKey, toKey) => {
+      if (fromKey == null || toKey == null || fromKey === toKey) {
+        return;
+      }
+
+      set((current) => {
+        const moving = current.queuedPromptsByKey[fromKey];
+        if (moving == null || moving.length === 0) {
+          return current;
+        }
+
+        const nextQueue = { ...current.queuedPromptsByKey };
+        delete nextQueue[fromKey];
+        nextQueue[toKey] = [...(nextQueue[toKey] ?? []), ...moving];
+        return { queuedPromptsByKey: nextQueue };
       });
     },
     setBoardSelection: (selection) => {

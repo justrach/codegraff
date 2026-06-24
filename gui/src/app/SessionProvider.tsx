@@ -662,6 +662,10 @@ export function SessionProvider({ children }: SessionProviderProps) {
           conversationId: conversationId ?? `optimistic-chat-${Date.now()}`,
           workspacePath,
         };
+        const optimisticPromptDraftKey = getPromptDraftKey(
+          optimisticBinding.workspacePath,
+          optimisticBinding.conversationId,
+        );
         store.setPromptDraftPending(promptDraftKey, true);
         store.appendOptimisticUserMessage(
           optimisticBinding,
@@ -712,6 +716,18 @@ export function SessionProvider({ children }: SessionProviderProps) {
                 prompt,
               )
             ) {
+              if (refreshedSnapshot != null) {
+                if (sessionStore.getState().selection.kind !== "saved-workspace") {
+                  syncBoardSelectionFromSnapshot(refreshedSnapshot);
+                }
+                sessionStore.getState().moveQueuedPrompts(
+                  optimisticPromptDraftKey,
+                  getPromptDraftKey(
+                    refreshedSnapshot.activeWorkspacePath,
+                    refreshedSnapshot.activeConversationId,
+                  ),
+                );
+              }
               return null;
             }
             restorePromptDraft();
@@ -723,6 +739,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
         }
         if (snapshot != null) {
           applySessionSnapshot(snapshot);
+          if (sessionStore.getState().selection.kind !== "saved-workspace") {
+            syncBoardSelectionFromSnapshot(snapshot);
+          }
           nextPromptDraftKey = getPromptDraftKey(
             snapshot.activeWorkspacePath,
             snapshot.activeConversationId,
@@ -736,6 +755,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
           sessionStore
             .getState()
             .moveAttachments(promptDraftKey, nextPromptDraftKey);
+          sessionStore
+            .getState()
+            .moveQueuedPrompts(optimisticPromptDraftKey, nextPromptDraftKey);
           sessionStore.getState().clearPromptDraft(nextPromptDraftKey);
           sessionStore.getState().clearAttachments(nextPromptDraftKey);
         }
