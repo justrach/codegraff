@@ -19,12 +19,6 @@ function deltaBatchKey(delta: MessageDelta): string {
   ].join('\u0000')
 }
 
-function hasPendingGuiPromptSubmission(): boolean {
-  return Object.values(sessionStore.getState().promptDraftsByKey).some(
-    (draft) => draft.isPending,
-  )
-}
-
 function sessionStoreSyncFingerprint(): string {
   const state = sessionStore.getState()
   return JSON.stringify({
@@ -193,12 +187,7 @@ export function startSessionBootstrap(
       if (!isMounted()) {
         return
       }
-      if (
-        !initialBootstrapSettled ||
-        !isDocumentVisible() ||
-        cliSessionSyncInFlight ||
-        hasPendingGuiPromptSubmission()
-      ) {
+      if (!initialBootstrapSettled || !isDocumentVisible() || cliSessionSyncInFlight) {
         scheduleCliSessionSync()
         return
       }

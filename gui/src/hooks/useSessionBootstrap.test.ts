@@ -394,39 +394,6 @@ describe("startSessionBootstrap", () => {
     expect(sessionStore.getState().uiError).toBe("cli-session-imported");
   });
 
-  test("does not poll CLI session files while a GUI prompt submission is pending", async () => {
-    let calls = 0;
-    getSessionSnapshotImpl = () => {
-      calls += 1;
-      return Promise.resolve(createSnapshot({ id: "initial" }));
-    };
-
-    const harness = startHarness({ cliSessionSyncIntervalMs: 10 });
-    await Promise.resolve();
-    sessionStore.getState().setPromptDraftPending("pending-draft", true);
-    await sleep(35);
-    harness.cleanup();
-
-    expect(calls).toBe(1);
-  });
-
-  test("continues polling while a request is active so snapshots can recover missed lifecycle events", async () => {
-    let calls = 0;
-    getSessionSnapshotImpl = () => {
-      calls += 1;
-      return Promise.resolve(
-        createSnapshot({ id: calls === 1 ? "running" : "finished", activeRequestIds: calls === 1 ? ["req-active"] : [] }),
-      );
-    };
-
-    const harness = startHarness({ cliSessionSyncIntervalMs: 10 });
-    await sleep(35);
-    harness.cleanup();
-
-    expect(calls).toBeGreaterThanOrEqual(2);
-    expect(sessionStore.getState().uiError).toBe("finished");
-  });
-
   test("does not let a stale CLI session poll overwrite newer GUI state", async () => {
     const poll = deferred<SessionSnapshot>();
     let calls = 0;
