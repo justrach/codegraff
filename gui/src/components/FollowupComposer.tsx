@@ -167,6 +167,10 @@ export function FollowupComposer({
                 : "Type your reply, then press Enter to send"
             }
             value={notesText}
+            autoCapitalize="off"
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
             onChange={(event) => setNotesText(event.target.value)}
             onKeyDown={handleNotesKeyDown}
             rows={3}

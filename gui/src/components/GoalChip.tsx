@@ -92,6 +92,10 @@ export function GoalChip({ goal, onEdit, onClear, className }: GoalChipProps) {
         <Input
           ref={inputRef}
           value={draft}
+          autoCapitalize="off"
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleKeyDown}
           onBlur={commitEdit}
