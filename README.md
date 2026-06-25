@@ -288,6 +288,8 @@ usage:
   graff login codex [--refresh]    ChatGPT/Codex OAuth login (PKCE)
   graff key set <provider> <key>   store a key (macOS Keychain, else 0600 file)
   graff key list                   show which providers have keys
+  graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
+  graff mcp                         list configured MCP servers
   graff --schema                   print the machine-readable interface (SDK codegen)
 
 flags:
@@ -528,7 +530,10 @@ discovers their tools, and offers them to the model namespaced
 Pointing it at `codedb mcp .` gives the agent 22 structural code-intelligence
 tools — pure-Zig client to pure-Zig server, zero dependencies on either side.
 `/mcp` lists what connected; `/mcp add <name> <cmd> [args…]` connects a server
-live and saves it to `.mcp.json`. Workspace servers auto-connect only with
+live and saves it to `.mcp.json`. From a shell, use the Codex-style form
+`graff mcp add <name> [--env KEY=VALUE ...] -- <cmd> [args…]`; for example,
+`graff mcp add context7 -- npx -y @upstash/context7-mcp`. `graff mcp` lists the
+servers already saved in `.mcp.json`. Workspace servers auto-connect only with
 `--yolo` (trusted) or per-session consent.
 
 One known companion is exempt from the workspace gate: if the `muonry` binary is

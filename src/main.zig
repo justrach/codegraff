@@ -4838,6 +4838,8 @@ const usage_text =
     \\  graff login kimi                 Kimi Code OAuth login (device-code)
     \\  graff key set <provider> <key>   store a key (macOS Keychain, else 0600 file)
     \\  graff key list                   show which providers have keys
+    \\  graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
+    \\  graff mcp                         list configured MCP servers
     \\  graff --schema                   print the machine-readable interface (SDK codegen)
     \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
     \\                                   (--host/--port/--token; sessions are --json children)
@@ -5105,7 +5107,9 @@ pub fn main(init: std.process.Init) !void {
         defer it.deinit();
         _ = it.next(); // argv[0]
         while (it.next()) |arg| {
-            if (std.mem.startsWith(u8, arg, "-")) {
+            if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "mcp")) {
+                try positionals.append(arena, try arena.dupe(u8, arg));
+            } else if (std.mem.startsWith(u8, arg, "-")) {
                 if (std.mem.eql(u8, arg, "--yolo")) {
                     yolo_flag = true;
                 } else if (std.mem.eql(u8, arg, "--no-telemetry")) {
@@ -5175,7 +5179,7 @@ pub fn main(init: std.process.Init) !void {
     // One-shot print mode: `harness -p "prompt"` or a bare positional prompt
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     const is_subcommand = positionals.items.len > 0 and
-        (std.mem.eql(u8, positionals.items[0], "login") or std.mem.eql(u8, positionals.items[0], "key") or
+        (std.mem.eql(u8, positionals.items[0], "login") or std.mem.eql(u8, positionals.items[0], "key") or std.mem.eql(u8, positionals.items[0], "mcp") or
             std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title") or std.mem.eql(u8, positionals.items[0], "repl"));
     var oneshot_prompt: ?[]const u8 = null;
     if (!is_subcommand and positionals.items.len > 0) {
@@ -5198,6 +5202,12 @@ pub fn main(init: std.process.Init) !void {
     if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "key")) {
         const home = homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
         try keyCommand(io, gpa, arena, home, positionals.items[1..]);
+        return;
+    }
+
+    // `harness mcp add <name> -- <command> [args...]`: write workspace MCP config.
+    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "mcp")) {
+        try mcpCommand(io, arena, positionals.items[1..]);
         return;
     }
 
@@ -6278,7 +6288,13 @@ fn countMcpServers(io: Io, arena: Allocator) usize {
 
 /// Best-effort write of a server entry into .mcp.json (so `/mcp add` survives
 /// a restart). Merges into any existing config. Returns false on any error.
+const McpEnvPair = struct { key: []const u8, value: []const u8 };
+
 fn persistMcpServer(io: Io, arena: Allocator, name: []const u8, command: []const u8, args: []const []const u8) bool {
+    return persistMcpServerWithEnv(io, arena, name, command, args, &.{});
+}
+
+fn persistMcpServerWithEnv(io: Io, arena: Allocator, name: []const u8, command: []const u8, args: []const []const u8, env: []const McpEnvPair) bool {
     var root_obj: std.json.ObjectMap = .empty;
     if (Io.Dir.cwd().readFileAlloc(io, mcp_config_path, arena, .limited(1 << 20))) |text| {
         if (std.json.parseFromSliceLeaky(Value, arena, text, .{ .allocate = .alloc_always })) |v| {
@@ -6295,6 +6311,11 @@ fn persistMcpServer(io: Io, arena: Allocator, name: []const u8, command: []const
     var argv = std.json.Array.init(arena);
     for (args) |a| argv.append(.{ .string = a }) catch return false;
     entry.put(arena, "args", .{ .array = argv }) catch return false;
+    if (env.len > 0) {
+        var env_obj: std.json.ObjectMap = .empty;
+        for (env) |pair| env_obj.put(arena, pair.key, .{ .string = pair.value }) catch return false;
+        entry.put(arena, "env", .{ .object = env_obj }) catch return false;
+    }
     servers.put(arena, name, .{ .object = entry }) catch return false;
     root_obj.put(arena, "mcpServers", .{ .object = servers }) catch return false;
 
@@ -6309,6 +6330,111 @@ fn persistMcpServer(io: Io, arena: Allocator, name: []const u8, command: []const
     fw.interface.writeAll(aw.writer.buffered()) catch return false;
     fw.interface.flush() catch return false;
     return true;
+}
+
+fn mcpCliUsage(w: *Io.Writer) !void {
+    try w.writeAll(
+        \\usage:
+        \\  graff mcp                      list servers in .mcp.json
+        \\  graff mcp add <name> [--env KEY=VALUE ...] -- <command> [args...]
+        \\  graff mcp add <name> <command> [args...]
+        \\
+        \\examples:
+        \\  graff mcp add context7 -- npx -y @upstash/context7-mcp
+        \\  graff mcp add playwright -- npx -y @playwright/mcp
+        \\  graff mcp add sentry --env SENTRY_AUTH_TOKEN=... -- npx -y @sentry/mcp-server
+        \\
+    );
+}
+
+fn mcpCommand(io: Io, arena: Allocator, args: []const []const u8) !void {
+    var obuf: [4096]u8 = undefined;
+    var out = Io.File.stdout().writer(io, &obuf);
+
+    if (args.len == 0 or std.mem.eql(u8, args[0], "list")) {
+        const data = Io.Dir.cwd().readFileAlloc(io, mcp_config_path, arena, .limited(1 << 20)) catch |err| switch (err) {
+            error.FileNotFound => {
+                try out.interface.writeAll("no .mcp.json yet. Add one with `graff mcp add <name> -- <command> [args...]`.\n");
+                try out.interface.flush();
+                return;
+            },
+            else => return err,
+        };
+        const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch {
+            try out.interface.writeAll(".mcp.json is not valid JSON.\n");
+            try out.interface.flush();
+            return;
+        };
+        const servers = if (v == .object) v.object.get("mcpServers") else null;
+        if (servers == null or servers.? != .object or servers.?.object.count() == 0) {
+            try out.interface.writeAll("no MCP servers configured. Add one with `graff mcp add <name> -- <command> [args...]`.\n");
+        } else {
+            try out.interface.print("{d} MCP server(s) in .mcp.json:\n", .{servers.?.object.count()});
+            var it = servers.?.object.iterator();
+            while (it.next()) |entry| {
+                const cfg = entry.value_ptr.*;
+                if (cfg != .object) continue;
+                const command = if (cfg.object.get("command")) |c| if (c == .string) c.string else "?" else "?";
+                try out.interface.print("  {s}: {s}", .{ entry.key_ptr.*, command });
+                if (cfg.object.get("args")) |argv| if (argv == .array) for (argv.array.items) |a| {
+                    if (a == .string) try out.interface.print(" {s}", .{a.string});
+                };
+                try out.interface.writeByte('\n');
+            }
+        }
+        try out.interface.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, args[0], "help") or std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")) {
+        try mcpCliUsage(&out.interface);
+        try out.interface.flush();
+        return;
+    }
+
+    if (!std.mem.eql(u8, args[0], "add")) {
+        try mcpCliUsage(&out.interface);
+        try out.interface.flush();
+        return;
+    }
+    if (args.len < 3) {
+        try mcpCliUsage(&out.interface);
+        try out.interface.flush();
+        return;
+    }
+
+    const name = args[1];
+    var env_pairs: std.ArrayList(McpEnvPair) = .empty;
+    defer env_pairs.deinit(arena);
+    var command_index: ?usize = null;
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--")) {
+            command_index = i + 1;
+            break;
+        } else if (std.mem.eql(u8, arg, "--env")) {
+            i += 1;
+            if (i >= args.len) std.process.fatal("mcp add: --env needs KEY=VALUE", .{});
+            const eq = std.mem.indexOfScalar(u8, args[i], '=') orelse std.process.fatal("mcp add: --env expects KEY=VALUE", .{});
+            try env_pairs.append(arena, .{ .key = args[i][0..eq], .value = args[i][eq + 1 ..] });
+        } else if (std.mem.startsWith(u8, arg, "--env=")) {
+            const kv = arg["--env=".len..];
+            const eq = std.mem.indexOfScalar(u8, kv, '=') orelse std.process.fatal("mcp add: --env expects KEY=VALUE", .{});
+            try env_pairs.append(arena, .{ .key = kv[0..eq], .value = kv[eq + 1 ..] });
+        } else {
+            command_index = i;
+            break;
+        }
+    }
+    const ci = command_index orelse std.process.fatal("mcp add: missing command after server name", .{});
+    if (ci >= args.len) std.process.fatal("mcp add: missing command after --", .{});
+    const command = args[ci];
+    const command_args = args[ci + 1 ..];
+    if (!persistMcpServerWithEnv(io, arena, name, command, command_args, env_pairs.items))
+        std.process.fatal("mcp add: failed to write .mcp.json", .{});
+    try out.interface.print("✓ added MCP server {s} to .mcp.json\n  run `graff` and use `/mcp trust` if workspace MCP startup is waiting for consent.\n", .{name});
+    try out.interface.flush();
 }
 
 /// Pull plain text out of a message's content (string, or the text blocks of a
