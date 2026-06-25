@@ -501,7 +501,7 @@ pub const Model = struct {
             self.pushFmt(.info, "ai title: {s}", .{onOff(self.title)}) catch {};
         } else if (std.mem.eql(u8, cmd, "/goal")) {
             self.setGoal(arg);
-            if (self.goal) |g| self.pushFmt(.info, "goal set: {s}", .{g}) catch {} else self.push(.info, "goal cleared") catch {};
+            if (self.goal) |g| self.pushFmt(.info, "goal set: {s} - I'll track it as a checklist", .{g}) catch {} else self.push(.info, "goal cleared") catch {};
         } else if (std.mem.eql(u8, cmd, "/rename")) {
             self.setSession(arg);
             self.pushFmt(.info, "session renamed: {s}", .{self.session_name orelse "repl"}) catch {};
@@ -838,7 +838,7 @@ const HELP_CHAT =
     \\  /model [name] /models            model (switch / list)
     \\  /effort low|med|high  /reasoning reasoning depth
     \\  /fast /thinking /ultracode       thinking controls (toggles)
-    \\  /goal <text>                     standing objective (steers replies)
+    \\  /goal <text>                     standing objective (tracked as a checklist)
     \\  /plan /strict /yolo /keepcontext /title   modes
     \\  /rename <name>  /animation braille|dragon
     \\  /bash /save /resume /sessions /trace /trajectory
@@ -1015,6 +1015,83 @@ pub fn run(
     var program = zz.Program(Model).initWithOptions(gpa, io, environ_map, .{ .mouse = true });
     defer program.deinit();
     try program.run();
+}
+
+/// Headless, scriptable twin of run(): drives the SAME Model + turn_fn as the
+/// live TUI, but reads input lines from `in` and prints each turn's new output to
+/// `out` instead of taking over the terminal. Lets
+///   printf '/goal X\n<prompt>\n' | graff repl
+/// exercise the exact repl path (goal steering, todo_write, cross-turn continuity)
+/// from a script / CI / test — a 1:1 map of the interactive behavior. main() routes
+/// here automatically when stdin is not a TTY. GRAFF_REPL_DEBUG=1 additionally dumps
+/// each turn's raw agent stream to stderr (where mid-turn renders like the
+/// todo_write checklist appear).
+pub fn runScripted(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    in: *std.Io.Reader,
+    out: *std.Io.Writer,
+    turn_ctx: ?*anyopaque,
+    turn_fn: ?TurnFn,
+    model_fn: ?ModelFn,
+    cancel_fn: ?CancelFn,
+    model_name: []const u8,
+    models: []const u8,
+) !void {
+    g_turn_ctx = turn_ctx;
+    g_turn_fn = turn_fn;
+    g_model_fn = model_fn;
+    g_cancel_fn = cancel_fn;
+    g_model_name = model_name;
+    g_debug = environ_map.get("GRAFF_REPL_DEBUG") != null;
+    g_models = models;
+
+    var m: Model = undefined;
+    m.setup(gpa);
+    defer m.deinit();
+
+    while (true) {
+        const raw = (in.takeDelimiter('\n') catch null) orelse break; // EOF ends the script
+        const line = std.mem.trim(u8, raw, " \t\r\n");
+        if (line.len == 0) continue;
+
+        try out.print("\n> {s}\n", .{line});
+        try out.flush();
+
+        const before = m.history.items.len;
+        const eff = m.applyLine(line);
+
+        // A chat line spawns a background turn; a slash command runs inline.
+        if (m.pending != null) {
+            while (m.pending) |job| {
+                if (job.done.load(.acquire)) {
+                    m.finishJob();
+                    break;
+                }
+                io.sleep(.fromMilliseconds(20), .awake) catch {};
+            }
+        }
+
+        // Print what the line produced — slash-command info, the assistant reply,
+        // or an error. The user line is already echoed above; the pending
+        // placeholder is gone once finishJob ran.
+        var i = before;
+        while (i < m.history.items.len) : (i += 1) {
+            switch (m.history.items[i].kind) {
+                .pending, .input, .welcome => {},
+                else => try out.print("{s}\n", .{m.history.items[i].text}),
+            }
+        }
+        try out.flush();
+
+        if (eff == .quit) break;
+    }
+
+    const pane = try m.render(gpa, 100, 60, 0);
+    defer gpa.free(pane);
+    try out.print("\n===== final repl pane =====\n{s}\n===========================\n", .{pane});
+    try out.flush();
 }
 
 pub fn main(init: std.process.Init) !void {

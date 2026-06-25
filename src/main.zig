@@ -2867,6 +2867,39 @@ const ReplStreamSink = struct {
     }
 };
 
+/// The standing-goal steering note appended to each turn when /goal is set: the
+/// objective, an instruction to track it as a todo_write checklist, and the
+/// current checklist render when one exists. Returns "" when goal is null so the
+/// caller can skip the append. Pass todos_render="" when there are no todos — do
+/// NOT pass renderTodos()'s "(no todos)" placeholder, which would leak into the prompt.
+fn goalSteeringNote(arena: Allocator, goal: ?[]const u8, todos_render: []const u8) ![]const u8 {
+    const g = goal orelse return "";
+    const progress: []const u8 = if (todos_render.len > 0)
+        try std.fmt.allocPrint(arena, "\n\nChecklist so far:\n{s}", .{todos_render})
+    else
+        "";
+    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a todo_write checklist and work through it, marking each item in_progress when you start and completed when done.]{s}", .{ g, progress });
+}
+
+test "goalSteeringNote: goal + checklist assembly, no (no todos) leak" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const ar = arena.allocator();
+
+    // No goal -> empty note, caller skips the append.
+    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, null, ""));
+
+    // Goal, no todos -> bracket note, no checklist, and never the "(no todos)" placeholder.
+    const n1 = try goalSteeringNote(ar, "close all issues", "");
+    try std.testing.expect(std.mem.startsWith(u8, n1, "[standing goal: close all issues - track this as a todo_write checklist"));
+    try std.testing.expect(std.mem.indexOf(u8, n1, "Checklist so far") == null);
+    try std.testing.expect(std.mem.indexOf(u8, n1, "(no todos)") == null);
+
+    // Goal + live todos -> the rendered checklist is appended verbatim.
+    const n2 = try goalSteeringNote(ar, "ship 0.0.177", "[x] wire steering\n[ ] add test");
+    try std.testing.expect(std.mem.indexOf(u8, n2, "Checklist so far:\n[x] wire steering\n[ ] add test") != null);
+}
+
 /// repl.TurnFn — run a full ROOT agent turn (tools + MCP) for `graff repl`, so
 /// the model can read files, run bash, search the codebase, etc. — not a bare
 /// completion. Auto-approves tools (yolo: the chat repl has no permission UI),
@@ -2882,7 +2915,7 @@ fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Turn, 
     sink.init(stream); // agent output streams into the repl's live pane (thread-safe)
     var approvals: Approvals = .{ .yolo = true };
     const sys = if (params.goal.len > 0)
-        (std.fmt.allocPrint(arena, "{s}\n\n# Standing goal (from the user)\n{s}", .{ c.sys_normal, params.goal }) catch c.sys_normal)
+        (std.fmt.allocPrint(arena, "{s}\n\n# Standing goal (from the user)\n{s}\n\nTrack this as a todo_write checklist and work through it across turns - mark each item in_progress when you start and completed when done. Keep the list current; don't repeat finished items.", .{ c.sys_normal, params.goal }) catch c.sys_normal)
     else
         c.sys_normal;
     var agent: Agent = .{
@@ -4862,6 +4895,7 @@ const usage_text =
     \\  --no-resume      ignore --resume and start fresh
     \\  --system-prompt <text>          replace the built-in system prompt
     \\  --append-system-prompt <text>   append extra text to the system prompt
+    \\  --goal <text>                   seed a standing objective (tracked as a todo checklist) for every turn
     \\  --yolo           skip all permission prompts for the session
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
     \\  --timing         show per-tool wall-clock on result lines
@@ -5108,6 +5142,7 @@ pub fn main(init: std.process.Init) !void {
     var port_flag: u16 = 8787; // harness serve
     var token_flag: ?[]const u8 = null; // harness serve
     var resume_flag: ?[]const u8 = null; // restore/save this named session
+    var goal_flag: ?[]const u8 = null; // --goal: standing objective (todos) every turn gets, incl. --json/-p
     var no_resume_flag = false; // start without auto-loading last.session.json
     var new_session_flag = false; // start a fresh autosaved session
     var positionals: std.ArrayList([]const u8) = .empty;
@@ -5121,6 +5156,8 @@ pub fn main(init: std.process.Init) !void {
             } else if (std.mem.startsWith(u8, arg, "-")) {
                 if (std.mem.eql(u8, arg, "--yolo")) {
                     yolo_flag = true;
+                } else if (std.mem.eql(u8, arg, "--goal")) {
+                    goal_flag = it.next() orelse std.process.fatal("--goal needs an objective", .{});
                 } else if (std.mem.eql(u8, arg, "--no-telemetry")) {
                     no_telemetry_flag = true;
                 } else if (std.mem.eql(u8, arg, "--timing")) {
@@ -5649,6 +5686,7 @@ pub fn main(init: std.process.Init) !void {
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(io)});
     root.session_name = if (resume_flag) |name| (if (!new_session_flag and !no_resume_flag) name else fresh_session_name) else fresh_session_name;
     loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
+    if (goal_flag) |g| root.goal = try arena.dupe(u8, g); // --goal applies to every turn (incl. --json/-p/SDK)
     tracer.note("session", root.provider.model);
 
     // Save from the start: if the harness is killed (Ctrl+C / SIGINT) before
@@ -5685,7 +5723,10 @@ pub fn main(init: std.process.Init) !void {
             if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
             models_buf.appendSlice(mi.name) catch {};
         }
-        try repl.run(gpa, io, init.environ_map, &repl_ctx, replTurnCb, replModelCb, replCancelCb, root.provider.model, models_buf.items);
+        if (Io.File.stdin().isTty(io) catch true)
+            try repl.run(gpa, io, init.environ_map, &repl_ctx, replTurnCb, replModelCb, replCancelCb, root.provider.model, models_buf.items)
+        else
+            try repl.runScripted(gpa, io, init.environ_map, in, out, &repl_ctx, replTurnCb, replModelCb, replCancelCb, root.provider.model, models_buf.items);
         return;
     }
     // One-shot print mode: run the single prompt to completion, print the
@@ -5702,7 +5743,9 @@ pub fn main(init: std.process.Init) !void {
             tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
             if (g_telem) |t| t.ultracode();
         }
-        try root.messages.append(try textMessage(arena, "user", ultracode_msg.text));
+        const goal_note = try goalSteeringNote(arena, root.goal, if (root.todos.items.len > 0) root.renderTodos() else "");
+        const oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
+        try root.messages.append(try textMessage(arena, "user", oneshot_user));
         if (g_telem) |t| t.countTurn();
         const final_text = root.runTurn() catch |err| switch (err) {
             error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
@@ -6015,12 +6058,15 @@ pub fn main(init: std.process.Init) !void {
             break :blk text;
         } else line;
 
-        // Persistent goal steering is prepended to every normal/loop turn.
-        const goal_msg: []const u8 = if (root.goal) |goal| try std.fmt.allocPrint(arena,
-            \\{s}
-            \\
-            \\[harness goal: {s}]
-        , .{ base_msg, goal }) else base_msg;
+        // Persistent goal steering: the objective plus a nudge to track it as a
+        // live todo_write checklist, with the current list appended so the model
+        // resumes the plan instead of re-deriving it (assembled by goalSteeringNote).
+        const todos_render: []const u8 = if (root.todos.items.len > 0) root.renderTodos() else "";
+        const goal_note = try goalSteeringNote(arena, root.goal, todos_render);
+        const goal_msg: []const u8 = if (goal_note.len > 0)
+            try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ base_msg, goal_note })
+        else
+            base_msg;
 
         // /loop asks the model to work autonomously through plan→act→verify.
         const loop_msg: []const u8 = if (loop_prompt != null) try std.fmt.allocPrint(arena,
@@ -6866,7 +6912,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/clear", .desc = "wipe the conversation, start fresh" },
     .{ .name = "/new", .desc = "start a new autosaved session" },
     .{ .name = "/rename", .desc = "rename the current session title" },
-    .{ .name = "/goal", .desc = "set/show persistent objective steering" },
+    .{ .name = "/goal", .desc = "set/show a standing objective, tracked as a live checklist" },
     .{ .name = "/loop", .desc = "run an autonomous plan→act→verify prompt" },
     .{ .name = "/bash", .desc = "run a shell command in the current workspace" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
@@ -7079,7 +7125,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         } else {
             root.goal = try arena.dupe(u8, text);
             saveSession(root, arena, root.session_name) catch {};
-            try out.print("Goal set: {s}\nFuture turns in this session will include this objective as steering.\n", .{text});
+            try out.print("Goal set: {s}\nI'll track it as a live checklist (todo_write) and work through it across turns.\n", .{text});
         }
         try out.flush();
         return;
@@ -8049,7 +8095,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /clear          wipe the conversation and start fresh
         \\  /new            start a fresh autosaved session
         \\  /rename <title> set the current session title
-        \\  /goal [text]    set/show persistent objective steering; /goal clear clears
+        \\  /goal [text]    set/show a standing objective (tracked as a checklist); /goal clear clears
         \\  /loop <prompt>  run an autonomous plan→act→verify pass
         \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
         \\  /ultracode      toggle persistent workflow mode; bare opens on/off picker, or /ultracode on|off
