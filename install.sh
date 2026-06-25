@@ -198,7 +198,7 @@ main() {
   # slow network can never freeze the install; override with GRAFF_SUITE_URL.
   GRAFF_SUITE_URL="${GRAFF_SUITE_URL:-https://codegraff.com/install.sh}"
   if [ -z "${HARNESS_NO_GRAFF:-}" ]; then
-    if command -v muonry >/dev/null 2>&1 && command -v zigpatch >/dev/null 2>&1; then
+    if command -v codedb-pro >/dev/null 2>&1 && command -v zigpatch >/dev/null 2>&1; then
       printf "  ${D}│${N} %-10s ${G}✓${N} (already present)\n" "suite"
     else
       printf "  ${D}│${N} %-10s " "suite"
