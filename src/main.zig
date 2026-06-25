@@ -3123,6 +3123,7 @@ var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
 var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + Agent.emit)
 var g_force_interrupt = false; // Force-prompt path caused the last interrupt (Ctrl-F/double-enter).
 var g_thinking_fold_request: bool = false; // Ctrl-T in escPressed → fold/unfold the live Thinking block (#92)
+var g_thinking_open: bool = false; // a live Thinking block is on screen (gates the mouse-click fold, #92)
 var g_5xx_body_buf: [600]u8 = undefined; // snippet of the last 5xx/429 error body
 var g_5xx_body_len: usize = 0; // 0 = no body captured
 
@@ -10833,8 +10834,9 @@ const Agent = struct {
         const w = self.out orelse return;
         if (!self.thinking_open) {
             self.spinnerStop();
-            w.print("{s}Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
+            w.print("{s}▼ Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
             self.thinking_open = true;
+            g_thinking_open = true;
             self.thinking_rows = 1; // the header newline already moved us down one line
             self.thinking_col = 0;
             self.thinking_overflow = false;
@@ -10855,6 +10857,7 @@ const Agent = struct {
     fn closeThinkingBlock(self: *Agent) void {
         if (!self.thinking_open) return;
         self.thinking_open = false;
+        g_thinking_open = false;
         self.thinking_folded = false;
         const w = self.out orelse return;
         if (!self.thinking_overflow and self.thinking_rows >= 1 and use_color) {
@@ -10873,12 +10876,12 @@ const Agent = struct {
         if (!self.thinking_open or self.thinking_overflow or !use_color) return;
         const w = self.out orelse return;
         if (!self.thinking_folded) {
-            w.print("\x1b[{d}F\x1b[0J{s}[+] Thinking (folded · ^T){s}\n", .{ self.thinking_rows, style.dim, style.reset }) catch return;
+            w.print("\x1b[{d}F\x1b[0J{s}▶ Thinking (folded · ^T / click){s}\n", .{ self.thinking_rows, style.dim, style.reset }) catch return;
             self.thinking_folded = true;
             self.thinking_rows = 1;
             self.thinking_col = 0;
         } else {
-            w.print("\x1b[1F\x1b[0J{s}Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
+            w.print("\x1b[1F\x1b[0J{s}▼ Thinking{s}\n{s}", .{ style.dim, style.reset, style.dim }) catch return;
             self.thinking_folded = false;
             self.thinking_rows = 1;
             self.thinking_col = 0;
@@ -10892,6 +10895,7 @@ const Agent = struct {
         self.spinnerStart();
         defer self.spinnerStop();
         self.thinking_open = false; // fresh "Thinking" block state per request
+        g_thinking_open = false;
         self.thinking_rows = 0;
         self.thinking_col = 0;
         self.thinking_folded = false;
@@ -10930,8 +10934,22 @@ const Agent = struct {
         // and the line editor see a clean tty.
         const watch_esc = !self.sub and self.in != null and use_color and !json_mode;
         var orig_tio: ?tty.RawState = null;
-        if (watch_esc) orig_tio = rawNonblockStdin();
+        if (watch_esc) {
+            orig_tio = rawNonblockStdin();
+            // Enable SGR mouse click reporting so a click on the live Thinking
+            // block's chevron folds/unfolds it (#92). Scoped to the streaming
+            // window — the defer turns it off so native selection works between
+            // turns.
+            if (self.out) |w| {
+                w.writeAll("\x1b[?1000;1006h") catch {};
+                w.flush() catch {};
+            }
+        }
         defer if (orig_tio) |o| {
+            if (self.out) |w| {
+                w.writeAll("\x1b[?1000;1006l") catch {};
+                w.flush() catch {};
+            }
             _ = drainSteerStdin(true);
             tty.restore(o);
         };
@@ -11148,6 +11166,20 @@ const Agent = struct {
                     var j = i + 2;
                     while (j < n) : (j += 1) {
                         if (buf[j] >= 0x40 and buf[j] <= 0x7e) break;
+                    }
+                    // SGR mouse report (ESC [ < btn ; col ; row, M=press/m=release):
+                    // a plain left-button press (btn 0) on the live Thinking block
+                    // toggles its fold — the clickable control for #92. Other mouse
+                    // events fall through and are swallowed like any CSI sequence.
+                    if (j < n and buf[j] == 'M' and i + 2 < n and buf[i + 2] == '<') {
+                        var mk = i + 3;
+                        var btn: usize = 0;
+                        var got = false;
+                        while (mk < j and buf[mk] >= '0' and buf[mk] <= '9') : (mk += 1) {
+                            btn = btn * 10 + (buf[mk] - '0');
+                            got = true;
+                        }
+                        if (got and btn == 0 and g_thinking_open) g_thinking_fold_request = true;
                     }
                     i = if (j < n) j else n - 1;
                     continue;
