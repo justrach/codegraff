@@ -152,6 +152,8 @@ var g_model_name: []const u8 = "";
 pub const ModelFn = *const fn (turn_ctx: ?*anyopaque, gpa: std.mem.Allocator, name: []const u8) ?[]const u8;
 var g_models: []const u8 = ""; // comma-joined model names (for /models)
 var g_model_fn: ?ModelFn = null; // switch the active model by name
+pub const CancelFn = *const fn (turn_ctx: ?*anyopaque) void;
+var g_cancel_fn: ?CancelFn = null; // force-interrupt the running turn (steer drain)
 var g_debug: bool = false; // GRAFF_REPL_DEBUG / `/debug` → dump raw stream + frames to stderr
 
 // ---------------------------------------------------------------------------
@@ -239,6 +241,10 @@ pub const Model = struct {
     turns: usize = 0,
     chars_in: usize = 0,
     chars_out: usize = 0,
+    // Steering: lines typed while a turn streams are queued here and run as
+    // follow-up turns; an empty Enter force-interrupts so they drain now.
+    steer_queue: std.array_list.Managed([]const u8) = undefined,
+    cancel_requested: bool = false,
 
     pub const Tick = struct { timestamp: u64, delta: u64 };
     pub const Msg = union(enum) { key: zz.KeyEvent, tick: Tick, mouse: zz.MouseEvent };
@@ -249,6 +255,7 @@ pub const Model = struct {
             .input = zz.TextInput.init(alloc),
             .history = std.array_list.Managed(Entry).init(alloc),
             .visible_text = std.array_list.Managed([]const u8).init(alloc),
+            .steer_queue = std.array_list.Managed([]const u8).init(alloc),
             .chat = g_turn_fn != null,
         };
         self.input.setPrompt("> ");
@@ -277,6 +284,8 @@ pub const Model = struct {
         if (self.session_name) |s| self.alloc.free(s);
         for (self.visible_text.items) |l| self.alloc.free(l);
         self.visible_text.deinit();
+        for (self.steer_queue.items) |s| self.alloc.free(s);
+        self.steer_queue.deinit();
         self.input.deinit();
     }
 
@@ -372,6 +381,10 @@ pub const Model = struct {
             } else |_| {
                 self.pushOwned(.assistant, r) catch self.alloc.free(r);
             }
+        } else if (self.cancel_requested) {
+            // Force-steer interrupted this turn (runTurn → error.Interrupted →
+            // replTurnCb returns null); not an error.
+            self.push(.info, "⏹ interrupted") catch {};
         } else {
             self.push(.err, "model call failed — check /model and your API key") catch {};
         }
@@ -380,7 +393,17 @@ pub const Model = struct {
         if (job.stream.buf.len > 0) self.alloc.free(job.stream.buf);
         self.alloc.destroy(job);
         self.pending = null;
+        self.cancel_requested = false;
         self.scroll = 0; // reply landed → jump to the latest
+    }
+
+    /// Pop the next queued steer line (FIFO) and run it as the next turn.
+    /// Returns the applyLine Effect so a steered "/quit" still propagates.
+    fn drainSteer(self: *Model) Effect {
+        if (self.steer_queue.items.len == 0) return .stay;
+        const text = self.steer_queue.orderedRemove(0);
+        defer self.alloc.free(text);
+        return self.applyLine(text);
     }
 
     fn setGoal(self: *Model, text: []const u8) void {
@@ -556,6 +579,25 @@ pub const Model = struct {
         self.session_name = if (name.len > 0) (self.alloc.dupe(u8, name) catch null) else null;
     }
 
+    /// Handle Enter while a turn streams. A typed line is queued as a steer
+    /// (runs as a follow-up turn after the current one finishes); an empty line
+    /// with a non-empty queue FORCES — flags the turn for interrupt and signals
+    /// the harness via the cancel callback so the queue drains immediately.
+    fn steerEnter(self: *Model) void {
+        const v = std.mem.trim(u8, self.input.getValue(), " \t\r\n");
+        if (v.len > 0) {
+            if (self.alloc.dupe(u8, v)) |dup| {
+                self.steer_queue.append(dup) catch self.alloc.free(dup);
+                self.input.setValue("") catch {};
+                self.pushFmt(.info, "↳ steer › queued ({d} waiting)", .{self.steer_queue.items.len}) catch {};
+            } else |_| {}
+        } else if (self.steer_queue.items.len > 0) {
+            self.cancel_requested = true;
+            if (g_cancel_fn) |f| f(g_turn_ctx);
+            self.push(.info, "↳ force › interrupting…") catch {};
+        }
+    }
+
     pub fn update(self: *Model, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
         switch (msg) {
             .key => |k| switch (k.key) {
@@ -563,19 +605,27 @@ pub const Model = struct {
                 .page_down => self.scroll -|= 10,
                 .enter => {
                     self.scroll = 0; // jump to the latest on submit
-                    if (self.pending != null) return .none; // busy: ignore submits
+                    if (self.pending != null) {
+                        self.steerEnter(); // a turn is streaming: Enter steers, not submits
+                        return .{ .tick = POLL_NS };
+                    }
                     const effect = self.applyLine(self.input.getValue());
                     self.input.setValue("") catch {};
                     if (effect == .quit) return .quit;
                     if (self.pending != null) return .{ .tick = POLL_NS };
                     return .none;
                 },
-                else => if (self.pending == null) self.input.handleKey(k),
+                // While a turn streams, keys edit the input box too, so the user
+                // can compose a steer line; otherwise it's normal line editing.
+                else => self.input.handleKey(k),
             },
             .tick => {
                 if (self.pending) |job| {
                     if (job.done.load(.acquire)) {
                         self.finishJob();
+                        // Run the next queued steer line, if any, as the next turn.
+                        if (self.drainSteer() == .quit) return .quit;
+                        if (self.pending != null) return .{ .tick = POLL_NS };
                         return .none;
                     }
                     return .{ .tick = POLL_NS };
@@ -680,6 +730,11 @@ pub const Model = struct {
                     } else {
                         const t = try (zz.Style{}).dim(true).render(a, "thinking…");
                         try top.appendSlice(try std.fmt.allocPrint(a, "{s} {s}\n", .{ g, t }));
+                    }
+                    if (self.steer_queue.items.len > 0) {
+                        try top.appendSlice(try (zz.Style{}).dim(true).render(a, try std.fmt.allocPrint(a, "  ↳ {d} steer queued · empty Enter runs now\n", .{self.steer_queue.items.len})));
+                    } else {
+                        try top.appendSlice(try (zz.Style{}).dim(true).render(a, "  ↳ type to steer · Enter queues\n"));
                     }
                 },
                 .err => {
@@ -946,12 +1001,14 @@ pub fn run(
     turn_ctx: ?*anyopaque,
     turn_fn: ?TurnFn,
     model_fn: ?ModelFn,
+    cancel_fn: ?CancelFn,
     model_name: []const u8,
     models: []const u8,
 ) !void {
     g_turn_ctx = turn_ctx;
     g_turn_fn = turn_fn;
     g_model_fn = model_fn;
+    g_cancel_fn = cancel_fn;
     g_model_name = model_name;
     g_debug = environ_map.get("GRAFF_REPL_DEBUG") != null;
     g_models = models;
@@ -961,7 +1018,7 @@ pub fn run(
 }
 
 pub fn main(init: std.process.Init) !void {
-    return run(init.gpa, init.io, init.environ_map, null, null, null, "", "");
+    return run(init.gpa, init.io, init.environ_map, null, null, null, null, "", "");
 }
 
 // ---------------------------------------------------------------------------
@@ -1066,4 +1123,76 @@ test "model: /rewind and /compact (leak-checked)" {
     try std.testing.expect(m.history.items.len <= 9);
     _ = m.applyLine("/rename my-session");
     try std.testing.expect(m.session_name != null);
+}
+
+var g_test_cancelled: bool = false;
+fn testCancel(_: ?*anyopaque) void {
+    g_test_cancelled = true;
+}
+
+test "model: steering queues a line and drains it as the next turn" {
+    g_turn_fn = stubTurn;
+    g_turn_ctx = null;
+    defer g_turn_fn = null;
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+
+    // Turn 1 in flight.
+    try std.testing.expectEqual(Effect.stay, m.applyLine("first"));
+    try std.testing.expect(m.pending != null);
+
+    // Type a steer line while the turn streams → queued, input cleared (not submitted).
+    m.input.setValue("second") catch {};
+    m.steerEnter();
+    try std.testing.expectEqual(@as(usize, 1), m.steer_queue.items.len);
+    try std.testing.expectEqualStrings("", m.input.getValue());
+
+    // Finish turn 1, then drain (what update(.tick) does) → the steer runs as turn 2.
+    while (!m.pending.?.done.load(.acquire)) {}
+    m.finishJob();
+    try std.testing.expect(m.pending == null);
+    _ = m.drainSteer();
+    try std.testing.expectEqual(@as(usize, 0), m.steer_queue.items.len);
+    try std.testing.expect(m.pending != null);
+
+    while (!m.pending.?.done.load(.acquire)) {}
+    m.finishJob();
+
+    const out = try m.render(std.testing.allocator, 80, 24, 0);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "echo[medium]: first") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "echo[medium]: second") != null);
+}
+
+test "model: empty Enter force-interrupts when a steer line is queued" {
+    g_turn_fn = stubTurn;
+    g_turn_ctx = null;
+    g_cancel_fn = testCancel;
+    g_test_cancelled = false;
+    defer {
+        g_turn_fn = null;
+        g_cancel_fn = null;
+    }
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+
+    _ = m.applyLine("first");
+    try std.testing.expect(m.pending != null);
+
+    // Queue one steer line, then an empty Enter forces.
+    m.input.setValue("urgent") catch {};
+    m.steerEnter();
+    m.input.setValue("") catch {};
+    m.steerEnter();
+    try std.testing.expect(m.cancel_requested); // turn flagged interrupted
+    try std.testing.expect(g_test_cancelled); // cancel callback fired
+
+    // Drain to completion so the queued line + jobs are freed (leak-checked).
+    while (!m.pending.?.done.load(.acquire)) {}
+    m.finishJob();
+    _ = m.drainSteer();
+    while (m.pending != null and !m.pending.?.done.load(.acquire)) {}
+    if (m.pending != null) m.finishJob();
 }

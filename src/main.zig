@@ -2937,6 +2937,14 @@ fn replModelCb(ctx_ptr: ?*anyopaque, gpa: Allocator, name: []const u8) ?[]const 
     c.provider.context = contextFor(c.provider.id, c.provider.model);
     return gpa.dupe(u8, name) catch null;
 }
+/// repl.CancelFn adapter — force-interrupt the running repl turn. Sets the
+/// Agent-wide esc_cancel flag the streaming loops + watchdog poll, so the
+/// in-flight runTurn unwinds (error.Interrupted) and the repl drains its steer
+/// queue. Cross-thread safe (atomic) — the same signal the TTY esc-watch uses.
+fn replCancelCb(ctx_ptr: ?*anyopaque) void {
+    _ = ctx_ptr;
+    Agent.esc_cancel.store(true, .release);
+}
 fn binOnPath(io: Io, name: []const u8) bool {
     var it = std.mem.splitScalar(u8, g_path_env, ':');
     var buf: [1024]u8 = undefined;
@@ -5676,7 +5684,7 @@ pub fn main(init: std.process.Init) !void {
             if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
             models_buf.appendSlice(mi.name) catch {};
         }
-        try repl.run(gpa, io, init.environ_map, &repl_ctx, replTurnCb, replModelCb, root.provider.model, models_buf.items);
+        try repl.run(gpa, io, init.environ_map, &repl_ctx, replTurnCb, replModelCb, replCancelCb, root.provider.model, models_buf.items);
         return;
     }
     // One-shot print mode: run the single prompt to completion, print the
