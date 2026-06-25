@@ -593,6 +593,13 @@ const meta_specs = [_]ToolSpec{
         .schema = empty_schema,
     },
     .{
+        .name = "eval",
+        .desc = "Run the configured scoring command (graff --eval) on the current output and record the result. The HARNESS runs it and logs the score to .graff/eval-log.tsv - do not run the eval command yourself via bash. Returns the score (0-100), best so far, target, and whether the target is met. Call after each focused change in an eval-driven loop. Pass `note` describing what you just changed.",
+        .schema =
+        \\{"type": "object", "properties": {"note": {"type": "string", "description": "What you changed since the last eval"}}}
+        ,
+    },
+    .{
         .name = "ask_user",
         .desc = "Ask the human a question and wait for their typed reply, which is returned as this tool's result. Use when you need a decision, clarification, or missing information. This routes the human turn through the tool channel — the user is just another tool you can call.",
         .schema =
@@ -630,6 +637,7 @@ fn isMetaName(name: []const u8) bool {
     return std.mem.eql(u8, name, "todo_write") or
         std.mem.eql(u8, name, "todo_read") or
         std.mem.eql(u8, name, "ask_user") or
+        std.mem.eql(u8, name, "eval") or
         std.mem.eql(u8, name, "attempt_completion");
 }
 
@@ -2881,6 +2889,45 @@ fn goalSteeringNote(arena: Allocator, goal: ?[]const u8, todos_render: []const u
     return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a todo_write checklist and work through it, marking each item in_progress when you start and completed when done.]{s}", .{ g, progress });
 }
 
+/// Extract a 0-100 score from an eval command's output: a `score` key (JSON or
+/// key=val) if present, else the last numeric line. Values in [0,1] are read as
+/// fractions and scaled to 0-100.
+fn parseEvalScore(out: []const u8) ?f64 {
+    if (std.mem.indexOf(u8, out, "score")) |i| {
+        var j = i + 5;
+        while (j < out.len and out[j] != ':' and out[j] != '=' and out[j] != '\n') j += 1;
+        if (j < out.len and (out[j] == ':' or out[j] == '=')) {
+            j += 1;
+            while (j < out.len and (out[j] == ' ' or out[j] == '\t' or out[j] == '"')) j += 1;
+            if (parseLeadingNumber(out[j..])) |v| return normalizeScore(v);
+        }
+    }
+    const trimmed = std.mem.trimEnd(u8, out, " \t\r\n");
+    const last = if (std.mem.lastIndexOfScalar(u8, trimmed, '\n')) |k| trimmed[k + 1 ..] else trimmed;
+    if (parseLeadingNumber(std.mem.trim(u8, last, " \t\r\n"))) |v| return normalizeScore(v);
+    return null;
+}
+
+fn parseLeadingNumber(s: []const u8) ?f64 {
+    var end: usize = 0;
+    while (end < s.len and (std.ascii.isDigit(s[end]) or s[end] == '.' or s[end] == '-' or s[end] == '+')) end += 1;
+    if (end == 0) return null;
+    return std.fmt.parseFloat(f64, s[0..end]) catch null;
+}
+
+fn normalizeScore(v: f64) f64 {
+    if (v >= 0.0 and v <= 1.0) return v * 100.0;
+    return v;
+}
+
+/// Steering injected each turn when --eval is set: the eval-driven loop
+/// discipline (score -> one focused change -> re-score -> log -> stop at
+/// target). Returns "" when no eval command is configured.
+fn evalSteeringNote(arena: Allocator, eval_cmd: ?[]const u8, target: u8) ![]const u8 {
+    if (eval_cmd == null) return "";
+    return std.fmt.allocPrint(arena, "[eval-driven loop active. A scoring command is configured. Work it as a scored improvement loop: (1) call the `eval` tool to score the current state - the harness runs the command and logs to .graff/eval-log.tsv, so do NOT run it yourself via bash; (2) read the score, best-so-far, and output; (3) find the SINGLE biggest failure (inspect any artifacts or images directly); (4) make ONE focused change targeting it; (5) call `eval` again. Continue until `eval` reports the target ({d}/100) is met. Do not stop at the first passing result, and do not revert unless `eval` shows a clear regression. After each `eval`, briefly note what you changed.]", .{target});
+}
+
 test "goalSteeringNote: goal + checklist assembly, no (no todos) leak" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -4896,6 +4943,8 @@ const usage_text =
     \\  --system-prompt <text>          replace the built-in system prompt
     \\  --append-system-prompt <text>   append extra text to the system prompt
     \\  --goal <text>                   seed a standing objective (tracked as a todo checklist) for every turn
+    \\  --eval <cmd>                    scoring command for an eval-driven loop (the `eval` tool runs it)
+    \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
     \\  --yolo           skip all permission prompts for the session
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
     \\  --timing         show per-tool wall-clock on result lines
@@ -5143,6 +5192,8 @@ pub fn main(init: std.process.Init) !void {
     var token_flag: ?[]const u8 = null; // harness serve
     var resume_flag: ?[]const u8 = null; // restore/save this named session
     var goal_flag: ?[]const u8 = null; // --goal: standing objective (todos) every turn gets, incl. --json/-p
+    var eval_cmd_flag: ?[]const u8 = null; // --eval: scoring command for the eval-driven loop
+    var eval_target_flag: ?u8 = null; // --until: target score 0-100 for the eval loop
     var no_resume_flag = false; // start without auto-loading last.session.json
     var new_session_flag = false; // start a fresh autosaved session
     var positionals: std.ArrayList([]const u8) = .empty;
@@ -5158,6 +5209,11 @@ pub fn main(init: std.process.Init) !void {
                     yolo_flag = true;
                 } else if (std.mem.eql(u8, arg, "--goal")) {
                     goal_flag = it.next() orelse std.process.fatal("--goal needs an objective", .{});
+                } else if (std.mem.eql(u8, arg, "--eval")) {
+                    eval_cmd_flag = it.next() orelse std.process.fatal("--eval needs a scoring command", .{});
+                } else if (std.mem.eql(u8, arg, "--until")) {
+                    const uv = it.next() orelse std.process.fatal("--until needs a score 0-100", .{});
+                    eval_target_flag = std.fmt.parseInt(u8, uv, 10) catch std.process.fatal("--until must be a number 0-100", .{});
                 } else if (std.mem.eql(u8, arg, "--no-telemetry")) {
                     no_telemetry_flag = true;
                 } else if (std.mem.eql(u8, arg, "--timing")) {
@@ -5687,6 +5743,8 @@ pub fn main(init: std.process.Init) !void {
     root.session_name = if (resume_flag) |name| (if (!new_session_flag and !no_resume_flag) name else fresh_session_name) else fresh_session_name;
     loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
     if (goal_flag) |g| root.goal = try arena.dupe(u8, g); // --goal applies to every turn (incl. --json/-p/SDK)
+    if (eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
+    if (eval_target_flag) |t| root.eval_target = t;
     tracer.note("session", root.provider.model);
 
     // Save from the start: if the harness is killed (Ctrl+C / SIGINT) before
@@ -5744,7 +5802,9 @@ pub fn main(init: std.process.Init) !void {
             if (g_telem) |t| t.ultracode();
         }
         const goal_note = try goalSteeringNote(arena, root.goal, if (root.todos.items.len > 0) root.renderTodos() else "");
-        const oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
+        const eval_note = try evalSteeringNote(arena, root.eval_cmd, root.eval_target);
+        var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
+        if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
         try root.messages.append(try textMessage(arena, "user", oneshot_user));
         if (g_telem) |t| t.countTurn();
         const final_text = root.runTurn() catch |err| switch (err) {
@@ -6063,10 +6123,10 @@ pub fn main(init: std.process.Init) !void {
         // resumes the plan instead of re-deriving it (assembled by goalSteeringNote).
         const todos_render: []const u8 = if (root.todos.items.len > 0) root.renderTodos() else "";
         const goal_note = try goalSteeringNote(arena, root.goal, todos_render);
-        const goal_msg: []const u8 = if (goal_note.len > 0)
-            try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ base_msg, goal_note })
-        else
-            base_msg;
+        const eval_note = try evalSteeringNote(arena, root.eval_cmd, root.eval_target);
+        var goal_msg: []const u8 = base_msg;
+        if (goal_note.len > 0) goal_msg = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ goal_msg, goal_note });
+        if (eval_note.len > 0) goal_msg = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ goal_msg, eval_note });
 
         // /loop asks the model to work autonomously through plan→act→verify.
         const loop_msg: []const u8 = if (loop_prompt != null) try std.fmt.allocPrint(arena,
@@ -9498,6 +9558,10 @@ const Agent = struct {
     tools_openai: []const u8 = tools_openai_sub,
     tools_responses: []const u8 = tools_responses_sub,
     todos: std.ArrayList(TodoItem) = .empty,
+    eval_cmd: ?[]const u8 = null, // --eval: shell command that scores the current output (eval-driven loop)
+    eval_target: u8 = 90, // --until: stop when the score reaches this (0-100)
+    eval_iter: u32 = 0, // eval-loop iteration counter (scores log)
+    eval_best: f64 = -1, // best score seen this session (-1 = none yet)
     strict: bool = false,
     completed: ?[]const u8 = null,
     last_context_tokens: u64 = 0,
@@ -10341,6 +10405,10 @@ const Agent = struct {
             if (!self.sub and !self.argStreamedFully(call)) try self.say("{s}\n", .{result});
             return .{ .text = "completion recorded", .is_error = false };
         }
+        if (std.mem.eql(u8, call.name, "eval")) {
+            const note = if (call.input.object.get("note")) |n| (if (n == .string) n.string else "") else "";
+            return self.runEval(note);
+        }
         if (std.mem.eql(u8, call.name, "todo_write")) {
             self.todos.clearRetainingCapacity();
             if (call.input.object.get("todos")) |list| if (list == .array) {
@@ -10443,6 +10511,68 @@ const Agent = struct {
             w.print("{s} {s}\n", .{ mark, t.content }) catch break;
         }
         return std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
+    }
+
+    /// Run the configured --eval scoring command, append the result to the
+    /// scores log (.graff/eval-log.tsv), and return a verdict for the model:
+    /// score (0-100), best so far, target, and whether the target is met. The
+    /// harness runs the command, so the model cannot fake the number. (eval tool)
+    fn runEval(self: *Agent, note: []const u8) !ExecResult {
+        const cmd = self.eval_cmd orelse return .{
+            .text = "no eval command configured - relaunch graff with --eval <scoring cmd> and --until <N>, or ask the user to set one",
+            .is_error = true,
+        };
+        const run = runCapped(self.gpa, self.io, &.{ "/bin/sh", "-c", cmd }, 64 * 1024, 16 * 1024, 0) catch |e|
+            return .{ .text = try std.fmt.allocPrint(self.arena, "eval command could not run: {t}", .{e}), .is_error = true };
+        defer self.gpa.free(run.stdout);
+        defer self.gpa.free(run.stderr);
+        self.eval_iter += 1;
+        const exit_code: i32 = switch (run.term) {
+            .exited => |c| @intCast(c),
+            else => -1,
+        };
+        const score = parseEvalScore(run.stdout) orelse parseEvalScore(run.stderr);
+        const improved = if (score) |s| (self.eval_best < 0 or s > self.eval_best) else false;
+        if (score) |s| {
+            if (self.eval_best < 0 or s > self.eval_best) self.eval_best = s;
+        }
+        const met = if (score) |s| s >= @as(f64, @floatFromInt(self.eval_target)) else false;
+        self.appendEvalLog(note, score, exit_code, met) catch {};
+
+        var aw: Io.Writer.Allocating = .init(self.arena);
+        const w = &aw.writer;
+        if (score) |s| {
+            try w.print("eval #{d}: score {d:.1}/100 (best {d:.1}, target {d}). ", .{ self.eval_iter, s, self.eval_best, self.eval_target });
+            if (met)
+                try w.writeAll("TARGET MET - finish and report the final scores.")
+            else if (improved)
+                try w.writeAll("Improved - keep going: fix the next biggest failure with one focused change.")
+            else
+                try w.writeAll("No gain over the best - try a different change; do not build on a regression.");
+        } else {
+            try w.print("eval #{d}: command ran but no score parsed - print a bare number, or JSON with a score field (0-100 or 0-1), on the last line. ", .{self.eval_iter});
+        }
+        const tail = if (run.stdout.len > 1500) run.stdout[run.stdout.len - 1500 ..] else run.stdout;
+        try w.print("\n[exit {d}] eval output (tail):\n{s}", .{ exit_code, tail });
+        return .{ .text = try self.arena.dupe(u8, aw.writer.buffered()), .is_error = false };
+    }
+
+    /// Append one tab-separated row to the scores log (.graff/eval-log.tsv).
+    /// Best-effort - a failed write never breaks the loop.
+    fn appendEvalLog(self: *Agent, note: []const u8, score: ?f64, exit_code: i32, met: bool) !void {
+        Io.Dir.cwd().createDir(self.io, ".graff", .default_dir) catch {};
+        const path = ".graff/eval-log.tsv";
+        const existing = Io.Dir.cwd().readFileAlloc(self.io, path, self.arena, .limited(2 * 1024 * 1024)) catch "";
+        var aw: Io.Writer.Allocating = .init(self.arena);
+        const w = &aw.writer;
+        try w.writeAll(existing);
+        if (existing.len > 0 and existing[existing.len - 1] != '\n') try w.writeByte('\n');
+        try w.print("iter={d}\tscore=", .{self.eval_iter});
+        if (score) |s| try w.print("{d:.2}", .{s}) else try w.writeAll("NA");
+        try w.print("\tbest={d:.2}\ttarget={d}\tmet={s}\texit={d}\tnote=", .{ self.eval_best, self.eval_target, if (met) "yes" else "no", exit_code });
+        for (note) |ch| try w.writeByte(if (ch < 0x20) ' ' else ch);
+        try w.writeByte('\n');
+        Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = aw.writer.buffered() }) catch {};
     }
 
     fn sayToolUse(self: *Agent, call: ToolCall) !void {
