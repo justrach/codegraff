@@ -12574,21 +12574,33 @@ fn toolResultMessage(arena: Allocator, kind: Provider.Kind, call_id: []const u8,
     return .{ .object = obj };
 }
 
-/// #95: coerce any malformed Responses `function_call_output.output` in
-/// `messages` to a valid JSON string, in place. The Responses API rejects
-/// scalar/array outputs ("input[N].output[0]: expected an object, got an
-/// integer") — a scalar tool result (e.g. from an ultracode subagent) packed
-/// into output[] poisons history and bricks the gpt-5.5 session, replayed every
-/// turn. toolResultMessage already emits strings; this is the send-time safety
-/// net for any item that reached history malformed. No-op for valid strings.
+/// The Responses API hard-caps `function_call_output.output` at this length; an
+/// oversized tool result (a big webfetch/bash/codedb/file read) is rejected
+/// ("output: array too long, max 16384") and, since it's already in history,
+/// wedges every later turn — the size sibling of #95's type bug.
+const responses_output_cap = 16384;
+
+/// #95 + size cap: coerce any malformed Responses `function_call_output.output`
+/// in `messages` to a valid JSON string, AND truncate output longer than
+/// `responses_output_cap`, in place. The Responses API rejects scalar/array
+/// outputs ("expected an object, got an integer") and over-long ones ("array
+/// too long") alike — either poisons history and bricks the gpt-5.5 session,
+/// replayed every turn. toolResultMessage already emits strings; this is the
+/// send-time safety net for any item that reached history malformed or
+/// oversized. No-op for valid strings within the cap.
 fn normalizeResponsesHistory(arena: Allocator, messages: *std.json.Array) void {
     for (messages.items) |*m| {
         if (m.* != .object) continue;
         const t = m.object.get("type") orelse continue;
         if (t != .string or !std.mem.eql(u8, t.string, "function_call_output")) continue;
         const out = m.object.get("output") orelse continue;
-        if (out == .string) continue; // already valid — leave it
-        m.object.put(arena, "output", .{ .string = jsonValueString(arena, out) }) catch {};
+        if (out == .string and out.string.len <= responses_output_cap) continue; // valid + within cap
+        const s = if (out == .string) out.string else jsonValueString(arena, out);
+        const capped = if (s.len > responses_output_cap)
+            (std.fmt.allocPrint(arena, "{s}\n[truncated: the Responses API caps tool output at {d} chars — read/fetch a smaller range]", .{ utf8Prefix(s, responses_output_cap - 112), responses_output_cap }) catch utf8Prefix(s, responses_output_cap))
+        else
+            s;
+        m.object.put(arena, "output", .{ .string = capped }) catch {};
     }
 }
 
@@ -12628,6 +12640,27 @@ test "normalizeResponsesHistory: scalar/array outputs coerced to string (#95)" {
     try std.testing.expect(msgs.items[1].object.get("output").? == .string);
     try std.testing.expectEqualStrings("[42]", msgs.items[1].object.get("output").?.string);
     try std.testing.expectEqualStrings("hello", msgs.items[2].object.get("output").?.string);
+}
+
+test "normalizeResponsesHistory: oversized output is capped to the Responses limit" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var msgs = std.json.Array.init(arena);
+    var big: std.json.ObjectMap = .empty; // a 260 KB webfetch-style result
+    try big.put(arena, "type", .{ .string = "function_call_output" });
+    const huge = try arena.alloc(u8, 260 * 1024);
+    @memset(huge, 'x');
+    try big.put(arena, "output", .{ .string = huge });
+    try msgs.append(.{ .object = big });
+
+    normalizeResponsesHistory(arena, &msgs);
+
+    const out = msgs.items[0].object.get("output").?;
+    try std.testing.expect(out == .string);
+    try std.testing.expect(out.string.len <= responses_output_cap);
+    try std.testing.expect(std.mem.indexOf(u8, out.string, "truncated") != null);
 }
 
 /// A base64-encoded image staged by `/image`, sent with the next user turn.
