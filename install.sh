@@ -77,8 +77,8 @@ place_bin() {
   IFS="$oldifs"
 }
 
-# Try the latest GitHub release for this platform. Uses `gh` when present
-# (needed while the repo is private); plain curl once it's public.
+# Try the latest GitHub release for this platform. Plain curl is the fast path
+# now that the repo is public; gh is only a fallback for private forks.
 fetch_release() {
   local platform="$1" target asset tmpd
   case "$platform" in
@@ -94,12 +94,16 @@ fetch_release() {
   for stem in graff harness; do
     asset="$stem-$target.tar.gz"
     tmpd="$(mktemp -d)"
-    if command -v gh >/dev/null 2>&1; then
-      gh release download --repo "${REPO#https://github.com/}" --pattern "$asset" --dir "$tmpd" >/dev/null 2>&1 \
-        || { rm -rf "$tmpd"; continue; }
+    # Public repo: plain curl is the fast path (no auth, and it can't hang the
+    # way `gh release download` has been observed to on some machines). Fall
+    # back to gh only if curl fails — e.g. a private fork — and gh is present.
+    if curl -fsSL --max-time 60 "$REPO/releases/latest/download/$asset" -o "$tmpd/$asset" 2>/dev/null; then
+      :
+    elif command -v gh >/dev/null 2>&1 \
+      && gh release download --repo "${REPO#https://github.com/}" --pattern "$asset" --dir "$tmpd" >/dev/null 2>&1; then
+      :
     else
-      curl -fsSL "$REPO/releases/latest/download/$asset" -o "$tmpd/$asset" 2>/dev/null \
-        || { rm -rf "$tmpd"; continue; }
+      rm -rf "$tmpd"; continue
     fi
     break
   done
