@@ -5413,7 +5413,8 @@ pub fn main(init: std.process.Init) !void {
     // PRANK — remove in a future release (see the blackfloofie_poop_prank flag).
     // A poop thinking spinner just for blackfloofie, when running from
     // their home dir. Still overridable at runtime with /animation.
-    if (blackfloofie_poop_prank and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
+    // Disabled by --yolo (skip permission prompts) for a clean experience.
+    if (blackfloofie_poop_prank and !yolo_flag and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
         if (animIndex("poop")) |di| {
             g_anim_index = di;
             g_anim_off = false;
