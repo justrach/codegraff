@@ -94,6 +94,11 @@ const PromptSettings = struct {
     fast_enabled: bool = false,
 };
 
+const ModelUsage = struct {
+    prompt_count: u64 = 0,
+    last_used_at: i64 = 0,
+};
+
 const TerminalSessionState = struct {
     terminal_id: []const u8,
     instance_id: []const u8,
@@ -160,6 +165,7 @@ pub const Runtime = struct {
     runtime_status_cache: std.StringHashMap(RuntimeStatusCacheEntry),
     runtime_status_generation: u64 = 0,
     session_scan_cache: std.StringHashMap(SessionScanCacheEntry),
+    model_usage: std.StringHashMap(ModelUsage),
     event_mutex: std.Io.Mutex = .init,
     events: std.ArrayList(SseEvent) = .empty,
     next_event_seq: u64 = 1,
@@ -185,6 +191,7 @@ pub const Runtime = struct {
             .graff_sessions = std.StringHashMap(*GraffSession).init(allocator),
             .runtime_status_cache = std.StringHashMap(RuntimeStatusCacheEntry).init(allocator),
             .session_scan_cache = std.StringHashMap(SessionScanCacheEntry).init(allocator),
+            .model_usage = std.StringHashMap(ModelUsage).init(allocator),
         };
         rt.arena = rt.arena_state.allocator();
         instance = rt;
@@ -206,6 +213,9 @@ pub const Runtime = struct {
             self.allocator.free(entry.value_ptr.json);
         }
         self.runtime_status_cache.deinit();
+        var usage_it = self.model_usage.keyIterator();
+        while (usage_it.next()) |key| self.allocator.free(key.*);
+        self.model_usage.deinit();
         var scan_it = self.session_scan_cache.iterator();
         while (scan_it.next()) |entry| self.allocator.free(entry.key_ptr.*);
         self.session_scan_cache.deinit();
@@ -480,6 +490,7 @@ pub const Runtime = struct {
         const prompt = stringField(input, "prompt") orelse return bad(req, "missing prompt");
         const provided_conversation = stringField(input, "conversationId");
         const agent_id = stringField(input, "agentId");
+        self.ensurePromptSettingsLoaded();
 
         if (!fileExists(workspace)) {
             if (isGeneratedManagedChatPath(req.allocator, workspace)) {
@@ -1721,7 +1732,9 @@ pub const Runtime = struct {
     fn streamGraffTurn(self: *Runtime, conversation_id: []const u8, request_id: []const u8, session_name: []const u8, workspace: []const u8, prompt: []const u8, agent_id: []const u8, plan_mode: bool, retry_on_setup_failure: bool) anyerror!void {
         const io = mer_runtime.io;
         self.ensurePromptSettingsLoaded();
-        const prompt_selection = self.turnPromptSelectionLocked(conversation_id);
+        var selection_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer selection_arena.deinit();
+        const prompt_selection = try self.resolvedTurnPromptSelection(selection_arena.allocator(), conversation_id);
         const model = prompt_selection.model;
         const provider = prompt_selection.provider;
         const effort = prompt_selection.effort;
@@ -1842,6 +1855,7 @@ pub const Runtime = struct {
             if (retry_on_setup_failure) return self.retryGraffTurnAfterSetupFailure(conversation_id, request_id, session, session_name, workspace, prompt, agent_id, plan_mode);
             return err;
         };
+        self.recordModelUsage(provider, model);
 
         var assistant_seq: usize = 0;
         var reasoning_seq: usize = 0;
@@ -2505,7 +2519,7 @@ pub const Runtime = struct {
         const selected = resolvePromptSelection(schema, self.settings.selected_provider, self.settings.selected_model);
         var out: std.Io.Writer.Allocating = .init(alloc);
         try out.writer.writeAll("{\"availableModels\":");
-        try writePromptModels(&out.writer, schema);
+        try writePromptModels(alloc, &out.writer, schema, &self.model_usage);
         try out.writer.writeAll(",\"selectedProviderId\":");
         try writeNullableString(&out.writer, selected.provider);
         try out.writer.writeAll(",\"selectedModelId\":");
@@ -2601,6 +2615,23 @@ pub const Runtime = struct {
             .effort = effectiveReasoningEffort(provider, model, self.settings.selected_effort),
             .fast_enabled = self.settings.fast_enabled,
             .send_model_control = true,
+        };
+    }
+
+    fn resolvedTurnPromptSelection(self: *Runtime, alloc: std.mem.Allocator, conversation_id: []const u8) !TurnPromptSelection {
+        const raw = self.turnPromptSelectionLocked(conversation_id);
+        const resolved = if (raw.provider == null or raw.model == null) blk: {
+            const schema = self.cachedSchemaValue(alloc);
+            break :blk resolvePromptSelection(schema, raw.provider, raw.model);
+        } else PromptSelection{ .provider = raw.provider, .model = raw.model };
+        const provider = if (resolved.provider) |value| try alloc.dupe(u8, value) else null;
+        const model = if (resolved.model) |value| try alloc.dupe(u8, value) else null;
+        return .{
+            .provider = provider,
+            .model = model,
+            .effort = effectiveReasoningEffort(provider, model, raw.effort),
+            .fast_enabled = raw.fast_enabled,
+            .send_model_control = raw.send_model_control,
         };
     }
 
@@ -3111,6 +3142,9 @@ pub const Runtime = struct {
         if (boolField(parsed, "fast_enabled")) |fast| {
             self.settings.fast_enabled = fast;
         }
+        if (objectField(parsed, "model_usage")) |usage_value| {
+            self.loadModelUsage(usage_value);
+        }
     }
 
     fn ensurePromptSettingsLoaded(self: *Runtime) void {
@@ -3135,8 +3169,65 @@ pub const Runtime = struct {
         writeNullableString(&out.writer, self.settings.selected_effort) catch return;
         out.writer.writeAll(",\"fast_enabled\":") catch return;
         out.writer.writeAll(if (self.settings.fast_enabled) "true" else "false") catch return;
+        out.writer.writeAll(",\"model_usage\":") catch return;
+        writeModelUsageJson(&out.writer, &self.model_usage) catch return;
         out.writer.writeAll("}") catch return;
         std.Io.Dir.cwd().writeFile(mer_runtime.io, .{ .sub_path = path, .data = out.written() }) catch {};
+    }
+
+    fn modelUsageKey(self: *Runtime, provider_id: []const u8, model_id: []const u8) []const u8 {
+        return self.fmt("{s}/{s}", .{ provider_id, model_id });
+    }
+
+    fn incrementModelUsageLocked(self: *Runtime, provider_id: []const u8, model_id: []const u8, now: i64) void {
+        const key = self.modelUsageKey(provider_id, model_id);
+        const result = self.model_usage.getOrPut(key) catch return;
+        if (result.found_existing) {
+            result.value_ptr.prompt_count = std.math.add(u64, result.value_ptr.prompt_count, 1) catch std.math.maxInt(u64);
+            result.value_ptr.last_used_at = now;
+        } else {
+            result.key_ptr.* = self.allocator.dupe(u8, key) catch key;
+            result.value_ptr.* = .{ .prompt_count = 1, .last_used_at = now };
+        }
+    }
+
+    fn recordModelUsage(self: *Runtime, provider_raw: ?[]const u8, model_raw: ?[]const u8) void {
+        const provider = provider_raw orelse return;
+        const model = model_raw orelse return;
+        self.mutex.lockUncancelable(mer_runtime.io);
+        self.incrementModelUsageLocked(provider, model, nowMillis());
+        self.savePromptSettingsLocked();
+        self.mutex.unlock(mer_runtime.io);
+    }
+
+    fn loadModelUsage(self: *Runtime, usage_value: Value) void {
+        if (usage_value != .object) return;
+        var provider_it = usage_value.object.iterator();
+        while (provider_it.next()) |provider_entry| {
+            const provider_id = provider_entry.key_ptr.*;
+            const models_value = provider_entry.value_ptr.*;
+            if (models_value != .object) continue;
+            var model_it = models_value.object.iterator();
+            while (model_it.next()) |model_entry| {
+                const model_id = model_entry.key_ptr.*;
+                const entry_value = model_entry.value_ptr.*;
+                if (entry_value != .object) continue;
+                const count_value = entry_value.object.get("prompt_count") orelse continue;
+                const count: u64 = switch (count_value) {
+                    .integer => |v| if (v > 0) @intCast(v) else 0,
+                    else => 0,
+                };
+                const last_value = entry_value.object.get("last_used_at") orelse null;
+                const last: i64 = if (last_value) |v| switch (v) {
+                    .integer => |n| n,
+                    else => 0,
+                } else 0;
+                if (count == 0) continue;
+                const key = self.modelUsageKey(provider_id, model_id);
+                const owned = self.allocator.dupe(u8, key) catch continue;
+                self.model_usage.put(owned, .{ .prompt_count = count, .last_used_at = last }) catch self.allocator.free(owned);
+            }
+        }
     }
 
     fn bumpLocked(self: *Runtime) void {
@@ -3398,7 +3489,35 @@ fn schemaValue(alloc: std.mem.Allocator, graff_bin: []const u8) !Value {
     return try std.json.parseFromSliceLeaky(Value, alloc, raw, .{ .allocate = .alloc_always });
 }
 
-fn writePromptModels(w: *std.Io.Writer, schema: ?Value) !void {
+const PromptModelListItem = struct {
+    provider_id: []const u8,
+    provider_name: []const u8,
+    model_id: []const u8,
+    context_length: ?i64,
+    supports_reasoning: bool,
+    usage_count: u64,
+};
+
+fn modelUsageKeyAlloc(alloc: std.mem.Allocator, provider_id: []const u8, model_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(alloc, "{s}/{s}", .{ provider_id, model_id });
+}
+
+fn modelUsageCount(alloc: std.mem.Allocator, usage: *const std.StringHashMap(ModelUsage), provider_id: []const u8, model_id: []const u8) u64 {
+    const key = modelUsageKeyAlloc(alloc, provider_id, model_id) catch return 0;
+    defer alloc.free(key);
+    return if (usage.get(key)) |entry| entry.prompt_count else 0;
+}
+
+fn modelSortLessThan(_: void, left: PromptModelListItem, right: PromptModelListItem) bool {
+    if (left.usage_count != right.usage_count) return left.usage_count > right.usage_count;
+    const by_model = std.ascii.orderIgnoreCase(left.model_id, right.model_id);
+    if (by_model != .eq) return by_model == .lt;
+    const by_provider_name = std.ascii.orderIgnoreCase(left.provider_name, right.provider_name);
+    if (by_provider_name != .eq) return by_provider_name == .lt;
+    return std.ascii.orderIgnoreCase(left.provider_id, right.provider_id) == .lt;
+}
+
+fn writePromptModels(alloc: std.mem.Allocator, w: *std.Io.Writer, schema: ?Value, usage: *const std.StringHashMap(ModelUsage)) !void {
     const s = schema orelse {
         try w.writeAll("[{\"providerId\":\"codegraff\",\"providerName\":\"Codegraff\",\"modelId\":\"default\",\"modelName\":\"Default\",\"contextLength\":null,\"supportsReasoning\":false,\"reasoningEfforts\":[]}]");
         return;
@@ -3412,45 +3531,92 @@ fn writePromptModels(w: *std.Io.Writer, schema: ?Value) !void {
         return;
     };
 
-    try w.writeByte('[');
-    var first = true;
-    for (0..2) |pass| {
-        for (providers.items) |provider_value| {
-            if (provider_value != .object) continue;
-            const provider_id = strFieldObj(provider_value.object, "id") orelse continue;
-            if ((pass == 0) != std.mem.eql(u8, provider_id, "codegraff")) continue;
-            const env_key = strFieldObj(provider_value.object, "env_key");
-            if (!providerConfiguredById(provider_id, env_key)) continue;
-            const provider_name = strFieldObj(provider_value.object, "name") orelse provider_id;
-            for (models.items) |model_value| {
-                if (model_value != .object) continue;
-                const model_provider = strFieldObj(model_value.object, "provider") orelse continue;
-                if (!std.mem.eql(u8, model_provider, provider_id)) continue;
-                const model_name = strFieldObj(model_value.object, "name") orelse continue;
-                if (!first) try w.writeByte(',');
-                first = false;
-                try w.writeAll("{\"providerId\":");
-                try writeString(w, provider_id);
-                try w.writeAll(",\"providerName\":");
-                try writeString(w, provider_name);
-                try w.writeAll(",\"modelId\":");
-                try writeString(w, model_name);
-                try w.writeAll(",\"modelName\":");
-                try writeString(w, model_name);
-                try w.writeAll(",\"contextLength\":");
-                if (model_value.object.get("context")) |context| {
-                    if (context == .integer) try w.print("{d}", .{context.integer}) else try w.writeAll("null");
-                } else try w.writeAll("null");
-                const reasoning = promptModelSupportsReasoning(provider_id, model_name);
-                try w.writeAll(",\"supportsReasoning\":");
-                try w.writeAll(if (reasoning) "true" else "false");
-                try w.writeAll(",\"reasoningEfforts\":");
-                try w.writeAll(if (reasoning) "[\"low\",\"medium\",\"high\"]" else "[]");
-                try w.writeAll("}");
-            }
+    var items: std.ArrayList(PromptModelListItem) = .empty;
+    defer items.deinit(alloc);
+
+    for (providers.items) |provider_value| {
+        if (provider_value != .object) continue;
+        const provider_id = strFieldObj(provider_value.object, "id") orelse continue;
+        const env_key = strFieldObj(provider_value.object, "env_key");
+        if (!providerConfiguredById(provider_id, env_key)) continue;
+        const provider_name = strFieldObj(provider_value.object, "name") orelse provider_id;
+        for (models.items) |model_value| {
+            if (model_value != .object) continue;
+            const model_provider = strFieldObj(model_value.object, "provider") orelse continue;
+            if (!std.mem.eql(u8, model_provider, provider_id)) continue;
+            const model_name = strFieldObj(model_value.object, "name") orelse continue;
+            const context_length: ?i64 = if (model_value.object.get("context")) |context| switch (context) {
+                .integer => |value| value,
+                else => null,
+            } else null;
+            try items.append(alloc, .{
+                .provider_id = provider_id,
+                .provider_name = provider_name,
+                .model_id = model_name,
+                .context_length = context_length,
+                .supports_reasoning = promptModelSupportsReasoning(provider_id, model_name),
+                .usage_count = modelUsageCount(alloc, usage, provider_id, model_name),
+            });
         }
     }
+
+    std.mem.sort(PromptModelListItem, items.items, {}, modelSortLessThan);
+
+    try w.writeByte('[');
+    for (items.items, 0..) |item, index| {
+        if (index > 0) try w.writeByte(',');
+        try w.writeAll("{\"providerId\":");
+        try writeString(w, item.provider_id);
+        try w.writeAll(",\"providerName\":");
+        try writeString(w, item.provider_name);
+        try w.writeAll(",\"modelId\":");
+        try writeString(w, item.model_id);
+        try w.writeAll(",\"modelName\":");
+        try writeString(w, item.model_id);
+        try w.writeAll(",\"contextLength\":");
+        if (item.context_length) |context| try w.print("{d}", .{context}) else try w.writeAll("null");
+        try w.writeAll(",\"supportsReasoning\":");
+        try w.writeAll(if (item.supports_reasoning) "true" else "false");
+        try w.writeAll(",\"reasoningEfforts\":");
+        try w.writeAll(if (item.supports_reasoning) "[\"low\",\"medium\",\"high\"]" else "[]");
+        try w.writeAll("}");
+    }
     try w.writeByte(']');
+}
+
+fn writeModelUsageJson(w: *std.Io.Writer, usage: *const std.StringHashMap(ModelUsage)) !void {
+    try w.writeByte('{');
+    var provider_first = true;
+    var providers = std.StringHashMap(void).init(std.heap.page_allocator);
+    defer providers.deinit();
+    var key_it = usage.keyIterator();
+    while (key_it.next()) |key_ptr| {
+        const key = key_ptr.*;
+        const slash = std.mem.indexOfScalar(u8, key, '/') orelse continue;
+        providers.put(key[0..slash], {}) catch {};
+    }
+    var provider_it = providers.keyIterator();
+    while (provider_it.next()) |provider_ptr| {
+        const provider_id = provider_ptr.*;
+        if (!provider_first) try w.writeByte(',');
+        provider_first = false;
+        try writeString(w, provider_id);
+        try w.writeAll(":{");
+        var model_first = true;
+        var usage_it = usage.iterator();
+        while (usage_it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const slash = std.mem.indexOfScalar(u8, key, '/') orelse continue;
+            if (!std.mem.eql(u8, key[0..slash], provider_id)) continue;
+            const model_id = key[slash + 1 ..];
+            if (!model_first) try w.writeByte(',');
+            model_first = false;
+            try writeString(w, model_id);
+            try w.print(":{{\"prompt_count\":{d},\"last_used_at\":{d}}}", .{ entry.value_ptr.prompt_count, entry.value_ptr.last_used_at });
+        }
+        try w.writeByte('}');
+    }
+    try w.writeByte('}');
 }
 
 fn resolvePromptSelection(schema: ?Value, selected_provider: ?[]const u8, selected_model: ?[]const u8) PromptSelection {
@@ -4816,6 +4982,35 @@ test "git mutation validation fails before shelling out" {
     try std.testing.expectError(error.InvalidBranchName, runGitMutation(std.testing.allocator, "/tmp/workspace", "checkout_git_branch", refspec_branch));
     try std.testing.expect(isSafeGitBranchName("feature/safe-branch_1.2"));
     try std.testing.expectError(error.UnsupportedGitMutation, runGitMutation(std.testing.allocator, "/tmp/workspace", "unknown_git_command", empty));
+}
+
+test "prompt models are ranked by persisted usage then name" {
+    var rt = try Runtime.init(std.testing.allocator);
+    defer rt.deinit();
+
+    var tmp = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tmp.deinit();
+    const parsed = try std.json.parseFromSliceLeaky(Value, tmp.allocator(),
+        \\{"providers":[{"id":"codegraff","name":"Codegraff","env_key":"PATH"}],"models":[
+        \\{"provider":"codegraff","name":"zeta"},
+        \\{"provider":"codegraff","name":"alpha"},
+        \\{"provider":"codegraff","name":"beta"}
+        \\]}
+    , .{ .allocate = .alloc_always });
+
+    rt.incrementModelUsageLocked("codegraff", "zeta", 10);
+    rt.incrementModelUsageLocked("codegraff", "zeta", 20);
+    rt.incrementModelUsageLocked("codegraff", "beta", 30);
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writePromptModels(std.testing.allocator, &out.writer, parsed, &rt.model_usage);
+    const json = out.written();
+    const beta = std.mem.indexOf(u8, json, "\"modelId\":\"beta\"").?;
+    const zeta = std.mem.indexOf(u8, json, "\"modelId\":\"zeta\"").?;
+    const alpha = std.mem.indexOf(u8, json, "\"modelId\":\"alpha\"").?;
+    try std.testing.expect(zeta < beta);
+    try std.testing.expect(beta < alpha);
 }
 
 test "provider summaries are generated from core schema" {
