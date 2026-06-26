@@ -281,6 +281,12 @@ const provider_specs = [_]ProviderSpec{
     .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
     .{ .id = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
     .{ .id = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro" },
+    // mlx: a local model served by mlx-lm (`mlx_lm.server`) on Apple Silicon —
+    // OpenAI-compatible, no real key (MLX_API_KEY=local just clears graff's boot gate).
+    .{ .id = "mlx", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:8080/v1/chat/completions", .env_key = "MLX_API_KEY", .default_model = "mlx-community/Qwen3.6-27B-OptiQ-4bit" },
+    // lm-studio: the LM Studio app's local OpenAI-compatible server (default :1234).
+    // Load a model in LM Studio, then `LMSTUDIO_API_KEY=local graff --model lmstudio`.
+    .{ .id = "lmstudio", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:1234/v1/chat/completions", .env_key = "LMSTUDIO_API_KEY", .default_model = "lmstudio" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
     // — it's the OAuth access token read from ~/.codex/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
@@ -306,6 +312,11 @@ const ModelInfo = struct {
 const codex_context_window: u64 = 270_000;
 
 const model_table = [_]ModelInfo{
+    // Local Apple-Silicon model served by mlx-lm (mlx_lm.server, OpenAI-compatible).
+    .{ .provider = "mlx", .name = "mlx-community/Qwen3.6-27B-OptiQ-4bit", .context = 262_144 },
+    // LM Studio serves whatever model is loaded; "lmstudio" is a routing alias —
+    // swap for your loaded model id if LM Studio requires an exact match (GET :1234/v1/models).
+    .{ .provider = "lmstudio", .name = "lmstudio", .context = 32_768 },
     .{ .provider = "anthropic", .name = "claude-fable-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-8", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-7", .context = 1_000_000 },
@@ -469,6 +480,12 @@ const main_system_prompt =
     \\errors), and "t" = ms since session start. When asked to debug, profile,
     \\or explain the harness's own behavior — including your own — read that
     \\file and analyze it.
+    \\
+    \\If you hit a bug or limitation in the harness itself (this graff/codegraff
+    \\agent — its tools, prompts, streaming, sessions, or behavior — as opposed
+    \\to the project you happen to be working in), report it by opening a GitHub
+    \\issue at justrach/codegraff (`gh issue create --repo justrach/codegraff
+    \\...`), never in the current working repository's issue tracker.
     \\
     \\When making git commits on behalf of the user, always set the author
     \\to Codegraff <blackfloofie@codegraff.com> — pass GIT_AUTHOR_NAME,
@@ -1395,25 +1412,43 @@ const builtin_agent_types = [_]AgentType{
     },
 };
 
-/// Resolved agent types for this session (builtins + .harness/agents/*.md,
-/// files override builtins by name). Set by main(); arena-owned strings.
+/// Resolved agent types for this session, in precedence order:
+/// builtin < personal (~/.harness/agents) < private (./.harness/agents). A later
+/// tier's <name>.md shadows the same niche from an earlier one. Set by main();
+/// arena-owned strings.
 var g_agent_types: []const AgentType = &builtin_agent_types;
+var g_home: ?[]const u8 = null; // resolved HOME (set in main); used by /agents promote's personal tier
 
 const agents_dir = ".harness/agents";
 
-/// Load .harness/agents/*.md: YAML-ish frontmatter (name/description/score)
-/// + body as the prompt. Returns builtins ++ file types, with file types
-/// shadowing builtins of the same name.
-fn loadAgentTypes(io: Io, arena: Allocator) []const AgentType {
+/// Build the session's agent types: the compiled builtins, then the personal
+/// tier (~/.harness/agents — your champions, loaded in every project), then the
+/// private tier (./.harness/agents — this project only). Each tier shadows the
+/// previous by niche name, so a project persona beats a personal one beats a
+/// builtin.
+fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const AgentType {
     var list: std.ArrayList(AgentType) = .empty;
     list.appendSlice(arena, &builtin_agent_types) catch return &builtin_agent_types;
-    var dir = Io.Dir.cwd().openDir(io, agents_dir, .{ .iterate = true }) catch return list.items;
+    if (home) |h| {
+        const personal = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, agents_dir }) catch "";
+        if (personal.len > 0) loadAgentDir(io, arena, &list, personal);
+    }
+    loadAgentDir(io, arena, &list, agents_dir);
+    return list.items;
+}
+
+/// Merge `<dir>/*.md` personas into `list`: YAML-ish frontmatter
+/// (name/description/score) + body as the prompt. A file shadows any existing
+/// type (builtin or earlier tier) of the same name — the elite for a niche is
+/// whatever the highest tier last promoted.
+fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_path: []const u8) void {
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
-        const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ agents_dir, entry.name }) catch continue;
+        const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
         const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(256 * 1024)) catch continue;
         var at: AgentType = .{
             .name = arena.dupe(u8, entry.name[0 .. entry.name.len - ".md".len]) catch continue,
@@ -1437,8 +1472,7 @@ fn loadAgentTypes(io: Io, arena: Allocator) []const AgentType {
             }
         }
         if (at.prompt.len == 0) continue;
-        // File types shadow builtins (and earlier files) of the same name —
-        // the elite for a niche is whatever the driver last promoted.
+        // A file shadows an existing type (builtin or earlier tier) of the same name.
         var replaced = false;
         for (list.items) |*existing| {
             if (std.mem.eql(u8, existing.name, at.name)) {
@@ -1449,9 +1483,113 @@ fn loadAgentTypes(io: Io, arena: Allocator) []const AgentType {
         }
         if (!replaced) list.append(arena, at) catch continue;
     }
-    return list.items;
 }
 
+/// Local single-tenant promote — the "grow for me" loop. Mine
+/// harness.trajectory.jsonl (prompt records → genome text, subagent records →
+/// niche, score records → fitness), and for each MAP-Elites niche write the
+/// highest-mean-scoring genome that has captured text into the chosen tier
+/// (personal ~/.harness/agents or private ./.harness/agents) as <niche>.md. No
+/// backend: your own scored runs become your built-in personas. Returns the
+/// number of niches promoted.
+fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8, personal: bool) usize {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const data = Io.Dir.cwd().readFileAlloc(io, trajectory_path, arena, .limited(64 << 20)) catch {
+        out.print("  {s}no {s} yet — run some scored agents first{s}\n", .{ style.dim, trajectory_path, style.reset }) catch {};
+        return 0;
+    };
+
+    const Cell = struct { sha: []const u8, text: []const u8, niche: []const u8, sum: f64, n: u32 };
+    var cells: std.ArrayList(Cell) = .empty;
+    const cell = struct {
+        fn at(a: Allocator, list: *std.ArrayList(Cell), sha: []const u8) *Cell {
+            for (list.items) |*c| if (std.mem.eql(u8, c.sha, sha)) return c;
+            list.append(a, .{ .sha = a.dupe(u8, sha) catch sha, .text = "", .niche = "", .sum = 0, .n = 0 }) catch {};
+            return &list.items[list.items.len - 1];
+        }
+    }.at;
+
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |ln| {
+        const t = std.mem.trim(u8, ln, " \t\r");
+        if (t.len == 0) continue;
+        const v = std.json.parseFromSliceLeaky(Value, arena, t, .{ .allocate = .alloc_always }) catch continue;
+        if (v != .object) continue;
+        const o = v.object;
+        const kind = strFieldObj(o, "kind") orelse continue;
+        const sha = strFieldObj(o, "prompt_sha") orelse "";
+        if (sha.len == 0) continue;
+        if (std.mem.eql(u8, kind, "prompt")) {
+            if (strFieldObj(o, "text")) |txt| cell(arena, &cells, sha).text = arena.dupe(u8, txt) catch "";
+        } else if (std.mem.eql(u8, kind, "score")) {
+            const sv = o.get("score") orelse continue;
+            const val: f64 = switch (sv) {
+                .float => sv.float,
+                .integer => @floatFromInt(sv.integer),
+                else => continue,
+            };
+            const c = cell(arena, &cells, sha);
+            c.sum += val;
+            c.n += 1;
+        } else if (strFieldObj(o, "niche")) |nz| {
+            if (nz.len > 0) cell(arena, &cells, sha).niche = arena.dupe(u8, nz) catch "";
+        }
+    }
+
+    // Resolve + create the target tier dir (createDir is one level).
+    const dir = if (personal) blk: {
+        const h = home orelse {
+            out.print("  {s}no HOME for the personal tier{s}\n", .{ style.yellow, style.reset }) catch {};
+            return 0;
+        };
+        Io.Dir.cwd().createDir(io, std.fmt.allocPrint(arena, "{s}/.harness", .{h}) catch return 0, .default_dir) catch {};
+        break :blk std.fmt.allocPrint(arena, "{s}/{s}", .{ h, agents_dir }) catch return 0;
+    } else pblk: {
+        Io.Dir.cwd().createDir(io, ".harness", .default_dir) catch {};
+        break :pblk agents_dir;
+    };
+    Io.Dir.cwd().createDir(io, dir, .default_dir) catch {};
+
+    // For each niche, write the genome with the best mean score (text required).
+    var done: std.ArrayList([]const u8) = .empty;
+    var promoted: usize = 0;
+    for (cells.items) |*seed| {
+        if (seed.niche.len == 0 or seed.text.len == 0 or seed.n == 0) continue;
+        var already = false;
+        for (done.items) |d| if (std.mem.eql(u8, d, seed.niche)) {
+            already = true;
+            break;
+        };
+        if (already) continue;
+        var champ = seed;
+        var champ_mean = seed.sum / @as(f64, @floatFromInt(seed.n));
+        for (cells.items) |*other| {
+            if (other.text.len == 0 or other.n == 0) continue;
+            if (!std.mem.eql(u8, other.niche, seed.niche)) continue;
+            const m = other.sum / @as(f64, @floatFromInt(other.n));
+            if (m > champ_mean) {
+                champ = other;
+                champ_mean = m;
+            }
+        }
+        const path = std.fmt.allocPrint(arena, "{s}/{s}.md", .{ dir, champ.niche }) catch continue;
+        const content = std.fmt.allocPrint(arena, "---\nname: {s}\ndescription: promoted local champion (mean {d:.2} over {d} run(s), sha {s})\nscore: {d:.4}\n---\n{s}\n", .{ champ.niche, champ_mean, champ.n, champ.sha, champ_mean, champ.text }) catch continue;
+        const f = Io.Dir.cwd().createFile(io, path, .{}) catch continue;
+        defer f.close(io);
+        var wbuf: [4096]u8 = undefined;
+        var fw = f.writer(io, &wbuf);
+        fw.interface.writeAll(content) catch continue;
+        fw.interface.flush() catch {};
+        out.print("  {s}✓{s} {s}{s}{s} → {s} {s}(mean {d:.2}, n={d}){s}\n", .{ style.green, style.reset, style.cyan, champ.niche, style.reset, path, style.dim, champ_mean, champ.n, style.reset }) catch {};
+        done.append(arena, champ.niche) catch {};
+        promoted += 1;
+    }
+    if (promoted == 0) out.print("  {s}nothing to promote — need scored, niche-tagged genomes (spawn personas via subagent agent:\"<niche>\", then score them){s}\n", .{ style.dim, style.reset }) catch {};
+    return promoted;
+}
 /// Resolve an agent-type name (case-sensitive) to its prompt.
 fn agentTypePrompt(name: []const u8) ?[]const u8 {
     for (g_agent_types) |t| {
@@ -4367,6 +4505,71 @@ fn cleanDroppedPath(gpa: Allocator, home: []const u8, pasted: []const u8) ?[]con
     return clean.toOwnedSlice(gpa) catch null;
 }
 
+/// History + unsent-draft navigation for the line editor (#101). Mirrors the
+/// GUI's promptHistoryNavigation.ts: stepping UP out of the fresh slot snapshots
+/// the half-typed draft; stepping DOWN past the newest entry restores it instead
+/// of clearing the line. `idx == history.len` is the fresh (editing) slot.
+const HistoryNav = struct {
+    idx: usize,
+    draft: ?[]const u8 = null, // owned snapshot of the unsent line; freed by the caller
+
+    fn init(history_len: usize) HistoryNav {
+        return .{ .idx = history_len };
+    }
+
+    /// UP / older. `current` is the live buffer. Returns the text the buffer
+    /// should show next, or null to leave it unchanged (already at the oldest).
+    /// Leaving the fresh slot snapshots `current` as the draft to restore later.
+    fn up(self: *HistoryNav, gpa: Allocator, history: []const []const u8, current: []const u8) ?[]const u8 {
+        if (self.idx == 0) return null;
+        if (self.idx == history.len) { // leaving the fresh slot: keep the draft
+            if (self.draft) |d| gpa.free(d);
+            self.draft = gpa.dupe(u8, current) catch null;
+        }
+        self.idx -= 1;
+        return history[self.idx];
+    }
+
+    /// DOWN / newer. Returns the text to show next, or null to leave it
+    /// unchanged (already at the fresh slot). Past the newest entry, restores the
+    /// snapshotted draft (or "" when there was none) instead of clearing it.
+    fn down(self: *HistoryNav, history: []const []const u8) ?[]const u8 {
+        if (self.idx >= history.len) return null;
+        self.idx += 1;
+        if (self.idx == history.len) return self.draft orelse "";
+        return history[self.idx];
+    }
+};
+
+test "HistoryNav: up snapshots the draft, down past newest restores it (#101)" {
+    const gpa = std.testing.allocator;
+    const history = [_][]const u8{ "first", "second" };
+    var nav: HistoryNav = .init(history.len);
+    defer if (nav.draft) |d| gpa.free(d);
+
+    // up from the fresh slot → newest entry, draft snapshotted
+    try std.testing.expectEqualStrings("second", nav.up(gpa, &history, "draft in progress").?);
+    // up again → older entry
+    try std.testing.expectEqualStrings("first", nav.up(gpa, &history, "second").?);
+    // up at the oldest → no change
+    try std.testing.expect(nav.up(gpa, &history, "first") == null);
+    // down → back to newest
+    try std.testing.expectEqualStrings("second", nav.down(&history).?);
+    // down past newest → the draft is restored, NOT cleared (the bug)
+    try std.testing.expectEqualStrings("draft in progress", nav.down(&history).?);
+    // down at the fresh slot → no change
+    try std.testing.expect(nav.down(&history) == null);
+}
+
+test "HistoryNav: no draft → fresh slot returns empty, no leak (#101)" {
+    const gpa = std.testing.allocator;
+    const history = [_][]const u8{"only"};
+    var nav: HistoryNav = .init(history.len);
+    defer if (nav.draft) |d| gpa.free(d);
+    try std.testing.expectEqualStrings("only", nav.up(gpa, &history, "").?);
+    try std.testing.expectEqualStrings("", nav.down(&history).?); // empty draft → empty line, as today
+}
+
 /// Read one input line with a tiny raw-mode editor: ↑/↓ walk history,
 /// Tab completes/cycles (models, providers, slash commands), backspace edits,
 /// Ctrl-C cancels the line, Ctrl-D on an empty line is EOF. `buf` is reused
@@ -4386,7 +4589,8 @@ fn readLine(
 
     buf.clearRetainingCapacity();
     var cur: usize = 0; // cursor index within buf
-    var hist_idx: usize = history.items.len; // == len → editing a fresh line
+    var nav: HistoryNav = .init(history.items.len); // history + unsent-draft nav (#101)
+    defer if (nav.draft) |d| gpa.free(d);
     out.writeAll("\x1b[?2004h") catch {}; // enable bracketed paste (terminal wraps pastes in ESC[200~ … ESC[201~)
     defer out.writeAll("\x1b[?2004l") catch {};
     out.flush() catch {};
@@ -4836,15 +5040,13 @@ fn readLine(
                 const ps = params[0..pn];
                 const word_mod = std.mem.indexOfScalar(u8, ps, ';') != null; // 1;3 (alt) / 1;5 (ctrl)
                 switch (final) {
-                    'A' => if (hist_idx > 0) { // up → history back
-                        hist_idx -= 1;
-                        setLine(gpa, buf, history.items[hist_idx]);
+                    'A' => if (nav.up(gpa, history.items, buf.items)) |text| { // up → history back; snapshots draft (#101)
+                        setLine(gpa, buf, text);
                         cur = buf.items.len;
                         redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                     },
-                    'B' => if (hist_idx < history.items.len) { // down → history forward
-                        hist_idx += 1;
-                        if (hist_idx == history.items.len) buf.clearRetainingCapacity() else setLine(gpa, buf, history.items[hist_idx]);
+                    'B' => if (nav.down(history.items)) |text| { // down → history forward; restores draft past newest (#101)
+                        setLine(gpa, buf, text);
                         cur = buf.items.len;
                         redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                     },
@@ -5920,7 +6122,8 @@ pub fn main(init: std.process.Init) !void {
     const persisted_approvals = approvals.loadPersisted(io, gpa, arena);
 
     // Agent types: builtins + .harness/agents/*.md (the MAP-Elites niches).
-    g_agent_types = loadAgentTypes(io, arena);
+    g_home = homeEnv(init.environ_map); // for /agents promote's personal tier
+    g_agent_types = loadAgentTypes(io, arena, g_home); // builtin < ~/.harness/agents (personal) < ./.harness/agents (private)
     if (persisted_approvals > 0 and !json_mode and oneshot_prompt == null) {
         try out.print("{s}loaded {d} saved approval(s) from {s}{s}\n", .{ style.dim, persisted_approvals, Approvals.settings_path, style.reset });
         try out.flush();
@@ -6122,7 +6325,7 @@ pub fn main(init: std.process.Init) !void {
         if (loadSession(&root, keys, arena, root.session_name)) |_| {
             if (root.messages.items.len > 0) {
                 // Estimate the restored context from the file size (~4 bytes/token).
-                const est_path = try std.fmt.allocPrint(arena, "{s}{s}", .{ root.session_name, session_ext });
+                const est_path = try sessionPath(arena, root.session_name);
                 const est: u64 = if (Io.Dir.cwd().statFile(io, est_path, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
                 if (!json_mode) {
                     // Prefer the saved AI summary; fall back to the first user
@@ -6441,6 +6644,9 @@ pub fn main(init: std.process.Init) !void {
                     if (f.await(io)) |t| {
                         root.session_title = arena.dupe(u8, t) catch null;
                         gpa.free(t);
+                        // Name the session file by its AI title (the header agent):
+                        // session-<ts> -> .graff/sessions/<slug>.session.json.
+                        if (root.session_title) |st| renameSession(&root, arena, slugifyTitle(arena, st));
                     }
                     title_fut = null; // consumed; don't await twice
                 }
@@ -7495,6 +7701,14 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return;
     }
+    if (std.mem.startsWith(u8, line, "/agents promote")) {
+        const personal = std.mem.indexOf(u8, line, "--personal") != null or std.mem.indexOf(u8, line, "--global") != null;
+        try out.print("{s}promoting local champions{s} → {s} tier (from {s})\n", .{ style.bold, style.reset, if (personal) "personal ~/.harness/agents" else "private ./.harness/agents", trajectory_path });
+        const n = promoteAgents(root.io, root.gpa, out, g_home, personal);
+        if (n > 0) try out.print("{s}✓ promoted {d} niche(s) — they load on next start{s}\n", .{ style.green, n, style.reset });
+        try out.flush();
+        return;
+    }
     if (std.mem.eql(u8, line, "/agents")) {
         try out.print("{s}agent types{s} — MAP-Elites niches: builtins + {s}/*.md (file shadows builtin); spawn via subagent agent:\"<name>\"\n", .{ style.bold, style.reset, agents_dir });
         for (g_agent_types) |t| {
@@ -8399,7 +8613,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (arg.len == 0 and use_color and root.in != null) {
             var sessions: std.ArrayList(PickItem) = .empty;
             defer sessions.deinit(arena);
-            if (Io.Dir.cwd().openDir(root.io, ".", .{ .iterate = true })) |dir_v| {
+            if (Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true })) |dir_v| {
                 var dir = dir_v;
                 defer dir.close(root.io);
                 var it = dir.iterate();
@@ -8435,7 +8649,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return;
     }
     if (std.mem.eql(u8, line, "/sessions")) {
-        var dir = Io.Dir.cwd().openDir(root.io, ".", .{ .iterate = true }) catch {
+        var dir = Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true }) catch {
             try out.writeAll("(could not list cwd)\n");
             try out.flush();
             return;
@@ -8511,6 +8725,56 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
 }
 
 const session_ext = ".session.json";
+const sessions_dir = ".graff/sessions"; // title-named session files live here (resume reads this)
+
+/// Path to a session file: .graff/sessions/<name>.session.json.
+fn sessionPath(arena: Allocator, name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ sessions_dir, name, session_ext });
+}
+
+/// Filesystem-safe slug of an AI title: lowercase alnum, any other run collapses
+/// to one '-', trimmed, capped at 60. "Fixing the login bug" -> "fixing-the-login-bug".
+/// Returns "" for an empty/symbol-only title.
+fn slugifyTitle(arena: Allocator, title: []const u8) []const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    var last_dash = true; // suppress a leading '-'
+    for (title) |c| {
+        if (buf.items.len >= 60) break;
+        const lc = std.ascii.toLower(c);
+        if ((lc >= 'a' and lc <= 'z') or (lc >= '0' and lc <= '9')) {
+            buf.append(arena, lc) catch break;
+            last_dash = false;
+        } else if (!last_dash) {
+            buf.append(arena, '-') catch break;
+            last_dash = true;
+        }
+    }
+    var s = buf.items;
+    while (s.len > 0 and s[s.len - 1] == '-') s = s[0 .. s.len - 1];
+    return s;
+}
+
+/// Rename an as-yet-untitled (session-<ts>) session to a slug of its AI title:
+/// point session_name at a free <slug>[-N], write it there, and remove the old
+/// file. Best-effort; only fires for the default timestamp name, so a manual
+/// /rename or a resumed session keeps its name.
+fn renameSession(root: *Agent, arena: Allocator, slug: []const u8) void {
+    if (slug.len == 0) return;
+    if (!std.mem.startsWith(u8, root.session_name, "session-")) return; // already titled
+    if (std.mem.eql(u8, slug, root.session_name)) return;
+    var name = slug;
+    var n: usize = 2;
+    while (n < 100) : (n += 1) {
+        const p = sessionPath(arena, name) catch return;
+        if (Io.Dir.cwd().statFile(root.io, p, .{})) |_| {
+            name = std.fmt.allocPrint(arena, "{s}-{d}", .{ slug, n }) catch return;
+        } else |_| break; // free
+    }
+    const old_name = root.session_name;
+    root.session_name = arena.dupe(u8, name) catch return;
+    saveSession(root, arena, root.session_name) catch {};
+    if (sessionPath(arena, old_name)) |op| (Io.Dir.cwd().deleteFile(root.io, op) catch {}) else |_| {}
+}
 
 const CodexAuth = struct { token: []const u8, account: []const u8 };
 
@@ -9721,7 +9985,9 @@ fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     try s.write(Value{ .array = root.messages });
     try s.endObject();
 
-    const path = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_ext });
+    Io.Dir.cwd().createDir(root.io, ".graff", .default_dir) catch {};
+    Io.Dir.cwd().createDir(root.io, sessions_dir, .default_dir) catch {};
+    const path = try sessionPath(arena, name);
     try Io.Dir.cwd().writeFile(root.io, .{ .sub_path = path, .data = aw.writer.buffered() });
 }
 
@@ -9729,8 +9995,12 @@ fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
 /// provider, and replace the live history. The wire format must still match
 /// the restored provider's kind — same provider id guarantees it.
 fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !void {
-    const path = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_ext });
-    const data = try Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024));
+    const path = try sessionPath(arena, name);
+    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch blk: {
+        // backward-compat: older builds wrote <name>.session.json in cwd.
+        const legacy = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_ext });
+        break :blk try Io.Dir.cwd().readFileAlloc(root.io, legacy, arena, .limited(8 * 1024 * 1024));
+    };
     const parsed = try std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always });
     if (parsed != .object) return error.BadSession;
     const obj = parsed.object;
@@ -10025,6 +10295,7 @@ const Agent = struct {
         // #95: scrub any malformed function_call_output before it hits the wire.
         sanitizeMessagesUtf8(self.arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
         if (self.provider.kind == .responses) normalizeResponsesHistory(self.arena, &self.messages);
+        if (self.provider.kind == .openai) normalizeOpenAIHistory(self.arena, &self.messages); // #99: chat-completions sibling of the above
         while (true) {
             const live = !self.sub and self.out != null and !self.stream_quiet;
             self.streamed_text = false;
@@ -13253,6 +13524,99 @@ fn normalizeResponsesHistory(arena: Allocator, messages: *std.json.Array) void {
     }
 }
 
+/// #99: the chat-completions sibling of normalizeResponsesHistory. A resumed
+/// session can carry a `role:"tool"` message whose `content` is a byte-integer
+/// array (e.g. [61,61,61] — raw tool bytes that reached history as JSON ints) or
+/// a bare scalar. OpenAI-compatible providers reject it
+/// (`messages[N].content[0].type: cannot be empty`) and, because it sits in
+/// saved history, every later turn fails — the same wedge as #95, on the other
+/// wire format. Coerce such content back to a string in place. No-op for valid
+/// string content and for arrays of typed content-block objects (real blocks).
+fn normalizeOpenAIHistory(arena: Allocator, messages: *std.json.Array) void {
+    for (messages.items) |*m| {
+        if (m.* != .object) continue;
+        const role = m.object.get("role") orelse continue;
+        if (role != .string or !std.mem.eql(u8, role.string, "tool")) continue;
+        const content = m.object.get("content") orelse continue;
+        if (content == .string) continue; // already valid
+        if (content == .array and content.array.items.len > 0) {
+            var all_objects = true;
+            for (content.array.items) |it| if (it != .object) {
+                all_objects = false;
+                break;
+            };
+            if (all_objects) continue; // legitimate typed content blocks
+        }
+        const s = sanitizeUtf8(arena, toolContentString(arena, content));
+        m.object.put(arena, "content", .{ .string = s }) catch {};
+    }
+}
+
+/// Best-effort decode of a non-string tool `content` value to a string. A pure
+/// byte-integer array (every item an int in 0..255) decodes back to its bytes
+/// (so [61,61,61] → "==="); anything else is JSON-encoded.
+fn toolContentString(arena: Allocator, v: Value) []const u8 {
+    if (v == .array) {
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(arena);
+        for (v.array.items) |it| {
+            if (it == .integer and it.integer >= 0 and it.integer <= 255) {
+                bytes.append(arena, @intCast(it.integer)) catch return jsonValueString(arena, v);
+            } else {
+                return jsonValueString(arena, v);
+            }
+        }
+        return arena.dupe(u8, bytes.items) catch jsonValueString(arena, v);
+    }
+    return jsonValueString(arena, v);
+}
+
+test "normalizeOpenAIHistory: byte-array/scalar tool content coerced to string (#99)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var msgs = std.json.Array.init(arena);
+    // poison item: role:"tool" content is a byte-integer array ([61,61,61] = "===")
+    var bytearr: std.json.ObjectMap = .empty;
+    try bytearr.put(arena, "role", .{ .string = "tool" });
+    try bytearr.put(arena, "tool_call_id", .{ .string = "c1" });
+    var inner = std.json.Array.init(arena);
+    try inner.append(.{ .integer = 61 });
+    try inner.append(.{ .integer = 61 });
+    try inner.append(.{ .integer = 61 });
+    try bytearr.put(arena, "content", .{ .array = inner });
+    try msgs.append(.{ .object = bytearr });
+    // bare scalar content → stringified
+    var scalar: std.json.ObjectMap = .empty;
+    try scalar.put(arena, "role", .{ .string = "tool" });
+    try scalar.put(arena, "content", .{ .integer = 42 });
+    try msgs.append(.{ .object = scalar });
+    // valid string tool message → untouched
+    var ok_msg: std.json.ObjectMap = .empty;
+    try ok_msg.put(arena, "role", .{ .string = "tool" });
+    try ok_msg.put(arena, "content", .{ .string = "hello" });
+    try msgs.append(.{ .object = ok_msg });
+    // non-tool (user) message with array content → untouched
+    var user: std.json.ObjectMap = .empty;
+    try user.put(arena, "role", .{ .string = "user" });
+    var ublocks = std.json.Array.init(arena);
+    var blk: std.json.ObjectMap = .empty;
+    try blk.put(arena, "type", .{ .string = "text" });
+    try blk.put(arena, "text", .{ .string = "hi" });
+    try ublocks.append(.{ .object = blk });
+    try user.put(arena, "content", .{ .array = ublocks });
+    try msgs.append(.{ .object = user });
+
+    normalizeOpenAIHistory(arena, &msgs);
+
+    try std.testing.expect(msgs.items[0].object.get("content").? == .string);
+    try std.testing.expectEqualStrings("===", msgs.items[0].object.get("content").?.string);
+    try std.testing.expect(msgs.items[1].object.get("content").? == .string);
+    try std.testing.expectEqualStrings("42", msgs.items[1].object.get("content").?.string);
+    try std.testing.expectEqualStrings("hello", msgs.items[2].object.get("content").?.string);
+    try std.testing.expect(msgs.items[3].object.get("content").? == .array); // user multimodal stays an array
+}
 /// JSON-encode a Value to an owned string (best-effort; "" on failure).
 fn jsonValueString(arena: Allocator, v: Value) []const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
@@ -14786,6 +15150,7 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
             .ms = run_ms,
             .prompt_sha = &fp,
             .prompt_mutated = sys_override != null,
+            .niche = niche, // MAP-Elites niche, so a local /agents promote can group scores by it
             .task = utf8Prefix(prompt, 160),
             .tools = tools,
             .ok = run_ok,
@@ -16299,6 +16664,16 @@ test "reasoningDelta extracts thinking/reasoning per provider wire format (#75)"
     // a plain answer-text delta carries no reasoning
     const txt = mk(a, "{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}");
     try std.testing.expectEqualStrings("", reasoningDelta(.openai, txt));
+}
+
+test "slugifyTitle makes a filesystem-safe slug from an AI title" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expectEqualStrings("fixing-the-login-bug", slugifyTitle(a, "Fixing the login bug"));
+    try std.testing.expectEqualStrings("add-dark-mode", slugifyTitle(a, "Add dark mode!!"));
+    try std.testing.expectEqualStrings("planning-v2", slugifyTitle(a, "  Planning — v2  ")); // trim + collapse
+    try std.testing.expectEqualStrings("", slugifyTitle(a, "🎉 ✨")); // symbol-only → "" (keeps the session-<ts> name)
 }
 
 test "firstUserTitle: first user message becomes the header title, else Chat (#83)" {
