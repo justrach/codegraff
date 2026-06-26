@@ -5377,6 +5377,7 @@ const usage_text =
     \\  --goal <text>                   seed a standing objective (tracked as a todo checklist) for every turn
     \\  --eval <cmd>                    scoring command for an eval-driven loop (the `eval` tool runs it)
     \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
+    \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
     \\  --yolo           skip all permission prompts for the session
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
     \\  --timing         show per-tool wall-clock on result lines
@@ -5625,6 +5626,7 @@ pub fn main(init: std.process.Init) !void {
     var resume_flag: ?[]const u8 = null; // restore/save this named session
     var goal_flag: ?[]const u8 = null; // --goal: standing objective (todos) every turn gets, incl. --json/-p
     var eval_cmd_flag: ?[]const u8 = null; // --eval: scoring command for the eval-driven loop
+    var worktree_flag: ?[]const u8 = null; // --worktree/-w: isolate this session in a git worktree (parallel agents, no file collisions)
     var eval_target_flag: ?u8 = null; // --until: target score 0-100 for the eval loop
     var no_resume_flag = false; // start without auto-loading last.session.json
     var new_session_flag = false; // start a fresh autosaved session
@@ -5639,6 +5641,8 @@ pub fn main(init: std.process.Init) !void {
             } else if (std.mem.startsWith(u8, arg, "-")) {
                 if (std.mem.eql(u8, arg, "--yolo")) {
                     yolo_flag = true;
+                } else if (std.mem.eql(u8, arg, "--worktree") or std.mem.eql(u8, arg, "-w")) {
+                    worktree_flag = it.next() orelse std.process.fatal("--worktree needs a name (e.g. --worktree agent1)", .{});
                 } else if (std.mem.eql(u8, arg, "--goal")) {
                     goal_flag = it.next() orelse std.process.fatal("--goal needs an objective", .{});
                 } else if (std.mem.eql(u8, arg, "--eval")) {
@@ -5894,8 +5898,29 @@ pub fn main(init: std.process.Init) !void {
         style = Style.ansi;
         use_color = true;
     }
+    // --worktree/-w: run this session in an isolated git worktree so parallel
+    // agents don't collide on files. Creates .graff/worktrees/<name> on branch
+    // worktree-<name> (from HEAD) and enters it; reuses it if it already exists.
+    if (worktree_flag) |wt| {
+        const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{wt});
+        const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{wt});
+        if (runCapped(gpa, io, &.{ "git", "worktree", "add", wt_path, "-b", wt_branch }, 8192, 8192, 60_000)) |r| {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        } else |_| {}
+        const wt_z = arena.dupeZ(u8, wt_path) catch std.process.fatal("--worktree: out of memory", .{});
+        if (std.posix.system.chdir(wt_z.ptr) != 0)
+            std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, wt_path });
+        if (!json_mode) {
+            out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout\n", .{ style.dim, style.reset, style.cyan, wt_path, style.reset, wt_branch }) catch {};
+            out.flush() catch {};
+        }
+    }
     var cwd_buf: [4096]u8 = undefined;
-    g_cwd_display = if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
+    g_cwd_display = if (worktree_flag) |wt|
+        // After chdir into the worktree, realPath(AT_FDCWD) is unreliable; derive from the launch dir.
+        std.fmt.allocPrint(arena, "{s}/.graff/worktrees/{s}", .{ init.environ_map.get("PWD") orelse ".", wt }) catch try arena.dupe(u8, init.environ_map.get("PWD") orelse ".")
+    else if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
         try arena.dupe(u8, cwd_buf[0..n])
     else |_|
         try arena.dupe(u8, init.environ_map.get("PWD") orelse ".");
