@@ -281,6 +281,12 @@ const provider_specs = [_]ProviderSpec{
     .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
     .{ .id = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
     .{ .id = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro" },
+    // mlx: a local model served by mlx-lm (`mlx_lm.server`) on Apple Silicon —
+    // OpenAI-compatible, no real key (MLX_API_KEY=local just clears graff's boot gate).
+    .{ .id = "mlx", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:8080/v1/chat/completions", .env_key = "MLX_API_KEY", .default_model = "mlx-community/Qwen3.6-27B-OptiQ-4bit" },
+    // lm-studio: the LM Studio app's local OpenAI-compatible server (default :1234).
+    // Load a model in LM Studio, then `LMSTUDIO_API_KEY=local graff --model lmstudio`.
+    .{ .id = "lmstudio", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:1234/v1/chat/completions", .env_key = "LMSTUDIO_API_KEY", .default_model = "lmstudio" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
     // — it's the OAuth access token read from ~/.codex/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
@@ -306,6 +312,11 @@ const ModelInfo = struct {
 const codex_context_window: u64 = 270_000;
 
 const model_table = [_]ModelInfo{
+    // Local Apple-Silicon model served by mlx-lm (mlx_lm.server, OpenAI-compatible).
+    .{ .provider = "mlx", .name = "mlx-community/Qwen3.6-27B-OptiQ-4bit", .context = 262_144 },
+    // LM Studio serves whatever model is loaded; "lmstudio" is a routing alias —
+    // swap for your loaded model id if LM Studio requires an exact match (GET :1234/v1/models).
+    .{ .provider = "lmstudio", .name = "lmstudio", .context = 32_768 },
     .{ .provider = "anthropic", .name = "claude-fable-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-8", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-7", .context = 1_000_000 },
@@ -1401,25 +1412,43 @@ const builtin_agent_types = [_]AgentType{
     },
 };
 
-/// Resolved agent types for this session (builtins + .harness/agents/*.md,
-/// files override builtins by name). Set by main(); arena-owned strings.
+/// Resolved agent types for this session, in precedence order:
+/// builtin < personal (~/.harness/agents) < private (./.harness/agents). A later
+/// tier's <name>.md shadows the same niche from an earlier one. Set by main();
+/// arena-owned strings.
 var g_agent_types: []const AgentType = &builtin_agent_types;
+var g_home: ?[]const u8 = null; // resolved HOME (set in main); used by /agents promote's personal tier
 
 const agents_dir = ".harness/agents";
 
-/// Load .harness/agents/*.md: YAML-ish frontmatter (name/description/score)
-/// + body as the prompt. Returns builtins ++ file types, with file types
-/// shadowing builtins of the same name.
-fn loadAgentTypes(io: Io, arena: Allocator) []const AgentType {
+/// Build the session's agent types: the compiled builtins, then the personal
+/// tier (~/.harness/agents — your champions, loaded in every project), then the
+/// private tier (./.harness/agents — this project only). Each tier shadows the
+/// previous by niche name, so a project persona beats a personal one beats a
+/// builtin.
+fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const AgentType {
     var list: std.ArrayList(AgentType) = .empty;
     list.appendSlice(arena, &builtin_agent_types) catch return &builtin_agent_types;
-    var dir = Io.Dir.cwd().openDir(io, agents_dir, .{ .iterate = true }) catch return list.items;
+    if (home) |h| {
+        const personal = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, agents_dir }) catch "";
+        if (personal.len > 0) loadAgentDir(io, arena, &list, personal);
+    }
+    loadAgentDir(io, arena, &list, agents_dir);
+    return list.items;
+}
+
+/// Merge `<dir>/*.md` personas into `list`: YAML-ish frontmatter
+/// (name/description/score) + body as the prompt. A file shadows any existing
+/// type (builtin or earlier tier) of the same name — the elite for a niche is
+/// whatever the highest tier last promoted.
+fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_path: []const u8) void {
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
-        const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ agents_dir, entry.name }) catch continue;
+        const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
         const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(256 * 1024)) catch continue;
         var at: AgentType = .{
             .name = arena.dupe(u8, entry.name[0 .. entry.name.len - ".md".len]) catch continue,
@@ -1443,8 +1472,7 @@ fn loadAgentTypes(io: Io, arena: Allocator) []const AgentType {
             }
         }
         if (at.prompt.len == 0) continue;
-        // File types shadow builtins (and earlier files) of the same name —
-        // the elite for a niche is whatever the driver last promoted.
+        // A file shadows an existing type (builtin or earlier tier) of the same name.
         var replaced = false;
         for (list.items) |*existing| {
             if (std.mem.eql(u8, existing.name, at.name)) {
@@ -1455,9 +1483,113 @@ fn loadAgentTypes(io: Io, arena: Allocator) []const AgentType {
         }
         if (!replaced) list.append(arena, at) catch continue;
     }
-    return list.items;
 }
 
+/// Local single-tenant promote — the "grow for me" loop. Mine
+/// harness.trajectory.jsonl (prompt records → genome text, subagent records →
+/// niche, score records → fitness), and for each MAP-Elites niche write the
+/// highest-mean-scoring genome that has captured text into the chosen tier
+/// (personal ~/.harness/agents or private ./.harness/agents) as <niche>.md. No
+/// backend: your own scored runs become your built-in personas. Returns the
+/// number of niches promoted.
+fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8, personal: bool) usize {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const data = Io.Dir.cwd().readFileAlloc(io, trajectory_path, arena, .limited(64 << 20)) catch {
+        out.print("  {s}no {s} yet — run some scored agents first{s}\n", .{ style.dim, trajectory_path, style.reset }) catch {};
+        return 0;
+    };
+
+    const Cell = struct { sha: []const u8, text: []const u8, niche: []const u8, sum: f64, n: u32 };
+    var cells: std.ArrayList(Cell) = .empty;
+    const cell = struct {
+        fn at(a: Allocator, list: *std.ArrayList(Cell), sha: []const u8) *Cell {
+            for (list.items) |*c| if (std.mem.eql(u8, c.sha, sha)) return c;
+            list.append(a, .{ .sha = a.dupe(u8, sha) catch sha, .text = "", .niche = "", .sum = 0, .n = 0 }) catch {};
+            return &list.items[list.items.len - 1];
+        }
+    }.at;
+
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |ln| {
+        const t = std.mem.trim(u8, ln, " \t\r");
+        if (t.len == 0) continue;
+        const v = std.json.parseFromSliceLeaky(Value, arena, t, .{ .allocate = .alloc_always }) catch continue;
+        if (v != .object) continue;
+        const o = v.object;
+        const kind = strFieldObj(o, "kind") orelse continue;
+        const sha = strFieldObj(o, "prompt_sha") orelse "";
+        if (sha.len == 0) continue;
+        if (std.mem.eql(u8, kind, "prompt")) {
+            if (strFieldObj(o, "text")) |txt| cell(arena, &cells, sha).text = arena.dupe(u8, txt) catch "";
+        } else if (std.mem.eql(u8, kind, "score")) {
+            const sv = o.get("score") orelse continue;
+            const val: f64 = switch (sv) {
+                .float => sv.float,
+                .integer => @floatFromInt(sv.integer),
+                else => continue,
+            };
+            const c = cell(arena, &cells, sha);
+            c.sum += val;
+            c.n += 1;
+        } else if (strFieldObj(o, "niche")) |nz| {
+            if (nz.len > 0) cell(arena, &cells, sha).niche = arena.dupe(u8, nz) catch "";
+        }
+    }
+
+    // Resolve + create the target tier dir (createDir is one level).
+    const dir = if (personal) blk: {
+        const h = home orelse {
+            out.print("  {s}no HOME for the personal tier{s}\n", .{ style.yellow, style.reset }) catch {};
+            return 0;
+        };
+        Io.Dir.cwd().createDir(io, std.fmt.allocPrint(arena, "{s}/.harness", .{h}) catch return 0, .default_dir) catch {};
+        break :blk std.fmt.allocPrint(arena, "{s}/{s}", .{ h, agents_dir }) catch return 0;
+    } else pblk: {
+        Io.Dir.cwd().createDir(io, ".harness", .default_dir) catch {};
+        break :pblk agents_dir;
+    };
+    Io.Dir.cwd().createDir(io, dir, .default_dir) catch {};
+
+    // For each niche, write the genome with the best mean score (text required).
+    var done: std.ArrayList([]const u8) = .empty;
+    var promoted: usize = 0;
+    for (cells.items) |*seed| {
+        if (seed.niche.len == 0 or seed.text.len == 0 or seed.n == 0) continue;
+        var already = false;
+        for (done.items) |d| if (std.mem.eql(u8, d, seed.niche)) {
+            already = true;
+            break;
+        };
+        if (already) continue;
+        var champ = seed;
+        var champ_mean = seed.sum / @as(f64, @floatFromInt(seed.n));
+        for (cells.items) |*other| {
+            if (other.text.len == 0 or other.n == 0) continue;
+            if (!std.mem.eql(u8, other.niche, seed.niche)) continue;
+            const m = other.sum / @as(f64, @floatFromInt(other.n));
+            if (m > champ_mean) {
+                champ = other;
+                champ_mean = m;
+            }
+        }
+        const path = std.fmt.allocPrint(arena, "{s}/{s}.md", .{ dir, champ.niche }) catch continue;
+        const content = std.fmt.allocPrint(arena, "---\nname: {s}\ndescription: promoted local champion (mean {d:.2} over {d} run(s), sha {s})\nscore: {d:.4}\n---\n{s}\n", .{ champ.niche, champ_mean, champ.n, champ.sha, champ_mean, champ.text }) catch continue;
+        const f = Io.Dir.cwd().createFile(io, path, .{}) catch continue;
+        defer f.close(io);
+        var wbuf: [4096]u8 = undefined;
+        var fw = f.writer(io, &wbuf);
+        fw.interface.writeAll(content) catch continue;
+        fw.interface.flush() catch {};
+        out.print("  {s}✓{s} {s}{s}{s} → {s} {s}(mean {d:.2}, n={d}){s}\n", .{ style.green, style.reset, style.cyan, champ.niche, style.reset, path, style.dim, champ_mean, champ.n, style.reset }) catch {};
+        done.append(arena, champ.niche) catch {};
+        promoted += 1;
+    }
+    if (promoted == 0) out.print("  {s}nothing to promote — need scored, niche-tagged genomes (spawn personas via subagent agent:\"<niche>\", then score them){s}\n", .{ style.dim, style.reset }) catch {};
+    return promoted;
+}
 /// Resolve an agent-type name (case-sensitive) to its prompt.
 fn agentTypePrompt(name: []const u8) ?[]const u8 {
     for (g_agent_types) |t| {
@@ -5990,7 +6122,8 @@ pub fn main(init: std.process.Init) !void {
     const persisted_approvals = approvals.loadPersisted(io, gpa, arena);
 
     // Agent types: builtins + .harness/agents/*.md (the MAP-Elites niches).
-    g_agent_types = loadAgentTypes(io, arena);
+    g_home = homeEnv(init.environ_map); // for /agents promote's personal tier
+    g_agent_types = loadAgentTypes(io, arena, g_home); // builtin < ~/.harness/agents (personal) < ./.harness/agents (private)
     if (persisted_approvals > 0 and !json_mode and oneshot_prompt == null) {
         try out.print("{s}loaded {d} saved approval(s) from {s}{s}\n", .{ style.dim, persisted_approvals, Approvals.settings_path, style.reset });
         try out.flush();
@@ -7565,6 +7698,14 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         defer root.gpa.free(result.text);
         try out.writeAll(result.text);
         if (result.text.len == 0 or result.text[result.text.len - 1] != '\n') try out.writeAll("\n");
+        try out.flush();
+        return;
+    }
+    if (std.mem.startsWith(u8, line, "/agents promote")) {
+        const personal = std.mem.indexOf(u8, line, "--personal") != null or std.mem.indexOf(u8, line, "--global") != null;
+        try out.print("{s}promoting local champions{s} → {s} tier (from {s})\n", .{ style.bold, style.reset, if (personal) "personal ~/.harness/agents" else "private ./.harness/agents", trajectory_path });
+        const n = promoteAgents(root.io, root.gpa, out, g_home, personal);
+        if (n > 0) try out.print("{s}✓ promoted {d} niche(s) — they load on next start{s}\n", .{ style.green, n, style.reset });
         try out.flush();
         return;
     }
@@ -15009,6 +15150,7 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
             .ms = run_ms,
             .prompt_sha = &fp,
             .prompt_mutated = sys_override != null,
+            .niche = niche, // MAP-Elites niche, so a local /agents promote can group scores by it
             .task = utf8Prefix(prompt, 160),
             .tools = tools,
             .ok = run_ok,
