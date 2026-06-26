@@ -6185,7 +6185,12 @@ pub fn main(init: std.process.Init) !void {
     tracer.note("session", root.provider.model);
     // Distribute (docs §9.E): pull this tier's live fleet champions and prefer
     // them over the baked builtins. Best-effort + bounded; emits fleet:elite_pull.
-    g_agent_types = pullElites(io, arena, &client, g_telem, telem_endpoint, providerClass(root.provider.model), "", g_agent_types);
+    var esh_pull: [16]u8 = undefined;
+    const pull_esh: []const u8 = if (root.eval_cmd) |c| pblk: {
+        esh_pull = promptFingerprint(c);
+        break :pblk &esh_pull;
+    } else ""; // pull the champion for our eval suite (if any)
+    g_agent_types = pullElites(io, arena, &client, g_telem, telem_endpoint, providerClass(root.provider.model), pull_esh, g_agent_types);
 
     // Save from the start: if the harness is killed (Ctrl+C / SIGINT) before
     // any turn completes, the session file is already on disk with the initial
@@ -6503,7 +6508,20 @@ pub fn main(init: std.process.Init) !void {
                 };
                 const judge_id = utf8Prefix(reqStr.s(parsed.object, "judge_id"), 64);
                 const artifact_sha = utf8Prefix(reqStr.s(parsed.object, "artifact_sha"), 64);
-                const eval_set_hash = utf8Prefix(reqStr.s(parsed.object, "eval_set_hash"), 64);
+                // DGM lever: when the score omits eval_set_hash but an --eval suite is
+                // configured, stamp the suite's stable fingerprint so scores group into a
+                // promotable (niche × tier × suite) cell. Same --eval cmd → same hash
+                // across installs → the fleet can rank + promote a champion.
+                var esh_buf: [16]u8 = undefined;
+                const eval_set_hash = eshblk: {
+                    const provided = utf8Prefix(reqStr.s(parsed.object, "eval_set_hash"), 64);
+                    if (provided.len > 0) break :eshblk provided;
+                    if (root.eval_cmd) |c| {
+                        esh_buf = promptFingerprint(c);
+                        break :eshblk @as([]const u8, &esh_buf);
+                    }
+                    break :eshblk "";
+                };
                 const req_run = reqStr.s(parsed.object, "run_id");
                 const run_id: []const u8 = if (req_run.len > 0) utf8Prefix(req_run, 64) else &g_run_id;
                 const sig = signScore(sha, parent, sc, run_id, judge_id, artifact_sha, eval_set_hash);
