@@ -3560,11 +3560,6 @@ fn saveThemeSetting(io: Io, gpa: Allocator, value: []const u8) bool {
     return true;
 }
 var g_obfs_select: bool = false; // auto-detect for legacy host profiles
-// PRANK — remove in a future release. Gives blackfloofie a poop
-// thinking spinner when graff runs from their home dir (/Users/blackfloofie). To
-// remove: delete this flag, animPoop, the "poop" anims entry, and the cwd
-// hook in main.
-const blackfloofie_poop_prank = false; // retired: ship the default spinner for everyone
 var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 
 // Steering (Codex-style): bytes typed while a turn streams are captured
@@ -3653,14 +3648,6 @@ fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
     try w.print(" {s}thinking…{s}", .{ style.dim, style.reset });
 }
 
-fn animPoop(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // PRANK (blackfloofie_poop_prank): a wobbly poop with stink lines.
-    const wobble = [_][]const u8{ "", " ", "  ", " ", "" };
-    const stink = [_][]const u8{ "Ë", "Ë", "Ë", "Â·", "Ë" };
-    try w.print("{s}{s}{s}{s}{s}{s}", .{ style.dim, stink[i % stink.len], style.reset, wobble[i % wobble.len], style.dim, stink[(i + 2) % stink.len] });
-    try w.print("{s}{s}{s}{s}", .{ style.bold, style.yellow, "ð©", style.reset });
-    try animThinking(w);
-}
 
 fn animGlitter(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     // 🎂 EGG (limyuxi_birthday_white): a glittery pink sparkle spinner. Saturated
@@ -6085,16 +6072,6 @@ pub fn main(init: std.process.Init) !void {
         out.flush() catch {};
     };
     loadDevSpinnerOptOut(io, arena, init.environ_map);
-    // PRANK — remove in a future release (see the blackfloofie_poop_prank flag).
-    // A poop thinking spinner just for blackfloofie, when running from
-    // their home dir. Still overridable at runtime with /animation.
-    if (blackfloofie_poop_prank and !devSpinnerOptOut(io, arena) and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
-        if (animIndex("poop")) |di| {
-            g_anim_index = di;
-            g_anim_off = false;
-            g_anim_random = false;
-        }
-    }
     connect: {
         for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
         for (companion_servers) |c| {
@@ -8056,6 +8033,30 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         // provider on its default model — not the priority router's pick.
         for (provider_specs) |spec| {
             if (!std.mem.eql(u8, spec.id, arg)) continue;
+            // Local OpenAI-compatible servers (LM Studio :1234, mlx-lm :8080) serve a
+            // live, user-loaded model set — list what's actually there instead of a
+            // baked default. One loaded → switch straight to it; many → list to pick.
+            if (isLocalUrl(spec.url)) {
+                const key = keys.get(spec.id) orelse {
+                    try offerProviderAuth(root, keys, arena, out, spec.id, spec.default_model);
+                    return;
+                };
+                const murl = openAiModelsUrl(arena, spec.url);
+                const models = fetchOpenAIModels(root.io, root.gpa, arena, murl, key);
+                if (models.len == 0) {
+                    try out.print("{s}{s}: no models at {s} — start the server and load a model{s}\n", .{ style.yellow, spec.id, murl, style.reset });
+                    try out.flush();
+                    return;
+                }
+                if (models.len == 1) {
+                    try switchProvider(root, arena, keys.build(spec, key, try arena.dupe(u8, models[0])), out);
+                    return;
+                }
+                try out.print("{s}{s} models{s} — pick with {s}/model {s} <id>{s}:\n", .{ style.bold, spec.id, style.reset, style.cyan, spec.id, style.reset });
+                for (models) |id| try out.print("  {s}{s}{s}\n", .{ style.cyan, id, style.reset });
+                try out.flush();
+                return;
+            }
             const provider = keys.providerById(spec.id, spec.default_model) catch {
                 try offerProviderAuth(root, keys, arena, out, spec.id, spec.default_model);
                 return;
@@ -9161,6 +9162,64 @@ fn fetchKimiModel(io: Io, gpa: Allocator, arena: Allocator, access: []const u8) 
         if (strFieldObj(item.object, "id")) |id| if (id.len > 0) return id;
     }
     return null;
+}
+
+/// True for a provider served by a local server (LM Studio, mlx-lm) on the
+/// loopback host — these expose a live, user-controlled model set.
+fn isLocalUrl(url: []const u8) bool {
+    return std.mem.indexOf(u8, url, "127.0.0.1") != null or std.mem.indexOf(u8, url, "localhost") != null;
+}
+
+/// Derive the OpenAI-compatible `/v1/models` URL from a provider's chat URL
+/// (`…/v1/chat/completions` → `…/v1/models`).
+fn openAiModelsUrl(arena: Allocator, chat_url: []const u8) []const u8 {
+    const suffix = "/chat/completions";
+    if (std.mem.endsWith(u8, chat_url, suffix))
+        return std.fmt.allocPrint(arena, "{s}/models", .{chat_url[0 .. chat_url.len - suffix.len]}) catch chat_url;
+    return chat_url;
+}
+
+/// GET an OpenAI-compatible `/v1/models` endpoint and return every model id it
+/// advertises (arena-owned), or an empty slice on any failure. Lets `/model
+/// <local-provider>` list what a local server (LM Studio :1234, mlx-lm :8080)
+/// actually has loaded instead of a baked-in name.
+fn fetchOpenAIModels(io: Io, gpa: Allocator, arena: Allocator, models_url: []const u8, key: []const u8) [][]const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
+    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{key}) catch return list.items;
+    const extra = [_]std.http.Header{
+        .{ .name = "authorization", .value = bearer },
+        .{ .name = "Accept", .value = "application/json" },
+    };
+    const res = client.fetch(.{
+        .location = .{ .url = models_url },
+        .method = .GET,
+        .response_writer = &aw.writer,
+        .extra_headers = &extra,
+    }) catch return list.items;
+    if (@intFromEnum(res.status) != 200) return list.items;
+    const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch return list.items;
+    if (v != .object) return list.items;
+    const data = v.object.get("data") orelse return list.items;
+    if (data != .array) return list.items;
+    for (data.array.items) |item| {
+        if (item != .object) continue;
+        if (strFieldObj(item.object, "id")) |id| if (id.len > 0)
+            list.append(arena, arena.dupe(u8, id) catch continue) catch {};
+    }
+    return list.toOwnedSlice(arena) catch list.items;
+}
+
+test "openAiModelsUrl derives /v1/models from the chat URL; isLocalUrl flags loopback" {
+    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a.deinit();
+    try std.testing.expectEqualStrings("http://127.0.0.1:1234/v1/models", openAiModelsUrl(a.allocator(), "http://127.0.0.1:1234/v1/chat/completions"));
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/v1/models", openAiModelsUrl(a.allocator(), "http://127.0.0.1:8080/v1/chat/completions"));
+    try std.testing.expect(isLocalUrl("http://127.0.0.1:1234/v1/chat/completions"));
+    try std.testing.expect(isLocalUrl("http://localhost:1234/v1/chat/completions"));
+    try std.testing.expect(!isLocalUrl("https://api.openai.com/v1/chat/completions"));
 }
 
 // ---------------------------------------------------------------------------
