@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# tdev — agentic remote control for the native Tauri app.
+# tdev — agentic remote control for the native Codegraff desktop app.
 #
-# Talks to the dev-only debug bridge (debug_bridge.rs) that runs inside the
+# Talks to the dev-only debug bridge that runs inside the
 # Codegraff desktop app on http://127.0.0.1:9233. Lets an agent (or human)
 # evaluate JS in the real webview WITH return values, screenshot the window,
 # and synthesize clicks/keys — all via curl, against the native app.

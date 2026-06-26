@@ -1,8 +1,8 @@
 // native/main.zig — codegraff-gui native shell entry point.
 //
 // Boots the merjs HTTP server (serving the React SPA from dist/ + api/ routes
-// + SSE /events) inside a system WKWebView. The React frontend is unchanged;
-// it talks to this Zig backend over HTTP instead of Tauri IPC.
+// + SSE /events) inside a system WKWebView. The React frontend talks to this
+// Zig backend over HTTP.
 //
 //   zig build native        # run
 //   zig build native-build  # prod binary
