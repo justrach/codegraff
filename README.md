@@ -327,6 +327,13 @@ provider connect), what already streamed stays in history with an
 `[interrupted]` marker, and you're back at the prompt. A bare Esc at the prompt
 clears the input line.
 
+While a response streams you stay in control: besides Esc to interrupt,
+**Ctrl-T (`^T`) folds/unfolds the live "Thinking" block** in place, and the mouse
+wheel scrolls your terminal's own scrollback — the REPL doesn't grab the mouse, so
+scrolling up to re-read earlier output works like any normal terminal (parity with
+Claude Code). Folding the Thinking block is keyboard-only (`^T`) — there is no
+click-to-fold.
+
 ```
 /model [name]   no arg → interactive fuzzy picker; or /model <name|provider|provider model>
 /models         list known models, context windows, compaction points
