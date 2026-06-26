@@ -246,10 +246,10 @@ export function useCommandAutocomplete({
       isOpen,
       items.length,
       complete,
-      pick,
-      inChoiceMode,
       query,
       hasExactCommandMatch,
+      inChoiceMode,
+      pick,
     ],
   );
 
