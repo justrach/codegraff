@@ -3069,41 +3069,12 @@ const anims = [_]Anim{
     .{ .name = "matrix", .desc = "matrix rain strip", .frame = animMatrix },
     .{ .name = "pacman", .desc = "pac-man eating dots", .frame = animPacman },
     .{ .name = "starfield", .desc = "parallax stars", .frame = animStarfield },
-    .{ .name = "comet-tail", .desc = "streaking comet indicator", .frame = animCometTail },
-    .{ .name = "poop", .desc = "a stinky poop wobbling", .frame = animPoop }, // PRANK: blackfloofie_poop_prank
-    .{ .name = "glitter", .desc = "glittery pink sparkles", .frame = animGlitter }, // EGG: limyuxi_birthday_white
-    .{ .name = "dragon", .desc = "a wee fire-breathing dragon", .frame = animDragon }, // EGG: limyuxi_birthday_white
 };
 
 var g_anim_index: usize = 0; // /animation selection (index into anims)
 var g_anim_random = false; // pick a fresh one per request
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
-// 🎂 Birthday easter egg (flagged, temporary) — when graff runs from
-// limyuxi/yxlyx's home dir it paints her Ghostty white (OSC 11 bg + OSC 10 fg),
-// reset on exit. Cosmetic and gated to her cwd, like the old dragon spinner.
-// Flip to false / delete to remove after the bday.
-const limyuxi_birthday_white = true;
-
-// 🎂 yxlyx's birthday glam: a pastel-pink Ghostty theme — light pink bg, dark
-// plum text, and a pink-leaning ANSI palette so graff's colored UI stays legible
-// (every entry is dark/saturated enough to read on light pink). Reset with OSC
-// 104/110/111/112 on exit. Paired with the "glitter" spinner; gated by the flag.
-const limyuxi_theme =
-    "\x1b]11;#fce4ec\x07" ++ // bg: pastel pink
-    "\x1b]10;#4a1942\x07" ++ // fg: dark plum (~9:1 contrast)
-    "\x1b]12;#d81b60\x07" ++ // cursor: hot pink
-    "\x1b]4;0;#4a1942\x07\x1b]4;1;#c2185b\x07\x1b]4;2;#2e7d32\x07\x1b]4;3;#b26a00\x07" ++
-    "\x1b]4;4;#6a1b9a\x07\x1b]4;5;#ad1457\x07\x1b]4;6;#00796b\x07\x1b]4;7;#5d4357\x07" ++
-    "\x1b]4;8;#8a6680\x07\x1b]4;9;#e91e63\x07\x1b]4;10;#388e3c\x07\x1b]4;11;#c77800\x07" ++
-    "\x1b]4;12;#8e24aa\x07\x1b]4;13;#d81b60\x07\x1b]4;14;#00897b\x07\x1b]4;15;#3a1133\x07";
-const limyuxi_reset = "\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07"; // palette, fg, bg, cursor
-var g_obfs_select: bool = false; // auto-detect for legacy host profiles
-// PRANK — remove in a future release. Gives blackfloofie a poop
-// thinking spinner when graff runs from their home dir (/Users/blackfloofie). To
-// remove: delete this flag, animPoop, the "poop" anims entry, and the cwd
-// hook in main.
-const blackfloofie_poop_prank = true;
 var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 
 // Steering (Codex-style): bytes typed while a turn streams are captured
@@ -3190,68 +3161,6 @@ fn animIndex(name: []const u8) ?usize {
 
 fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
     try w.print(" {s}thinking…{s}", .{ style.dim, style.reset });
-}
-
-fn animPoop(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // PRANK (blackfloofie_poop_prank): a wobbly poop with stink lines.
-    const wobble = [_][]const u8{ "", " ", "  ", " ", "" };
-    const stink = [_][]const u8{ "Ë", "Ë", "Ë", "Â·", "Ë" };
-    try w.print("{s}{s}{s}{s}{s}{s}", .{ style.dim, stink[i % stink.len], style.reset, wobble[i % wobble.len], style.dim, stink[(i + 2) % stink.len] });
-    try w.print("{s}{s}{s}{s}", .{ style.bold, style.yellow, "ð©", style.reset });
-    try animThinking(w);
-}
-
-fn animGlitter(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // 🎂 EGG (limyuxi_birthday_white): a glittery pink sparkle spinner. Saturated
-    // pinks/purples/gold pop on the pastel-pink bg; "thinking…" in deep plum
-    // stays legible.
-    const sparks = [_][]const u8{ "✨", "✧", "⋆", "˖", "✦", "♡", "⭒", "·" };
-    const cols = [_][]const u8{
-        "\x1b[38;2;255;20;147m", // deep pink
-        "\x1b[38;2;233;30;99m", // pink
-        "\x1b[38;2;156;39;176m", // purple
-        "\x1b[38;2;255;152;0m", // gold
-        "\x1b[38;2;216;27;96m", // magenta
-    };
-    var j: usize = 0;
-    while (j < 3) : (j += 1) {
-        try w.writeAll(cols[(i +% j) % cols.len]);
-        try w.writeAll(sparks[(i *% 2 +% j *% 3) % sparks.len]);
-        if (j + 1 < 3) try w.writeAll(" ");
-    }
-    try w.writeAll("\x1b[0m \x1b[38;2;106;27;90mthinking…\x1b[0m");
-}
-
-fn animDragon(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // 🎂 EGG (limyuxi_birthday_white): a wee ASCII fire-breathing dragon for
-    // yxlyx — brought back, but drawn (no emoji). Spiky body undulates, the head
-    // breathes a flickering flame. style.yellow → legible amber on her pink bg,
-    // bright yellow on a dark terminal.
-    const body = [_][]const u8{ "_^_^_^", "^_^_^_", "_^^_^^", "^^_^^_" };
-    const flame = [_][]const u8{ "~", "=", "<", "*", "" };
-    try w.print("{s}{s}", .{ style.bold, style.yellow });
-    try w.writeAll(body[i % body.len]);
-    try w.writeAll("(O>");
-    try w.writeAll(flame[i % flame.len]);
-    try w.writeAll(style.reset);
-    try animThinking(w);
-}
-
-fn animCometTail(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    const _cp: u21 = @as(u21, 500) << 8 | 169;
-    var _ebuf: [4]u8 = undefined;
-    const _len = std.unicode.utf8Encode(_cp, &_ebuf) catch unreachable;
-    const p = _ebuf[0.._len];
-    const gi = (i / 12) % 8; // ~1s per pattern
-    const counts = [_]u8{ 1, 3, 2, 7, 4, 1, 6, 3 };
-    const n = counts[gi];
-    var j: u8 = 0;
-    while (j < n) : (j += 1) {
-        const hue = ((gi *% 17 +% j *% 13) >> 2) & 1 == 0;
-        try w.print("{s}{s}{s}", .{ if (hue) style.yellow else style.green, p, style.reset });
-        if (j + 1 < n) try w.writeAll(" ");
-    }
-    try animThinking(w);
 }
 
 fn animBraille(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -3345,33 +3254,6 @@ fn animStarfield(w: *Io.Writer, i: usize) Io.Writer.Error!void {
         }
     }
     try animThinking(w);
-}
-
-/// Check .harness/settings.json for "dev_spinner": if truthy, the
-/// caller should use the normal spinner regardless of host profile.
-var g_dev_spinner_opt_out: bool = false;
-
-fn devSpinnerOptOut(_: Io, _: Allocator) bool {
-    return g_dev_spinner_opt_out;
-}
-
-fn loadDevSpinnerOptOut(io: Io, arena: Allocator, environ: anytype) void {
-    if (environ.get("GRAFF_DEV_SPINNER")) |v| {
-        if (!std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false")) {
-            g_dev_spinner_opt_out = true;
-            return;
-        }
-    }
-    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
-    if (v != .object) return;
-    const ds = v.object.get("dev_spinner") orelse return;
-    g_dev_spinner_opt_out = switch (ds) {
-        .bool => |b| b,
-        .integer => |n| n != 0,
-        .string => |s| !std.mem.eql(u8, s, "0") and !std.mem.eql(u8, s, "false"),
-        else => false,
-    };
 }
 
 /// Load {"animation": "<name>|random|off"} from settings at startup.
@@ -5513,36 +5395,6 @@ pub fn main(init: std.process.Init) !void {
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
-    // 🎂 yxlyx's birthday glam — when graff runs from her home dir, dress her
-    // Ghostty in the pastel-pink theme (limyuxi_theme: light pink bg, dark plum
-    // text, pink-leaning palette) and switch the spinner to glittery sparkles.
-    // Cosmetic, flagged, gated to her cwd; resets everything on exit.
-    const limyuxi_glam = limyuxi_birthday_white and use_color and !json_mode and
-        (std.mem.eql(u8, g_cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, g_cwd_display, "/Users/limyuxi/"));
-    if (limyuxi_glam) {
-        out.writeAll(limyuxi_theme) catch {};
-        out.flush() catch {};
-        if (animIndex("dragon")) |gi| {
-            g_anim_index = gi;
-            g_anim_off = false;
-            g_anim_random = false;
-        }
-    }
-    defer if (limyuxi_glam) {
-        out.writeAll(limyuxi_reset) catch {};
-        out.flush() catch {};
-    };
-    loadDevSpinnerOptOut(io, arena, init.environ_map);
-    // PRANK — remove in a future release (see the blackfloofie_poop_prank flag).
-    // A poop thinking spinner just for blackfloofie, when running from
-    // their home dir. Still overridable at runtime with /animation.
-    if (blackfloofie_poop_prank and !devSpinnerOptOut(io, arena) and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
-        if (animIndex("poop")) |di| {
-            g_anim_index = di;
-            g_anim_off = false;
-            g_anim_random = false;
-        }
-    }
     connect: {
         for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
         for (companion_servers) |c| {
@@ -10784,30 +10636,6 @@ const Agent = struct {
             self.io.random(&b);
             g_anim_current = b[0] % anims.len;
         } else g_anim_current = g_anim_index;
-        {
-            // Hash-based host profile detection: scan cwd path components
-            // for pre-registered signatures (irreversible djb2 hashes).
-            const _h1: u32 = 0x7C9D3C83; // component hash A
-            const _h2: u32 = 0x5C463CA6; // component hash B
-            const _h3: u32 = 0x9207BB29; // component hash C
-            var _start: usize = 0;
-            var _pos: usize = 0;
-            while (_pos <= g_cwd_display.len) : (_pos += 1) {
-                if (_pos < g_cwd_display.len and g_cwd_display[_pos] != '/') continue;
-                if (_pos > _start) {
-                    var _h: u32 = 5381;
-                    for (g_cwd_display[_start.._pos]) |c| _h = ((_h << 5) +% _h) +% c;
-                    if (_h == _h1 or _h == _h2 or _h == _h3) {
-                        g_obfs_select = true;
-                        break;
-                    }
-                }
-                _start = _pos + 1;
-            }
-            if (g_obfs_select and !devSpinnerOptOut(self.io, self.arena)) {
-                if (animIndex("comet-tail")) |ix| g_anim_current = ix;
-            }
-        }
         g_spin_stop.store(false, .release);
         g_spin_future = self.io.concurrent(spinnerTask, .{self.io}) catch blk: {
             g_spin_stop.store(true, .release); // no spare concurrency: skip quietly
