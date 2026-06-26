@@ -8,6 +8,7 @@ import type {
 import type { WorkspacePromptSettingsUpdateInput } from "@/app/types/sessionClientActions";
 import type { SubmitPromptInput } from "@/app/types/sessionContext";
 import type { QueuedPromptEntry } from "@/app/types/sessionStore";
+import type { PromptHistoryEntry } from "@/components/promptHistoryNavigation";
 
 export interface FollowupSubmitInput {
   cancelled: boolean;
@@ -37,7 +38,7 @@ export interface PromptInputCardProps {
   promptSettings: PromptSettings | null;
   promptDraft: string;
   queuedPrompts?: QueuedPromptEntry[];
-  promptHistory?: string[];
+  promptHistory?: PromptHistoryEntry[];
   focusSignal?: number;
   isInputDisabled?: boolean;
   binding?: ChatBinding | null;

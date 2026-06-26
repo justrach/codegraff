@@ -46,6 +46,16 @@ describe("round-trip", () => {
     expect(parsed.paths).toEqual(paths);
   });
 
+  test("parseAttachmentBlock recovers attachments before an ultra marker", () => {
+    const body = "inspect this";
+    const attachments = [attachmentFixture("/abs/screenshot.png")];
+    const combined = `${appendAttachmentsToPrompt(body, attachments)}\n\nultracode`;
+    const parsed = parseAttachmentBlock(combined);
+
+    expect(parsed.body).toBe(body);
+    expect(parsed.paths).toEqual(["/abs/screenshot.png"]);
+  });
+
   test("messages without an attachment block are left intact", () => {
     const parsed = parseAttachmentBlock("just a normal message");
     expect(parsed.body).toBe("just a normal message");

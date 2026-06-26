@@ -5,6 +5,10 @@ import type { SubmitPromptInput } from "@/app/types/sessionContext";
 import { CommandResultDialog } from "@/components/CommandResultDialog";
 import { FollowupComposer } from "@/components/FollowupComposer";
 import { PromptInputCard } from "@/components/PromptInputCard";
+import {
+  classifyPath,
+  parseAttachmentBlock,
+} from "@/components/attachments/attachmentTypes";
 import { PlanDecisionCard } from "@/components/conversation-panel/PlanDecisionCard";
 import {
   getActiveInterrupt,
@@ -75,7 +79,16 @@ export function NewChatPromptSection({
     lastAssistant != null;
   const promptHistory = messages
     .filter((message) => message.kind === "user")
-    .map((message) => message.text);
+    .map((message) => {
+      const { body, paths } = parseAttachmentBlock(message.text);
+      return {
+        draft: body,
+        attachments: paths.flatMap((path) => {
+          const attachment = classifyPath(path);
+          return attachment == null ? [] : [attachment];
+        }),
+      };
+    });
   const handleSubmit = useCallback(
     async (input?: SubmitPromptInput) => {
       const draft = typeof input === "string" ? input : input?.draft ?? promptDraft;

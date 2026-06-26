@@ -8,6 +8,10 @@ import { FollowupComposer } from "./FollowupComposer";
 import { GoalChip } from "./GoalChip";
 import { PromptActionAlert } from "./PromptActionAlert";
 import { PromptInputCard } from "./PromptInputCard";
+import {
+  classifyPath,
+  parseAttachmentBlock,
+} from "./attachments/attachmentTypes";
 import { InterruptContinuePrompt } from "./conversation-panel/InterruptContinuePrompt";
 import { PlanDecisionCard } from "./conversation-panel/PlanDecisionCard";
 import { SessionTodoDock } from "./conversation-panel/SessionTodoDock";
@@ -80,7 +84,16 @@ export function PromptComposer({
     promptSettings != null && promptSettings.availableModels.length === 0;
   const promptHistory = messages
     .filter((message) => message.kind === "user")
-    .map((message) => message.text);
+    .map((message) => {
+      const { body, paths } = parseAttachmentBlock(message.text);
+      return {
+        draft: body,
+        attachments: paths.flatMap((path) => {
+          const attachment = classifyPath(path);
+          return attachment == null ? [] : [attachment];
+        }),
+      };
+    });
 
   const handleSubmit = useCallback(
     async (input?: SubmitPromptInput) => {

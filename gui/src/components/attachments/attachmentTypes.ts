@@ -105,11 +105,14 @@ export function classifyPath(path: string): Attachment | null {
 }
 
 const ATTACHMENT_BLOCK_HEADER = "Attached files:";
-// Matches the trailing block we generate: a header followed by `@[<path>]` tokens.
+// Matches the block we generate: a header followed by `@[<path>]` tokens at the
+// end of the prompt. Ultra-mode submit appends the harness codeword after this
+// block, so accept and strip a trailing standalone `ultracode` marker too.
 // The harness attachment parser scans the prompt for `@[...]` tokens and routes
 // each file through its pipeline (images inline, binaries/PDFs become a
 // <file_reference> the agent opens with the read tool, text inlines as content).
-const ATTACHMENT_BLOCK_PATTERN = /\n*Attached files:\n((?:[ \t]*@\[.+\]\n?)+)$/;
+const ATTACHMENT_BLOCK_PATTERN =
+  /\n*Attached files:\n((?:[ \t]*@\[.+\]\n?)+)(?:\n+ultracode\s*)?$/i;
 
 /** Appends an agent-readable, machine-parseable list of attached paths to a prompt. */
 export function appendAttachmentsToPrompt(
