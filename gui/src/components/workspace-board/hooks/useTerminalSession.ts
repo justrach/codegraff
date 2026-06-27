@@ -240,6 +240,7 @@ export function useTerminalSession(
 
       activeTerminalInstanceId = session.terminalInstanceId ?? null;
       activeScrollbackSeq = session.scrollbackSeq ?? 0;
+      let terminalAlreadyEnded = false;
       for (const event of pendingOutputEvents.splice(0)) {
         if (
           event.terminalInstanceId === activeTerminalInstanceId &&
@@ -251,11 +252,13 @@ export function useTerminalSession(
       }
       for (const event of pendingErrorEvents.splice(0)) {
         if (event.terminalInstanceId === activeTerminalInstanceId) {
+          terminalAlreadyEnded = true;
           setStatus({ kind: "error", message: event.message });
         }
       }
       for (const event of pendingExitEvents.splice(0)) {
         if (event.terminalInstanceId === activeTerminalInstanceId) {
+          terminalAlreadyEnded = true;
           const suffix =
             event.signal != null
               ? `terminated by ${event.signal}`
@@ -277,7 +280,9 @@ export function useTerminalSession(
       }
 
       openedRef.current = true;
-      setStatus(null);
+      if (!terminalAlreadyEnded) {
+        setStatus(null);
+      }
 
       const resolvedSize = normalizeTerminalSize(session.cols, session.rows);
       syncedBackendSize = resolvedSize;

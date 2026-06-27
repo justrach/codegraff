@@ -87,6 +87,13 @@ const Workspace = struct {
     display_name: ?[]const u8 = null,
 };
 
+const SavedWorkspace = struct {
+    id: []const u8,
+    name: []const u8,
+    layout_json: []const u8,
+    updated_at: i64,
+};
+
 const PromptSettings = struct {
     selected_provider: ?[]const u8 = null,
     selected_model: ?[]const u8 = null,
@@ -157,6 +164,7 @@ pub const Runtime = struct {
     mutex: std.Io.Mutex = .init,
     version: std.atomic.Value(u64) = .init(1),
     workspaces: std.ArrayList(Workspace) = .empty,
+    saved_workspaces: std.ArrayList(SavedWorkspace) = .empty,
     conversations: std.StringHashMap(*Conversation),
     selected_by_workspace: std.StringHashMap([]const u8),
     terminals: std.StringHashMap(*TerminalSessionState),
@@ -286,8 +294,8 @@ pub const Runtime = struct {
         if (std.mem.eql(u8, cmd, "save_conversation_layout")) return self.saveConversationLayout(req);
         if (std.mem.eql(u8, cmd, "get_conversation_layout")) return mer.json("null");
         if (std.mem.eql(u8, cmd, "create_saved_workspace")) return self.createSavedWorkspace(req);
-        if (std.mem.eql(u8, cmd, "update_saved_workspace_layout")) return self.createSavedWorkspace(req);
-        if (std.mem.eql(u8, cmd, "get_saved_workspace")) return mer.json("null");
+        if (std.mem.eql(u8, cmd, "update_saved_workspace_layout")) return self.updateSavedWorkspaceLayout(req);
+        if (std.mem.eql(u8, cmd, "get_saved_workspace")) return self.getSavedWorkspace(req);
         if (std.mem.eql(u8, cmd, "rename_saved_workspace") or std.mem.eql(u8, cmd, "delete_saved_workspace")) return self.jsonResponse(req, self.snapshotJson(req.allocator) catch return oom());
         if (std.mem.eql(u8, cmd, "checkout_git_branch") or std.mem.eql(u8, cmd, "create_git_branch") or std.mem.eql(u8, cmd, "commit_git_changes") or std.mem.eql(u8, cmd, "push_git_branch")) return self.gitMutation(req, cmd);
         if (std.mem.eql(u8, cmd, "clone_repository") or std.mem.eql(u8, cmd, "quick_start_project")) return mer.Response.init(.bad_request, .json, "{\"error\":\"repository creation is not implemented in the Zig backend yet\"}");
@@ -1300,14 +1308,72 @@ pub const Runtime = struct {
         return mer.json("{}");
     }
 
-    fn createSavedWorkspace(_: *Runtime, req: mer.Request) mer.Response {
-        const id = std.fmt.allocPrint(req.allocator, "workspace-{d}", .{nowMillis()}) catch return oom();
+    fn createSavedWorkspace(self: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch return badJson(req);
+        const input = objectField(root, "input") orelse root;
+        const layout_json = stringField(input, "layoutJson") orelse "{}";
+        const now = nowSeconds();
+        const id = self.fmt("workspace-{d}", .{nowMillis()});
+        const saved = SavedWorkspace{
+            .id = id,
+            .name = "Saved workspace",
+            .layout_json = self.dupe(layout_json),
+            .updated_at = now,
+        };
+        self.mutex.lockUncancelable(mer_runtime.io);
+        self.saved_workspaces.append(self.arena, saved) catch {};
+        self.saveGuiStateLocked();
+        self.mutex.unlock(mer_runtime.io);
+        return self.writeSavedWorkspaceDetail(req, saved);
+    }
+
+    fn updateSavedWorkspaceLayout(self: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch return badJson(req);
+        const input = objectField(root, "input") orelse root;
+        const workspace_id = stringField(input, "workspaceId") orelse return bad(req, "missing workspaceId");
+        const layout_json = stringField(input, "layoutJson") orelse return bad(req, "missing layoutJson");
+        self.mutex.lockUncancelable(mer_runtime.io);
+        for (self.saved_workspaces.items) |*saved| {
+            if (std.mem.eql(u8, saved.id, workspace_id)) {
+                saved.layout_json = self.dupe(layout_json);
+                saved.updated_at = nowSeconds();
+                const detail = saved.*;
+                self.saveGuiStateLocked();
+                self.mutex.unlock(mer_runtime.io);
+                return self.writeSavedWorkspaceDetail(req, detail);
+            }
+        }
+        self.mutex.unlock(mer_runtime.io);
+        return bad(req, "saved workspace not found");
+    }
+
+    fn getSavedWorkspace(self: *Runtime, req: mer.Request) mer.Response {
+        const root = parse(req) catch return badJson(req);
+        const workspace_id = stringField(root, "workspaceId") orelse stringField(root, "id") orelse return bad(req, "missing workspaceId");
+        self.mutex.lockUncancelable(mer_runtime.io);
+        for (self.saved_workspaces.items) |saved| {
+            if (std.mem.eql(u8, saved.id, workspace_id)) {
+                const detail = saved;
+                self.mutex.unlock(mer_runtime.io);
+                return self.writeSavedWorkspaceDetail(req, detail);
+            }
+        }
+        self.mutex.unlock(mer_runtime.io);
+        return mer.json("null");
+    }
+
+    fn writeSavedWorkspaceDetail(_: *Runtime, req: mer.Request, saved: SavedWorkspace) mer.Response {
         var out: std.Io.Writer.Allocating = .init(req.allocator);
-        out.writer.writeAll("{\"id\":") catch return oom();
-        writeString(&out.writer, id) catch return oom();
-        out.writer.writeAll(",\"name\":\"Saved workspace\",\"layoutJson\":\"{}\",\"updatedAt\":") catch return oom();
-        out.writer.print("{d}", .{nowSeconds()}) catch return oom();
-        out.writer.writeAll("}") catch return oom();
+        const w = &out.writer;
+        w.writeAll("{\"id\":") catch return oom();
+        writeString(w, saved.id) catch return oom();
+        w.writeAll(",\"name\":") catch return oom();
+        writeString(w, saved.name) catch return oom();
+        w.writeAll(",\"layoutJson\":") catch return oom();
+        writeString(w, saved.layout_json) catch return oom();
+        w.writeAll(",\"updatedAt\":") catch return oom();
+        w.print("{d}", .{saved.updated_at}) catch return oom();
+        w.writeAll("}") catch return oom();
         return mer.json(out.written());
     }
 
@@ -2299,7 +2365,18 @@ pub const Runtime = struct {
             if (idx > 0) try w.writeByte(',');
             try self.writeWorkspace(w, workspace);
         }
-        try w.writeAll("],\"savedWorkspaces\":[]}");
+        try w.writeAll("],\"savedWorkspaces\":[");
+        for (self.saved_workspaces.items, 0..) |saved, idx| {
+            if (idx > 0) try w.writeByte(',');
+            try w.writeAll("{\"id\":");
+            try writeString(w, saved.id);
+            try w.writeAll(",\"name\":");
+            try writeString(w, saved.name);
+            try w.writeAll(",\"updatedAt\":");
+            try w.print("{d}", .{saved.updated_at});
+            try w.writeByte('}');
+        }
+        try w.writeAll("]}");
         return out.written();
     }
 
@@ -2682,6 +2759,22 @@ pub const Runtime = struct {
         const parsed = std.json.parseFromSliceLeaky(Value, tmp.allocator(), data, .{ .allocate = .alloc_always }) catch return;
         if (parsed != .object) return;
 
+        if (arrayField(parsed, "savedWorkspaces")) |saved_workspaces| {
+            for (saved_workspaces.items) |item| {
+                if (item != .object) continue;
+                const id = stringField(item, "id") orelse continue;
+                const name = stringField(item, "name") orelse "Saved workspace";
+                const layout_json = stringField(item, "layoutJson") orelse "{}";
+                const updated_at = intField(item, "updatedAt", nowSeconds());
+                self.saved_workspaces.append(self.arena, .{
+                    .id = self.dupe(id),
+                    .name = self.dupe(name),
+                    .layout_json = self.dupe(layout_json),
+                    .updated_at = updated_at,
+                }) catch {};
+            }
+        }
+
         if (arrayField(parsed, "workspaces")) |workspaces| {
             for (workspaces.items) |item| {
                 if (item != .object) continue;
@@ -2764,6 +2857,19 @@ pub const Runtime = struct {
             writeNullableString(w, workspace.display_name) catch return;
             w.writeAll(",\"selectedConversationId\":") catch return;
             writeNullableString(w, self.selected_by_workspace.get(workspace.path)) catch return;
+            w.writeAll("}") catch return;
+        }
+        w.writeAll("],\"savedWorkspaces\":[") catch return;
+        for (self.saved_workspaces.items, 0..) |saved, idx| {
+            if (idx > 0) w.writeByte(',') catch return;
+            w.writeAll("{\"id\":") catch return;
+            writeString(w, saved.id) catch return;
+            w.writeAll(",\"name\":") catch return;
+            writeString(w, saved.name) catch return;
+            w.writeAll(",\"layoutJson\":") catch return;
+            writeString(w, saved.layout_json) catch return;
+            w.writeAll(",\"updatedAt\":") catch return;
+            w.print("{d}", .{saved.updated_at}) catch return;
             w.writeAll("}") catch return;
         }
         w.writeAll("]}") catch return;

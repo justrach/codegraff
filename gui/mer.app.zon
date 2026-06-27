@@ -28,6 +28,8 @@
         .commands = .{
             .{ .name = "dialog.openFile", .permissions = .{ "dialog" }, .origins = .{ "http://127.0.0.1" } },
             .{ .name = "dialog.pickDirectory", .permissions = .{ "dialog" }, .origins = .{ "http://127.0.0.1" } },
+            .{ .name = "clipboard.read", .permissions = .{ "clipboard" }, .origins = .{ "http://127.0.0.1" } },
+            .{ .name = "clipboard.write", .permissions = .{ "clipboard" }, .origins = .{ "http://127.0.0.1" } },
             .{ .name = "open.external", .permissions = .{ "open" }, .origins = .{ "http://127.0.0.1" } },
             .{ .name = "open.path", .permissions = .{ "open" }, .origins = .{ "http://127.0.0.1" } },
             .{ .name = "window.setTitle", .permissions = .{ "window" }, .origins = .{ "http://127.0.0.1" } },

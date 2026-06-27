@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { mergeProps } from "@base-ui/react/merge-props"
 import { useRender } from "@base-ui/react/use-render"
 import { cva, type VariantProps } from "class-variance-authority"
@@ -5,8 +6,8 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/utils/cn"
 import { Separator } from "@/components/ui/Separator"
 
-const buttonGroupVariants = cva(
-  "flex w-fit items-stretch *:focus-visible:relative *:focus-visible:z-30 *:hover:relative *:hover:z-10 *:aria-pressed:relative *:aria-pressed:z-20 has-[>[data-slot=button-group]]:gap-2 has-[select[aria-hidden=true]:last-child]:[&>[data-slot=select-trigger]:last-of-type]:rounded-r-md [&>[data-slot=select-trigger]:not([class*='w-'])]:w-fit [&>input]:flex-1",
+export const buttonGroupVariants = cva(
+  "flex w-fit items-stretch *:data-slot:relative *:focus-visible:relative *:focus-visible:z-30 *:hover:relative *:hover:z-10 *:aria-pressed:relative *:aria-pressed:z-20 has-[>[data-slot=button-group]]:gap-2 has-[select[aria-hidden=true]:last-child]:[&>[data-slot=select-trigger]:last-of-type]:rounded-r-md [&>[data-slot=select-trigger]:not([class*='w-'])]:w-fit [&>input]:flex-1",
   {
     variants: {
       orientation: {
