@@ -8,7 +8,7 @@ version = "0.3.1"
 readme = "README.md"
 description = "Python client for the codegraff agent — drives `graff --json` over stdio. Constants auto-generated from `graff --schema`."
 requires-python = ">=3.8"
-license = { text = "BSD-3-Clause" }
+license = { text = "Apache-2.0" }
 keywords = ["codegraff", "graff", "agent", "llm", "harness", "sdk"]
 
 [project.urls]
