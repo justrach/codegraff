@@ -3900,6 +3900,17 @@ fn loadAnimationSetting(io: Io, arena: Allocator) void {
     }
 }
 
+/// Pick which animation the thinking spinner shows — the EXACT logic spinnerStart
+/// uses, factored so the headless --selftest-spinner render and the live spinner
+/// always agree (a cwd-gated override would surface in both). Sets g_anim_current.
+fn selectSpinner(io: Io) void {
+    if (g_anim_random) {
+        var b: [1]u8 = undefined;
+        io.random(&b);
+        g_anim_current = b[0] % anims.len;
+    } else g_anim_current = g_anim_index;
+}
+
 /// Persist the /animation choice, preserving every other settings key.
 /// The default ("random") removes the key. Best-effort.
 fn saveAnimationSetting(io: Io, gpa: Allocator, value: []const u8) bool {
@@ -5681,6 +5692,7 @@ pub fn main(init: std.process.Init) !void {
     var version_flag = false;
     var print_flag = false;
     var update_force = false; // graff update --force
+    var selftest_spinner_flag = false; // --selftest-spinner: headless spinner render for the PTY anti-stealth test
     var update_check = false; // graff update --check
     var model_flag: ?[]const u8 = null;
     var system_prompt_flag: ?[]const u8 = null;
@@ -5738,6 +5750,8 @@ pub fn main(init: std.process.Init) !void {
                     help_flag = true;
                 } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
                     version_flag = true;
+                } else if (std.mem.eql(u8, arg, "--selftest-spinner")) {
+                    selftest_spinner_flag = true;
                 } else if (std.mem.eql(u8, arg, "--print") or std.mem.eql(u8, arg, "-p")) {
                     print_flag = true;
                 } else if (std.mem.eql(u8, arg, "--force")) {
@@ -6181,6 +6195,23 @@ pub fn main(init: std.process.Init) !void {
         out.writeAll(limyuxi_reset) catch {};
         out.flush() catch {};
     };
+    if (selftest_spinner_flag) {
+        // Headless render of the real thinking-spinner pool for the PTY anti-stealth
+        // test (scripts/test-pty-spinner.py): runs the real selection (so a cwd-gated
+        // pick surfaces) and prints every frame fn's output to stdout, where the test
+        // scans for the U+1F4A9 / supplementary-plane glyph class the poop hid in.
+        selectSpinner(io);
+        out.print("selected: {s}\n", .{anims[g_anim_current].name}) catch {};
+        for (anims) |a| {
+            var i: usize = 0;
+            while (i < 48) : (i += 1) {
+                a.frame(out, i) catch {};
+                out.writeByte('\n') catch {};
+            }
+        }
+        out.flush() catch {};
+        return;
+    }
     loadDevSpinnerOptOut(io, arena, init.environ_map);
     connect: {
         for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
@@ -11829,11 +11860,7 @@ const Agent = struct {
         if (self.sub or json_mode or !use_color or self.out == null) return;
         if (g_anim_off) return;
         if (g_spin_future != null) return;
-        if (g_anim_random) {
-            var b: [1]u8 = undefined;
-            self.io.random(&b);
-            g_anim_current = b[0] % anims.len;
-        } else g_anim_current = g_anim_index;
+        selectSpinner(self.io);
         g_spin_stop.store(false, .release);
         g_spin_future = self.io.concurrent(spinnerTask, .{self.io}) catch blk: {
             g_spin_stop.store(true, .release); // no spare concurrency: skip quietly
