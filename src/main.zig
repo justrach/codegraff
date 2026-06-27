@@ -1458,6 +1458,7 @@ const builtin_agent_types = [_]AgentType{
 /// tier's <name>.md shadows the same niche from an earlier one. Set by main();
 /// arena-owned strings.
 var g_agent_types: []const AgentType = &builtin_agent_types;
+var g_elites_future: ?Io.Future([]const AgentType) = null; // backgrounded pullElites; joined on the main thread before the first turn
 var g_home: ?[]const u8 = null; // resolved HOME (set in main); used by /agents promote's personal tier
 
 const agents_dir = ".harness/agents";
@@ -1696,6 +1697,17 @@ fn pullElites(io: Io, arena: Allocator, client: *std.http.Client, telem: ?*Telem
     }
     if (telem) |tl| tl.fleetEvent("elite_pull", "", "", "", provider_class, eval_set_hash, n, "");
     return out.items;
+}
+
+/// Join the backgrounded fleet pull (g_elites_future) and publish its champions.
+/// Called on the main thread at the top of the root's runTurn: by then the user
+/// has spent time typing, so the ~0.3s fetch has overlapped and this is ~free.
+/// The write to g_agent_types stays on the main thread, so there is no torn read.
+fn joinElites(io: Io) void {
+    if (g_elites_future) |*f| {
+        g_agent_types = f.await(io);
+        g_elites_future = null;
+    }
 }
 
 /// Select-arm wrapper for pullElites: GET the elites URL into `aw`, set `ok` on 200.
@@ -6350,7 +6362,11 @@ pub fn main(init: std.process.Init) !void {
         esh_pull = promptFingerprint(c);
         break :pblk &esh_pull;
     } else ""; // pull the champion for our eval suite (if any)
-    g_agent_types = pullElites(io, arena, &client, g_telem, telem_endpoint, providerClass(root.provider.model), pull_esh, g_agent_types);
+    // Background the fleet-champion pull: a ~0.3s TLS round-trip that used to block
+    // the first prompt. Spawn it now; joinElites() reaps it on the main thread at the
+    // first turn, so the user's typing hides the fetch (prompt paints ~0.3s sooner).
+    g_elites_future = io.async(pullElites, .{ io, arena, &client, g_telem, telem_endpoint, providerClass(root.provider.model), arena.dupe(u8, pull_esh) catch pull_esh, g_agent_types });
+    defer joinElites(io); // reap if the session quits before any turn joins it
 
     // Save from the start: if the harness is killed (Ctrl+C / SIGINT) before
     // any turn completes, the session file is already on disk with the initial
@@ -10516,6 +10532,7 @@ const Agent = struct {
     fn runTurn(self: *Agent) anyerror![]const u8 {
         self.completed = null;
         if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
+        if (!self.sub) joinElites(self.io); // publish backgrounded fleet champions before the turn builds its body
         while (true) {
             // Esc during a tool join (set by escWatchTask) lands here: the
             // root consumes the flag and aborts before the next request;
