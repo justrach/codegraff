@@ -27,5 +27,5 @@
   "keywords": ["codegraff", "graff", "agent", "llm", "harness", "sdk"],
   "files": ["harness.ts", "remote.ts", "README.md"],
   "engines": { "node": ">=18" },
-  "license": "BSD-3-Clause"
+  "license": "Apache-2.0"
 }

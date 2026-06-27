@@ -327,6 +327,13 @@ provider connect), what already streamed stays in history with an
 `[interrupted]` marker, and you're back at the prompt. A bare Esc at the prompt
 clears the input line.
 
+While a response streams you stay in control: besides Esc to interrupt,
+**Ctrl-T (`^T`) folds/unfolds the live "Thinking" block** in place, and the mouse
+wheel scrolls your terminal's own scrollback — the REPL doesn't grab the mouse, so
+scrolling up to re-read earlier output works like any normal terminal (parity with
+Claude Code). Folding the Thinking block is keyboard-only (`^T`) — there is no
+click-to-fold.
+
 ```
 /model [name]   no arg → interactive fuzzy picker; or /model <name|provider|provider model>
 /models         list known models, context windows, compaction points
@@ -656,24 +663,33 @@ current session. The system prompt tells the agent the file exists — so "profi
 yourself" or "why was that slow?" makes the agent read its own trace and answer
 from data. `/trace` toggles it.
 
-**Telemetry — anonymous, opt-out in releases.** Official release binaries ship
-with a default OTLP endpoint baked in (`-Dtelemetry-endpoint`), so they send
-anonymous usage + evolution telemetry to the project's collector by default —
-this is how install counts, model mix, and agent-evolution fitness are learned
-across the fleet. **Opt out any time** with `--no-telemetry` or
-`GRAFF_NO_TELEMETRY=1`. **Builds from source have no endpoint baked in and send
-nothing** unless you set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `GRAFF_OTEL_ENDPOINT`)
-yourself; an env endpoint also overrides the release default. When live, the
-session ships one best-effort OTLP/HTTP JSON POST to `<endpoint>/v1/logs` at exit
-(plus mid-session batches): a `session` summary (duration, turns, API/tool
-call+error counts, models used, workflow and ultracode counts), one record per
-`workflow` run (phases, tasks, failures, wall-clock), and one per error (API
-failure, aborted turn). Resource attributes carry an anonymous per-install id
-(`~/.simple-harness-install-id`), version, OS, and arch — that id is how total
-installs are counted. The generated SDKs tag their child harness with
-`HARNESS_CLIENT=sdk-ts|sdk-py` plus their own id (`~/.simple-harness-sdk-id`), so
-SDK users are counted separately from direct CLI users. A flush failure never
-disturbs the session.
+**Telemetry — pseudonymous, opt-out, on by default.** *Every* build — release,
+source, and dev — bakes in a default OTLP endpoint (pass `-Dtelemetry-endpoint=""`
+to disable it at build time), so by default a session ships best-effort OTLP/HTTP
+JSON POSTs to `<endpoint>/v1/logs` (at exit, plus mid-session batches). **Opt out
+any time** with `--no-telemetry` or `GRAFF_NO_TELEMETRY=1`; setting
+`OTEL_EXPORTER_OTLP_ENDPOINT` (or `GRAFF_OTEL_ENDPOINT`) redirects it to your own
+collector instead.
+
+It's *pseudonymous, not anonymous*: records carry a **random** per-install id
+(`~/.simple-harness-install-id`, generated with `io.random` — not derived from your
+name, host, or user) plus your request IP, version, OS, and arch. The payload is
+**counts, hashes, and tool names**: a `session` summary (duration, turns, API/tool
+call+error counts, models used, workflow/ultracode counts), per-`workflow` and
+per-error records, and per-turn/score records keyed by a one-way **system-prompt
+fingerprint** + `prompt_sha` hashes with a tool-**name** sequence (e.g.
+`read_file, bash, edit_file`). It does **not** send your prompts, your code, file
+contents, file paths, or tool arguments — your input is never an argument to any
+telemetry call.
+
+**Fleet / evolution signals** (`fleet:propose|submit|elite_pull` — the
+agent-evolution fitness loop) ride the same channel and have a *separate* opt-out:
+`GRAFF_FLEET=off` or `/fleet off`. They're hashes and labels, with one exception —
+`fleet:propose` sends an agent's **system-prompt / persona text** (≤8192 chars: the
+evolved "genome"; graff's own text for built-in agents, *your* text for a custom
+agent or inline override). Error details are capped at 200 chars. The SDKs tag their
+child harness with `HARNESS_CLIENT=sdk-ts|sdk-py` and a separate id
+(`~/.simple-harness-sdk-id`). A flush failure never disturbs the session.
 
 </details>
 
@@ -848,4 +864,16 @@ list, and the GitHub issues for what's in flight:
 
 ---
 
-<p align="center"><sub>Built in Zig 0.16 · <a href="LICENSE">BSD 3-Clause</a> · <a href="architecture.md">architecture.md</a> · <a href="uxlog.md">uxlog.md</a></sub></p>
+## License
+
+codegraff is licensed under a **modified GNU AGPL-3.0** (see [`LICENSE`](LICENSE)):
+the public receives it under the AGPL-3.0 — so network use triggers the Section 13
+obligation to make Corresponding Source available to remote users — while the
+authors **Rach Pradhan (justrach)** and **Yu Xi Lim (yxlyx)** reserve full rights
+to use, distribute, and offer it (and modified versions) as a private, proprietary,
+or hosted/cloud product, free of those obligations. For commercial or proprietary
+licensing, contact the authors.
+
+---
+
+<p align="center"><sub>Built in Zig 0.16 · <a href="LICENSE">AGPL-3.0 (modified)</a> · <a href="architecture.md">architecture.md</a> · <a href="uxlog.md">uxlog.md</a></sub></p>

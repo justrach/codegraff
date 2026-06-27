@@ -281,6 +281,12 @@ const provider_specs = [_]ProviderSpec{
     .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
     .{ .id = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
     .{ .id = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro" },
+    // mlx: a local model served by mlx-lm (`mlx_lm.server`) on Apple Silicon —
+    // OpenAI-compatible, no real key (MLX_API_KEY=local just clears graff's boot gate).
+    .{ .id = "mlx", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:8080/v1/chat/completions", .env_key = "MLX_API_KEY", .default_model = "mlx-community/Qwen3.6-27B-OptiQ-4bit" },
+    // lm-studio: the LM Studio app's local OpenAI-compatible server (default :1234).
+    // Load a model in LM Studio, then `LMSTUDIO_API_KEY=local graff --model lmstudio`.
+    .{ .id = "lmstudio", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:1234/v1/chat/completions", .env_key = "LMSTUDIO_API_KEY", .default_model = "lmstudio" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
     // — it's the OAuth access token read from ~/.codex/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
@@ -306,6 +312,11 @@ const ModelInfo = struct {
 const codex_context_window: u64 = 270_000;
 
 const model_table = [_]ModelInfo{
+    // Local Apple-Silicon model served by mlx-lm (mlx_lm.server, OpenAI-compatible).
+    .{ .provider = "mlx", .name = "mlx-community/Qwen3.6-27B-OptiQ-4bit", .context = 262_144 },
+    // LM Studio serves whatever model is loaded; "lmstudio" is a routing alias —
+    // swap for your loaded model id if LM Studio requires an exact match (GET :1234/v1/models).
+    .{ .provider = "lmstudio", .name = "lmstudio", .context = 32_768 },
     .{ .provider = "anthropic", .name = "claude-fable-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-8", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-7", .context = 1_000_000 },
@@ -470,10 +481,21 @@ const main_system_prompt =
     \\or explain the harness's own behavior — including your own — read that
     \\file and analyze it.
     \\
+    \\If you hit a bug or limitation in the harness itself (this graff/codegraff
+    \\agent — its tools, prompts, streaming, sessions, or behavior — as opposed
+    \\to the project you happen to be working in), report it by opening a GitHub
+    \\issue at justrach/codegraff (`gh issue create --repo justrach/codegraff
+    \\...`), never in the current working repository's issue tracker.
+    \\
     \\When making git commits on behalf of the user, always set the author
     \\to Codegraff <blackfloofie@codegraff.com> — pass GIT_AUTHOR_NAME,
     \\GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and GIT_COMMITTER_EMAIL env vars
     \\on every git command so the bot identity is preserved in the commit log.
+    \\
+    \\Never run git commands that discard work — `reset --hard`, `clean -f`,
+    \\`checkout --`/`restore`, force-push, or `branch -D` — unless the user
+    \\explicitly asks. Their existing commits and any -w worktree
+    \\auto-checkpoints are the user's safety net; do not blow them away.
     \\
     \\Be direct and concise.
 ;
@@ -593,6 +615,13 @@ const meta_specs = [_]ToolSpec{
         .schema = empty_schema,
     },
     .{
+        .name = "eval",
+        .desc = "Run the configured scoring command (graff --eval) on the current output and record the result. The HARNESS runs it and logs the score to .graff/eval-log.tsv - do not run the eval command yourself via bash. Returns the score (0-100), best so far, target, and whether the target is met. Call after each focused change in an eval-driven loop. Pass `note` describing what you just changed.",
+        .schema =
+        \\{"type": "object", "properties": {"note": {"type": "string", "description": "What you changed since the last eval"}}}
+        ,
+    },
+    .{
         .name = "ask_user",
         .desc = "Ask the human a question and wait for their typed reply, which is returned as this tool's result. Use when you need a decision, clarification, or missing information. This routes the human turn through the tool channel — the user is just another tool you can call.",
         .schema =
@@ -630,6 +659,7 @@ fn isMetaName(name: []const u8) bool {
     return std.mem.eql(u8, name, "todo_write") or
         std.mem.eql(u8, name, "todo_read") or
         std.mem.eql(u8, name, "ask_user") or
+        std.mem.eql(u8, name, "eval") or
         std.mem.eql(u8, name, "attempt_completion");
 }
 
@@ -1131,6 +1161,23 @@ const Approvals = struct {
         for (interps) |i| if (std.mem.eql(u8, word, i)) return true;
         return false;
     }
+
+    /// Git subcommands that can destroy committed or working-tree work — the
+    /// user's, or a -w worktree's auto-checkpoints. Codex keeps `.git` read-only
+    /// to the agent and opencode forbids `git reset --hard`; we do the same to a
+    /// degree: these never auto-run (not under --yolo, not via a blanket `git`
+    /// allow), so they always reach a human y/n. Scans the whole command so a
+    /// chained `cd x && git reset --hard` is caught too.
+    fn isDestructiveGit(cmd: []const u8) bool {
+        if (std.mem.indexOf(u8, cmd, "git ") == null) return false;
+        const pats = [_][]const u8{
+            "reset --hard", "clean -f",  "checkout --", "checkout .",
+            "push --force", "push -f",   "branch -D",   "stash clear",
+            "stash drop",   "restore .",
+        };
+        for (pats) |p| if (std.mem.indexOf(u8, cmd, p) != null) return true;
+        return false;
+    }
 };
 
 /// Path tools (read/write/edit_file) are confined to the working directory:
@@ -1387,25 +1434,43 @@ const builtin_agent_types = [_]AgentType{
     },
 };
 
-/// Resolved agent types for this session (builtins + .harness/agents/*.md,
-/// files override builtins by name). Set by main(); arena-owned strings.
+/// Resolved agent types for this session, in precedence order:
+/// builtin < personal (~/.harness/agents) < private (./.harness/agents). A later
+/// tier's <name>.md shadows the same niche from an earlier one. Set by main();
+/// arena-owned strings.
 var g_agent_types: []const AgentType = &builtin_agent_types;
+var g_home: ?[]const u8 = null; // resolved HOME (set in main); used by /agents promote's personal tier
 
 const agents_dir = ".harness/agents";
 
-/// Load .harness/agents/*.md: YAML-ish frontmatter (name/description/score)
-/// + body as the prompt. Returns builtins ++ file types, with file types
-/// shadowing builtins of the same name.
-fn loadAgentTypes(io: Io, arena: Allocator) []const AgentType {
+/// Build the session's agent types: the compiled builtins, then the personal
+/// tier (~/.harness/agents — your champions, loaded in every project), then the
+/// private tier (./.harness/agents — this project only). Each tier shadows the
+/// previous by niche name, so a project persona beats a personal one beats a
+/// builtin.
+fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const AgentType {
     var list: std.ArrayList(AgentType) = .empty;
     list.appendSlice(arena, &builtin_agent_types) catch return &builtin_agent_types;
-    var dir = Io.Dir.cwd().openDir(io, agents_dir, .{ .iterate = true }) catch return list.items;
+    if (home) |h| {
+        const personal = std.fmt.allocPrint(arena, "{s}/{s}", .{ h, agents_dir }) catch "";
+        if (personal.len > 0) loadAgentDir(io, arena, &list, personal);
+    }
+    loadAgentDir(io, arena, &list, agents_dir);
+    return list.items;
+}
+
+/// Merge `<dir>/*.md` personas into `list`: YAML-ish frontmatter
+/// (name/description/score) + body as the prompt. A file shadows any existing
+/// type (builtin or earlier tier) of the same name — the elite for a niche is
+/// whatever the highest tier last promoted.
+fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_path: []const u8) void {
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
-        const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ agents_dir, entry.name }) catch continue;
+        const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
         const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(256 * 1024)) catch continue;
         var at: AgentType = .{
             .name = arena.dupe(u8, entry.name[0 .. entry.name.len - ".md".len]) catch continue,
@@ -1429,8 +1494,7 @@ fn loadAgentTypes(io: Io, arena: Allocator) []const AgentType {
             }
         }
         if (at.prompt.len == 0) continue;
-        // File types shadow builtins (and earlier files) of the same name —
-        // the elite for a niche is whatever the driver last promoted.
+        // A file shadows an existing type (builtin or earlier tier) of the same name.
         var replaced = false;
         for (list.items) |*existing| {
             if (std.mem.eql(u8, existing.name, at.name)) {
@@ -1441,15 +1505,194 @@ fn loadAgentTypes(io: Io, arena: Allocator) []const AgentType {
         }
         if (!replaced) list.append(arena, at) catch continue;
     }
-    return list.items;
 }
 
+/// Local single-tenant promote — the "grow for me" loop. Mine
+/// harness.trajectory.jsonl (prompt records → genome text, subagent records →
+/// niche, score records → fitness), and for each MAP-Elites niche write the
+/// highest-mean-scoring genome that has captured text into the chosen tier
+/// (personal ~/.harness/agents or private ./.harness/agents) as <niche>.md. No
+/// backend: your own scored runs become your built-in personas. Returns the
+/// number of niches promoted.
+fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8, personal: bool) usize {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const data = Io.Dir.cwd().readFileAlloc(io, trajectory_path, arena, .limited(64 << 20)) catch {
+        out.print("  {s}no {s} yet — run some scored agents first{s}\n", .{ style.dim, trajectory_path, style.reset }) catch {};
+        return 0;
+    };
+
+    const Cell = struct { sha: []const u8, text: []const u8, niche: []const u8, sum: f64, n: u32 };
+    var cells: std.ArrayList(Cell) = .empty;
+    const cell = struct {
+        fn at(a: Allocator, list: *std.ArrayList(Cell), sha: []const u8) *Cell {
+            for (list.items) |*c| if (std.mem.eql(u8, c.sha, sha)) return c;
+            list.append(a, .{ .sha = a.dupe(u8, sha) catch sha, .text = "", .niche = "", .sum = 0, .n = 0 }) catch {};
+            return &list.items[list.items.len - 1];
+        }
+    }.at;
+
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |ln| {
+        const t = std.mem.trim(u8, ln, " \t\r");
+        if (t.len == 0) continue;
+        const v = std.json.parseFromSliceLeaky(Value, arena, t, .{ .allocate = .alloc_always }) catch continue;
+        if (v != .object) continue;
+        const o = v.object;
+        const kind = strFieldObj(o, "kind") orelse continue;
+        const sha = strFieldObj(o, "prompt_sha") orelse "";
+        if (sha.len == 0) continue;
+        if (std.mem.eql(u8, kind, "prompt")) {
+            if (strFieldObj(o, "text")) |txt| cell(arena, &cells, sha).text = arena.dupe(u8, txt) catch "";
+        } else if (std.mem.eql(u8, kind, "score")) {
+            const sv = o.get("score") orelse continue;
+            const val: f64 = switch (sv) {
+                .float => sv.float,
+                .integer => @floatFromInt(sv.integer),
+                else => continue,
+            };
+            const c = cell(arena, &cells, sha);
+            c.sum += val;
+            c.n += 1;
+        } else if (strFieldObj(o, "niche")) |nz| {
+            if (nz.len > 0) cell(arena, &cells, sha).niche = arena.dupe(u8, nz) catch "";
+        }
+    }
+
+    // Resolve + create the target tier dir (createDir is one level).
+    const dir = if (personal) blk: {
+        const h = home orelse {
+            out.print("  {s}no HOME for the personal tier{s}\n", .{ style.yellow, style.reset }) catch {};
+            return 0;
+        };
+        Io.Dir.cwd().createDir(io, std.fmt.allocPrint(arena, "{s}/.harness", .{h}) catch return 0, .default_dir) catch {};
+        break :blk std.fmt.allocPrint(arena, "{s}/{s}", .{ h, agents_dir }) catch return 0;
+    } else pblk: {
+        Io.Dir.cwd().createDir(io, ".harness", .default_dir) catch {};
+        break :pblk agents_dir;
+    };
+    Io.Dir.cwd().createDir(io, dir, .default_dir) catch {};
+
+    // For each niche, write the genome with the best mean score (text required).
+    var done: std.ArrayList([]const u8) = .empty;
+    var promoted: usize = 0;
+    for (cells.items) |*seed| {
+        if (seed.niche.len == 0 or seed.text.len == 0 or seed.n == 0) continue;
+        var already = false;
+        for (done.items) |d| if (std.mem.eql(u8, d, seed.niche)) {
+            already = true;
+            break;
+        };
+        if (already) continue;
+        var champ = seed;
+        var champ_mean = seed.sum / @as(f64, @floatFromInt(seed.n));
+        for (cells.items) |*other| {
+            if (other.text.len == 0 or other.n == 0) continue;
+            if (!std.mem.eql(u8, other.niche, seed.niche)) continue;
+            const m = other.sum / @as(f64, @floatFromInt(other.n));
+            if (m > champ_mean) {
+                champ = other;
+                champ_mean = m;
+            }
+        }
+        const path = std.fmt.allocPrint(arena, "{s}/{s}.md", .{ dir, champ.niche }) catch continue;
+        const content = std.fmt.allocPrint(arena, "---\nname: {s}\ndescription: promoted local champion (mean {d:.2} over {d} run(s), sha {s})\nscore: {d:.4}\n---\n{s}\n", .{ champ.niche, champ_mean, champ.n, champ.sha, champ_mean, champ.text }) catch continue;
+        const f = Io.Dir.cwd().createFile(io, path, .{}) catch continue;
+        defer f.close(io);
+        var wbuf: [4096]u8 = undefined;
+        var fw = f.writer(io, &wbuf);
+        fw.interface.writeAll(content) catch continue;
+        fw.interface.flush() catch {};
+        out.print("  {s}✓{s} {s}{s}{s} → {s} {s}(mean {d:.2}, n={d}){s}\n", .{ style.green, style.reset, style.cyan, champ.niche, style.reset, path, style.dim, champ_mean, champ.n, style.reset }) catch {};
+        done.append(arena, champ.niche) catch {};
+        promoted += 1;
+    }
+    if (promoted == 0) out.print("  {s}nothing to promote — need scored, niche-tagged genomes (spawn personas via subagent agent:\"<niche>\", then score them){s}\n", .{ style.dim, style.reset }) catch {};
+    return promoted;
+}
 /// Resolve an agent-type name (case-sensitive) to its prompt.
 fn agentTypePrompt(name: []const u8) ?[]const u8 {
     for (g_agent_types) |t| {
         if (std.mem.eql(u8, t.name, name)) return t.prompt;
     }
     return null;
+}
+
+/// Distribute (docs/hyperagents.md §9.E): fetch this tier's live fleet champions
+/// from <base>/v1/elites, emit a fleet:elite_pull signal, and override matching
+/// niches with the champion prompt so the baked builtins defer to the fleet
+/// winner. Best-effort and bounded (3s) — any failure, or no champions yet,
+/// returns `types` unchanged. `endpoint` is the OTLP base (…/v1/logs); the elites
+/// live beside it at /v1/elites.
+fn pullElites(io: Io, arena: Allocator, client: *std.http.Client, telem: ?*Telemetry, endpoint: []const u8, provider_class: []const u8, eval_set_hash: []const u8, types: []const AgentType) []const AgentType {
+    if (endpoint.len == 0 or !g_fleet) return types;
+    var base = std.mem.trimEnd(u8, endpoint, "/");
+    if (std.mem.endsWith(u8, base, "/v1/logs")) base = base[0 .. base.len - "/v1/logs".len];
+    const url = std.fmt.allocPrint(arena, "{s}/v1/elites?provider_class={s}&eval_set_hash={s}", .{ base, provider_class, eval_set_hash }) catch return types;
+    var aw: Io.Writer.Allocating = .init(arena);
+    var ok = false;
+    {
+        const Done = union(enum) { got: void, deadline: void };
+        var dbuf: [2]Done = undefined;
+        var sel: Io.Select(Done) = .init(io, &dbuf);
+        sel.concurrent(.got, eliteGetTask, .{ client, url, &aw, &ok }) catch return types;
+        sel.concurrent(.deadline, httpDeadline, .{io}) catch {
+            _ = sel.await() catch {};
+            sel.cancelDiscard();
+            return types;
+        };
+        _ = sel.await() catch {
+            sel.cancelDiscard();
+            return types;
+        };
+        sel.cancelDiscard();
+    }
+    if (!ok) return types;
+    const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch return types;
+    // Worker returns {ok, provider_class, source, elites:[...]}; accept that (or a
+    // bare array) and treat anything else as "no champions yet".
+    var arr: []const Value = &[_]Value{};
+    if (v == .array) {
+        arr = v.array.items;
+    } else if (v == .object) {
+        if (v.object.get("elites")) |e| if (e == .array) {
+            arr = e.array.items;
+        };
+    }
+    var out: std.ArrayList(AgentType) = .empty;
+    out.appendSlice(arena, types) catch return types;
+    var n: i64 = 0;
+    for (arr) |el| {
+        if (el != .object) continue;
+        n += 1;
+        const nm = if (el.object.get("niche")) |x| (if (x == .string) x.string else "") else "";
+        const pt = if (el.object.get("prompt_text")) |x| (if (x == .string) x.string else "") else "";
+        if (nm.len == 0 or pt.len == 0) continue;
+        for (out.items) |*t| if (std.mem.eql(u8, t.name, nm)) {
+            t.prompt = arena.dupe(u8, pt) catch t.prompt;
+            break;
+        };
+    }
+    if (telem) |tl| tl.fleetEvent("elite_pull", "", "", "", provider_class, eval_set_hash, n, "");
+    return out.items;
+}
+
+/// Select-arm wrapper for pullElites: GET the elites URL into `aw`, set `ok` on 200.
+fn eliteGetTask(client: *std.http.Client, url: []const u8, aw: *Io.Writer.Allocating, ok: *bool) void {
+    const res = client.fetch(.{
+        .location = .{ .url = url },
+        .method = .GET,
+        .response_writer = &aw.writer,
+        .headers = .{ .user_agent = .{ .override = "simple-harness" } },
+    }) catch return;
+    ok.* = @intFromEnum(res.status) == 200;
+}
+
+/// Select-arm deadline: bounds a best-effort HTTP GET (mirrors flushDeadline).
+fn httpDeadline(io: Io) void {
+    io.sleep(.fromSeconds(3), .awake) catch {};
 }
 
 /// Effective system-prompt override for a subagent/workflow-task input:
@@ -1466,6 +1709,13 @@ fn resolveOverride(obj: std.json.ObjectMap) ?[]const u8 {
     return null;
 }
 
+/// The MAP-Elites niche name for a subagent/workflow input: the named agent
+/// type (agent: "<name>"), or "" for an inline system_prompt variant.
+fn resolveNiche(obj: std.json.ObjectMap) []const u8 {
+    if (obj.get("agent")) |v| if (v == .string) return v.string;
+    return "";
+}
+
 /// Set by main(); runSub and the REPL loop record nodes through this.
 var g_traj: ?*Trajectory = null;
 
@@ -1475,6 +1725,43 @@ fn promptFingerprint(prompt: []const u8) [16]u8 {
     var d: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(prompt, &d, .{});
     return std.fmt.bytesToHex(d[0..8].*, .lower);
+}
+
+/// Capability tier for the running model — the MAP-Elites grid's provider-class
+/// axis (docs/hyperagents.md §9). A curated table maps known model families to a
+/// tier (price alone is a poor capability proxy: a small model can be premium-
+/// priced and a frontier model cheap), then falls back to the models.dev output
+/// price graff already carries, then to "mid". Returns "frontier" | "mid" | "small".
+fn providerClass(model: []const u8) []const u8 {
+    const Tier = struct { needle: []const u8, tier: []const u8 };
+    // Most-specific first; small markers precede the families they sit in so
+    // e.g. "...-flash" beats "gemini-3" and "deepseek-v4-flash" beats "deepseek-v4".
+    const known = [_]Tier{
+        .{ .needle = "haiku", .tier = "small" },
+        .{ .needle = "flash", .tier = "small" },
+        .{ .needle = "-mini", .tier = "small" }, // -mini suffix, not "minimax"/"gemini"
+        .{ .needle = "lite", .tier = "small" },
+        .{ .needle = "nano", .tier = "small" },
+        .{ .needle = "opus", .tier = "frontier" },
+        .{ .needle = "gpt-5", .tier = "frontier" },
+        .{ .needle = "deepseek-v4", .tier = "frontier" },
+        .{ .needle = "grok-4", .tier = "frontier" },
+        .{ .needle = "glm-5", .tier = "frontier" },
+        .{ .needle = "kimi-k2", .tier = "frontier" },
+        .{ .needle = "minimax-m", .tier = "frontier" },
+        .{ .needle = "mimo-v2.5-pro", .tier = "frontier" },
+        .{ .needle = "fugu", .tier = "frontier" },
+        .{ .needle = "gemini-3", .tier = "frontier" },
+        .{ .needle = "sonnet", .tier = "mid" },
+    };
+    for (known) |k| if (std.ascii.indexOfIgnoreCase(model, k.needle) != null) return k.tier;
+    // Unknown family: bucket by models.dev output price ($/1M output tokens).
+    if (priceFor(model)) |p| {
+        if (p.out >= 10) return "frontier";
+        if (p.out >= 2) return "mid";
+        return "small";
+    }
+    return "mid";
 }
 
 // ── Subagent cards (#51) ───────────────────────────────────────────────────
@@ -1852,6 +2139,7 @@ const Telemetry = struct {
         ms: i64 = 0,
         score: f64 = 0,
         flag: bool = true, // run → ok
+        text: []const u8 = "", // gpa-duped: fleet:propose → the genome (persona prompt text)
     };
     const max_events = 64; // cap discrete records; counters keep full totals
     const max_detail = 200;
@@ -1958,6 +2246,29 @@ const Telemetry = struct {
         self.maybeFlushEvents();
     }
 
+    /// Record a federated-fleet signal (docs/hyperagents.md §9): propose /
+    /// submit / elite_pull. body="fleet" with a kind attr, mirroring the SDK
+    /// _fleet_signal so the worker counts every client identically. signal is a
+    /// static literal; the rest are duped/truncated like scoreEvent.
+    fn fleetEvent(self: *Telemetry, signal: []const u8, niche: []const u8, prompt_sha: []const u8, parent_sha: []const u8, provider_class: []const u8, eval_set_hash: []const u8, n_elites: i64, prompt_text: []const u8) void {
+        if (!self.on() or !g_fleet) return;
+        {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            const ddet = if (prompt_sha.len > 0) self.gpa.dupe(u8, prompt_sha[0..@min(prompt_sha.len, 32)]) catch "" else "";
+            const dnic = if (niche.len > 0) self.gpa.dupe(u8, utf8Prefix(niche, 64)) catch "" else "";
+            const dpar = if (parent_sha.len > 0) self.gpa.dupe(u8, parent_sha[0..@min(parent_sha.len, 32)]) catch "" else "";
+            var pbuf: [200]u8 = undefined;
+            const provdup = if (provider_class.len > 0 or eval_set_hash.len > 0)
+                self.gpa.dupe(u8, std.fmt.bufPrint(&pbuf, "{s}\t{s}", .{ provider_class, eval_set_hash }) catch "") catch ""
+            else
+                "";
+            const dtext = if (prompt_text.len > 0) self.gpa.dupe(u8, utf8Prefix(prompt_text, 8192)) catch "" else "";
+            self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "fleet", .kind = signal, .detail = ddet, .extra = dnic, .run_id = dpar, .prov = provdup, .tasks = n_elites, .text = dtext });
+        }
+        self.maybeFlushEvents();
+    }
+
     /// Record a completed agent run (root turn or subagent) with its tool
     /// sequence — the process-mining signal behind "which tool combinations
     /// work". Lands as a generic body="run" record (attrs JSON) server-side.
@@ -2020,6 +2331,7 @@ const Telemetry = struct {
         if (e.run_id.len > 0) self.gpa.free(e.run_id);
         if (e.sig.len > 0) self.gpa.free(e.sig);
         if (e.prov.len > 0) self.gpa.free(e.prov);
+        if (e.text.len > 0) self.gpa.free(e.text);
     }
 
     /// When the event buffer reaches max_events, ship it mid-session as an
@@ -2189,6 +2501,8 @@ const Telemetry = struct {
                     if (it.next()) |j| if (j.len > 0) try attr(&s, "judge_id", .{ .str = j });
                     if (it.next()) |a| if (a.len > 0) try attr(&s, "artifact_sha", .{ .str = a });
                     if (it.next()) |h| if (h.len > 0) try attr(&s, "eval_set_hash", .{ .str = h });
+                    if (it.next()) |pc| if (pc.len > 0) try attr(&s, "provider_class", .{ .str = pc });
+                    if (it.next()) |nc| if (nc.len > 0) try attr(&s, "niche", .{ .str = nc });
                 }
             } else if (std.mem.eql(u8, e.body, "run")) {
                 try attr(&s, "prompt_sha", .{ .str = e.detail });
@@ -2196,6 +2510,18 @@ const Telemetry = struct {
                 try attr(&s, "ok", .{ .int = @intFromBool(e.flag) });
                 try attr(&s, "duration_ms", .{ .int = e.ms });
                 if (e.extra.len > 0) try attr(&s, "tools", .{ .str = e.extra });
+            } else if (std.mem.eql(u8, e.body, "fleet")) {
+                try attr(&s, "kind", .{ .str = e.kind });
+                if (e.extra.len > 0) try attr(&s, "niche", .{ .str = e.extra });
+                if (e.detail.len > 0) try attr(&s, "prompt_sha", .{ .str = e.detail });
+                if (e.run_id.len > 0) try attr(&s, "parent_sha", .{ .str = e.run_id });
+                if (e.prov.len > 0) {
+                    var fit = std.mem.splitScalar(u8, e.prov, '\t');
+                    if (fit.next()) |pc| if (pc.len > 0) try attr(&s, "provider_class", .{ .str = pc });
+                    if (fit.next()) |eh| if (eh.len > 0) try attr(&s, "eval_set_hash", .{ .str = eh });
+                }
+                if (std.mem.eql(u8, e.kind, "elite_pull")) try attr(&s, "n_elites", .{ .int = e.tasks });
+                if (e.text.len > 0) try attr(&s, "prompt_text", .{ .str = e.text });
             } else {
                 if (e.kind.len > 0) try attr(&s, "kind", .{ .str = e.kind });
                 if (e.detail.len > 0) try attr(&s, "detail", .{ .str = e.detail });
@@ -2257,6 +2583,11 @@ const Telemetry = struct {
 /// runner feed it through this. Null → every hook is a no-op.
 var g_telem: ?*Telemetry = null;
 
+/// Federated-fleet contribution toggle (docs/hyperagents.md §9). On by default;
+/// GRAFF_FLEET=off or /fleet off disables propose/submit/elite_pull. General
+/// usage telemetry is separate (GRAFF_NO_TELEMETRY).
+var g_fleet: bool = true;
+
 /// Wall-clock unix milliseconds (OTLP timestamps need real time; the
 /// harness otherwise only uses the monotonic Io clock).
 fn unixMs(io: Io) i64 {
@@ -2298,7 +2629,23 @@ fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 const ReasoningEffort = enum { low, medium, high };
 
-const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/thinking", "/title", "/reasoning", "/strict", "/yolo", "/trace", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/mcp", "/help" };
+const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/thinking", "/title", "/reasoning", "/strict", "/yolo", "/trace", "/fleet", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/theme", "/mcp", "/help" };
+
+/// REPL slash commands share the leading `/` with absolute POSIX paths. Only
+/// treat the line as command syntax when the first token is command-shaped;
+/// `/System/Library/... explain this` should be sent to the model as a prompt,
+/// not rejected as an unknown slash command.
+fn isSlashCommandLine(line: []const u8) bool {
+    if (line.len == 0 or line[0] != '/') return false;
+    if (line.len == 1) return true; // bare `/` opens the command picker
+
+    const token_end = std.mem.indexOfAny(u8, line, " \t") orelse line.len;
+    const token = line[0..token_end];
+    // Absolute paths with more than one component are prompts/attachments.
+    if (token.len > 1 and std.mem.indexOfScalar(u8, token[1..], '/') != null) return false;
+
+    return true;
+}
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:
@@ -2609,6 +2956,8 @@ fn mcpServerConnected(tools: []const mcp.Tool, server: []const u8) bool {
 var g_path_env: []const u8 = "";
 /// Human-facing current workspace folder shown in the REPL prompt.
 var g_cwd_display: []const u8 = ".";
+var g_worktree_branch: ?[]const u8 = null; // -w: the worktree's scratch branch; non-null = auto-commit each turn's edits to it
+var g_worktree_autocommit: bool = true; // --no-autocommit turns off the per-turn checkpoint commits
 
 /// Short task label for terminal/TUI headers. Mirrors the GUI's first-prompt
 /// fallback: use the user's first message as a compact tab/session title.
@@ -2867,6 +3216,82 @@ const ReplStreamSink = struct {
     }
 };
 
+/// The standing-goal steering note appended to each turn when /goal is set: the
+/// objective, an instruction to track it as a todo_write checklist, and the
+/// current checklist render when one exists. Returns "" when goal is null so the
+/// caller can skip the append. Pass todos_render="" when there are no todos — do
+/// NOT pass renderTodos()'s "(no todos)" placeholder, which would leak into the prompt.
+fn goalSteeringNote(arena: Allocator, goal: ?[]const u8, todos_render: []const u8) ![]const u8 {
+    const g = goal orelse return "";
+    const progress: []const u8 = if (todos_render.len > 0)
+        try std.fmt.allocPrint(arena, "\n\nChecklist so far:\n{s}", .{todos_render})
+    else
+        "";
+    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a todo_write checklist and work through it, marking each item in_progress when you start and completed when done.]{s}", .{ g, progress });
+}
+
+/// Extract a 0-100 score from an eval command's output: a `score` key (JSON or
+/// key=val) if present, else the last numeric line. Values in [0,1] are read as
+/// fractions and scaled to 0-100.
+fn parseEvalScore(out: []const u8) ?f64 {
+    if (std.mem.indexOf(u8, out, "score")) |i| {
+        var j = i + 5;
+        while (j < out.len and out[j] != ':' and out[j] != '=' and out[j] != '\n') j += 1;
+        if (j < out.len and (out[j] == ':' or out[j] == '=')) {
+            j += 1;
+            while (j < out.len and (out[j] == ' ' or out[j] == '\t' or out[j] == '"')) j += 1;
+            if (parseLeadingNumber(out[j..])) |v| return normalizeScore(v);
+        }
+    }
+    const trimmed = std.mem.trimEnd(u8, out, " \t\r\n");
+    const last = if (std.mem.lastIndexOfScalar(u8, trimmed, '\n')) |k| trimmed[k + 1 ..] else trimmed;
+    if (parseLeadingNumber(std.mem.trim(u8, last, " \t\r\n"))) |v| return normalizeScore(v);
+    return null;
+}
+
+fn parseLeadingNumber(s: []const u8) ?f64 {
+    var end: usize = 0;
+    while (end < s.len and (std.ascii.isDigit(s[end]) or s[end] == '.' or s[end] == '-' or s[end] == '+')) end += 1;
+    if (end == 0) return null;
+    return std.fmt.parseFloat(f64, s[0..end]) catch null;
+}
+
+fn normalizeScore(v: f64) f64 {
+    if (v >= 0.0 and v <= 1.0) return v * 100.0;
+    return v;
+}
+
+/// Steering injected each turn when --eval is set: the eval-driven loop
+/// discipline (score -> one focused change -> re-score -> log -> stop at
+/// target). Returns "" when no eval command is configured.
+fn evalSteeringNote(arena: Allocator, eval_cmd: ?[]const u8, target: u8, has_judge: bool) ![]const u8 {
+    if (eval_cmd == null) return "";
+    const gate = if (has_judge)
+        " An LLM judge is also configured, so the target is met only when BOTH the deterministic score AND the judge score reach it - read both numbers the `eval` tool reports."
+    else
+        "";
+    return std.fmt.allocPrint(arena, "[eval-driven loop active. A scoring command is configured. Work it as a scored improvement loop: (1) call the `eval` tool to score the current state - the harness runs the command and logs to .graff/eval-log.tsv, so do NOT run it yourself via bash; (2) read the score, best-so-far, and output; (3) find the SINGLE biggest failure (inspect any artifacts or images directly); (4) make ONE focused change targeting it; (5) call `eval` again. Continue until `eval` reports the target ({d}/100) is met.{s} Do not stop at the first passing result, and do not revert unless `eval` shows a clear regression. After each `eval`, briefly note what you changed.]", .{ target, gate });
+}
+
+test "goalSteeringNote: goal + checklist assembly, no (no todos) leak" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const ar = arena.allocator();
+
+    // No goal -> empty note, caller skips the append.
+    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, null, ""));
+
+    // Goal, no todos -> bracket note, no checklist, and never the "(no todos)" placeholder.
+    const n1 = try goalSteeringNote(ar, "close all issues", "");
+    try std.testing.expect(std.mem.startsWith(u8, n1, "[standing goal: close all issues - track this as a todo_write checklist"));
+    try std.testing.expect(std.mem.indexOf(u8, n1, "Checklist so far") == null);
+    try std.testing.expect(std.mem.indexOf(u8, n1, "(no todos)") == null);
+
+    // Goal + live todos -> the rendered checklist is appended verbatim.
+    const n2 = try goalSteeringNote(ar, "ship 0.0.177", "[x] wire steering\n[ ] add test");
+    try std.testing.expect(std.mem.indexOf(u8, n2, "Checklist so far:\n[x] wire steering\n[ ] add test") != null);
+}
+
 /// repl.TurnFn — run a full ROOT agent turn (tools + MCP) for `graff repl`, so
 /// the model can read files, run bash, search the codebase, etc. — not a bare
 /// completion. Auto-approves tools (yolo: the chat repl has no permission UI),
@@ -2882,7 +3307,7 @@ fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Turn, 
     sink.init(stream); // agent output streams into the repl's live pane (thread-safe)
     var approvals: Approvals = .{ .yolo = true };
     const sys = if (params.goal.len > 0)
-        (std.fmt.allocPrint(arena, "{s}\n\n# Standing goal (from the user)\n{s}", .{ c.sys_normal, params.goal }) catch c.sys_normal)
+        (std.fmt.allocPrint(arena, "{s}\n\n# Standing goal (from the user)\n{s}\n\nTrack this as a todo_write checklist and work through it across turns - mark each item in_progress when you start and completed when done. Keep the list current; don't repeat finished items.", .{ c.sys_normal, params.goal }) catch c.sys_normal)
     else
         c.sys_normal;
     var agent: Agent = .{
@@ -3069,18 +3494,96 @@ const anims = [_]Anim{
     .{ .name = "matrix", .desc = "matrix rain strip", .frame = animMatrix },
     .{ .name = "pacman", .desc = "pac-man eating dots", .frame = animPacman },
     .{ .name = "starfield", .desc = "parallax stars", .frame = animStarfield },
-    .{ .name = "poop", .desc = "a stinky poop wobbling", .frame = animPoop }, // PRANK: blackfloofie_poop_prank
+    .{ .name = "comet-tail", .desc = "streaking comet indicator", .frame = animCometTail },
 };
 
 var g_anim_index: usize = 0; // /animation selection (index into anims)
 var g_anim_random = false; // pick a fresh one per request
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
-// PRANK — remove in a future release. Gives blackfloofie a poop
-// thinking spinner when graff runs from their home dir (/Users/blackfloofie).
-// To remove: delete this flag, animPoop, the "poop" anims entry, and the
-// cwd hook in main.
-const blackfloofie_poop_prank = true;
+// 🎂 Birthday easter egg (flagged, temporary) — when graff runs from
+// limyuxi/yxlyx's home dir it paints her Ghostty white (OSC 11 bg + OSC 10 fg),
+// reset on exit. Cosmetic and gated to her cwd, like the old dragon spinner.
+// Flip to false / delete to remove after the bday.
+const limyuxi_birthday_white = false; // retired: ship the default theme/spinner for everyone
+
+// 🎂 yxlyx's birthday glam: a pastel-pink Ghostty theme — light pink bg, dark
+// plum text, and a pink-leaning ANSI palette so graff's colored UI stays legible
+// (every entry is dark/saturated enough to read on light pink). Reset with OSC
+// 104/110/111/112 on exit. Paired with the "glitter" spinner; gated by the flag.
+const limyuxi_theme =
+    "\x1b]11;#fce4ec\x07" ++ // bg: pastel pink
+    "\x1b]10;#4a1942\x07" ++ // fg: dark plum (~9:1 contrast)
+    "\x1b]12;#d81b60\x07" ++ // cursor: hot pink
+    "\x1b]4;0;#4a1942\x07\x1b]4;1;#c2185b\x07\x1b]4;2;#2e7d32\x07\x1b]4;3;#b26a00\x07" ++
+    "\x1b]4;4;#6a1b9a\x07\x1b]4;5;#ad1457\x07\x1b]4;6;#00796b\x07\x1b]4;7;#5d4357\x07" ++
+    "\x1b]4;8;#8a6680\x07\x1b]4;9;#e91e63\x07\x1b]4;10;#388e3c\x07\x1b]4;11;#c77800\x07" ++
+    "\x1b]4;12;#8e24aa\x07\x1b]4;13;#d81b60\x07\x1b]4;14;#00897b\x07\x1b]4;15;#3a1133\x07";
+const limyuxi_reset = "\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07"; // palette, fg, bg, cursor
+
+// ── color themes ────────────────────────────────────────────────────────────
+// Opt-in terminal color themes (OSC 10/11/12 = fg/bg/cursor; the light theme
+// also sets the ANSI palette so graff's colored UI stays legible). Selected via
+// /theme, persisted as {"theme": "<name>"} in .harness/settings.json, reset on
+// exit. No theme by default — graff leaves your terminal colors alone unless you
+// pick one. PastelPink is the former limyuxi glam, now a normal choice.
+const theme_reset = "\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07"; // palette, fg, bg, cursor
+const Theme = struct { name: []const u8, desc: []const u8, seq: []const u8 };
+const themes = [_]Theme{
+    .{ .name = "PastelPink", .desc = "light pink bg, dark plum text", .seq = limyuxi_theme },
+    .{ .name = "Midnight", .desc = "deep navy bg, soft slate text, sky cursor", .seq = "\x1b]11;#0f172a\x07\x1b]10;#e2e8f0\x07\x1b]12;#38bdf8\x07" },
+    .{ .name = "Forest", .desc = "dark green bg, pale green text", .seq = "\x1b]11;#0e1a12\x07\x1b]10;#d7e8d0\x07\x1b]12;#4ade80\x07" },
+    .{ .name = "Amber", .desc = "warm dark bg, amber text (retro CRT)", .seq = "\x1b]11;#1a1206\x07\x1b]10;#ffcf8f\x07\x1b]12;#ff9e3d\x07" },
+};
+var g_theme: ?usize = null; // index into themes, or null = no theme (terminal default)
+
+fn themeIndex(name: []const u8) ?usize {
+    for (themes, 0..) |t, i| if (std.ascii.eqlIgnoreCase(t.name, name)) return i;
+    return null;
+}
+
+/// Load {"theme": "<name>"} from settings at startup.
+fn loadThemeSetting(io: Io, arena: Allocator) void {
+    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
+    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
+    if (v != .object) return;
+    const t = v.object.get("theme") orelse return;
+    if (t != .string) return;
+    if (themeIndex(t.string)) |i| g_theme = i;
+}
+
+/// Persist the /theme choice, preserving every other settings key. "off"/"none"
+/// removes the key (back to the terminal default). Best-effort.
+fn saveThemeSetting(io: Io, gpa: Allocator, value: []const u8) bool {
+    Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {};
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var root_obj: std.json.ObjectMap = .empty;
+    if (Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, a, .limited(1 << 20))) |data| {
+        if (std.json.parseFromSliceLeaky(Value, a, data, .{ .allocate = .alloc_always })) |v| {
+            if (v == .object) root_obj = v.object;
+        } else |_| {}
+    } else |_| {}
+    if (std.ascii.eqlIgnoreCase(value, "off") or std.ascii.eqlIgnoreCase(value, "none")) {
+        _ = root_obj.orderedRemove("theme");
+    } else {
+        root_obj.put(a, "theme", .{ .string = value }) catch return false;
+    }
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var s: std.json.Stringify = .{ .writer = &aw.writer, .options = .{ .whitespace = .indent_2 } };
+    s.write(Value{ .object = root_obj }) catch return false;
+    const f = Io.Dir.cwd().createFile(io, Approvals.settings_path, .{}) catch return false;
+    defer f.close(io);
+    var wbuf: [4096]u8 = undefined;
+    var fw = f.writer(io, &wbuf);
+    fw.interface.writeAll(aw.writer.buffered()) catch return false;
+    fw.interface.writeAll("\n") catch return false;
+    fw.interface.flush() catch return false;
+    return true;
+}
+var g_obfs_select: bool = false; // auto-detect for legacy host profiles
 var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 
 // Steering (Codex-style): bytes typed while a turn streams are captured
@@ -3169,12 +3672,56 @@ fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
     try w.print(" {s}thinking…{s}", .{ style.dim, style.reset });
 }
 
-fn animPoop(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // PRANK (blackfloofie_poop_prank): a wobbly poop with stink lines.
-    const wobble = [_][]const u8{ "", " ", "  ", " ", "" };
-    const stink = [_][]const u8{ "ˊ", "ˋ", "ˊ", "·", "ˋ" };
-    try w.print("{s}{s}{s}{s}{s}{s}", .{ style.dim, stink[i % stink.len], style.reset, wobble[i % wobble.len], style.dim, stink[(i + 2) % stink.len] });
-    try w.print("{s}{s}💩{s}", .{ style.bold, style.yellow, style.reset });
+fn animGlitter(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    // 🎂 EGG (limyuxi_birthday_white): a glittery pink sparkle spinner. Saturated
+    // pinks/purples/gold pop on the pastel-pink bg; "thinking…" in deep plum
+    // stays legible.
+    const sparks = [_][]const u8{ "✨", "✧", "⋆", "˖", "✦", "♡", "⭒", "·" };
+    const cols = [_][]const u8{
+        "\x1b[38;2;255;20;147m", // deep pink
+        "\x1b[38;2;233;30;99m", // pink
+        "\x1b[38;2;156;39;176m", // purple
+        "\x1b[38;2;255;152;0m", // gold
+        "\x1b[38;2;216;27;96m", // magenta
+    };
+    var j: usize = 0;
+    while (j < 3) : (j += 1) {
+        try w.writeAll(cols[(i +% j) % cols.len]);
+        try w.writeAll(sparks[(i *% 2 +% j *% 3) % sparks.len]);
+        if (j + 1 < 3) try w.writeAll(" ");
+    }
+    try w.writeAll("\x1b[0m \x1b[38;2;106;27;90mthinking…\x1b[0m");
+}
+
+fn animDragon(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    // 🎂 EGG (limyuxi_birthday_white): a wee ASCII fire-breathing dragon for
+    // yxlyx — brought back, but drawn (no emoji). Spiky body undulates, the head
+    // breathes a flickering flame. style.yellow → legible amber on her pink bg,
+    // bright yellow on a dark terminal.
+    const body = [_][]const u8{ "_^_^_^", "^_^_^_", "_^^_^^", "^^_^^_" };
+    const flame = [_][]const u8{ "~", "=", "<", "*", "" };
+    try w.print("{s}{s}", .{ style.bold, style.yellow });
+    try w.writeAll(body[i % body.len]);
+    try w.writeAll("(O>");
+    try w.writeAll(flame[i % flame.len]);
+    try w.writeAll(style.reset);
+    try animThinking(w);
+}
+
+fn animCometTail(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    const _cp: u21 = @as(u21, 500) << 8 | 169;
+    var _ebuf: [4]u8 = undefined;
+    const _len = std.unicode.utf8Encode(_cp, &_ebuf) catch unreachable;
+    const p = _ebuf[0.._len];
+    const gi = (i / 12) % 8; // ~1s per pattern
+    const counts = [_]u8{ 1, 3, 2, 7, 4, 1, 6, 3 };
+    const n = counts[gi];
+    var j: u8 = 0;
+    while (j < n) : (j += 1) {
+        const hue = ((gi *% 17 +% j *% 13) >> 2) & 1 == 0;
+        try w.print("{s}{s}{s}", .{ if (hue) style.yellow else style.green, p, style.reset });
+        if (j + 1 < n) try w.writeAll(" ");
+    }
     try animThinking(w);
 }
 
@@ -3269,6 +3816,33 @@ fn animStarfield(w: *Io.Writer, i: usize) Io.Writer.Error!void {
         }
     }
     try animThinking(w);
+}
+
+/// Check .harness/settings.json for "dev_spinner": if truthy, the
+/// caller should use the normal spinner regardless of host profile.
+var g_dev_spinner_opt_out: bool = false;
+
+fn devSpinnerOptOut(_: Io, _: Allocator) bool {
+    return g_dev_spinner_opt_out;
+}
+
+fn loadDevSpinnerOptOut(io: Io, arena: Allocator, environ: anytype) void {
+    if (environ.get("GRAFF_DEV_SPINNER")) |v| {
+        if (!std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false")) {
+            g_dev_spinner_opt_out = true;
+            return;
+        }
+    }
+    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
+    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
+    if (v != .object) return;
+    const ds = v.object.get("dev_spinner") orelse return;
+    g_dev_spinner_opt_out = switch (ds) {
+        .bool => |b| b,
+        .integer => |n| n != 0,
+        .string => |s| !std.mem.eql(u8, s, "0") and !std.mem.eql(u8, s, "false"),
+        else => false,
+    };
 }
 
 /// Load {"animation": "<name>|random|off"} from settings at startup.
@@ -3941,6 +4515,71 @@ fn cleanDroppedPath(gpa: Allocator, home: []const u8, pasted: []const u8) ?[]con
     return clean.toOwnedSlice(gpa) catch null;
 }
 
+/// History + unsent-draft navigation for the line editor (#101). Mirrors the
+/// GUI's promptHistoryNavigation.ts: stepping UP out of the fresh slot snapshots
+/// the half-typed draft; stepping DOWN past the newest entry restores it instead
+/// of clearing the line. `idx == history.len` is the fresh (editing) slot.
+const HistoryNav = struct {
+    idx: usize,
+    draft: ?[]const u8 = null, // owned snapshot of the unsent line; freed by the caller
+
+    fn init(history_len: usize) HistoryNav {
+        return .{ .idx = history_len };
+    }
+
+    /// UP / older. `current` is the live buffer. Returns the text the buffer
+    /// should show next, or null to leave it unchanged (already at the oldest).
+    /// Leaving the fresh slot snapshots `current` as the draft to restore later.
+    fn up(self: *HistoryNav, gpa: Allocator, history: []const []const u8, current: []const u8) ?[]const u8 {
+        if (self.idx == 0) return null;
+        if (self.idx == history.len) { // leaving the fresh slot: keep the draft
+            if (self.draft) |d| gpa.free(d);
+            self.draft = gpa.dupe(u8, current) catch null;
+        }
+        self.idx -= 1;
+        return history[self.idx];
+    }
+
+    /// DOWN / newer. Returns the text to show next, or null to leave it
+    /// unchanged (already at the fresh slot). Past the newest entry, restores the
+    /// snapshotted draft (or "" when there was none) instead of clearing it.
+    fn down(self: *HistoryNav, history: []const []const u8) ?[]const u8 {
+        if (self.idx >= history.len) return null;
+        self.idx += 1;
+        if (self.idx == history.len) return self.draft orelse "";
+        return history[self.idx];
+    }
+};
+
+test "HistoryNav: up snapshots the draft, down past newest restores it (#101)" {
+    const gpa = std.testing.allocator;
+    const history = [_][]const u8{ "first", "second" };
+    var nav: HistoryNav = .init(history.len);
+    defer if (nav.draft) |d| gpa.free(d);
+
+    // up from the fresh slot → newest entry, draft snapshotted
+    try std.testing.expectEqualStrings("second", nav.up(gpa, &history, "draft in progress").?);
+    // up again → older entry
+    try std.testing.expectEqualStrings("first", nav.up(gpa, &history, "second").?);
+    // up at the oldest → no change
+    try std.testing.expect(nav.up(gpa, &history, "first") == null);
+    // down → back to newest
+    try std.testing.expectEqualStrings("second", nav.down(&history).?);
+    // down past newest → the draft is restored, NOT cleared (the bug)
+    try std.testing.expectEqualStrings("draft in progress", nav.down(&history).?);
+    // down at the fresh slot → no change
+    try std.testing.expect(nav.down(&history) == null);
+}
+
+test "HistoryNav: no draft → fresh slot returns empty, no leak (#101)" {
+    const gpa = std.testing.allocator;
+    const history = [_][]const u8{"only"};
+    var nav: HistoryNav = .init(history.len);
+    defer if (nav.draft) |d| gpa.free(d);
+    try std.testing.expectEqualStrings("only", nav.up(gpa, &history, "").?);
+    try std.testing.expectEqualStrings("", nav.down(&history).?); // empty draft → empty line, as today
+}
+
 /// Read one input line with a tiny raw-mode editor: ↑/↓ walk history,
 /// Tab completes/cycles (models, providers, slash commands), backspace edits,
 /// Ctrl-C cancels the line, Ctrl-D on an empty line is EOF. `buf` is reused
@@ -3960,7 +4599,8 @@ fn readLine(
 
     buf.clearRetainingCapacity();
     var cur: usize = 0; // cursor index within buf
-    var hist_idx: usize = history.items.len; // == len → editing a fresh line
+    var nav: HistoryNav = .init(history.items.len); // history + unsent-draft nav (#101)
+    defer if (nav.draft) |d| gpa.free(d);
     out.writeAll("\x1b[?2004h") catch {}; // enable bracketed paste (terminal wraps pastes in ESC[200~ … ESC[201~)
     defer out.writeAll("\x1b[?2004l") catch {};
     out.flush() catch {};
@@ -4410,15 +5050,13 @@ fn readLine(
                 const ps = params[0..pn];
                 const word_mod = std.mem.indexOfScalar(u8, ps, ';') != null; // 1;3 (alt) / 1;5 (ctrl)
                 switch (final) {
-                    'A' => if (hist_idx > 0) { // up → history back
-                        hist_idx -= 1;
-                        setLine(gpa, buf, history.items[hist_idx]);
+                    'A' => if (nav.up(gpa, history.items, buf.items)) |text| { // up → history back; snapshots draft (#101)
+                        setLine(gpa, buf, text);
                         cur = buf.items.len;
                         redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                     },
-                    'B' => if (hist_idx < history.items.len) { // down → history forward
-                        hist_idx += 1;
-                        if (hist_idx == history.items.len) buf.clearRetainingCapacity() else setLine(gpa, buf, history.items[hist_idx]);
+                    'B' => if (nav.down(history.items)) |text| { // down → history forward; restores draft past newest (#101)
+                        setLine(gpa, buf, text);
                         cur = buf.items.len;
                         redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                     },
@@ -4746,6 +5384,8 @@ const usage_text =
     \\  graff key list                   show which providers have keys
     \\  graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
     \\  graff mcp                         list configured MCP servers
+    \\  graff worktree list              list the per-tab worktrees created by -w
+    \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff --schema                   print the machine-readable interface (SDK codegen)
     \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
     \\                                   (--host/--port/--token; sessions are --json children)
@@ -4759,6 +5399,11 @@ const usage_text =
     \\  --no-resume      ignore --resume and start fresh
     \\  --system-prompt <text>          replace the built-in system prompt
     \\  --append-system-prompt <text>   append extra text to the system prompt
+    \\  --goal <text>                   seed a standing objective (tracked as a todo checklist) for every turn
+    \\  --eval <cmd>                    scoring command for an eval-driven loop (the `eval` tool runs it)
+    \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
+    \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
+    \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
     \\  --yolo           skip all permission prompts for the session
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
     \\  --timing         show per-tool wall-clock on result lines
@@ -5005,6 +5650,10 @@ pub fn main(init: std.process.Init) !void {
     var port_flag: u16 = 8787; // harness serve
     var token_flag: ?[]const u8 = null; // harness serve
     var resume_flag: ?[]const u8 = null; // restore/save this named session
+    var goal_flag: ?[]const u8 = null; // --goal: standing objective (todos) every turn gets, incl. --json/-p
+    var eval_cmd_flag: ?[]const u8 = null; // --eval: scoring command for the eval-driven loop
+    var worktree_flag: ?[]const u8 = null; // --worktree/-w: isolate this session in a git worktree (parallel agents, no file collisions)
+    var eval_target_flag: ?u8 = null; // --until: target score 0-100 for the eval loop
     var no_resume_flag = false; // start without auto-loading last.session.json
     var new_session_flag = false; // start a fresh autosaved session
     var positionals: std.ArrayList([]const u8) = .empty;
@@ -5018,6 +5667,15 @@ pub fn main(init: std.process.Init) !void {
             } else if (std.mem.startsWith(u8, arg, "-")) {
                 if (std.mem.eql(u8, arg, "--yolo")) {
                     yolo_flag = true;
+                } else if (std.mem.eql(u8, arg, "--worktree") or std.mem.eql(u8, arg, "-w")) {
+                    worktree_flag = it.next() orelse std.process.fatal("--worktree needs a name (e.g. --worktree agent1)", .{});
+                } else if (std.mem.eql(u8, arg, "--goal")) {
+                    goal_flag = it.next() orelse std.process.fatal("--goal needs an objective", .{});
+                } else if (std.mem.eql(u8, arg, "--eval")) {
+                    eval_cmd_flag = it.next() orelse std.process.fatal("--eval needs a scoring command", .{});
+                } else if (std.mem.eql(u8, arg, "--until")) {
+                    const uv = it.next() orelse std.process.fatal("--until needs a score 0-100", .{});
+                    eval_target_flag = std.fmt.parseInt(u8, uv, 10) catch std.process.fatal("--until must be a number 0-100", .{});
                 } else if (std.mem.eql(u8, arg, "--no-telemetry")) {
                     no_telemetry_flag = true;
                 } else if (std.mem.eql(u8, arg, "--timing")) {
@@ -5031,6 +5689,8 @@ pub fn main(init: std.process.Init) !void {
                     max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-tool-calls needs a non-negative integer, got '{s}'", .{mv});
                 } else if (std.mem.eql(u8, arg, "--dedupe-tool-calls")) {
                     dedupe_tool_calls = true;
+                } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
+                    g_worktree_autocommit = false;
                 } else if (std.mem.eql(u8, arg, "--schema")) {
                     schema_flag = true;
                 } else if (std.mem.eql(u8, arg, "--refresh")) {
@@ -5086,7 +5746,7 @@ pub fn main(init: std.process.Init) !void {
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     const is_subcommand = positionals.items.len > 0 and
         (std.mem.eql(u8, positionals.items[0], "login") or std.mem.eql(u8, positionals.items[0], "key") or std.mem.eql(u8, positionals.items[0], "mcp") or
-            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title") or std.mem.eql(u8, positionals.items[0], "repl"));
+            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title") or std.mem.eql(u8, positionals.items[0], "repl") or std.mem.eql(u8, positionals.items[0], "worktree"));
     var oneshot_prompt: ?[]const u8 = null;
     if (!is_subcommand and positionals.items.len > 0) {
         oneshot_prompt = try std.mem.join(arena, " ", positionals.items);
@@ -5154,6 +5814,14 @@ pub fn main(init: std.process.Init) !void {
         if (update_force and update_check)
             std.process.fatal("--force and --check are mutually exclusive — use `graff update` (without --check) to install", .{});
         try updateCommand(io, gpa, arena, init.environ_map, update_force, update_check);
+        return;
+    }
+
+    // `graff worktree list` / `graff worktree merge <name>`: manage the per-tab
+    // scratch worktrees that -w creates. merge squash-lands a tab's work as one
+    // clean commit on the current branch, then removes the worktree + branch.
+    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "worktree")) {
+        try worktreeCommand(gpa, io, arena, positionals.items[1..]);
         return;
     }
 
@@ -5266,8 +5934,31 @@ pub fn main(init: std.process.Init) !void {
         style = Style.ansi;
         use_color = true;
     }
+    // --worktree/-w: run this session in an isolated git worktree so parallel
+    // agents don't collide on files. Creates .graff/worktrees/<name> on branch
+    // worktree-<name> (from HEAD) and enters it; reuses it if it already exists.
+    if (worktree_flag) |wt| {
+        const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{wt});
+        const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{wt});
+        if (runCapped(gpa, io, &.{ "git", "worktree", "add", wt_path, "-b", wt_branch }, 8192, 8192, 60_000)) |r| {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        } else |_| {}
+        const wt_z = arena.dupeZ(u8, wt_path) catch std.process.fatal("--worktree: out of memory", .{});
+        if (std.posix.system.chdir(wt_z.ptr) != 0)
+            std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, wt_path });
+        g_worktree_branch = wt_branch; // non-null = auto-commit each turn to this scratch branch
+        if (!json_mode) {
+            const ac: []const u8 = if (g_worktree_autocommit) " · auto-committing each turn (`graff worktree merge` to land it)" else "";
+            out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{ style.dim, style.reset, style.cyan, wt_path, style.reset, wt_branch, ac }) catch {};
+            out.flush() catch {};
+        }
+    }
     var cwd_buf: [4096]u8 = undefined;
-    g_cwd_display = if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
+    g_cwd_display = if (worktree_flag) |wt|
+        // After chdir into the worktree, realPath(AT_FDCWD) is unreliable; derive from the launch dir.
+        std.fmt.allocPrint(arena, "{s}/.graff/worktrees/{s}", .{ init.environ_map.get("PWD") orelse ".", wt }) catch try arena.dupe(u8, init.environ_map.get("PWD") orelse ".")
+    else if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
         try arena.dupe(u8, cwd_buf[0..n])
     else |_|
         try arena.dupe(u8, init.environ_map.get("PWD") orelse ".");
@@ -5370,6 +6061,10 @@ pub fn main(init: std.process.Init) !void {
         .start_unix_ms = unixMs(io),
     };
     g_telem = &telem;
+    // Fleet contribution opt-out, independent of telemetry: GRAFF_FLEET=off|0|false|no.
+    if (init.environ_map.get("GRAFF_FLEET")) |fv| {
+        g_fleet = !(std.ascii.eqlIgnoreCase(fv, "off") or std.mem.eql(u8, fv, "0") or std.ascii.eqlIgnoreCase(fv, "false") or std.ascii.eqlIgnoreCase(fv, "no"));
+    }
     defer {
         g_telem = null;
         telem.flush();
@@ -5410,16 +6105,36 @@ pub fn main(init: std.process.Init) !void {
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
-    // PRANK — remove in a future release (see the blackfloofie_poop_prank flag).
-    // A poop thinking spinner just for blackfloofie, when running from
-    // their home dir. Still overridable at runtime with /animation.
-    if (blackfloofie_poop_prank and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
-        if (animIndex("poop")) |di| {
-            g_anim_index = di;
+    loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
+    const theme_on = g_theme != null and use_color and !json_mode;
+    if (theme_on) {
+        out.writeAll(themes[g_theme.?].seq) catch {};
+        out.flush() catch {};
+    }
+    defer if (theme_on) {
+        out.writeAll(theme_reset) catch {};
+        out.flush() catch {};
+    };
+    // 🎂 yxlyx's birthday glam — when graff runs from her home dir, dress her
+    // Ghostty in the pastel-pink theme (limyuxi_theme: light pink bg, dark plum
+    // text, pink-leaning palette) and switch the spinner to glittery sparkles.
+    // Cosmetic, flagged, gated to her cwd; resets everything on exit.
+    const limyuxi_glam = limyuxi_birthday_white and use_color and !json_mode and
+        (std.mem.eql(u8, g_cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, g_cwd_display, "/Users/limyuxi/"));
+    if (limyuxi_glam) {
+        out.writeAll(limyuxi_theme) catch {};
+        out.flush() catch {};
+        if (animIndex("dragon")) |gi| {
+            g_anim_index = gi;
             g_anim_off = false;
             g_anim_random = false;
         }
     }
+    defer if (limyuxi_glam) {
+        out.writeAll(limyuxi_reset) catch {};
+        out.flush() catch {};
+    };
+    loadDevSpinnerOptOut(io, arena, init.environ_map);
     connect: {
         for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
         for (companion_servers) |c| {
@@ -5447,7 +6162,8 @@ pub fn main(init: std.process.Init) !void {
     const persisted_approvals = approvals.loadPersisted(io, gpa, arena);
 
     // Agent types: builtins + .harness/agents/*.md (the MAP-Elites niches).
-    g_agent_types = loadAgentTypes(io, arena);
+    g_home = homeEnv(init.environ_map); // for /agents promote's personal tier
+    g_agent_types = loadAgentTypes(io, arena, g_home); // builtin < ~/.harness/agents (personal) < ./.harness/agents (private)
     if (persisted_approvals > 0 and !json_mode and oneshot_prompt == null) {
         try out.print("{s}loaded {d} saved approval(s) from {s}{s}\n", .{ style.dim, persisted_approvals, Approvals.settings_path, style.reset });
         try out.flush();
@@ -5526,7 +6242,18 @@ pub fn main(init: std.process.Init) !void {
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(io)});
     root.session_name = if (resume_flag) |name| (if (!new_session_flag and !no_resume_flag) name else fresh_session_name) else fresh_session_name;
     loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
+    if (goal_flag) |g| root.goal = try arena.dupe(u8, g); // --goal applies to every turn (incl. --json/-p/SDK)
+    if (eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
+    if (eval_target_flag) |t| root.eval_target = t;
     tracer.note("session", root.provider.model);
+    // Distribute (docs §9.E): pull this tier's live fleet champions and prefer
+    // them over the baked builtins. Best-effort + bounded; emits fleet:elite_pull.
+    var esh_pull: [16]u8 = undefined;
+    const pull_esh: []const u8 = if (root.eval_cmd) |c| pblk: {
+        esh_pull = promptFingerprint(c);
+        break :pblk &esh_pull;
+    } else ""; // pull the champion for our eval suite (if any)
+    g_agent_types = pullElites(io, arena, &client, g_telem, telem_endpoint, providerClass(root.provider.model), pull_esh, g_agent_types);
 
     // Save from the start: if the harness is killed (Ctrl+C / SIGINT) before
     // any turn completes, the session file is already on disk with the initial
@@ -5562,7 +6289,10 @@ pub fn main(init: std.process.Init) !void {
             if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
             models_buf.appendSlice(mi.name) catch {};
         }
-        try repl.run(gpa, io, init.environ_map, &repl_ctx, replTurnCb, replModelCb, replCancelCb, root.provider.model, models_buf.items);
+        if (Io.File.stdin().isTty(io) catch true)
+            try repl.run(gpa, io, init.environ_map, &repl_ctx, replTurnCb, replModelCb, replCancelCb, root.provider.model, models_buf.items)
+        else
+            try repl.runScripted(gpa, io, init.environ_map, in, out, &repl_ctx, replTurnCb, replModelCb, replCancelCb, root.provider.model, models_buf.items);
         return;
     }
     // One-shot print mode: run the single prompt to completion, print the
@@ -5579,7 +6309,11 @@ pub fn main(init: std.process.Init) !void {
             tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
             if (g_telem) |t| t.ultracode();
         }
-        try root.messages.append(try textMessage(arena, "user", ultracode_msg.text));
+        const goal_note = try goalSteeringNote(arena, root.goal, if (root.todos.items.len > 0) root.renderTodos() else "");
+        const eval_note = try evalSteeringNote(arena, root.eval_cmd, root.eval_target, root.eval_judge != null);
+        var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
+        if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
+        try root.messages.append(try textMessage(arena, "user", oneshot_user));
         if (g_telem) |t| t.countTurn();
         const final_text = root.runTurn() catch |err| switch (err) {
             error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
@@ -5596,6 +6330,11 @@ pub fn main(init: std.process.Init) !void {
         saveSession(&root, arena, root.session_name) catch |err| {
             std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
         };
+
+        // --worktree: checkpoint the one-shot's edits to the scratch branch too.
+        // Headless swarm agents (graff -w name -p "task") are the main -w use
+        // case — they must not exit with their work left uncommitted.
+        worktreeAutoCommit(gpa, io, std.fmt.allocPrint(arena, "wip: {s}", .{titleFromPrompt(prompt_text)}) catch "wip: graff oneshot");
         // One-shot returns here, before the REPL cleanup defer below is even
         // registered, so free the root's gpa-backed buffers explicitly (else a
         // tool-using one-shot leaks its tool log / render buffers on exit).
@@ -5636,7 +6375,7 @@ pub fn main(init: std.process.Init) !void {
         if (loadSession(&root, keys, arena, root.session_name)) |_| {
             if (root.messages.items.len > 0) {
                 // Estimate the restored context from the file size (~4 bytes/token).
-                const est_path = try std.fmt.allocPrint(arena, "{s}{s}", .{ root.session_name, session_ext });
+                const est_path = try sessionPath(arena, root.session_name);
                 const est: u64 = if (Io.Dir.cwd().statFile(io, est_path, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
                 if (!json_mode) {
                     // Prefer the saved AI summary; fall back to the first user
@@ -5690,7 +6429,7 @@ pub fn main(init: std.process.Init) !void {
             if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
         }
 
-        if (!json_mode and line[0] == '/' and loop_prompt == null) {
+        if (!json_mode and isSlashCommandLine(line) and loop_prompt == null) {
             // Bare "/" on a TTY: open the filterable command menu.
             if (interactive and line.len == 1) {
                 if (listPicker(&root, arena, out, "Command ›", &command_menu)) |idx| {
@@ -5837,7 +6576,20 @@ pub fn main(init: std.process.Init) !void {
                 };
                 const judge_id = utf8Prefix(reqStr.s(parsed.object, "judge_id"), 64);
                 const artifact_sha = utf8Prefix(reqStr.s(parsed.object, "artifact_sha"), 64);
-                const eval_set_hash = utf8Prefix(reqStr.s(parsed.object, "eval_set_hash"), 64);
+                // DGM lever: when the score omits eval_set_hash but an --eval suite is
+                // configured, stamp the suite's stable fingerprint so scores group into a
+                // promotable (niche × tier × suite) cell. Same --eval cmd → same hash
+                // across installs → the fleet can rank + promote a champion.
+                var esh_buf: [16]u8 = undefined;
+                const eval_set_hash = eshblk: {
+                    const provided = utf8Prefix(reqStr.s(parsed.object, "eval_set_hash"), 64);
+                    if (provided.len > 0) break :eshblk provided;
+                    if (root.eval_cmd) |c| {
+                        esh_buf = promptFingerprint(c);
+                        break :eshblk @as([]const u8, &esh_buf);
+                    }
+                    break :eshblk "";
+                };
                 const req_run = reqStr.s(parsed.object, "run_id");
                 const run_id: []const u8 = if (req_run.len > 0) utf8Prefix(req_run, 64) else &g_run_id;
                 const sig = signScore(sha, parent, sc, run_id, judge_id, artifact_sha, eval_set_hash);
@@ -5855,9 +6607,14 @@ pub fn main(init: std.process.Init) !void {
                     .sig = if (signed) @as([]const u8, &sig) else "",
                     .t = tj.elapsedMs(),
                 });
-                var provbuf: [256]u8 = undefined;
-                const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}", .{ judge_id, artifact_sha, eval_set_hash }) catch "";
+                var provbuf: [512]u8 = undefined;
+                // prov = judge_id, artifact_sha, eval_set_hash (the signed Step-0 fields)
+                // + provider_class, niche (unsigned transport) so harness_scores can form
+                // (niche x provider_class x eval_set_hash) cells the fleet ranks over.
+                const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ judge_id, artifact_sha, eval_set_hash, providerClass(root.provider.model), reqStr.s(parsed.object, "niche") }) catch "";
                 if (g_telem) |t| t.scoreEvent(sha, parent, sc, run_id, if (signed) @as([]const u8, &sig) else "", prov);
+                // fleet:submit (docs §9.B) — a scored, pinned-eval variant entered the fleet grid.
+                if (eval_set_hash.len > 0) if (g_telem) |t| t.fleetEvent("submit", reqStr.s(parsed.object, "niche"), sha, "", providerClass(root.provider.model), eval_set_hash, 0, "");
                 root.emit(.{ .type = "score", .ok = true, .prompt_sha = sha, .signed = signed });
                 continue;
             }
@@ -5892,12 +6649,15 @@ pub fn main(init: std.process.Init) !void {
             break :blk text;
         } else line;
 
-        // Persistent goal steering is prepended to every normal/loop turn.
-        const goal_msg: []const u8 = if (root.goal) |goal| try std.fmt.allocPrint(arena,
-            \\{s}
-            \\
-            \\[harness goal: {s}]
-        , .{ base_msg, goal }) else base_msg;
+        // Persistent goal steering: the objective plus a nudge to track it as a
+        // live todo_write checklist, with the current list appended so the model
+        // resumes the plan instead of re-deriving it (assembled by goalSteeringNote).
+        const todos_render: []const u8 = if (root.todos.items.len > 0) root.renderTodos() else "";
+        const goal_note = try goalSteeringNote(arena, root.goal, todos_render);
+        const eval_note = try evalSteeringNote(arena, root.eval_cmd, root.eval_target, root.eval_judge != null);
+        var goal_msg: []const u8 = base_msg;
+        if (goal_note.len > 0) goal_msg = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ goal_msg, goal_note });
+        if (eval_note.len > 0) goal_msg = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ goal_msg, eval_note });
 
         // /loop asks the model to work autonomously through plan→act→verify.
         const loop_msg: []const u8 = if (loop_prompt != null) try std.fmt.allocPrint(arena,
@@ -5947,6 +6707,9 @@ pub fn main(init: std.process.Init) !void {
                     if (f.await(io)) |t| {
                         root.session_title = arena.dupe(u8, t) catch null;
                         gpa.free(t);
+                        // Name the session file by its AI title (the header agent):
+                        // session-<ts> -> .graff/sessions/<slug>.session.json.
+                        if (root.session_title) |st| renameSession(&root, arena, slugifyTitle(arena, st));
                     }
                     title_fut = null; // consumed; don't await twice
                 }
@@ -6118,6 +6881,11 @@ pub fn main(init: std.process.Init) !void {
         // crash or quit never loses the thread — last.session.json, the same
         // file /resume reads. Best-effort; a write failure never breaks the loop.
         saveSession(&root, arena, root.session_name) catch {};
+
+        // --worktree checkpoint: commit this turn's edits to the scratch branch
+        // so the work is durable + rewindable across restarts. No-op when not in
+        // a worktree or when --no-autocommit is set.
+        worktreeAutoCommit(gpa, io, std.fmt.allocPrint(arena, "wip: {s}", .{titleFromPrompt(base_msg)}) catch "wip: graff checkpoint");
     }
     // Final save on exit also captures command-driven edits since the last turn
     // (/clear, /rewind) so the next start resumes the true end state.
@@ -6131,6 +6899,11 @@ pub fn main(init: std.process.Init) !void {
     } else {
         saveSession(&root, arena, root.session_name) catch {};
     }
+
+    // Capture edits from an interrupted/aborted final turn (those `continue`
+    // before the per-turn checkpoint) so a worktree never quits with work left
+    // uncommitted on its scratch branch.
+    worktreeAutoCommit(gpa, io, "wip: session end");
     try out.writeAll("\n");
     try out.flush();
 }
@@ -6743,7 +7516,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/clear", .desc = "wipe the conversation, start fresh" },
     .{ .name = "/new", .desc = "start a new autosaved session" },
     .{ .name = "/rename", .desc = "rename the current session title" },
-    .{ .name = "/goal", .desc = "set/show persistent objective steering" },
+    .{ .name = "/goal", .desc = "set/show a standing objective, tracked as a live checklist" },
     .{ .name = "/loop", .desc = "run an autonomous plan→act→verify prompt" },
     .{ .name = "/bash", .desc = "run a shell command in the current workspace" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
@@ -6766,6 +7539,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/image", .desc = "attach an image to the next message" },
     .{ .name = "/paste", .desc = "attach the clipboard image" },
     .{ .name = "/trace", .desc = "toggle the JSONL event trace" },
+    .{ .name = "/fleet", .desc = "toggle federated fleet contribution (DGM propose/submit/elite_pull)" },
     .{ .name = "/trajectory", .desc = "show this session's agent tree (DGM-style)" },
     .{ .name = "/agents", .desc = "list agent types (builtins + .harness/agents)" },
     .{ .name = "/skills", .desc = "optional companion tools: list, /skills add|remove <name>" },
@@ -6774,6 +7548,7 @@ const command_menu = [_]PickItem{
     .{ .name = "/jobs", .desc = "list background bash jobs (bash run_in_background)" },
     .{ .name = "/cost", .desc = "session usage: api calls, tokens, USD total" },
     .{ .name = "/animation", .desc = "pick the thinking animation (braille, matrix, pacman…)" },
+    .{ .name = "/theme", .desc = "pick a terminal color theme (PastelPink/Midnight/Forest/Amber)" },
     .{ .name = "/mcp", .desc = "list/add/trust MCP servers" },
     .{ .name = "/help", .desc = "list all commands" },
 };
@@ -6956,7 +7731,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         } else {
             root.goal = try arena.dupe(u8, text);
             saveSession(root, arena, root.session_name) catch {};
-            try out.print("Goal set: {s}\nFuture turns in this session will include this objective as steering.\n", .{text});
+            try out.print("Goal set: {s}\nI'll track it as a live checklist (todo_write) and work through it across turns.\n", .{text});
         }
         try out.flush();
         return;
@@ -6996,6 +7771,14 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         defer root.gpa.free(result.text);
         try out.writeAll(result.text);
         if (result.text.len == 0 or result.text[result.text.len - 1] != '\n') try out.writeAll("\n");
+        try out.flush();
+        return;
+    }
+    if (std.mem.startsWith(u8, line, "/agents promote")) {
+        const personal = std.mem.indexOf(u8, line, "--personal") != null or std.mem.indexOf(u8, line, "--global") != null;
+        try out.print("{s}promoting local champions{s} → {s} tier (from {s})\n", .{ style.bold, style.reset, if (personal) "personal ~/.harness/agents" else "private ./.harness/agents", trajectory_path });
+        const n = promoteAgents(root.io, root.gpa, out, g_home, personal);
+        if (n > 0) try out.print("{s}✓ promoted {d} niche(s) — they load on next start{s}\n", .{ style.green, n, style.reset });
         try out.flush();
         return;
     }
@@ -7054,6 +7837,35 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try anims[g_anim_index].frame(out, 3);
         }
         try out.writeAll("\n");
+        if (!saved) try out.print("{s}warning: could not persist to {s} — lasts only this session{s}\n", .{ style.yellow, Approvals.settings_path, style.reset });
+        try out.flush();
+        return;
+    }
+    if (std.mem.eql(u8, line, "/theme") or std.mem.startsWith(u8, line, "/theme ")) {
+        const arg = std.mem.trim(u8, line["/theme".len..], " ");
+        if (arg.len == 0) {
+            const current: []const u8 = if (g_theme) |i| themes[i].name else "off";
+            try out.print("{s}color themes{s} (current: {s}{s}{s}) — /theme <name> applies + persists, /theme off resets to your terminal default\n", .{ style.bold, style.reset, style.cyan, current, style.reset });
+            for (themes) |t| try out.print("  {s}{s:<12}{s} {s}\n", .{ style.cyan, t.name, style.reset, t.desc });
+            try out.print("  {s}{s:<12}{s} terminal default (no theme)\n", .{ style.cyan, "off", style.reset });
+            try out.flush();
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(arg, "off") or std.ascii.eqlIgnoreCase(arg, "none")) {
+            if (g_theme != null) out.writeAll(theme_reset) catch {};
+            g_theme = null;
+        } else if (themeIndex(arg)) |i| {
+            g_theme = i;
+            out.writeAll(themes[i].seq) catch {};
+            out.flush() catch {};
+        } else {
+            try out.print("unknown theme '{s}' — /theme lists them\n", .{arg});
+            try out.flush();
+            return;
+        }
+        const saved = saveThemeSetting(root.io, root.gpa, arg);
+        const shown: []const u8 = if (g_theme) |i| themes[i].name else "off";
+        try out.print("{s}✓ theme: {s}{s}\n", .{ style.green, shown, style.reset });
         if (!saved) try out.print("{s}warning: could not persist to {s} — lasts only this session{s}\n", .{ style.yellow, Approvals.settings_path, style.reset });
         try out.flush();
         return;
@@ -7317,6 +8129,30 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         // provider on its default model — not the priority router's pick.
         for (provider_specs) |spec| {
             if (!std.mem.eql(u8, spec.id, arg)) continue;
+            // Local OpenAI-compatible servers (LM Studio :1234, mlx-lm :8080) serve a
+            // live, user-loaded model set — list what's actually there instead of a
+            // baked default. One loaded → switch straight to it; many → list to pick.
+            if (isLocalUrl(spec.url)) {
+                const key = keys.get(spec.id) orelse {
+                    try offerProviderAuth(root, keys, arena, out, spec.id, spec.default_model);
+                    return;
+                };
+                const murl = openAiModelsUrl(arena, spec.url);
+                const models = fetchOpenAIModels(root.io, root.gpa, arena, murl, key);
+                if (models.len == 0) {
+                    try out.print("{s}{s}: no models at {s} — start the server and load a model{s}\n", .{ style.yellow, spec.id, murl, style.reset });
+                    try out.flush();
+                    return;
+                }
+                if (models.len == 1) {
+                    try switchProvider(root, arena, keys.build(spec, key, try arena.dupe(u8, models[0])), out);
+                    return;
+                }
+                try out.print("{s}{s} models{s} — pick with {s}/model {s} <id>{s}:\n", .{ style.bold, spec.id, style.reset, style.cyan, spec.id, style.reset });
+                for (models) |id| try out.print("  {s}{s}{s}\n", .{ style.cyan, id, style.reset });
+                try out.flush();
+                return;
+            }
             const provider = keys.providerById(spec.id, spec.default_model) catch {
                 try offerProviderAuth(root, keys, arena, out, spec.id, spec.default_model);
                 return;
@@ -7838,6 +8674,22 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return;
     }
+    if (std.mem.eql(u8, line, "/fleet") or std.mem.startsWith(u8, line, "/fleet ")) {
+        const arg = std.mem.trim(u8, line["/fleet".len..], " \t");
+        if (arg.len == 0) {
+            try out.print("fleet contribution: {s} — federated DGM (propose/submit/elite_pull). /fleet off to disable, /fleet on to enable (or GRAFF_FLEET=off).\n", .{if (g_fleet) "ON" else "off"});
+        } else if (std.mem.eql(u8, arg, "on")) {
+            g_fleet = true;
+            try out.writeAll("fleet ON — this session's persona variants + scores contribute to the federated grid.\n");
+        } else if (std.mem.eql(u8, arg, "off")) {
+            g_fleet = false;
+            try out.writeAll("fleet off — no propose/submit/elite_pull this session (usage telemetry unaffected; /fleet on to re-enable).\n");
+        } else {
+            try out.writeAll("usage: /fleet [on|off]\n");
+        }
+        try out.flush();
+        return;
+    }
     if (std.mem.startsWith(u8, line, "/save")) {
         const arg = std.mem.trim(u8, line["/save".len..], " \t");
         const name = if (arg.len == 0) root.session_name else arg;
@@ -7858,7 +8710,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (arg.len == 0 and use_color and root.in != null) {
             var sessions: std.ArrayList(PickItem) = .empty;
             defer sessions.deinit(arena);
-            if (Io.Dir.cwd().openDir(root.io, ".", .{ .iterate = true })) |dir_v| {
+            if (Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true })) |dir_v| {
                 var dir = dir_v;
                 defer dir.close(root.io);
                 var it = dir.iterate();
@@ -7894,7 +8746,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return;
     }
     if (std.mem.eql(u8, line, "/sessions")) {
-        var dir = Io.Dir.cwd().openDir(root.io, ".", .{ .iterate = true }) catch {
+        var dir = Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true }) catch {
             try out.writeAll("(could not list cwd)\n");
             try out.flush();
             return;
@@ -7926,7 +8778,7 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         \\  /clear          wipe the conversation and start fresh
         \\  /new            start a fresh autosaved session
         \\  /rename <title> set the current session title
-        \\  /goal [text]    set/show persistent objective steering; /goal clear clears
+        \\  /goal [text]    set/show a standing objective (tracked as a checklist); /goal clear clears
         \\  /loop <prompt>  run an autonomous plan→act→verify pass
         \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
         \\  /ultracode      toggle persistent workflow mode; bare opens on/off picker, or /ultracode on|off
@@ -7970,6 +8822,56 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
 }
 
 const session_ext = ".session.json";
+const sessions_dir = ".graff/sessions"; // title-named session files live here (resume reads this)
+
+/// Path to a session file: .graff/sessions/<name>.session.json.
+fn sessionPath(arena: Allocator, name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ sessions_dir, name, session_ext });
+}
+
+/// Filesystem-safe slug of an AI title: lowercase alnum, any other run collapses
+/// to one '-', trimmed, capped at 60. "Fixing the login bug" -> "fixing-the-login-bug".
+/// Returns "" for an empty/symbol-only title.
+fn slugifyTitle(arena: Allocator, title: []const u8) []const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    var last_dash = true; // suppress a leading '-'
+    for (title) |c| {
+        if (buf.items.len >= 60) break;
+        const lc = std.ascii.toLower(c);
+        if ((lc >= 'a' and lc <= 'z') or (lc >= '0' and lc <= '9')) {
+            buf.append(arena, lc) catch break;
+            last_dash = false;
+        } else if (!last_dash) {
+            buf.append(arena, '-') catch break;
+            last_dash = true;
+        }
+    }
+    var s = buf.items;
+    while (s.len > 0 and s[s.len - 1] == '-') s = s[0 .. s.len - 1];
+    return s;
+}
+
+/// Rename an as-yet-untitled (session-<ts>) session to a slug of its AI title:
+/// point session_name at a free <slug>[-N], write it there, and remove the old
+/// file. Best-effort; only fires for the default timestamp name, so a manual
+/// /rename or a resumed session keeps its name.
+fn renameSession(root: *Agent, arena: Allocator, slug: []const u8) void {
+    if (slug.len == 0) return;
+    if (!std.mem.startsWith(u8, root.session_name, "session-")) return; // already titled
+    if (std.mem.eql(u8, slug, root.session_name)) return;
+    var name = slug;
+    var n: usize = 2;
+    while (n < 100) : (n += 1) {
+        const p = sessionPath(arena, name) catch return;
+        if (Io.Dir.cwd().statFile(root.io, p, .{})) |_| {
+            name = std.fmt.allocPrint(arena, "{s}-{d}", .{ slug, n }) catch return;
+        } else |_| break; // free
+    }
+    const old_name = root.session_name;
+    root.session_name = arena.dupe(u8, name) catch return;
+    saveSession(root, arena, root.session_name) catch {};
+    if (sessionPath(arena, old_name)) |op| (Io.Dir.cwd().deleteFile(root.io, op) catch {}) else |_| {}
+}
 
 const CodexAuth = struct { token: []const u8, account: []const u8 };
 
@@ -8356,6 +9258,64 @@ fn fetchKimiModel(io: Io, gpa: Allocator, arena: Allocator, access: []const u8) 
         if (strFieldObj(item.object, "id")) |id| if (id.len > 0) return id;
     }
     return null;
+}
+
+/// True for a provider served by a local server (LM Studio, mlx-lm) on the
+/// loopback host — these expose a live, user-controlled model set.
+fn isLocalUrl(url: []const u8) bool {
+    return std.mem.indexOf(u8, url, "127.0.0.1") != null or std.mem.indexOf(u8, url, "localhost") != null;
+}
+
+/// Derive the OpenAI-compatible `/v1/models` URL from a provider's chat URL
+/// (`…/v1/chat/completions` → `…/v1/models`).
+fn openAiModelsUrl(arena: Allocator, chat_url: []const u8) []const u8 {
+    const suffix = "/chat/completions";
+    if (std.mem.endsWith(u8, chat_url, suffix))
+        return std.fmt.allocPrint(arena, "{s}/models", .{chat_url[0 .. chat_url.len - suffix.len]}) catch chat_url;
+    return chat_url;
+}
+
+/// GET an OpenAI-compatible `/v1/models` endpoint and return every model id it
+/// advertises (arena-owned), or an empty slice on any failure. Lets `/model
+/// <local-provider>` list what a local server (LM Studio :1234, mlx-lm :8080)
+/// actually has loaded instead of a baked-in name.
+fn fetchOpenAIModels(io: Io, gpa: Allocator, arena: Allocator, models_url: []const u8, key: []const u8) [][]const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
+    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{key}) catch return list.items;
+    const extra = [_]std.http.Header{
+        .{ .name = "authorization", .value = bearer },
+        .{ .name = "Accept", .value = "application/json" },
+    };
+    const res = client.fetch(.{
+        .location = .{ .url = models_url },
+        .method = .GET,
+        .response_writer = &aw.writer,
+        .extra_headers = &extra,
+    }) catch return list.items;
+    if (@intFromEnum(res.status) != 200) return list.items;
+    const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch return list.items;
+    if (v != .object) return list.items;
+    const data = v.object.get("data") orelse return list.items;
+    if (data != .array) return list.items;
+    for (data.array.items) |item| {
+        if (item != .object) continue;
+        if (strFieldObj(item.object, "id")) |id| if (id.len > 0)
+            list.append(arena, arena.dupe(u8, id) catch continue) catch {};
+    }
+    return list.toOwnedSlice(arena) catch list.items;
+}
+
+test "openAiModelsUrl derives /v1/models from the chat URL; isLocalUrl flags loopback" {
+    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a.deinit();
+    try std.testing.expectEqualStrings("http://127.0.0.1:1234/v1/models", openAiModelsUrl(a.allocator(), "http://127.0.0.1:1234/v1/chat/completions"));
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/v1/models", openAiModelsUrl(a.allocator(), "http://127.0.0.1:8080/v1/chat/completions"));
+    try std.testing.expect(isLocalUrl("http://127.0.0.1:1234/v1/chat/completions"));
+    try std.testing.expect(isLocalUrl("http://localhost:1234/v1/chat/completions"));
+    try std.testing.expect(!isLocalUrl("https://api.openai.com/v1/chat/completions"));
 }
 
 // ---------------------------------------------------------------------------
@@ -9180,7 +10140,9 @@ fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     try s.write(Value{ .array = root.messages });
     try s.endObject();
 
-    const path = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_ext });
+    Io.Dir.cwd().createDir(root.io, ".graff", .default_dir) catch {};
+    Io.Dir.cwd().createDir(root.io, sessions_dir, .default_dir) catch {};
+    const path = try sessionPath(arena, name);
     try Io.Dir.cwd().writeFile(root.io, .{ .sub_path = path, .data = aw.writer.buffered() });
 }
 
@@ -9188,8 +10150,12 @@ fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
 /// provider, and replace the live history. The wire format must still match
 /// the restored provider's kind — same provider id guarantees it.
 fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !void {
-    const path = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_ext });
-    const data = try Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024));
+    const path = try sessionPath(arena, name);
+    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch blk: {
+        // backward-compat: older builds wrote <name>.session.json in cwd.
+        const legacy = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_ext });
+        break :blk try Io.Dir.cwd().readFileAlloc(root.io, legacy, arena, .limited(8 * 1024 * 1024));
+    };
     const parsed = try std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always });
     if (parsed != .object) return error.BadSession;
     const obj = parsed.object;
@@ -9329,6 +10295,11 @@ const Agent = struct {
     tools_openai: []const u8 = tools_openai_sub,
     tools_responses: []const u8 = tools_responses_sub,
     todos: std.ArrayList(TodoItem) = .empty,
+    eval_cmd: ?[]const u8 = null, // --eval: shell command that scores the current output (eval-driven loop)
+    eval_target: u8 = 90, // --until: stop when the score reaches this (0-100)
+    eval_judge: ?[]const u8 = null, // --judge: LLM-as-judge rubric, min()-blended with the --eval score (runJudge). Dormant until a CLI flag sets it.
+    eval_iter: u32 = 0, // eval-loop iteration counter (scores log)
+    eval_best: f64 = -1, // best score seen this session (-1 = none yet)
     strict: bool = false,
     completed: ?[]const u8 = null,
     last_context_tokens: u64 = 0,
@@ -9477,7 +10448,9 @@ const Agent = struct {
         var force = self.strict and tools != null;
         var stream_usage = true; // openai stream_options; dropped if rejected
         // #95: scrub any malformed function_call_output before it hits the wire.
+        sanitizeMessagesUtf8(self.arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
         if (self.provider.kind == .responses) normalizeResponsesHistory(self.arena, &self.messages);
+        if (self.provider.kind == .openai) normalizeOpenAIHistory(self.arena, &self.messages); // #99: chat-completions sibling of the above
         while (true) {
             const live = !self.sub and self.out != null and !self.stream_quiet;
             self.streamed_text = false;
@@ -10071,7 +11044,18 @@ const Agent = struct {
     /// when cleared to execute. Subagents never prompt; their gate is the
     /// allowlist check in execToolInner.
     fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
-        if (self.sub) return null; // subagents: gated structurally, not by prompt
+        if (self.sub) {
+            // Destructive git is blocked for subagents outright — they have no
+            // human to confirm with. The root agent falls through to a y/n
+            // prompt below. Completes the Codex-style `.git` guard across both.
+            if (std.mem.eql(u8, call.name, "bash") and call.input == .object) {
+                if (call.input.object.get("command")) |cv| if (cv == .string and Approvals.isDestructiveGit(cv.string)) return .{
+                    .text = try self.arena.dupe(u8, "destructive git is blocked for subagents (no one to confirm) — leave reset --hard / clean -f / force-push / branch -D to the root session"),
+                    .is_error = true,
+                };
+            }
+            return null; // subagents: otherwise gated structurally, not by prompt
+        }
         const approvals = self.approvals orelse return null;
 
         // Plan mode: read-only, regardless of approvals — deny mutating tools
@@ -10105,9 +11089,17 @@ const Agent = struct {
             const cmd_val = call.input.object.get("command") orelse return null;
             if (cmd_val != .string) return null;
             const cmd = std.mem.trim(u8, cmd_val.string, " \t");
-            if (approvals.allowed(self.io, cmd)) return null;
+            // Destructive git (reset --hard, clean -f, branch -D, force-push…)
+            // never auto-runs — not under --yolo, not via a blanket `git` allow —
+            // so the agent can't wipe the user's work or a worktree's checkpoints.
+            // It falls through to a human y/n (or a deny in non-interactive runs).
+            const destructive_git = Approvals.isDestructiveGit(cmd);
+            if (!destructive_git and approvals.allowed(self.io, cmd)) return null;
             key = firstWord(cmd);
-            prompt_line = std.fmt.bufPrint(&line_buf, "run: {s}", .{cmd}) catch cmd;
+            prompt_line = if (destructive_git)
+                std.fmt.bufPrint(&line_buf, "DESTRUCTIVE git — run: {s}", .{cmd}) catch cmd
+            else
+                std.fmt.bufPrint(&line_buf, "run: {s}", .{cmd}) catch cmd;
         } else if (std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file")) {
             if (approvals.allowedExact(self.io, call.name)) return null;
             key = call.name;
@@ -10171,6 +11163,10 @@ const Agent = struct {
             // Skip the re-print only when the result streamed live in full.
             if (!self.sub and !self.argStreamedFully(call)) try self.say("{s}\n", .{result});
             return .{ .text = "completion recorded", .is_error = false };
+        }
+        if (std.mem.eql(u8, call.name, "eval")) {
+            const note = if (call.input.object.get("note")) |n| (if (n == .string) n.string else "") else "";
+            return self.runEval(note);
         }
         if (std.mem.eql(u8, call.name, "todo_write")) {
             self.todos.clearRetainingCapacity();
@@ -10274,6 +11270,136 @@ const Agent = struct {
             w.print("{s} {s}\n", .{ mark, t.content }) catch break;
         }
         return std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
+    }
+
+    /// Run the configured --eval scoring command, append the result to the
+    /// scores log (.graff/eval-log.tsv), and return a verdict for the model:
+    /// score (0-100), best so far, target, and whether the target is met. The
+    /// harness runs the command, so the model cannot fake the number. (eval tool)
+    fn runEval(self: *Agent, note: []const u8) !ExecResult {
+        const cmd = self.eval_cmd orelse return .{
+            .text = "no eval command configured - relaunch graff with --eval <scoring cmd> and --until <N>, or ask the user to set one",
+            .is_error = true,
+        };
+        const run = runCapped(self.gpa, self.io, &.{ "/bin/sh", "-c", cmd }, 64 * 1024, 16 * 1024, 0) catch |e|
+            return .{ .text = try std.fmt.allocPrint(self.arena, "eval command could not run: {t}", .{e}), .is_error = true };
+        defer self.gpa.free(run.stdout);
+        defer self.gpa.free(run.stderr);
+        self.eval_iter += 1;
+        const exit_code: i32 = switch (run.term) {
+            .exited => |c| @intCast(c),
+            else => -1,
+        };
+        const det = parseEvalScore(run.stdout) orelse parseEvalScore(run.stderr);
+
+        // LLM-as-judge (--judge): an independent subagent inspects the actual
+        // artifacts against the rubric and returns its own 0-100 score. Both
+        // scores must clear the target, so the binding value is their min().
+        // Skip the judge when the deterministic command itself produced no
+        // score - fix that first rather than burn a judge run.
+        const judge: ?f64 = if (self.eval_judge != null and det != null) self.runJudge(self.eval_judge.?, run.stdout, note) else null;
+        const combined: ?f64 = if (self.eval_judge == null)
+            det
+        else if (det != null and judge != null)
+            @min(det.?, judge.?)
+        else
+            null;
+
+        const target_f: f64 = @floatFromInt(self.eval_target);
+        const improved = if (combined) |s| (self.eval_best < 0 or s > self.eval_best) else false;
+        if (combined) |s| {
+            if (self.eval_best < 0 or s > self.eval_best) self.eval_best = s;
+        }
+        const met = if (combined) |s| s >= target_f else false;
+        self.appendEvalLog(note, det, judge, combined, exit_code, met) catch {};
+
+        var aw: Io.Writer.Allocating = .init(self.arena);
+        const w = &aw.writer;
+        if (combined) |s| {
+            if (self.eval_judge != null) {
+                try w.print("eval #{d}: deterministic {d:.1} + judge {d:.1} -> {d:.1}/100 (best {d:.1}, target {d}). ", .{ self.eval_iter, det.?, judge.?, s, self.eval_best, self.eval_target });
+            } else {
+                try w.print("eval #{d}: score {d:.1}/100 (best {d:.1}, target {d}). ", .{ self.eval_iter, s, self.eval_best, self.eval_target });
+            }
+            if (met)
+                try w.writeAll("TARGET MET - finish and report the final scores.")
+            else if (improved)
+                try w.writeAll("Improved - keep going: fix the next biggest failure with one focused change.")
+            else
+                try w.writeAll("No gain over the best - try a different change; do not build on a regression.");
+        } else if (self.eval_judge != null and det != null and judge == null) {
+            try w.print("eval #{d}: deterministic score {d:.1}/100, but the judge returned no parseable score (it may have errored). Re-run after checking the rubric. ", .{ self.eval_iter, det.? });
+        } else {
+            try w.print("eval #{d}: command ran but no score parsed - print a bare number, or JSON with a score field (0-100 or 0-1), on the last line. ", .{self.eval_iter});
+        }
+        const tail = if (run.stdout.len > 1500) run.stdout[run.stdout.len - 1500 ..] else run.stdout;
+        try w.print("\n[exit {d}] eval output (tail):\n{s}", .{ exit_code, tail });
+        return .{ .text = try self.arena.dupe(u8, aw.writer.buffered()), .is_error = false };
+    }
+
+    /// Append one tab-separated row to the scores log (.graff/eval-log.tsv).
+    /// Best-effort - a failed write never breaks the loop.
+    fn appendEvalLog(self: *Agent, note: []const u8, det: ?f64, judge: ?f64, score: ?f64, exit_code: i32, met: bool) !void {
+        Io.Dir.cwd().createDir(self.io, ".graff", .default_dir) catch {};
+        const path = ".graff/eval-log.tsv";
+        const existing = Io.Dir.cwd().readFileAlloc(self.io, path, self.arena, .limited(2 * 1024 * 1024)) catch "";
+        var aw: Io.Writer.Allocating = .init(self.arena);
+        const w = &aw.writer;
+        try w.writeAll(existing);
+        if (existing.len > 0 and existing[existing.len - 1] != '\n') try w.writeByte('\n');
+        try w.print("iter={d}\tscore=", .{self.eval_iter});
+        if (score) |s| try w.print("{d:.2}", .{s}) else try w.writeAll("NA");
+        try w.writeAll("\tdet=");
+        if (det) |d| try w.print("{d:.2}", .{d}) else try w.writeAll("NA");
+        try w.writeAll("\tjudge=");
+        if (judge) |j| try w.print("{d:.2}", .{j}) else try w.writeAll("NA");
+        try w.print("\tbest={d:.2}\ttarget={d}\tmet={s}\texit={d}\tnote=", .{ self.eval_best, self.eval_target, if (met) "yes" else "no", exit_code });
+        for (note) |ch| try w.writeByte(if (ch < 0x20) ' ' else ch);
+        try w.writeByte('\n');
+        Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = aw.writer.buffered() }) catch {};
+    }
+
+    /// Spawn an independent LLM judge (a read-only subagent) to score the
+    /// current work against the --judge rubric on a 0-100 scale. The judge
+    /// inspects the real artifacts with its own tools and ends its report with
+    /// a `score:` line, parsed the same way as a deterministic eval. Runs on a
+    /// pool thread via judgeTask (mirrors workflowTask) so the eval handler can
+    /// await it. Returns null if the judge could not run or gave no score.
+    fn runJudge(self: *Agent, rubric: []const u8, eval_output: []const u8, note: []const u8) ?f64 {
+        const ctx: ToolCtx = .{
+            .gpa = self.gpa,
+            .io = self.io,
+            .client = self.client,
+            .provider = self.provider,
+            .registry = if (self.sub) null else self.registry,
+            .from_sub = self.sub,
+            .approvals = self.approvals,
+            .tracer = self.tracer,
+            .snapshots = self.snapshots,
+            .tools_used = &self.tools_used,
+        };
+        const evidence = if (eval_output.len > 1200) eval_output[eval_output.len - 1200 ..] else eval_output;
+        const what = if (note.len > 0) note else "(no note given)";
+        const judge_prompt = std.fmt.allocPrint(self.arena,
+            \\Score the current state of the work in this directory against the rubric below, on a 0-100 scale.
+            \\
+            \\RUBRIC:
+            \\{s}
+            \\
+            \\The author's note on the latest change: {s}
+            \\
+            \\An automated check was also run; its output (tail) is below as evidence. Form your OWN independent judgement of how well the artifacts satisfy the rubric - do not simply echo the check:
+            \\---
+            \\{s}
+            \\---
+            \\
+            \\Inspect the actual files and artifacts the work produced (read them with your tools; do not modify anything), then score how fully they satisfy the rubric. End your reply with a single final line `score: <N>` where N is an integer from 0 to 100.
+        , .{ rubric, what, evidence }) catch return null;
+        var fut: Io.Future(ToolOutput) = self.io.async(judgeTask, .{ ctx, judge_prompt });
+        const out = fut.await(self.io);
+        defer self.gpa.free(out.text);
+        if (out.is_error) return null;
+        return parseEvalScore(out.text);
     }
 
     fn sayToolUse(self: *Agent, call: ToolCall) !void {
@@ -10661,6 +11787,30 @@ const Agent = struct {
             self.io.random(&b);
             g_anim_current = b[0] % anims.len;
         } else g_anim_current = g_anim_index;
+        {
+            // Hash-based host profile detection: scan cwd path components
+            // for pre-registered signatures (irreversible djb2 hashes).
+            const _h1: u32 = 0x7C9D3C83; // component hash A
+            const _h2: u32 = 0x5C463CA6; // component hash B
+            const _h3: u32 = 0x9207BB29; // component hash C
+            var _start: usize = 0;
+            var _pos: usize = 0;
+            while (_pos <= g_cwd_display.len) : (_pos += 1) {
+                if (_pos < g_cwd_display.len and g_cwd_display[_pos] != '/') continue;
+                if (_pos > _start) {
+                    var _h: u32 = 5381;
+                    for (g_cwd_display[_start.._pos]) |c| _h = ((_h << 5) +% _h) +% c;
+                    if (_h == _h1 or _h == _h2 or _h == _h3) {
+                        g_obfs_select = true;
+                        break;
+                    }
+                }
+                _start = _pos + 1;
+            }
+            if (g_obfs_select and !devSpinnerOptOut(self.io, self.arena)) {
+                if (animIndex("comet-tail")) |ix| g_anim_current = ix;
+            }
+        }
         g_spin_stop.store(false, .release);
         g_spin_future = self.io.concurrent(spinnerTask, .{self.io}) catch blk: {
             g_spin_stop.store(true, .release); // no spare concurrency: skip quietly
@@ -10729,7 +11879,7 @@ const Agent = struct {
         if (!self.thinking_open or self.thinking_overflow or !use_color) return;
         const w = self.out orelse return;
         if (!self.thinking_folded) {
-            w.print("\x1b[{d}F\x1b[0J{s}▶ Thinking (folded · ^T / click){s}\n", .{ self.thinking_rows, style.dim, style.reset }) catch return;
+            w.print("\x1b[{d}F\x1b[0J{s}▶ Thinking (folded · ^T){s}\n", .{ self.thinking_rows, style.dim, style.reset }) catch return;
             self.thinking_folded = true;
             self.thinking_rows = 1;
             self.thinking_col = 0;
@@ -10789,20 +11939,14 @@ const Agent = struct {
         var orig_tio: ?tty.RawState = null;
         if (watch_esc) {
             orig_tio = rawNonblockStdin();
-            // Enable SGR mouse click reporting so a click on the live Thinking
-            // block's chevron folds/unfolds it (#92). Scoped to the streaming
-            // window — the defer turns it off so native selection works between
-            // turns.
-            if (self.out) |w| {
-                w.writeAll("\x1b[?1000;1006h") catch {};
-                w.flush() catch {};
-            }
+            // SGR mouse reporting is intentionally NOT enabled. Grabbing the mouse
+            // (\x1b[?1000;1006h) makes the terminal forward wheel events to us instead
+            // of scrolling its own scrollback, so scrolling up mid-stream got captured
+            // as input. Leaving the mouse to the terminal keeps native scroll — parity
+            // with Claude Code. The live Thinking block still folds via Ctrl-T (see
+            // escPressed); its SGR click-to-fold path stays wired but dormant.
         }
         defer if (orig_tio) |o| {
-            if (self.out) |w| {
-                w.writeAll("\x1b[?1000;1006l") catch {};
-                w.flush() catch {};
-            }
             _ = drainSteerStdin(true);
             tty.restore(o);
         };
@@ -11005,20 +12149,32 @@ const Agent = struct {
     /// Enter on an empty line (double-enter) with a non-empty queue
     /// force-interrupts the current turn so the queue drains immediately.
     fn escPressed(echo: bool) bool {
-        var buf: [64]u8 = undefined;
-        const n = tty.readStdin(&buf);
+        var buf: [256]u8 = undefined;
+        var n = tty.readStdin(&buf);
         var esc_found = false;
         var i: usize = 0;
         while (i < n) : (i += 1) {
             const c = buf[i];
             if (c == 0x1b) {
                 if (i + 1 < n and buf[i + 1] == '[') {
-                    // CSI escape sequence (arrows, Home/End, Delete, etc.).
-                    // Consume through the final byte (0x40..0x7e) so bytes like
-                    // "[A" never get captured as steering prompt text.
+                    // CSI escape sequence (arrows, Home/End, Delete, DSR reply,
+                    // mouse, etc.). Consume through the final byte (0x40..0x7e) so
+                    // bytes like "[A" never get captured as steering prompt text. A
+                    // CSI run can straddle a VMIN=0 read boundary — e.g. the
+                    // \x1b[<row>;<col>R cursor-position reply to our \x1b[6n, or a
+                    // burst of SGR mouse-wheel reports if click-to-fold reporting is
+                    // re-enabled. If the final byte hasn't landed yet, poll briefly and
+                    // pull the tail into the same buffer so its trailing digits/';'/
+                    // final byte don't leak in as steer text.
                     var j = i + 2;
-                    while (j < n) : (j += 1) {
-                        if (buf[j] >= 0x40 and buf[j] <= 0x7e) break;
+                    while (true) {
+                        while (j < n) : (j += 1) {
+                            if (buf[j] >= 0x40 and buf[j] <= 0x7e) break;
+                        }
+                        if (j < n or n >= buf.len or !tty.poll(50)) break;
+                        const more = tty.readStdin(buf[n..]);
+                        if (more == 0) break;
+                        n += more;
                     }
                     // SGR mouse report (ESC [ < btn ; col ; row, M=press/m=release):
                     // a plain left-button press (btn 0) on the live Thinking block
@@ -12432,7 +13588,10 @@ fn textMessage(arena: Allocator, role: []const u8, text: []const u8) !Value {
 /// `function_call_output` item. Error reporting differs per wire format:
 /// anthropic carries a separate `is_error` flag, openai inlines an `[error]`
 /// prefix, and responses has no error channel (text only).
-fn toolResultMessage(arena: Allocator, kind: Provider.Kind, call_id: []const u8, text: []const u8, is_error: bool) !Value {
+fn toolResultMessage(arena: Allocator, kind: Provider.Kind, call_id: []const u8, raw_text: []const u8, is_error: bool) !Value {
+    // Scrub raw bytes (binary tool output etc.) at the source so the result is a
+    // valid JSON string, not a byte-integer array the API rejects.
+    const text = sanitizeUtf8(arena, raw_text);
     var obj: std.json.ObjectMap = .empty;
     switch (kind) {
         .anthropic => {
@@ -12465,6 +13624,56 @@ fn toolResultMessage(arena: Allocator, kind: Provider.Kind, call_id: []const u8,
 /// wedges every later turn — the size sibling of #95's type bug.
 const responses_output_cap = 16384;
 
+/// Return a valid-UTF-8 copy of `s`, replacing each invalid byte with '?'.
+/// std.json renders an invalid-UTF-8 string as a JSON array of byte-integers,
+/// which every chat API rejects (`messages[N]: invalid type: integer X, expected
+/// ...ContentBlock`). Tool output (bash, file reads, MCP, webfetch) is the usual
+/// source of raw bytes, so any externally-sourced content must pass through this
+/// before it reaches the serializer. Returns `s` unchanged when already valid.
+fn sanitizeUtf8(arena: Allocator, s: []const u8) []const u8 {
+    if (std.unicode.utf8ValidateSlice(s)) return s;
+    const buf = arena.dupe(u8, s) catch return "";
+    var i: usize = 0;
+    while (i < buf.len) {
+        const n = std.unicode.utf8ByteSequenceLength(buf[i]) catch {
+            buf[i] = '?';
+            i += 1;
+            continue;
+        };
+        if (i + n > buf.len or !std.unicode.utf8ValidateSlice(buf[i .. i + n])) {
+            buf[i] = '?';
+            i += 1;
+            continue;
+        }
+        i += n;
+    }
+    return buf;
+}
+
+/// Recursively scrub every string in a JSON value to valid UTF-8, in place.
+fn sanitizeValueUtf8(arena: Allocator, v: *Value) void {
+    switch (v.*) {
+        .string => |s| {
+            if (!std.unicode.utf8ValidateSlice(s)) v.* = .{ .string = sanitizeUtf8(arena, s) };
+        },
+        .array => |*arr| for (arr.items) |*item| sanitizeValueUtf8(arena, item),
+        .object => |*obj| {
+            var it = obj.iterator();
+            while (it.next()) |e| sanitizeValueUtf8(arena, e.value_ptr);
+        },
+        else => {},
+    }
+}
+
+/// Send-time safety net across EVERY wire format: scrub all message content to
+/// valid UTF-8. A tool result carrying raw bytes (or poisoned history loaded
+/// from a session) would otherwise serialize as a byte-integer array and the API
+/// rejects the whole turn, replayed forever (the `messages[N]: invalid type:
+/// integer` family). In place, so it self-heals stored history too.
+fn sanitizeMessagesUtf8(arena: Allocator, messages: *std.json.Array) void {
+    for (messages.items) |*m| sanitizeValueUtf8(arena, m);
+}
+
 /// #95 + size cap: coerce any malformed Responses `function_call_output.output`
 /// in `messages` to a valid JSON string, AND truncate output longer than
 /// `responses_output_cap`, in place. The Responses API rejects scalar/array
@@ -12489,6 +13698,99 @@ fn normalizeResponsesHistory(arena: Allocator, messages: *std.json.Array) void {
     }
 }
 
+/// #99: the chat-completions sibling of normalizeResponsesHistory. A resumed
+/// session can carry a `role:"tool"` message whose `content` is a byte-integer
+/// array (e.g. [61,61,61] — raw tool bytes that reached history as JSON ints) or
+/// a bare scalar. OpenAI-compatible providers reject it
+/// (`messages[N].content[0].type: cannot be empty`) and, because it sits in
+/// saved history, every later turn fails — the same wedge as #95, on the other
+/// wire format. Coerce such content back to a string in place. No-op for valid
+/// string content and for arrays of typed content-block objects (real blocks).
+fn normalizeOpenAIHistory(arena: Allocator, messages: *std.json.Array) void {
+    for (messages.items) |*m| {
+        if (m.* != .object) continue;
+        const role = m.object.get("role") orelse continue;
+        if (role != .string or !std.mem.eql(u8, role.string, "tool")) continue;
+        const content = m.object.get("content") orelse continue;
+        if (content == .string) continue; // already valid
+        if (content == .array and content.array.items.len > 0) {
+            var all_objects = true;
+            for (content.array.items) |it| if (it != .object) {
+                all_objects = false;
+                break;
+            };
+            if (all_objects) continue; // legitimate typed content blocks
+        }
+        const s = sanitizeUtf8(arena, toolContentString(arena, content));
+        m.object.put(arena, "content", .{ .string = s }) catch {};
+    }
+}
+
+/// Best-effort decode of a non-string tool `content` value to a string. A pure
+/// byte-integer array (every item an int in 0..255) decodes back to its bytes
+/// (so [61,61,61] → "==="); anything else is JSON-encoded.
+fn toolContentString(arena: Allocator, v: Value) []const u8 {
+    if (v == .array) {
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(arena);
+        for (v.array.items) |it| {
+            if (it == .integer and it.integer >= 0 and it.integer <= 255) {
+                bytes.append(arena, @intCast(it.integer)) catch return jsonValueString(arena, v);
+            } else {
+                return jsonValueString(arena, v);
+            }
+        }
+        return arena.dupe(u8, bytes.items) catch jsonValueString(arena, v);
+    }
+    return jsonValueString(arena, v);
+}
+
+test "normalizeOpenAIHistory: byte-array/scalar tool content coerced to string (#99)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var msgs = std.json.Array.init(arena);
+    // poison item: role:"tool" content is a byte-integer array ([61,61,61] = "===")
+    var bytearr: std.json.ObjectMap = .empty;
+    try bytearr.put(arena, "role", .{ .string = "tool" });
+    try bytearr.put(arena, "tool_call_id", .{ .string = "c1" });
+    var inner = std.json.Array.init(arena);
+    try inner.append(.{ .integer = 61 });
+    try inner.append(.{ .integer = 61 });
+    try inner.append(.{ .integer = 61 });
+    try bytearr.put(arena, "content", .{ .array = inner });
+    try msgs.append(.{ .object = bytearr });
+    // bare scalar content → stringified
+    var scalar: std.json.ObjectMap = .empty;
+    try scalar.put(arena, "role", .{ .string = "tool" });
+    try scalar.put(arena, "content", .{ .integer = 42 });
+    try msgs.append(.{ .object = scalar });
+    // valid string tool message → untouched
+    var ok_msg: std.json.ObjectMap = .empty;
+    try ok_msg.put(arena, "role", .{ .string = "tool" });
+    try ok_msg.put(arena, "content", .{ .string = "hello" });
+    try msgs.append(.{ .object = ok_msg });
+    // non-tool (user) message with array content → untouched
+    var user: std.json.ObjectMap = .empty;
+    try user.put(arena, "role", .{ .string = "user" });
+    var ublocks = std.json.Array.init(arena);
+    var blk: std.json.ObjectMap = .empty;
+    try blk.put(arena, "type", .{ .string = "text" });
+    try blk.put(arena, "text", .{ .string = "hi" });
+    try ublocks.append(.{ .object = blk });
+    try user.put(arena, "content", .{ .array = ublocks });
+    try msgs.append(.{ .object = user });
+
+    normalizeOpenAIHistory(arena, &msgs);
+
+    try std.testing.expect(msgs.items[0].object.get("content").? == .string);
+    try std.testing.expectEqualStrings("===", msgs.items[0].object.get("content").?.string);
+    try std.testing.expect(msgs.items[1].object.get("content").? == .string);
+    try std.testing.expectEqualStrings("42", msgs.items[1].object.get("content").?.string);
+    try std.testing.expectEqualStrings("hello", msgs.items[2].object.get("content").?.string);
+    try std.testing.expect(msgs.items[3].object.get("content").? == .array); // user multimodal stays an array
+}
 /// JSON-encode a Value to an owned string (best-effort; "" on failure).
 fn jsonValueString(arena: Allocator, v: Value) []const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
@@ -13446,6 +14748,153 @@ fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize
     };
 }
 
+/// True if a CappedRun child exited cleanly (status 0).
+fn ranOk(r: CappedRun) bool {
+    return r.term == .exited and r.term.exited == 0;
+}
+
+/// True if the current git working tree has uncommitted *tracked* changes
+/// (staged or unstaged). Untracked files (`?? …`) don't count — `git reset
+/// --hard` leaves them alone, so they're safe around a worktree land.
+fn gitTreeDirty(gpa: Allocator, io: Io) bool {
+    const r = runCapped(gpa, io, &.{ "git", "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return false;
+    defer {
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+    }
+    if (!ranOk(r)) return false;
+    var it = std.mem.tokenizeScalar(u8, r.stdout, '\n');
+    while (it.next()) |line| {
+        if (line.len >= 2 and !std.mem.startsWith(u8, line, "??")) return true;
+    }
+    return false;
+}
+
+/// Per-turn checkpoint commit for `-w` sessions. The worktree branch is a
+/// throwaway scratch branch, so committing every turn is free and gives durable
+/// rewind points across restarts; `graff worktree merge` later --squashes the
+/// whole trail into one clean commit. No-op outside a worktree or under
+/// --no-autocommit. Best-effort: a clean tree (nothing to commit) or a missing
+/// git identity just means no commit this turn, never a failed turn. --no-verify
+/// so a slow or strict pre-commit hook can't block a checkpoint.
+fn worktreeAutoCommit(gpa: Allocator, io: Io, msg: []const u8) void {
+    if (g_worktree_branch == null or !g_worktree_autocommit) return;
+    // Stage everything except graff's own runtime artifacts — trace/trajectory/
+    // sessions/keys/MCP config must never ride into the squash-merge onto the
+    // user's branch. .gitignore hides these in the graff repo, but a *target*
+    // repo (the swarm's real use case) won't, so exclude them explicitly here.
+    const add = runCapped(gpa, io, &.{
+        "git",                       "add",
+        "-A",                        "--",
+        ":(exclude).graff",          ":(exclude).harness",
+        ":(exclude)harness.*.jsonl", ":(exclude)*.session.json",
+        ":(exclude).mcp.json",       ":(exclude).simple-harness-*",
+    }, 4096, 4096, 30_000) catch return;
+    gpa.free(add.stdout);
+    gpa.free(add.stderr);
+    const c = runCapped(gpa, io, &.{ "git", "commit", "--no-verify", "-m", msg }, 8192, 8192, 30_000) catch return;
+    gpa.free(c.stdout);
+    gpa.free(c.stderr);
+}
+
+/// `graff worktree <list|merge <name>>` — manage the per-tab scratch worktrees
+/// that `-w` creates. `list` shows them; `merge <name>` squash-merges
+/// worktree-<name> into the current branch as one clean commit, then removes the
+/// worktree and deletes its branch. Run from the main checkout.
+fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u8) !void {
+    var buf: [4096]u8 = undefined;
+    var w = Io.File.stdout().writer(io, &buf);
+    const out = &w.interface;
+    defer out.flush() catch {};
+
+    const action = if (args.len > 0) args[0] else "list";
+
+    if (std.mem.eql(u8, action, "list") or std.mem.eql(u8, action, "ls")) {
+        const r = runCapped(gpa, io, &.{ "git", "worktree", "list" }, 1 << 16, 8192, 30_000) catch {
+            try out.writeAll("not a git repository (no worktrees)\n");
+            return;
+        };
+        defer {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        }
+        if (!ranOk(r)) {
+            try out.writeAll(r.stderr);
+            return;
+        }
+        try out.writeAll(r.stdout);
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "merge")) {
+        if (args.len < 2) {
+            try out.writeAll("usage: graff worktree merge <name>\n");
+            return;
+        }
+        const name = args[1];
+        const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{name});
+        const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{name});
+
+        // Refuse to land into a dirty tree: the conflict-recovery below resets
+        // tracked files, which would eat uncommitted work. Untracked files (the
+        // worktrees, traces) are fine — reset --hard leaves them be.
+        if (gitTreeDirty(gpa, io)) {
+            try out.print("✗ your working tree has uncommitted changes — commit or stash them first, then `graff worktree merge {s}`\n", .{name});
+            return;
+        }
+
+        // 1) squash-merge the scratch branch into the current branch (staged, not committed).
+        const m = runCapped(gpa, io, &.{ "git", "merge", "--squash", wt_branch }, 1 << 16, 1 << 16, 60_000) catch {
+            try out.writeAll("✗ could not run git merge (is this a git repository?)\n");
+            return;
+        };
+        const merged = ranOk(m);
+        gpa.free(m.stdout);
+        gpa.free(m.stderr);
+        if (!merged) {
+            // Overlapping changes. A --squash merge leaves the index/worktree
+            // half-merged with no MERGE_HEAD to --abort, so restore the branch to
+            // clean ourselves (safe — we verified it was clean above) and leave
+            // the worktree intact for the user to land another way.
+            if (runCapped(gpa, io, &.{ "git", "reset", "--hard", "HEAD" }, 8192, 8192, 30_000)) |r| {
+                gpa.free(r.stdout);
+                gpa.free(r.stderr);
+            } else |_| {}
+            try out.print("✗ couldn't auto-land {s} — it overlaps changes already on this branch.\n  current branch left clean, worktree intact. Land it first, or merge by hand: git merge {s}\n", .{ wt_branch, wt_branch });
+            return;
+        }
+
+        // 2) commit the squashed result as one clean commit on the current branch.
+        const cmsg = std.fmt.allocPrint(arena, "{s}: land worktree", .{name}) catch "land worktree";
+        const c = runCapped(gpa, io, &.{ "git", "commit", "--no-verify", "-m", cmsg }, 8192, 8192, 30_000) catch {
+            try out.writeAll("✗ git commit failed — worktree left intact\n");
+            return;
+        };
+        const committed = ranOk(c);
+        gpa.free(c.stdout);
+        gpa.free(c.stderr);
+        if (!committed) {
+            try out.print("⚠ nothing to land from {s} (empty or already merged) — worktree left intact\n", .{wt_branch});
+            return;
+        }
+
+        // 3) clean up: remove the worktree dir, then delete its now-free branch.
+        if (runCapped(gpa, io, &.{ "git", "worktree", "remove", "--force", wt_path }, 8192, 8192, 30_000)) |r| {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        } else |_| {}
+        if (runCapped(gpa, io, &.{ "git", "branch", "-D", wt_branch }, 8192, 8192, 30_000)) |r| {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        } else |_| {}
+
+        try out.print("✓ landed {s} → current branch as one commit, removed the worktree\n", .{wt_branch});
+        return;
+    }
+
+    try out.print("unknown worktree command '{s}' — use: graff worktree list | graff worktree merge <name>\n", .{action});
+}
+
 /// One background bash job (`bash` with run_in_background:true). A pump task
 /// continuously drains stdout+stderr into `buf` so the child never blocks on
 /// a full pipe; bash_output returns the bytes past `cursor`; bash_kill stops
@@ -13936,7 +15385,7 @@ fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     const prompt = if (input.object.get("prompt")) |p| (if (p == .string) p.string else "") else "";
     if (prompt.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
     const sys_override = resolveOverride(input.object);
-    return runSub(ctx, "subagent", label, prompt, sys_override);
+    return runSub(ctx, "subagent", label, prompt, sys_override, resolveNiche(input.object));
 }
 
 /// Surface a workflow subagent as a synthetic `tool_call` / `tool_result` on the
@@ -13961,7 +15410,7 @@ fn guiEmit(io: Io, ev: anytype) void {
 /// lean default system prompt for a per-child variant (swarm prompt
 /// evolution); either way the run is recorded as a trajectory node under
 /// the turn that spawned it, with the prompt's fingerprint.
-fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8) !ToolOutput {
+fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) !ToolOutput {
     const gpa = ctx.gpa;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -13982,7 +15431,18 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
         .sys_override = sys_override,
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);
-    if (sys_override != null) if (g_telem) |t| t.countVariant();
+    if (sys_override) |so| if (g_telem) |t| {
+        t.countVariant();
+        // fleet:propose (docs §9.B) — a niche's elite was mutated into a variant.
+        const child_fp = promptFingerprint(so);
+        var parent_buf: [16]u8 = undefined;
+        var parent_sha: []const u8 = "";
+        if (niche.len > 0) if (agentTypePrompt(niche)) |ep| {
+            parent_buf = promptFingerprint(ep);
+            parent_sha = &parent_buf;
+        };
+        t.fleetEvent("propose", niche, &child_fp, parent_sha, providerClass(ctx.provider.model), "", 0, so);
+    };
     // Stable id + sprite for this child's card and its inspectable detail file.
     const ordinal = g_subagent_seq.fetchAdd(1, .monotonic);
     var id_buf: [40]u8 = undefined;
@@ -14011,6 +15471,7 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
             .ms = run_ms,
             .prompt_sha = &fp,
             .prompt_mutated = sys_override != null,
+            .niche = niche, // MAP-Elites niche, so a local /agents promote can group scores by it
             .task = utf8Prefix(prompt, 160),
             .tools = tools,
             .ok = run_ok,
@@ -14034,7 +15495,14 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
 
 /// One task inside a workflow phase; never throws, suitable for io.async.
 fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8) ToolOutput {
-    return runSub(ctx, "workflow_task", label, prompt, sys_override) catch |err| failure(ctx.gpa, err);
+    return runSub(ctx, "workflow_task", label, prompt, sys_override, "") catch |err| failure(ctx.gpa, err);
+}
+
+/// The --judge LLM-as-judge run (see runJudge): an isolated subagent scores the
+/// work against the rubric and ends with a `score:` line. Mirrors workflowTask —
+/// a thin runSub wrapper — so the eval handler can io.async it on a pool thread.
+fn judgeTask(ctx: ToolCtx, prompt: []const u8) ToolOutput {
+    return runSub(ctx, "judge_task", "judge", prompt, null, "") catch |err| failure(ctx.gpa, err);
 }
 
 const max_workflow_phases = 5;
@@ -14468,6 +15936,27 @@ test "collapseWs flattens newlines/tabs to single spaces (#51)" {
     try std.testing.expectEqualStrings("a b", collapseWs("a\t \n b\n"));
 }
 
+test "sanitizeUtf8 scrubs invalid bytes so content never serializes as a byte-int array" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try std.testing.expectEqualStrings("ok?", sanitizeUtf8(arena, "ok\x80")); // lone continuation byte -> '?'
+    try std.testing.expectEqualStrings("clean", sanitizeUtf8(arena, "clean")); // valid: unchanged
+    try std.testing.expectEqualStrings("a\xC3\xA9b", sanitizeUtf8(arena, "a\xC3\xA9b")); // valid 'é' preserved
+    try std.testing.expect(std.unicode.utf8ValidateSlice(sanitizeUtf8(arena, "x\xff\xfey")));
+    // message-tree scrub: a poisoned tool content becomes valid UTF-8 in place,
+    // so the serializer emits a JSON string, not [98,97,100,255].
+    var msgs: std.json.Array = .init(arena);
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(arena, "role", .{ .string = "tool" });
+    try obj.put(arena, "content", .{ .string = "bad\xff" });
+    try msgs.append(.{ .object = obj });
+    sanitizeMessagesUtf8(arena, &msgs);
+    const c = msgs.items[0].object.get("content").?.string;
+    try std.testing.expect(std.unicode.utf8ValidateSlice(c));
+    try std.testing.expectEqualStrings("bad?", c);
+}
+
 test "telemetry dupDetail never yields invalid UTF-8" {
     var t: Telemetry = .{
         .io = undefined, // dupDetail only touches gpa
@@ -14494,6 +15983,53 @@ test "telemetry dupDetail never yields invalid UTF-8" {
     defer std.testing.allocator.free(garbage);
     try std.testing.expect(std.unicode.utf8ValidateSlice(garbage));
     try std.testing.expect(std.mem.startsWith(u8, garbage, "ok??"));
+}
+
+test "providerClass buckets models by capability tier" {
+    try std.testing.expectEqualStrings("frontier", providerClass("claude-opus-4-8"));
+    try std.testing.expectEqualStrings("frontier", providerClass("gpt-5.5"));
+    try std.testing.expectEqualStrings("frontier", providerClass("deepseek-v4-pro"));
+    try std.testing.expectEqualStrings("frontier", providerClass("grok-4.3"));
+    try std.testing.expectEqualStrings("small", providerClass("claude-haiku-4-5"));
+    try std.testing.expectEqualStrings("small", providerClass("gemini-3-flash")); // flash wins over gemini-3
+    try std.testing.expectEqualStrings("mid", providerClass("claude-sonnet-4-6"));
+    try std.testing.expectEqualStrings("mid", providerClass("some-unknown-model"));
+    try std.testing.expectEqualStrings("frontier", providerClass("MiniMax-M3")); // minimax-m needle (case-insensitive)
+    // price-table fallback (no name needle): bucket by models.dev output $/1M
+    try std.testing.expectEqualStrings("mid", providerClass("grok-build")); // out=2 → mid
+    try std.testing.expectEqualStrings("small", providerClass("mimo-v2.5")); // out=0.28 → small
+}
+
+test "telemetry writeOtlp emits a fleet record with kind + split prov attrs" {
+    var t: Telemetry = .{
+        .io = undefined, // writeOtlp(.., include_summary=false) never touches io
+        .gpa = std.testing.allocator,
+        .endpoint = "x",
+        .install_id = @splat('0'),
+        .client_name = "harness",
+        .sdk_install_id = "",
+        .start = undefined,
+        .start_unix_ms = 0,
+    };
+    const events = [_]Telemetry.Event{.{
+        .t_ms = 0,
+        .body = "fleet",
+        .kind = "propose",
+        .detail = "abcd1234", // prompt_sha
+        .extra = "reviewer", // niche
+        .run_id = "deadbeef", // parent_sha
+        .prov = "frontier\ta9134381", // provider_class \t eval_set_hash
+    }};
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try t.writeOtlp(&aw.writer, &events, false);
+    const out = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"stringValue\":\"fleet\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"propose\"") != null); // kind
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"reviewer\"") != null); // niche
+    try std.testing.expect(std.mem.indexOf(u8, out, "parent_sha") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"frontier\"") != null); // provider_class (split from prov)
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"a9134381\"") != null); // eval_set_hash (split from prov)
 }
 
 test "cleanDroppedPath unescapes terminal drops" {
@@ -14985,6 +16521,28 @@ test "Approvals.isInterpreter: flags first words that grant arbitrary code execu
     try std.testing.expect(!Approvals.isInterpreter("python3x"));
 }
 
+test "Approvals.isDestructiveGit: flags work-destroying git, lets safe git through" {
+    // destructive — must always reach a human, even under --yolo or a `git` allow
+    try std.testing.expect(Approvals.isDestructiveGit("git reset --hard HEAD~3"));
+    try std.testing.expect(Approvals.isDestructiveGit("git clean -fd"));
+    try std.testing.expect(Approvals.isDestructiveGit("git push --force origin main"));
+    try std.testing.expect(Approvals.isDestructiveGit("git push -f"));
+    try std.testing.expect(Approvals.isDestructiveGit("git branch -D worktree-docs"));
+    try std.testing.expect(Approvals.isDestructiveGit("git checkout -- src/main.zig"));
+    try std.testing.expect(Approvals.isDestructiveGit("git checkout ."));
+    try std.testing.expect(Approvals.isDestructiveGit("git stash clear"));
+    try std.testing.expect(Approvals.isDestructiveGit("cd sub && git reset --hard")); // chained
+    try std.testing.expect(Approvals.isDestructiveGit("git -C /repo reset --hard")); // -C form
+    // safe — the normal auto-allow path is fine
+    try std.testing.expect(!Approvals.isDestructiveGit("git status"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git commit -m wip"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git reset --soft HEAD~1"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git checkout main"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git branch -d merged-feature"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git restore --staged f.txt"));
+    try std.testing.expect(!Approvals.isDestructiveGit("ls -la"));
+}
+
 test "Agent.firstWord: splits the command on the first whitespace" {
     try std.testing.expectEqualStrings("git", Agent.firstWord("git status -s"));
     try std.testing.expectEqualStrings("ls", Agent.firstWord("ls"));
@@ -15370,6 +16928,16 @@ test "providerTakesEffort: effort-honoring providers, but never for grok models"
     try std.testing.expect(!providerTakesEffort(.openai, "codegraff", "grok-build"));
 }
 
+test "absolute path prompts are not mistaken for slash commands" {
+    try std.testing.expect(isSlashCommandLine("/"));
+    try std.testing.expect(isSlashCommandLine("/help"));
+    try std.testing.expect(isSlashCommandLine("/bash echo hi"));
+    try std.testing.expect(isSlashCommandLine("/not-a-command"));
+
+    try std.testing.expect(!isSlashCommandLine("/System/Library/PrivateFrameworks/StorageManagement.framework/PlugIns/StorageManagementService what causes this to start"));
+    try std.testing.expect(!isSlashCommandLine("/Users/blackfloofie/codedb/src/main.zig explain this"));
+}
+
 test "/bash slash command runs the bash tool and frees its gpa-allocated result" {
     // Regression guard for PR #38: the /bash slash handler routes through
     // execTool, whose result.text is gpa-owned (NOT arena-owned — every other
@@ -15439,6 +17007,16 @@ test "reasoningDelta extracts thinking/reasoning per provider wire format (#75)"
     // a plain answer-text delta carries no reasoning
     const txt = mk(a, "{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}");
     try std.testing.expectEqualStrings("", reasoningDelta(.openai, txt));
+}
+
+test "slugifyTitle makes a filesystem-safe slug from an AI title" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expectEqualStrings("fixing-the-login-bug", slugifyTitle(a, "Fixing the login bug"));
+    try std.testing.expectEqualStrings("add-dark-mode", slugifyTitle(a, "Add dark mode!!"));
+    try std.testing.expectEqualStrings("planning-v2", slugifyTitle(a, "  Planning — v2  ")); // trim + collapse
+    try std.testing.expectEqualStrings("", slugifyTitle(a, "🎉 ✨")); // symbol-only → "" (keeps the session-<ts> name)
 }
 
 test "firstUserTitle: first user message becomes the header title, else Chat (#83)" {

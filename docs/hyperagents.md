@@ -427,9 +427,17 @@ returns the live champions and emits `fleet:elite_pull`; `proposeVariant(...)`
 
 - **Scaffolded now:** the migration, the `harness_elites` table + fleet-fitness
   view, the `GET /v1/elites` endpoint, score-ingest capture of the signed
-  fields, and the SDK `fleet` signal emitters.
-- **TODO (logic, not wiring):** the LCB + anomaly-ejection in C (the scaffold
-  ranks by mean with a hard K-install floor), the artifact re-verification for
-  golden tasks, the auto-promote margin/window rule in D, the provider-class
-  threshold table, and graff-side startup pull + `loadAgentTypes` preference for
-  a live fleet elite (Step 4).
+  fields, the SDK `fleet` signal emitters, and — as of this change — the
+  **harness-side `fleet` emitters too**: `Telemetry.fleetEvent` (body `fleet`,
+  matching the SDK `_fleet_signal`), `fleet:propose` at the variant spawn
+  (`runSub`), `fleet:submit` at the `score` write-back, a `providerClass()`
+  tier tag, and the graff-side startup pull (`pullElites` → `fleet:elite_pull`,
+  with `loadAgentTypes`/builtins deferring to a live champion's prompt). Verified
+  live: a harness session moved `/v1/stats` `submits` and `elite_pulls`.
+- **TODO (worker-only, not in this repo):** the LCB + anomaly-ejection in C (the
+  scaffold ranks by mean with a hard K-install floor), the artifact
+  re-verification for golden tasks, and the auto-promote margin/window rule in D
+  (so `promotes` / `live_cells` move). The harness side is now complete: the
+  `fleet` emitters, a curated-table + models.dev-price `providerClass()`, the
+  startup elite-pull, and the `GRAFF_FLEET` env / `/fleet` opt-out (live A/B
+  verified — `GRAFF_FLEET=off` leaves `proposes` flat while `variants` still ticks).

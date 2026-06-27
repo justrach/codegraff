@@ -9,6 +9,7 @@ node_modules/
 harness.trace.jsonl
 harness.trajectory.jsonl
 .harness/
+.graff/worktrees/
 .claude/scheduled_tasks.lock
 *.session.json
 .mcp.json
