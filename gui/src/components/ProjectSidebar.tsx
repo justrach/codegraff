@@ -29,6 +29,7 @@ import { Button } from "./ui/Button";
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -50,7 +51,7 @@ function SidebarWatermark() {
   return (
     <button
       type="button"
-      className="pointer-events-auto flex cursor-pointer items-center justify-start gap-2 rounded-lg px-2 py-1 text-sm font-medium tracking-tight text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+      className="pointer-events-auto flex w-full cursor-pointer items-center justify-start gap-2 rounded-lg px-2 py-1 text-sm font-medium tracking-tight text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
       aria-label="Open Codegraff on GitHub"
       title="Open Codegraff on GitHub"
       onClick={handleOpenGithub}
@@ -173,7 +174,7 @@ export function ProjectSidebar({
           />
         </SidebarHeader>
 
-        <SidebarContent className="select-none pb-16">
+        <SidebarContent className="select-none pb-2">
           <SidebarGroup className="pt-0">
             <div className="mb-1 flex h-7 items-center justify-between px-2">
               <SidebarGroupLabel className="h-full px-0 font-medium">
@@ -230,9 +231,9 @@ export function ProjectSidebar({
           </SidebarGroup>
         </SidebarContent>
 
-        <div className="pb-3">
+        <SidebarFooter className="relative shrink-0 px-3 pb-3 pt-3 before:pointer-events-none before:absolute before:inset-x-0 before:-top-12 before:h-12 before:bg-gradient-to-t before:from-sidebar before:to-transparent">
           <SidebarWatermark />
-        </div>
+        </SidebarFooter>
       </Sidebar>
     );
   }
@@ -258,7 +259,7 @@ export function ProjectSidebar({
         ) : null}
       </SidebarHeader>
 
-      <SidebarContent className="select-none pb-24">
+      <SidebarContent className="select-none pb-2">
         <SidebarGroup className="pt-0">
           <div className="mb-1 flex h-7 items-center justify-between px-2">
             <SidebarGroupLabel className="h-full px-0 font-medium">
@@ -446,15 +447,12 @@ export function ProjectSidebar({
 
       </SidebarContent>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-3">
-        <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-sidebar via-sidebar/95 to-transparent" />
+      <SidebarFooter className="relative shrink-0 px-3 pb-3 pt-3 before:pointer-events-none before:absolute before:inset-x-0 before:-top-12 before:h-12 before:bg-gradient-to-t before:from-sidebar before:to-transparent">
         <div className="relative flex flex-col gap-2">
           <SidebarWatermark />
-          <div className="pointer-events-auto">
-            <SidebarSettingsControl onOpenSettings={onOpenSettings} />
-          </div>
+          <SidebarSettingsControl onOpenSettings={onOpenSettings} />
         </div>
-      </div>
+      </SidebarFooter>
     </Sidebar>
   );
 }
