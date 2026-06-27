@@ -1,9 +1,9 @@
 let inFlight = false;
 
 /**
- * Native mer GUI currently runs without the old Tauri updater plugins. Keep the
- * update entry point available so release-parity UI can call it, but defer the
- * actual desktop-app updater until the native shell exposes an updater command.
+ * Keep the update entry point available so release-parity UI can call it, but
+ * defer the actual desktop-app updater until the native shell exposes an updater
+ * command.
  */
 export async function checkForUpdates({ silent = true }: { silent?: boolean } = {}): Promise<void> {
   if (inFlight) return;

@@ -12,9 +12,9 @@ type Status =
   | { kind: "error"; message: string };
 
 /**
- * Manual update control for the native desktop app. The old Tauri updater API is
- * not available in the mer-native shell, so this surfaces the parity entry point
- * while directing users to the CLI updater until native app updates are wired.
+ * Manual update control for the native desktop app. Native desktop updates are
+ * not wired yet, so this surfaces the parity entry point while directing users
+ * to the CLI updater.
  */
 export function UpdatesCard() {
   const [status, setStatus] = useState<Status>({ kind: "idle" });
