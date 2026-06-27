@@ -3698,27 +3698,8 @@ fn animIndex(name: []const u8) ?usize {
     return null;
 }
 
-/// Playful status line for the thinking spinner. Short waits stay a plain
-/// "thinking…"; once a response drags (~2.5s+, e.g. a cold first request to a busy
-/// gateway) it rotates fun loading-screen lines so the wait feels alive instead of
-/// stuck — the reticulating-splines trick. ASCII + "…" only (BMP), so the
-/// anti-stealth frame scan stays happy.
-fn thinkingText(i: usize) []const u8 {
-    const lull = [_][]const u8{
-        "connecting to the mainframe…",
-        "reticulating splines…",
-        "negotiating with the GPUs…",
-        "summoning tokens…",
-        "consulting the oracle…",
-        "warming up the tensors…",
-        "bribing the rate limiter…",
-        "untangling the attention heads…",
-    };
-    return if (i < 30) "thinking…" else lull[((i - 30) / 24) % lull.len];
-}
-
-fn animThinking(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    try w.print(" {s}{s}{s}", .{ style.dim, thinkingText(i), style.reset });
+fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
+    try w.print(" {s}thinking…{s}", .{ style.dim, style.reset });
 }
 
 fn animGlitter(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -3754,19 +3735,19 @@ fn animDragon(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     try w.writeAll("(O>");
     try w.writeAll(flame[i % flame.len]);
     try w.writeAll(style.reset);
-    try animThinking(w, i);
+    try animThinking(w);
 }
 
 fn animCometTail(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     // A streaking comet: a bright cyan head trailing a fading dash tail.
     const tail = [_][]const u8{ "    ", "·   ", "-·  ", "=-· ", "≈=-·" };
     try w.print("{s}{s}☄{s}", .{ style.cyan, tail[i % tail.len], style.reset });
-    try animThinking(w, i);
+    try animThinking(w);
 }
 
 fn animBraille(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
-    try w.print("{s}{s} {s}{s}", .{ style.dim, frames[i % frames.len], thinkingText(i), style.reset });
+    try w.print("{s}{s} thinking…{s}", .{ style.dim, frames[i % frames.len], style.reset });
 }
 
 fn animPulse(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -3774,7 +3755,7 @@ fn animPulse(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     const g = glyphs[i % glyphs.len];
     const bright = (i % glyphs.len) >= 3 and (i % glyphs.len) <= 6;
     try w.print("{s}{s}{s}", .{ if (bright) style.cyan else style.dim, g, style.reset });
-    try animThinking(w, i);
+    try animThinking(w);
 }
 
 fn animOrbit(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -3789,7 +3770,7 @@ fn animOrbit(w: *Io.Writer, i: usize) Io.Writer.Error!void {
         }
         if (j + 1 < slots) try w.writeAll(" ");
     }
-    try animThinking(w, i);
+    try animThinking(w);
 }
 
 fn animBlockWave(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -3801,7 +3782,7 @@ fn animBlockWave(w: *Io.Writer, i: usize) Io.Writer.Error!void {
         try w.writeAll(lvls[@intCast(7 - tri)]);
     }
     try w.writeAll(style.reset);
-    try animThinking(w, i);
+    try animThinking(w);
 }
 
 fn animShimmer(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -3824,7 +3805,7 @@ fn animMatrix(w: *Io.Writer, i: usize) Io.Writer.Error!void {
         const head = (i + j) % 5 == 0;
         try w.print("{s}{s}{s}", .{ if (head) style.green else style.dim, g, style.reset });
     }
-    try animThinking(w, i);
+    try animThinking(w);
 }
 
 fn animPacman(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -3840,7 +3821,7 @@ fn animPacman(w: *Io.Writer, i: usize) Io.Writer.Error!void {
             try w.print("{s}·{s} ", .{ style.dim, style.reset });
         }
     }
-    try animThinking(w, i);
+    try animThinking(w);
 }
 
 fn animStarfield(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -3854,7 +3835,7 @@ fn animStarfield(w: *Io.Writer, i: usize) Io.Writer.Error!void {
             try w.writeAll(" ");
         }
     }
-    try animThinking(w, i);
+    try animThinking(w);
 }
 
 test "no spinner frame ever emits a supplementary-plane glyph (anti-stealth, #106)" {
