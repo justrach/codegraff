@@ -11876,8 +11876,9 @@ const Agent = struct {
                 continue;
             }
             // Clear-then-draw each frame: animations may vary in width.
-            w.interface.writeAll("\r\x1b[2K") catch return;
+            w.interface.writeAll("\r\x1b[2K\x1b[?7l") catch return; // ?7l: autowrap off so a wide spinner truncates instead of wrapping in a narrow window (the "goes on and on" bug)
             anims[g_anim_current].frame(&w.interface, i) catch return;
+            w.interface.writeAll("\x1b[?7h") catch return; // restore autowrap
             w.interface.flush() catch return;
             i += 1;
             var t: usize = 0;
@@ -11887,7 +11888,7 @@ const Agent = struct {
             }
         }
         if (!g_steer_visible.load(.acquire)) {
-            w.interface.writeAll("\r\x1b[2K") catch return;
+            w.interface.writeAll("\x1b[?7h\r\x1b[2K") catch return; // restore autowrap + clear
             w.interface.flush() catch {};
         }
     }
