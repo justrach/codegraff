@@ -6812,21 +6812,16 @@ pub fn main(init: std.process.Init) !void {
         // keep the window title in sync each turn.
         if (!json_mode) {
             if (!root.tui_header_shown) {
-                // First turn: wait for the AI summary title before printing the
-                // header (it scrolls into scrollback and can't be redrawn) so it
-                // reads as a summary, not the raw prompt (#91). Nothing has
-                // streamed yet, so the wait is invisible.
-                if (title_fut) |*f| {
-                    if (f.await(io)) |t| {
-                        root.session_title = arena.dupe(u8, t) catch null;
-                        gpa.free(t);
-                        // Name the session file by its AI title (the header agent):
-                        // session-<ts> -> .graff/sessions/<slug>.session.json.
-                        if (root.session_title) |st| renameSession(&root, arena, slugifyTitle(arena, st));
-                    }
-                    title_fut = null; // consumed; don't await twice
-                }
-                const turn_title = root.session_title orelse titleFromPrompt(base_msg);
+                // Print the header IMMEDIATELY with the fast prompt-derived title so
+                // the AI summary call (titleTask, spawned just above with io.async)
+                // never blocks the response. The printed header scrolls into
+                // scrollback and can't be redrawn, so it keeps the prompt title; the
+                // AI summary runs in the background overlapping the turn and lands on
+                // the redrawable window title + the session filename in the post-turn
+                // handler below. (#91 made the reverse trade — blocking the turn so the
+                // *printed* card read as a summary — but an extra round-trip in front
+                // of every first response isn't worth it.)
+                const turn_title = titleFromPrompt(base_msg);
                 setTerminalTitle(out, turn_title, g_cwd_display);
                 try printSessionHeader(out, turn_title, g_cwd_display);
                 root.tui_header_shown = true;
@@ -6963,17 +6958,22 @@ pub fn main(init: std.process.Init) !void {
             root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = true, .metadata_complete = root.last_context_tokens > 0 });
         }
 
-        // Apply the AI summary title that was spawned at the turn's start
-        // (io.async, overlapping the turn). It's usually already done by now;
-        // null the future so the reap-defer above doesn't await it twice.
+        // Apply the AI summary title + fleet champions that ran in the background
+        // overlapping the turn — both off the critical path. The printed header kept
+        // the fast prompt title; the summary now lands on the redrawable window title
+        // and the saved session filename. Usually already resolved by here.
         if (title_fut) |*f| {
             if (f.await(io)) |t| {
                 root.session_title = arena.dupe(u8, t) catch null;
                 gpa.free(t);
-                if (root.session_title) |st| setTerminalTitle(out, st, g_cwd_display);
+                if (root.session_title) |st| {
+                    setTerminalTitle(out, st, g_cwd_display);
+                    renameSession(&root, arena, slugifyTitle(arena, st));
+                }
             }
             title_fut = null;
         }
+        joinElites(io); // publish backgrounded fleet champions for the next turn (no-op once joined)
 
         // turn_end lifecycle hooks (best-effort; interrupted/errored turns
         // `continue` above and never reach here, so ok is always true).
@@ -10532,7 +10532,6 @@ const Agent = struct {
     fn runTurn(self: *Agent) anyerror![]const u8 {
         self.completed = null;
         if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
-        if (!self.sub) joinElites(self.io); // publish backgrounded fleet champions before the turn builds its body
         while (true) {
             // Esc during a tool join (set by escWatchTask) lands here: the
             // root consumes the flag and aborts before the next request;
