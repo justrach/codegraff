@@ -5938,20 +5938,28 @@ pub fn main(init: std.process.Init) !void {
     // agents don't collide on files. Creates .graff/worktrees/<name> on branch
     // worktree-<name> (from HEAD) and enters it; reuses it if it already exists.
     if (worktree_flag) |wt| {
-        const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{wt});
-        const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{wt});
-        if (runCapped(gpa, io, &.{ "git", "worktree", "add", wt_path, "-b", wt_branch }, 8192, 8192, 60_000)) |r| {
-            gpa.free(r.stdout);
-            gpa.free(r.stderr);
-        } else |_| {}
-        const wt_z = arena.dupeZ(u8, wt_path) catch std.process.fatal("--worktree: out of memory", .{});
-        if (std.posix.system.chdir(wt_z.ptr) != 0)
-            std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, wt_path });
-        g_worktree_branch = wt_branch; // non-null = auto-commit each turn to this scratch branch
-        if (!json_mode) {
-            const ac: []const u8 = if (g_worktree_autocommit) " · auto-committing each turn (`graff worktree merge` to land it)" else "";
-            out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{ style.dim, style.reset, style.cyan, wt_path, style.reset, wt_branch, ac }) catch {};
-            out.flush() catch {};
+        // POSIX-only: the chdir below goes through libc's `chdir`, which Windows
+        // builds don't link. -w is a parallel-agent dev workflow (mac/linux); on
+        // Windows we bail with a clear message rather than break the cross-build.
+        // The comptime `if` elides the chdir branch entirely on Windows.
+        if (builtin.os.tag == .windows) {
+            std.process.fatal("--worktree is not yet supported on Windows (POSIX-only chdir) — run without -w", .{});
+        } else {
+            const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{wt});
+            const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{wt});
+            if (runCapped(gpa, io, &.{ "git", "worktree", "add", wt_path, "-b", wt_branch }, 8192, 8192, 60_000)) |r| {
+                gpa.free(r.stdout);
+                gpa.free(r.stderr);
+            } else |_| {}
+            const wt_z = arena.dupeZ(u8, wt_path) catch std.process.fatal("--worktree: out of memory", .{});
+            if (std.posix.system.chdir(wt_z.ptr) != 0)
+                std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, wt_path });
+            g_worktree_branch = wt_branch; // non-null = auto-commit each turn to this scratch branch
+            if (!json_mode) {
+                const ac: []const u8 = if (g_worktree_autocommit) " · auto-committing each turn (`graff worktree merge` to land it)" else "";
+                out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{ style.dim, style.reset, style.cyan, wt_path, style.reset, wt_branch, ac }) catch {};
+                out.flush() catch {};
+            }
         }
     }
     var cwd_buf: [4096]u8 = undefined;
