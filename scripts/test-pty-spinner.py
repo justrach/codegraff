@@ -20,6 +20,10 @@ import os, sys, pty, select
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 # absolute, so the child's chdir() to another cwd can't break the exec lookup
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
+
+# graff won't start without a provider key, but --selftest-spinner renders before
+# any model call — a throwaway key just clears the boot gate (CI has no real auth).
+os.environ.setdefault("LMSTUDIO_API_KEY", "local")
 THRESHOLD = 0x10000  # supplementary plane: no legit spinner glyph lives here; 💩 = U+1F4A9
 
 
