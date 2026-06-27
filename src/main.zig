@@ -1178,7 +1178,26 @@ const Approvals = struct {
         for (pats) |p| if (std.mem.indexOf(u8, cmd, p) != null) return true;
         return false;
     }
+
+    /// Whether a destructive git command may auto-run without a y/n. Gated
+    /// everywhere EXCEPT the root agent under --yolo, where the operator
+    /// explicitly opted out of prompts and is driving. Subagents never get it.
+    fn destructiveGitAllowed(yolo: bool, sub: bool) bool {
+        return yolo and !sub;
+    }
 };
+
+test "destructive git gate: only the root agent under --yolo skips the y/n" {
+    // The 'yolo fails on destructive git' report: --yolo lets the operator through
+    // (they opted out of prompts), but never a subagent and never a non-yolo run.
+    try std.testing.expect(Approvals.destructiveGitAllowed(true, false));
+    try std.testing.expect(!Approvals.destructiveGitAllowed(true, true));
+    try std.testing.expect(!Approvals.destructiveGitAllowed(false, false));
+    try std.testing.expect(!Approvals.destructiveGitAllowed(false, true));
+    try std.testing.expect(Approvals.isDestructiveGit("git reset --hard origin/main"));
+    try std.testing.expect(Approvals.isDestructiveGit("git clean -fd"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git status"));
+}
 
 /// Path tools (read/write/edit_file) are confined to the working directory:
 /// no absolute paths and no `..` components. This keeps `read_file
@@ -11168,11 +11187,12 @@ const Agent = struct {
             if (cmd_val != .string) return null;
             const cmd = std.mem.trim(u8, cmd_val.string, " \t");
             // Destructive git (reset --hard, clean -f, branch -D, force-push…)
-            // never auto-runs — not under --yolo, not via a blanket `git` allow —
+            // stays gated in normal mode + for subagents, but DOES run under --yolo
             // so the agent can't wipe the user's work or a worktree's checkpoints.
             // It falls through to a human y/n (or a deny in non-interactive runs).
             const destructive_git = Approvals.isDestructiveGit(cmd);
-            if (!destructive_git and approvals.allowed(self.io, cmd)) return null;
+            const gate_ok = !destructive_git or Approvals.destructiveGitAllowed(approvals.yolo, self.sub);
+            if (gate_ok and approvals.allowed(self.io, cmd)) return null;
             key = firstWord(cmd);
             prompt_line = if (destructive_git)
                 std.fmt.bufPrint(&line_buf, "DESTRUCTIVE git — run: {s}", .{cmd}) catch cmd
