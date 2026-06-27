@@ -10530,10 +10530,10 @@ const Agent = struct {
                         // (1s·2ⁿ, capped at 8s; Esc cancels) and allow a few
                         // more attempts than a plain transport flake gets.
                         const throttled = err == error.RateLimited or err == error.ServerError;
-                        const max_attempts: usize = if (throttled) 5 else 3;
+                        const max_attempts: usize = RetryPlan.maxAttempts(throttled);
                         if (attempt < max_attempts) {
                             if (throttled) {
-                                const delay_ms = @min(@as(u64, 1000) << @intCast(@min(attempt, 3)), 8000);
+                                const delay_ms = RetryPlan.delayMs(throttled, attempt);
                                 const what: []const u8 = if (err == error.RateLimited) "rate limited (429)" else "server error (5xx)";
                                 if (g_5xx_body_len > 0) {
                                     try self.say("[{s} — retrying in {d}s ({d}/{d})] {s}\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts, g_5xx_body_buf[0..g_5xx_body_len] });
@@ -10547,8 +10547,8 @@ const Agent = struct {
                                 // a truncated TLS read): back off before a fresh
                                 // connection. Rapid-fire retries against a
                                 // just-closed keep-alive almost always re-fail
-                                // (#86). 250ms·2ⁿ, capped at 2s; Esc cancels.
-                                const delay_ms = @min(@as(u64, 250) << @intCast(@min(attempt, 3)), 2000);
+                                // (#86). 250ms·2ⁿ, capped at 4s over 6 tries; Esc cancels.
+                                const delay_ms = RetryPlan.delayMs(throttled, attempt);
                                 try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
                                 self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                             }
@@ -14162,6 +14162,40 @@ const stream_stall_ms: u64 = 120 * 1000;
 /// Shorter than stream_stall_ms because the head should arrive in
 /// milliseconds; any delay past this is a stall, not a slow model.
 const head_stall_ms: u64 = 30 * 1000;
+
+/// Retry policy for request() after a failed attempt. Transport flakes
+/// (HttpConnectionClosing / WriteFailed / reset / truncated TLS) are now far
+/// more patient: a real network blip (wifi hiccup, gateway redeploy) outlasts
+/// the old 3-try / ~1.75s window and was wrongly giving up the whole turn. The
+/// connection is poisoned + re-dialed fresh on each retry (postStream/postWatched
+/// errdefer), so these tries hit new sockets. 429/5xx throttles keep their longer
+/// server-directed waits.
+const RetryPlan = struct {
+    /// Total attempts before the turn gives up.
+    fn maxAttempts(throttled: bool) usize {
+        return if (throttled) 5 else 6;
+    }
+    /// Backoff (ms) before the attempt following `attempt` (0-based).
+    /// throttle: 1Â·2Â·4Â·8Â·8 s. flake: .25Â·.5Â·1Â·2Â·4Â·4 s (~7.75s total).
+    fn delayMs(throttled: bool, attempt: usize) u64 {
+        return if (throttled)
+            @min(@as(u64, 1000) << @intCast(@min(attempt, 3)), 8000)
+        else
+            @min(@as(u64, 250) << @intCast(@min(attempt, 4)), 4000);
+    }
+};
+
+test "retry policy: transport flakes get 6 patient tries, throttles keep 5 (network give-up fix)" {
+    // The WriteFailed/HttpConnectionClosing give-up bailed at 3 tries (~1.75s) —
+    // too short for a transient blip. Now 6 tries spanning ~7.75s.
+    try std.testing.expectEqual(@as(usize, 6), RetryPlan.maxAttempts(false));
+    const flake = [_]u64{ 250, 500, 1000, 2000, 4000 }; // backoff before tries 2..6
+    for (flake, 0..) |want, a| try std.testing.expectEqual(want, RetryPlan.delayMs(false, a));
+    // 429/5xx throttles unchanged: 5 tries, 1-2-4-8-8 s.
+    try std.testing.expectEqual(@as(usize, 5), RetryPlan.maxAttempts(true));
+    const throttle = [_]u64{ 1000, 2000, 4000, 8000 };
+    for (throttle, 0..) |want, a| try std.testing.expectEqual(want, RetryPlan.delayMs(true, a));
+}
 
 /// Select-arm wrapper: send the request body and receive the response head.
 /// Stores the response in `out` for the main thread to use after the select.
