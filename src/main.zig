@@ -3807,6 +3807,54 @@ fn animStarfield(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     try animThinking(w);
 }
 
+test "no spinner frame ever emits a supplementary-plane glyph (anti-stealth, #106)" {
+    // Regression guard for the runtime-built poop prank (U+1F4A9): it lived inside a
+    // frame fn and constructed the codepoint at runtime, so strings/grep never saw it.
+    // Every legitimate spinner glyph is BMP (braille, blocks, the comet, sparkles), so
+    // a terminal spinner has no business ever emitting a supplementary-plane codepoint.
+    // Render every production spinner — plus the gated birthday eggs — across several
+    // cycles and assert it. This is the unit-level test that would have caught the poop.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const FrameFn = *const fn (*Io.Writer, usize) Io.Writer.Error!void;
+    var fns: [anims.len + 2]FrameFn = undefined;
+    for (anims, 0..) |a, k| fns[k] = a.frame;
+    fns[anims.len] = animGlitter; // gated birthday eggs are still real spinner output
+    fns[anims.len + 1] = animDragon;
+
+    for (fns, 0..) |f, fi| {
+        var i: usize = 0;
+        while (i < 96) : (i += 1) {
+            var aw: Io.Writer.Allocating = .init(arena);
+            try f(&aw.writer, i);
+            const view = std.unicode.Utf8View.init(aw.writer.buffered()) catch {
+                std.debug.print("spinner #{d} i={d}: invalid UTF-8\n", .{ fi, i });
+                return error.InvalidFrameUtf8;
+            };
+            var it = view.iterator();
+            while (it.nextCodepoint()) |cp| {
+                if (cp >= 0x10000) {
+                    std.debug.print("spinner #{d} i={d} emitted U+{X} (supplementary-plane/emoji, the old poop class)\n", .{ fi, i, cp });
+                    return error.ForbiddenSpinnerGlyph;
+                }
+            }
+        }
+    }
+}
+
+test "spinner pool is exactly the expected 9 animations (no silent additions)" {
+    // Lock the user-facing spinner set: adding or renaming one must be a deliberate,
+    // reviewed change, not something that slips in unnoticed.
+    const expected = [_][]const u8{
+        "braille", "pulse",  "orbit-dots", "block-wave", "shimmer",
+        "matrix",  "pacman", "starfield",  "comet-tail",
+    };
+    try std.testing.expectEqual(expected.len, anims.len);
+    for (anims, 0..) |a, k| try std.testing.expectEqualStrings(expected[k], a.name);
+}
+
 /// Check .harness/settings.json for "dev_spinner": if truthy, the
 /// caller should use the normal spinner regardless of host profile.
 var g_dev_spinner_opt_out: bool = false;
