@@ -11427,6 +11427,30 @@ const Agent = struct {
         const met = if (combined) |s| s >= target_f else false;
         self.appendEvalLog(note, det, judge, combined, exit_code, met) catch {};
 
+        // Feed the eval-driven score into the fleet (docs/hyperagents.md §9.B):
+        // on a NEW BEST, submit the genome (this agent's persona) with its achieved
+        // score on the pinned eval set (the eval command's fingerprint). Without this
+        // the score only ever reached .graff/eval-log.tsv and the DGM/fleet never saw
+        // real eval-driven work — only darwincode/JSON-proto runs ever submitted.
+        if (combined) |s| {
+            if (improved) {
+                if (g_telem) |t| {
+                    const genome_fp = promptFingerprint(self.systemPrompt());
+                    const esh_fp = promptFingerprint(cmd);
+                    const genome: []const u8 = &genome_fp;
+                    const esh: []const u8 = &esh_fp;
+                    const run_id: []const u8 = &g_run_id;
+                    const pclass = providerClass(self.provider.model);
+                    const sig = signScore(genome, "", s, run_id, "", "", esh);
+                    const sig_s: []const u8 = if (g_score_key != null) &sig else "";
+                    var provbuf: [512]u8 = undefined;
+                    const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, "" }) catch "";
+                    t.scoreEvent(genome, "", s, run_id, sig_s, prov);
+                    t.fleetEvent("submit", "", genome, "", pclass, esh, 0, "");
+                }
+            }
+        }
+
         var aw: Io.Writer.Allocating = .init(self.arena);
         const w = &aw.writer;
         if (combined) |s| {
