@@ -124,7 +124,12 @@ fetch_release() {
   [ -n "$binpath" ] && [ -f "$binpath" ] || { rm -rf "$tmpd"; return 1; }
   place_bin "$binpath"
   if [ "$(uname -s)" = "Darwin" ]; then
-    codesign -s - --force "$INSTALL_DIR/$BIN" >/dev/null 2>&1 || true
+    # The release binary is already Developer-ID-signed + notarized — that both
+    # satisfies Gatekeeper and avoids the Apple-Silicon SIGKILL, so leave it be.
+    # Only ad-hoc re-sign when it does NOT already verify (older unsigned tarballs
+    # or a source build); re-signing a notarized binary would strip its Developer ID.
+    codesign --verify --strict "$INSTALL_DIR/$BIN" >/dev/null 2>&1 \
+      || codesign -s - --force "$INSTALL_DIR/$BIN" >/dev/null 2>&1 || true
   fi
   rm -rf "$tmpd"
   # Fail closed: if the binary didn't actually land, return non-zero so the
@@ -172,6 +177,19 @@ main() {
   printf "  ${D}platform${N}  $platform\n"
   printf "  ${D}install${N}   $INSTALL_DIR\n\n"
 
+  # Kick off the companion suite install in the background so it downloads in
+  # parallel with the graff binary below — it's the slow part (a full curl|sh of
+  # codedb-pro + the zigrep/zigread/zigpatch suite). Reaped before the summary.
+  # Empty suite_pid = already present or opted out (HARNESS_NO_GRAFF) → nothing to wait on.
+  # Tools installer = codegraff.com/install.sh; --max-time bounds it; override via GRAFF_SUITE_URL.
+  GRAFF_SUITE_URL="${GRAFF_SUITE_URL:-https://codegraff.com/install.sh}"
+  suite_pid=""; suite_log=""
+  if [ -z "${HARNESS_NO_GRAFF:-}" ] && ! { command -v codedb-pro >/dev/null 2>&1 && command -v zigpatch >/dev/null 2>&1; }; then
+    suite_log="$(mktemp)"
+    ( curl -fsSL --max-time 120 "$GRAFF_SUITE_URL" | sh >/dev/null 2>&1 && echo ok || echo fail ) >"$suite_log" 2>&1 &
+    suite_pid=$!
+  fi
+
   if [ "${HARNESS_BUILD:-release}" != "source" ] && fetch_release "$platform"; then
     printf "  ${D}│${N} %-10s ${G}✓${N} (prebuilt release)\n" "download"
   else
@@ -184,29 +202,22 @@ main() {
   # shell habits keep working through a symlink.
   ln -sf "$INSTALL_DIR/$BIN" "$INSTALL_DIR/harness"
 
-  # The graff companion suite (muonry, zigrep/zigread/zigpatch, codedb):
-  # the harness auto-upgrades to it when present — codedb backs the @ picker
-  # and the codedb tool, zigpatch does atomic edit_file splices — but works
-  # fully without it, premium paths just stay dormant.
-  #
-  # Installed by default; skip with HARNESS_NO_GRAFF=1 (the harness works fine
-  # without it, premium paths just stay dormant). The companion installer is
-  # codegraff.com/install.sh (the tools installer). This step previously
-  # called codegraff.com/install-graff.sh, which proxies *this* harness
-  # installer (github releases/.../install.sh) — so it reinstalled the harness
-  # and recursed into itself, hanging at this line. Bounded by --max-time so a
-  # slow network can never freeze the install; override with GRAFF_SUITE_URL.
-  GRAFF_SUITE_URL="${GRAFF_SUITE_URL:-https://codegraff.com/install.sh}"
+  # Reap the companion suite install that was kicked off in parallel at the top
+  # of main() (muonry, zigrep/zigread/zigpatch, codedb — they back the @ picker,
+  # the codedb tool, and zigpatch's atomic edit_file splices; the harness works
+  # fully without it, premium paths just stay dormant). Skip with HARNESS_NO_GRAFF=1.
   if [ -z "${HARNESS_NO_GRAFF:-}" ]; then
-    if command -v codedb-pro >/dev/null 2>&1 && command -v zigpatch >/dev/null 2>&1; then
-      printf "  ${D}│${N} %-10s ${G}✓${N} (already present)\n" "suite"
+    printf "  ${D}│${N} %-10s " "suite"
+    if [ -z "$suite_pid" ]; then
+      printf "${G}✓${N} (already present)\n"
     else
-      printf "  ${D}│${N} %-10s " "suite"
-      if curl -fsSL --max-time 120 "$GRAFF_SUITE_URL" | sh >/dev/null 2>&1; then
+      wait "$suite_pid" 2>/dev/null || true
+      if [ "$(cat "$suite_log" 2>/dev/null)" = ok ]; then
         printf "${G}✓${N} (muonry + zigrep suite)\n"
       else
         printf "${Y}skipped${N} ${D}(companion install unavailable — harness still fully functional)${N}\n"
       fi
+      rm -f "$suite_log"
     fi
   fi
 
