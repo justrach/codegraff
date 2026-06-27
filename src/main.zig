@@ -3498,7 +3498,7 @@ const anims = [_]Anim{
 };
 
 var g_anim_index: usize = 0; // /animation selection (index into anims)
-var g_anim_random = false; // pick a fresh one per request
+var g_anim_random = true; // default: pick a fresh spinner per request (/animation <name> to pin one)
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
 // 🎂 Birthday easter egg (flagged, temporary) — when graff runs from
@@ -3843,15 +3843,17 @@ fn loadAnimationSetting(io: Io, arena: Allocator) void {
     if (a != .string) return;
     if (std.mem.eql(u8, a.string, "off")) {
         g_anim_off = true;
+        g_anim_random = false;
     } else if (std.mem.eql(u8, a.string, "random")) {
         g_anim_random = true;
     } else if (animIndex(a.string)) |i| {
         g_anim_index = i;
+        g_anim_random = false; // a pinned spinner overrides the random default
     }
 }
 
 /// Persist the /animation choice, preserving every other settings key.
-/// The default ("braille") removes the key. Best-effort.
+/// The default ("random") removes the key. Best-effort.
 fn saveAnimationSetting(io: Io, gpa: Allocator, value: []const u8) bool {
     Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {};
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -3863,7 +3865,7 @@ fn saveAnimationSetting(io: Io, gpa: Allocator, value: []const u8) bool {
             if (v == .object) root_obj = v.object;
         } else |_| {}
     } else |_| {}
-    if (std.mem.eql(u8, value, anims[0].name)) {
+    if (std.mem.eql(u8, value, "random")) { // random is the default → no stored key needed
         _ = root_obj.orderedRemove("animation");
     } else {
         root_obj.put(a, "animation", .{ .string = value }) catch return false;
