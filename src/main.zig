@@ -11433,7 +11433,7 @@ const Agent = struct {
         // the score only ever reached .graff/eval-log.tsv and the DGM/fleet never saw
         // real eval-driven work — only darwincode/JSON-proto runs ever submitted.
         if (combined) |s| {
-            if (improved) {
+            if (improved and s > 0) { // s>0: skip the initial-state / total-failure 0 (don't pollute the cell mean)
                 if (g_telem) |t| {
                     const genome_fp = promptFingerprint(self.systemPrompt());
                     const esh_fp = promptFingerprint(cmd);
