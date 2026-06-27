@@ -492,6 +492,11 @@ const main_system_prompt =
     \\GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and GIT_COMMITTER_EMAIL env vars
     \\on every git command so the bot identity is preserved in the commit log.
     \\
+    \\Never run git commands that discard work — `reset --hard`, `clean -f`,
+    \\`checkout --`/`restore`, force-push, or `branch -D` — unless the user
+    \\explicitly asks. Their existing commits and any -w worktree
+    \\auto-checkpoints are the user's safety net; do not blow them away.
+    \\
     \\Be direct and concise.
 ;
 
@@ -1154,6 +1159,23 @@ const Approvals = struct {
             "php",    "sh",      "bash", "osascript", "awk",
         };
         for (interps) |i| if (std.mem.eql(u8, word, i)) return true;
+        return false;
+    }
+
+    /// Git subcommands that can destroy committed or working-tree work — the
+    /// user's, or a -w worktree's auto-checkpoints. Codex keeps `.git` read-only
+    /// to the agent and opencode forbids `git reset --hard`; we do the same to a
+    /// degree: these never auto-run (not under --yolo, not via a blanket `git`
+    /// allow), so they always reach a human y/n. Scans the whole command so a
+    /// chained `cd x && git reset --hard` is caught too.
+    fn isDestructiveGit(cmd: []const u8) bool {
+        if (std.mem.indexOf(u8, cmd, "git ") == null) return false;
+        const pats = [_][]const u8{
+            "reset --hard", "clean -f",  "checkout --", "checkout .",
+            "push --force", "push -f",   "branch -D",   "stash clear",
+            "stash drop",   "restore .",
+        };
+        for (pats) |p| if (std.mem.indexOf(u8, cmd, p) != null) return true;
         return false;
     }
 };
@@ -2934,6 +2956,8 @@ fn mcpServerConnected(tools: []const mcp.Tool, server: []const u8) bool {
 var g_path_env: []const u8 = "";
 /// Human-facing current workspace folder shown in the REPL prompt.
 var g_cwd_display: []const u8 = ".";
+var g_worktree_branch: ?[]const u8 = null; // -w: the worktree's scratch branch; non-null = auto-commit each turn's edits to it
+var g_worktree_autocommit: bool = true; // --no-autocommit turns off the per-turn checkpoint commits
 
 /// Short task label for terminal/TUI headers. Mirrors the GUI's first-prompt
 /// fallback: use the user's first message as a compact tab/session title.
@@ -3647,7 +3671,6 @@ fn animIndex(name: []const u8) ?usize {
 fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
     try w.print(" {s}thinking…{s}", .{ style.dim, style.reset });
 }
-
 
 fn animGlitter(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     // 🎂 EGG (limyuxi_birthday_white): a glittery pink sparkle spinner. Saturated
@@ -5361,6 +5384,8 @@ const usage_text =
     \\  graff key list                   show which providers have keys
     \\  graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
     \\  graff mcp                         list configured MCP servers
+    \\  graff worktree list              list the per-tab worktrees created by -w
+    \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff --schema                   print the machine-readable interface (SDK codegen)
     \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
     \\                                   (--host/--port/--token; sessions are --json children)
@@ -5378,6 +5403,7 @@ const usage_text =
     \\  --eval <cmd>                    scoring command for an eval-driven loop (the `eval` tool runs it)
     \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
     \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
+    \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
     \\  --yolo           skip all permission prompts for the session
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
     \\  --timing         show per-tool wall-clock on result lines
@@ -5663,6 +5689,8 @@ pub fn main(init: std.process.Init) !void {
                     max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-tool-calls needs a non-negative integer, got '{s}'", .{mv});
                 } else if (std.mem.eql(u8, arg, "--dedupe-tool-calls")) {
                     dedupe_tool_calls = true;
+                } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
+                    g_worktree_autocommit = false;
                 } else if (std.mem.eql(u8, arg, "--schema")) {
                     schema_flag = true;
                 } else if (std.mem.eql(u8, arg, "--refresh")) {
@@ -5718,7 +5746,7 @@ pub fn main(init: std.process.Init) !void {
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     const is_subcommand = positionals.items.len > 0 and
         (std.mem.eql(u8, positionals.items[0], "login") or std.mem.eql(u8, positionals.items[0], "key") or std.mem.eql(u8, positionals.items[0], "mcp") or
-            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title") or std.mem.eql(u8, positionals.items[0], "repl"));
+            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title") or std.mem.eql(u8, positionals.items[0], "repl") or std.mem.eql(u8, positionals.items[0], "worktree"));
     var oneshot_prompt: ?[]const u8 = null;
     if (!is_subcommand and positionals.items.len > 0) {
         oneshot_prompt = try std.mem.join(arena, " ", positionals.items);
@@ -5786,6 +5814,14 @@ pub fn main(init: std.process.Init) !void {
         if (update_force and update_check)
             std.process.fatal("--force and --check are mutually exclusive — use `graff update` (without --check) to install", .{});
         try updateCommand(io, gpa, arena, init.environ_map, update_force, update_check);
+        return;
+    }
+
+    // `graff worktree list` / `graff worktree merge <name>`: manage the per-tab
+    // scratch worktrees that -w creates. merge squash-lands a tab's work as one
+    // clean commit on the current branch, then removes the worktree + branch.
+    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "worktree")) {
+        try worktreeCommand(gpa, io, arena, positionals.items[1..]);
         return;
     }
 
@@ -5911,8 +5947,10 @@ pub fn main(init: std.process.Init) !void {
         const wt_z = arena.dupeZ(u8, wt_path) catch std.process.fatal("--worktree: out of memory", .{});
         if (std.posix.system.chdir(wt_z.ptr) != 0)
             std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, wt_path });
+        g_worktree_branch = wt_branch; // non-null = auto-commit each turn to this scratch branch
         if (!json_mode) {
-            out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout\n", .{ style.dim, style.reset, style.cyan, wt_path, style.reset, wt_branch }) catch {};
+            const ac: []const u8 = if (g_worktree_autocommit) " · auto-committing each turn (`graff worktree merge` to land it)" else "";
+            out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{ style.dim, style.reset, style.cyan, wt_path, style.reset, wt_branch, ac }) catch {};
             out.flush() catch {};
         }
     }
@@ -6292,6 +6330,11 @@ pub fn main(init: std.process.Init) !void {
         saveSession(&root, arena, root.session_name) catch |err| {
             std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
         };
+
+        // --worktree: checkpoint the one-shot's edits to the scratch branch too.
+        // Headless swarm agents (graff -w name -p "task") are the main -w use
+        // case — they must not exit with their work left uncommitted.
+        worktreeAutoCommit(gpa, io, std.fmt.allocPrint(arena, "wip: {s}", .{titleFromPrompt(prompt_text)}) catch "wip: graff oneshot");
         // One-shot returns here, before the REPL cleanup defer below is even
         // registered, so free the root's gpa-backed buffers explicitly (else a
         // tool-using one-shot leaks its tool log / render buffers on exit).
@@ -6838,6 +6881,11 @@ pub fn main(init: std.process.Init) !void {
         // crash or quit never loses the thread — last.session.json, the same
         // file /resume reads. Best-effort; a write failure never breaks the loop.
         saveSession(&root, arena, root.session_name) catch {};
+
+        // --worktree checkpoint: commit this turn's edits to the scratch branch
+        // so the work is durable + rewindable across restarts. No-op when not in
+        // a worktree or when --no-autocommit is set.
+        worktreeAutoCommit(gpa, io, std.fmt.allocPrint(arena, "wip: {s}", .{titleFromPrompt(base_msg)}) catch "wip: graff checkpoint");
     }
     // Final save on exit also captures command-driven edits since the last turn
     // (/clear, /rewind) so the next start resumes the true end state.
@@ -6851,6 +6899,11 @@ pub fn main(init: std.process.Init) !void {
     } else {
         saveSession(&root, arena, root.session_name) catch {};
     }
+
+    // Capture edits from an interrupted/aborted final turn (those `continue`
+    // before the per-turn checkpoint) so a worktree never quits with work left
+    // uncommitted on its scratch branch.
+    worktreeAutoCommit(gpa, io, "wip: session end");
     try out.writeAll("\n");
     try out.flush();
 }
@@ -10991,7 +11044,18 @@ const Agent = struct {
     /// when cleared to execute. Subagents never prompt; their gate is the
     /// allowlist check in execToolInner.
     fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
-        if (self.sub) return null; // subagents: gated structurally, not by prompt
+        if (self.sub) {
+            // Destructive git is blocked for subagents outright — they have no
+            // human to confirm with. The root agent falls through to a y/n
+            // prompt below. Completes the Codex-style `.git` guard across both.
+            if (std.mem.eql(u8, call.name, "bash") and call.input == .object) {
+                if (call.input.object.get("command")) |cv| if (cv == .string and Approvals.isDestructiveGit(cv.string)) return .{
+                    .text = try self.arena.dupe(u8, "destructive git is blocked for subagents (no one to confirm) — leave reset --hard / clean -f / force-push / branch -D to the root session"),
+                    .is_error = true,
+                };
+            }
+            return null; // subagents: otherwise gated structurally, not by prompt
+        }
         const approvals = self.approvals orelse return null;
 
         // Plan mode: read-only, regardless of approvals — deny mutating tools
@@ -11025,9 +11089,17 @@ const Agent = struct {
             const cmd_val = call.input.object.get("command") orelse return null;
             if (cmd_val != .string) return null;
             const cmd = std.mem.trim(u8, cmd_val.string, " \t");
-            if (approvals.allowed(self.io, cmd)) return null;
+            // Destructive git (reset --hard, clean -f, branch -D, force-push…)
+            // never auto-runs — not under --yolo, not via a blanket `git` allow —
+            // so the agent can't wipe the user's work or a worktree's checkpoints.
+            // It falls through to a human y/n (or a deny in non-interactive runs).
+            const destructive_git = Approvals.isDestructiveGit(cmd);
+            if (!destructive_git and approvals.allowed(self.io, cmd)) return null;
             key = firstWord(cmd);
-            prompt_line = std.fmt.bufPrint(&line_buf, "run: {s}", .{cmd}) catch cmd;
+            prompt_line = if (destructive_git)
+                std.fmt.bufPrint(&line_buf, "DESTRUCTIVE git — run: {s}", .{cmd}) catch cmd
+            else
+                std.fmt.bufPrint(&line_buf, "run: {s}", .{cmd}) catch cmd;
         } else if (std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file")) {
             if (approvals.allowedExact(self.io, call.name)) return null;
             key = call.name;
@@ -14676,6 +14748,153 @@ fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize
     };
 }
 
+/// True if a CappedRun child exited cleanly (status 0).
+fn ranOk(r: CappedRun) bool {
+    return r.term == .exited and r.term.exited == 0;
+}
+
+/// True if the current git working tree has uncommitted *tracked* changes
+/// (staged or unstaged). Untracked files (`?? …`) don't count — `git reset
+/// --hard` leaves them alone, so they're safe around a worktree land.
+fn gitTreeDirty(gpa: Allocator, io: Io) bool {
+    const r = runCapped(gpa, io, &.{ "git", "status", "--porcelain" }, 1 << 16, 8192, 30_000) catch return false;
+    defer {
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+    }
+    if (!ranOk(r)) return false;
+    var it = std.mem.tokenizeScalar(u8, r.stdout, '\n');
+    while (it.next()) |line| {
+        if (line.len >= 2 and !std.mem.startsWith(u8, line, "??")) return true;
+    }
+    return false;
+}
+
+/// Per-turn checkpoint commit for `-w` sessions. The worktree branch is a
+/// throwaway scratch branch, so committing every turn is free and gives durable
+/// rewind points across restarts; `graff worktree merge` later --squashes the
+/// whole trail into one clean commit. No-op outside a worktree or under
+/// --no-autocommit. Best-effort: a clean tree (nothing to commit) or a missing
+/// git identity just means no commit this turn, never a failed turn. --no-verify
+/// so a slow or strict pre-commit hook can't block a checkpoint.
+fn worktreeAutoCommit(gpa: Allocator, io: Io, msg: []const u8) void {
+    if (g_worktree_branch == null or !g_worktree_autocommit) return;
+    // Stage everything except graff's own runtime artifacts — trace/trajectory/
+    // sessions/keys/MCP config must never ride into the squash-merge onto the
+    // user's branch. .gitignore hides these in the graff repo, but a *target*
+    // repo (the swarm's real use case) won't, so exclude them explicitly here.
+    const add = runCapped(gpa, io, &.{
+        "git",                       "add",
+        "-A",                        "--",
+        ":(exclude).graff",          ":(exclude).harness",
+        ":(exclude)harness.*.jsonl", ":(exclude)*.session.json",
+        ":(exclude).mcp.json",       ":(exclude).simple-harness-*",
+    }, 4096, 4096, 30_000) catch return;
+    gpa.free(add.stdout);
+    gpa.free(add.stderr);
+    const c = runCapped(gpa, io, &.{ "git", "commit", "--no-verify", "-m", msg }, 8192, 8192, 30_000) catch return;
+    gpa.free(c.stdout);
+    gpa.free(c.stderr);
+}
+
+/// `graff worktree <list|merge <name>>` — manage the per-tab scratch worktrees
+/// that `-w` creates. `list` shows them; `merge <name>` squash-merges
+/// worktree-<name> into the current branch as one clean commit, then removes the
+/// worktree and deletes its branch. Run from the main checkout.
+fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const []const u8) !void {
+    var buf: [4096]u8 = undefined;
+    var w = Io.File.stdout().writer(io, &buf);
+    const out = &w.interface;
+    defer out.flush() catch {};
+
+    const action = if (args.len > 0) args[0] else "list";
+
+    if (std.mem.eql(u8, action, "list") or std.mem.eql(u8, action, "ls")) {
+        const r = runCapped(gpa, io, &.{ "git", "worktree", "list" }, 1 << 16, 8192, 30_000) catch {
+            try out.writeAll("not a git repository (no worktrees)\n");
+            return;
+        };
+        defer {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        }
+        if (!ranOk(r)) {
+            try out.writeAll(r.stderr);
+            return;
+        }
+        try out.writeAll(r.stdout);
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "merge")) {
+        if (args.len < 2) {
+            try out.writeAll("usage: graff worktree merge <name>\n");
+            return;
+        }
+        const name = args[1];
+        const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{name});
+        const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{name});
+
+        // Refuse to land into a dirty tree: the conflict-recovery below resets
+        // tracked files, which would eat uncommitted work. Untracked files (the
+        // worktrees, traces) are fine — reset --hard leaves them be.
+        if (gitTreeDirty(gpa, io)) {
+            try out.print("✗ your working tree has uncommitted changes — commit or stash them first, then `graff worktree merge {s}`\n", .{name});
+            return;
+        }
+
+        // 1) squash-merge the scratch branch into the current branch (staged, not committed).
+        const m = runCapped(gpa, io, &.{ "git", "merge", "--squash", wt_branch }, 1 << 16, 1 << 16, 60_000) catch {
+            try out.writeAll("✗ could not run git merge (is this a git repository?)\n");
+            return;
+        };
+        const merged = ranOk(m);
+        gpa.free(m.stdout);
+        gpa.free(m.stderr);
+        if (!merged) {
+            // Overlapping changes. A --squash merge leaves the index/worktree
+            // half-merged with no MERGE_HEAD to --abort, so restore the branch to
+            // clean ourselves (safe — we verified it was clean above) and leave
+            // the worktree intact for the user to land another way.
+            if (runCapped(gpa, io, &.{ "git", "reset", "--hard", "HEAD" }, 8192, 8192, 30_000)) |r| {
+                gpa.free(r.stdout);
+                gpa.free(r.stderr);
+            } else |_| {}
+            try out.print("✗ couldn't auto-land {s} — it overlaps changes already on this branch.\n  current branch left clean, worktree intact. Land it first, or merge by hand: git merge {s}\n", .{ wt_branch, wt_branch });
+            return;
+        }
+
+        // 2) commit the squashed result as one clean commit on the current branch.
+        const cmsg = std.fmt.allocPrint(arena, "{s}: land worktree", .{name}) catch "land worktree";
+        const c = runCapped(gpa, io, &.{ "git", "commit", "--no-verify", "-m", cmsg }, 8192, 8192, 30_000) catch {
+            try out.writeAll("✗ git commit failed — worktree left intact\n");
+            return;
+        };
+        const committed = ranOk(c);
+        gpa.free(c.stdout);
+        gpa.free(c.stderr);
+        if (!committed) {
+            try out.print("⚠ nothing to land from {s} (empty or already merged) — worktree left intact\n", .{wt_branch});
+            return;
+        }
+
+        // 3) clean up: remove the worktree dir, then delete its now-free branch.
+        if (runCapped(gpa, io, &.{ "git", "worktree", "remove", "--force", wt_path }, 8192, 8192, 30_000)) |r| {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        } else |_| {}
+        if (runCapped(gpa, io, &.{ "git", "branch", "-D", wt_branch }, 8192, 8192, 30_000)) |r| {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        } else |_| {}
+
+        try out.print("✓ landed {s} → current branch as one commit, removed the worktree\n", .{wt_branch});
+        return;
+    }
+
+    try out.print("unknown worktree command '{s}' — use: graff worktree list | graff worktree merge <name>\n", .{action});
+}
+
 /// One background bash job (`bash` with run_in_background:true). A pump task
 /// continuously drains stdout+stderr into `buf` so the child never blocks on
 /// a full pipe; bash_output returns the bytes past `cursor`; bash_kill stops
@@ -16300,6 +16519,28 @@ test "Approvals.isInterpreter: flags first words that grant arbitrary code execu
     try std.testing.expect(!Approvals.isInterpreter("ls"));
     try std.testing.expect(!Approvals.isInterpreter("git"));
     try std.testing.expect(!Approvals.isInterpreter("python3x"));
+}
+
+test "Approvals.isDestructiveGit: flags work-destroying git, lets safe git through" {
+    // destructive — must always reach a human, even under --yolo or a `git` allow
+    try std.testing.expect(Approvals.isDestructiveGit("git reset --hard HEAD~3"));
+    try std.testing.expect(Approvals.isDestructiveGit("git clean -fd"));
+    try std.testing.expect(Approvals.isDestructiveGit("git push --force origin main"));
+    try std.testing.expect(Approvals.isDestructiveGit("git push -f"));
+    try std.testing.expect(Approvals.isDestructiveGit("git branch -D worktree-docs"));
+    try std.testing.expect(Approvals.isDestructiveGit("git checkout -- src/main.zig"));
+    try std.testing.expect(Approvals.isDestructiveGit("git checkout ."));
+    try std.testing.expect(Approvals.isDestructiveGit("git stash clear"));
+    try std.testing.expect(Approvals.isDestructiveGit("cd sub && git reset --hard")); // chained
+    try std.testing.expect(Approvals.isDestructiveGit("git -C /repo reset --hard")); // -C form
+    // safe — the normal auto-allow path is fine
+    try std.testing.expect(!Approvals.isDestructiveGit("git status"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git commit -m wip"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git reset --soft HEAD~1"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git checkout main"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git branch -d merged-feature"));
+    try std.testing.expect(!Approvals.isDestructiveGit("git restore --staged f.txt"));
+    try std.testing.expect(!Approvals.isDestructiveGit("ls -la"));
 }
 
 test "Agent.firstWord: splits the command on the first whitespace" {
