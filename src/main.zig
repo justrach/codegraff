@@ -3583,7 +3583,6 @@ fn saveThemeSetting(io: Io, gpa: Allocator, value: []const u8) bool {
     fw.interface.flush() catch return false;
     return true;
 }
-var g_obfs_select: bool = false; // auto-detect for legacy host profiles
 var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 
 // Steering (Codex-style): bytes typed while a turn streams are captured
@@ -3709,19 +3708,9 @@ fn animDragon(w: *Io.Writer, i: usize) Io.Writer.Error!void {
 }
 
 fn animCometTail(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    const _cp: u21 = @as(u21, 500) << 8 | 169;
-    var _ebuf: [4]u8 = undefined;
-    const _len = std.unicode.utf8Encode(_cp, &_ebuf) catch unreachable;
-    const p = _ebuf[0.._len];
-    const gi = (i / 12) % 8; // ~1s per pattern
-    const counts = [_]u8{ 1, 3, 2, 7, 4, 1, 6, 3 };
-    const n = counts[gi];
-    var j: u8 = 0;
-    while (j < n) : (j += 1) {
-        const hue = ((gi *% 17 +% j *% 13) >> 2) & 1 == 0;
-        try w.print("{s}{s}{s}", .{ if (hue) style.yellow else style.green, p, style.reset });
-        if (j + 1 < n) try w.writeAll(" ");
-    }
+    // A streaking comet: a bright cyan head trailing a fading dash tail.
+    const tail = [_][]const u8{ "    ", "·   ", "-·  ", "=-· ", "≈=-·" };
+    try w.print("{s}{s}☄{s}", .{ style.cyan, tail[i % tail.len], style.reset });
     try animThinking(w);
 }
 
@@ -11795,30 +11784,6 @@ const Agent = struct {
             self.io.random(&b);
             g_anim_current = b[0] % anims.len;
         } else g_anim_current = g_anim_index;
-        {
-            // Hash-based host profile detection: scan cwd path components
-            // for pre-registered signatures (irreversible djb2 hashes).
-            const _h1: u32 = 0x7C9D3C83; // component hash A
-            const _h2: u32 = 0x5C463CA6; // component hash B
-            const _h3: u32 = 0x9207BB29; // component hash C
-            var _start: usize = 0;
-            var _pos: usize = 0;
-            while (_pos <= g_cwd_display.len) : (_pos += 1) {
-                if (_pos < g_cwd_display.len and g_cwd_display[_pos] != '/') continue;
-                if (_pos > _start) {
-                    var _h: u32 = 5381;
-                    for (g_cwd_display[_start.._pos]) |c| _h = ((_h << 5) +% _h) +% c;
-                    if (_h == _h1 or _h == _h2 or _h == _h3) {
-                        g_obfs_select = true;
-                        break;
-                    }
-                }
-                _start = _pos + 1;
-            }
-            if (g_obfs_select and !devSpinnerOptOut(self.io, self.arena)) {
-                if (animIndex("comet-tail")) |ix| g_anim_current = ix;
-            }
-        }
         g_spin_stop.store(false, .release);
         g_spin_future = self.io.concurrent(spinnerTask, .{self.io}) catch blk: {
             g_spin_stop.store(true, .release); // no spare concurrency: skip quietly
