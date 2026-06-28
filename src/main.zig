@@ -15742,6 +15742,25 @@ fn scoreVariants(
 const max_workflow_phases = 5;
 const max_workflow_tasks = 8;
 
+// Per-task cap on each phase result fed into {{prev}} (#4): a wide or runaway
+// phase would otherwise push its full output into every next-phase task, so
+// phase N+1 pays N× context. Over the cap we keep the head (the substance) plus
+// a short tail — which carries the `inspect:` pointer to the full detail file —
+// with a truncation marker between, so nothing is actually lost. (A synthesis/
+// compress pass is the heavier alternative; per-task slicing is the cheap,
+// no-extra-LLM-call lever.)
+const max_prev_per_task = 6000;
+const prev_tail_keep = 600;
+
+/// Bound one task's output before it enters the {{prev}} buffer (#4). Short
+/// outputs pass through untouched; over the cap, head + truncation marker + tail.
+fn cappedPrevBody(arena: Allocator, text: []const u8) []const u8 {
+    if (text.len <= max_prev_per_task) return text;
+    const head = utf8Prefix(text, max_prev_per_task - prev_tail_keep);
+    const tail = text[text.len - prev_tail_keep ..];
+    return std.fmt.allocPrint(arena, "{s}\n\n…[{d} chars truncated — full result in the inspect file below]…\n\n{s}", .{ head, text.len - head.len - tail.len, tail }) catch text;
+}
+
 /// Dynamic workflows as data: sequential phases, parallel tasks. Each task
 /// is an isolated subagent; "{{prev}}" in a task prompt is replaced with
 /// the labeled results of the previous phase (appended when omitted).
@@ -15886,7 +15905,7 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
                 // raw error text into {{prev}} as if it were a real result (#2).
                 try aw.writer.print("### {s} (no result — task failed)\n\n", .{label});
             } else {
-                try aw.writer.print("### {s}\n{s}\n\n", .{ label, out.text });
+                try aw.writer.print("### {s}\n{s}\n\n", .{ label, cappedPrevBody(arena, out.text) });
             }
         }
         prev_results = std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
@@ -15933,6 +15952,25 @@ test "resolveNiche: agent name is the fleet cell, inline variant is uncelled" {
     try std.testing.expectEqualStrings("", resolveNiche(obj(a, "{\"system_prompt\":\"be terse\"}")));
     // A plain task is uncelled too.
     try std.testing.expectEqualStrings("", resolveNiche(obj(a, "{\"description\":\"x\",\"prompt\":\"y\"}")));
+}
+
+test "cappedPrevBody bounds a wide phase output, keeps head + inspect tail (#4)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // A short result passes through untouched — most outputs never hit the cap.
+    try std.testing.expectEqualStrings("hi", cappedPrevBody(a, "hi"));
+
+    // A huge result is capped: head kept, the trailing inspect: pointer kept,
+    // a truncation marker added, and the full text never lands verbatim.
+    const big = ("X" ** 9000) ++ "\n[subagent sa-007-abcd · inspect: .graff/subagents/sa-007-abcd.md]";
+    const capped = cappedPrevBody(a, big);
+    try std.testing.expect(capped.len < big.len);
+    try std.testing.expect(capped.len <= max_prev_per_task + 200); // head + tail + marker overhead
+    try std.testing.expect(std.mem.indexOf(u8, capped, "truncated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, capped, "inspect: .graff/subagents/sa-007-abcd.md") != null);
+    try std.testing.expect(std.mem.indexOf(u8, capped, big) == null);
 }
 
 test "codedbGuard.referencesSourceFile: concrete code paths, not globs/logs/configs" {
