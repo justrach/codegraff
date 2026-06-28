@@ -8764,6 +8764,61 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             });
         }
         try out.print("(unknown models: {d}k ctx; claude* → anthropic, else → codegraff)\n", .{default_context / 1000});
+        // Live LM Studio models: query the local server so loaded models show up
+        // in /models without hand-typing their ids. Best-effort and silent if the
+        // server is down. Only probe when the user actually uses lmstudio (key set
+        // or it's the current provider) so we never make a stray localhost hit.
+        if (keys.get("lmstudio") != null or std.mem.eql(u8, root.provider.id, "lmstudio")) lmstudio: {
+            var base: []const u8 = "";
+            for (provider_specs) |sp| {
+                if (std.mem.eql(u8, sp.id, "lmstudio")) {
+                    base = sp.url;
+                    break;
+                }
+            }
+            if (base.len == 0) break :lmstudio;
+            const suffix = "/chat/completions";
+            const root_url = if (std.mem.endsWith(u8, base, suffix)) base[0 .. base.len - suffix.len] else base;
+            const url = std.fmt.allocPrint(arena, "{s}/models", .{root_url}) catch break :lmstudio;
+            var aw: Io.Writer.Allocating = .init(arena);
+            defer aw.deinit();
+            const res = root.client.fetch(.{
+                .location = .{ .url = url },
+                .method = .GET,
+                .response_writer = &aw.writer,
+                .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
+            }) catch break :lmstudio; // server not running → skip silently
+            if (@intFromEnum(res.status) != 200) break :lmstudio;
+            if (aw.writer.buffered().len > 256 * 1024) break :lmstudio;
+            const parsed = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch break :lmstudio;
+            if (parsed != .object) break :lmstudio;
+            const data = parsed.object.get("data") orelse break :lmstudio;
+            if (data != .array) break :lmstudio;
+            const has_key = keys.get("lmstudio") != null;
+            var printed_header = false;
+            for (data.array.items) |item| {
+                if (item != .object) continue;
+                const idv = item.object.get("id") orelse continue;
+                if (idv != .string) continue;
+                const id = idv.string;
+                if (std.mem.indexOf(u8, id, "embed") != null) continue; // skip embedding models — not chat targets
+                if (!printed_header) {
+                    try out.print("{s}lm studio (live @ {s}):{s}\n", .{ style.dim, root_url, style.reset });
+                    printed_header = true;
+                }
+                const current = std.mem.eql(u8, root.provider.id, "lmstudio") and std.mem.eql(u8, id, root.provider.model);
+                try out.print("{s:<26} {s:>6}   {s:>6}    {s:<11} {s}    {s}{s}\n", .{
+                    id,
+                    "—",
+                    "—",
+                    "lmstudio",
+                    if (has_key) "✓" else "—",
+                    if (visionModel(id)) "✓" else "—",
+                    if (current) "  ← current" else "",
+                });
+            }
+            if (printed_header) try out.print("{s}  copy an id above: /model lmstudio <id>{s}\n", .{ style.dim, style.reset });
+        }
         try out.print("{s}tip: /model <name> (fuzzy) · /model <provider> (its default) · /model <provider> <model> (pin, e.g. 'codex gpt-5.5'){s}\n", .{ style.dim, style.reset });
         try out.flush();
         return;
@@ -13970,13 +14025,22 @@ const PendingImage = struct { media_type: []const u8, b64: []const u8, label: []
 /// Vision support by model-name prefix (provider-agnostic): which models
 /// accept image content blocks. Used by /image, Ctrl-V, image drops, and
 /// the /models vision column.
-fn visionModel(m: []const u8) bool {
+fn visionModel(m_full: []const u8) bool {
+    // Local / OpenAI-compatible providers (LM Studio, Ollama, …) report
+    // org-prefixed ids like "google/gemma-4-26b-a4b-qat" — match the bare name.
+    const slash = std.mem.lastIndexOfScalar(u8, m_full, '/');
+    const m = if (slash) |i| m_full[i + 1 ..] else m_full;
     return std.mem.startsWith(u8, m, "claude") or
         std.mem.startsWith(u8, m, "gpt-5") or
         std.mem.startsWith(u8, m, "gpt-4") or
         std.mem.startsWith(u8, m, "grok-4") or
         std.mem.startsWith(u8, m, "kimi") or // kimi-k2.7+ see images (Kimi for Coding endpoint, verified 2026-06-16)
-        std.mem.startsWith(u8, m, "gemini");
+        std.mem.startsWith(u8, m, "gemini") or
+        std.mem.startsWith(u8, m, "gemma") or // gemma-3/4 are multimodal (LM Studio etc.)
+        std.mem.startsWith(u8, m, "llava") or
+        std.mem.startsWith(u8, m, "pixtral") or
+        std.mem.indexOf(u8, m, "-vl") != null or // qwen2-vl, qwen2.5-vl, internvl, …
+        std.mem.indexOf(u8, m, "vision") != null; // llama-3.2-vision, minicpm-v-vision, …
 }
 
 fn visionCapable(p: Provider) bool {
@@ -17267,9 +17331,17 @@ test "visionModel: vision-capable model families only" {
     try std.testing.expect(visionModel("grok-4.3"));
     try std.testing.expect(visionModel("kimi-k2.7"));
     try std.testing.expect(visionModel("gemini-2.0"));
+    // Local / OpenAI-compat providers report org-prefixed ids — match the bare name.
+    try std.testing.expect(visionModel("google/gemma-4-26b-a4b-qat"));
+    try std.testing.expect(visionModel("gemma-3-12b"));
+    try std.testing.expect(visionModel("llava-1.6"));
+    try std.testing.expect(visionModel("pixtral-12b"));
+    try std.testing.expect(visionModel("qwen2.5-vl-7b"));
+    try std.testing.expect(visionModel("llama-3.2-11b-vision"));
     try std.testing.expect(!visionModel("deepseek-v4-pro"));
     try std.testing.expect(!visionModel("mimo-v2.5"));
     try std.testing.expect(!visionModel("grok-build")); // grok-4 prefix only, not all grok
+    try std.testing.expect(!visionModel("qwen2.5-coder-7b")); // text-only local model
 }
 
 test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
