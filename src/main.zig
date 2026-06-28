@@ -647,9 +647,9 @@ const subagent_spec = ToolSpec{
 
 const workflow_spec = ToolSpec{
     .name = "workflow",
-    .desc = "Run a multi-phase workflow of parallel subagents (dynamic workflows as data). Phases run sequentially; the tasks inside a phase run in parallel, each as an isolated subagent with no shared context, so every prompt must be self-contained. From phase 2 on, the placeholder {{prev}} in a task prompt is replaced with the labeled results of the previous phase (appended automatically if omitted). Returns the final phase results. Use for fan-out work with a synthesis step: audits, multi-perspective review, parallel research. Tasks may carry their own system_prompt to run prompt variants side by side; when the fleet is on, a phase with 2+ variants is auto-scored by an LLM judge and each variant's fitness feeds back to the fleet, so a variant tournament doubles as a DGM scoring round.",
+    .desc = "Run a workflow of parallel subagents (dynamic workflows as data). Two shapes. PHASES (fan-out + synthesis): phases run sequentially; tasks inside a phase run in parallel as isolated subagents with no shared context, so every prompt must be self-contained; from phase 2 on, {{prev}} in a task prompt is replaced with the labeled results of the previous phase (appended if omitted); a phase may carry `when` to run only if a substring appears in {{prev}} (conditional / early-exit). Returns the final phase results. Use for audits, multi-perspective review, parallel research. Tasks may carry their own system_prompt to run prompt variants side by side; when the fleet is on, a phase with 2+ variants is auto-scored by an LLM judge and each variant's fitness feeds back to the fleet (a tournament doubles as a DGM scoring round). PIPELINE (no barrier): pass {pipeline:{items,stages}} instead to map each item through the stages independently — item A can reach stage 3 while item B is still on stage 1; {{item}} is the item and {{prev}} is this item's previous-stage result. Use for per-item work like transform/verify each file.",
     .schema =
-    \\{"type": "object", "properties": {"phases": {"type": "array", "items": {"type": "object", "properties": {"title": {"type": "string", "description": "Short phase label for logs"}, "tasks": {"type": "array", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "Short label, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task; may contain {{prev}}"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name)"}, "system_prompt": {"type": "string", "description": "Optional: replace this task's system prompt (overrides agent)"}}, "required": ["description", "prompt"]}}}, "required": ["tasks"]}}}, "required": ["phases"]}
+    \\{"type": "object", "properties": {"phases": {"type": "array", "description": "Fan-out + synthesis mode (barrier between phases).", "items": {"type": "object", "properties": {"title": {"type": "string", "description": "Short phase label for logs"}, "when": {"type": "string", "description": "Optional (phase 2+): run this phase only if this substring appears (case-insensitive) in the previous phase's results — gate a synthesis/exit phase on a sentinel"}, "tasks": {"type": "array", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "Short label, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task; may contain {{prev}}"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name)"}, "system_prompt": {"type": "string", "description": "Optional: replace this task's system prompt (overrides agent)"}}, "required": ["description", "prompt"]}}}, "required": ["tasks"]}}, "pipeline": {"type": "object", "description": "No-barrier mode: map each item through the stages independently.", "properties": {"items": {"type": "array", "items": {"type": "string"}, "description": "Things to process, one independent chain each (e.g. file paths)"}, "stages": {"type": "array", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "Short stage label"}, "prompt": {"type": "string", "description": "Self-contained; {{item}} = the item, {{prev}} = this item's previous-stage result"}, "agent": {"type": "string", "description": "Optional named agent type"}, "system_prompt": {"type": "string", "description": "Optional: replace this stage's system prompt"}}, "required": ["description", "prompt"]}}}, "required": ["items", "stages"]}}}
     ,
 };
 
@@ -15761,6 +15761,155 @@ fn cappedPrevBody(arena: Allocator, text: []const u8) []const u8 {
     return std.fmt.allocPrint(arena, "{s}\n\n…[{d} chars truncated — full result in the inspect file below]…\n\n{s}", .{ head, text.len - head.len - tail.len, tail }) catch text;
 }
 
+/// #5 conditional-phase gate: a phase carrying a non-empty `when` runs only when
+/// that substring appears (case-insensitively) in the previous phase's results —
+/// e.g. gate a synthesis phase on a findings sentinel so it never runs when the
+/// earlier phase turned up nothing. Empty `when` (or phase 1, no prev) → runs.
+fn gateAllows(prev: []const u8, when: []const u8) bool {
+    return when.len == 0 or std.ascii.indexOfIgnoreCase(prev, when) != null;
+}
+
+// ── Pipeline mode (#3) ──────────────────────────────────────────────────────
+// Phases fan out then synthesize: a barrier between phases, since every
+// next-phase task waits on ALL of the previous phase via {{prev}}. Pipeline
+// instead maps each ITEM through a chain of STAGES with NO barrier — item A can
+// be in stage 3 while item B is still in stage 1, so wall-clock is the slowest
+// single chain, not the sum of slowest-per-stage. Use it for per-item work
+// (transform/verify each file); use phases for fan-out + synthesis.
+const max_pipeline_items = 8;
+const max_pipeline_stages = 5;
+
+const StageSpec = struct {
+    label: []const u8,
+    prompt: []const u8, // raw; may contain {{item}} / {{prev}}
+    override: ?[]const u8,
+    niche: []const u8,
+};
+
+/// Replace every `needle` in `hay` with `repl` (arena-allocated); returns `hay`
+/// unchanged when the needle is absent.
+fn replacePlaceholder(arena: Allocator, hay: []const u8, needle: []const u8, with: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, hay, needle) == null) return hay;
+    const size = std.mem.replacementSize(u8, hay, needle, with);
+    const buf = try arena.alloc(u8, size);
+    _ = std.mem.replace(u8, hay, needle, with, buf);
+    return buf;
+}
+
+/// Resolve a pipeline stage prompt for one item: substitute {{item}}, and from
+/// stage 2 {{prev}} = this item's bounded previous-stage result. Either is
+/// appended when its placeholder is omitted (mirrors phases-mode {{prev}}).
+fn pipelinePrompt(arena: Allocator, raw: []const u8, item: []const u8, prev: []const u8, stage_no: usize) ![]const u8 {
+    const cp = if (stage_no > 1) cappedPrevBody(arena, prev) else "";
+    var p = raw;
+    if (std.mem.indexOf(u8, p, "{{item}}") != null)
+        p = try replacePlaceholder(arena, p, "{{item}}", item)
+    else
+        p = try std.fmt.allocPrint(arena, "{s}\n\nItem: {s}", .{ p, item });
+    if (std.mem.indexOf(u8, p, "{{prev}}") != null)
+        p = try replacePlaceholder(arena, p, "{{prev}}", cp)
+    else if (stage_no > 1)
+        p = try std.fmt.allocPrint(arena, "{s}\n\nResult from the previous stage:\n\n{s}", .{ p, cp });
+    return p;
+}
+
+/// One item's journey through every stage, run on a pool thread (spawned by
+/// runPipeline). Stages run SEQUENTIALLY here via DIRECT runSub calls — never a
+/// nested io.async, which on a bounded pool could deadlock; different items run
+/// concurrently. A failed stage is retried once (#2); a stage that still fails
+/// ends the chain with a terse marker rather than feeding its error downstream.
+fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) ToolOutput {
+    const gpa = ctx.gpa;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var prev: []const u8 = "";
+    for (stages, 1..) |st, stage_no| {
+        const prompt = pipelinePrompt(arena, st.prompt, item, prev, stage_no) catch |e| return failure(gpa, e);
+        var out = runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche) catch |e| failure(gpa, e);
+        if (out.is_error) {
+            gpa.free(out.text);
+            out = runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche) catch |e| failure(gpa, e);
+            if (out.is_error) {
+                gpa.free(out.text);
+                return .{
+                    .text = std.fmt.allocPrint(gpa, "(pipeline stopped at stage {d}/{d} \"{s}\": task failed)", .{ stage_no, stages.len, st.label }) catch (gpa.dupe(u8, "(pipeline stage failed)") catch ""),
+                    .is_error = true,
+                };
+            }
+        }
+        const duped = arena.dupe(u8, out.text) catch {
+            gpa.free(out.text);
+            return failure(gpa, error.OutOfMemory);
+        };
+        gpa.free(out.text);
+        prev = duped;
+    }
+    return .{ .text = gpa.dupe(u8, prev) catch "" };
+}
+
+/// Pipeline mode entry (#3): validate {items, stages}, then run one independent
+/// chain per item concurrently (no barrier) and return the labeled final-stage
+/// result for each item.
+fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
+    const gpa = ctx.gpa;
+    if (pv != .object) return .{ .text = try gpa.dupe(u8, "pipeline must be an object with items + stages"), .is_error = true };
+    const items_val = pv.object.get("items") orelse return .{ .text = try gpa.dupe(u8, "pipeline needs an items array"), .is_error = true };
+    const stages_val = pv.object.get("stages") orelse return .{ .text = try gpa.dupe(u8, "pipeline needs a stages array"), .is_error = true };
+    if (items_val != .array or stages_val != .array) return .{ .text = try gpa.dupe(u8, "pipeline items and stages must both be arrays"), .is_error = true };
+    const items = items_val.array.items;
+    const stage_vals = stages_val.array.items;
+    if (items.len == 0 or items.len > max_pipeline_items) return .{ .text = try std.fmt.allocPrint(gpa, "pipeline needs 1-{d} items", .{max_pipeline_items}), .is_error = true };
+    if (stage_vals.len == 0 or stage_vals.len > max_pipeline_stages) return .{ .text = try std.fmt.allocPrint(gpa, "pipeline needs 1-{d} stages", .{max_pipeline_stages}), .is_error = true };
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Parse stages once — shared (read-only) by every item chain.
+    const stages = try arena.alloc(StageSpec, stage_vals.len);
+    for (stage_vals, stages) |sv, *sp| {
+        if (sv != .object) return .{ .text = try gpa.dupe(u8, "each pipeline stage must be an object"), .is_error = true };
+        const so = sv.object;
+        sp.label = if (so.get("description")) |d| (if (d == .string) d.string else "stage") else "stage";
+        const raw = if (so.get("prompt")) |p| (if (p == .string) p.string else "") else "";
+        if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each pipeline stage needs a non-empty \"prompt\""), .is_error = true };
+        sp.prompt = raw;
+        sp.override = resolveOverride(so);
+        const an = resolveNiche(so);
+        sp.niche = if (an.len > 0) an else sp.label;
+    }
+
+    const item_strs = try arena.alloc([]const u8, items.len);
+    for (items, item_strs) |iv, *is| {
+        if (iv != .string or iv.string.len == 0) return .{ .text = try gpa.dupe(u8, "pipeline items must be non-empty strings"), .is_error = true };
+        is.* = iv.string;
+    }
+
+    const wf_start = Io.Timestamp.now(ctx.io, .awake);
+    std.debug.print("  [workflow] pipeline: {d} item(s) × {d} stage(s), no barrier\n", .{ items.len, stages.len });
+
+    // Spawn one chain per item — all joined before any fallible work so an early
+    // return can never abandon a running chain.
+    const futures = try arena.alloc(Io.Future(ToolOutput), items.len);
+    const outputs = try arena.alloc(ToolOutput, items.len);
+    for (item_strs, futures) |item, *fut| fut.* = ctx.io.async(pipelineChain, .{ ctx, item, stages });
+    for (futures, outputs) |*fut, *out| out.* = fut.await(ctx.io);
+    defer for (outputs) |out| gpa.free(out.text);
+
+    var failed: usize = 0;
+    for (outputs) |out| if (out.is_error) {
+        failed += 1;
+    };
+    if (g_telem) |t| t.workflowEvent(stages.len, items.len * stages.len, failed, @intCast(@max(0, wf_start.untilNow(ctx.io, .awake).toMilliseconds())));
+
+    var aw: Io.Writer.Allocating = .init(arena);
+    for (item_strs, outputs) |item, out| {
+        try aw.writer.print("### {s}{s}\n{s}\n\n", .{ item, if (out.is_error) " (failed)" else "", out.text });
+    }
+    return .{ .text = try gpa.dupe(u8, std.mem.trimEnd(u8, aw.writer.buffered(), "\n")) };
+}
+
 /// Dynamic workflows as data: sequential phases, parallel tasks. Each task
 /// is an isolated subagent; "{{prev}}" in a task prompt is replaced with
 /// the labeled results of the previous phase (appended when omitted).
@@ -15771,8 +15920,11 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         .text = try gpa.dupe(u8, "subagents cannot run workflows — do this work yourself"),
         .is_error = true,
     };
+    // Pipeline mode (#3): {pipeline:{items,stages}} maps each item through the
+    // stages with no barrier — distinct from phases (fan-out + synthesis).
+    if (input.object.get("pipeline")) |pv| return runPipeline(ctx, pv);
     const phases_val = input.object.get("phases") orelse return .{
-        .text = try gpa.dupe(u8, "workflow needs a phases array"),
+        .text = try gpa.dupe(u8, "workflow needs a \"phases\" array (or a \"pipeline\" object)"),
         .is_error = true,
     };
     const phases = phases_val.array.items;
@@ -15813,6 +15965,14 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         if (tasks.len == 0 or tasks.len > max_workflow_tasks) return .{
             .text = try std.fmt.allocPrint(gpa, "each phase needs 1-{d} tasks", .{max_workflow_tasks}),
             .is_error = true,
+        };
+        // #5 — conditional phase: skip when its `when` substring is absent from
+        // the previous phase's results (case-insensitive). Phase 1 has no prev so
+        // its `when` never gates; a skipped phase leaves {{prev}} untouched, so a
+        // skipped final phase just returns the prior phase's results (early-exit).
+        if (phase_no > 1) if (phase.get("when")) |wv| if (wv == .string and !gateAllows(prev_results, wv.string)) {
+            std.debug.print("  [workflow] phase {d}/{d}: {s} — SKIPPED (when \"{s}\" absent)\n", .{ phase_no, phases.len, title, wv.string });
+            continue;
         };
         std.debug.print("  [workflow] phase {d}/{d}: {s} ({d} task(s))\n", .{ phase_no, phases.len, title, tasks.len });
 
@@ -15971,6 +16131,34 @@ test "cappedPrevBody bounds a wide phase output, keeps head + inspect tail (#4)"
     try std.testing.expect(std.mem.indexOf(u8, capped, "truncated") != null);
     try std.testing.expect(std.mem.indexOf(u8, capped, "inspect: .graff/subagents/sa-007-abcd.md") != null);
     try std.testing.expect(std.mem.indexOf(u8, capped, big) == null);
+}
+
+test "gateAllows: empty when always runs, else case-insensitive substring (#5)" {
+    try std.testing.expect(gateAllows("anything", "")); // no gate → always run
+    try std.testing.expect(gateAllows("found 3 ISSUES here", "issues")); // case-insensitive hit
+    try std.testing.expect(!gateAllows("all clean, no findings", "ISSUE")); // absent → skip
+    try std.testing.expect(!gateAllows("", "ready")); // empty prev → skip
+}
+
+test "pipelinePrompt substitutes {{item}}/{{prev}} and appends when omitted (#3)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // {{item}} substituted on stage 1; no previous-stage section.
+    const s1 = try pipelinePrompt(a, "Audit {{item}} for bugs.", "src/x.zig", "", 1);
+    try std.testing.expect(std.mem.indexOf(u8, s1, "Audit src/x.zig for bugs.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s1, "previous stage") == null);
+
+    // {{item}} and {{prev}} both substituted on stage 2.
+    const s2 = try pipelinePrompt(a, "Given {{prev}}, fix {{item}}.", "src/x.zig", "BUG: off-by-one", 2);
+    try std.testing.expect(std.mem.indexOf(u8, s2, "Given BUG: off-by-one, fix src/x.zig.") != null);
+
+    // Omitted placeholders are appended (item on stage 1, prev on stage 2+).
+    const s3 = try pipelinePrompt(a, "Summarize the result.", "ticket-7", "DONE", 2);
+    try std.testing.expect(std.mem.indexOf(u8, s3, "Item: ticket-7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s3, "Result from the previous stage:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s3, "DONE") != null);
 }
 
 test "codedbGuard.referencesSourceFile: concrete code paths, not globs/logs/configs" {
