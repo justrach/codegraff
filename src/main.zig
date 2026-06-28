@@ -316,7 +316,7 @@ const model_table = [_]ModelInfo{
     .{ .provider = "mlx", .name = "mlx-community/Qwen3.6-27B-OptiQ-4bit", .context = 262_144 },
     // LM Studio serves whatever model is loaded; "lmstudio" is a routing alias —
     // swap for your loaded model id if LM Studio requires an exact match (GET :1234/v1/models).
-    .{ .provider = "lmstudio", .name = "lmstudio", .context = 32_768 },
+    .{ .provider = "lmstudio", .name = "lmstudio", .context = 200_000 },
     .{ .provider = "anthropic", .name = "claude-fable-5", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-8", .context = 1_000_000 },
     .{ .provider = "anthropic", .name = "claude-opus-4-7", .context = 1_000_000 },
