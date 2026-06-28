@@ -47,6 +47,10 @@ It works in your real terminal, on your real files, with the real internet, and 
 
 ## How it compares
 
+<p align="center">
+  <img src="comparison.png" alt="graff vs Claude Code vs Codex: ~20x cheaper ($0.022 vs $0.51 vs $0.42 per task), ~25 MB vs ~410 MB vs ~206 MB peak memory, 4.4s vs 8.9s one-shot gpt-5.5 latency" width="860">
+</p>
+
 Run the same job on graff, Claude Code, and Codex (three read-only questions about this repo, plus an 8-trial latency test), and here is what it means for you:
 
 **Your AI bill is a fraction.** graff runs the same task on whatever model fits your budget. On `deepseek-v4-pro` it averaged **$0.022 per task**, against Claude Code's **$0.51** (Opus 4.8) and Codex's **$0.42** (gpt-5.5). That is roughly **20× cheaper**, because Claude Code only runs Claude and Codex only runs GPT, while graff runs deepseek, kimi, glm, grok, minimax, gpt, claude, and more. On the *same* model the token usage is comparable, so the win is the freedom to pick a cheaper one, not a token trick.
