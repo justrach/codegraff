@@ -5490,6 +5490,7 @@ const usage_text =
     \\  --goal <text>                   seed a standing objective (tracked as a todo checklist) for every turn
     \\  --eval <cmd>                    scoring command for an eval-driven loop (the `eval` tool runs it)
     \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
+    \\  --niche <name>                  fleet niche this eval optimizes (reviewer/researcher/implementer/skeptic or a custom agent); tags submitted scores so the DGM can promote a champion for that role
     \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
     \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
     \\  --yolo           skip all permission prompts for the session
@@ -5743,6 +5744,7 @@ pub fn main(init: std.process.Init) !void {
     var eval_cmd_flag: ?[]const u8 = null; // --eval: scoring command for the eval-driven loop
     var worktree_flag: ?[]const u8 = null; // --worktree/-w: isolate this session in a git worktree (parallel agents, no file collisions)
     var eval_target_flag: ?u8 = null; // --until: target score 0-100 for the eval loop
+    var eval_niche_flag: ?[]const u8 = null; // --niche: fleet niche this eval-driven session optimizes (tags submitted scores)
     var no_resume_flag = false; // start without auto-loading last.session.json
     var new_session_flag = false; // start a fresh autosaved session
     var positionals: std.ArrayList([]const u8) = .empty;
@@ -5765,6 +5767,8 @@ pub fn main(init: std.process.Init) !void {
                 } else if (std.mem.eql(u8, arg, "--until")) {
                     const uv = it.next() orelse std.process.fatal("--until needs a score 0-100", .{});
                     eval_target_flag = std.fmt.parseInt(u8, uv, 10) catch std.process.fatal("--until must be a number 0-100", .{});
+                } else if (std.mem.eql(u8, arg, "--niche")) {
+                    eval_niche_flag = it.next() orelse std.process.fatal("--niche needs a name (e.g. --niche reviewer)", .{});
                 } else if (std.mem.eql(u8, arg, "--no-telemetry")) {
                     no_telemetry_flag = true;
                 } else if (std.mem.eql(u8, arg, "--timing")) {
@@ -6361,6 +6365,7 @@ pub fn main(init: std.process.Init) !void {
     if (goal_flag) |g| root.goal = try arena.dupe(u8, g); // --goal applies to every turn (incl. --json/-p/SDK)
     if (eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     if (eval_target_flag) |t| root.eval_target = t;
+    if (eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);
     tracer.note("session", root.provider.model);
     // Distribute (docs §9.E): pull this tier's live fleet champions and prefer
     // them over the baked builtins. Best-effort + bounded; emits fleet:elite_pull.
@@ -10472,6 +10477,7 @@ const Agent = struct {
     todos: std.ArrayList(TodoItem) = .empty,
     eval_cmd: ?[]const u8 = null, // --eval: shell command that scores the current output (eval-driven loop)
     eval_target: u8 = 90, // --until: stop when the score reaches this (0-100)
+    eval_niche: []const u8 = "", // --niche: fleet niche this eval session optimizes; tags submitted scores into a promotable (niche × tier × suite) cell
     eval_judge: ?[]const u8 = null, // --judge: LLM-as-judge rubric, min()-blended with the --eval score (runJudge). Dormant until a CLI flag sets it.
     eval_iter: u32 = 0, // eval-loop iteration counter (scores log)
     eval_best: f64 = -1, // best score seen this session (-1 = none yet)
@@ -11497,18 +11503,30 @@ const Agent = struct {
         if (combined) |s| {
             if (improved and s > 0) { // s>0: skip the initial-state / total-failure 0 (don't pollute the cell mean)
                 if (g_telem) |t| {
-                    const genome_fp = promptFingerprint(self.systemPrompt());
+                    const sys = self.systemPrompt();
+                    const genome_fp = promptFingerprint(sys);
                     const esh_fp = promptFingerprint(cmd);
                     const genome: []const u8 = &genome_fp;
                     const esh: []const u8 = &esh_fp;
                     const run_id: []const u8 = &g_run_id;
                     const pclass = providerClass(self.provider.model);
+                    // --niche tags this score's cell. Without it the score lands in the
+                    // anonymous "" niche, which pullElites can never match to a builtin —
+                    // so an eval session that wants to grow a champion must name its role.
+                    const niche = self.eval_niche;
+                    // Genome-send (graff-dgm.md §B): the eval genome is this agent's own
+                    // persona, never spawned via runSub, so its prompt_text never reached
+                    // the worker. A cell only promotes when harness_scores joins to a
+                    // harness_genomes row, so ride the genome text over on a `propose`
+                    // (deduped by prompt_sha) before the score — else a winning eval cell
+                    // has nothing to serve. Gated on a niche: a "" cell is unpromotable.
+                    if (niche.len > 0) t.fleetEvent("propose", niche, genome, "", pclass, "", 0, sys);
                     const sig = signScore(genome, "", s, run_id, "", "", esh);
                     const sig_s: []const u8 = if (g_score_key != null) &sig else "";
                     var provbuf: [512]u8 = undefined;
-                    const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, "" }) catch "";
+                    const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche }) catch "";
                     t.scoreEvent(genome, "", s, run_id, sig_s, prov);
-                    t.fleetEvent("submit", "", genome, "", pclass, esh, 0, "");
+                    t.fleetEvent("submit", niche, genome, "", pclass, esh, 0, "");
                 }
             }
         }

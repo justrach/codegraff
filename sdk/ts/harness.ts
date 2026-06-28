@@ -321,19 +321,28 @@ export class Harness {
    *  text (fingerprinted for you) or an existing 16-hex fingerprint.
    *  Pass `parent` (text or sha) when the variant was mutated from another
    *  prompt: that genome-lineage edge is what DGM parent selection counts
-   *  children with. Call between turns; resolves on the harness's ack. */
-  async score(promptOrSha: string, value: number, notes = "", parent?: string): Promise<void> {
+   *  children with. Pass `niche` (reviewer/researcher/implementer/skeptic, or
+   *  a custom agent) to file the score into that MAP-Elites cell so the fleet
+   *  can promote a champion for the role; with the full persona text the genome
+   *  also rides over on a `fleet:propose`. Call between turns; resolves on the
+   *  harness's ack. */
+  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string): Promise<void> {
     const sha = /^[0-9a-f]{16}$/.test(promptOrSha) ? promptOrSha : promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : /^[0-9a-f]{16}$/.test(parent) ? parent : promptFingerprint(parent);
-    this.proc.stdin.write(JSON.stringify({ type: "score", prompt_sha: sha, score: value, notes, parent_sha }) + "\n");
+    // Genome-send (docs §9.B): a cell only promotes when a score's prompt_sha
+    // joins a stored genome, so when we hold the full persona text + a niche,
+    // register it first on a `fleet:propose` (deduped by prompt_sha on the
+    // collector). This is the SDK analog of the harness eval loop's propose.
+    if (niche && !/^[0-9a-f]{16}$/.test(promptOrSha)) fleetSignal("propose", { niche, prompt_sha: sha, parent_sha: parent_sha ?? "", prompt_text: promptOrSha });
+    this.proc.stdin.write(JSON.stringify({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche }) + "\n");
     // Same edge-version tolerance as setSystemPrompt: skip unknown events
     // while waiting for the ack.
     while (true) {
       const ev = await this.next();
       if (ev === null) { reportError("died", "harness closed before acking score"); throw new Error("harness closed"); }
       if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "score") { fleetSignal("submit", { prompt_sha: sha, parent_sha: parent_sha ?? "" }); return; }
+      if (ev.type === "score") { fleetSignal("submit", { prompt_sha: sha, parent_sha: parent_sha ?? "", niche: niche ?? "" }); return; }
     }
   }
 

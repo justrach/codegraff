@@ -344,6 +344,36 @@ artifact are ever transmitted.
 | **D — Promote** | central worker (automatic) | challenger beats the incumbent built-in by margin M over W days with ≥K distinct installs → flip `live` |
 | **E — Distribute** | startup pull / release | graff fetches the elites for *its* tier; `loadAgentTypes` prefers a live fleet elite over the baked built-in |
 
+### Driving Propose (B) yourself
+
+Two entry points feed a niche's cell. Both tag the score with the niche so the
+worker can group it into `(niche × provider_class × eval_set_hash)`, and both
+ride the genome (the persona's `prompt_text`) over on `fleet:propose` so a
+promoted cell actually has a persona to serve:
+
+- **Harness eval loop.** Name the role the eval optimizes:
+
+  ```
+  graff --eval ./score.sh --until 95 --niche reviewer
+  ```
+
+  On each new best, `runEval` emits `fleet:propose` (the genome) plus a
+  niche-tagged `score` and `fleet:submit`. Without `--niche` the score lands in
+  the anonymous `""` cell, which `pullElites` can never match to a built-in, so
+  an eval session that wants to grow a champion must name its role.
+
+- **SDK.** Pass `niche` to `score()` with the full persona text:
+
+  ```python
+  h.score(persona_text, 95.0, niche="reviewer", eval_set_hash=suite_hash)
+  ```
+  ```ts
+  await h.score(personaText, 95, "", undefined, "reviewer");
+  ```
+
+  Given the full text plus a niche, `score()` first emits `fleet:propose`
+  carrying the genome (deduped by `prompt_sha`), then the niche-tagged score.
+
 ### Why the backend can decide unattended: signing ≠ attestation
 
 Step 0's HMAC proves a score *came from a real graff build* and wasn't
@@ -406,9 +436,9 @@ both clients, since the SDKs are generated):
 
 | body | kind | emitted by | attrs | meaning |
 |---|---|---|---|---|
-| `score` | — | harness (on `h.score()`) | `prompt_sha`, `value`, `parent_sha`, `provider_class`, `artifact_sha`, `eval_set_hash`, `sig` | a signed fitness write-back (the gradient) |
-| `fleet` | `propose` | SDK driver | `niche`, `prompt_sha`, `parent_sha`, `provider_class` | a variant was generated/mutated |
-| `fleet` | `submit` | SDK driver | `niche`, `prompt_sha`, `provider_class`, `eval_set_hash` | a scored variant was submitted to the fleet |
+| `score` | — | harness (on `h.score()`) | `prompt_sha`, `value`, `parent_sha`, `provider_class`, `artifact_sha`, `eval_set_hash`, `niche`, `sig` | a signed fitness write-back (the gradient) |
+| `fleet` | `propose` | harness · SDK driver | `niche`, `prompt_sha`, `parent_sha`, `provider_class`, `prompt_text` | a variant was generated/mutated (carries the genome) |
+| `fleet` | `submit` | harness · SDK driver | `niche`, `prompt_sha`, `provider_class`, `eval_set_hash` | a scored variant was submitted to the fleet |
 | `fleet` | `elite_pull` | SDK driver | `provider_class`, `eval_set_hash`, `n_elites` | current elites fetched from `/v1/elites` |
 | `fleet` | `promote` | worker | `niche`, `provider_class`, `prompt_sha`, `lcb`, `n_installs` | the backend flipped a new champion live |
 
@@ -417,11 +447,12 @@ so a dashboard confirms the federated loop is running (variants proposed →
 scores submitted → cells promoted) per client, exactly as `prompt_variants` /
 `scores_recorded` did for the local loop.
 
-SDK surface (both clients): `score()` already carries the signed fields and now
-emits `fleet:submit`; new `pullElites(providerClass)` / `pull_elites(...)`
-returns the live champions and emits `fleet:elite_pull`; `proposeVariant(...)`
-(thin helper around `subagent` with a `system_prompt` override) emits
-`fleet:propose`. All gated by the same telemetry opt-out as the rest of the SDK.
+SDK surface (both clients): `score(promptOrSha, value, …, niche)` carries the
+signed fields and emits `fleet:submit`; when handed the full persona text plus a
+`niche` it also emits `fleet:propose` carrying the genome, so the cell it submits
+into is promotable. `pullElites(providerClass)` / `pull_elites(...)` returns the
+live champions and emits `fleet:elite_pull`. All gated by the same telemetry
+opt-out as the rest of the SDK.
 
 ### Scaffolded vs TODO
 
@@ -430,7 +461,9 @@ returns the live champions and emits `fleet:elite_pull`; `proposeVariant(...)`
   fields, the SDK `fleet` signal emitters, and — as of this change — the
   **harness-side `fleet` emitters too**: `Telemetry.fleetEvent` (body `fleet`,
   matching the SDK `_fleet_signal`), `fleet:propose` at the variant spawn
-  (`runSub`), `fleet:submit` at the `score` write-back, a `providerClass()`
+  (`runSub`) and on each eval-loop best (`runEval`, gated on `--niche`), both
+  carrying the genome `prompt_text`; the niche-tagged `fleet:submit` at the
+  `score` write-back, a `providerClass()`
   tier tag, and the graff-side startup pull (`pullElites` → `fleet:elite_pull`,
   with `loadAgentTypes`/builtins deferring to a live champion's prompt). Verified
   live: a harness session moved `/v1/stats` `submits` and `elite_pulls`.
