@@ -15,8 +15,8 @@ RESERVED COMMERCIAL & CLOUD RIGHTS (Licensor carve-out)
 --------------------------------------------------------------------------------
 
 Notwithstanding anything in the AGPL-3.0 text below, the copyright holders
-Rach Pradhan ("justrach") and Yu Xi Lim ("yxlyx") (each a "Licensor") each
-retain and reserve, for themselves, all rights in and to this software,
+Rach Pradhan ("justrach") and Yu Xi Lim ("yxlyx") (each a "Licensor") jointly
+retain and reserve all rights in and to this software,
 including the unrestricted, perpetual, irrevocable, and royalty-free right to
 use, reproduce, modify, prepare derivative works of, sublicense, distribute,
 host, operate, and commercially exploit this software and any modified or
@@ -25,9 +25,10 @@ this software, or any product or service based on or incorporating it, as a
 private, proprietary, hosted, managed, or cloud offering -- free of, and
 without being bound by, any obligation of the AGPL-3.0 (including, without
 limitation, its copyleft, source-availability, and Section 13
-remote-network-interaction obligations). Each Licensor may additionally license
+remote-network-interaction obligations). The Licensors may additionally license
 this software to third parties under separate proprietary or commercial terms
-at that Licensor's sole discretion.
+only by their joint written agreement (see EXERCISE OF RESERVED RIGHTS below);
+no Licensor may grant any such license alone.
 
 This reservation runs solely and personally to the two Licensors named above.
 EVERY OTHER PERSON OR ENTITY receives, copies, runs, modifies, conveys, and
@@ -37,14 +38,23 @@ to all users who interact with a modified version remotely over a network.
 Nothing in this carve-out grants any right to anyone other than the two named
 Licensors.
 
-EXERCISE OF RESERVED RIGHTS. The rights reserved above are held by the two
-Licensors severally, not jointly: either Licensor may exercise, license, or
-otherwise act on any of these reserved rights independently, and may grant
-licenses to others, without the consent, signature, or joinder of the other
-Licensor. If at any time one Licensor is unavailable, unreachable, incapacitated,
-or otherwise unable or unwilling to act, Rach Pradhan ("justrach") may exercise
-these reserved rights and grant licenses alone, with full authority to act for
-both. Both Licensors have agreed to and signed these Additional Terms.
+EXERCISE OF RESERVED RIGHTS. The reserved commercial, proprietary, and cloud
+rights set out above are held by the two Licensors JOINTLY, not severally. Any
+exercise of those rights to grant a license to any third party, or to offer this
+software (or any product or service based on or incorporating it) as a private,
+proprietary, hosted, managed, or cloud offering, requires the joint, express,
+written agreement of BOTH Licensors. No Licensor may exercise those rights, or
+grant any such license, alone, independently, or without the consent, signature,
+and joinder of the other Licensor, and there is no sole-authority or
+unavailability fallback: if both Licensors do not agree in writing, the reserved
+rights are not exercised. Any proprietary or commercial permission so granted is
+separate from the AGPL-3.0 license and is revocable by the Licensors at their
+discretion unless its written grant states otherwise; the provision of
+consultancy or other services by either or both Licensors does not, of itself,
+grant any such permission or make one irrevocable. By contrast, each recipient's
+license under the AGPL-3.0 is irrevocable except by reason of that recipient's
+own material breach. Both Licensors have agreed to and signed these Additional
+Terms.
 
 For commercial or proprietary licensing, contact the Licensors.
 
