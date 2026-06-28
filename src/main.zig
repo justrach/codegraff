@@ -1650,7 +1650,14 @@ fn pullElites(io: Io, arena: Allocator, client: *std.http.Client, telem: ?*Telem
     if (endpoint.len == 0 or !g_fleet) return types;
     var base = std.mem.trimEnd(u8, endpoint, "/");
     if (std.mem.endsWith(u8, base, "/v1/logs")) base = base[0 .. base.len - "/v1/logs".len];
-    const url = std.fmt.allocPrint(arena, "{s}/v1/elites?provider_class={s}&eval_set_hash={s}", .{ base, provider_class, eval_set_hash }) catch return types;
+    // No eval suite → omit eval_set_hash entirely (NOT empty): the worker reads an
+    // absent hash as "give me the global-best champion" but a present-but-empty one
+    // as cell "" (always empty), so sending "&eval_set_hash=" makes plain interactive
+    // sessions pull nothing. Eval-driven sessions keep their cell-specific lookup.
+    const url = if (eval_set_hash.len == 0)
+        std.fmt.allocPrint(arena, "{s}/v1/elites?provider_class={s}", .{ base, provider_class }) catch return types
+    else
+        std.fmt.allocPrint(arena, "{s}/v1/elites?provider_class={s}&eval_set_hash={s}", .{ base, provider_class, eval_set_hash }) catch return types;
     var aw: Io.Writer.Allocating = .init(arena);
     var ok = false;
     {
