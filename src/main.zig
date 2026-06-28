@@ -647,7 +647,7 @@ const subagent_spec = ToolSpec{
 
 const workflow_spec = ToolSpec{
     .name = "workflow",
-    .desc = "Run a multi-phase workflow of parallel subagents (dynamic workflows as data). Phases run sequentially; the tasks inside a phase run in parallel, each as an isolated subagent with no shared context, so every prompt must be self-contained. From phase 2 on, the placeholder {{prev}} in a task prompt is replaced with the labeled results of the previous phase (appended automatically if omitted). Returns the final phase results. Use for fan-out work with a synthesis step: audits, multi-perspective review, parallel research. Tasks may carry their own system_prompt to run prompt variants side by side.",
+    .desc = "Run a multi-phase workflow of parallel subagents (dynamic workflows as data). Phases run sequentially; the tasks inside a phase run in parallel, each as an isolated subagent with no shared context, so every prompt must be self-contained. From phase 2 on, the placeholder {{prev}} in a task prompt is replaced with the labeled results of the previous phase (appended automatically if omitted). Returns the final phase results. Use for fan-out work with a synthesis step: audits, multi-perspective review, parallel research. Tasks may carry their own system_prompt to run prompt variants side by side; when the fleet is on, a phase with 2+ variants is auto-scored by an LLM judge and each variant's fitness feeds back to the fleet, so a variant tournament doubles as a DGM scoring round.",
     .schema =
     \\{"type": "object", "properties": {"phases": {"type": "array", "items": {"type": "object", "properties": {"title": {"type": "string", "description": "Short phase label for logs"}, "tasks": {"type": "array", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "Short label, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task; may contain {{prev}}"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name)"}, "system_prompt": {"type": "string", "description": "Optional: replace this task's system prompt (overrides agent)"}}, "required": ["description", "prompt"]}}}, "required": ["tasks"]}}}, "required": ["phases"]}
     ,
@@ -15639,8 +15639,10 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
 }
 
 /// One task inside a workflow phase; never throws, suitable for io.async.
-fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8) ToolOutput {
-    return runSub(ctx, "workflow_task", label, prompt, sys_override, "") catch |err| failure(ctx.gpa, err);
+/// `niche` is the task's MAP-Elites cell, threaded through so runSub's
+/// fleet:propose — and scoreVariants' submit — tag the variant's genome.
+fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) ToolOutput {
+    return runSub(ctx, "workflow_task", label, prompt, sys_override, niche) catch |err| failure(ctx.gpa, err);
 }
 
 /// The --judge LLM-as-judge run (see runJudge): an isolated subagent scores the
@@ -15648,6 +15650,93 @@ fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_overrid
 /// a thin runSub wrapper — so the eval handler can io.async it on a pool thread.
 fn judgeTask(ctx: ToolCtx, prompt: []const u8) ToolOutput {
     return runSub(ctx, "judge_task", "judge", prompt, null, "") catch |err| failure(ctx.gpa, err);
+}
+
+/// Build the judge prompt that scores one workflow variant's output against its
+/// task on a 0-100 scale (see scoreVariants). Bounded: the task spec and output
+/// tail are truncated so a fat phase can't blow up the judge's context.
+fn variantJudgePrompt(arena: Allocator, title: []const u8, task: []const u8, output: []const u8) ![]const u8 {
+    const spec = utf8Prefix(task, 1200);
+    const work = if (output.len > 2000) output[output.len - 2000 ..] else output;
+    return std.fmt.allocPrint(arena,
+        \\An agent variant ran the task below as part of the "{s}" phase of a workflow.
+        \\Judge how well its OUTPUT accomplishes the TASK, on a 0-100 scale. Be
+        \\discriminating: reward correctness, completeness, and usefulness; penalize
+        \\hand-waving, non-answers, and ignored requirements. Do not reward length.
+        \\
+        \\TASK:
+        \\{s}
+        \\
+        \\VARIANT OUTPUT:
+        \\{s}
+        \\
+        \\Inspect any files the work references if you need to, then end your reply
+        \\with a single final line `score: <N>` where N is an integer from 0 to 100.
+    , .{ title, spec, work });
+}
+
+/// #1 — Score this phase's persona variants and submit niche-tagged fitness to
+/// the fleet, turning every ultracode tournament into a DGM scoring round. Each
+/// surviving variant task is judged 0-100 against its task; the score is signed
+/// and submitted under the task's niche so a MAP-Elites cell accrues real fitness
+/// and the promote pass can crown a winner. Mirrors runEval's submit exactly but
+/// with a NON-EMPTY niche — the gap that previously forced bootstrap seeding.
+/// Best-effort and gated: no judge runs unless ≥2 variants competed and the
+/// fleet (telemetry) is on, so ordinary fan-outs pay nothing.
+fn scoreVariants(
+    ctx: ToolCtx,
+    arena: Allocator,
+    title: []const u8,
+    prompts: [][]const u8,
+    raws: [][]const u8,
+    overrides: []?[]const u8,
+    niches: [][]const u8,
+    outputs: []ToolOutput,
+) void {
+    if (!g_fleet) return;
+    const t = g_telem orelse return;
+
+    // Variant tasks that produced a usable result; a tournament needs ≥2.
+    var vidx: [max_workflow_tasks]usize = undefined;
+    var vn: usize = 0;
+    for (overrides, outputs, 0..) |o, out, i| {
+        if (o != null and !out.is_error) {
+            vidx[vn] = i;
+            vn += 1;
+        }
+    }
+    if (vn < 2) return;
+
+    // All fallible work (prompt builds) before any future spawns, so an early
+    // return can never abandon a running judge.
+    const jprompts = arena.alloc([]const u8, vn) catch return;
+    for (jprompts, 0..) |*jp, k| {
+        const i = vidx[k];
+        jp.* = variantJudgePrompt(arena, title, prompts[i], outputs[i].text) catch return;
+    }
+    const jfuts = arena.alloc(Io.Future(ToolOutput), vn) catch return;
+    for (jfuts, jprompts) |*jf, jp| jf.* = ctx.io.async(judgeTask, .{ ctx, jp });
+
+    const pclass = providerClass(ctx.provider.model);
+    const run_id: []const u8 = &g_run_id;
+    for (jfuts, 0..) |*jf, k| {
+        const i = vidx[k];
+        const jout = jf.await(ctx.io);
+        defer ctx.gpa.free(jout.text);
+        if (jout.is_error) continue;
+        const s = parseEvalScore(jout.text) orelse continue;
+        if (s <= 0) continue; // skip the total-failure 0 (don't pollute the cell mean), mirroring runEval
+        const genome_fp = promptFingerprint(overrides[i].?);
+        const esh_fp = promptFingerprint(raws[i]);
+        const genome: []const u8 = &genome_fp;
+        const esh: []const u8 = &esh_fp;
+        const sig = signScore(genome, "", s, run_id, "", "", esh);
+        const sig_s: []const u8 = if (g_score_key != null) &sig else "";
+        var provbuf: [512]u8 = undefined;
+        const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, "" }) catch "";
+        t.scoreEvent(genome, "", s, run_id, sig_s, prov);
+        t.fleetEvent("submit", niches[i], genome, "", pclass, esh, 0, "");
+    }
 }
 
 const max_workflow_phases = 5;
@@ -15709,16 +15798,24 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         std.debug.print("  [workflow] phase {d}/{d}: {s} ({d} task(s))\n", .{ phase_no, phases.len, title, tasks.len });
 
         // Resolve prompts: substitute or append the previous phase results.
+        // raws keeps each task's pre-substitution spec (a stable eval-set id for
+        // scoring, unlike the prev-injected prompt); niches is its MAP-Elites
+        // cell — the agent type, else the phase title for an inline variant.
         const prompts = try arena.alloc([]const u8, tasks.len);
         const labels = try arena.alloc([]const u8, tasks.len);
         const overrides = try arena.alloc(?[]const u8, tasks.len);
-        for (tasks, prompts, labels, overrides) |task_val, *prompt, *label, *override| {
+        const raws = try arena.alloc([]const u8, tasks.len);
+        const niches = try arena.alloc([]const u8, tasks.len);
+        for (tasks, prompts, labels, overrides, raws, niches) |task_val, *prompt, *label, *override, *rawp, *niche| {
             if (task_val != .object) return .{ .text = try gpa.dupe(u8, "each task must be an object"), .is_error = true };
             const task = task_val.object;
             label.* = if (task.get("description")) |d| (if (d == .string) d.string else "task") else "task";
             override.* = resolveOverride(task);
+            const agent_niche = resolveNiche(task);
+            niche.* = if (agent_niche.len > 0) agent_niche else title;
             const raw = if (task.get("prompt")) |p| (if (p == .string) p.string else "") else "";
             if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each task needs a non-empty \"prompt\""), .is_error = true };
+            rawp.* = raw;
             if (phase_no == 1) {
                 prompt.* = raw;
             } else if (std.mem.indexOf(u8, raw, "{{prev}}") != null) {
@@ -15735,21 +15832,62 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // can never abandon running subagents or free their result slots.
         const futures = try arena.alloc(Io.Future(ToolOutput), tasks.len);
         const outputs = try arena.alloc(ToolOutput, tasks.len);
-        for (labels, prompts, overrides, futures) |label, prompt, override, *fut| {
-            fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override });
+        for (labels, prompts, overrides, niches, futures) |label, prompt, override, niche, *fut| {
+            fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche });
         }
         for (futures, outputs) |*fut, *out| out.* = fut.await(ctx.io);
         defer for (outputs) |out| gpa.free(out.text);
         wf_tasks += tasks.len;
-        for (outputs) |out| {
-            if (out.is_error) wf_failed += 1;
+
+        // #2 — Retry transient failures once. A single flaky subagent (an empty
+        // report, a dropped stream) shouldn't fail the phase or poison {{prev}}
+        // for the next one. We can't reliably tell a transient failure from a
+        // deterministic one, so we retry every failure exactly once: a permanent
+        // failure just costs one more attempt and stays failed.
+        var fidx: [max_workflow_tasks]usize = undefined;
+        var nf: usize = 0;
+        for (outputs, 0..) |out, i| if (out.is_error) {
+            fidx[nf] = i;
+            nf += 1;
+        };
+        if (nf > 0) {
+            const refut = try arena.alloc(Io.Future(ToolOutput), nf);
+            for (refut, 0..) |*rf, k| {
+                const i = fidx[k];
+                rf.* = ctx.io.async(workflowTask, .{ ctx, labels[i], prompts[i], overrides[i], niches[i] });
+            }
+            for (refut, 0..) |*rf, k| {
+                const retry = rf.await(ctx.io);
+                const i = fidx[k];
+                if (!retry.is_error) {
+                    gpa.free(outputs[i].text);
+                    outputs[i] = retry;
+                } else gpa.free(retry.text);
+            }
         }
+        // Tally this phase's surviving failures into the run total (post-retry,
+        // so a recovered task no longer counts). Accumulates across phases, like
+        // wf_tasks, for the single end-of-run workflowEvent.
+        for (outputs) |out| if (out.is_error) {
+            wf_failed += 1;
+        };
+
+        // #1 — Ultracode → DGM engine: when ≥2 persona variants competed this
+        // phase, score each survivor and submit its niche-tagged fitness so the
+        // fleet can rank and promote the winner (docs/hyperagents.md §9.B). The
+        // propose half already fired in runSub; this closes the loop runEval left
+        // open (it submits niche=""). Gated on the fleet — no judge cost otherwise.
+        scoreVariants(ctx, arena, title, prompts, raws, overrides, niches, outputs);
 
         var aw: Io.Writer.Allocating = .init(arena);
         for (labels, outputs) |label, out| {
-            try aw.writer.print("### {s}{s}\n{s}\n\n", .{
-                label, if (out.is_error) " (failed)" else "", out.text,
-            });
+            if (out.is_error) {
+                // Keep the failure visible to the next phase, but never feed its
+                // raw error text into {{prev}} as if it were a real result (#2).
+                try aw.writer.print("### {s} (no result — task failed)\n\n", .{label});
+            } else {
+                try aw.writer.print("### {s}\n{s}\n\n", .{ label, out.text });
+            }
         }
         prev_results = std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
     }
@@ -15757,6 +15895,45 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
 }
 
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────
+
+test "variantJudgePrompt: bounded, names the phase, keeps the score contract" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const big_task = "T" ** 4000;
+    const big_out = "O" ** 5000;
+    const p = try variantJudgePrompt(a, "code-review", big_task, big_out);
+
+    // Names the shared phase so the judge has the tournament context.
+    try std.testing.expect(std.mem.indexOf(u8, p, "\"code-review\" phase") != null);
+    // Task is prefix-capped and output tail-capped — neither lands verbatim.
+    try std.testing.expect(std.mem.indexOf(u8, p, big_task) == null);
+    try std.testing.expect(std.mem.indexOf(u8, p, big_out) == null);
+    // The `score:` contract parseEvalScore depends on is spelled out…
+    try std.testing.expect(std.mem.indexOf(u8, p, "score: <N>") != null);
+    // …and it round-trips: a judge tail like this parses back to the score.
+    try std.testing.expectEqual(@as(?f64, 87), parseEvalScore("ok\nscore: 87"));
+}
+
+test "resolveNiche: agent name is the fleet cell, inline variant is uncelled" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const obj = struct {
+        fn p(al: Allocator, s: []const u8) std.json.ObjectMap {
+            return (std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable).object;
+        }
+    }.p;
+
+    // A named agent type is the MAP-Elites niche the variant submits under.
+    try std.testing.expectEqualStrings("reviewer", resolveNiche(obj(a, "{\"agent\":\"reviewer\"}")));
+    // An inline system_prompt variant has no named cell — execWorkflow then falls
+    // back to the phase title so it still lands somewhere non-empty.
+    try std.testing.expectEqualStrings("", resolveNiche(obj(a, "{\"system_prompt\":\"be terse\"}")));
+    // A plain task is uncelled too.
+    try std.testing.expectEqualStrings("", resolveNiche(obj(a, "{\"description\":\"x\",\"prompt\":\"y\"}")));
+}
 
 test "codedbGuard.referencesSourceFile: concrete code paths, not globs/logs/configs" {
     // The exact #626 screenshot commands — every one reads a source file.
