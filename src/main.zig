@@ -5444,13 +5444,9 @@ const harness_version: []const u8 = @import("build_options").version;
 const changelog_text =
     \\What's new
     \\──────────
-    \\0.0.166
-    \\  • Trace/trajectory JSONL never corrupts on a failed write (#86)
-    \\  • Auto-compaction recovers instead of wedging on huge context (#88)
-    \\  • New providers: Sakana AI (fugu) + Fireworks AI (deepseek, kimi, glm…)
-    \\0.0.165
-    \\  • TUI: live /thinking reasoning stream, AI /title, session headers
-    \\  • GUI: /ultracode toggle, prompt-history image fix, segmented borders
+    \\0.0.187
+    \\  • Fleet eval-loop and SDK scores carry niche metadata
+    \\  • Elite selection rides the genome with niche-aware scoring
     \\
 ;
 
