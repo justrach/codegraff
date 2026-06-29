@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  CheckCircle2Icon,
   ExternalLinkIcon,
   LoaderCircle,
+  TerminalIcon,
 } from "lucide-react";
 
 import { ensureWorkspacePromptSettingsLoaded } from "@/app/sessionStore";
@@ -524,26 +526,88 @@ export function ProviderSetupDialog({
             ) : null}
 
             {authFlow?.kind === "cli_login" ? (
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center gap-2.5 rounded-lg border border-border/60 px-3 py-3 text-sm text-muted-foreground">
-                  {isDetectingLogin ? (
-                    <>
+              <div className="relative overflow-hidden rounded-xl border border-border bg-card p-5">
+                {/* Brand motif: a soft terracotta enso brush-arc echoing the
+                    codegraff primary mark, low-opacity so it reads as texture
+                    across every theme. */}
+                <svg
+                  aria-hidden
+                  viewBox="0 0 100 100"
+                  fill="none"
+                  className="pointer-events-none absolute -right-7 -top-9 size-36 opacity-[0.08]"
+                >
+                  <path
+                    d="M86 30A40 40 0 1 0 90 54"
+                    stroke="#D75A42"
+                    strokeWidth="9"
+                    strokeLinecap="round"
+                  />
+                  <circle cx="88" cy="66" r="4.5" fill="#D75A42" />
+                </svg>
+
+                <div className="relative flex items-start gap-3.5">
+                  <div className="relative flex size-11 shrink-0 items-center justify-center rounded-full border border-border bg-background">
+                    {isDetectingLogin ? (
                       <LoaderCircle
-                        className="size-4 shrink-0 animate-spin text-[color:var(--accent)]"
+                        className="size-5 animate-spin text-[color:var(--accent)]"
                         strokeWidth={2}
                       />
-                      <span>
-                        Waiting for login to complete in Terminal… The dialog
-                        closes automatically once detected.
+                    ) : (
+                      <TerminalIcon
+                        className="size-5 text-foreground"
+                        strokeWidth={1.75}
+                      />
+                    )}
+                    {isDetectingLogin ? (
+                      <span className="absolute -right-0.5 -top-0.5 flex size-2.5">
+                        <span className="absolute inline-flex size-full animate-ping rounded-full bg-[color:var(--accent)] opacity-60" />
+                        <span className="relative inline-flex size-2.5 rounded-full bg-[color:var(--accent)]" />
                       </span>
-                    </>
-                  ) : (
-                    <span>
-                      {authFlow.apiKeyHint ??
-                        "Login launched in Terminal. Complete the CLI flow there, then finish setup here."}
-                    </span>
-                  )}
+                    ) : null}
+                  </div>
+
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <p className="text-sm font-medium text-foreground">
+                      {isDetectingLogin
+                        ? "Waiting for sign-in to finish…"
+                        : `Continue in Terminal to connect ${provider.name}`}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {isDetectingLogin
+                        ? "This dialog closes itself the moment the login lands — nothing to click."
+                        : (authFlow.apiKeyHint ??
+                          "We launched the sign-in in your Terminal. Finish the browser OAuth there and we detect it automatically.")}
+                    </p>
+                  </div>
                 </div>
+
+                <ol className="relative mt-4 flex flex-col gap-2.5 border-t border-border/60 pt-4">
+                  {[
+                    "A Terminal window opened running the sign-in.",
+                    "Complete the browser OAuth it opens.",
+                    "We detect the credential and finish setup for you.",
+                  ].map((step, index) => {
+                    const done = isDetectingLogin && index === 0;
+                    return (
+                      <li
+                        key={step}
+                        className="flex items-center gap-2.5 text-[13px] text-muted-foreground"
+                      >
+                        {done ? (
+                          <CheckCircle2Icon
+                            className="size-5 shrink-0 text-[color:var(--success)]"
+                            strokeWidth={2}
+                          />
+                        ) : (
+                          <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium tabular-nums text-foreground">
+                            {index + 1}
+                          </span>
+                        )}
+                        <span>{step}</span>
+                      </li>
+                    );
+                  })}
+                </ol>
               </div>
             ) : null}
 
