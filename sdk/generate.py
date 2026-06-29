@@ -370,19 +370,28 @@ export class Harness {{
    *  text (fingerprinted for you) or an existing 16-hex fingerprint.
    *  Pass `parent` (text or sha) when the variant was mutated from another
    *  prompt: that genome-lineage edge is what DGM parent selection counts
-   *  children with. Call between turns; resolves on the harness's ack. */
-  async score(promptOrSha: string, value: number, notes = "", parent?: string): Promise<void> {{
+   *  children with. Pass `niche` (reviewer/researcher/implementer/skeptic, or
+   *  a custom agent) to file the score into that MAP-Elites cell so the fleet
+   *  can promote a champion for the role; with the full persona text the genome
+   *  also rides over on a `fleet:propose`. Call between turns; resolves on the
+   *  harness's ack. */
+  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string): Promise<void> {{
     const sha = /^[0-9a-f]{{16}}$/.test(promptOrSha) ? promptOrSha : promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : /^[0-9a-f]{{16}}$/.test(parent) ? parent : promptFingerprint(parent);
-    this.proc.stdin.write(JSON.stringify({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha }}) + "\\n");
+    // Genome-send (docs §9.B): a cell only promotes when a score's prompt_sha
+    // joins a stored genome, so when we hold the full persona text + a niche,
+    // register it first on a `fleet:propose` (deduped by prompt_sha on the
+    // collector). This is the SDK analog of the harness eval loop's propose.
+    if (niche && !/^[0-9a-f]{{16}}$/.test(promptOrSha)) fleetSignal("propose", {{ niche, prompt_sha: sha, parent_sha: parent_sha ?? "", prompt_text: promptOrSha }});
+    this.proc.stdin.write(JSON.stringify({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche }}) + "\\n");
     // Same edge-version tolerance as setSystemPrompt: skip unknown events
     // while waiting for the ack.
     while (true) {{
       const ev = await this.next();
       if (ev === null) {{ reportError("died", "harness closed before acking score"); throw new Error("harness closed"); }}
       if (ev.type === "error") throw new Error(ev.message);
-      if (ev.type === "score") {{ fleetSignal("submit", {{ prompt_sha: sha, parent_sha: parent_sha ?? "" }}); return; }}
+      if (ev.type === "score") {{ fleetSignal("submit", {{ prompt_sha: sha, parent_sha: parent_sha ?? "", niche: niche ?? "" }}); return; }}
     }}
   }}
 
@@ -678,11 +687,15 @@ export class RemoteHarness {{
 
   /** Record an evaluation score in the server-side trajectory archive —
    *  same semantics as the stdio SDK's `score()`. */
-  async score(promptOrSha: string, value: number, notes = "", parent?: string): Promise<void> {{
+  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string): Promise<void> {{
     const sha = HEX16.test(promptOrSha) ? promptOrSha : await promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : HEX16.test(parent) ? parent : await promptFingerprint(parent);
-    for await (const ev of this.send({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha }})) {{
+    // `niche` files the score into a MAP-Elites cell so the fleet can promote a
+    // champion for the role; the remote harness reads it from the request and
+    // tags its own score/submit. (Genome capture rides the harness process,
+    // which holds the persona text the remote bridge only references by sha.)
+    for await (const ev of this.send({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche }})) {{
       if (ev.type === "error") throw new Error(ev.message);
       if (ev.type === "score") return;
     }}
@@ -1023,7 +1036,8 @@ class Harness:
 
     def score(self, prompt_or_sha: str, value: float, notes: str = "",
               parent: Optional[str] = None, judge_id: str = "",
-              artifact_sha: str = "", eval_set_hash: str = "") -> None:
+              artifact_sha: str = "", eval_set_hash: str = "",
+              niche: str = "") -> None:
         """Record an evaluation score for an agent/prompt variant in the
         trajectory archive (harness.trajectory.jsonl) — the DGM evaluation
         phase writing back. `prompt_or_sha` is either the full system-prompt
@@ -1036,7 +1050,11 @@ class Harness:
         names the evaluator, `artifact_sha` the thing it judged, and
         `eval_set_hash` the held-out eval used — all folded into the record's
         HMAC so a forged fitness row is detectable (see `verify_score`).
-        Call between turns; blocks until the harness acks."""
+        `niche` (reviewer/researcher/implementer/skeptic, or a custom agent)
+        files the score into that MAP-Elites cell so the fleet can promote a
+        champion for the role; with the full persona text the genome also rides
+        over on a `fleet:propose`. Call between turns; blocks until the harness
+        acks."""
         assert self.proc.stdin and self.proc.stdout
         sha = prompt_or_sha if re.fullmatch(r"[0-9a-f]{{16}}", prompt_or_sha) \\
             else prompt_fingerprint(prompt_or_sha)
@@ -1050,6 +1068,15 @@ class Harness:
             req["artifact_sha"] = artifact_sha
         if eval_set_hash:
             req["eval_set_hash"] = eval_set_hash
+        if niche:
+            req["niche"] = niche
+        # Genome-send (docs §9.B): a cell only promotes when a score's prompt_sha
+        # joins a stored genome, so when we hold the full persona text + a niche,
+        # register it first (deduped by prompt_sha on the collector).
+        if niche and not re.fullmatch(r"[0-9a-f]{{16}}", prompt_or_sha):
+            _fleet_signal("propose", {{"niche": niche, "prompt_sha": sha,
+                                      "parent_sha": req.get("parent_sha", ""),
+                                      "prompt_text": prompt_or_sha}})
         self.proc.stdin.write(json.dumps(req) + "\\n")
         self.proc.stdin.flush()
         for line in self.proc.stdout:
@@ -1063,7 +1090,7 @@ class Harness:
             if ev.get("type") == "error":
                 raise RuntimeError(ev["message"])
             if ev.get("type") == "score":
-                _fleet_signal("submit", {{"prompt_sha": sha, "eval_set_hash": eval_set_hash}})
+                _fleet_signal("submit", {{"prompt_sha": sha, "eval_set_hash": eval_set_hash, "niche": niche}})
                 return
         _report_error("died", f"harness closed before acking score (rc={{self.proc.poll()}})")
         raise RuntimeError("harness closed before acking score")
@@ -1226,9 +1253,11 @@ class RemoteHarness:
 
     def score(self, prompt_or_sha: str, value: float, notes: str = "",
               parent: Optional[str] = None, judge_id: str = "",
-              artifact_sha: str = "", eval_set_hash: str = "") -> None:
+              artifact_sha: str = "", eval_set_hash: str = "",
+              niche: str = "") -> None:
         """Record an evaluation score in the server-side trajectory archive —
-        same semantics (and provenance fields) as `Harness.score`."""
+        same semantics (and provenance fields) as `Harness.score`, including
+        the `niche` MAP-Elites tag and genome-send."""
         sha = prompt_or_sha if re.fullmatch(r"[0-9a-f]{{16}}", prompt_or_sha) \\
             else prompt_fingerprint(prompt_or_sha)
         req = {{"type": "score", "prompt_sha": sha, "score": value, "notes": notes}}
@@ -1241,6 +1270,14 @@ class RemoteHarness:
             req["artifact_sha"] = artifact_sha
         if eval_set_hash:
             req["eval_set_hash"] = eval_set_hash
+        if niche:
+            req["niche"] = niche
+        # Genome-send (docs §9.B): register the persona when we hold the full
+        # text + a niche so a promoted cell has a genome to serve.
+        if niche and not re.fullmatch(r"[0-9a-f]{{16}}", prompt_or_sha):
+            _fleet_signal("propose", {{"niche": niche, "prompt_sha": sha,
+                                      "parent_sha": req.get("parent_sha", ""),
+                                      "prompt_text": prompt_or_sha}})
         for ev in self._send(req):
             if ev.get("type") == "error":
                 raise RuntimeError(ev["message"])

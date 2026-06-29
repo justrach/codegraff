@@ -208,11 +208,15 @@ export class RemoteHarness {
 
   /** Record an evaluation score in the server-side trajectory archive —
    *  same semantics as the stdio SDK's `score()`. */
-  async score(promptOrSha: string, value: number, notes = "", parent?: string): Promise<void> {
+  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string): Promise<void> {
     const sha = HEX16.test(promptOrSha) ? promptOrSha : await promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : HEX16.test(parent) ? parent : await promptFingerprint(parent);
-    for await (const ev of this.send({ type: "score", prompt_sha: sha, score: value, notes, parent_sha })) {
+    // `niche` files the score into a MAP-Elites cell so the fleet can promote a
+    // champion for the role; the remote harness reads it from the request and
+    // tags its own score/submit. (Genome capture rides the harness process,
+    // which holds the persona text the remote bridge only references by sha.)
+    for await (const ev of this.send({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche })) {
       if (ev.type === "error") throw new Error(ev.message);
       if (ev.type === "score") return;
     }
