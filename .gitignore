@@ -9,7 +9,7 @@ node_modules/
 harness.trace.jsonl
 harness.trajectory.jsonl
 .harness/
-.graff/worktrees/
+.graff/
 .claude/scheduled_tasks.lock
 *.session.json
 .mcp.json
@@ -31,3 +31,6 @@ __pycache__/
 
 # release artifacts
 dist/
+
+# surfer lives in its own repo (~/surfer, github.com/justrach/surfer) — never track it here
+surfer/
