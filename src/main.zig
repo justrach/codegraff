@@ -5508,6 +5508,8 @@ const usage_text =
     \\  graff mcp                         list configured MCP servers
     \\  graff worktree list              list the per-tab worktrees created by -w
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
+    \\  graff sandboxes                  list your gateway sandboxes (what's burning credits)
+    \\  graff sandboxes stop <id>        spin a sandbox down (stops it + settles the meter)
     \\  graff --schema                   print the machine-readable interface (SDK codegen)
     \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
     \\                                   (--host/--port/--token; sessions are --json children)
@@ -5875,7 +5877,8 @@ pub fn main(init: std.process.Init) !void {
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     const is_subcommand = positionals.items.len > 0 and
         (std.mem.eql(u8, positionals.items[0], "login") or std.mem.eql(u8, positionals.items[0], "key") or std.mem.eql(u8, positionals.items[0], "mcp") or
-            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title") or std.mem.eql(u8, positionals.items[0], "repl") or std.mem.eql(u8, positionals.items[0], "worktree"));
+            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title") or std.mem.eql(u8, positionals.items[0], "repl") or
+            std.mem.eql(u8, positionals.items[0], "worktree") or std.mem.eql(u8, positionals.items[0], "sandboxes"));
     var oneshot_prompt: ?[]const u8 = null;
     if (!is_subcommand and positionals.items.len > 0) {
         oneshot_prompt = try std.mem.join(arena, " ", positionals.items);
@@ -5951,6 +5954,17 @@ pub fn main(init: std.process.Init) !void {
     // clean commit on the current branch, then removes the worktree + branch.
     if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "worktree")) {
         try worktreeCommand(gpa, io, arena, positionals.items[1..]);
+        return;
+    }
+
+    // `graff sandboxes [stop <id>]`: list the account's gateway sandboxes or
+    // spin one down. Key resolution mirrors a normal run: CODEGRAFF_API_KEY
+    // env first, else the `graff login` file via loadCodegraffKey.
+    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "sandboxes")) {
+        const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
+            (if (homeEnv(init.environ_map)) |home| loadCodegraffKey(io, arena, home) else null) orelse
+            std.process.fatal("sandboxes: no codegraff key — run `graff login` first", .{});
+        try sandboxesCommand(io, gpa, arena, cg_key, positionals.items[1..]);
         return;
     }
 
@@ -10192,6 +10206,86 @@ fn loadCodegraffKey(io: Io, arena: Allocator, home: []const u8) ?[]const u8 {
         } else |_| {}
     } else |_| {}
     return null;
+}
+
+// `graff sandboxes [stop <id>]` — the account's gateway sandboxes: the same
+// ones the PR bot, the e2e cube probe, and the iOS app create. List shows
+// state + spec + labels so you can see what's burning credits; stop spins one
+// down via the gateway, which settles its billing meter.
+fn gatewayJson(io: Io, gpa: Allocator, arena: Allocator, method: std.http.Method, url: []const u8, key: []const u8) !Value {
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
+    const res = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = method,
+        .payload = if (method == .POST) "{}" else null,
+        .response_writer = &aw.writer,
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+            .authorization = .{ .override = try std.fmt.allocPrint(arena, "Bearer {s}", .{key}) },
+            .user_agent = .{ .override = "simple-harness/" ++ harness_version },
+        },
+    });
+    const body = aw.writer.buffered();
+    const code = @intFromEnum(res.status);
+    if (code < 200 or code >= 300) {
+        var msg: []const u8 = body;
+        if (std.json.parseFromSliceLeaky(Value, arena, body, .{ .allocate = .alloc_always })) |v| {
+            if (v == .object) if (v.object.get("error")) |e| if (e == .object)
+                if (e.object.get("message")) |m| if (m == .string) {
+                    msg = m.string;
+                };
+        } else |_| {}
+        std.process.fatal("sandboxes: gateway HTTP {d}: {s}", .{ code, msg[0..@min(msg.len, 200)] });
+    }
+    return std.json.parseFromSliceLeaky(Value, arena, body, .{ .allocate = .alloc_always });
+}
+
+fn sandboxesCommand(io: Io, gpa: Allocator, arena: Allocator, key: []const u8, args: []const []const u8) !void {
+    var obuf: [4096]u8 = undefined;
+    var ow = Io.File.stdout().writer(io, &obuf);
+    const out = &ow.interface;
+
+    if (args.len >= 2 and std.mem.eql(u8, args[0], "stop")) {
+        const url = try std.fmt.allocPrint(arena, codegraff_device_base ++ "/v1/sandboxes/{s}/stop", .{args[1]});
+        const resp = try gatewayJson(io, gpa, arena, .POST, url, key);
+        const state = if (resp == .object) (strFieldObj(resp.object, "state") orelse "stopped") else "stopped";
+        const cost_micro = if (resp == .object) intFieldObj(resp.object, "costMicro", 0) else 0;
+        const usd = @as(f64, @floatFromInt(cost_micro)) / 1e6;
+        try out.print("{s}✓{s} {s} → {s} (meter settled ${d:.4})\n", .{ style.green, style.reset, args[1], state, usd });
+        try out.flush();
+        return;
+    }
+    if (args.len != 0 and !std.mem.eql(u8, args[0], "list"))
+        std.process.fatal("usage: graff sandboxes [stop <id>]", .{});
+
+    const resp = try gatewayJson(io, gpa, arena, .GET, codegraff_device_base ++ "/v1/sandboxes", key);
+    if (resp != .array) std.process.fatal("sandboxes: unexpected gateway response (not a list)", .{});
+    if (resp.array.items.len == 0) {
+        try out.writeAll("no sandboxes — nothing is burning credits\n");
+        try out.flush();
+        return;
+    }
+    try out.print("{s}{s:<36}  {s:<8}  {s:<9}  {s:<16}  {s}{s}\n", .{ style.dim, "id", "state", "spec", "label", "created", style.reset });
+    for (resp.array.items) |item| {
+        if (item != .object) continue;
+        const o = item.object;
+        const id = strFieldObj(o, "id") orelse "?";
+        const state = strFieldObj(o, "state") orelse "?";
+        const spec = try std.fmt.allocPrint(arena, "{d}c/{d}g/{d}g", .{
+            intFieldObj(o, "cpu", 0), intFieldObj(o, "memory", 0), intFieldObj(o, "disk", 0),
+        });
+        var label: []const u8 = "";
+        if (o.get("labels")) |l| if (l == .object) {
+            label = strFieldObj(l.object, "purpose") orelse strFieldObj(l.object, "app") orelse "";
+        };
+        const created_full = strFieldObj(o, "createdAt") orelse "";
+        const created = created_full[0..@min(created_full.len, 16)];
+        const scolor = if (std.mem.eql(u8, state, "started")) style.green else style.dim;
+        try out.print("{s:<36}  {s}{s:<8}{s}  {s:<9}  {s:<16}  {s}\n", .{ id, scolor, state, style.reset, spec, label, created });
+    }
+    try out.flush();
 }
 
 // Safe API-key store. On macOS, keys live in the login Keychain (service
