@@ -10348,6 +10348,66 @@ fn cubePrintAttach(out: *Io.Writer, st: std.json.ObjectMap) !void {
     try out.print("  attach any serve client:\n    GRAFF_SERVE_BASE={s}\n    GRAFF_SERVE_TOKEN={s}\n", .{ url, tok });
     if (strFieldObj(st, "preview_token")) |pt|
         try out.print("    x-daytona-preview-token: {s}\n", .{pt});
+    if (strFieldObj(st, "github_login")) |gl|
+        try out.print("  github: {s} (git push + gh ready inside)\n", .{gl});
+}
+
+// GitHub for the cube — the same access @codegraff-bot gets. The frontend
+// mints a 1-hour installation token for the account's connected GitHub
+// (POST /api/github/mint-token, Bearer cg_sk_); we then provision the sandbox:
+// git credential store + identity, the gh CLI, and a 0600 token file that the
+// serve environment exports as GH_TOKEN. Not connected → the cube still
+// works, just without repo access.
+const cube_mint_url = "https://codegraff.com/api/github/mint-token";
+const CubeGithub = struct { login: []const u8, token: []const u8 };
+
+fn cubeGithubProvision(io: Io, gpa: Allocator, arena: Allocator, key: []const u8, sandbox_id: []const u8, out: *Io.Writer) !?CubeGithub {
+    const r = gatewayFetch(io, gpa, arena, .POST, cube_mint_url, key, "{}") catch {
+        try out.writeAll("  github: mint endpoint unreachable — cube gets no repo access\n");
+        try out.flush();
+        return null;
+    };
+    if (r.code == 404) {
+        try out.writeAll("  github: not connected — connect at codegraff.com/dashboard for repo access\n");
+        try out.flush();
+        return null;
+    }
+    if (r.code < 200 or r.code >= 300) {
+        try out.print("  github: mint failed (HTTP {d}) — cube gets no repo access\n", .{r.code});
+        try out.flush();
+        return null;
+    }
+    const v = std.json.parseFromSliceLeaky(Value, arena, r.body, .{ .allocate = .alloc_always }) catch return null;
+    if (v != .object) return null;
+    const token = strFieldObj(v.object, "token") orelse return null;
+    const login = strFieldObj(v.object, "account_login") orelse "github";
+
+    try out.print("  wiring github ({s}) …\n", .{login});
+    try out.flush();
+    const cmd = try std.fmt.allocPrint(arena,
+        "mkdir -p $HOME/bin && git config --global credential.helper store && " ++
+            "printf 'https://x-access-token:%s@github.com\\n' '{s}' > $HOME/.git-credentials && chmod 600 $HOME/.git-credentials && " ++
+            "printf '%s' '{s}' > $HOME/.cube-github-token && chmod 600 $HOME/.cube-github-token && " ++
+            "git config --global user.name '{s}' && git config --global user.email '{s}@users.noreply.github.com' && " ++
+            "(command -v gh >/dev/null 2>&1 || (A=$(uname -m); case \"$A\" in x86_64) A=amd64;; aarch64|arm64) A=arm64;; esac; " ++
+            "V=$(curl -s https://api.github.com/repos/cli/cli/releases/latest | grep -o '\"tag_name\": *\"[^\"]*\"' | head -1 | cut -d'\"' -f4); " ++
+            "curl -fsSL https://github.com/cli/cli/releases/download/$V/gh_${{V#v}}_linux_$A.tar.gz | tar -xz -C /tmp && " ++
+            "mv /tmp/gh_${{V#v}}_linux_$A/bin/gh $HOME/bin/gh)) && echo GH-PROVISIONED",
+        .{ token, token, login, login });
+    const res = cubeExec(io, gpa, arena, key, sandbox_id, cmd, 90, false) catch {
+        try out.writeAll("  github: provisioning exec failed — continuing without\n");
+        try out.flush();
+        return null;
+    };
+    const okout = if (res == .object) (strFieldObj(res.object, "result") orelse "") else "";
+    if (std.mem.indexOf(u8, okout, "GH-PROVISIONED") == null) {
+        try out.print("  github: provisioning failed — continuing without (tail: {s})\n", .{okout[(okout.len -| 160)..]});
+        try out.flush();
+        return null;
+    }
+    try out.print("  github: connected as {s} (git push + gh CLI ready; token ~1h)\n", .{login});
+    try out.flush();
+    return .{ .login = login, .token = token };
 }
 
 // Reach serve from THIS machine through the preview proxy — any HTTP status
@@ -10376,19 +10436,25 @@ fn cubePipeProbe(io: Io, gpa: Allocator, arena: Allocator, base: []const u8, ser
 }
 
 fn cubeNew(io: Io, gpa: Allocator, arena: Allocator, key: []const u8, out: *Io.Writer, minutes: i64) !void {
-    // A cube that is still running is reused, not duplicated — `cube stop`
-    // first for a fresh one. Stale state (stopped/deleted sandbox) is replaced.
+    // Cost ladder, cheapest first: a running cube is reused as-is; a stopped
+    // one is woken without reinstalling (its disk survives a stop); only a
+    // gone/archived one pays the full spin-up again.
+    var resume_id: ?[]const u8 = null;
     if (cubeReadState(io, arena)) |st| {
         if (strFieldObj(st, "sandbox_id")) |old_id| {
             const info_url = try std.fmt.allocPrint(arena, codegraff_device_base ++ "/v1/sandboxes/{s}", .{old_id});
             if (gatewayFetch(io, gpa, arena, .GET, info_url, key, null)) |r| {
                 if (r.code >= 200 and r.code < 300) {
                     if (std.json.parseFromSliceLeaky(Value, arena, r.body, .{ .allocate = .alloc_always })) |info| {
-                        if (info == .object and std.mem.eql(u8, strFieldObj(info.object, "state") orelse "", "started")) {
-                            try out.print("cube already running: {s}\n", .{old_id});
-                            try cubePrintAttach(out, st);
-                            try out.flush();
-                            return;
+                        if (info == .object) {
+                            const s = strFieldObj(info.object, "state") orelse "";
+                            if (std.mem.eql(u8, s, "started")) {
+                                try out.print("cube already running: {s} (no new spin-up cost)\n", .{old_id});
+                                try cubePrintAttach(out, st);
+                                try out.flush();
+                                return;
+                            }
+                            if (std.mem.eql(u8, s, "stopped")) resume_id = try arena.dupe(u8, old_id);
                         }
                     } else |_| {}
                 }
@@ -10396,33 +10462,48 @@ fn cubeNew(io: Io, gpa: Allocator, arena: Allocator, key: []const u8, out: *Io.W
         }
     }
 
-    try out.writeAll("spinning up a cube …\n");
-    try out.flush();
-    const create_body = try std.fmt.allocPrint(arena, "{{\"autoStopMinutes\":{d},\"labels\":{{\"purpose\":\"cube\"}}}}", .{minutes});
-    const created = try gatewayJson(io, gpa, arena, .POST, codegraff_device_base ++ "/v1/sandboxes", key, create_body);
-    if (created != .object) std.process.fatal("cube: unexpected create response", .{});
-    const id = strFieldObj(created.object, "id") orelse std.process.fatal("cube: create returned no id", .{});
-    try out.print("  sandbox {s}\n", .{id});
-    try out.flush();
+    var id: []const u8 = undefined;
+    if (resume_id) |rid| {
+        id = rid;
+        try out.print("waking stopped cube {s} — cheaper than a fresh spin-up (no reinstall)\n", .{rid});
+        try out.flush();
+        const start_url = try std.fmt.allocPrint(arena, codegraff_device_base ++ "/v1/sandboxes/{s}/start", .{rid});
+        _ = try gatewayJson(io, gpa, arena, .POST, start_url, key, null);
+    } else {
+        try out.writeAll("spinning up a cube …\n");
+        try out.flush();
+        const create_body = try std.fmt.allocPrint(arena, "{{\"autoStopMinutes\":{d},\"labels\":{{\"purpose\":\"cube\"}}}}", .{minutes});
+        const created = try gatewayJson(io, gpa, arena, .POST, codegraff_device_base ++ "/v1/sandboxes", key, create_body);
+        if (created != .object) std.process.fatal("cube: unexpected create response", .{});
+        id = strFieldObj(created.object, "id") orelse std.process.fatal("cube: create returned no id", .{});
+        try out.print("  sandbox {s}\n", .{id});
+        try out.flush();
+    }
 
-    var state: []const u8 = strFieldObj(created.object, "state") orelse "";
+    var state: []const u8 = "";
     var waits: usize = 0;
-    while (!std.mem.eql(u8, state, "started") and waits < 60) : (waits += 1) {
-        io.sleep(Io.Duration.fromSeconds(2), .awake) catch {};
+    while (waits < 60) : (waits += 1) {
         const info_url = try std.fmt.allocPrint(arena, codegraff_device_base ++ "/v1/sandboxes/{s}", .{id});
         const info = try gatewayJson(io, gpa, arena, .GET, info_url, key, null);
         if (info == .object) state = strFieldObj(info.object, "state") orelse "";
+        if (std.mem.eql(u8, state, "started")) break;
+        io.sleep(Io.Duration.fromSeconds(2), .awake) catch {};
     }
     if (!std.mem.eql(u8, state, "started"))
         std.process.fatal("cube: sandbox never reached started (last state '{s}')", .{state});
 
-    try out.writeAll("  installing graff …\n");
-    try out.flush();
-    const inst = try cubeExec(io, gpa, arena, key, id, "curl -fsSL https://raw.githubusercontent.com/justrach/codegraff/main/install.sh | bash", 120, false);
-    if (inst != .object or intFieldObj(inst.object, "exitCode", 1) != 0) {
-        const r = if (inst == .object) (strFieldObj(inst.object, "result") orelse "") else "";
-        std.process.fatal("cube: graff install failed: {s}", .{r[(r.len -| 300)..]});
+    if (resume_id == null) {
+        try out.writeAll("  installing graff …\n");
+        try out.flush();
+        const inst = try cubeExec(io, gpa, arena, key, id, "curl -fsSL https://raw.githubusercontent.com/justrach/codegraff/main/install.sh | bash", 120, false);
+        if (inst != .object or intFieldObj(inst.object, "exitCode", 1) != 0) {
+            const r = if (inst == .object) (strFieldObj(inst.object, "result") orelse "") else "";
+            std.process.fatal("cube: graff install failed: {s}", .{r[(r.len -| 300)..]});
+        }
     }
+
+    // Fresh token every bring-up — the previous one expires after an hour.
+    const gh = try cubeGithubProvision(io, gpa, arena, key, id, out);
 
     var tok_bytes: [24]u8 = undefined;
     io.random(&tok_bytes);
@@ -10431,7 +10512,10 @@ fn cubeNew(io: Io, gpa: Allocator, arena: Allocator, key: []const u8, out: *Io.W
 
     try out.writeAll("  starting graff serve …\n");
     try out.flush();
-    const launch = try std.fmt.allocPrint(arena, "CODEGRAFF_API_KEY={s} exec $HOME/bin/graff serve --host 0.0.0.0 --port {d} --token {s}", .{ key, cube_port, serve_token });
+    const launch = if (gh) |g|
+        try std.fmt.allocPrint(arena, "CODEGRAFF_API_KEY={s} GH_TOKEN={s} GITHUB_LOGIN={s} exec $HOME/bin/graff serve --host 0.0.0.0 --port {d} --token {s}", .{ key, g.token, g.login, cube_port, serve_token })
+    else
+        try std.fmt.allocPrint(arena, "CODEGRAFF_API_KEY={s} exec $HOME/bin/graff serve --host 0.0.0.0 --port {d} --token {s}", .{ key, cube_port, serve_token });
     const started = try cubeExec(io, gpa, arena, key, id, launch, 60, true);
     const exec_id = if (started == .object) (strFieldObj(started.object, "execId") orelse "") else "";
 
@@ -10478,6 +10562,7 @@ fn cubeNew(io: Io, gpa: Allocator, arena: Allocator, key: []const u8, out: *Io.W
     try st.put(arena, "serve_token", .{ .string = try arena.dupe(u8, serve_token) });
     try st.put(arena, "exec_id", .{ .string = exec_id });
     try st.put(arena, "port", .{ .integer = cube_port });
+    if (gh) |g| try st.put(arena, "github_login", .{ .string = g.login });
     var aw: Io.Writer.Allocating = .init(arena);
     var sfy: std.json.Stringify = .{ .writer = &aw.writer };
     try sfy.write(Value{ .object = st });
@@ -10488,7 +10573,7 @@ fn cubeNew(io: Io, gpa: Allocator, arena: Allocator, key: []const u8, out: *Io.W
     try fw.interface.writeAll(aw.writer.buffered());
     try fw.interface.flush();
 
-    try out.print("{s}✓{s} cube ready\n", .{ style.green, style.reset });
+    try out.print("{s}✓{s} cube ready{s}\n", .{ style.green, style.reset, if (resume_id != null) " (woken, not rebuilt)" else "" });
     try cubePrintAttach(out, st);
     try out.print("  state → {s}\n  stop  → graff cube stop\n", .{cube_state_file});
     try out.flush();
