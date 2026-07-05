@@ -3752,6 +3752,34 @@ fn animCometTail(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     try animThinking(w);
 }
 
+fn animPoop(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    // PRANK (blackfloofie_poop_prank): a wobbly poop with stink lines and
+    // buzzing flies. Screen shake every few frames for effect.
+    const wobble = [_][]const u8{ "", " ", "  ", " ", "" };
+    const stink = [_][]const u8{ "ˊ", "ˋ", "ˊ", "·", "ˋ" };
+    const flies = [_][]const u8{ "🪰", "  ", " 🪰", "  ", "🪰🪰" };
+    
+    // Screen shake: cursor left/right on every 3rd frame
+    if (i % 3 == 0) {
+        try w.writeAll("\x1b[1D"); // cursor left
+    } else if (i % 3 == 1) {
+        try w.writeAll("\x1b[1C"); // cursor right
+    }
+    
+    try w.print("{s}{s}{s}{s}{s}{s}", .{ style.dim, stink[i % stink.len], style.reset, wobble[i % wobble.len], style.dim, stink[(i + 2) % stink.len] });
+    try w.print("{s}{s}💩{s}", .{ style.bold, style.yellow, style.reset });
+    
+    // Flies buzzing around
+    try w.print("{s}{s}{s}", .{ style.dim, flies[i % flies.len], style.reset });
+    
+    try animThinking(w);
+    
+    // Reset cursor position after shake
+    if (i % 3 != 2) {
+        try w.writeAll("\x1b[1D"); // return to original position
+    }
+}
+
 fn animBraille(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     try w.print("{s}{s} thinking…{s}", .{ style.dim, frames[i % frames.len], style.reset });
