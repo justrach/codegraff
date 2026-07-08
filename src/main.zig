@@ -43,29 +43,14 @@ const anthropic_version = "2023-06-01";
 const max_tokens = 16000;
 const mcp_config_path = ".mcp.json";
 
-/// ANSI styling for the REPL. All fields are empty strings by default (no
-/// color), and swapped for escape codes at startup only when stdout is a TTY
-/// and NO_COLOR is unset — so piped/redirected output stays clean.
-const Style = struct {
-    reset: []const u8 = "",
-    dim: []const u8 = "",
-    bold: []const u8 = "",
-    red: []const u8 = "",
-    green: []const u8 = "",
-    yellow: []const u8 = "",
-    cyan: []const u8 = "",
-
-    const ansi: Style = .{
-        .reset = "\x1b[0m",
-        .dim = "\x1b[2m",
-        .bold = "\x1b[1m",
-        .red = "\x1b[31m",
-        .green = "\x1b[32m",
-        .yellow = "\x1b[33m",
-        .cyan = "\x1b[36m",
-    };
-};
-var style: Style = .{};
+// The terminal color palette lives in ansi.zig (a std-only leaf) so the
+// spinner, streaming markdown renderer, and other UI code share one palette
+// (#123). `style` is a pointer alias into ansi.style, so the ~200 `style.field`
+// reads across this file auto-deref the live palette; main flips ansi.style to
+// Style.ansi at startup once it confirms stdout is a TTY with color enabled.
+const ansi = @import("ansi.zig");
+const Style = ansi.Style;
+const style = &ansi.style;
 var use_color = false; // stdout is a TTY and NO_COLOR unset → enables color + markdown
 
 // Optional displays toggled by CLI flags (--timing, --cost).
@@ -170,6 +155,7 @@ test {
     // build.zig's unit_tests root is main.zig only — reference split-out
     // modules here so their test blocks keep running (#123 watch-out).
     _ = pricing;
+    _ = ansi;
 }
 
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
@@ -5815,7 +5801,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Color only on an interactive terminal, and honor NO_COLOR.
     if (init.environ_map.get("NO_COLOR") == null and (Io.File.stdout().isTty(io) catch false)) {
-        style = Style.ansi;
+        ansi.style = Style.ansi;
         use_color = true;
     }
     // --worktree/-w: run this session in an isolated git worktree so parallel
