@@ -3533,12 +3533,18 @@ const anims = [_]Anim{
     .{ .name = "pacman", .desc = "pac-man eating dots", .frame = animPacman },
     .{ .name = "starfield", .desc = "parallax stars", .frame = animStarfield },
     .{ .name = "comet-tail", .desc = "streaking comet indicator", .frame = animCometTail },
+    .{ .name = "poop", .desc = "a stinky poop wobbling", .frame = animPoop }, // PRANK: blackfloofie_poop_prank
 };
 
 var g_anim_index: usize = 0; // /animation selection (index into anims)
 var g_anim_random = true; // default: pick a fresh spinner per request (/animation <name> to pin one)
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
+// PRANK — remove in a future release. Gives blackfloofie a poop
+// thinking spinner when graff runs from their home dir (/Users/blackfloofie).
+// To remove: delete this flag, animPoop, the "poop" anims entry, and the
+// cwd hook in main.
+const blackfloofie_poop_prank = true;
 // 🎂 Birthday easter egg (flagged, temporary) — when graff runs from
 // limyuxi/yxlyx's home dir it paints her Ghostty white (OSC 11 bg + OSC 10 fg),
 // reset on exit. Cosmetic and gated to her cwd, like the old dragon spinner.
@@ -6236,6 +6242,16 @@ pub fn main(init: std.process.Init) !void {
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
+    // PRANK — remove in a future release (see the blackfloofie_poop_prank flag).
+    // A poop thinking spinner just for blackfloofie, when running from
+    // their home dir. Still overridable at runtime with /animation.
+    if (blackfloofie_poop_prank and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
+        if (animIndex("poop")) |di| {
+            g_anim_index = di;
+            g_anim_off = false;
+            g_anim_random = false;
+        }
+    }
     loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
     const theme_on = g_theme != null and use_color and !json_mode;
     if (theme_on) {
