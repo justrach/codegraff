@@ -3294,18 +3294,12 @@ const anims = [_]Anim{
     .{ .name = "pacman", .desc = "pac-man eating dots", .frame = animPacman },
     .{ .name = "starfield", .desc = "parallax stars", .frame = animStarfield },
     .{ .name = "comet-tail", .desc = "streaking comet indicator", .frame = animCometTail },
-    .{ .name = "poop", .desc = "a stinky poop wobbling", .frame = animPoop }, // PRANK: blackfloofie_poop_prank
 };
 
 var g_anim_index: usize = 0; // /animation selection (index into anims)
 var g_anim_random = true; // default: pick a fresh spinner per request (/animation <name> to pin one)
 var g_anim_off = false; // /animation off
 var g_anim_current: usize = 0; // what spinnerTask draws right now
-// PRANK — remove in a future release. Gives blackfloofie a poop
-// thinking spinner when graff runs from their home dir (/Users/blackfloofie).
-// To remove: delete this flag, animPoop, the "poop" anims entry, and the
-// cwd hook in main.
-const blackfloofie_poop_prank = true;
 // 🎂 Birthday easter egg (flagged, temporary) — when graff runs from
 // limyuxi/yxlyx's home dir it paints her Ghostty white (OSC 11 bg + OSC 10 fg),
 // reset on exit. Cosmetic and gated to her cwd, like the old dragon spinner.
@@ -3517,34 +3511,6 @@ fn animCometTail(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     const tail = [_][]const u8{ "    ", "·   ", "-·  ", "=-· ", "≈=-·" };
     try w.print("{s}{s}☄{s}", .{ style.cyan, tail[i % tail.len], style.reset });
     try animThinking(w);
-}
-
-fn animPoop(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // PRANK (blackfloofie_poop_prank): a wobbly poop with stink lines and
-    // buzzing flies. Screen shake every few frames for effect.
-    const wobble = [_][]const u8{ "", " ", "  ", " ", "" };
-    const stink = [_][]const u8{ "ˊ", "ˋ", "ˊ", "·", "ˋ" };
-    const flies = [_][]const u8{ "🪰", "  ", " 🪰", "  ", "🪰🪰" };
-    
-    // Screen shake: cursor left/right on every 3rd frame
-    if (i % 3 == 0) {
-        try w.writeAll("\x1b[1D"); // cursor left
-    } else if (i % 3 == 1) {
-        try w.writeAll("\x1b[1C"); // cursor right
-    }
-    
-    try w.print("{s}{s}{s}{s}{s}{s}", .{ style.dim, stink[i % stink.len], style.reset, wobble[i % wobble.len], style.dim, stink[(i + 2) % stink.len] });
-    try w.print("{s}{s}💩{s}", .{ style.bold, style.yellow, style.reset });
-    
-    // Flies buzzing around
-    try w.print("{s}{s}{s}", .{ style.dim, flies[i % flies.len], style.reset });
-    
-    try animThinking(w);
-    
-    // Reset cursor position after shake
-    if (i % 3 != 2) {
-        try w.writeAll("\x1b[1D"); // return to original position
-    }
 }
 
 fn animBraille(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -6031,16 +5997,6 @@ pub fn main(init: std.process.Init) !void {
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
-    // PRANK — remove in a future release (see the blackfloofie_poop_prank flag).
-    // A poop thinking spinner just for blackfloofie, when running from
-    // their home dir. Still overridable at runtime with /animation.
-    if (blackfloofie_poop_prank and (std.mem.eql(u8, g_cwd_display, "/Users/blackfloofie") or std.mem.startsWith(u8, g_cwd_display, "/Users/blackfloofie/"))) {
-        if (animIndex("poop")) |di| {
-            g_anim_index = di;
-            g_anim_off = false;
-            g_anim_random = false;
-        }
-    }
     loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
     const theme_on = g_theme != null and use_color and !json_mode;
     if (theme_on) {
