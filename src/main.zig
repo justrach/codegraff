@@ -165,6 +165,7 @@ test {
     _ = serve;
     _ = util;
     _ = oauth;
+    _ = anim;
 }
 
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
@@ -752,7 +753,7 @@ const Keys = struct {
 /// subagent pool threads only read. Commands with shell metacharacters
 /// (chaining, pipes, redirection, substitution, newlines) never match a
 /// prefix — they always prompt at the root and are denied in subagents.
-const Approvals = struct {
+pub const Approvals = struct {
     mutex: Io.Mutex = .init,
     prefixes: std.ArrayList([]const u8) = .empty,
     yolo: bool = false,
@@ -796,8 +797,8 @@ const Approvals = struct {
         return false;
     }
 
-    const settings_dir = ".harness";
-    const settings_path = ".harness/settings.json";
+    pub const settings_dir = ".harness";
+    pub const settings_path = ".harness/settings.json";
 
     /// "Always allow" appends the key and persists the allow-list to the
     /// project's .harness/settings.json, so approvals survive restarts.
@@ -3268,115 +3269,10 @@ fn applySkillSettings(skills: Value) void {
 }
 
 // ── thinking animations ──────────────────────────────────────────────────
-// Named single-line indicators for the model-wait spinner, ported in spirit
-// from arpagon/pi-animations (MIT). Plain Unicode + ANSI 256-color only (no
-// Nerd Fonts), each frame ≤ ~30 columns. Selected via /animation, persisted
-// as {"animation": "<name>"} in .harness/settings.json.
-
-const Anim = struct {
-    name: []const u8,
-    desc: []const u8,
-    frame: *const fn (w: *Io.Writer, i: usize) Io.Writer.Error!void,
-};
-
-const anims = [_]Anim{
-    .{ .name = "braille", .desc = "classic braille spinner (default)", .frame = animBraille },
-    .{ .name = "pulse", .desc = "pulsing star", .frame = animPulse },
-    .{ .name = "orbit-dots", .desc = "dot orbiting a ring", .frame = animOrbit },
-    .{ .name = "block-wave", .desc = "unicode block wave", .frame = animBlockWave },
-    .{ .name = "shimmer", .desc = "highlight sweeping the word", .frame = animShimmer },
-    .{ .name = "matrix", .desc = "matrix rain strip", .frame = animMatrix },
-    .{ .name = "pacman", .desc = "pac-man eating dots", .frame = animPacman },
-    .{ .name = "starfield", .desc = "parallax stars", .frame = animStarfield },
-    .{ .name = "comet-tail", .desc = "streaking comet indicator", .frame = animCometTail },
-};
-
-var g_anim_index: usize = 0; // /animation selection (index into anims)
-var g_anim_random = true; // default: pick a fresh spinner per request (/animation <name> to pin one)
-var g_anim_off = false; // /animation off
-var g_anim_current: usize = 0; // what spinnerTask draws right now
-// 🎂 Birthday easter egg (flagged, temporary) — when graff runs from
-// limyuxi/yxlyx's home dir it paints her Ghostty white (OSC 11 bg + OSC 10 fg),
-// reset on exit. Cosmetic and gated to her cwd, like the old dragon spinner.
-// Flip to false / delete to remove after the bday.
-const limyuxi_birthday_white = false; // retired: ship the default theme/spinner for everyone
-
-// 🎂 yxlyx's birthday glam: a pastel-pink Ghostty theme — light pink bg, dark
-// plum text, and a pink-leaning ANSI palette so graff's colored UI stays legible
-// (every entry is dark/saturated enough to read on light pink). Reset with OSC
-// 104/110/111/112 on exit. Paired with the "glitter" spinner; gated by the flag.
-const limyuxi_theme =
-    "\x1b]11;#fce4ec\x07" ++ // bg: pastel pink
-    "\x1b]10;#4a1942\x07" ++ // fg: dark plum (~9:1 contrast)
-    "\x1b]12;#d81b60\x07" ++ // cursor: hot pink
-    "\x1b]4;0;#4a1942\x07\x1b]4;1;#c2185b\x07\x1b]4;2;#2e7d32\x07\x1b]4;3;#b26a00\x07" ++
-    "\x1b]4;4;#6a1b9a\x07\x1b]4;5;#ad1457\x07\x1b]4;6;#00796b\x07\x1b]4;7;#5d4357\x07" ++
-    "\x1b]4;8;#8a6680\x07\x1b]4;9;#e91e63\x07\x1b]4;10;#388e3c\x07\x1b]4;11;#c77800\x07" ++
-    "\x1b]4;12;#8e24aa\x07\x1b]4;13;#d81b60\x07\x1b]4;14;#00897b\x07\x1b]4;15;#3a1133\x07";
-const limyuxi_reset = "\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07"; // palette, fg, bg, cursor
-
-// ── color themes ────────────────────────────────────────────────────────────
-// Opt-in terminal color themes (OSC 10/11/12 = fg/bg/cursor; the light theme
-// also sets the ANSI palette so graff's colored UI stays legible). Selected via
-// /theme, persisted as {"theme": "<name>"} in .harness/settings.json, reset on
-// exit. No theme by default — graff leaves your terminal colors alone unless you
-// pick one. PastelPink is the former limyuxi glam, now a normal choice.
-const theme_reset = "\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07"; // palette, fg, bg, cursor
-const Theme = struct { name: []const u8, desc: []const u8, seq: []const u8 };
-const themes = [_]Theme{
-    .{ .name = "PastelPink", .desc = "light pink bg, dark plum text", .seq = limyuxi_theme },
-    .{ .name = "Midnight", .desc = "deep navy bg, soft slate text, sky cursor", .seq = "\x1b]11;#0f172a\x07\x1b]10;#e2e8f0\x07\x1b]12;#38bdf8\x07" },
-    .{ .name = "Forest", .desc = "dark green bg, pale green text", .seq = "\x1b]11;#0e1a12\x07\x1b]10;#d7e8d0\x07\x1b]12;#4ade80\x07" },
-    .{ .name = "Amber", .desc = "warm dark bg, amber text (retro CRT)", .seq = "\x1b]11;#1a1206\x07\x1b]10;#ffcf8f\x07\x1b]12;#ff9e3d\x07" },
-};
-var g_theme: ?usize = null; // index into themes, or null = no theme (terminal default)
-
-fn themeIndex(name: []const u8) ?usize {
-    for (themes, 0..) |t, i| if (std.ascii.eqlIgnoreCase(t.name, name)) return i;
-    return null;
-}
-
-/// Load {"theme": "<name>"} from settings at startup.
-fn loadThemeSetting(io: Io, arena: Allocator) void {
-    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
-    if (v != .object) return;
-    const t = v.object.get("theme") orelse return;
-    if (t != .string) return;
-    if (themeIndex(t.string)) |i| g_theme = i;
-}
-
-/// Persist the /theme choice, preserving every other settings key. "off"/"none"
-/// removes the key (back to the terminal default). Best-effort.
-fn saveThemeSetting(io: Io, gpa: Allocator, value: []const u8) bool {
-    Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {};
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var root_obj: std.json.ObjectMap = .empty;
-    if (Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, a, .limited(1 << 20))) |data| {
-        if (std.json.parseFromSliceLeaky(Value, a, data, .{ .allocate = .alloc_always })) |v| {
-            if (v == .object) root_obj = v.object;
-        } else |_| {}
-    } else |_| {}
-    if (std.ascii.eqlIgnoreCase(value, "off") or std.ascii.eqlIgnoreCase(value, "none")) {
-        _ = root_obj.orderedRemove("theme");
-    } else {
-        root_obj.put(a, "theme", .{ .string = value }) catch return false;
-    }
-    var aw: Io.Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    var s: std.json.Stringify = .{ .writer = &aw.writer, .options = .{ .whitespace = .indent_2 } };
-    s.write(Value{ .object = root_obj }) catch return false;
-    const f = Io.Dir.cwd().createFile(io, Approvals.settings_path, .{}) catch return false;
-    defer f.close(io);
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    fw.interface.writeAll(aw.writer.buffered()) catch return false;
-    fw.interface.writeAll("\n") catch return false;
-    fw.interface.flush() catch return false;
-    return true;
-}
+// Spinner animations + color themes (and their settings persistence) live in
+// anim.zig (#123); it imports ansi and back-imports main for Approvals paths.
+// The spinner consumers (Agent.spinnerTask, /animation, /theme) stay here.
+const anim = @import("anim.zig");
 var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 
 // Steering (Codex-style): bytes typed while a turn streams are captured
@@ -3425,317 +3321,6 @@ fn steerEcho(bytes: []const u8) void {
     }
 }
 
-/// 9-stop truecolor rainbow for the `ultracode` shine (banner + live input).
-const ultracode_rainbow = [_][]const u8{
-    "\x1b[38;2;255;87;51m",  "\x1b[38;2;255;159;28m", "\x1b[38;2;255;222;51m",
-    "\x1b[38;2;120;255;51m", "\x1b[38;2;51;255;170m", "\x1b[38;2;51;170;255m",
-    "\x1b[38;2;120;51;255m", "\x1b[38;2;210;51;255m", "\x1b[38;2;255;51;159m",
-};
-
-/// `ultracode` codeword banner: a rainbow shine sweeps across the word in
-/// interactive (color) mode when the codeword engages multi-agent workflow
-/// mode. Truecolor ANSI; best-effort (any write failure aborts silently).
-fn ultracodeShine(w: *Io.Writer, io: Io) void {
-    const word = "ULTRACODE";
-    const gold = "\x1b[38;2;255;215;0m";
-    const frames = 14;
-    var f: usize = 0;
-    while (f < frames) : (f += 1) {
-        w.writeAll("\r\x1b[2K") catch return;
-        w.writeAll(style.bold) catch return;
-        w.print("{s}✦ ", .{gold}) catch return;
-        for (word, 0..) |c, i| {
-            w.writeAll(ultracode_rainbow[(i + f) % ultracode_rainbow.len]) catch return;
-            w.print("{c}", .{c}) catch return;
-        }
-        w.print("{s} ✦{s}", .{ gold, style.reset }) catch return;
-        w.flush() catch return;
-        io.sleep(.fromMilliseconds(70), .awake) catch {};
-    }
-    w.writeAll("\n") catch {};
-    w.flush() catch {};
-}
-
-fn animIndex(name: []const u8) ?usize {
-    for (anims, 0..) |a, i| if (std.mem.eql(u8, a.name, name)) return i;
-    return null;
-}
-
-fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
-    try w.print(" {s}thinking…{s}", .{ style.dim, style.reset });
-}
-
-fn animGlitter(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // 🎂 EGG (limyuxi_birthday_white): a glittery pink sparkle spinner. Saturated
-    // pinks/purples/gold pop on the pastel-pink bg; "thinking…" in deep plum
-    // stays legible.
-    const sparks = [_][]const u8{ "✨", "✧", "⋆", "˖", "✦", "♡", "⭒", "·" };
-    const cols = [_][]const u8{
-        "\x1b[38;2;255;20;147m", // deep pink
-        "\x1b[38;2;233;30;99m", // pink
-        "\x1b[38;2;156;39;176m", // purple
-        "\x1b[38;2;255;152;0m", // gold
-        "\x1b[38;2;216;27;96m", // magenta
-    };
-    var j: usize = 0;
-    while (j < 3) : (j += 1) {
-        try w.writeAll(cols[(i +% j) % cols.len]);
-        try w.writeAll(sparks[(i *% 2 +% j *% 3) % sparks.len]);
-        if (j + 1 < 3) try w.writeAll(" ");
-    }
-    try w.writeAll("\x1b[0m \x1b[38;2;106;27;90mthinking…\x1b[0m");
-}
-
-fn animDragon(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // 🎂 EGG (limyuxi_birthday_white): a wee ASCII fire-breathing dragon for
-    // yxlyx — brought back, but drawn (no emoji). Spiky body undulates, the head
-    // breathes a flickering flame. style.yellow → legible amber on her pink bg,
-    // bright yellow on a dark terminal.
-    const body = [_][]const u8{ "_^_^_^", "^_^_^_", "_^^_^^", "^^_^^_" };
-    const flame = [_][]const u8{ "~", "=", "<", "*", "" };
-    try w.print("{s}{s}", .{ style.bold, style.yellow });
-    try w.writeAll(body[i % body.len]);
-    try w.writeAll("(O>");
-    try w.writeAll(flame[i % flame.len]);
-    try w.writeAll(style.reset);
-    try animThinking(w);
-}
-
-fn animCometTail(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // A streaking comet: a bright cyan head trailing a fading dash tail.
-    const tail = [_][]const u8{ "    ", "·   ", "-·  ", "=-· ", "≈=-·" };
-    try w.print("{s}{s}☄{s}", .{ style.cyan, tail[i % tail.len], style.reset });
-    try animThinking(w);
-}
-
-fn animBraille(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
-    try w.print("{s}{s} thinking…{s}", .{ style.dim, frames[i % frames.len], style.reset });
-}
-
-fn animPulse(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    const glyphs = [_][]const u8{ "·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢" };
-    const g = glyphs[i % glyphs.len];
-    const bright = (i % glyphs.len) >= 3 and (i % glyphs.len) <= 6;
-    try w.print("{s}{s}{s}", .{ if (bright) style.cyan else style.dim, g, style.reset });
-    try animThinking(w);
-}
-
-fn animOrbit(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    const slots = 6;
-    const pos = i % slots;
-    var j: usize = 0;
-    while (j < slots) : (j += 1) {
-        if (j == pos) {
-            try w.print("{s}●{s}", .{ style.cyan, style.reset });
-        } else {
-            try w.print("{s}·{s}", .{ style.dim, style.reset });
-        }
-        if (j + 1 < slots) try w.writeAll(" ");
-    }
-    try animThinking(w);
-}
-
-fn animBlockWave(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    const lvls = [_][]const u8{ "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" };
-    try w.writeAll(style.cyan);
-    var j: usize = 0;
-    while (j < 10) : (j += 1) {
-        const tri = @abs(@as(i64, @intCast((i + j) % 14)) - 7); // 0..7 triangle wave
-        try w.writeAll(lvls[@intCast(7 - tri)]);
-    }
-    try w.writeAll(style.reset);
-    try animThinking(w);
-}
-
-fn animShimmer(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    const chs = [_][]const u8{ "t", "h", "i", "n", "k", "i", "n", "g", "…" };
-    const pos = i % (chs.len + 4); // a little off-screen pause each sweep
-    for (chs, 0..) |c, j| {
-        if (j == pos) {
-            try w.print("{s}{s}{s}{s}", .{ style.bold, style.cyan, c, style.reset });
-        } else {
-            try w.print("{s}{s}{s}", .{ style.dim, c, style.reset });
-        }
-    }
-}
-
-fn animMatrix(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    const glyphs = [_][]const u8{ "ｱ", "ｼ", "ﾂ", "ｴ", "ｵ", "ｶ", "ｷ", "ﾒ", "ｹ", "ｺ", "ﾅ", "ﾈ", "ｽ", "ﾎ", "ﾜ", "ﾀ" };
-    var j: usize = 0;
-    while (j < 8) : (j += 1) {
-        const g = glyphs[(i / 2 +% j *% 7 +% j * j) % glyphs.len];
-        const head = (i + j) % 5 == 0;
-        try w.print("{s}{s}{s}", .{ if (head) style.green else style.dim, g, style.reset });
-    }
-    try animThinking(w);
-}
-
-fn animPacman(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    const track = 10;
-    const pos = (i / 2) % (track + 2); // 2 spare ticks off the right edge
-    var j: usize = 0;
-    while (j < track) : (j += 1) {
-        if (j < pos) {
-            try w.writeAll("  ");
-        } else if (j == pos) {
-            try w.print("{s}{s}{s} ", .{ style.yellow, if (i % 2 == 0) "ᗧ" else "○", style.reset });
-        } else {
-            try w.print("{s}·{s} ", .{ style.dim, style.reset });
-        }
-    }
-    try animThinking(w);
-}
-
-fn animStarfield(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    var j: usize = 0;
-    while (j < 14) : (j += 1) {
-        if ((j + i) % 7 == 0) {
-            try w.print("{s}✦{s}", .{ style.cyan, style.reset });
-        } else if ((j + i * 2) % 11 == 0) {
-            try w.print("{s}·{s}", .{ style.dim, style.reset });
-        } else {
-            try w.writeAll(" ");
-        }
-    }
-    try animThinking(w);
-}
-
-test "no spinner frame ever emits a supplementary-plane glyph (anti-stealth, #106)" {
-    // Regression guard for the runtime-built poop prank (U+1F4A9): it lived inside a
-    // frame fn and constructed the codepoint at runtime, so strings/grep never saw it.
-    // Every legitimate spinner glyph is BMP (braille, blocks, the comet, sparkles), so
-    // a terminal spinner has no business ever emitting a supplementary-plane codepoint.
-    // Render every production spinner — plus the gated birthday eggs — across several
-    // cycles and assert it. This is the unit-level test that would have caught the poop.
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const FrameFn = *const fn (*Io.Writer, usize) Io.Writer.Error!void;
-    var fns: [anims.len + 2]FrameFn = undefined;
-    for (anims, 0..) |a, k| fns[k] = a.frame;
-    fns[anims.len] = animGlitter; // gated birthday eggs are still real spinner output
-    fns[anims.len + 1] = animDragon;
-
-    for (fns, 0..) |f, fi| {
-        var i: usize = 0;
-        while (i < 96) : (i += 1) {
-            var aw: Io.Writer.Allocating = .init(arena);
-            try f(&aw.writer, i);
-            const view = std.unicode.Utf8View.init(aw.writer.buffered()) catch {
-                std.debug.print("spinner #{d} i={d}: invalid UTF-8\n", .{ fi, i });
-                return error.InvalidFrameUtf8;
-            };
-            var it = view.iterator();
-            while (it.nextCodepoint()) |cp| {
-                if (cp >= 0x10000) {
-                    std.debug.print("spinner #{d} i={d} emitted U+{X} (supplementary-plane/emoji, the old poop class)\n", .{ fi, i, cp });
-                    return error.ForbiddenSpinnerGlyph;
-                }
-            }
-        }
-    }
-}
-
-test "spinner pool is exactly the expected 9 animations (no silent additions)" {
-    // Lock the user-facing spinner set: adding or renaming one must be a deliberate,
-    // reviewed change, not something that slips in unnoticed.
-    const expected = [_][]const u8{
-        "braille", "pulse",  "orbit-dots", "block-wave", "shimmer",
-        "matrix",  "pacman", "starfield",  "comet-tail",
-    };
-    try std.testing.expectEqual(expected.len, anims.len);
-    for (anims, 0..) |a, k| try std.testing.expectEqualStrings(expected[k], a.name);
-}
-
-/// Check .harness/settings.json for "dev_spinner": if truthy, the
-/// caller should use the normal spinner regardless of host profile.
-var g_dev_spinner_opt_out: bool = false;
-
-fn devSpinnerOptOut(_: Io, _: Allocator) bool {
-    return g_dev_spinner_opt_out;
-}
-
-fn loadDevSpinnerOptOut(io: Io, arena: Allocator, environ: anytype) void {
-    if (environ.get("GRAFF_DEV_SPINNER")) |v| {
-        if (!std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false")) {
-            g_dev_spinner_opt_out = true;
-            return;
-        }
-    }
-    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
-    if (v != .object) return;
-    const ds = v.object.get("dev_spinner") orelse return;
-    g_dev_spinner_opt_out = switch (ds) {
-        .bool => |b| b,
-        .integer => |n| n != 0,
-        .string => |s| !std.mem.eql(u8, s, "0") and !std.mem.eql(u8, s, "false"),
-        else => false,
-    };
-}
-
-/// Load {"animation": "<name>|random|off"} from settings at startup.
-fn loadAnimationSetting(io: Io, arena: Allocator) void {
-    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
-    if (v != .object) return;
-    const a = v.object.get("animation") orelse return;
-    if (a != .string) return;
-    if (std.mem.eql(u8, a.string, "off")) {
-        g_anim_off = true;
-        g_anim_random = false;
-    } else if (std.mem.eql(u8, a.string, "random")) {
-        g_anim_random = true;
-    } else if (animIndex(a.string)) |i| {
-        g_anim_index = i;
-        g_anim_random = false; // a pinned spinner overrides the random default
-    }
-}
-
-/// Pick which animation the thinking spinner shows — the EXACT logic spinnerStart
-/// uses, factored so the headless --selftest-spinner render and the live spinner
-/// always agree (a cwd-gated override would surface in both). Sets g_anim_current.
-fn selectSpinner(io: Io) void {
-    if (g_anim_random) {
-        var b: [1]u8 = undefined;
-        io.random(&b);
-        g_anim_current = b[0] % anims.len;
-    } else g_anim_current = g_anim_index;
-}
-
-/// Persist the /animation choice, preserving every other settings key.
-/// The default ("random") removes the key. Best-effort.
-fn saveAnimationSetting(io: Io, gpa: Allocator, value: []const u8) bool {
-    Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {};
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var root_obj: std.json.ObjectMap = .empty;
-    if (Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, a, .limited(1 << 20))) |data| {
-        if (std.json.parseFromSliceLeaky(Value, a, data, .{ .allocate = .alloc_always })) |v| {
-            if (v == .object) root_obj = v.object;
-        } else |_| {}
-    } else |_| {}
-    if (std.mem.eql(u8, value, "random")) { // random is the default → no stored key needed
-        _ = root_obj.orderedRemove("animation");
-    } else {
-        root_obj.put(a, "animation", .{ .string = value }) catch return false;
-    }
-    var aw: Io.Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    var s: std.json.Stringify = .{ .writer = &aw.writer, .options = .{ .whitespace = .indent_2 } };
-    s.write(Value{ .object = root_obj }) catch return false;
-    const f = Io.Dir.cwd().createFile(io, Approvals.settings_path, .{}) catch return false;
-    defer f.close(io);
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    fw.interface.writeAll(aw.writer.buffered()) catch return false;
-    fw.interface.writeAll("\n") catch return false;
-    fw.interface.flush() catch return false;
-    return true;
-}
 
 /// Persist one skill's enabled/disabled state to .harness/settings.json,
 /// preserving every other key (allow-list and hooks live there too).
@@ -5991,34 +5576,34 @@ pub fn main(init: std.process.Init) !void {
     g_path_env = try arena.dupe(u8, init.environ_map.get("PATH") orelse "");
     g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
-    loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
-    loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
-    const theme_on = g_theme != null and use_color and !json_mode;
+    anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
+    anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
+    const theme_on = anim.g_theme != null and use_color and !json_mode;
     if (theme_on) {
-        out.writeAll(themes[g_theme.?].seq) catch {};
+        out.writeAll(anim.themes[anim.g_theme.?].seq) catch {};
         out.flush() catch {};
     }
     defer if (theme_on) {
-        out.writeAll(theme_reset) catch {};
+        out.writeAll(anim.theme_reset) catch {};
         out.flush() catch {};
     };
     // 🎂 yxlyx's birthday glam — when graff runs from her home dir, dress her
     // Ghostty in the pastel-pink theme (limyuxi_theme: light pink bg, dark plum
     // text, pink-leaning palette) and switch the spinner to glittery sparkles.
     // Cosmetic, flagged, gated to her cwd; resets everything on exit.
-    const limyuxi_glam = limyuxi_birthday_white and use_color and !json_mode and
+    const limyuxi_glam = anim.limyuxi_birthday_white and use_color and !json_mode and
         (std.mem.eql(u8, g_cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, g_cwd_display, "/Users/limyuxi/"));
     if (limyuxi_glam) {
-        out.writeAll(limyuxi_theme) catch {};
+        out.writeAll(anim.limyuxi_theme) catch {};
         out.flush() catch {};
-        if (animIndex("dragon")) |gi| {
-            g_anim_index = gi;
-            g_anim_off = false;
-            g_anim_random = false;
+        if (anim.animIndex("dragon")) |gi| {
+            anim.g_anim_index = gi;
+            anim.g_anim_off = false;
+            anim.g_anim_random = false;
         }
     }
     defer if (limyuxi_glam) {
-        out.writeAll(limyuxi_reset) catch {};
+        out.writeAll(anim.limyuxi_reset) catch {};
         out.flush() catch {};
     };
     if (selftest_spinner_flag) {
@@ -6026,9 +5611,9 @@ pub fn main(init: std.process.Init) !void {
         // test (scripts/test-pty-spinner.py): runs the real selection (so a cwd-gated
         // pick surfaces) and prints every frame fn's output to stdout, where the test
         // scans for the U+1F4A9 / supplementary-plane glyph class the poop hid in.
-        selectSpinner(io);
-        out.print("selected: {s}\n", .{anims[g_anim_current].name}) catch {};
-        for (anims) |a| {
+        anim.selectSpinner(io);
+        out.print("selected: {s}\n", .{anim.anims[anim.g_anim_current].name}) catch {};
+        for (anim.anims) |a| {
             var i: usize = 0;
             while (i < 48) : (i += 1) {
                 a.frame(out, i) catch {};
@@ -6038,7 +5623,7 @@ pub fn main(init: std.process.Init) !void {
         out.flush() catch {};
         return;
     }
-    loadDevSpinnerOptOut(io, arena, init.environ_map);
+    anim.loadDevSpinnerOptOut(io, arena, init.environ_map);
     connect: {
         for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
         for (companion_servers) |c| {
@@ -6633,7 +6218,7 @@ pub fn main(init: std.process.Init) !void {
         if (ultracode_msg.explicit) {
             if (!json_mode) {
                 if (interactive) {
-                    ultracodeShine(out, io);
+                    anim.ultracodeShine(out, io);
                     try out.writeAll("⚡ multi-agent workflow mode engaged\n");
                 } else {
                     try out.writeAll("⚡ ultracode — multi-agent workflow mode engaged\n");
@@ -7713,9 +7298,9 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/animation") or std.mem.startsWith(u8, line, "/animation ")) {
         const arg = std.mem.trim(u8, line["/animation".len..], " ");
         if (arg.len == 0) {
-            const current: []const u8 = if (g_anim_off) "off" else if (g_anim_random) "random" else anims[g_anim_index].name;
+            const current: []const u8 = if (anim.g_anim_off) "off" else if (anim.g_anim_random) "random" else anim.anims[anim.g_anim_index].name;
             try out.print("{s}thinking animations{s} (current: {s}{s}{s}) — /animation <name> picks one, persists to {s}\n", .{ style.bold, style.reset, style.cyan, current, style.reset, Approvals.settings_path });
-            for (anims) |a| {
+            for (anim.anims) |a| {
                 try out.print("  {s}{s:<12}{s} {s}  preview: ", .{ style.cyan, a.name, style.reset, a.desc });
                 try a.frame(out, 3);
                 try out.writeAll("\n");
@@ -7725,25 +7310,25 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return;
         }
         if (std.mem.eql(u8, arg, "off")) {
-            g_anim_off = true;
-            g_anim_random = false;
+            anim.g_anim_off = true;
+            anim.g_anim_random = false;
         } else if (std.mem.eql(u8, arg, "random")) {
-            g_anim_off = false;
-            g_anim_random = true;
-        } else if (animIndex(arg)) |i| {
-            g_anim_off = false;
-            g_anim_random = false;
-            g_anim_index = i;
+            anim.g_anim_off = false;
+            anim.g_anim_random = true;
+        } else if (anim.animIndex(arg)) |i| {
+            anim.g_anim_off = false;
+            anim.g_anim_random = false;
+            anim.g_anim_index = i;
         } else {
             try out.print("unknown animation '{s}' — /animation lists them\n", .{arg});
             try out.flush();
             return;
         }
-        const saved = saveAnimationSetting(root.io, root.gpa, arg);
+        const saved = anim.saveAnimationSetting(root.io, root.gpa, arg);
         try out.print("{s}✓ thinking animation: {s}{s}", .{ style.green, arg, style.reset });
-        if (!g_anim_off and !g_anim_random) {
+        if (!anim.g_anim_off and !anim.g_anim_random) {
             try out.writeAll("  ");
-            try anims[g_anim_index].frame(out, 3);
+            try anim.anims[anim.g_anim_index].frame(out, 3);
         }
         try out.writeAll("\n");
         if (!saved) try out.print("{s}warning: could not persist to {s} — lasts only this session{s}\n", .{ style.yellow, Approvals.settings_path, style.reset });
@@ -7753,27 +7338,27 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/theme") or std.mem.startsWith(u8, line, "/theme ")) {
         const arg = std.mem.trim(u8, line["/theme".len..], " ");
         if (arg.len == 0) {
-            const current: []const u8 = if (g_theme) |i| themes[i].name else "off";
+            const current: []const u8 = if (anim.g_theme) |i| anim.themes[i].name else "off";
             try out.print("{s}color themes{s} (current: {s}{s}{s}) — /theme <name> applies + persists, /theme off resets to your terminal default\n", .{ style.bold, style.reset, style.cyan, current, style.reset });
-            for (themes) |t| try out.print("  {s}{s:<12}{s} {s}\n", .{ style.cyan, t.name, style.reset, t.desc });
+            for (anim.themes) |t| try out.print("  {s}{s:<12}{s} {s}\n", .{ style.cyan, t.name, style.reset, t.desc });
             try out.print("  {s}{s:<12}{s} terminal default (no theme)\n", .{ style.cyan, "off", style.reset });
             try out.flush();
             return;
         }
         if (std.ascii.eqlIgnoreCase(arg, "off") or std.ascii.eqlIgnoreCase(arg, "none")) {
-            if (g_theme != null) out.writeAll(theme_reset) catch {};
-            g_theme = null;
-        } else if (themeIndex(arg)) |i| {
-            g_theme = i;
-            out.writeAll(themes[i].seq) catch {};
+            if (anim.g_theme != null) out.writeAll(anim.theme_reset) catch {};
+            anim.g_theme = null;
+        } else if (anim.themeIndex(arg)) |i| {
+            anim.g_theme = i;
+            out.writeAll(anim.themes[i].seq) catch {};
             out.flush() catch {};
         } else {
             try out.print("unknown theme '{s}' — /theme lists them\n", .{arg});
             try out.flush();
             return;
         }
-        const saved = saveThemeSetting(root.io, root.gpa, arg);
-        const shown: []const u8 = if (g_theme) |i| themes[i].name else "off";
+        const saved = anim.saveThemeSetting(root.io, root.gpa, arg);
+        const shown: []const u8 = if (anim.g_theme) |i| anim.themes[i].name else "off";
         try out.print("{s}✓ theme: {s}{s}\n", .{ style.green, shown, style.reset });
         if (!saved) try out.print("{s}warning: could not persist to {s} — lasts only this session{s}\n", .{ style.yellow, Approvals.settings_path, style.reset });
         try out.flush();
@@ -10859,7 +10444,7 @@ const Agent = struct {
             }
             // Clear-then-draw each frame: animations may vary in width.
             w.interface.writeAll("\r\x1b[2K\x1b[?7l") catch return; // ?7l: autowrap off so a wide spinner truncates instead of wrapping in a narrow window (the "goes on and on" bug)
-            anims[g_anim_current].frame(&w.interface, i) catch return;
+            anim.anims[anim.g_anim_current].frame(&w.interface, i) catch return;
             w.interface.writeAll("\x1b[?7h") catch return; // restore autowrap
             w.interface.flush() catch return;
             i += 1;
@@ -10877,9 +10462,9 @@ const Agent = struct {
 
     fn spinnerStart(self: *Agent) void {
         if (self.sub or json_mode or !use_color or self.out == null) return;
-        if (g_anim_off) return;
+        if (anim.g_anim_off) return;
         if (g_spin_future != null) return;
-        selectSpinner(self.io);
+        anim.selectSpinner(self.io);
         g_spin_stop.store(false, .release);
         g_spin_future = self.io.concurrent(spinnerTask, .{self.io}) catch blk: {
             g_spin_stop.store(true, .release); // no spare concurrency: skip quietly
