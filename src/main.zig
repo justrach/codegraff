@@ -135,6 +135,12 @@ const pricing = @import("pricing.zig");
 const ModelPrice = pricing.ModelPrice;
 const price_table = pricing.price_table;
 const priceFor = pricing.priceFor;
+
+// Pure shared helpers (JSON ObjectMap getters) live in util.zig (#123). Aliased
+// so the ~50 existing strFieldObj/intFieldObj call sites stay unqualified.
+const util = @import("util.zig");
+const strFieldObj = util.strFieldObj;
+const intFieldObj = util.intFieldObj;
 const Billing = pricing.Billing;
 const billingFor = pricing.billingFor;
 const usdFor = pricing.usdFor;
@@ -157,6 +163,7 @@ test {
     _ = pricing;
     _ = ansi;
     _ = serve;
+    _ = util;
 }
 
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
@@ -9107,10 +9114,6 @@ fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, refres
     try out.flush();
 }
 
-pub fn strFieldObj(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
-    const v = obj.get(name) orelse return null;
-    return if (v == .string) v.string else null;
-}
 
 /// Extract a query-string parameter from an HTTP request line ("GET /p?k=v…").
 fn queryParam(req_line: []const u8, key: []const u8) ?[]const u8 {
@@ -9414,10 +9417,6 @@ fn httpJsonPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body:
     return v.object;
 }
 
-pub fn intFieldObj(obj: std.json.ObjectMap, name: []const u8, default: i64) i64 {
-    const v = obj.get(name) orelse return default;
-    return if (v == .integer) v.integer else default;
-}
 
 fn codegraffLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
     var obuf: [4096]u8 = undefined;
@@ -16714,17 +16713,6 @@ test "strField/intField: typed JSON field extraction, null on wrong type or non-
     try std.testing.expect(intField(v, "missing") == null);
 }
 
-test "strFieldObj/intFieldObj: object-map variants with defaults" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const v = std.json.parseFromSliceLeaky(Value, a, "{\"s\":\"hi\",\"n\":42}", .{}) catch unreachable;
-    try std.testing.expectEqualStrings("hi", strFieldObj(v.object, "s").?);
-    try std.testing.expect(strFieldObj(v.object, "n") == null);
-    try std.testing.expectEqual(@as(i64, 42), intFieldObj(v.object, "n", -1));
-    try std.testing.expectEqual(@as(i64, -1), intFieldObj(v.object, "s", -1)); // wrong type -> default
-    try std.testing.expectEqual(@as(i64, -1), intFieldObj(v.object, "missing", -1));
-}
 
 test "b64url: url-safe base64 without padding" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

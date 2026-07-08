@@ -14,8 +14,9 @@ const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
 const root = @import("main.zig");
-const strFieldObj = root.strFieldObj;
-const intFieldObj = root.intFieldObj;
+const util = @import("util.zig");
+const strFieldObj = util.strFieldObj;
+const intFieldObj = util.intFieldObj;
 const codegraff_device_base = root.codegraff_device_base;
 const harness_version = root.harness_version;
 
