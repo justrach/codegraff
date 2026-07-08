@@ -2461,32 +2461,16 @@ fn isSlashCommandLine(line: []const u8) bool {
 /// "command": "./guard.sh", "timeout_ms": 10000}], ...}}. `match` is "*"
 /// (default) or pipe-separated tool names. A hung hook is killed at its
 /// timeout and treated as allow — hooks must never brick the loop.
-const Hook = struct {
-    match: []const u8,
-    command: []const u8,
-    timeout_ms: u64,
-
-    fn matches(self: Hook, tool: []const u8) bool {
-        if (std.mem.eql(u8, self.match, "*")) return true;
-        var it = std.mem.splitScalar(u8, self.match, '|');
-        while (it.next()) |m| {
-            if (std.mem.eql(u8, std.mem.trim(u8, m, " "), tool)) return true;
-        }
-        return false;
-    }
-};
-
-const Hooks = struct {
-    pre_tool: []const Hook = &.{},
-    post_tool: []const Hook = &.{},
-    turn_end: []const Hook = &.{},
-
-    fn total(self: Hooks) usize {
-        return self.pre_tool.len + self.post_tool.len + self.turn_end.len;
-    }
-};
-
-var g_hooks: Hooks = .{};
+// Lifecycle hooks (parse/match/run) live in hooks.zig (#123); aliased so
+// call sites read unchanged, same pattern as the pricing split.
+const hooks = @import("hooks.zig");
+const Hook = hooks.Hook;
+const Hooks = hooks.Hooks;
+const g_hooks = &hooks.g_hooks;
+const parseHookList = hooks.parseHookList;
+const loadHooks = hooks.loadHooks;
+const HookRun = hooks.HookRun;
+const runHookCmd = hooks.runHookCmd;
 
 /// Built-in codedb guard (issue #626): when a repo is codedb-indexed, agents
 /// reflexively grep/sed/cat source files and never touch the structural tools,
@@ -2532,104 +2516,6 @@ fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
     const dup = gpa.dupe(u8, path) catch return result;
     g_codedb_file_checks.append(gpa, .{ .path = dup, .indexed = result }) catch gpa.free(dup);
     return result;
-}
-
-fn parseHookList(arena: Allocator, v: ?Value) []const Hook {
-    const arr = v orelse return &.{};
-    if (arr != .array) return &.{};
-    var list: std.ArrayList(Hook) = .empty;
-    for (arr.array.items) |item| {
-        if (item != .object) continue;
-        const cmd = item.object.get("command") orelse continue;
-        if (cmd != .string or cmd.string.len == 0) continue;
-        const match: []const u8 = if (item.object.get("match")) |m|
-            (if (m == .string and m.string.len > 0) m.string else "*")
-        else
-            "*";
-        const timeout: u64 = if (item.object.get("timeout_ms")) |t|
-            (if (t == .integer and t.integer > 0) @intCast(t.integer) else 10_000)
-        else
-            10_000;
-        list.append(arena, .{ .match = match, .command = cmd.string, .timeout_ms = timeout }) catch continue;
-    }
-    return list.items;
-}
-
-/// Parse the "hooks" section of .harness/settings.json (arena-owned slices;
-/// call once at startup with the session arena).
-fn loadHooks(io: Io, arena: Allocator) Hooks {
-    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return .{};
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return .{};
-    if (v != .object) return .{};
-    const hooks = v.object.get("hooks") orelse return .{};
-    if (hooks != .object) return .{};
-    return .{
-        .pre_tool = parseHookList(arena, hooks.object.get("pre_tool")),
-        .post_tool = parseHookList(arena, hooks.object.get("post_tool")),
-        .turn_end = parseHookList(arena, hooks.object.get("turn_end")),
-    };
-}
-
-const HookRun = struct { code: ?u8, stderr: []u8 };
-
-/// Run one hook command: /bin/sh -c, event JSON on stdin, stderr captured
-/// (capped), killed at its timeout. Returns the exit code (null on timeout
-/// or spawn failure) and the trimmed stderr (gpa-owned).
-fn runHookCmd(gpa: Allocator, io: Io, command: []const u8, payload: []const u8, timeout_ms: u64) HookRun {
-    const none: HookRun = .{ .code = null, .stderr = &.{} };
-    var child = std.process.spawn(io, .{
-        .argv = &.{ "/bin/sh", "-c", command },
-        .stdin = .pipe,
-        .stdout = .ignore,
-        .stderr = .pipe,
-    }) catch return none;
-    {
-        var wbuf: [4096]u8 = undefined;
-        var w = child.stdin.?.writerStreaming(io, &wbuf);
-        w.interface.writeAll(payload) catch {};
-        w.interface.flush() catch {};
-        child.stdin.?.close(io);
-        child.stdin = null;
-    }
-    var rbuf: [16 * 1024]u8 = undefined;
-    var r = child.stderr.?.readerStreaming(io, &rbuf);
-    var err_text: std.ArrayList(u8) = .empty;
-    defer err_text.deinit(gpa);
-    const t0: Io.Timestamp = .now(io, .awake);
-    var timed_out = false;
-    while (true) {
-        // Bounded read pump: stderr is tiny in practice; the deadline is the
-        // real guard. takeDelimiter would block, so poll the fd instead.
-        if (t0.untilNow(io, .awake).toMilliseconds() >= timeout_ms) {
-            timed_out = true;
-            child.kill(io);
-            break;
-        }
-        if (r.interface.buffered().len == 0) {
-            if (builtin.os.tag == .windows) {
-                // No pollfd on Windows; peek the pipe for available bytes.
-                var avail: u32 = 0;
-                if (win.PeekNamedPipe(child.stderr.?.handle, null, 0, null, &avail, null) == 0) break; // broken pipe = EOF
-                if (avail == 0) {
-                    io.sleep(.fromMilliseconds(50), .awake) catch {};
-                    continue;
-                }
-            } else {
-                var fds = [_]std.posix.pollfd{.{ .fd = child.stderr.?.handle, .events = std.posix.POLL.IN, .revents = 0 }};
-                const ready = std.posix.poll(&fds, 100) catch break;
-                if (ready == 0) continue;
-                if (fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0 and fds[0].revents & std.posix.POLL.IN == 0) break;
-            }
-        }
-        const b = r.interface.takeByte() catch break; // EOF: hook exited
-        if (err_text.items.len < 4096) err_text.append(gpa, b) catch break;
-    }
-    const code: ?u8 = if (timed_out) null else switch (child.wait(io) catch return none) {
-        .exited => |c| c,
-        else => null,
-    };
-    const trimmed = std.mem.trim(u8, err_text.items, " \t\r\n");
-    return .{ .code = code, .stderr = gpa.dupe(u8, trimmed) catch &.{} };
 }
 
 /// Codex-style optional skills: known companion tools the harness quietly
@@ -6079,7 +5965,7 @@ pub fn main(init: std.process.Init) !void {
     }
     // Lifecycle hooks (pre_tool/post_tool/turn_end) from the same file.
     // (Per-skill opt-outs were loaded earlier, before the muonry auto-connect.)
-    g_hooks = loadHooks(io, arena);
+    g_hooks.* = loadHooks(io, arena, Approvals.settings_path);
     if (g_hooks.total() > 0 and !json_mode and oneshot_prompt == null) {
         try out.print("{s}loaded {d} lifecycle hook(s) from {s} — /hooks lists them{s}\n", .{ style.dim, g_hooks.total(), Approvals.settings_path, style.reset });
         try out.flush();
@@ -17270,39 +17156,9 @@ test "parseAnswerRequest: explicit cancel and mismatched call id" {
     try std.testing.expectError(error.AnswerCallIdMismatch, parseAnswerRequest(mismatch, "call-1"));
 }
 
-test { // pull in tests from imported modules (mcp.zig)
+test { // pull in tests from imported modules (mcp.zig, hooks.zig)
     _ = mcp;
-}
-
-test "Hook.matches: wildcard, pipe lists, exact" {
-    const star = Hook{ .match = "*", .command = "", .timeout_ms = 0 };
-    try std.testing.expect(star.matches("bash"));
-    try std.testing.expect(star.matches("anything"));
-    const multi = Hook{ .match = "bash|edit_file | write_file", .command = "", .timeout_ms = 0 };
-    try std.testing.expect(multi.matches("bash"));
-    try std.testing.expect(multi.matches("edit_file"));
-    try std.testing.expect(multi.matches("write_file")); // spaces trimmed
-    try std.testing.expect(!multi.matches("read_file"));
-    try std.testing.expect(!multi.matches("bas")); // no prefix matching
-}
-
-test "parseHookList: defaults, malformed entries skipped" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const v = try std.json.parseFromSliceLeaky(Value, a,
-        \\[{"command": "./guard.sh"},
-        \\ {"match": "bash", "command": "lint", "timeout_ms": 500},
-        \\ {"match": "no-command-key"},
-        \\ "not-an-object",
-        \\ {"command": ""}]
-    , .{});
-    const hooks = parseHookList(a, v);
-    try std.testing.expectEqual(@as(usize, 2), hooks.len);
-    try std.testing.expectEqualStrings("*", hooks[0].match); // default match
-    try std.testing.expectEqual(@as(u64, 10_000), hooks[0].timeout_ms); // default timeout
-    try std.testing.expectEqualStrings("bash", hooks[1].match);
-    try std.testing.expectEqual(@as(u64, 500), hooks[1].timeout_ms);
+    _ = hooks;
 }
 
 test "toolResultMessage: result text serializes as a JSON string in every wire format" {
