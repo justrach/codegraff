@@ -8958,28 +8958,30 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.startsWith(u8, line, "/resume")) {
         const arg = std.mem.trim(u8, line["/resume".len..], " \t");
         var name: []const u8 = if (arg.len == 0) "last" else arg;
-        // Bare /resume on a TTY: pick from the saved sessions interactively.
+        // Bare /resume on a TTY: pick from the saved sessions interactively,
+        // labeled by stored title + age instead of raw file names (#109).
         if (arg.len == 0 and use_color and root.in != null) {
-            var sessions: std.ArrayList(PickItem) = .empty;
-            defer sessions.deinit(arena);
-            if (Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true })) |dir_v| {
-                var dir = dir_v;
-                defer dir.close(root.io);
-                var it = dir.iterate();
-                while (it.next(root.io) catch null) |entry| {
-                    if (entry.kind != .file) continue;
-                    if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
-                    const base = entry.name[0 .. entry.name.len - session_ext.len];
-                    sessions.append(arena, .{ .name = arena.dupe(u8, base) catch continue }) catch {};
-                }
-            } else |_| {}
-            if (sessions.items.len == 0) {
+            var entries = listSavedSessions(root, arena);
+            defer entries.deinit(arena);
+            if (entries.items.len == 0) {
                 try out.writeAll("(no saved sessions in cwd — /save creates one)\n");
                 try out.flush();
                 return;
             }
+            var sessions: std.ArrayList(PickItem) = .empty;
+            defer sessions.deinit(arena);
+            for (entries.items) |e| {
+                const age = sessionAge(arena, root.io, e.updated_ms);
+                const desc = if (e.title == null)
+                    age
+                else if (age.len > 0)
+                    std.fmt.allocPrint(arena, "{s} · {s}", .{ age, e.base }) catch e.base
+                else
+                    e.base;
+                try sessions.append(arena, .{ .name = e.title orelse e.base, .desc = desc });
+            }
             const idx = listPicker(root, arena, out, "Resume session ›", sessions.items) orelse return;
-            name = sessions.items[idx].name;
+            name = entries.items[idx].base;
         }
         loadSession(root, keys.*, arena, name) catch |err| {
             switch (err) {
@@ -8998,22 +9000,18 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return;
     }
     if (std.mem.eql(u8, line, "/sessions")) {
-        var dir = Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true }) catch {
-            try out.writeAll("(could not list cwd)\n");
-            try out.flush();
-            return;
-        };
-        defer dir.close(root.io);
-        var it = dir.iterate();
-        var n: usize = 0;
-        while (it.next(root.io) catch null) |entry| {
-            if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
-            const base = entry.name[0 .. entry.name.len - session_ext.len];
-            try out.print("  {s}{s}\n", .{ base, if (std.mem.eql(u8, base, root.session_name)) "  ← current" else "" });
-            n += 1;
+        var entries = listSavedSessions(root, arena);
+        defer entries.deinit(arena);
+        for (entries.items) |e| {
+            const age = sessionAge(arena, root.io, e.updated_ms);
+            const cur = if (std.mem.eql(u8, e.base, root.session_name)) "  ← current" else "";
+            if (e.title) |t| {
+                try out.print("  {s}  {s}{s}{s}{s}{s}{s}\n", .{ t, style.dim, e.base, if (age.len > 0) " · " else "", age, style.reset, cur });
+            } else {
+                try out.print("  {s}{s}{s}{s}{s}{s}\n", .{ e.base, style.dim, if (age.len > 0) "  " else "", age, style.reset, cur });
+            }
         }
-        if (n == 0) try out.writeAll("(no saved sessions in cwd)\n");
+        if (entries.items.len == 0) try out.writeAll("(no saved sessions in cwd)\n");
         try out.flush();
         return;
     }
@@ -9079,6 +9077,96 @@ const sessions_dir = ".graff/sessions"; // title-named session files live here (
 /// Path to a session file: .graff/sessions/<name>.session.json.
 fn sessionPath(arena: Allocator, name: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ sessions_dir, name, session_ext });
+}
+
+/// Session-list metadata peeked from a session file WITHOUT parsing the
+/// (potentially multi-MB) messages array: saveSession writes "title" and
+/// "updated_ms" before "messages", so parsing the header slice alone is
+/// enough. Zero-value fields when the file predates them or the header
+/// can't be read — callers fall back to the raw session name (#109).
+const SessionMeta = struct { title: ?[]const u8 = null, updated_ms: i64 = 0 };
+
+fn sessionMetaFromBytes(arena: Allocator, data: []const u8) SessionMeta {
+    // Embedded quotes inside string values are escaped in the file, so the
+    // raw needle can only match the real top-level "messages" key.
+    const idx = std.mem.indexOf(u8, data, "\"messages\":") orelse return .{};
+    const header = std.mem.trimEnd(u8, data[0..idx], " \t\r\n");
+    if (header.len < 2 or header[header.len - 1] != ',') return .{};
+    const hjson = std.fmt.allocPrint(arena, "{s}}}", .{header[0 .. header.len - 1]}) catch return .{};
+    const parsed = std.json.parseFromSliceLeaky(Value, arena, hjson, .{ .allocate = .alloc_always }) catch return .{};
+    if (parsed != .object) return .{};
+    return .{
+        .title = if (parsed.object.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null,
+        .updated_ms = if (parsed.object.get("updated_ms")) |v| (if (v == .integer) v.integer else 0) else 0,
+    };
+}
+
+fn sessionMeta(root: *Agent, arena: Allocator, base: []const u8) SessionMeta {
+    const path = sessionPath(arena, base) catch return .{};
+    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch return .{};
+    return sessionMetaFromBytes(arena, data);
+}
+
+/// "3m ago"-style age for the session lists; "" when the timestamp is missing.
+fn sessionAge(arena: Allocator, io: Io, then_ms: i64) []const u8 {
+    if (then_ms <= 0) return "";
+    const s = @divTrunc(unixMs(io) - then_ms, 1000);
+    if (s < 60) return "just now";
+    if (s < 3600) return std.fmt.allocPrint(arena, "{d}m ago", .{@divTrunc(s, 60)}) catch "";
+    if (s < 86_400) return std.fmt.allocPrint(arena, "{d}h ago", .{@divTrunc(s, 3600)}) catch "";
+    return std.fmt.allocPrint(arena, "{d}d ago", .{@divTrunc(s, 86_400)}) catch "";
+}
+
+/// One row per saved session for the /resume picker and /sessions list:
+/// newest first, keyed (and resumed) by the file base name.
+const SessionEntry = struct { base: []const u8, title: ?[]const u8 = null, updated_ms: i64 = 0 };
+
+fn listSavedSessions(root: *Agent, arena: Allocator) std.ArrayList(SessionEntry) {
+    var entries: std.ArrayList(SessionEntry) = .empty;
+    var dir = Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true }) catch return entries;
+    defer dir.close(root.io);
+    var it = dir.iterate();
+    while (it.next(root.io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
+        const base = arena.dupe(u8, entry.name[0 .. entry.name.len - session_ext.len]) catch continue;
+        const meta = sessionMeta(root, arena, base);
+        entries.append(arena, .{ .base = base, .title = meta.title, .updated_ms = meta.updated_ms }) catch {};
+    }
+    std.mem.sort(SessionEntry, entries.items, {}, struct {
+        fn newerFirst(_: void, a: SessionEntry, b: SessionEntry) bool {
+            return a.updated_ms > b.updated_ms;
+        }
+    }.newerFirst);
+    return entries;
+}
+
+test "sessionMetaFromBytes reads title + updated_ms from the header only" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const meta = sessionMetaFromBytes(arena,
+        \\{"provider":"codegraff","model":"glm-5.2","strict":false,"ultracode_mode":false,"goal":null,"title":"Fix \"login\" bug","updated_ms":1782294417239,"messages":[{"role":"user","content":"hi"}]}
+    );
+    try std.testing.expectEqualStrings("Fix \"login\" bug", meta.title.?);
+    try std.testing.expectEqual(@as(i64, 1782294417239), meta.updated_ms);
+}
+
+test "sessionMetaFromBytes falls back cleanly on legacy/invalid headers" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const legacy = sessionMetaFromBytes(arena,
+        \\{"provider":"kimi","model":"kimi-k2.7","strict":false,"messages":[]}
+    );
+    try std.testing.expect(legacy.title == null);
+    try std.testing.expectEqual(@as(i64, 0), legacy.updated_ms);
+    const tricky = sessionMetaFromBytes(arena,
+        \\{"provider":"x","model":"y","goal":"say \"messages\": then stop","title":"T","updated_ms":5,"messages":[]}
+    );
+    try std.testing.expectEqualStrings("T", tricky.title.?);
+    try std.testing.expectEqual(@as(i64, 5), tricky.updated_ms);
+    try std.testing.expect(sessionMetaFromBytes(arena, "not json").title == null);
 }
 
 /// Filesystem-safe slug of an AI title: lowercase alnum, any other run collapses
