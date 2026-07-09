@@ -321,9 +321,10 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
     var full: Io.Writer.Allocating = .init(gpa);
     errdefer full.deinit();
     var line: Io.Writer.Allocating = .init(gpa);
+    var got_body = false; // #134: true once response bytes have been received (gates the post-completion read-error handling)
     defer line.deinit();
 
-    while (true) {
+    stream: while (true) {
         // Race the line read against an idle-stall watchdog so a dead
         // stream can't hang the turn (the Esc escape below is TTY-only, so
         // --json/GUI sessions would otherwise wait forever).
@@ -332,7 +333,10 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
             var rd_buf: [2]ReadDone = undefined;
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
             rsel.concurrent(.line, streamLineTask, .{ reader, &line.writer }) catch {
-                _ = try reader.streamDelimiterEnding(&line.writer, '\n'); // no spare concurrency
+                _ = reader.streamDelimiterEnding(&line.writer, '\n') catch |e| {
+                    if (got_body and readErrIsClose(e)) break :stream; // #134: body already delivered — not a retryable flake
+                    return e;
+                }; // no spare concurrency
                 break :read;
             };
             rsel.concurrent(.stall, streamStallTask, .{ self.io, orig_tio != null }) catch {
@@ -341,7 +345,10 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
                     return e;
                 };
                 rsel.cancelDiscard();
-                _ = try r.line;
+                _ = r.line catch |e| {
+                    if (got_body and readErrIsClose(e)) break :stream;
+                    return e;
+                };
                 break :read;
             };
             const first = rsel.await() catch |e| {
@@ -350,7 +357,10 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
             };
             rsel.cancelDiscard();
             switch (first) {
-                .line => |r| _ = try r,
+                .line => |r| _ = r catch |e| {
+                    if (got_body and readErrIsClose(e)) break :stream; // #134: post-completion close/reset is success, not a retryable flake
+                    return e;
+                },
                 .stall => |w| {
                     self.flushStreamTail();
                     if (req.connection) |conn| conn.closing = true;
@@ -372,10 +382,21 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
         const more = if (reader.peekByte()) |_| true else |_| false;
         try full.writer.writeAll(line.writer.buffered());
         try full.writer.writeByte('\n');
+        got_body = true; // #134: response bytes are in `full`; a later read error is a clean close
         self.printDelta(line.writer.buffered());
         if (main_mod.g_thinking_fold_request) {
             main_mod.g_thinking_fold_request = false;
             self.toggleThinkingFold();
+        }
+        // Logical stream terminator: once the provider's final event
+        // ([DONE] / response.completed / message_stop) has landed in `full`,
+        // the response is complete — stop instead of waiting for the socket to
+        // close. Some gateways hold the connection open (or reset it) after the
+        // last event, which otherwise trips the 120s idle-stall watchdog or a
+        // spurious retry on an already-complete response (#134/#135).
+        if (isStreamEnd(self.arena, self.provider.kind, line.writer.buffered())) {
+            if (req.connection) |conn| conn.closing = true;
+            break :stream;
         }
         line.clearRetainingCapacity();
         if ((orig_tio != null and escPressed(true)) or (self.sub and Agent.esc_cancel.load(.acquire))) {
@@ -396,6 +417,70 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
         w.flush() catch {};
     };
     return full.toOwnedSlice();
+}
+
+/// A read error once the response body is already flowing is the socket
+/// closing or resetting AFTER the model finished — treat it as end-of-stream,
+/// not a retryable transport flake (mirrors the non-streaming `post` drain's
+/// `catch break`). Before any body arrives it is a real connection failure.
+fn readErrIsClose(e: anyerror) bool {
+    return e == error.ReadFailed or e == error.EndOfStream;
+}
+
+/// True if this SSE line is the provider's terminal event — after it no more
+/// content comes, so postStream can stop instead of waiting for the socket to
+/// close (#134/#135). Precise: matches the `[DONE]` sentinel, a structural
+/// `event:` terminator, or a `data:` payload whose PARSED top-level `type` is
+/// terminal — never a substring inside a content delta (deltas escape quotes).
+fn isStreamEnd(arena: std.mem.Allocator, kind: anytype, raw_line: []const u8) bool {
+    const line = std.mem.trim(u8, raw_line, " \t\r\n");
+    if (std.mem.eql(u8, line, "data: [DONE]") or std.mem.eql(u8, line, "data:[DONE]")) return true;
+    if (std.mem.startsWith(u8, line, "event:")) return switch (kind) {
+        .anthropic => std.mem.indexOf(u8, line, "message_stop") != null,
+        .responses => std.mem.indexOf(u8, line, "response.completed") != null or
+            std.mem.indexOf(u8, line, "response.incomplete") != null or
+            std.mem.indexOf(u8, line, "response.failed") != null,
+        .openai => false,
+    };
+    const payload = ssePayload(raw_line) orelse return false;
+    const candidate = switch (kind) {
+        .anthropic => std.mem.indexOf(u8, payload, "message_stop") != null,
+        .responses => std.mem.indexOf(u8, payload, "response.completed") != null or
+            std.mem.indexOf(u8, payload, "response.incomplete") != null or
+            std.mem.indexOf(u8, payload, "response.failed") != null,
+        .openai => false,
+    };
+    if (!candidate) return false;
+    const v = std.json.parseFromSliceLeaky(Value, arena, payload, .{ .allocate = .alloc_always }) catch return false;
+    if (v != .object) return false;
+    const ty = v.object.get("type") orelse return false;
+    if (ty != .string) return false;
+    return switch (kind) {
+        .anthropic => std.mem.eql(u8, ty.string, "message_stop"),
+        .responses => std.mem.eql(u8, ty.string, "response.completed") or
+            std.mem.eql(u8, ty.string, "response.incomplete") or
+            std.mem.eql(u8, ty.string, "response.failed"),
+        .openai => false,
+    };
+}
+
+test "isStreamEnd (#134): terminal events detected, content deltas never false-match" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const Kind = @import("provider.zig").Provider.Kind;
+    // OpenAI/Responses [DONE] sentinel; a content delta merely CONTAINING it must not end the stream.
+    try std.testing.expect(isStreamEnd(a, Kind.openai, "data: [DONE]"));
+    try std.testing.expect(!isStreamEnd(a, Kind.openai, "data: {\"choices\":[{\"delta\":{\"content\":\"[DONE]\"}}]}"));
+    // Anthropic: event: line and data payload both terminate; a delta with the word does not.
+    try std.testing.expect(isStreamEnd(a, Kind.anthropic, "event: message_stop"));
+    try std.testing.expect(isStreamEnd(a, Kind.anthropic, "data: {\"type\":\"message_stop\"}"));
+    try std.testing.expect(!isStreamEnd(a, Kind.anthropic, "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"message_stop\"}}"));
+    // Responses (codex/gpt-5.5): completed/incomplete terminate; an output-text delta does not.
+    try std.testing.expect(isStreamEnd(a, Kind.responses, "event: response.completed"));
+    try std.testing.expect(isStreamEnd(a, Kind.responses, "data: {\"type\":\"response.completed\"}"));
+    try std.testing.expect(isStreamEnd(a, Kind.responses, "data: {\"type\":\"response.incomplete\"}"));
+    try std.testing.expect(!isStreamEnd(a, Kind.responses, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"));
 }
 
 /// Print the user-visible text from one SSE line, if any. Best-effort:

@@ -183,8 +183,14 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         return null;
     }
 
-    const finish = choice.get("finish_reason").?;
-    if (finish == .string and !std.mem.eql(u8, finish.string, "stop")) try self.say("[stopped: {s}]\n", .{finish.string});
+    // finish_reason is optional on raw provider JSON — some gateways omit it,
+    // and the non-streaming subagent path runs stepOpenAI on that raw JSON
+    // (the reassembled stream always fills it in, but a subagent/plain body may
+    // not). An unconditional `.?` here panicked the whole harness on that input;
+    // null-guard it like every other field read in this file (#134 audit P0).
+    if (choice.get("finish_reason")) |finish| {
+        if (finish == .string and !std.mem.eql(u8, finish.string, "stop")) try self.say("[stopped: {s}]\n", .{finish.string});
+    }
     return final_text;
 }
 
