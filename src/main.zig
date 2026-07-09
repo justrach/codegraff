@@ -163,6 +163,8 @@ test {
     _ = agent_interrupt;
     _ = agent_stream;
     _ = mainloop;
+    _ = args;
+    _ = startup;
     _ = provider_mod;
     _ = agent_mod;
 }
@@ -504,6 +506,19 @@ const updateCommand = cli.updateCommand;
 const changelog_text = cli.changelog_text;
 const usage_text = cli.usage_text;
 
+// CLI flag parsing (the Flags struct + main()'s former ~130-line flag loop)
+// lives in args.zig (600-line goal, #123 follow-up — the last file over the
+// line goal). Not aliased: main() calls `args.parse` once and reads
+// `flags.<name>` throughout, so there is no bare call-site to preserve.
+const args = @import("args.zig");
+
+// Post-arg-parse setup helpers (resolveKeys, buildSystemPrompt) that are
+// safely separable from main()'s stack-owned storage live in startup.zig
+// (600-line goal, #123 follow-up). See its header comment for why the rest
+// of main()'s setup (tracer/traj/telem construction, the MCP/approvals/
+// hooks/theme block) stays inline instead.
+const startup = @import("startup.zig");
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -513,185 +528,60 @@ pub fn main(init: std.process.Init) !void {
     // color and cursor sequences render instead of printing as literal text.
     if (builtin.os.tag == .windows) tty.enableVtOutput();
 
-    // CLI flags. --yolo starts with the permission gate fully open (same as
-    // typing /yolo once you're in) — skips every bash/tool/MCP approval prompt.
-    var yolo_flag = false;
-    var no_telemetry_flag = false;
-    var schema_flag = false;
-    var login_flag = false;
-    var refresh_flag = false;
-    var codex_login = false;
-    var kimi_login = false;
-    var help_flag = false;
-    var version_flag = false;
-    var print_flag = false;
-    var update_force = false; // graff update --force
-    var selftest_spinner_flag = false; // --selftest-spinner: headless spinner render for the PTY anti-stealth test
-    var update_check = false; // graff update --check
-    var model_flag: ?[]const u8 = null;
-    var system_prompt_flag: ?[]const u8 = null;
-    var append_system_flag: ?[]const u8 = null;
-    var host_flag: []const u8 = "127.0.0.1"; // harness serve
-    var port_flag: u16 = 8787; // harness serve
-    var token_flag: ?[]const u8 = null; // harness serve
-    var resume_flag: ?[]const u8 = null; // restore/save this named session
-    var goal_flag: ?[]const u8 = null; // --goal: standing objective (todos) every turn gets, incl. --json/-p
-    var eval_cmd_flag: ?[]const u8 = null; // --eval: scoring command for the eval-driven loop
-    var worktree_flag: ?[]const u8 = null; // --worktree/-w: isolate this session in a git worktree (parallel agents, no file collisions)
-    var eval_target_flag: ?u8 = null; // --until: target score 0-100 for the eval loop
-    var eval_niche_flag: ?[]const u8 = null; // --niche: fleet niche this eval-driven session optimizes (tags submitted scores)
-    var no_resume_flag = false; // start without auto-loading last.session.json
-    var new_session_flag = false; // start a fresh autosaved session
-    var positionals: std.ArrayList([]const u8) = .empty;
-    {
-        var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
-        defer it.deinit();
-        _ = it.next(); // argv[0]
-        while (it.next()) |arg| {
-            if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "mcp")) {
-                try positionals.append(arena, try arena.dupe(u8, arg));
-            } else if (std.mem.startsWith(u8, arg, "-")) {
-                if (std.mem.eql(u8, arg, "--yolo")) {
-                    yolo_flag = true;
-                } else if (std.mem.eql(u8, arg, "--worktree") or std.mem.eql(u8, arg, "-w")) {
-                    worktree_flag = it.next() orelse std.process.fatal("--worktree needs a name (e.g. --worktree agent1)", .{});
-                } else if (std.mem.eql(u8, arg, "--goal")) {
-                    goal_flag = it.next() orelse std.process.fatal("--goal needs an objective", .{});
-                } else if (std.mem.eql(u8, arg, "--eval")) {
-                    eval_cmd_flag = it.next() orelse std.process.fatal("--eval needs a scoring command", .{});
-                } else if (std.mem.eql(u8, arg, "--until")) {
-                    const uv = it.next() orelse std.process.fatal("--until needs a score 0-100", .{});
-                    eval_target_flag = std.fmt.parseInt(u8, uv, 10) catch std.process.fatal("--until must be a number 0-100", .{});
-                } else if (std.mem.eql(u8, arg, "--niche")) {
-                    eval_niche_flag = it.next() orelse std.process.fatal("--niche needs a name (e.g. --niche reviewer)", .{});
-                } else if (std.mem.eql(u8, arg, "--no-telemetry")) {
-                    no_telemetry_flag = true;
-                } else if (std.mem.eql(u8, arg, "--timing")) {
-                    show_timing = true;
-                } else if (std.mem.eql(u8, arg, "--cost")) {
-                    show_cost = true;
-                } else if (std.mem.eql(u8, arg, "--json")) {
-                    json_mode = true;
-                } else if (std.mem.eql(u8, arg, "--max-tool-calls")) {
-                    const mv = it.next() orelse std.process.fatal("--max-tool-calls needs a non-negative integer — harness --help", .{});
-                    max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-tool-calls needs a non-negative integer, got '{s}'", .{mv});
-                } else if (std.mem.eql(u8, arg, "--dedupe-tool-calls")) {
-                    dedupe_tool_calls = true;
-                } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
-                    g_worktree_autocommit = false;
-                } else if (std.mem.eql(u8, arg, "--schema")) {
-                    schema_flag = true;
-                } else if (std.mem.eql(u8, arg, "--refresh")) {
-                    refresh_flag = true;
-                } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-                    help_flag = true;
-                } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
-                    version_flag = true;
-                } else if (std.mem.eql(u8, arg, "--selftest-spinner")) {
-                    selftest_spinner_flag = true;
-                } else if (std.mem.eql(u8, arg, "--print") or std.mem.eql(u8, arg, "-p")) {
-                    print_flag = true;
-                } else if (std.mem.eql(u8, arg, "--force")) {
-                    update_force = true;
-                } else if (std.mem.eql(u8, arg, "--check")) {
-                    update_check = true;
-                } else if (std.mem.eql(u8, arg, "--resume")) {
-                    const rv = it.next() orelse std.process.fatal("--resume needs a session name — harness --help", .{});
-                    resume_flag = try arena.dupe(u8, rv);
-                } else if (std.mem.eql(u8, arg, "--no-resume")) {
-                    no_resume_flag = true;
-                } else if (std.mem.eql(u8, arg, "--new")) {
-                    new_session_flag = true;
-                } else if (std.mem.eql(u8, arg, "--model")) {
-                    const mv = it.next() orelse std.process.fatal("--model needs a value — harness --help", .{});
-                    model_flag = try arena.dupe(u8, mv);
-                } else if (std.mem.eql(u8, arg, "--system-prompt")) {
-                    const sv = it.next() orelse std.process.fatal("--system-prompt needs a value — harness --help", .{});
-                    system_prompt_flag = try arena.dupe(u8, sv);
-                } else if (std.mem.eql(u8, arg, "--append-system-prompt")) {
-                    const av = it.next() orelse std.process.fatal("--append-system-prompt needs a value — harness --help", .{});
-                    append_system_flag = try arena.dupe(u8, av);
-                } else if (std.mem.eql(u8, arg, "--host")) {
-                    const hv = it.next() orelse std.process.fatal("--host needs a value — harness --help", .{});
-                    host_flag = try arena.dupe(u8, hv);
-                } else if (std.mem.eql(u8, arg, "--port")) {
-                    const pv = it.next() orelse std.process.fatal("--port needs a value — harness --help", .{});
-                    port_flag = std.fmt.parseInt(u16, pv, 10) catch std.process.fatal("--port needs a number 1-65535, got '{s}'", .{pv});
-                } else if (std.mem.eql(u8, arg, "--token")) {
-                    const tv = it.next() orelse std.process.fatal("--token needs a value — harness --help", .{});
-                    token_flag = try arena.dupe(u8, tv);
-                } else {
-                    std.process.fatal("unknown flag '{s}' — harness --help lists them", .{arg});
-                }
-            } else {
-                try positionals.append(arena, try arena.dupe(u8, arg));
-            }
-        }
-        if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "login")) login_flag = true;
-        if (positionals.items.len > 1 and std.mem.eql(u8, positionals.items[1], "codex")) codex_login = true;
-        if (positionals.items.len > 1 and std.mem.eql(u8, positionals.items[1], "kimi")) kimi_login = true;
-    }
-
-    // One-shot print mode: `harness -p "prompt"` or a bare positional prompt
-    // (`harness "say hi"`). Subcommands (login/key) are not prompts.
-    const is_subcommand = positionals.items.len > 0 and
-        (std.mem.eql(u8, positionals.items[0], "login") or std.mem.eql(u8, positionals.items[0], "key") or std.mem.eql(u8, positionals.items[0], "mcp") or
-            std.mem.eql(u8, positionals.items[0], "serve") or std.mem.eql(u8, positionals.items[0], "update") or std.mem.eql(u8, positionals.items[0], "title") or std.mem.eql(u8, positionals.items[0], "repl") or
-            std.mem.eql(u8, positionals.items[0], "worktree") or std.mem.eql(u8, positionals.items[0], "sandboxes") or std.mem.eql(u8, positionals.items[0], "cube"));
-    var oneshot_prompt: ?[]const u8 = null;
-    if (!is_subcommand and positionals.items.len > 0) {
-        oneshot_prompt = try std.mem.join(arena, " ", positionals.items);
-    }
-    if (print_flag and oneshot_prompt == null) std.process.fatal("-p needs a prompt: harness -p \"do something\"", .{});
+    // CLI flags: the Flags struct + parsing loop live in args.zig (600-line
+    // goal, #123 follow-up — the last file over the line goal). Downstream
+    // code reads flags.<name> in place of the ~27 locals + the positional
+    // args this block used to declare and populate directly.
+    const flags = try args.parse(init);
 
     // `--help` / `--version`: handled before any subcommand dispatch, so
     // `harness login --help` prints usage instead of starting an OAuth flow.
-    if (help_flag or version_flag) {
+    if (flags.help_flag or flags.version_flag) {
         var hbuf: [4096]u8 = undefined;
         var hw = Io.File.stdout().writer(io, &hbuf);
-        if (help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("graff {s}\n\n{s}", .{ harness_version, changelog_text });
+        if (flags.help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("graff {s}\n\n{s}", .{ harness_version, changelog_text });
         try hw.interface.flush();
         return;
     }
 
     // `harness key set <provider> <key>` / `harness key list`: safe key store
     // (macOS Keychain, else a 0600 file). Exits after.
-    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "key")) {
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "key")) {
         const home = homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
-        try keyCommand(io, gpa, arena, home, positionals.items[1..]);
+        try keyCommand(io, gpa, arena, home, flags.positionals.items[1..]);
         return;
     }
 
     // `harness mcp add <name> -- <command> [args...]`: write workspace MCP config.
-    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "mcp")) {
-        try mcpCommand(io, arena, positionals.items[1..]);
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
+        try mcpCommand(io, arena, flags.positionals.items[1..]);
         return;
     }
 
     // `harness login [codex] [--refresh]`: OAuth login. Default target is
     // codegraff (device-code flow, writes ~/.simple-harness-codegraff.json);
     // `codex` (or --refresh) runs the ChatGPT PKCE/refresh flow → ~/.codex/auth.json.
-    if (login_flag) {
+    if (flags.login_flag) {
         const home = homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
-        if (kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (codex_login or refresh_flag) try oauth.codexLogin(io, gpa, arena, home, refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
+        if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
         return;
     }
 
     // `harness serve`: HTTP/NDJSON bridge over the --json protocol — each
     // session is a `harness --json` child of this same binary. Keys are
     // loaded by the children, not here.
-    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "serve")) {
-        const token = token_flag orelse init.environ_map.get("HARNESS_SERVE_TOKEN") orelse init.environ_map.get("GRAFF_SERVE_TOKEN");
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "serve")) {
+        const token = flags.token_flag orelse init.environ_map.get("HARNESS_SERVE_TOKEN") orelse init.environ_map.get("GRAFF_SERVE_TOKEN");
         const exe = std.process.executablePathAlloc(io, arena) catch
             std.process.fatal("serve: cannot resolve own executable path", .{});
         try serve.serveMain(gpa, io, .{
-            .host = host_flag,
-            .port = port_flag,
+            .host = flags.host_flag,
+            .port = flags.port_flag,
             .token = token,
-            .yolo = yolo_flag,
-            .model = model_flag,
-            .system_prompt = system_prompt_flag,
-            .append_system_prompt = append_system_flag,
+            .yolo = flags.yolo_flag,
+            .model = flags.model_flag,
+            .system_prompt = flags.system_prompt_flag,
+            .append_system_prompt = flags.append_system_flag,
         }, exe);
         return;
     }
@@ -699,31 +589,31 @@ pub fn main(init: std.process.Init) !void {
     // `harness update [--force|--check]`: self-update to the latest GitHub
     // release. Version-checked (skips if already current), reuses install.sh
     // for the actual download/codesign/atomic swap. Exits after.
-    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "update")) {
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "update")) {
         // --check never installs, so --force has no effect on it — reject the
         // contradictory combination up front rather than silently ignoring one.
-        if (update_force and update_check)
+        if (flags.update_force and flags.update_check)
             std.process.fatal("--force and --check are mutually exclusive — use `graff update` (without --check) to install", .{});
-        try updateCommand(io, gpa, arena, init.environ_map, update_force, update_check);
+        try updateCommand(io, gpa, arena, init.environ_map, flags.update_force, flags.update_check);
         return;
     }
 
     // `graff worktree list` / `graff worktree merge <name>`: manage the per-tab
     // scratch worktrees that -w creates. merge squash-lands a tab's work as one
     // clean commit on the current branch, then removes the worktree + branch.
-    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "worktree")) {
-        try worktreeCommand(gpa, io, arena, positionals.items[1..]);
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "worktree")) {
+        try worktreeCommand(gpa, io, arena, flags.positionals.items[1..]);
         return;
     }
 
     // `graff sandboxes [stop <id>]`: list the account's gateway sandboxes or
     // spin one down. Key resolution mirrors a normal run: CODEGRAFF_API_KEY
     // env first, else the `graff login` file via loadCodegraffKey.
-    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "sandboxes")) {
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "sandboxes")) {
         const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
             (if (homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
             std.process.fatal("sandboxes: no codegraff key — run `graff login` first", .{});
-        try cube.sandboxesCommand(io, gpa, arena, cg_key, positionals.items[1..]);
+        try cube.sandboxesCommand(io, gpa, arena, cg_key, flags.positionals.items[1..]);
         return;
     }
 
@@ -731,92 +621,32 @@ pub fn main(init: std.process.Init) !void {
     // sandbox running `graff serve` behind a Daytona preview URL. This is the
     // broker the iOS app mirrors; any serve client can attach with the
     // printed base + token.
-    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "cube")) {
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "cube")) {
         const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
             (if (homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
             std.process.fatal("cube: no codegraff key — run `graff login` first", .{});
-        try cube.cubeCommand(io, gpa, arena, cg_key, positionals.items[1..]);
+        try cube.cubeCommand(io, gpa, arena, cg_key, flags.positionals.items[1..]);
         return;
     }
 
     // `--schema`: print the machine-readable interface and exit. No keys,
     // network, or MCP — so it works anywhere (CI codegen calls this).
-    if (schema_flag) {
+    if (flags.schema_flag) {
         var sbuf: [8 * 1024]u8 = undefined;
         var sw = Io.File.stdout().writer(io, &sbuf);
         try emitSchema(&sw.interface);
         return;
     }
-    var keys: Keys = .{ .values = undefined };
-    for (provider_specs, &keys.values) |spec, *value| {
-        value.* = init.environ_map.get(spec.env_key);
-    }
-    // Codegraff "login": if CODEGRAFF_API_KEY isn't set, pick up a key from
-    // `harness login codegraff` (~/.simple-harness-codegraff.json) or graff's
-    // own store (~/forge/.credentials.json) — read-only, env always wins.
-    if (homeEnv(init.environ_map)) |home| {
-        for (provider_specs, &keys.values) |spec, *value| {
-            if (std.mem.eql(u8, spec.id, "codegraff") and value.* == null)
-                value.* = oauth.loadCodegraffKey(io, arena, home);
-        }
-    }
-    // Codex "login": read the ChatGPT OAuth token from ~/.codex/auth.json
-    // (written by the Codex CLI) instead of an env var — same on-disk
-    // credential pattern as the codegraff key in ~/forge/.credentials.json.
-    var codex_account: ?[]const u8 = null;
-    if (homeEnv(init.environ_map)) |home| {
-        if (oauth.loadCodexAuth(io, arena, home)) |auth| {
-            for (provider_specs, &keys.values) |spec, *value| {
-                if (std.mem.eql(u8, spec.id, "codex")) value.* = auth.token;
-            }
-            keys.codex_account = auth.account;
-            codex_account = auth.account;
-        }
-    }
-    // Kimi "login": OAuth device-flow token from `graff login kimi`
-    // (~/.kimi/credentials/graff-oauth.json), refreshed in place when near
-    // expiry. Same on-disk-credential pattern as codex/codegraff; env wins.
-    if (homeEnv(init.environ_map)) |home| {
-        for (provider_specs, &keys.values) |spec, *value| {
-            if (std.mem.eql(u8, spec.id, "kimi") and value.* == null)
-                value.* = oauth.loadKimiOAuth(io, gpa, arena, home);
-        }
-    }
-    // Stored keys (macOS Keychain / 0600 file via `harness key set`): fill any
-    // provider slot still empty after env + the login loaders. env always wins.
-    if (homeEnv(init.environ_map)) |home| {
-        for (provider_specs, &keys.values) |spec, *value| {
-            if (value.* == null) value.* = loadStoredKey(io, arena, home, spec.id);
-        }
-    }
-    var default_provider = keys.defaultProvider() catch {
-        std.process.fatal(
-            \\no API key found. quickest fixes:
-            \\  graff login                         free codegraff key (device-code OAuth)
-            \\  graff key set <provider> <key>      store a key (macOS Keychain, else 0600 file)
-            \\  export ANTHROPIC_API_KEY=sk-ant-…   or CODEGRAFF/DEEPSEEK/OPENAI/MINIMAX/XIAOMI/KIMI/MOONSHOT/XAI/ZAI _API_KEY
-            \\a Codex CLI login (~/.codex/auth.json) is also picked up automatically.
-        , .{});
-    };
-    var stale_saved_model: ?[]const u8 = null;
-    // `--model <name|provider>` pins the startup model (same resolution as /model).
-    if (model_flag) |mname| pick: {
-        for (provider_specs) |spec| if (std.mem.eql(u8, spec.id, mname)) {
-            if (keys.providerById(spec.id, spec.default_model)) |p| {
-                default_provider = p;
-                break :pick;
-            } else |_| std.process.fatal("no key/login for provider '{s}' (--model)", .{mname});
-        };
-        const nm = resolveModelName(keys, mname) orelse mname;
-        default_provider = keys.providerFor(nm) catch std.process.fatal("no key/login for --model '{s}' — see /models", .{mname});
-    } else if (loadModel(io, arena, homeEnv(init.environ_map) orelse "")) |saved| {
-        // No --model flag: resume the model chosen last session only if that
-        // exact provider/model pair is still in the catalog; model names can be
-        // shared by providers with different support.
-        if (providerModelInTable(saved.pid, saved.model)) {
-            if (keys.providerById(saved.pid, saved.model)) |p| default_provider = p else |_| {}
-        } else stale_saved_model = saved.model;
-    }
+    // Credential/model resolution (env vars → codegraff/codex/kimi on-disk
+    // logins → the `harness key set` store, env always wins; then --model or
+    // the last-saved model) lives in startup.zig (600-line goal, #123
+    // follow-up) as resolveKeys() — pure over env/disk/arena, safe to call
+    // outside main()'s own stack frame (no address-of-local storage).
+    const resolved_keys = try startup.resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag);
+    var keys = resolved_keys.keys;
+    const default_provider = resolved_keys.default_provider;
+    const stale_saved_model = resolved_keys.stale_saved_model;
+    const codex_account = resolved_keys.codex_account;
 
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
@@ -832,9 +662,9 @@ pub fn main(init: std.process.Init) !void {
 
     // `graff title <prompt>` — print the tab-title the model would generate for
     // that prompt (one title call, no session). For A/B-ing title prompts/styles.
-    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "title")) {
-        if (positionals.items.len < 2) std.process.fatal("usage: graff title <prompt>", .{});
-        const tprompt = try std.mem.join(arena, " ", positionals.items[1..]);
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "title")) {
+        if (flags.positionals.items.len < 2) std.process.fatal("usage: graff title <prompt>", .{});
+        const tprompt = try std.mem.join(arena, " ", flags.positionals.items[1..]);
         if (titleTask(gpa, io, &client, default_provider, tprompt)) |t| {
             defer gpa.free(t);
             try out.print("{s}\n", .{t});
@@ -851,7 +681,7 @@ pub fn main(init: std.process.Init) !void {
     // --worktree/-w: run this session in an isolated git worktree so parallel
     // agents don't collide on files. Creates .graff/worktrees/<name> on branch
     // worktree-<name> (from HEAD) and enters it; reuses it if it already exists.
-    if (worktree_flag) |wt| {
+    if (flags.worktree_flag) |wt| {
         // POSIX-only: the chdir below goes through libc's `chdir`, which Windows
         // builds don't link. -w is a parallel-agent dev workflow (mac/linux); on
         // Windows we bail with a clear message rather than break the cross-build.
@@ -877,7 +707,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     var cwd_buf: [4096]u8 = undefined;
-    g_cwd_display = if (worktree_flag) |wt|
+    g_cwd_display = if (flags.worktree_flag) |wt|
         // After chdir into the worktree, realPath(AT_FDCWD) is unreliable; derive from the launch dir.
         std.fmt.allocPrint(arena, "{s}/.graff/worktrees/{s}", .{ init.environ_map.get("PWD") orelse ".", wt }) catch try arena.dupe(u8, init.environ_map.get("PWD") orelse ".")
     else if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
@@ -885,14 +715,14 @@ pub fn main(init: std.process.Init) !void {
     else |_|
         try arena.dupe(u8, init.environ_map.get("PWD") orelse ".");
 
-    if (!json_mode and oneshot_prompt == null) {
+    if (!json_mode and flags.oneshot_prompt == null) {
         try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.cyan, g_cwd_display, style.reset, trace_path });
         try out.flush();
         if (codex_account) |acct| {
             try out.print("logged into Codex (ChatGPT account {s}…) — /model gpt-5.5\n", .{acct[0..@min(acct.len, 8)]});
             try out.flush();
         }
-        if (yolo_flag) {
+        if (flags.yolo_flag) {
             try out.print("⚠ yolo mode (--yolo): all bash/tool/MCP permission prompts are skipped\n", .{});
             try out.flush();
         }
@@ -964,7 +794,7 @@ pub fn main(init: std.process.Init) !void {
     // env-configured endpoint (dev / override) → else the release build's
     // baked-in default (build_options.telemetry_endpoint, empty in dev). The
     // install id file is only created when an endpoint is live.
-    const telem_endpoint: []const u8 = if (no_telemetry_flag or init.environ_map.get("GRAFF_NO_TELEMETRY") != null)
+    const telem_endpoint: []const u8 = if (flags.no_telemetry_flag or init.environ_map.get("GRAFF_NO_TELEMETRY") != null)
         ""
     else
         init.environ_map.get("OTEL_EXPORTER_OTLP_ENDPOINT") orelse
@@ -998,8 +828,8 @@ pub fn main(init: std.process.Init) !void {
     // Auto-connect only with --yolo (trusted) or explicit per-session consent;
     // otherwise start with an empty (but live) registry so `/mcp add` still works.
     const mcp_count = countMcpServers(io, arena);
-    var connect_mcp = yolo_flag or mcp_count == 0;
-    if (mcp_count > 0 and !yolo_flag and !json_mode and use_color) {
+    var connect_mcp = flags.yolo_flag or mcp_count == 0;
+    if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
         try out.print("{s}⚠ this workspace's .mcp.json defines {d} MCP server(s) that run local commands. Connect them this session? [y/N] {s}", .{ style.bold, mcp_count, style.reset });
         try out.flush();
         const ans = in.takeDelimiter('\n') catch null;
@@ -1056,7 +886,7 @@ pub fn main(init: std.process.Init) !void {
         out.writeAll(anim.limyuxi_reset) catch {};
         out.flush() catch {};
     };
-    if (selftest_spinner_flag) {
+    if (flags.selftest_spinner_flag) {
         // Headless render of the real thinking-spinner pool for the PTY anti-stealth
         // test (scripts/test-pty-spinner.py): runs the real selection (so a cwd-gated
         // pick surfaces) and prints every frame fn's output to stdout, where the test
@@ -1081,7 +911,7 @@ pub fn main(init: std.process.Init) !void {
             if (registry_storage.addServer(c.server, c.bin, &.{"--mcp"})) |_| {
                 break;
             } else |err| {
-                if (!json_mode and oneshot_prompt == null) {
+                if (!json_mode and flags.oneshot_prompt == null) {
                     try out.print("{s}[mcp:{s}] auto-connect failed ({t}) — native tools only{s}\n", .{ style.dim, c.server, err, style.reset });
                     try out.flush();
                 }
@@ -1093,7 +923,7 @@ pub fn main(init: std.process.Init) !void {
     // below can lean into the paid tools (vs the conservative free-codedb note).
     if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);
 
-    var approvals: Approvals = .{ .yolo = yolo_flag };
+    var approvals: Approvals = .{ .yolo = flags.yolo_flag };
     defer {
         for (approvals.prefixes.items) |p| gpa.free(p);
         approvals.prefixes.deinit(gpa);
@@ -1103,54 +933,35 @@ pub fn main(init: std.process.Init) !void {
     // Agent types: builtins + .harness/agents/*.md (the MAP-Elites niches).
     fleet.g_home = homeEnv(init.environ_map); // for /agents promote's personal tier
     fleet.g_agent_types = loadAgentTypes(io, arena, fleet.g_home); // builtin < ~/.harness/agents (personal) < ./.harness/agents (private)
-    if (persisted_approvals > 0 and !json_mode and oneshot_prompt == null) {
+    if (persisted_approvals > 0 and !json_mode and flags.oneshot_prompt == null) {
         try out.print("{s}loaded {d} saved approval(s) from {s}{s}\n", .{ style.dim, persisted_approvals, Approvals.settings_path, style.reset });
         try out.flush();
     }
     // Lifecycle hooks (pre_tool/post_tool/turn_end) from the same file.
     // (Per-skill opt-outs were loaded earlier, before the muonry auto-connect.)
     g_hooks = hooks.loadHooks(io, arena);
-    if (g_hooks.total() > 0 and !json_mode and oneshot_prompt == null) {
+    if (g_hooks.total() > 0 and !json_mode and flags.oneshot_prompt == null) {
         try out.print("{s}loaded {d} lifecycle hook(s) from {s} — /hooks lists them{s}\n", .{ style.dim, g_hooks.total(), Approvals.settings_path, style.reset });
         try out.flush();
     }
 
-    // Root system prompt layering, frozen at startup so it stays
-    // KV-cache-friendly: built-in base (or its --system-prompt replacement),
-    // then project instructions from the first of AGENTS.md/HARNESS.md/
-    // CLAUDE.md found in the cwd, then --append-system-prompt text.
-    const base_prompt: []const u8 = system_prompt_flag orelse main_system_prompt;
-    var sys_normal: []const u8 = base_prompt;
-    for ([_][]const u8{ "AGENTS.md", "HARNESS.md", "CLAUDE.md" }) |fname| {
-        const body = Io.Dir.cwd().readFileAlloc(io, fname, arena, .limited(64 * 1024)) catch continue;
-        const trimmed = std.mem.trim(u8, body, " \t\r\n");
-        if (trimmed.len == 0) continue;
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n# Project instructions (from {s})\n{s}", .{ base_prompt, fname, trimmed });
-        if (!json_mode and oneshot_prompt == null) {
-            try out.print("loaded project instructions from {s} ({d} bytes)\n", .{ fname, trimmed.len });
-            try out.flush();
-        }
-        break;
-    }
-    if (append_system_flag) |extra| {
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, extra });
-    }
-    // Codex-style skills: one capability line per installed optional
-    // companion (skills_registry) — metadata in context, --help on demand.
-    // (g_path_env was captured earlier, before the muonry auto-connect.)
-    for (skills_registry) |sk| {
-        if (sk.note.len == 0 or !skillActive(io, sk)) continue;
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, sk.note });
-    }
-    // Same idea for known MCP servers: a usage note enters the context only
-    // when the server actually connected this session (consent given, spawn
-    // succeeded). Native tools remain the fallback either way.
-    for (mcp_notes) |mn| {
-        if (!mcpServerConnected(mcp_tools, mn.server)) continue;
-        const note = codedbproNote(mn.server, g_codedbpro_licensed, mn.note);
-        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, note });
-    }
-    const sys_strict: []const u8 = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, strict_note });
+    // Root system-prompt layering (base + AGENTS.md/HARNESS.md/CLAUDE.md +
+    // --append-system-prompt + active-skill capability lines + connected-MCP
+    // usage notes) lives in startup.zig (600-line goal, #123 follow-up) as
+    // buildSystemPrompt() — pure over io/arena, returns both prompt strings
+    // by value.
+    const sys_prompt = try startup.buildSystemPrompt(
+        io,
+        arena,
+        out,
+        flags.system_prompt_flag,
+        flags.append_system_flag,
+        json_mode or flags.oneshot_prompt != null,
+        mcp_tools,
+        g_codedbpro_licensed,
+    );
+    const sys_normal = sys_prompt.sys_normal;
+    const sys_strict = sys_prompt.sys_strict;
 
     var snaps: Snapshots = .{ .gpa = gpa, .io = io };
     defer snaps.deinit();
@@ -1179,12 +990,12 @@ pub fn main(init: std.process.Init) !void {
         .tools_responses = try renderRootTools(arena, .responses, &root_specs, mcp_tools),
     };
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(io)});
-    root.session_name = if (resume_flag) |name| (if (!new_session_flag and !no_resume_flag) name else fresh_session_name) else fresh_session_name;
+    root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
-    if (goal_flag) |g| root.goal = try arena.dupe(u8, g); // --goal applies to every turn (incl. --json/-p/SDK)
-    if (eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
-    if (eval_target_flag) |t| root.eval_target = t;
-    if (eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);
+    if (flags.goal_flag) |g| root.goal = try arena.dupe(u8, g); // --goal applies to every turn (incl. --json/-p/SDK)
+    if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
+    if (flags.eval_target_flag) |t| root.eval_target = t;
+    if (flags.eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);
     tracer.note("session", root.provider.model);
     // Distribute (docs §9.E): pull this tier's live fleet champions and prefer
     // them over the baked builtins. Best-effort + bounded; emits fleet:elite_pull.
@@ -1205,10 +1016,10 @@ pub fn main(init: std.process.Init) !void {
     // resuming: the resume target already holds the real conversation and
     // loadSession below restores it — writing the empty initial state here
     // would clobber the very session we're about to read back (data loss).
-    const will_resume = resume_flag != null and !new_session_flag and !no_resume_flag;
+    const will_resume = flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag;
     if (!will_resume) saveSession(&root, arena, root.session_name) catch {};
 
-    if (oneshot_prompt != null and resume_flag != null and !new_session_flag and !no_resume_flag) {
+    if (flags.oneshot_prompt != null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) {
         loadSession(&root, keys, arena, root.session_name) catch {};
     }
 
@@ -1216,7 +1027,7 @@ pub fn main(init: std.process.Init) !void {
     // agent loop — each prompt runs a full root turn (tools + MCP) via
     // replTurnCb, reusing the root agent's tool set + registry + system prompt.
     // Self-contained — exits after.
-    if (positionals.items.len > 0 and std.mem.eql(u8, positionals.items[0], "repl")) {
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "repl")) {
         var repl_ctx = ReplCtx{
             .io = io,
             .client = &client,
@@ -1243,7 +1054,7 @@ pub fn main(init: std.process.Init) !void {
     // final text to stdout, exit. Tool progress goes to stderr (say() with no
     // out writer), streaming stays quiet, and the gate denies anything not
     // pre-approved instead of prompting (there's no one to ask).
-    if (oneshot_prompt) |prompt_text| {
+    if (flags.oneshot_prompt) |prompt_text| {
         unattended = true;
         root.in = null; // gate: deny instead of prompt; ask_user: self-decide
         root.out = null; // tool progress → stderr; stdout carries only the answer
@@ -1309,7 +1120,7 @@ pub fn main(init: std.process.Init) !void {
     // Explicit resume only: bare `graff` starts fresh, while `--resume <name>`
     // restores that autosave target. Best-effort: a missing/keyless/corrupt
     // file silently starts fresh.
-    if (oneshot_prompt == null and resume_flag != null and !new_session_flag and !no_resume_flag) {
+    if (flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) {
         if (loadSession(&root, keys, arena, root.session_name)) |_| {
             if (root.messages.items.len > 0) {
                 // Estimate the restored context from the file size (~4 bytes/token).
