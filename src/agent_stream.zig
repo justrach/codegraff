@@ -432,7 +432,7 @@ fn readErrIsClose(e: anyerror) bool {
 /// close (#134/#135). Precise: matches the `[DONE]` sentinel, a structural
 /// `event:` terminator, or a `data:` payload whose PARSED top-level `type` is
 /// terminal — never a substring inside a content delta (deltas escape quotes).
-fn isStreamEnd(arena: std.mem.Allocator, kind: anytype, raw_line: []const u8) bool {
+pub fn isStreamEnd(arena: std.mem.Allocator, kind: anytype, raw_line: []const u8) bool {
     const line = std.mem.trim(u8, raw_line, " \t\r\n");
     if (std.mem.eql(u8, line, "data: [DONE]") or std.mem.eql(u8, line, "data:[DONE]")) return true;
     if (std.mem.startsWith(u8, line, "event:")) return switch (kind) {

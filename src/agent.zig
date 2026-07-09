@@ -109,6 +109,7 @@ pub const Agent = struct {
     /// what survives into history (with an "[interrupted]" marker appended).
     partial_text: std.ArrayList(u8) = .empty,
     stream_quiet: bool = false, // suppress live streaming (compaction summary)
+    ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     streamed_text: bool = false, // the last request printed its text live
     thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
     thinking_rows: usize = 0, // on-screen rows the live Thinking block spans (#75 collapse)
@@ -328,6 +329,11 @@ pub const Agent = struct {
     pub const toggleThinkingFold = @import("agent_stream.zig").toggleThinkingFold;
     pub const postStream = @import("agent_stream.zig").postStream;
     pub const printDelta = @import("agent_stream.zig").printDelta;
+    // Codex/gpt-5.5 Responses-over-WebSocket transport (+ its SSE-fallback
+    // wrapper postLive) lives in agent_ws.zig (#codex-ws). Member-aliased.
+    pub const postResponsesWs = @import("agent_ws.zig").postResponsesWs;
+    pub const postLive = @import("agent_ws.zig").postLive;
+    pub const wsEligible = @import("agent_ws.zig").wsEligible;
     /// Esc-during-tools cancellation. postStream only watches stdin while an
     /// HTTP stream is live, so a long tool join (bash, a subagent fan-out, a
     /// whole workflow) used to be Esc-deaf — exactly when turns feel longest.

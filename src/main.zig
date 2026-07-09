@@ -44,6 +44,7 @@ pub var use_color = false; // stdout is a TTY and NO_COLOR unset → enables col
 pub var show_timing = false;
 pub var show_cost = false;
 pub var json_mode = false; // --json: structured JSONL events on stdout instead of human text
+pub var g_codex_ws = true; // codex/gpt-5.5 uses the WebSocket transport (Responses API over wss) with SSE fallback; GRAFF_CODEX_WS=off|0 forces SSE
 pub var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
 pub var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
 pub var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes

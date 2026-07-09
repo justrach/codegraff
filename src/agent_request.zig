@@ -69,7 +69,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             var attempt: usize = 0;
             while (true) : (attempt += 1) {
                 const attempt_body = if (live)
-                    self.postStream(body)
+                    self.postLive(body)
                 else
                     postWatched(self.gpa, self.io, self.client, self.provider, body);
                 if (attempt_body) |ok| break :blk ok else |err| {

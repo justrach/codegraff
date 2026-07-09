@@ -29,6 +29,7 @@ const agent_mod = @import("agent.zig");
 const approvals_mod = @import("approvals.zig");
 const tools_mod = @import("tools.zig");
 const http = @import("http.zig");
+const ws = @import("ws.zig");
 const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const pricing = @import("pricing.zig");
@@ -340,6 +341,12 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
             if (secs > 0) http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
         } else |_| {}
     }
+    // #codex-ws: GRAFF_CODEX_WS=off|0|false|no forces the SSE transport for
+    // codex; GRAFF_WS_DEBUG=1 dumps the ws handshake + frames to stderr.
+    if (environ_map.get("GRAFF_CODEX_WS")) |v| {
+        main_mod.g_codex_ws = !(std.mem.eql(u8, v, "off") or std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "false") or std.mem.eql(u8, v, "no"));
+    }
+    ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
