@@ -1,0 +1,546 @@
+//! Interactive fuzzy pickers (the /model picker + the generic listPicker
+//! used by /resume, /login, the bare "/" command menu, etc.), the fuzzy
+//! match/score/sort primitives behind them, ultracode steering + its on/off
+//! toggle picker, the slash-command menu, and the "no key for this
+//! provider" login/paste-a-key flow. Split out of main.zig (600-line goal).
+//! Back-imports switchProvider from providers.zig (offerProviderAuth's
+//! final step) and main (as main_mod, since several params are named
+//! `root`) for Agent, Keys, provider_specs, storeKey, and the live
+//! use_color toggle.
+
+const std = @import("std");
+const Io = std.Io;
+const Allocator = std.mem.Allocator;
+
+const ansi = @import("ansi.zig");
+const style = &ansi.style;
+
+const term = @import("term.zig");
+const tty = term.tty;
+
+const pricing = @import("pricing.zig");
+const model_table = pricing.model_table;
+
+const oauth = @import("oauth.zig");
+
+const providers = @import("providers.zig");
+const switchProvider = providers.switchProvider;
+
+const main_mod = @import("main.zig");
+const Agent = main_mod.Agent;
+const Keys = main_mod.Keys;
+const provider_specs = main_mod.provider_specs;
+const storeKey = main_mod.storeKey;
+
+/// Case-insensitive subsequence match (fzf-style): every char of `needle`
+/// appears in `hay` in order, gaps allowed — so "gpt5.5" matches "gpt-5.5".
+fn fuzzySubseq(hay: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    var ni: usize = 0;
+    for (hay) |hc| {
+        if (std.ascii.toLower(hc) == std.ascii.toLower(needle[ni])) {
+            ni += 1;
+            if (ni == needle.len) return true;
+        }
+    }
+    return false;
+}
+
+/// Rank a fuzzy match for the pickers (higher = better, null = no match).
+/// Tiers: basename/whole-string prefix > substring (earlier and shorter is
+/// better) > bare subsequence — so "dem" puts demo.py above README.md, which
+/// only matches as a d…e…m subsequence.
+fn fuzzyScore(hay: []const u8, needle: []const u8) ?i32 {
+    if (needle.len == 0) return 0;
+    if (needle.len > hay.len) return null;
+    const len_pen: i32 = @intCast(@min(hay.len, 200));
+    const base = if (std.mem.lastIndexOfScalar(u8, hay, '/')) |sl| sl + 1 else 0;
+    if (std.ascii.startsWithIgnoreCase(hay[base..], needle) or
+        std.ascii.startsWithIgnoreCase(hay, needle)) return 300_000 - len_pen;
+    if (std.ascii.indexOfIgnoreCase(hay, needle)) |p| {
+        const pos_pen: i32 = @intCast(@min(p, 1000));
+        return 200_000 - pos_pen * 10 - len_pen;
+    }
+    if (fuzzySubseq(hay, needle)) return 100_000 - len_pen;
+    return null;
+}
+
+/// Score a PickItem against a query: a name match always outranks a
+/// desc-only match (the +1_000_000 tier gap dominates any name score).
+fn pickScore(item: PickItem, q: []const u8) ?i32 {
+    if (fuzzyScore(item.name, q)) |s| return s + 1_000_000;
+    return fuzzyScore(item.desc, q);
+}
+
+/// Picker ranking entry: original item index + its pickScore/fuzzyScore.
+const Scored = struct { idx: usize, score: i32 };
+
+/// Sort order for picker results: best score first, ties keep item order.
+fn scoredLess(_: void, a: Scored, b: Scored) bool {
+    if (a.score != b.score) return a.score > b.score;
+    return a.idx < b.idx;
+}
+
+/// Interactive fuzzy model picker for a bare `/model` (codegraff-style). Opens
+/// a full-screen alternate buffer: type to filter, ↑/↓ to move, Enter to pick,
+/// Ctrl-C to cancel. Returns the chosen model_table index, or null.
+pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer) ?usize {
+    const in = root.in orelse return null;
+    const raw_state = tty.enterRaw(true) orelse return null;
+    defer tty.restore(raw_state);
+    out.writeAll("\x1b[?1049h") catch {}; // alternate screen
+    defer {
+        out.writeAll("\x1b[?1049l") catch {};
+        out.flush() catch {};
+    }
+
+    var query: std.ArrayList(u8) = .empty;
+    defer query.deinit(arena);
+    var scored: std.ArrayList(Scored) = .empty;
+    defer scored.deinit(arena);
+    var filtered: std.ArrayList(usize) = .empty;
+    defer filtered.deinit(arena);
+    var sel: usize = 0;
+    const visible = 18;
+
+    while (true) {
+        filtered.clearRetainingCapacity();
+        // Two passes: models whose provider has a key/login first, so the
+        // initial selection (and Enter) lands on something usable; keyless
+        // rows trail with their ·no key tag. Within each pass the best
+        // fuzzy match ranks first (ties keep table order).
+        for ([2]bool{ true, false }) |want_keyed| {
+            scored.clearRetainingCapacity();
+            for (model_table, 0..) |m, i| {
+                if ((keys.get(m.provider) != null) != want_keyed) continue;
+                if (pickScore(.{ .name = m.name, .desc = m.provider }, query.items)) |s|
+                    scored.append(arena, .{ .idx = i, .score = s }) catch {};
+            }
+            std.mem.sort(Scored, scored.items, {}, scoredLess);
+            for (scored.items) |s| filtered.append(arena, s.idx) catch {};
+        }
+        if (filtered.items.len == 0) sel = 0 else if (sel >= filtered.items.len) sel = filtered.items.len - 1;
+
+        out.writeAll("\x1b[2J\x1b[H") catch {};
+        out.print("{s}Model ›{s} {s}\n", .{ style.cyan, style.reset, query.items }) catch {};
+        out.print("{s}{d}/{d}{s}\n", .{ style.dim, filtered.items.len, model_table.len, style.reset }) catch {};
+        out.print("{s}  {s:<26} {s:<11} CTX{s}\n", .{ style.dim, "MODEL", "PROVIDER", style.reset }) catch {};
+        const off = if (sel >= visible) sel - visible + 1 else 0;
+        var row = off;
+        while (row < filtered.items.len and row < off + visible) : (row += 1) {
+            const m = model_table[filtered.items[row]];
+            const cur = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id);
+            const keyed = keys.get(m.provider) != null;
+            if (row == sel) out.writeAll("\x1b[7m") catch {};
+            out.print("{s} {s:<26} {s:<11} {d}k{s}{s}\n", .{
+                if (cur) "▌" else " ",
+                m.name,
+                m.provider,
+                m.context / 1000,
+                if (keyed) "" else " ·no key",
+                if (row == sel) "\x1b[0m" else "",
+            }) catch {};
+        }
+        out.print("{s}↑/↓ move · type to filter · Enter switch · Ctrl-C cancel{s}", .{ style.dim, style.reset }) catch {};
+        out.flush() catch {};
+
+        const ch = in.takeByte() catch return null;
+        switch (ch) {
+            '\r', '\n' => return if (filtered.items.len > 0) filtered.items[sel] else null,
+            0x03, 0x07 => return null, // Ctrl-C / Ctrl-G
+            0x7f, 0x08 => if (query.items.len > 0) {
+                query.shrinkRetainingCapacity(query.items.len - 1);
+                sel = 0;
+            },
+            0x1b => {
+                if ((in.takeByte() catch return null) != '[') continue;
+                switch (in.takeByte() catch return null) {
+                    'A' => if (sel > 0) {
+                        sel -= 1;
+                    },
+                    'B' => if (sel + 1 < filtered.items.len) {
+                        sel += 1;
+                    },
+                    else => {},
+                }
+            },
+            else => if (ch >= 0x20) {
+                query.append(arena, ch) catch {};
+                sel = 0;
+            },
+        }
+    }
+}
+
+pub const PickItem = struct { name: []const u8, desc: []const u8 = "" };
+
+/// Generic full-screen fuzzy picker (same UI as the /model picker): type to
+/// filter on name or description, ↑/↓ to move, Enter picks, Ctrl-C cancels.
+/// Returns the index into `items`, or null.
+pub fn listPicker(root: *Agent, arena: Allocator, out: *Io.Writer, title: []const u8, items: []const PickItem) ?usize {
+    const in = root.in orelse return null;
+    if (items.len == 0) return null;
+    const raw_state = tty.enterRaw(true) orelse return null;
+    defer tty.restore(raw_state);
+    out.writeAll("\x1b[?1049h") catch {}; // alternate screen
+    defer {
+        out.writeAll("\x1b[?1049l") catch {};
+        out.flush() catch {};
+    }
+
+    var query: std.ArrayList(u8) = .empty;
+    defer query.deinit(arena);
+    var scored: std.ArrayList(Scored) = .empty;
+    defer scored.deinit(arena);
+    var filtered: std.ArrayList(usize) = .empty;
+    defer filtered.deinit(arena);
+    var sel: usize = 0;
+    const visible = 18;
+
+    while (true) {
+        // Score every item against the query and rank: best match on top
+        // (ties keep the original item order). An empty query scores all
+        // items 0, so the list stays in its given order.
+        scored.clearRetainingCapacity();
+        for (items, 0..) |item, i| {
+            if (pickScore(item, query.items)) |s|
+                scored.append(arena, .{ .idx = i, .score = s }) catch {};
+        }
+        std.mem.sort(Scored, scored.items, {}, scoredLess);
+        filtered.clearRetainingCapacity();
+        for (scored.items) |s| filtered.append(arena, s.idx) catch {};
+        if (filtered.items.len == 0) sel = 0 else if (sel >= filtered.items.len) sel = filtered.items.len - 1;
+
+        out.writeAll("\x1b[2J\x1b[H") catch {};
+        out.print("{s}{s}{s} {s}\n", .{ style.cyan, title, style.reset, query.items }) catch {};
+        out.print("{s}{d}/{d}{s}\n", .{ style.dim, filtered.items.len, items.len, style.reset }) catch {};
+        const off = if (sel >= visible) sel - visible + 1 else 0;
+        var row = off;
+        while (row < filtered.items.len and row < off + visible) : (row += 1) {
+            const item = items[filtered.items[row]];
+            if (row == sel) out.writeAll("\x1b[7m") catch {};
+            out.print(" {s:<16}{s} {s}{s}{s}\n", .{
+                item.name,
+                if (row == sel) "\x1b[0m" else "",
+                style.dim,
+                item.desc,
+                style.reset,
+            }) catch {};
+        }
+        out.print("{s}↑/↓ move · type to filter · Enter pick · Ctrl-C cancel{s}", .{ style.dim, style.reset }) catch {};
+        out.flush() catch {};
+
+        const ch = in.takeByte() catch return null;
+        switch (ch) {
+            '\r', '\n' => return if (filtered.items.len > 0) filtered.items[sel] else null,
+            0x03, 0x07 => return null, // Ctrl-C / Ctrl-G
+            0x7f, 0x08 => if (query.items.len > 0) {
+                query.shrinkRetainingCapacity(query.items.len - 1);
+                sel = 0;
+            },
+            0x1b => {
+                if ((in.takeByte() catch return null) != '[') return null; // bare Esc cancels
+                switch (in.takeByte() catch return null) {
+                    'A' => if (sel > 0) {
+                        sel -= 1;
+                    },
+                    'B' => if (sel + 1 < filtered.items.len) {
+                        sel += 1;
+                    },
+                    else => {},
+                }
+            },
+            else => if (ch >= 0x20) {
+                query.append(arena, ch) catch {};
+                sel = 0;
+            },
+        }
+    }
+}
+
+pub const UltracodeMessage = struct {
+    text: []const u8,
+    explicit: bool,
+};
+
+const ultracode_explicit_note =
+    \\[harness note: the user invoked the "ultracode" codeword, opting
+    \\this turn into multi-agent orchestration. Fulfill the request with
+    \\the workflow tool: decompose it into sequential phases of parallel
+    \\subagents — fan out for coverage first, then a synthesis phase.
+    \\Tell code-exploration subagents to go through the repo with the
+    \\codedb tool (search / symbol / callers / outline / context) before
+    \\reaching for bash grep — it is indexed and structural.
+    \\Use the workflow even if you could do the work solo; skip it only
+    \\if the message needs a purely conversational reply.]
+;
+
+const ultracode_persistent_note =
+    \\[harness note: ultracode mode is enabled for this session. Use the
+    \\workflow tool for coding tasks: decompose the work into sequential
+    \\phases with parallel subagents for exploration/review where helpful,
+    \\then synthesize and implement. Tell code-exploration subagents to go
+    \\through the repo with the codedb tool (search / symbol / callers /
+    \\outline / context) before reaching for bash grep — it is indexed and
+    \\structural.]
+;
+
+pub fn applyUltracodeSteering(arena: Allocator, msg: []const u8, persistent_enabled: bool) !UltracodeMessage {
+    const explicit = std.ascii.indexOfIgnoreCase(msg, "ultracode") != null;
+    if (explicit) {
+        return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_explicit_note }), .explicit = true };
+    }
+    if (persistent_enabled) {
+        return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_persistent_note }), .explicit = false };
+    }
+    return .{ .text = msg, .explicit = false };
+}
+
+const ultracode_on_first = [_]PickItem{
+    .{ .name = "on", .desc = "Enable ultracode orchestration" },
+    .{ .name = "off", .desc = "Disable ultracode orchestration" },
+};
+const ultracode_off_first = [_]PickItem{
+    .{ .name = "off", .desc = "Disable ultracode orchestration" },
+    .{ .name = "on", .desc = "Enable ultracode orchestration" },
+};
+
+fn ultracodeToggleItems(enabled: bool) []const PickItem {
+    return if (enabled) &ultracode_off_first else &ultracode_on_first;
+}
+
+pub fn pickUltracodeMode(root: *Agent, arena: Allocator, out: *Io.Writer) ?bool {
+    const items = ultracodeToggleItems(root.ultracode_mode);
+    const idx = listPicker(root, arena, out, "Ultracode ›", items) orelse return null;
+    return std.mem.eql(u8, items[idx].name, "on");
+}
+
+/// The slash-command menu shown for a bare "/": every REPL command with a
+/// one-line description, picked via listPicker. Returns the command to run.
+pub const command_menu = [_]PickItem{
+    .{ .name = "/model", .desc = "switch model/provider (picker)" },
+    .{ .name = "/models", .desc = "list known models, context windows" },
+    .{ .name = "/clear", .desc = "wipe the conversation, start fresh" },
+    .{ .name = "/new", .desc = "start a new autosaved session" },
+    .{ .name = "/rename", .desc = "rename the current session title" },
+    .{ .name = "/goal", .desc = "set/show a standing objective, tracked as a live checklist" },
+    .{ .name = "/loop", .desc = "run an autonomous plan→act→verify prompt" },
+    .{ .name = "/bash", .desc = "run a shell command in the current workspace" },
+    .{ .name = "/compact", .desc = "summarize history into a fresh context" },
+    .{ .name = "/plan", .desc = "toggle plan mode (read-only, propose first)" },
+    .{ .name = "/resume", .desc = "restore a saved session (picker)" },
+    .{ .name = "/save", .desc = "save the conversation" },
+    .{ .name = "/sessions", .desc = "list saved sessions" },
+    .{ .name = "/rewind", .desc = "drop a past prompt & revert its file edits" },
+    .{ .name = "/key", .desc = "API-key status / add one live" },
+    .{ .name = "/login", .desc = "OAuth sign-in: codegraff | codex/oai | kimi" },
+    .{ .name = "/yolo", .desc = "toggle permission prompts" },
+    .{ .name = "/strict", .desc = "toggle every-message-is-a-tool mode" },
+    .{ .name = "/keepcontext", .desc = "keep history across wire-format switches" },
+    .{ .name = "/effort", .desc = "thinking depth: low|medium|high (codex, deepseek, codegraff)" },
+    .{ .name = "/reasoning", .desc = "alias for /effort" },
+    .{ .name = "/fast", .desc = "codex priority service tier — lower latency (gpt-5.5)" },
+    .{ .name = "/ultracode", .desc = "toggle persistent ultracode (multi-agent workflow) mode" },
+    .{ .name = "/thinking", .desc = "show/collapse the model's live reasoning stream" },
+    .{ .name = "/title", .desc = "AI-name the tab from your first prompt (on by default)" },
+    .{ .name = "/image", .desc = "attach an image to the next message" },
+    .{ .name = "/paste", .desc = "attach the clipboard image" },
+    .{ .name = "/trace", .desc = "toggle the JSONL event trace" },
+    .{ .name = "/fleet", .desc = "toggle federated fleet contribution (DGM propose/submit/elite_pull)" },
+    .{ .name = "/trajectory", .desc = "show this session's agent tree (DGM-style)" },
+    .{ .name = "/agents", .desc = "list agent types (builtins + .harness/agents)" },
+    .{ .name = "/skills", .desc = "optional companion tools: list, /skills add|remove <name>" },
+    .{ .name = "/hooks", .desc = "list lifecycle hooks (pre_tool/post_tool/turn_end)" },
+    .{ .name = "/todo", .desc = "show the task list" },
+    .{ .name = "/jobs", .desc = "list background bash jobs (bash run_in_background)" },
+    .{ .name = "/cost", .desc = "session usage: api calls, tokens, USD total" },
+    .{ .name = "/animation", .desc = "pick the thinking animation (braille, matrix, pacman…)" },
+    .{ .name = "/theme", .desc = "pick a terminal color theme (PastelPink/Midnight/Forest/Amber)" },
+    .{ .name = "/mcp", .desc = "list/add/trust MCP servers" },
+    .{ .name = "/help", .desc = "list all commands" },
+};
+
+/// After an in-session `/login` writes its credential file, pull the fresh key
+/// (and the Codex account id) into the live Keys so the current conversation
+/// uses it without a restart — the in-session twin of the startup loaders.
+pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: []const u8) void {
+    const home = root.home;
+    for (provider_specs, &keys.values) |spec, *value| {
+        if (!std.mem.eql(u8, spec.id, provider_id)) continue;
+        if (std.mem.eql(u8, provider_id, "codegraff")) {
+            if (oauth.loadCodegraffKey(root.io, arena, home)) |k| value.* = k;
+        } else if (std.mem.eql(u8, provider_id, "kimi")) {
+            if (oauth.loadKimiOAuth(root.io, root.gpa, arena, home)) |k| value.* = k;
+        } else if (std.mem.eql(u8, provider_id, "codex")) {
+            if (oauth.loadCodexAuth(root.io, arena, home)) |auth| {
+                value.* = auth.token;
+                keys.codex_account = auth.account;
+            }
+        }
+    }
+}
+
+/// Better UX when /model targets a provider with no key: instead of a flat
+/// "no key" dead-end, offer to log in (OAuth, for providers that have a flow)
+/// or paste an API key, then switch to pid/model. Esc/blank/"keep" stays on the
+/// current model. Non-TTY just prints the actionable one-liner. Best-effort.
+pub fn offerProviderAuth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer, pid: []const u8, model: []const u8) !void {
+    var spec_idx: ?usize = null;
+    for (provider_specs, 0..) |spec, i| if (std.mem.eql(u8, spec.id, pid)) {
+        spec_idx = i;
+    };
+    const si = spec_idx orelse {
+        try out.print("unknown provider '{s}' — see /model for the list\n", .{pid});
+        try out.flush();
+        return;
+    };
+    const can_login = std.mem.eql(u8, pid, "codegraff") or std.mem.eql(u8, pid, "codex") or std.mem.eql(u8, pid, "kimi");
+
+    // Non-interactive (one-shot / no TTY): no picker — print the hint and bail.
+    if (!main_mod.use_color or root.in == null) {
+        if (can_login)
+            try out.print("no key for {s} — /login {s} (OAuth) or /key {s} <key>\n", .{ pid, pid, pid })
+        else
+            try out.print("no key for {s} — /key {s} <key> (or set {s})\n", .{ pid, pid, provider_specs[si].env_key });
+        try out.flush();
+        return;
+    }
+
+    // Choice menu — login row only when the provider actually has an OAuth flow.
+    var items: [3]PickItem = undefined;
+    var n: usize = 0;
+    if (can_login) {
+        items[n] = .{ .name = "log in (OAuth)", .desc = "device/browser sign-in — no key to paste" };
+        n += 1;
+    }
+    items[n] = .{ .name = "paste an API key", .desc = "enter a key now (used live + saved)" };
+    n += 1;
+    items[n] = .{ .name = "keep current model", .desc = "cancel — stay on the current model" };
+    n += 1;
+
+    const title = std.fmt.allocPrint(arena, "No key for {s} \xe2\x80\xba", .{pid}) catch "No key \xe2\x80\xba";
+    const choice = listPicker(root, arena, out, title, items[0..n]) orelse {
+        try out.print("kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+        try out.flush();
+        return;
+    };
+    const picked = items[choice].name;
+
+    if (std.mem.eql(u8, picked, "keep current model")) {
+        try out.print("kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+        try out.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, picked, "log in (OAuth)")) {
+        const home = root.home;
+        try out.flush(); // hand stdout to the login flow's own writer
+        if (std.mem.eql(u8, pid, "codegraff")) {
+            oauth.codegraffLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 codegraff login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else if (std.mem.eql(u8, pid, "codex")) {
+            oauth.codexLogin(root.io, root.gpa, arena, home, false) catch |err| {
+                try out.print("\xe2\x9c\x97 codex login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else if (std.mem.eql(u8, pid, "kimi")) {
+            oauth.kimiLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 kimi login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        }
+        reloadLoginKey(root, keys, arena, pid);
+    } else {
+        // Paste a key: one cooked-mode line read (echoes), same pattern as the
+        // tool-approval prompt. Blank input cancels.
+        const in = root.in orelse return;
+        try out.print("paste your {s} API key, then Enter (blank cancels): ", .{pid});
+        try out.flush();
+        const raw = (in.takeDelimiter('\n') catch null) orelse "";
+        const key = std.mem.trim(u8, raw, " \t\r\n");
+        if (key.len == 0) {
+            try out.print("cancelled — kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+            try out.flush();
+            return;
+        }
+        const dup = arena.dupe(u8, key) catch key;
+        keys.values[si] = dup;
+        const saved = storeKey(root.io, root.gpa, arena, root.home, pid, dup);
+        try out.print("\xe2\x9c\x93 {s} key set (live{s})\n", .{ pid, if (saved) " + Keychain" else "" });
+    }
+
+    // Auth done — switch now if the key/login took, else keep the current model.
+    const provider = keys.providerById(pid, model) catch {
+        try out.print("still no usable key for {s} — kept {s}{s}{s}\n", .{ pid, style.cyan, root.provider.model, style.reset });
+        try out.flush();
+        return;
+    };
+    try switchProvider(root, arena, provider, out);
+}
+
+// Tests moved from main.zig alongside the functions they cover (#123 split).
+
+test "fuzzySubseq matches across punctuation gaps" {
+    try std.testing.expect(fuzzySubseq("gpt-5.5", "gpt5.5"));
+    try std.testing.expect(fuzzySubseq("claude-opus-4-8", "opus"));
+    try std.testing.expect(fuzzySubseq("anything", "")); // empty needle matches
+    try std.testing.expect(!fuzzySubseq("gpt-5.5", "xyz"));
+    try std.testing.expect(!fuzzySubseq("abc", "abcd")); // needle longer
+}
+
+test "fuzzyScore ranks basename prefix above substring above subsequence" {
+    // "dem" → demo.py (basename prefix) must beat README.md (subsequence only).
+    const demo = fuzzyScore("sdk/py/demo.py", "dem").?;
+    const readme = fuzzyScore("README.md", "dem").?;
+    try std.testing.expect(demo > readme);
+    // substring beats subsequence
+    const sub = fuzzyScore("harness.trace.jsonl", "trace").?;
+    const seq = fuzzyScore("t-r-a-c-e.txt", "trace").?;
+    try std.testing.expect(sub > seq);
+    // basename prefix beats mid-path substring
+    const base_pre = fuzzyScore("src/main.zig", "main").?;
+    const mid = fuzzyScore("domain.zig", "main").?;
+    try std.testing.expect(base_pre > mid);
+    // whole-string prefix counts even with directories in the hay
+    try std.testing.expect(fuzzyScore("sdk/ts/harness.ts", "sdk").? >= 300_000 - 200);
+    // no match at all → null; empty needle → 0
+    try std.testing.expect(fuzzyScore("abc", "xyz") == null);
+    try std.testing.expectEqual(@as(?i32, 0), fuzzyScore("abc", ""));
+}
+
+test "pickScore prefers name matches over desc matches" {
+    const by_name = pickScore(.{ .name = "/model", .desc = "switch model" }, "model").?;
+    const by_desc = pickScore(.{ .name = "/quit", .desc = "model goodbye" }, "model").?;
+    try std.testing.expect(by_name > by_desc);
+}
+
+test "ultracode toggle choices put the opposite state first" {
+    try std.testing.expectEqualStrings("on", ultracodeToggleItems(false)[0].name);
+    try std.testing.expectEqualStrings("off", ultracodeToggleItems(false)[1].name);
+    try std.testing.expectEqualStrings("off", ultracodeToggleItems(true)[0].name);
+    try std.testing.expectEqualStrings("on", ultracodeToggleItems(true)[1].name);
+}
+
+test "applyUltracodeSteering handles explicit and persistent modes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const plain = try applyUltracodeSteering(a, "fix this", false);
+    try std.testing.expect(!plain.explicit);
+    try std.testing.expectEqualStrings("fix this", plain.text);
+
+    const persistent = try applyUltracodeSteering(a, "fix this", true);
+    try std.testing.expect(!persistent.explicit);
+    try std.testing.expect(std.mem.indexOf(u8, persistent.text, "ultracode mode is enabled") != null);
+
+    const explicit = try applyUltracodeSteering(a, "ultracode fix this", true);
+    try std.testing.expect(explicit.explicit);
+    try std.testing.expect(std.mem.indexOf(u8, explicit.text, "user invoked the \"ultracode\" codeword") != null);
+    try std.testing.expect(std.mem.indexOf(u8, explicit.text, "ultracode mode is enabled") == null);
+}
