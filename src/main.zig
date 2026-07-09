@@ -126,6 +126,9 @@ test {
     _ = subagent;
     _ = workflow;
     _ = exec;
+    _ = commands_session;
+    _ = commands_model;
+    _ = commands_misc;
 }
 
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
@@ -293,7 +296,7 @@ pub const Keys = struct {
         return null;
     }
 
-    fn build(keys: Keys, spec: ProviderSpec, key: []const u8, model: []const u8) Provider {
+    pub fn build(keys: Keys, spec: ProviderSpec, key: []const u8, model: []const u8) Provider {
         return .{
             .id = spec.id,
             .kind = spec.kind,
@@ -581,7 +584,7 @@ const saveSkillSetting = skills.saveSkillSetting;
 /// PATH captured at startup for skill detection (PATH won't change mid-run).
 pub var g_path_env: []const u8 = "";
 /// Human-facing current workspace folder shown in the REPL prompt.
-var g_cwd_display: []const u8 = ".";
+pub var g_cwd_display: []const u8 = ".";
 pub var g_worktree_branch: ?[]const u8 = null; // -w: the worktree's scratch branch; non-null = auto-commit each turn's edits to it
 pub var g_worktree_autocommit: bool = true; // --no-autocommit turns off the per-turn checkpoint commits
 
@@ -902,7 +905,7 @@ fn steerEcho(bytes: []const u8) void {
 /// Persist the thinking controls (/effort, /fast) to .harness/settings.json,
 /// preserving every other key. Default values (medium effort, fast off) are
 /// removed rather than written so the file stays clean. Best-effort.
-fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool, ultracode: bool, show_thinking: bool, ai_title: bool) bool {
+pub fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool, ultracode: bool, show_thinking: bool, ai_title: bool) bool {
     Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {}; // already-exists is fine
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -2512,1205 +2515,26 @@ const command_menu = pickers.command_menu;
 const reloadLoginKey = pickers.reloadLoginKey;
 const offerProviderAuth = pickers.offerProviderAuth;
 
-fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !void {
-    if (std.mem.eql(u8, line, "/clear")) {
-        root.messages = std.json.Array.init(arena);
-        root.last_context_tokens = 0;
-        root.last_cache_read = 0;
-        root.tui_header_shown = false;
-        root.session_title = null; // re-summarize the now-empty conversation
-        root.ai_title_done = false;
-        root.todos.clearRetainingCapacity();
-        saveSession(root, arena, root.session_name) catch {};
-        setTerminalTitle(out, "Chat", g_cwd_display);
-        try out.writeAll("context cleared — fresh conversation\n");
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/new")) {
-        root.messages = std.json.Array.init(arena);
-        root.last_context_tokens = 0;
-        root.last_cache_read = 0;
-        root.todos.clearRetainingCapacity();
-        root.goal = null;
-        root.ultracode_mode = false;
-        root.session_title = null;
-        root.ai_title_done = false; // let the new session earn its own AI title
-        root.tui_header_shown = false;
-        root.session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(root.io)});
-        saveSession(root, arena, root.session_name) catch {};
-        try out.print("new session → {s}{s}\n", .{ root.session_name, session_ext });
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/rename")) {
-        const title = std.mem.trim(u8, line["/rename".len..], " \t");
-        if (title.len == 0) {
-            try out.writeAll("usage: /rename <title>\n");
-        } else {
-            root.session_title = try arena.dupe(u8, title);
-            root.ai_title_done = true; // a manual /rename wins over the auto-titler
-            saveSession(root, arena, root.session_name) catch {};
-            try out.print("session title → {s}\n", .{title});
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/goal")) {
-        const text = std.mem.trim(u8, line["/goal".len..], " \t");
-        if (text.len == 0) {
-            if (root.goal) |goal| try out.print("Current goal: {s}\nClear it with /goal clear.\n", .{goal}) else try out.writeAll("No active goal. Set one with /goal <objective>.\n");
-        } else if (std.ascii.eqlIgnoreCase(text, "clear") or std.ascii.eqlIgnoreCase(text, "off")) {
-            root.goal = null;
-            saveSession(root, arena, root.session_name) catch {};
-            try out.writeAll("Goal cleared. Future turns will not get goal steering.\n");
-        } else {
-            root.goal = try arena.dupe(u8, text);
-            saveSession(root, arena, root.session_name) catch {};
-            try out.print("Goal set: {s}\nI'll track it as a live checklist (todo_write) and work through it across turns.\n", .{text});
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/loop")) {
-        try out.writeAll("usage: /loop <prompt> — run an autonomous plan→act→verify pass.\n");
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/bash") or std.mem.startsWith(u8, line, "/bash ")) {
-        const cmd = std.mem.trim(u8, line["/bash".len..], " \t\r\n");
-        if (cmd.len == 0) {
-            try out.writeAll("usage: /bash <command>\n");
-            try out.flush();
-            return;
-        }
-        var input_obj: std.json.ObjectMap = .empty;
-        try input_obj.put(arena, "command", .{ .string = cmd });
-        const call: ToolCall = .{ .id = "slash-bash", .name = "bash", .input = .{ .object = input_obj } };
-        if (try root.gateTool(call)) |denied| {
-            try out.print("{s}\n", .{denied.text});
-            try out.flush();
-            return;
-        }
-        const result = execTool(.{
-            .gpa = root.gpa,
-            .io = root.io,
-            .client = root.client,
-            .provider = root.provider,
-            .registry = root.registry,
-            .from_sub = false,
-            .approvals = root.approvals,
-            .tracer = root.tracer,
-            .snapshots = root.snapshots,
-            .tools_used = &root.tools_used,
-        }, call);
-        defer root.gpa.free(result.text);
-        try out.writeAll(result.text);
-        if (result.text.len == 0 or result.text[result.text.len - 1] != '\n') try out.writeAll("\n");
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/agents promote")) {
-        const personal = std.mem.indexOf(u8, line, "--personal") != null or std.mem.indexOf(u8, line, "--global") != null;
-        try out.print("{s}promoting local champions{s} → {s} tier (from {s})\n", .{ style.bold, style.reset, if (personal) "personal ~/.harness/agents" else "private ./.harness/agents", trajectory_path });
-        const n = promoteAgents(root.io, root.gpa, out, fleet.g_home, personal);
-        if (n > 0) try out.print("{s}✓ promoted {d} niche(s) — they load on next start{s}\n", .{ style.green, n, style.reset });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/agents")) {
-        try out.print("{s}agent types{s} — MAP-Elites niches: builtins + {s}/*.md (file shadows builtin); spawn via subagent agent:\"<name>\"\n", .{ style.bold, style.reset, fleet.agents_dir });
-        for (fleet.g_agent_types) |t| {
-            const fp = promptFingerprint(t.prompt);
-            try out.print("  {s}{s:<14}{s} {s} {s}{s}{s}", .{
-                style.cyan,
-                t.name,
-                style.reset,
-                if (t.builtin) "builtin" else "file   ",
-                style.dim,
-                &fp,
-                style.reset,
-            });
-            if (t.score) |sc| try out.print(" {s}score {d:.2}{s}", .{ style.green, sc, style.reset });
-            try out.print("  {s}\n", .{t.desc});
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/animation") or std.mem.startsWith(u8, line, "/animation ")) {
-        const arg = std.mem.trim(u8, line["/animation".len..], " ");
-        if (arg.len == 0) {
-            const current: []const u8 = if (anim.g_anim_off) "off" else if (anim.g_anim_random) "random" else anim.anims[anim.g_anim_index].name;
-            try out.print("{s}thinking animations{s} (current: {s}{s}{s}) — /animation <name> picks one, persists to {s}\n", .{ style.bold, style.reset, style.cyan, current, style.reset, Approvals.settings_path });
-            for (anim.anims) |a| {
-                try out.print("  {s}{s:<12}{s} {s}  preview: ", .{ style.cyan, a.name, style.reset, a.desc });
-                try a.frame(out, 3);
-                try out.writeAll("\n");
-            }
-            try out.print("  {s}{s:<12}{s} a different one each request\n  {s}{s:<12}{s} no animation\n", .{ style.cyan, "random", style.reset, style.cyan, "off", style.reset });
-            try out.flush();
-            return;
-        }
-        if (std.mem.eql(u8, arg, "off")) {
-            anim.g_anim_off = true;
-            anim.g_anim_random = false;
-        } else if (std.mem.eql(u8, arg, "random")) {
-            anim.g_anim_off = false;
-            anim.g_anim_random = true;
-        } else if (anim.animIndex(arg)) |i| {
-            anim.g_anim_off = false;
-            anim.g_anim_random = false;
-            anim.g_anim_index = i;
-        } else {
-            try out.print("unknown animation '{s}' — /animation lists them\n", .{arg});
-            try out.flush();
-            return;
-        }
-        const saved = anim.saveAnimationSetting(root.io, root.gpa, arg);
-        try out.print("{s}✓ thinking animation: {s}{s}", .{ style.green, arg, style.reset });
-        if (!anim.g_anim_off and !anim.g_anim_random) {
-            try out.writeAll("  ");
-            try anim.anims[anim.g_anim_index].frame(out, 3);
-        }
-        try out.writeAll("\n");
-        if (!saved) try out.print("{s}warning: could not persist to {s} — lasts only this session{s}\n", .{ style.yellow, Approvals.settings_path, style.reset });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/theme") or std.mem.startsWith(u8, line, "/theme ")) {
-        const arg = std.mem.trim(u8, line["/theme".len..], " ");
-        if (arg.len == 0) {
-            const current: []const u8 = if (anim.g_theme) |i| anim.themes[i].name else "off";
-            try out.print("{s}color themes{s} (current: {s}{s}{s}) — /theme <name> applies + persists, /theme off resets to your terminal default\n", .{ style.bold, style.reset, style.cyan, current, style.reset });
-            for (anim.themes) |t| try out.print("  {s}{s:<12}{s} {s}\n", .{ style.cyan, t.name, style.reset, t.desc });
-            try out.print("  {s}{s:<12}{s} terminal default (no theme)\n", .{ style.cyan, "off", style.reset });
-            try out.flush();
-            return;
-        }
-        if (std.ascii.eqlIgnoreCase(arg, "off") or std.ascii.eqlIgnoreCase(arg, "none")) {
-            if (anim.g_theme != null) out.writeAll(anim.theme_reset) catch {};
-            anim.g_theme = null;
-        } else if (anim.themeIndex(arg)) |i| {
-            anim.g_theme = i;
-            out.writeAll(anim.themes[i].seq) catch {};
-            out.flush() catch {};
-        } else {
-            try out.print("unknown theme '{s}' — /theme lists them\n", .{arg});
-            try out.flush();
-            return;
-        }
-        const saved = anim.saveThemeSetting(root.io, root.gpa, arg);
-        const shown: []const u8 = if (anim.g_theme) |i| anim.themes[i].name else "off";
-        try out.print("{s}✓ theme: {s}{s}\n", .{ style.green, shown, style.reset });
-        if (!saved) try out.print("{s}warning: could not persist to {s} — lasts only this session{s}\n", .{ style.yellow, Approvals.settings_path, style.reset });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/hooks")) {
-        try out.print("{s}codedb guard{s} (built-in, issue #626): {s} — blocks bash grep/sed/cat/wc on indexed source files and redirects to the codedb tool; GRAFF_NO_CODEDB_GUARD=1 disables.\n", .{ style.bold, style.reset, if (g_codedb_guard) "on" else "off" });
-        if (g_hooks.total() == 0) {
-            try out.print("no lifecycle hooks. Add them to {s}:\n  {s}{{\"hooks\": {{\"pre_tool\": [{{\"match\": \"bash\", \"command\": \"./guard.sh\"}}]}}}}{s}\n  events: pre_tool (exit 2 blocks, stderr → model) · post_tool · turn_end; loaded at startup\n", .{ Approvals.settings_path, style.dim, style.reset });
-            try out.flush();
-            return;
-        }
-        try out.print("{s}lifecycle hooks{s} (from {s}; event JSON on stdin, pre_tool exit 2 blocks):\n", .{ style.bold, style.reset, Approvals.settings_path });
-        inline for (.{ "pre_tool", "post_tool", "turn_end" }) |ev| {
-            for (@field(g_hooks, ev)) |h| {
-                try out.print("  {s}{s:<9}{s} match {s}{s:<16}{s} {d}ms  {s}\n", .{ style.cyan, ev, style.reset, style.dim, h.match, style.reset, h.timeout_ms, h.command });
-            }
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/skills") or std.mem.startsWith(u8, line, "/skills ")) {
-        const rest = std.mem.trim(u8, line["/skills".len..], " ");
-        if (std.mem.startsWith(u8, rest, "remove ")) {
-            const name = std.mem.trim(u8, rest["remove ".len..], " ");
-            if (skillIndex(name)) |i| {
-                if (g_skill_disabled[i]) {
-                    try out.print("{s} is already disabled\n", .{name});
-                } else {
-                    g_skill_disabled[i] = true;
-                    const saved = saveSkillSetting(root.io, root.gpa, name, false);
-                    try out.print("{s}✓ {s} disabled{s} — ignored even when its binaries are on PATH (webfetch falls back, no context note); /skills add {s} re-enables\n", .{ style.green, name, style.reset, name });
-                    if (!saved) try out.print("{s}warning: could not persist to {s} — the opt-out lasts only this session{s}\n", .{ style.yellow, Approvals.settings_path, style.reset });
-                }
-                try out.flush();
-                return;
-            }
-            try out.print("unknown skill: {s} — /skills lists the registry\n", .{name});
-            try out.flush();
-            return;
-        }
-        if (std.mem.startsWith(u8, rest, "add ")) {
-            const name = std.mem.trim(u8, rest[4..], " ");
-            for (skills_registry) |sk| {
-                if (!std.mem.eql(u8, sk.name, name)) continue;
-                if (skillDisabled(sk.name)) {
-                    g_skill_disabled[skillIndex(sk.name).?] = false;
-                    const saved = saveSkillSetting(root.io, root.gpa, sk.name, true);
-                    try out.print("{s}✓ {s} re-enabled{s}{s}\n", .{ style.green, sk.name, style.reset, if (skillInstalled(root.io, sk)) " — restart the harness to add its context note" else "" });
-                    if (!saved) try out.print("{s}warning: could not persist to {s}{s}\n", .{ style.yellow, Approvals.settings_path, style.reset });
-                    if (skillInstalled(root.io, sk)) {
-                        try out.flush();
-                        return;
-                    }
-                    // not installed: fall through to the installer below
-                }
-                if (skillInstalled(root.io, sk)) {
-                    try out.print("{s} is already installed\n", .{sk.name});
-                    try out.flush();
-                    return;
-                }
-                try out.print("installing {s}{s}{s}: {s}{s}{s}\n", .{ style.cyan, sk.name, style.reset, style.dim, sk.install, style.reset });
-                try out.flush();
-                // The user typed the install command themselves — that's the
-                // consent; the installer runs with our stdio so its progress
-                // and any sudo prompt reach the terminal directly.
-                var child = std.process.spawn(root.io, .{ .argv = &.{ "/bin/sh", "-c", sk.install } }) catch |err| {
-                    try out.print("failed to launch installer: {t}\n", .{err});
-                    try out.flush();
-                    return;
-                };
-                const term = child.wait(root.io) catch {
-                    try out.writeAll("installer did not exit cleanly\n");
-                    try out.flush();
-                    return;
-                };
-                const ok = term == .exited and term.exited == 0 and skillInstalled(root.io, sk);
-                if (ok) {
-                    try out.print("{s}✓ {s} installed{s} — usable via bash now; restart the harness to add its context note\n", .{ style.green, sk.name, style.reset });
-                } else {
-                    try out.print("{s}{s} install did not complete{s} — run it manually: {s}\n", .{ style.yellow, sk.name, style.reset, sk.install });
-                }
-                try out.flush();
-                return;
-            }
-            try out.print("unknown skill: {s} — /skills lists the registry\n", .{name});
-            try out.flush();
-            return;
-        }
-        try out.print("{s}skills{s} — optional companion tools (codex-style; one context line each when installed)\n", .{ style.bold, style.reset });
-        for (skills_registry) |sk| {
-            const inst = skillInstalled(root.io, sk);
-            const disabled = skillDisabled(sk.name);
-            const state: []const u8 = if (disabled) "disabled     " else if (inst) "installed    " else "not installed";
-            try out.print("  {s}{s:<8}{s} {s}{s}{s}  {s}\n", .{
-                style.cyan,                                                           sk.name, style.reset,
-                if (disabled) style.yellow else if (inst) style.green else style.dim, state,   style.reset,
-                sk.desc,
-            });
-        }
-        try out.writeAll("  install/enable: /skills add <name> · disable: /skills remove <name>\n");
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/trajectory")) {
-        const data = Io.Dir.cwd().readFileAlloc(root.io, trajectory_path, arena, .limited(4 << 20)) catch "";
-        const S = struct {
-            fn str(o: std.json.ObjectMap, k: []const u8) []const u8 {
-                const v = o.get(k) orelse return "";
-                return if (v == .string) v.string else "";
-            }
-            fn int(o: std.json.ObjectMap, k: []const u8) i64 {
-                const v = o.get(k) orelse return 0;
-                return if (v == .integer) v.integer else 0;
-            }
-            fn flag(o: std.json.ObjectMap, k: []const u8) bool {
-                const v = o.get(k) orelse return false;
-                return v == .bool and v.bool;
-            }
-            // Latest score recorded for a prompt fingerprint, across the
-            // whole archive (scores persist between sessions).
-            fn scoreFor(all: []const std.json.ObjectMap, sha: []const u8) ?f64 {
-                var found: ?f64 = null;
-                for (all) |o| {
-                    if (!std.mem.eql(u8, str(o, "kind"), "score")) continue;
-                    if (!std.mem.eql(u8, str(o, "prompt_sha"), sha)) continue;
-                    const v = o.get("score") orelse continue;
-                    found = switch (v) {
-                        .float => |x| x,
-                        .integer => |x| @floatFromInt(x),
-                        else => found,
-                    };
-                }
-                return found;
-            }
-        };
-        var objs: std.ArrayList(std.json.ObjectMap) = .empty;
-        var it = std.mem.tokenizeScalar(u8, data, '\n');
-        while (it.next()) |ln| {
-            const v = std.json.parseFromSliceLeaky(Value, arena, ln, .{ .allocate = .alloc_always }) catch continue;
-            if (v == .object) objs.append(arena, v.object) catch {};
-        }
-        // Tree shows the CURRENT session (ids restart per session); scores
-        // come from the whole archive.
-        var session_start: usize = 0;
-        for (objs.items, 0..) |o, i| {
-            if (std.mem.eql(u8, S.str(o, "kind"), "session")) session_start = i + 1;
-        }
-        const session = objs.items[session_start..];
-        var turns: usize = 0;
-        for (session) |o| {
-            if (std.mem.eql(u8, S.str(o, "kind"), "turn")) turns += 1;
-        }
-        if (turns == 0) {
-            try out.writeAll("no trajectory recorded yet — run a turn first (the archive lives in harness.trajectory.jsonl)\n");
-            try out.flush();
-            return;
-        }
-        try out.print("{s}session trajectory{s} — {d} turn(s); archive: {s} ({d} record(s) total)\n", .{ style.bold, style.reset, turns, trajectory_path, objs.items.len });
-        for (session) |o| {
-            if (!std.mem.eql(u8, S.str(o, "kind"), "turn")) continue;
-            const turn_id = S.int(o, "id");
-            out.print("{s}●{s} turn {d} {s} {d}ms · prompt {s}{s}{s}{s} · {s}", .{
-                style.cyan,
-                style.reset,
-                turn_id,
-                if (S.flag(o, "ok")) "✓" else "✗",
-                S.int(o, "ms"),
-                style.dim,
-                S.str(o, "prompt_sha"),
-                if (S.flag(o, "prompt_mutated")) " (mutated)" else "",
-                style.reset,
-                utf8Prefix(S.str(o, "task"), 80),
-            }) catch {};
-            if (S.scoreFor(objs.items, S.str(o, "prompt_sha"))) |sc|
-                out.print(" {s}· score {d:.2}{s}", .{ style.green, sc, style.reset }) catch {};
-            out.writeAll("\n") catch {};
-            // children: subagents / workflow tasks spawned during this turn
-            var remaining: usize = 0;
-            for (session) |c| {
-                if (S.int(c, "parent") == turn_id and !std.mem.eql(u8, S.str(c, "kind"), "turn")) remaining += 1;
-            }
-            for (session) |c| {
-                if (S.int(c, "parent") != turn_id or std.mem.eql(u8, S.str(c, "kind"), "turn")) continue;
-                remaining -= 1;
-                out.print("  {s} {s} {s} {d}ms · prompt {s}{s}{s}{s} · {s}", .{
-                    if (remaining == 0) "└─" else "├─",
-                    S.str(c, "label"),
-                    if (S.flag(c, "ok")) "✓" else "✗",
-                    S.int(c, "ms"),
-                    style.dim,
-                    S.str(c, "prompt_sha"),
-                    if (S.flag(c, "prompt_mutated")) " (variant)" else "",
-                    style.reset,
-                    utf8Prefix(S.str(c, "task"), 70),
-                }) catch {};
-                if (S.scoreFor(objs.items, S.str(c, "prompt_sha"))) |sc|
-                    out.print(" {s}· score {d:.2}{s}", .{ style.green, sc, style.reset }) catch {};
-                out.writeAll("\n") catch {};
-            }
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/plan")) {
-        plan_mode = !plan_mode;
-        if (plan_mode) {
-            try out.print("plan mode {s}on{s} — read-only: the agent explores and proposes; writes/edits/mutating bash are denied. /plan again to execute.\n", .{ style.cyan, style.reset });
-        } else {
-            try out.writeAll("plan mode off — tools may modify things again (normal gating applies)\n");
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/model") and !std.mem.startsWith(u8, line, "/models")) {
-        const arg = std.mem.trim(u8, line["/model".len..], " \t");
-        if (arg.len == 0) {
-            if (use_color) { // interactive TTY → fuzzy picker
-                if (modelPicker(root, keys, arena, out)) |idx| {
-                    const m = model_table[idx];
-                    const provider = keys.providerById(m.provider, m.name) catch {
-                        try offerProviderAuth(root, keys, arena, out, m.provider, m.name);
-                        return;
-                    };
-                    try switchProvider(root, arena, provider, out);
-                }
-                return;
-            }
-            try out.print("current model: {s}{s}{s} via {s}\n", .{ style.cyan, root.provider.model, style.reset, root.provider.id });
-            try out.writeAll("switch with /model <name> or /model <provider>:\n");
-            for (provider_specs) |spec| {
-                const keyed = keys.get(spec.id) != null;
-                try out.print("  {s} {s:<10}{s}  default {s}\n", .{
-                    if (keyed) "✓" else "·",
-                    spec.id,
-                    if (keyed) "" else "  (no key)",
-                    spec.default_model,
-                });
-            }
-            try out.print("{s}add a key now:  /key <provider> <key>   ·   full model list: /models{s}\n", .{ style.dim, style.reset });
-            try out.flush();
-            return;
-        }
-        // `/model <provider> <model>` or `/model <provider>/<model>`: pin a
-        // model to a SPECIFIC provider (e.g. `/model codex gpt-5.5` to force
-        // codex when codegraff also serves gpt-5.5).
-        if (std.mem.indexOfAny(u8, arg, " /\t")) |i| {
-            const pid = arg[0..i];
-            const mdl = std.mem.trim(u8, arg[i + 1 ..], " \t");
-            for (provider_specs) |spec| {
-                if (!std.mem.eql(u8, spec.id, pid) or mdl.len == 0) continue;
-                const m = try arena.dupe(u8, mdl);
-                const provider = keys.providerById(pid, m) catch {
-                    try offerProviderAuth(root, keys, arena, out, pid, m);
-                    return;
-                };
-                try switchProvider(root, arena, provider, out);
-                return;
-            }
-        }
-        // If the query names a provider (e.g. "openai"), switch to THAT
-        // provider on its default model — not the priority router's pick.
-        for (provider_specs) |spec| {
-            if (!std.mem.eql(u8, spec.id, arg)) continue;
-            // Local OpenAI-compatible servers (LM Studio :1234, mlx-lm :8080) serve a
-            // live, user-loaded model set — list what's actually there instead of a
-            // baked default. One loaded → switch straight to it; many → list to pick.
-            if (isLocalUrl(spec.url)) {
-                const key = keys.get(spec.id) orelse {
-                    try offerProviderAuth(root, keys, arena, out, spec.id, spec.default_model);
-                    return;
-                };
-                const murl = openAiModelsUrl(arena, spec.url);
-                const models = fetchOpenAIModels(root.io, root.gpa, arena, murl, key);
-                if (models.len == 0) {
-                    try out.print("{s}{s}: no models at {s} — start the server and load a model{s}\n", .{ style.yellow, spec.id, murl, style.reset });
-                    try out.flush();
-                    return;
-                }
-                if (models.len == 1) {
-                    try switchProvider(root, arena, keys.build(spec, key, try arena.dupe(u8, models[0])), out);
-                    return;
-                }
-                try out.print("{s}{s} models{s} — pick with {s}/model {s} <id>{s}:\n", .{ style.bold, spec.id, style.reset, style.cyan, spec.id, style.reset });
-                for (models) |id| try out.print("  {s}{s}{s}\n", .{ style.cyan, id, style.reset });
-                try out.flush();
-                return;
-            }
-            const provider = keys.providerById(spec.id, spec.default_model) catch {
-                try offerProviderAuth(root, keys, arena, out, spec.id, spec.default_model);
-                return;
-            };
-            try switchProvider(root, arena, provider, out);
-            return;
-        }
-        const resolved = resolveModelName(keys.*, arg);
-        const name = try arena.dupe(u8, resolved orelse arg);
-        const provider = keys.providerFor(name) catch {
-            for (model_table) |mt| if (std.mem.eql(u8, mt.name, name)) {
-                try offerProviderAuth(root, keys, arena, out, mt.provider, name);
-                return;
-            };
-            try out.writeAll("no API key for any provider serving that model — see /models, or add one with /key <provider> <key>\n");
-            try out.flush();
-            return;
-        };
-        try switchProvider(root, arena, provider, out);
-        if (resolved == null) {
-            // Not in the model table: providerFor routed it to the claude*/
-            // gateway fallback. Say so — the API will reject a typo'd name.
-            try out.print("{s}⚠ '{s}' isn't in the model table — sent to {s} as-is; the first request will fail if it doesn't exist (/models lists known names){s}\n", .{ style.dim, name, provider.id, style.reset });
-            try out.flush();
-        }
-        return;
-    }
-    if (std.mem.eql(u8, line, "/compact")) {
-        _ = root.compact() catch |err| switch (err) {
-            error.ApiError => {},
-            else => |e| return e,
-        };
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/rewind")) {
-        // Conversation rewind (à la Claude Code): drop a past prompt and
-        // everything after it, so you can branch from an earlier point.
-        // Human turns are user messages whose content is a plain string
-        // (tool-result user messages carry a content array).
-        const arg = std.mem.trim(u8, line["/rewind".len..], " \t");
-        var turns: std.ArrayList(usize) = .empty;
-        defer turns.deinit(root.gpa);
-        for (root.messages.items, 0..) |m, i| {
-            if (m != .object) continue;
-            const role = if (m.object.get("role")) |r| (if (r == .string) r.string else "") else "";
-            if (!std.mem.eql(u8, role, "user")) continue;
-            if (m.object.get("content")) |c| if (c == .string) try turns.append(root.gpa, i);
-        }
-        if (turns.items.len == 0) {
-            try out.writeAll("nothing to rewind — no prompts in this conversation yet\n");
-            try out.flush();
-            return;
-        }
-        if (arg.len == 0) {
-            try out.writeAll("rewind to before which prompt?\n");
-            for (turns.items, 1..) |idx, n| {
-                var snip = if (root.messages.items[idx].object.get("content")) |c| (if (c == .string) c.string else "[image]") else "";
-                if (std.mem.indexOfScalar(u8, snip, '\n')) |nl| snip = snip[0..nl];
-                const shown = if (snip.len > 70) snip[0..70] else snip;
-                try out.print("  {s}{d}{s}: {s}{s}\n", .{ style.cyan, n, style.reset, shown, if (snip.len > 70) "…" else "" });
-            }
-            try out.print("{s}usage: /rewind <n> — drops prompt <n>+after and reverts its write_file/edit_file changes (bash edits aren't tracked){s}\n", .{ style.dim, style.reset });
-            try out.flush();
-            return;
-        }
-        const n = std.fmt.parseInt(usize, arg, 10) catch 0;
-        if (n < 1 or n > turns.items.len) {
-            try out.print("invalid — pick 1..{d} (see /rewind)\n", .{turns.items.len});
-            try out.flush();
-            return;
-        }
-        const cut = turns.items[n - 1];
-        const dropped = root.messages.items.len - cut;
-        root.messages.items.len = cut; // truncate (entries are arena-owned)
-        root.last_context_tokens = 0;
-        // Restore files written/edited during the rewound turns, and re-point the
-        // turn counter so the next prompt re-takes turn n.
-        var restored: usize = 0;
-        if (root.snapshots) |snaps| {
-            restored = snaps.restore(@intCast(n));
-            snaps.turn = @intCast(n - 1);
-        }
-        try out.print("⏪ rewound to before prompt {d} — dropped {d} message(s)", .{ n, dropped });
-        if (restored > 0) {
-            try out.print(", restored {d} file(s)", .{restored});
-        } else {
-            try out.print("{s} (no tracked file changes){s}", .{ style.dim, style.reset });
-        }
-        try out.writeAll("\n");
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/fast") or std.mem.eql(u8, line, "/fast on") or std.mem.eql(u8, line, "/fast off")) {
-        root.fast = if (std.mem.eql(u8, line, "/fast on")) true else if (std.mem.eql(u8, line, "/fast off")) false else !root.fast;
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
-        try out.print("fast mode: {s}{s}\n", .{
-            if (root.fast) "on" else "off",
-            if (root.provider.kind != .responses) " (codex only — current model ignores it)" else "",
-        });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/thinking") or std.mem.eql(u8, line, "/thinking on") or std.mem.eql(u8, line, "/thinking off")) {
-        root.show_thinking = if (std.mem.eql(u8, line, "/thinking on")) true else if (std.mem.eql(u8, line, "/thinking off")) false else !root.show_thinking;
-        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
-        try out.print("thinking: {s} ({s}){s}\n", .{
-            if (root.show_thinking) "shown" else "collapsed",
-            if (root.show_thinking) "stream reasoning live" else "spinner only",
-            if (saved) "" else " (not persisted)",
-        });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/title") or std.mem.eql(u8, line, "/title on") or std.mem.eql(u8, line, "/title off")) {
-        root.ai_title = if (std.mem.eql(u8, line, "/title on")) true else if (std.mem.eql(u8, line, "/title off")) false else !root.ai_title;
-        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
-        try out.print("AI session title: {s} ({s}){s}\n", .{
-            if (root.ai_title) "on" else "off",
-            if (root.ai_title) "name the tab from your first prompt" else "use the prompt text verbatim",
-            if (saved) "" else " (not persisted)",
-        });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/ultracode") or std.mem.startsWith(u8, line, "/ultracode ")) {
-        const arg = std.mem.trim(u8, line["/ultracode".len..], " \t\r\n");
-        const next = if (arg.len == 0) blk: {
-            if (use_color and root.in != null) {
-                break :blk pickUltracodeMode(root, arena, out) orelse return;
-            }
-            try out.writeAll("usage: /ultracode on|off\n");
-            try out.flush();
-            return;
-        } else if (std.mem.eql(u8, arg, "on"))
-            true
-        else if (std.mem.eql(u8, arg, "off"))
-            false
-        else {
-            try out.writeAll("usage: /ultracode on|off\n");
-            try out.flush();
-            return;
-        };
-        root.ultracode_mode = next;
-        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
-        try out.print("ultracode mode: {s}{s}\n", .{ if (root.ultracode_mode) "on" else "off", if (saved) "" else " (not persisted)" });
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/effort") or std.mem.startsWith(u8, line, "/reasoning")) {
-        const prefix: []const u8 = if (std.mem.startsWith(u8, line, "/effort")) "/effort" else "/reasoning";
-        const arg = std.mem.trim(u8, line[prefix.len..], " \t");
-        if (std.mem.eql(u8, arg, "low")) {
-            root.reasoning = .low;
-        } else if (std.mem.eql(u8, arg, "medium") or std.mem.eql(u8, arg, "med")) {
-            root.reasoning = .medium;
-        } else if (std.mem.eql(u8, arg, "high")) {
-            root.reasoning = .high;
-        } else if (arg.len != 0) {
-            try out.writeAll("usage: /effort low|medium|high\n");
-            try out.flush();
-            return;
-        }
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
-        try out.print("reasoning effort: {s}{s}\n", .{
-            @tagName(root.reasoning),
-            if (!root.effortApplies()) " (current model ignores it — applies to codex, deepseek, codegraff)" else "",
-        });
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/keepcontext")) {
-        const arg = std.mem.trim(u8, line["/keepcontext".len..], " \t");
-        if (std.mem.eql(u8, arg, "on")) {
-            root.keep_context = true;
-        } else if (std.mem.eql(u8, arg, "off")) {
-            root.keep_context = false;
-        } else root.keep_context = !root.keep_context; // bare: toggle
-        try out.print("keep-context across model switches: {s} — {s}\n", .{
-            if (root.keep_context) "ON" else "off",
-            if (root.keep_context) "a wire-format switch (e.g. → claude) translates & keeps the dialogue" else "a wire-format switch clears history",
-        });
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/key")) {
-        const rest = std.mem.trim(u8, line["/key".len..], " \t");
-        if (rest.len == 0) { // show key status + how to add
-            try out.writeAll("API keys (✓ = set via env / Keychain / login):\n");
-            for (provider_specs) |spec| {
-                try out.print("  {s} {s:<10}  {s}\n", .{ if (keys.get(spec.id) != null) "✓" else "·", spec.id, spec.env_key });
-            }
-            try out.print("{s}add one:  /key <provider> <key>   (used now + saved to the macOS Keychain){s}\n", .{ style.dim, style.reset });
-            try out.flush();
-            return;
-        }
-        const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse {
-            try out.writeAll("usage: /key <provider> <key>\n");
-            try out.flush();
-            return;
-        };
-        const pid = rest[0..sp];
-        const key = std.mem.trim(u8, rest[sp + 1 ..], " \t");
-        var idx: ?usize = null;
-        for (provider_specs, 0..) |spec, i| if (std.mem.eql(u8, spec.id, pid)) {
-            idx = i;
-        };
-        if (idx == null) {
-            try out.print("unknown provider '{s}' — see /model for the list\n", .{pid});
-            try out.flush();
-            return;
-        }
-        if (key.len == 0) {
-            try out.writeAll("usage: /key <provider> <key>\n");
-            try out.flush();
-            return;
-        }
-        keys.values[idx.?] = arena.dupe(u8, key) catch key; // live, usable immediately
-        const home = root.home;
-        const saved = storeKey(root.io, root.gpa, arena, home, pid, key); // persist
-        try out.print("✓ {s} key set (live{s}) — now: /model {s}\n", .{ pid, if (saved) " + Keychain" else "", pid });
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/login")) {
-        // Interactive OAuth sign-in for the providers that have a device/PKCE
-        // flow (codegraff, codex/ChatGPT, kimi). Mirrors the `graff login`
-        // subcommands but runs in-session and pulls the fresh key into the live
-        // Keys, so this conversation keeps going without a restart. Pure
-        // API-key providers don't log in — they point back at /key.
-        const rest = std.mem.trim(u8, line["/login".len..], " \t");
-        var lit = std.mem.tokenizeAny(u8, rest, " \t");
-        var target = lit.next() orelse "";
-        const refresh = while (lit.next()) |a| {
-            if (std.mem.eql(u8, a, "--refresh")) break true;
-        } else false;
-        const login_targets = [_]PickItem{
-            .{ .name = "codegraff", .desc = "free codegraff key (device-code OAuth)" },
-            .{ .name = "codex", .desc = "ChatGPT / OpenAI sign-in (alias: oai)" },
-            .{ .name = "kimi", .desc = "Kimi Code sign-in (device-code OAuth)" },
-        };
-        // Bare /login: pick a provider on a TTY, else just list the options.
-        if (target.len == 0) {
-            if (use_color and root.in != null) {
-                const idx = listPicker(root, arena, out, "Log in to \xe2\x80\xba", &login_targets) orelse return;
-                target = login_targets[idx].name;
-            } else {
-                try out.writeAll("interactive logins (OAuth \xe2\x80\x94 no key to paste):\n");
-                for (login_targets) |t| try out.print("  {s} /login {s:<10} {s}\n", .{ if (keys.get(t.name) != null) "\xe2\x9c\x93" else "\xc2\xb7", t.name, t.desc });
-                try out.print("{s}other providers use an API key:  /key <provider> <key>{s}\n", .{ style.dim, style.reset });
-                try out.flush();
-                return;
-            }
-        }
-        // codex is the OpenAI/ChatGPT login; accept the natural aliases.
-        if (std.mem.eql(u8, target, "oai") or std.mem.eql(u8, target, "openai") or
-            std.mem.eql(u8, target, "chatgpt") or std.mem.eql(u8, target, "gpt"))
-            target = "codex";
-        if (std.mem.eql(u8, target, "graff")) target = "codegraff";
+// The ~1,200-line body of handleCommand (one if-block per slash command) is
+// split into 3 sibling tryHandle() modules by theme (600-line goal, #123):
+// commands_session.zig (session/env: /clear /new /rename /goal /loop /bash
+// /agents /animation /theme /hooks /skills /trajectory /plan), commands_model.zig
+// (model/provider/thinking: /model /compact /rewind /fast /thinking /title
+// /ultracode /effort /keepcontext /key /login /image /paste /strict), and
+// commands_misc.zig (/todo /jobs /cost /mcp /models /yolo /trace /fleet
+// /save /resume /sessions + the unknown-command/help terminal fallback).
+const commands_session = @import("commands_session.zig");
+const commands_model = @import("commands_model.zig");
+const commands_misc = @import("commands_misc.zig");
 
-        const home = root.home;
-        try out.flush(); // hand stdout to the login flow's own writer
-        if (std.mem.eql(u8, target, "codegraff")) {
-            oauth.codegraffLogin(root.io, root.gpa, arena, home) catch |err| {
-                try out.print("\xe2\x9c\x97 codegraff login failed: {t}\n", .{err});
-                try out.flush();
-                return;
-            };
-        } else if (std.mem.eql(u8, target, "codex")) {
-            oauth.codexLogin(root.io, root.gpa, arena, home, refresh) catch |err| {
-                try out.print("\xe2\x9c\x97 codex login failed: {t}\n", .{err});
-                try out.flush();
-                return;
-            };
-        } else if (std.mem.eql(u8, target, "kimi")) {
-            oauth.kimiLogin(root.io, root.gpa, arena, home) catch |err| {
-                try out.print("\xe2\x9c\x97 kimi login failed: {t}\n", .{err});
-                try out.flush();
-                return;
-            };
-        } else {
-            // A pure API-key provider, or something unrecognized.
-            for (provider_specs) |spec| if (std.mem.eql(u8, spec.id, target)) {
-                try out.print("{s} uses an API key, not a login \xe2\x80\x94 /key {s} <key>\n", .{ target, target });
-                try out.flush();
-                return;
-            };
-            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | codex | kimi (others: /key <provider> <key>)\n", .{target});
-            try out.flush();
-            return;
-        }
-        // Login wrote its credential file; pull the key into the live session.
-        reloadLoginKey(root, keys, arena, target);
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/image")) {
-        const path = std.mem.trim(u8, line["/image".len..], " \t");
-        if (path.len == 0) {
-            if (root.pending_image) |pi| {
-                try out.print("staged image: {s} — send a message to include it ('/image clear' to drop)\n", .{pi.label});
-            } else {
-                try out.writeAll("usage: /image <path.png|jpg|gif|webp>  (attaches to your next message)\n");
-            }
-            try out.flush();
-            return;
-        }
-        if (std.mem.eql(u8, path, "clear")) {
-            root.pending_image = null;
-            try out.writeAll("cleared the staged image\n");
-            try out.flush();
-            return;
-        }
-        switch (stageImagePath(root, path)) {
-            .no_vision => try out.print("⚠ {s} can't see images — switch to a vision model first, e.g. /model claude-opus-4-8 or /model gpt-5.5\n", .{root.provider.model}),
-            .read_fail => try out.print("can't read '{s}' (missing, or larger than 5MB)\n", .{path}),
-            .ok => try out.print("📎 attached {s} — sent with your next message\n", .{path}),
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/paste")) {
-        if (builtin.os.tag != .macos) {
-            try out.writeAll("clipboard image paste is macOS-only — use /image <path>\n");
-            try out.flush();
-            return;
-        }
-        if (!visionCapable(root.provider)) {
-            try out.print("⚠ {s} can't see images — /model to a vision model (claude-*, gpt-5*) first\n", .{root.provider.model});
-            try out.flush();
-            return;
-        }
-        const p = grabClipboardImage(root.io) orelse {
-            try out.writeAll("no image on the clipboard — copy an image first (text? just paste it normally)\n");
-            try out.flush();
-            return;
-        };
-        switch (stageImagePath(root, p)) {
-            .ok => try out.writeAll("📎 clipboard image attached — sent with your next message\n"),
-            .no_vision => try out.print("⚠ {s} can't see images\n", .{root.provider.model}),
-            .read_fail => try out.writeAll("failed to read the clipboard image\n"),
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/strict")) {
-        root.strict = !root.strict;
-        try out.print("strict mode {s} — {s}\n", .{
-            if (root.strict) "ON" else "off",
-            if (root.strict) "every message must be a tool; finish with attempt_completion" else "free-text replies allowed",
-        });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/todo")) {
-        try out.print("{s}\n", .{root.renderTodos()});
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/jobs")) {
-        jobs.g_jobs.mutex.lockUncancelable(root.io);
-        defer jobs.g_jobs.mutex.unlock(root.io);
-        if (jobs.g_jobs.list.items.len == 0) {
-            try out.writeAll("no background jobs — the model starts one with bash {run_in_background: true}\n");
-            try out.flush();
-            return;
-        }
-        try out.print("{s}background jobs{s}\n", .{ style.bold, style.reset });
-        for (jobs.g_jobs.list.items) |job| {
-            var sbuf: [32]u8 = undefined;
-            const status: []const u8 = if (!job.done)
-                "running"
-            else if (job.killed)
-                "killed"
-            else if (job.exit_code) |c|
-                (std.fmt.bufPrint(&sbuf, "exit {d}", .{c}) catch "exited")
-            else
-                "abnormal";
-            try out.print("  {s}{d:>3}{s}  {s}{s:<8}{s} {d:>7} unread B  {s}\n", .{
-                style.cyan,                               job.id,                  style.reset,
-                if (job.done) style.dim else style.green, status,                  style.reset,
-                job.buf.items.len - job.cursor,           utf8Prefix(job.cmd, 60),
-            });
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/cost")) {
-        const c = g_cost.snap(root.io);
-        if (c.api_calls == 0) {
-            try out.writeAll("no API calls yet this session\n");
-            try out.flush();
-            return;
-        }
-        try out.print("{s}session usage{s}\n", .{ style.bold, style.reset });
-        try out.print("  api calls: {d}", .{c.api_calls});
-        if (c.sub_calls > 0) try out.print(" ({d} subscription, flat-rate)", .{c.sub_calls});
-        if (c.unpriced_calls > 0) try out.print(" ({d} on unpriced models)", .{c.unpriced_calls});
-        try out.print("\n  tokens:    {d} in ({d} cached) + {d} out\n", .{ c.in_tokens + c.cache_tokens, c.cache_tokens, c.out_tokens });
-        try out.print("  cost:      {s}${d:.4}{s}{s}\n", .{
-            style.green,                                                                                     c.usd, style.reset,
-            if (c.sub_calls > 0 or c.unpriced_calls > 0) " (API-key calls with a known price only)" else "",
-        });
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/mcp")) {
-        const arg = std.mem.trim(u8, line["/mcp".len..], " \t");
-        const reg = root.registry.?; // always present now
-        if (std.mem.startsWith(u8, arg, "add")) {
-            // /mcp add <name> <command> [args...]
-            var it = std.mem.tokenizeAny(u8, arg["add".len..], " \t");
-            const name = it.next() orelse {
-                try out.writeAll("usage: /mcp add <name> <command> [args...]   e.g. /mcp add fs npx -y @modelcontextprotocol/server-filesystem .\n");
-                try out.flush();
-                return;
-            };
-            const command = it.next() orelse {
-                try out.writeAll("usage: /mcp add <name> <command> [args...]\n");
-                try out.flush();
-                return;
-            };
-            var args: std.ArrayList([]const u8) = .empty;
-            defer args.deinit(arena);
-            while (it.next()) |a| try args.append(arena, a);
-            const added = reg.addServer(name, command, args.items) catch |err| {
-                try out.print("{s}✗ failed to add MCP server '{s}': {t}{s}\n", .{ style.red, name, err, style.reset });
-                try out.flush();
-                return;
-            };
-            // Re-render the tool lists so the new tools reach the model.
-            root.tools_anthropic = try renderRootTools(arena, .anthropic, &root_specs, reg.tools);
-            root.tools_openai = try renderRootTools(arena, .openai, &root_specs, reg.tools);
-            root.tools_responses = try renderRootTools(arena, .responses, &root_specs, reg.tools);
-            const persisted = persistMcpServer(root.io, arena, name, command, args.items);
-            var has_note = false;
-            for (mcp_notes) |mn| if (std.mem.eql(u8, mn.server, name)) {
-                has_note = true;
-            };
-            try out.print("{s}✓{s} connected MCP server {s}{s}{s} — {d} tool(s){s}{s}\n", .{
-                style.green, style.reset, style.cyan, name, style.reset, added,
-                if (persisted) " · saved to .mcp.json" else " · (not persisted)",
-                if (has_note) " · restart the harness to add its context note" else "",
-            });
-            try out.flush();
-            return;
-        }
-        if (std.mem.eql(u8, arg, "trust")) {
-            // Connect workspace .mcp.json servers that were skipped at startup
-            // (consent declined / no --yolo), live, without a restart.
-            const n = reg.trustWorkspace(mcp_config_path) catch |err| {
-                try out.print("{s}✗ /mcp trust failed: {t}{s}\n", .{ style.red, err, style.reset });
-                try out.flush();
-                return;
-            };
-            if (n == 0) {
-                try out.writeAll("no untrusted workspace MCP server(s) to connect.\n");
-            } else {
-                // Re-render the tool lists so the new tools reach the model.
-                root.tools_anthropic = try renderRootTools(arena, .anthropic, &root_specs, reg.tools);
-                root.tools_openai = try renderRootTools(arena, .openai, &root_specs, reg.tools);
-                root.tools_responses = try renderRootTools(arena, .responses, &root_specs, reg.tools);
-                try out.print("{s}✓{s} trusted workspace — connected {d} MCP server(s); {d} tool(s) total\n", .{ style.green, style.reset, n, reg.tools.len });
-            }
-            try out.flush();
-            return;
-        }
-        // Plain /mcp: list servers (with tool counts) then tools.
-        const pending = reg.pendingWorkspace(mcp_config_path);
-        if (reg.servers.len == 0) {
-            try out.writeAll("no MCP servers connected.\n  add one: /mcp add <name> <command> [args...]\n  e.g.   /mcp add fs npx -y @modelcontextprotocol/server-filesystem .\n");
-        } else {
-            try out.print("{d} MCP server(s), {d} tool(s):\n", .{ reg.servers.len, reg.tools.len });
-            for (reg.servers, 0..) |srv, i| {
-                try out.print("  {s}{s}{s}  (mcp {s}, {d} tool(s))\n", .{ style.cyan, srv.name, style.reset, srv.protocol_version, reg.toolCount(i) });
-            }
-            for (reg.tools) |t| try out.print("    {s}{s}{s}\n", .{ style.dim, t.qualified_name, style.reset });
-            try out.writeAll("  add more: /mcp add <name> <command> [args...]\n");
-        }
-        if (pending > 0) try out.print("  {s}{d} workspace server(s) not connected — /mcp trust to connect them{s}\n", .{ style.dim, pending, style.reset });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/models")) {
-        try out.writeAll("model                      ctx      compact@   provider    key  vision\n");
-        for (model_table) |m| {
-            const has_key = keys.get(m.provider) != null;
-            const current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id);
-            try out.print("{s:<26} {d:>5}k   {d:>5}k    {s:<11} {s}    {s}{s}\n", .{
-                m.name,
-                m.context / 1000,
-                m.context / 10 * 8 / 1000,
-                m.provider,
-                if (has_key) "✓" else "—",
-                if (visionModel(m.name)) "✓" else "—",
-                if (current) "  ← current" else "",
-            });
-        }
-        try out.print("(unknown models: {d}k ctx; claude* → anthropic, else → codegraff)\n", .{default_context / 1000});
-        // Live LM Studio models: query the local server so loaded models show up
-        // in /models without hand-typing their ids. Best-effort and silent if the
-        // server is down. Only probe when the user actually uses lmstudio (key set
-        // or it's the current provider) so we never make a stray localhost hit.
-        if (keys.get("lmstudio") != null or std.mem.eql(u8, root.provider.id, "lmstudio")) lmstudio: {
-            var base: []const u8 = "";
-            for (provider_specs) |sp| {
-                if (std.mem.eql(u8, sp.id, "lmstudio")) {
-                    base = sp.url;
-                    break;
-                }
-            }
-            if (base.len == 0) break :lmstudio;
-            const suffix = "/chat/completions";
-            const root_url = if (std.mem.endsWith(u8, base, suffix)) base[0 .. base.len - suffix.len] else base;
-            const url = std.fmt.allocPrint(arena, "{s}/models", .{root_url}) catch break :lmstudio;
-            var aw: Io.Writer.Allocating = .init(arena);
-            defer aw.deinit();
-            const res = root.client.fetch(.{
-                .location = .{ .url = url },
-                .method = .GET,
-                .response_writer = &aw.writer,
-                .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
-            }) catch break :lmstudio; // server not running → skip silently
-            if (@intFromEnum(res.status) != 200) break :lmstudio;
-            if (aw.writer.buffered().len > 256 * 1024) break :lmstudio;
-            const parsed = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch break :lmstudio;
-            if (parsed != .object) break :lmstudio;
-            const data = parsed.object.get("data") orelse break :lmstudio;
-            if (data != .array) break :lmstudio;
-            const has_key = keys.get("lmstudio") != null;
-            var printed_header = false;
-            for (data.array.items) |item| {
-                if (item != .object) continue;
-                const idv = item.object.get("id") orelse continue;
-                if (idv != .string) continue;
-                const id = idv.string;
-                if (std.mem.indexOf(u8, id, "embed") != null) continue; // skip embedding models — not chat targets
-                if (!printed_header) {
-                    try out.print("{s}lm studio (live @ {s}):{s}\n", .{ style.dim, root_url, style.reset });
-                    printed_header = true;
-                }
-                const current = std.mem.eql(u8, root.provider.id, "lmstudio") and std.mem.eql(u8, id, root.provider.model);
-                try out.print("{s:<26} {s:>6}   {s:>6}    {s:<11} {s}    {s}{s}\n", .{
-                    id,
-                    "—",
-                    "—",
-                    "lmstudio",
-                    if (has_key) "✓" else "—",
-                    if (visionModel(id)) "✓" else "—",
-                    if (current) "  ← current" else "",
-                });
-            }
-            if (printed_header) try out.print("{s}  copy an id above: /model lmstudio <id>{s}\n", .{ style.dim, style.reset });
-        }
-        try out.print("{s}tip: /model <name> (fuzzy) · /model <provider> (its default) · /model <provider> <model> (pin, e.g. 'codex gpt-5.5'){s}\n", .{ style.dim, style.reset });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/yolo")) {
-        const on = root.approvals.?.toggleYolo(root.io);
-        try out.print("yolo mode {s} — {s}\n", .{
-            if (on) "ON" else "off",
-            if (on) "bash runs without asking" else "unapproved bash commands prompt y/a/n",
-        });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/trace")) {
-        if (root.tracer) |tr| {
-            const on = tr.toggle();
-            try out.print("tracing {s} → {s}\n", .{ if (on) "ON" else "off", trace_path });
-        } else {
-            try out.writeAll("no trace file (failed to open at startup)\n");
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/fleet") or std.mem.startsWith(u8, line, "/fleet ")) {
-        const arg = std.mem.trim(u8, line["/fleet".len..], " \t");
-        if (arg.len == 0) {
-            try out.print("fleet contribution: {s} — federated DGM (propose/submit/elite_pull). /fleet off to disable, /fleet on to enable (or GRAFF_FLEET=off).\n", .{if (g_fleet) "ON" else "off"});
-        } else if (std.mem.eql(u8, arg, "on")) {
-            g_fleet = true;
-            try out.writeAll("fleet ON — this session's persona variants + scores contribute to the federated grid.\n");
-        } else if (std.mem.eql(u8, arg, "off")) {
-            g_fleet = false;
-            try out.writeAll("fleet off — no propose/submit/elite_pull this session (usage telemetry unaffected; /fleet on to re-enable).\n");
-        } else {
-            try out.writeAll("usage: /fleet [on|off]\n");
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/save")) {
-        const arg = std.mem.trim(u8, line["/save".len..], " \t");
-        const name = if (arg.len == 0) root.session_name else arg;
-        saveSession(root, arena, name) catch |err| {
-            try out.print("save failed: {t}\n", .{err});
-            try out.flush();
-            return;
-        };
-        root.session_name = name;
-        try out.print("saved session → {s}{s}\n", .{ name, session_ext });
-        try out.flush();
-        return;
-    }
-    if (std.mem.startsWith(u8, line, "/resume")) {
-        const arg = std.mem.trim(u8, line["/resume".len..], " \t");
-        var name: []const u8 = if (arg.len == 0) "last" else arg;
-        // Bare /resume on a TTY: pick from the saved sessions interactively,
-        // labeled by stored title + age instead of raw file names (#109).
-        if (arg.len == 0 and use_color and root.in != null) {
-            var entries = listSavedSessions(root, arena);
-            defer entries.deinit(arena);
-            if (entries.items.len == 0) {
-                try out.writeAll("(no saved sessions in cwd — /save creates one)\n");
-                try out.flush();
-                return;
-            }
-            var sessions: std.ArrayList(PickItem) = .empty;
-            defer sessions.deinit(arena);
-            for (entries.items) |e| {
-                const age = sessionAge(arena, root.io, e.updated_ms);
-                const desc = if (e.title == null)
-                    age
-                else if (age.len > 0)
-                    std.fmt.allocPrint(arena, "{s} · {s}", .{ age, e.base }) catch e.base
-                else
-                    e.base;
-                try sessions.append(arena, .{ .name = e.title orelse e.base, .desc = desc });
-            }
-            const idx = listPicker(root, arena, out, "Resume session ›", sessions.items) orelse return;
-            name = entries.items[idx].base;
-        }
-        loadSession(root, keys.*, arena, name) catch |err| {
-            switch (err) {
-                error.FileNotFound => try out.print("no session named '{s}' ({s}{s} not found in cwd) — /sessions lists saved ones\n", .{ name, name, session_ext }),
-                else => try out.print("resume failed: {t}\n", .{err}),
-            }
-            try out.flush();
-            return;
-        };
-        root.session_name = name;
-        try out.print("resumed {s}{s} — {d} message(s), {s} via {s}{s}\n", .{
-            name,                                 session_ext, root.messages.items.len, root.provider.model, root.provider.id,
-            if (root.strict) " (strict)" else "",
-        });
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, line, "/sessions")) {
-        var entries = listSavedSessions(root, arena);
-        defer entries.deinit(arena);
-        for (entries.items) |e| {
-            const age = sessionAge(arena, root.io, e.updated_ms);
-            const cur = if (std.mem.eql(u8, e.base, root.session_name)) "  ← current" else "";
-            if (e.title) |t| {
-                try out.print("  {s}  {s}{s}{s}{s}{s}{s}\n", .{ t, style.dim, e.base, if (age.len > 0) " · " else "", age, style.reset, cur });
-            } else {
-                try out.print("  {s}{s}{s}{s}{s}{s}\n", .{ e.base, style.dim, if (age.len > 0) "  " else "", age, style.reset, cur });
-            }
-        }
-        if (entries.items.len == 0) try out.writeAll("(no saved sessions in cwd)\n");
-        try out.flush();
-        return;
-    }
-    // Unknown slash command → a short error + pointer (only /help dumps the list).
-    if (!std.mem.eql(u8, line, "/help")) {
-        try out.print("unknown command '{s}' — /help for the list\n", .{line});
-        try out.flush();
-        return;
-    }
-    try out.writeAll(
-        \\commands:  (a bare "/" opens this list as a filterable menu)
-        \\  /model <name>   switch model/provider, fuzzy match (e.g. "sonnet", "opus")
-        \\  /models         list known models, context windows, compaction points
-        \\  /clear          wipe the conversation and start fresh
-        \\  /new            start a fresh autosaved session
-        \\  /rename <title> set the current session title
-        \\  /goal [text]    set/show a standing objective (tracked as a checklist); /goal clear clears
-        \\  /loop <prompt>  run an autonomous plan→act→verify pass
-        \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
-        \\  /ultracode      toggle persistent workflow mode; bare opens on/off picker, or /ultracode on|off
-        \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
-        \\  /login [tgt]    OAuth sign-in (no key to paste): codegraff | codex (alias oai) | kimi; bare → picker
-        \\  /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
-        \\  /effort         thinking depth: low|medium|high (codex, deepseek, codegraff; default medium, persists)
-        \\  /reasoning      alias for /effort
-        \\  /fast           codex only: priority service tier for lower latency (toggle, persists)
-        \\  /strict         toggle "every message is a tool" mode
-        \\  /yolo           toggle bash auto-approval (skip permission prompts)
-        \\  /trace          toggle the JSONL event trace (harness.trace.jsonl)
-        \\  /trajectory     show this session's agent tree — turns + spawned
-        \\                  subagents with system-prompt fingerprints
-        \\                  (harness.trajectory.jsonl, DGM-style)
-        \\  /agents         list agent types — builtin personas + .harness/agents/*.md
-        \\                  (spawn with subagent agent:"<name>")
-        \\  /compact        summarize history into a fresh context
-        \\  /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
-        \\  /image <path>   attach an image to your next message (vision models only)
-        \\  /paste          attach the clipboard image — macOS; also Ctrl-V (⌘V can't be captured)
-        \\  /save [name]    write the conversation to <name>.session.json (default: current)
-        \\  /resume [name]  restore a saved conversation (no arg → interactive picker)
-        \\  /sessions       list saved sessions in the cwd
-        \\  /todo           show the current task list
-        \\  /animation      pick the thinking animation (braille/pulse/orbit-dots/block-wave/
-        \\                  shimmer/matrix/pacman/starfield/random/off); persists to settings
-        \\  /mcp [add …]    list MCP servers/tools; /mcp add <name> <cmd> [args...] connects one live; /mcp trust connects skipped workspace servers
-        \\  exit / /exit    quit (also: ctrl-d, or ctrl-c on an empty line)
-        \\
-        \\esc during a response interrupts the turn (what streamed stays in history).
-        \\"always allow" answers persist to .harness/settings.json in the cwd.
-        \\codeword: include "ultracode" in any message to force one multi-agent
-        \\workflow turn; /ultracode on persists that behavior for future prompts.
-        \\
-        \\launch flags: --model <name> · --yolo (skip prompts) · -p "prompt" (one-shot) · --system-prompt/--append-system-prompt · --timing · --cost · --json (SDK protocol) · --help · --version
-        \\subcommands: `graff login [codex]` (OAuth) · `graff key set <provider> <key>` (Keychain) · `graff --schema`
-        \\
-    );
-    try out.flush();
+fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !void {
+    if (try commands_session.tryHandle(root, keys, arena, line, out)) return;
+    if (try commands_model.tryHandle(root, keys, arena, line, out)) return;
+    if (try commands_misc.tryHandle(root, keys, arena, line, out)) return;
+    try commands_misc.handleRest(line, out);
 }
 
-const session_ext = ".session.json";
+pub const session_ext = ".session.json";
 const sessions_dir = ".graff/sessions"; // title-named session files live here (resume reads this)
 
 /// Path to a session file: .graff/sessions/<name>.session.json.
@@ -3747,7 +2571,7 @@ fn sessionMeta(root: *Agent, arena: Allocator, base: []const u8) SessionMeta {
 }
 
 /// "3m ago"-style age for the session lists; "" when the timestamp is missing.
-fn sessionAge(arena: Allocator, io: Io, then_ms: i64) []const u8 {
+pub fn sessionAge(arena: Allocator, io: Io, then_ms: i64) []const u8 {
     if (then_ms <= 0) return "";
     const s = @divTrunc(unixMs(io) - then_ms, 1000);
     if (s < 60) return "just now";
@@ -3760,7 +2584,7 @@ fn sessionAge(arena: Allocator, io: Io, then_ms: i64) []const u8 {
 /// newest first, keyed (and resumed) by the file base name.
 const SessionEntry = struct { base: []const u8, title: ?[]const u8 = null, updated_ms: i64 = 0 };
 
-fn listSavedSessions(root: *Agent, arena: Allocator) std.ArrayList(SessionEntry) {
+pub fn listSavedSessions(root: *Agent, arena: Allocator) std.ArrayList(SessionEntry) {
     var entries: std.ArrayList(SessionEntry) = .empty;
     var dir = Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true }) catch return entries;
     defer dir.close(root.io);
@@ -3860,13 +2684,13 @@ const CodexAuth = oauth.CodexAuth;
 
 /// True for a provider served by a local server (LM Studio, mlx-lm) on the
 /// loopback host — these expose a live, user-controlled model set.
-fn isLocalUrl(url: []const u8) bool {
+pub fn isLocalUrl(url: []const u8) bool {
     return std.mem.indexOf(u8, url, "127.0.0.1") != null or std.mem.indexOf(u8, url, "localhost") != null;
 }
 
 /// Derive the OpenAI-compatible `/v1/models` URL from a provider's chat URL
 /// (`…/v1/chat/completions` → `…/v1/models`).
-fn openAiModelsUrl(arena: Allocator, chat_url: []const u8) []const u8 {
+pub fn openAiModelsUrl(arena: Allocator, chat_url: []const u8) []const u8 {
     const suffix = "/chat/completions";
     if (std.mem.endsWith(u8, chat_url, suffix))
         return std.fmt.allocPrint(arena, "{s}/models", .{chat_url[0 .. chat_url.len - suffix.len]}) catch chat_url;
@@ -3877,7 +2701,7 @@ fn openAiModelsUrl(arena: Allocator, chat_url: []const u8) []const u8 {
 /// advertises (arena-owned), or an empty slice on any failure. Lets `/model
 /// <local-provider>` list what a local server (LM Studio :1234, mlx-lm :8080)
 /// actually has loaded instead of a baked-in name.
-fn fetchOpenAIModels(io: Io, gpa: Allocator, arena: Allocator, models_url: []const u8, key: []const u8) [][]const u8 {
+pub fn fetchOpenAIModels(io: Io, gpa: Allocator, arena: Allocator, models_url: []const u8, key: []const u8) [][]const u8 {
     var list: std.ArrayList([]const u8) = .empty;
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
@@ -4134,7 +2958,7 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
 /// Restore a saved session: parse the file (arena-owned), rebuild the
 /// provider, and replace the live history. The wire format must still match
 /// the restored provider's kind — same provider id guarantees it.
-fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !void {
+pub fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !void {
     const path = try sessionPath(arena, name);
     const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch blk: {
         // backward-compat: older builds wrote <name>.session.json in cwd.
@@ -4388,7 +3212,7 @@ pub const Agent = struct {
     /// Responses API (codex) via reasoning.effort, and the OpenAI-compatible
     /// providers we know normalize a top-level reasoning_effort — the
     /// codegraff gateway and deepseek. Everything else ignores it.
-    fn effortApplies(self: *const Agent) bool {
+    pub fn effortApplies(self: *const Agent) bool {
         return providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
 
@@ -5029,7 +3853,7 @@ pub const Agent = struct {
     /// the rest of the session), or no. Returns the denial result, or null
     /// when cleared to execute. Subagents never prompt; their gate is the
     /// allowlist check in execToolInner.
-    fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
+    pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         if (self.sub) {
             // Destructive git is blocked for subagents outright — they have no
             // human to confirm with. The root agent falls through to a y/n
@@ -5243,7 +4067,7 @@ pub const Agent = struct {
         try w.flush();
     }
 
-    fn renderTodos(self: *Agent) []const u8 {
+    pub fn renderTodos(self: *Agent) []const u8 {
         if (self.todos.items.len == 0) return "(no todos)";
         var aw: Io.Writer.Allocating = .init(self.arena);
         const w = &aw.writer;
@@ -5484,7 +4308,7 @@ pub const Agent = struct {
 
     /// Ask the model for a context-handoff summary (no tools), then restart
     /// history from that summary.
-    fn compact(self: *Agent) anyerror!usize {
+    pub fn compact(self: *Agent) anyerror!usize {
         if (self.messages.items.len == 0) {
             if (!json_mode) try self.say("nothing to compact\n", .{});
             return 0;
