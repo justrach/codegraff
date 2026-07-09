@@ -109,6 +109,7 @@ test {
     _ = terminal;
     _ = scoring;
     _ = telemetry;
+    _ = trace;
 }
 
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
@@ -346,173 +347,16 @@ pub const Approvals = approvals_mod.Approvals;
 const confinedPath = approvals_mod.confinedPath;
 const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 
-const trace_path = "harness.trace.jsonl";
-
-/// Serialize one record as a single JSON line into an in-memory buffer, then
-/// write the whole line to `w` in one shot. Building the line in memory first
-/// means a partial serialization failure writes *nothing* — the shared buffered
-/// file writer never sees a half-record, and the trailing newline is always
-/// attached to its record. Without this, a write that errored mid-record left a
-/// truncated line plus leftover buffer bytes that the next record concatenated
-/// onto, corrupting the JSONL (issue #86: lines like `{"text":"You ar{"kind":…`).
-/// Flushing per line keeps the buffer empty between records. Best-effort.
-fn writeJsonLine(gpa: Allocator, w: *Io.Writer, rec: anytype) void {
-    var aw: Io.Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    s.write(rec) catch return;
-    aw.writer.writeByte('\n') catch return;
-    w.writeAll(aw.writer.buffered()) catch return;
-    w.flush() catch return;
-}
-
-/// Session event trace: one JSON object per line, written to trace_path in
-/// the cwd (truncated at startup, so it always covers the current session).
-/// Thread-safe — agents on pool threads share it through the mutex. The
-/// system prompt tells the agent the file exists, so it can read its own
-/// trace to debug or profile the harness ("t" is ms since session start).
-const Tracer = struct {
-    mutex: Io.Mutex = .init,
-    io: Io,
-    gpa: Allocator,
-    out: ?*Io.Writer,
-    start: Io.Timestamp,
-    enabled: bool = true,
-
-    fn api(self: *Tracer, label: []const u8, model: []const u8, ms: i64, req_bytes: usize, resp_bytes: usize, context_tokens: u64, cache_read: u64, is_error: bool) void {
-        if (telemetry.g_telem) |t| t.countApi(model, is_error);
-        self.write(.{
-            .t = self.elapsedMs(),
-            .ev = "api",
-            .agent = label,
-            .model = model,
-            .ms = ms,
-            .req_bytes = req_bytes,
-            .resp_bytes = resp_bytes,
-            .context_tokens = context_tokens,
-            .cache_read_tokens = cache_read,
-            .is_error = is_error,
-        });
-    }
-
-    fn tool(self: *Tracer, name: []const u8, ms: i64, is_error: bool, result_bytes: usize, from_sub: bool) void {
-        if (telemetry.g_telem) |t| t.countTool(is_error);
-        self.write(.{
-            .t = self.elapsedMs(),
-            .ev = "tool",
-            .name = name,
-            .ms = ms,
-            .result_bytes = result_bytes,
-            .is_error = is_error,
-            .from_sub = from_sub,
-        });
-    }
-
-    fn note(self: *Tracer, kind: []const u8, detail: []const u8) void {
-        self.write(.{ .t = self.elapsedMs(), .ev = kind, .detail = detail });
-    }
-
-    fn elapsedMs(self: *Tracer) i64 {
-        return @intCast(@max(0, self.start.untilNow(self.io, .awake).toMilliseconds()));
-    }
-
-    /// Serialize any struct as one JSON line. Best-effort: trace failures
-    /// never disturb the session.
-    fn write(self: *Tracer, event: anytype) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        const w = self.out orelse return;
-        if (!self.enabled) return;
-        writeJsonLine(self.gpa, w, event);
-    }
-
-    fn toggle(self: *Tracer) bool {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        self.enabled = !self.enabled;
-        return self.enabled;
-    }
-};
-
-// ── Trajectory (DGM-style archive tree) ────────────────────────────────────
-
-pub const trajectory_path = "harness.trajectory.jsonl";
-
-/// Session trajectory in the shape of the Darwin Gödel Machine's archive
-/// tree (arXiv:2505.22954): one JSON node per agent run. Root turns form
-/// the spine (each turn's parent is the previous turn); every subagent or
-/// workflow task hangs off the turn that spawned it. Each node carries a
-/// fingerprint of the system prompt it ran with, so prompt mutations —
-/// set_system_prompt on the spine, per-child system_prompt overrides on the
-/// fan-out — are visible as hash changes along edges, and a lineage can be
-/// replayed or scored offline (see docs/hyperagents.md, arXiv:2603.19461).
-/// Written to harness.trajectory.jsonl, truncated at startup like the trace.
-const Trajectory = struct {
-    mutex: Io.Mutex = .init,
-    io: Io,
-    gpa: Allocator,
-    out: ?*Io.Writer,
-    start: Io.Timestamp,
-    next_id: u64 = 1, // node 0 is the session itself
-    turn_node: u64 = 0, // current root-turn node: parent for spawned agents
-    seen_shas: std.ArrayList([16]u8) = .empty, // prompts captured this session
-
-    /// Reserve a node id (turns claim theirs before running so children can
-    /// point at them).
-    fn nextId(self: *Trajectory) u64 {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        const id = self.next_id;
-        self.next_id += 1;
-        return id;
-    }
-
-    fn setTurn(self: *Trajectory, id: u64) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        self.turn_node = id;
-    }
-
-    fn currentTurn(self: *Trajectory) u64 {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return self.turn_node;
-    }
-
-    fn elapsedMs(self: *Trajectory) i64 {
-        return @intCast(@max(0, self.start.untilNow(self.io, .awake).toMilliseconds()));
-    }
-
-    /// Serialize one node as a JSON line. Best-effort, like the Tracer.
-    fn node(self: *Trajectory, rec: anytype) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        self.writeLocked(rec);
-    }
-
-    /// Capture the full prompt text behind a fingerprint, once per session
-    /// (a `kind:"prompt"` record): the archive then maps sha → text so any
-    /// lineage can be replayed or re-mutated offline. Dedup is per session;
-    /// across sessions a sha repeats at most once per session — readers
-    /// treat the records as an idempotent map.
-    fn capturePrompt(self: *Trajectory, sha: [16]u8, text: []const u8) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        if (self.out == null) return;
-        for (self.seen_shas.items) |s| if (std.mem.eql(u8, &s, &sha)) return;
-        self.seen_shas.append(self.gpa, sha) catch return;
-        self.writeLocked(.{ .kind = "prompt", .prompt_sha = &sha, .text = text });
-    }
-
-    fn writeLocked(self: *Trajectory, rec: anytype) void {
-        const w = self.out orelse return;
-        writeJsonLine(self.gpa, w, rec);
-    }
-
-    fn deinit(self: *Trajectory) void {
-        self.seen_shas.deinit(self.gpa);
-    }
-};
+// Session tracing (harness.trace.jsonl Tracer) + the DGM trajectory archive
+// (harness.trajectory.jsonl Trajectory) + the per-line JSON writer live in
+// trace.zig (600-line goal). Types aliased back; trajectory_path re-exported
+// (fleet.zig back-imports it); the session trajectory pointer is trace.-qualified.
+const trace = @import("trace.zig");
+pub const Tracer = trace.Tracer;
+pub const Trajectory = trace.Trajectory;
+pub const trajectory_path = trace.trajectory_path;
+pub const ToolSink = trace.ToolSink;
+const trace_path = trace.trace_path;
 
 // ── Agent types / fleet (MAP-Elites niches) ───────────────────────────
 // The AgentType niche registry, the backgrounded elite pull, /agents promote,
@@ -528,9 +372,6 @@ const pullElites = fleet.pullElites;
 const joinElites = fleet.joinElites;
 const resolveOverride = fleet.resolveOverride;
 const resolveNiche = fleet.resolveNiche;
-
-/// Set by main(); runSub and the REPL loop record nodes through this.
-var g_traj: ?*Trajectory = null;
 
 // Prompt/provider-class fingerprinting + DGM score signing live in scoring.zig
 // (600-line goal). Pure fns aliased back; the signing globals are
@@ -742,50 +583,7 @@ fn writeSubagentDetail(
 // Score-channel signing (DGM fitness integrity) + the session signing globals
 // live in scoring.zig (600-line goal); reached scoring.-qualified.
 
-/// Per-agent record of external tool calls (name + error flag, in call
-/// order): the process signal behind "which tool combinations work" —
-/// rendered into trajectory nodes and OTLP run events, joinable to scores
-/// via prompt_sha. Tool fan-out is concurrent, so appends lock. Capped:
-/// the first 64 calls are plenty for pattern mining.
-const ToolSink = struct {
-    mutex: Io.Mutex = .init,
-    entries: std.ArrayList(Entry) = .empty,
-
-    const Entry = struct { name: []const u8, err: bool };
-    const cap = 64;
-
-    fn add(self: *ToolSink, io: Io, gpa: Allocator, name: []const u8, err: bool) void {
-        self.mutex.lockUncancelable(io);
-        defer self.mutex.unlock(io);
-        if (self.entries.items.len >= cap) return;
-        self.entries.append(gpa, .{ .name = name, .err = err }) catch {};
-    }
-
-    /// "read_file,edit_file!,bash" — `!` marks a failed call. Allocated from
-    /// `alloc`; "" when no tools ran. Call after the agent's tool futures
-    /// are joined (no lock taken).
-    fn render(self: *const ToolSink, alloc: Allocator) []const u8 {
-        if (self.entries.items.len == 0) return "";
-        var aw: Io.Writer.Allocating = .init(alloc);
-        defer aw.deinit();
-        for (self.entries.items, 0..) |e, i| {
-            if (i > 0) aw.writer.writeByte(',') catch return "";
-            aw.writer.writeAll(e.name) catch return "";
-            if (e.err) aw.writer.writeByte('!') catch return "";
-        }
-        return alloc.dupe(u8, aw.writer.buffered()) catch "";
-    }
-
-    fn clear(self: *ToolSink, io: Io) void {
-        self.mutex.lockUncancelable(io);
-        defer self.mutex.unlock(io);
-        self.entries.clearRetainingCapacity();
-    }
-
-    fn deinit(self: *ToolSink, gpa: Allocator) void {
-        self.entries.deinit(gpa);
-    }
-};
+// ToolSink (the per-agent tool-call log) lives in trace.zig (600-line goal).
 
 /// Largest prefix of `s` up to `max` bytes that doesn't split a UTF-8
 /// codepoint (std.json would otherwise serialize the slice as an int array).
@@ -3551,9 +3349,9 @@ pub fn main(init: std.process.Init) !void {
         .out = if (traj_file != null) &traj_writer.interface else null,
         .start = Io.Timestamp.now(io, .awake),
     };
-    g_traj = &traj;
+    trace.g_traj = &traj;
     defer {
-        g_traj = null;
+        trace.g_traj = null;
         traj.deinit();
     }
     traj.node(.{ .kind = "session", .version = harness_version, .unix_ms = unixMs(io) });
@@ -4146,7 +3944,7 @@ pub fn main(init: std.process.Init) !void {
                 const run_id: []const u8 = if (req_run.len > 0) utf8Prefix(req_run, 64) else &scoring.g_run_id;
                 const sig = signScore(sha, parent, sc, run_id, judge_id, artifact_sha, eval_set_hash);
                 const signed = scoring.g_score_key != null;
-                if (g_traj) |tj| tj.node(.{
+                if (trace.g_traj) |tj| tj.node(.{
                     .kind = "score",
                     .prompt_sha = sha,
                     .parent_sha = parent,
@@ -4294,7 +4092,7 @@ pub fn main(init: std.process.Init) !void {
         if (telemetry.g_telem) |t| t.countTurn();
         // Trajectory: claim this turn's node id up front so subagents spawned
         // during the turn can attach to it as their parent.
-        const turn_id: u64 = if (g_traj) |tj| blk: {
+        const turn_id: u64 = if (trace.g_traj) |tj| blk: {
             const id = tj.nextId();
             tj.setTurn(id);
             break :blk id;
@@ -4308,7 +4106,7 @@ pub fn main(init: std.process.Init) !void {
         // reported inside request(); anything else is surfaced here. Either
         // way we drop back to the prompt (or emit a JSON error/turn event).
         const turn_result = root.runTurn();
-        if (g_traj) |tj| {
+        if (trace.g_traj) |tj| {
             const fp = promptFingerprint(root.systemPrompt());
             const turn_ms: i64 = @intCast(@max(0, turn_started.untilNow(io, .awake).toMilliseconds()));
             const turn_ok = if (turn_result) |_| true else |_| false;
@@ -11685,7 +11483,7 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_result", .name = "subagent", .is_error = !run_ok });
     const tools = agent.tools_used.render(arena);
     const fp = promptFingerprint(agent.systemPrompt());
-    if (g_traj) |tj| {
+    if (trace.g_traj) |tj| {
         tj.capturePrompt(fp, agent.systemPrompt());
         tj.node(.{
             .id = tj.nextId(),
@@ -12824,21 +12622,6 @@ test "Provider.compactAt: auto-compacts at 80% of the context window (long-horiz
     try std.testing.expectEqual(@as(u64, 160_000), small.compactAt());
     const zero = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 0 };
     try std.testing.expectEqual(@as(u64, 0), zero.compactAt());
-}
-
-test "writeJsonLine: one complete newline-terminated JSON record per call" {
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    writeJsonLine(std.testing.allocator, &aw.writer, .{ .kind = "turn", .id = @as(u64, 7), .ok = true });
-    writeJsonLine(std.testing.allocator, &aw.writer, .{ .kind = "prompt", .text = "hi" });
-    const out = aw.writer.buffered();
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "\n"));
-    var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out, "\n"), '\n');
-    while (it.next()) |line| {
-        var p = try std.json.parseFromSlice(Value, std.testing.allocator, line, .{});
-        defer p.deinit();
-        try std.testing.expect(p.value == .object); // each line parses as valid JSON
-    }
 }
 
 test "Agent.cleanUserTurn: plain user text yes; assistant/tool_result no" {
