@@ -104,6 +104,7 @@ test {
     _ = hooks;
     _ = schema;
     _ = fleet;
+    _ = messages_mod;
 }
 
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
@@ -884,7 +885,7 @@ const ToolSink = struct {
 
 /// Largest prefix of `s` up to `max` bytes that doesn't split a UTF-8
 /// codepoint (std.json would otherwise serialize the slice as an int array).
-fn utf8Prefix(s: []const u8, max: usize) []const u8 {
+pub fn utf8Prefix(s: []const u8, max: usize) []const u8 {
     if (s.len <= max) return s;
     var p = s[0..max];
     var strips: usize = 0;
@@ -11105,284 +11106,15 @@ const Agent = struct {
     }
 };
 
-fn textMessage(arena: Allocator, role: []const u8, text: []const u8) !Value {
-    var msg: std.json.ObjectMap = .empty;
-    try msg.put(arena, "role", .{ .string = role });
-    try msg.put(arena, "content", .{ .string = try arena.dupe(u8, text) });
-    return .{ .object = msg };
-}
-
-/// Build the message appended to the conversation after a tool runs, shaped
-/// for each provider's request body. The tool's result text is ALWAYS written
-/// as a JSON string (`.{ .string = ... }`) — never a raw `[]u8` handed to the
-/// serializer, which std.json would emit as an array of integers and the API
-/// would reject (`'input[N].output[0]': expected an object, got an integer`).
-/// anthropic returns a `tool_result` content block (the caller wraps it in a
-/// user message); openai returns a `tool` role message; responses returns a
-/// `function_call_output` item. Error reporting differs per wire format:
-/// anthropic carries a separate `is_error` flag, openai inlines an `[error]`
-/// prefix, and responses has no error channel (text only).
-fn toolResultMessage(arena: Allocator, kind: Provider.Kind, call_id: []const u8, raw_text: []const u8, is_error: bool) !Value {
-    // Scrub raw bytes (binary tool output etc.) at the source so the result is a
-    // valid JSON string, not a byte-integer array the API rejects.
-    const text = sanitizeUtf8(arena, raw_text);
-    var obj: std.json.ObjectMap = .empty;
-    switch (kind) {
-        .anthropic => {
-            try obj.put(arena, "type", .{ .string = "tool_result" });
-            try obj.put(arena, "tool_use_id", .{ .string = call_id });
-            try obj.put(arena, "content", .{ .string = text });
-            if (is_error) try obj.put(arena, "is_error", .{ .bool = true });
-        },
-        .openai => {
-            try obj.put(arena, "role", .{ .string = "tool" });
-            try obj.put(arena, "tool_call_id", .{ .string = call_id });
-            const body = if (is_error)
-                try std.fmt.allocPrint(arena, "[error] {s}", .{text})
-            else
-                text;
-            try obj.put(arena, "content", .{ .string = body });
-        },
-        .responses => {
-            try obj.put(arena, "type", .{ .string = "function_call_output" });
-            try obj.put(arena, "call_id", .{ .string = call_id });
-            try obj.put(arena, "output", .{ .string = text });
-        },
-    }
-    return .{ .object = obj };
-}
-
-/// The Responses API hard-caps `function_call_output.output` at this length; an
-/// oversized tool result (a big webfetch/bash/codedb/file read) is rejected
-/// ("output: array too long, max 16384") and, since it's already in history,
-/// wedges every later turn — the size sibling of #95's type bug.
-const responses_output_cap = 16384;
-
-/// Return a valid-UTF-8 copy of `s`, replacing each invalid byte with '?'.
-/// std.json renders an invalid-UTF-8 string as a JSON array of byte-integers,
-/// which every chat API rejects (`messages[N]: invalid type: integer X, expected
-/// ...ContentBlock`). Tool output (bash, file reads, MCP, webfetch) is the usual
-/// source of raw bytes, so any externally-sourced content must pass through this
-/// before it reaches the serializer. Returns `s` unchanged when already valid.
-fn sanitizeUtf8(arena: Allocator, s: []const u8) []const u8 {
-    if (std.unicode.utf8ValidateSlice(s)) return s;
-    const buf = arena.dupe(u8, s) catch return "";
-    var i: usize = 0;
-    while (i < buf.len) {
-        const n = std.unicode.utf8ByteSequenceLength(buf[i]) catch {
-            buf[i] = '?';
-            i += 1;
-            continue;
-        };
-        if (i + n > buf.len or !std.unicode.utf8ValidateSlice(buf[i .. i + n])) {
-            buf[i] = '?';
-            i += 1;
-            continue;
-        }
-        i += n;
-    }
-    return buf;
-}
-
-/// Recursively scrub every string in a JSON value to valid UTF-8, in place.
-fn sanitizeValueUtf8(arena: Allocator, v: *Value) void {
-    switch (v.*) {
-        .string => |s| {
-            if (!std.unicode.utf8ValidateSlice(s)) v.* = .{ .string = sanitizeUtf8(arena, s) };
-        },
-        .array => |*arr| for (arr.items) |*item| sanitizeValueUtf8(arena, item),
-        .object => |*obj| {
-            var it = obj.iterator();
-            while (it.next()) |e| sanitizeValueUtf8(arena, e.value_ptr);
-        },
-        else => {},
-    }
-}
-
-/// Send-time safety net across EVERY wire format: scrub all message content to
-/// valid UTF-8. A tool result carrying raw bytes (or poisoned history loaded
-/// from a session) would otherwise serialize as a byte-integer array and the API
-/// rejects the whole turn, replayed forever (the `messages[N]: invalid type:
-/// integer` family). In place, so it self-heals stored history too.
-fn sanitizeMessagesUtf8(arena: Allocator, messages: *std.json.Array) void {
-    for (messages.items) |*m| sanitizeValueUtf8(arena, m);
-}
-
-/// #95 + size cap: coerce any malformed Responses `function_call_output.output`
-/// in `messages` to a valid JSON string, AND truncate output longer than
-/// `responses_output_cap`, in place. The Responses API rejects scalar/array
-/// outputs ("expected an object, got an integer") and over-long ones ("array
-/// too long") alike — either poisons history and bricks the gpt-5.5 session,
-/// replayed every turn. toolResultMessage already emits strings; this is the
-/// send-time safety net for any item that reached history malformed or
-/// oversized. No-op for valid strings within the cap.
-fn normalizeResponsesHistory(arena: Allocator, messages: *std.json.Array) void {
-    for (messages.items) |*m| {
-        if (m.* != .object) continue;
-        const t = m.object.get("type") orelse continue;
-        if (t != .string or !std.mem.eql(u8, t.string, "function_call_output")) continue;
-        const out = m.object.get("output") orelse continue;
-        if (out == .string and out.string.len <= responses_output_cap) continue; // valid + within cap
-        const s = if (out == .string) out.string else jsonValueString(arena, out);
-        const capped = if (s.len > responses_output_cap)
-            (std.fmt.allocPrint(arena, "{s}\n[truncated: the Responses API caps tool output at {d} chars — read/fetch a smaller range]", .{ utf8Prefix(s, responses_output_cap - 112), responses_output_cap }) catch utf8Prefix(s, responses_output_cap))
-        else
-            s;
-        m.object.put(arena, "output", .{ .string = capped }) catch {};
-    }
-}
-
-/// #99: the chat-completions sibling of normalizeResponsesHistory. A resumed
-/// session can carry a `role:"tool"` message whose `content` is a byte-integer
-/// array (e.g. [61,61,61] — raw tool bytes that reached history as JSON ints) or
-/// a bare scalar. OpenAI-compatible providers reject it
-/// (`messages[N].content[0].type: cannot be empty`) and, because it sits in
-/// saved history, every later turn fails — the same wedge as #95, on the other
-/// wire format. Coerce such content back to a string in place. No-op for valid
-/// string content and for arrays of typed content-block objects (real blocks).
-fn normalizeOpenAIHistory(arena: Allocator, messages: *std.json.Array) void {
-    for (messages.items) |*m| {
-        if (m.* != .object) continue;
-        const role = m.object.get("role") orelse continue;
-        if (role != .string or !std.mem.eql(u8, role.string, "tool")) continue;
-        const content = m.object.get("content") orelse continue;
-        if (content == .string) continue; // already valid
-        if (content == .array and content.array.items.len > 0) {
-            var all_objects = true;
-            for (content.array.items) |it| if (it != .object) {
-                all_objects = false;
-                break;
-            };
-            if (all_objects) continue; // legitimate typed content blocks
-        }
-        const s = sanitizeUtf8(arena, toolContentString(arena, content));
-        m.object.put(arena, "content", .{ .string = s }) catch {};
-    }
-}
-
-/// Best-effort decode of a non-string tool `content` value to a string. A pure
-/// byte-integer array (every item an int in 0..255) decodes back to its bytes
-/// (so [61,61,61] → "==="); anything else is JSON-encoded.
-fn toolContentString(arena: Allocator, v: Value) []const u8 {
-    if (v == .array) {
-        var bytes: std.ArrayList(u8) = .empty;
-        defer bytes.deinit(arena);
-        for (v.array.items) |it| {
-            if (it == .integer and it.integer >= 0 and it.integer <= 255) {
-                bytes.append(arena, @intCast(it.integer)) catch return jsonValueString(arena, v);
-            } else {
-                return jsonValueString(arena, v);
-            }
-        }
-        return arena.dupe(u8, bytes.items) catch jsonValueString(arena, v);
-    }
-    return jsonValueString(arena, v);
-}
-
-test "normalizeOpenAIHistory: byte-array/scalar tool content coerced to string (#99)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var msgs = std.json.Array.init(arena);
-    // poison item: role:"tool" content is a byte-integer array ([61,61,61] = "===")
-    var bytearr: std.json.ObjectMap = .empty;
-    try bytearr.put(arena, "role", .{ .string = "tool" });
-    try bytearr.put(arena, "tool_call_id", .{ .string = "c1" });
-    var inner = std.json.Array.init(arena);
-    try inner.append(.{ .integer = 61 });
-    try inner.append(.{ .integer = 61 });
-    try inner.append(.{ .integer = 61 });
-    try bytearr.put(arena, "content", .{ .array = inner });
-    try msgs.append(.{ .object = bytearr });
-    // bare scalar content → stringified
-    var scalar: std.json.ObjectMap = .empty;
-    try scalar.put(arena, "role", .{ .string = "tool" });
-    try scalar.put(arena, "content", .{ .integer = 42 });
-    try msgs.append(.{ .object = scalar });
-    // valid string tool message → untouched
-    var ok_msg: std.json.ObjectMap = .empty;
-    try ok_msg.put(arena, "role", .{ .string = "tool" });
-    try ok_msg.put(arena, "content", .{ .string = "hello" });
-    try msgs.append(.{ .object = ok_msg });
-    // non-tool (user) message with array content → untouched
-    var user: std.json.ObjectMap = .empty;
-    try user.put(arena, "role", .{ .string = "user" });
-    var ublocks = std.json.Array.init(arena);
-    var blk: std.json.ObjectMap = .empty;
-    try blk.put(arena, "type", .{ .string = "text" });
-    try blk.put(arena, "text", .{ .string = "hi" });
-    try ublocks.append(.{ .object = blk });
-    try user.put(arena, "content", .{ .array = ublocks });
-    try msgs.append(.{ .object = user });
-
-    normalizeOpenAIHistory(arena, &msgs);
-
-    try std.testing.expect(msgs.items[0].object.get("content").? == .string);
-    try std.testing.expectEqualStrings("===", msgs.items[0].object.get("content").?.string);
-    try std.testing.expect(msgs.items[1].object.get("content").? == .string);
-    try std.testing.expectEqualStrings("42", msgs.items[1].object.get("content").?.string);
-    try std.testing.expectEqualStrings("hello", msgs.items[2].object.get("content").?.string);
-    try std.testing.expect(msgs.items[3].object.get("content").? == .array); // user multimodal stays an array
-}
-/// JSON-encode a Value to an owned string (best-effort; "" on failure).
-fn jsonValueString(arena: Allocator, v: Value) []const u8 {
-    var aw: Io.Writer.Allocating = .init(arena);
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    s.write(v) catch return "";
-    return aw.toOwnedSlice() catch "";
-}
-
-test "normalizeResponsesHistory: scalar/array outputs coerced to string (#95)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var msgs = std.json.Array.init(arena);
-    var scalar: std.json.ObjectMap = .empty; // the poisoned item: output is a bare integer
-    try scalar.put(arena, "type", .{ .string = "function_call_output" });
-    try scalar.put(arena, "output", .{ .integer = 42 });
-    try msgs.append(.{ .object = scalar });
-    var arr: std.json.ObjectMap = .empty; // output as an array → "[42]"
-    try arr.put(arena, "type", .{ .string = "function_call_output" });
-    var inner = std.json.Array.init(arena);
-    try inner.append(.{ .integer = 42 });
-    try arr.put(arena, "output", .{ .array = inner });
-    try msgs.append(.{ .object = arr });
-    var ok: std.json.ObjectMap = .empty; // valid string → untouched
-    try ok.put(arena, "type", .{ .string = "function_call_output" });
-    try ok.put(arena, "output", .{ .string = "hello" });
-    try msgs.append(.{ .object = ok });
-
-    normalizeResponsesHistory(arena, &msgs);
-
-    try std.testing.expect(msgs.items[0].object.get("output").? == .string);
-    try std.testing.expectEqualStrings("42", msgs.items[0].object.get("output").?.string);
-    try std.testing.expect(msgs.items[1].object.get("output").? == .string);
-    try std.testing.expectEqualStrings("[42]", msgs.items[1].object.get("output").?.string);
-    try std.testing.expectEqualStrings("hello", msgs.items[2].object.get("output").?.string);
-}
-
-test "normalizeResponsesHistory: oversized output is capped to the Responses limit" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var msgs = std.json.Array.init(arena);
-    var big: std.json.ObjectMap = .empty; // a 260 KB webfetch-style result
-    try big.put(arena, "type", .{ .string = "function_call_output" });
-    const huge = try arena.alloc(u8, 260 * 1024);
-    @memset(huge, 'x');
-    try big.put(arena, "output", .{ .string = huge });
-    try msgs.append(.{ .object = big });
-
-    normalizeResponsesHistory(arena, &msgs);
-
-    const out = msgs.items[0].object.get("output").?;
-    try std.testing.expect(out == .string);
-    try std.testing.expect(out.string.len <= responses_output_cap);
-    try std.testing.expect(std.mem.indexOf(u8, out.string, "truncated") != null);
-}
+// Wire-format message construction + UTF-8/history normalization live in
+// messages.zig (600-line goal). Aliased back so call sites stay unqualified;
+// imported as messages_mod to avoid shadowing the `messages` params/fields.
+const messages_mod = @import("messages.zig");
+const textMessage = messages_mod.textMessage;
+const toolResultMessage = messages_mod.toolResultMessage;
+const sanitizeMessagesUtf8 = messages_mod.sanitizeMessagesUtf8;
+const normalizeResponsesHistory = messages_mod.normalizeResponsesHistory;
+const normalizeOpenAIHistory = messages_mod.normalizeOpenAIHistory;
 
 /// A base64-encoded image staged by `/image`, sent with the next user turn.
 const PendingImage = struct { media_type: []const u8, b64: []const u8, label: []const u8 };
@@ -13897,27 +13629,6 @@ test "collapseWs flattens newlines/tabs to single spaces (#51)" {
     try std.testing.expectEqualStrings("a b", collapseWs("a\t \n b\n"));
 }
 
-test "sanitizeUtf8 scrubs invalid bytes so content never serializes as a byte-int array" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    try std.testing.expectEqualStrings("ok?", sanitizeUtf8(arena, "ok\x80")); // lone continuation byte -> '?'
-    try std.testing.expectEqualStrings("clean", sanitizeUtf8(arena, "clean")); // valid: unchanged
-    try std.testing.expectEqualStrings("a\xC3\xA9b", sanitizeUtf8(arena, "a\xC3\xA9b")); // valid 'é' preserved
-    try std.testing.expect(std.unicode.utf8ValidateSlice(sanitizeUtf8(arena, "x\xff\xfey")));
-    // message-tree scrub: a poisoned tool content becomes valid UTF-8 in place,
-    // so the serializer emits a JSON string, not [98,97,100,255].
-    var msgs: std.json.Array = .init(arena);
-    var obj: std.json.ObjectMap = .empty;
-    try obj.put(arena, "role", .{ .string = "tool" });
-    try obj.put(arena, "content", .{ .string = "bad\xff" });
-    try msgs.append(.{ .object = obj });
-    sanitizeMessagesUtf8(arena, &msgs);
-    const c = msgs.items[0].object.get("content").?.string;
-    try std.testing.expect(std.unicode.utf8ValidateSlice(c));
-    try std.testing.expectEqualStrings("bad?", c);
-}
-
 test "telemetry dupDetail never yields invalid UTF-8" {
     var t: Telemetry = .{
         .io = undefined, // dupDetail only touches gpa
@@ -14297,65 +14008,6 @@ test "parseAnswerRequest: explicit cancel and mismatched call id" {
 
 test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
-}
-
-test "toolResultMessage: result text serializes as a JSON string in every wire format" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    // Serialize a built message the same way buildBody does and return the bytes.
-    const enc = struct {
-        fn run(a: Allocator, msg: Value) ![]u8 {
-            var aw: Io.Writer.Allocating = .init(a);
-            var s: std.json.Stringify = .{ .writer = &aw.writer };
-            try s.write(msg);
-            return aw.toOwnedSlice();
-        }
-    }.run;
-
-    // Responses (codex): result lives in `output`. This is the field that
-    // produced "'input[N].output[0]': expected an object, got an integer"
-    // when a raw []u8 reached the serializer as a byte array. Assert both the
-    // Value tag and the on-the-wire shape are a string, never an array.
-    {
-        const msg = try toolResultMessage(arena, .responses, "call_1", "hello world", false);
-        try std.testing.expect(msg.object.get("output").? == .string);
-        try std.testing.expectEqualStrings("function_call_output", msg.object.get("type").?.string);
-        try std.testing.expectEqualStrings("call_1", msg.object.get("call_id").?.string);
-        const json = try enc(arena, msg);
-        try std.testing.expect(std.mem.indexOf(u8, json, "\"output\":\"hello world\"") != null);
-        // Guard against the regression directly: output must not be a JSON array.
-        try std.testing.expect(std.mem.indexOf(u8, json, "\"output\":[") == null);
-    }
-
-    // OpenAI chat-completions: result in `content` (string); errors inline an
-    // [error] prefix rather than a separate flag.
-    {
-        const ok = try toolResultMessage(arena, .openai, "call_2", "result text", false);
-        try std.testing.expect(ok.object.get("content").? == .string);
-        try std.testing.expectEqualStrings("tool", ok.object.get("role").?.string);
-        try std.testing.expectEqualStrings("result text", ok.object.get("content").?.string);
-
-        const err = try toolResultMessage(arena, .openai, "call_2", "boom", true);
-        try std.testing.expect(err.object.get("content").? == .string);
-        try std.testing.expectEqualStrings("[error] boom", err.object.get("content").?.string);
-    }
-
-    // Anthropic: result in `content` (string) block; errors carry a separate
-    // is_error flag that is absent on success.
-    {
-        const ok = try toolResultMessage(arena, .anthropic, "call_3", "tool said hi", false);
-        try std.testing.expect(ok.object.get("content").? == .string);
-        try std.testing.expectEqualStrings("tool_result", ok.object.get("type").?.string);
-        try std.testing.expectEqualStrings("call_3", ok.object.get("tool_use_id").?.string);
-        try std.testing.expect(ok.object.get("is_error") == null);
-
-        const err = try toolResultMessage(arena, .anthropic, "call_3", "nope", true);
-        try std.testing.expect(err.object.get("is_error").?.bool == true);
-        const json = try enc(arena, err);
-        try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":\"nope\"") != null);
-    }
 }
 
 test "Agent.firstWord: splits the command on the first whitespace" {
