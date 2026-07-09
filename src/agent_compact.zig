@@ -9,10 +9,12 @@ const Io = std.Io;
 const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
-const ToolCall = main_mod.ToolCall;
+const agent_mod = @import("agent.zig");
+const repl_glue = @import("repl_glue.zig");
+const Agent = agent_mod.Agent;
+const ToolCall = tools_mod.ToolCall;
 const ExecResult = tools_mod.ExecResult;
-const parseEvalScore = main_mod.parseEvalScore;
+const parseEvalScore = repl_glue.parseEvalScore;
 const prompts = @import("prompts.zig");
 const compact_instruction = prompts.compact_instruction;
 

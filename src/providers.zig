@@ -22,10 +22,12 @@ const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
-const Keys = main_mod.Keys;
-const Provider = main_mod.Provider;
-const provider_specs = main_mod.provider_specs;
+const agent_mod = @import("agent.zig");
+const provider_mod = @import("provider.zig");
+const Agent = agent_mod.Agent;
+const Keys = provider_mod.Keys;
+const Provider = provider_mod.Provider;
+const provider_specs = provider_mod.provider_specs;
 /// Pull plain text out of a message's content (string, or the text blocks of a
 /// content array — anthropic "text", openai "text", responses "input/output_text").
 pub fn extractText(arena: Allocator, m: Value) []const u8 {

@@ -327,9 +327,9 @@ test "priceFor: known model priced, unknown is null" {
 }
 
 test "resolveModelName exact aliases and miss" {
-    const main_mod = @import("main.zig");
-    const Keys = main_mod.Keys;
-    const provider_specs = main_mod.provider_specs;
+    const provider_mod = @import("provider.zig");
+    const Keys = provider_mod.Keys;
+    const provider_specs = provider_mod.provider_specs;
     const keys = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
     try std.testing.expect(resolveModelName(keys, "gpt-5.5") != null); // exact name
     try std.testing.expectEqualStrings("glm-5.2", resolveModelName(keys, "glm5.2").?); // natural alias

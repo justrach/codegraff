@@ -8,13 +8,18 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
-const Keys = main_mod.Keys;
-const ToolCall = main_mod.ToolCall;
-const saveSession = main_mod.saveSession;
-const unixMs = main_mod.unixMs;
-const utf8Prefix = main_mod.utf8Prefix;
-const session_ext = main_mod.session_ext;
+const agent_mod = @import("agent.zig");
+const provider_mod = @import("provider.zig");
+const util = @import("util.zig");
+const tools_mod = @import("tools.zig");
+const session_mod = @import("session.zig");
+const Agent = agent_mod.Agent;
+const Keys = provider_mod.Keys;
+const ToolCall = tools_mod.ToolCall;
+const saveSession = session_mod.saveSession;
+const unixMs = util.unixMs;
+const utf8Prefix = util.utf8Prefix;
+const session_ext = session_mod.session_ext;
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;

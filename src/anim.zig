@@ -16,7 +16,8 @@ const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
 const root = @import("main.zig");
-const Approvals = root.Approvals;
+const approvals_mod = @import("approvals.zig");
+const Approvals = approvals_mod.Approvals;
 
 // Named single-line indicators for the model-wait spinner, ported in spirit
 // from arpagon/pi-animations (MIT). Plain Unicode + ANSI 256-color only (no

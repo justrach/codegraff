@@ -18,6 +18,7 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
+const provider_mod = @import("provider.zig");
 /// A normalized tool invocation — same shape for both providers.
 pub const ToolCall = struct {
     id: []const u8,
@@ -58,7 +59,7 @@ pub fn parseAnswerRequest(parsed: Value, expected_call_id: []const u8) !AnswerRe
     const text = if (parsed.object.get("text")) |v| (if (v == .string) v.string else "") else "";
     return .{ .text = text, .cancelled = cancelled, .call_id = call_id };
 }
-const Provider = main_mod.Provider;
+const Provider = provider_mod.Provider;
 const harness_version = main_mod.harness_version;
 
 const mcp = @import("mcp.zig");

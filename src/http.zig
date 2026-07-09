@@ -10,8 +10,10 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
-const Provider = root.Provider;
-const Agent = root.Agent;
+const provider_mod = @import("provider.zig");
+const agent_mod = @import("agent.zig");
+const Provider = provider_mod.Provider;
+const Agent = agent_mod.Agent;
 const anthropic_version = root.anthropic_version;
 const kimi_user_agent = root.kimi_user_agent;
 

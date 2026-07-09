@@ -15,8 +15,9 @@ const pricing = @import("pricing.zig");
 const model_table = pricing.model_table;
 
 const root = @import("main.zig");
-const Provider = root.Provider;
-const provider_specs = root.provider_specs;
+const provider_mod = @import("provider.zig");
+const Provider = provider_mod.Provider;
+const provider_specs = provider_mod.provider_specs;
 
 /// Documentation of the `--json` stdio protocol, embedded verbatim in
 /// `--schema` output so SDK generators/users know the request/event contract.

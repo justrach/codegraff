@@ -45,8 +45,10 @@ const nextWord = input_util.nextWord;
 const addMark = input_util.addMark;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
-const saveSession = main_mod.saveSession;
+const agent_mod = @import("agent.zig");
+const session = @import("session.zig");
+const Agent = agent_mod.Agent;
+const saveSession = session.saveSession;
 
 /// History + unsent-draft navigation for the line editor (#101). Mirrors the
 /// GUI's promptHistoryNavigation.ts: stepping UP out of the fresh slot snapshots

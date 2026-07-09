@@ -9,8 +9,10 @@ const std = @import("std");
 const Io = std.Io;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
-const ToolCall = main_mod.ToolCall;
+const agent_mod = @import("agent.zig");
+const tools_mod = @import("tools.zig");
+const Agent = agent_mod.Agent;
+const ToolCall = tools_mod.ToolCall;
 
 // sseIndex lives in agent_stream.zig; reached through the Agent struct's
 // member alias.

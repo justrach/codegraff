@@ -13,9 +13,10 @@ const Allocator = std.mem.Allocator;
 // Back-import the root module for the few helpers that remain in main.zig. Zig
 // resolves the main<->serve import cycle fine (all runtime, no comptime dep).
 const root = @import("main.zig");
-const emitSchema = root.emitSchema;
+const schema = @import("schema.zig");
+const emitSchema = schema.emitSchema;
 const harness_version = root.harness_version;
-const schema_version = root.schema_version;
+const schema_version = schema.schema_version;
 
 const ServeConfig = struct {
     host: []const u8,

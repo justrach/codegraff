@@ -18,7 +18,8 @@ const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 
 const main_mod = @import("main.zig");
-const provider_specs = main_mod.provider_specs;
+const provider_mod = @import("provider.zig");
+const provider_specs = provider_mod.provider_specs;
 
 const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;

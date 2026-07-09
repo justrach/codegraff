@@ -6,11 +6,11 @@
 //! setup.
 //!
 //! Same dangling-pointer discipline as session_start.zig: `buildRootAgent`
-//! returns `main_mod.Agent` by value — safe because its pointer fields
+//! returns `agent_mod.Agent` by value — safe because its pointer fields
 //! (snapshots/client/tracer/approvals/registry) all reference storage the
 //! CALLER already placed at a stable, final address (passed in by pointer),
 //! not anything local to this function. `runReplCommand`/`runOneshotPrompt`/
-//! `restoreResumedSession`/`finalizeSession` take `root: *main_mod.Agent` —
+//! `restoreResumedSession`/`finalizeSession` take `root: *agent_mod.Agent` —
 //! by the time any of these run, `root` is already stable main()-owned
 //! storage, so passing its address around is ordinary pointer-passing.
 //! `setupSkillsAndTheme` hands back which reset `defer`s main() needs to
@@ -25,6 +25,9 @@ const Allocator = std.mem.Allocator;
 
 const args = @import("args.zig");
 const main_mod = @import("main.zig");
+const agent_mod = @import("agent.zig");
+const approvals_mod = @import("approvals.zig");
+const tools_mod = @import("tools.zig");
 const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const pricing = @import("pricing.zig");
@@ -54,7 +57,7 @@ const schema = @import("schema.zig");
 /// `root` is already a stable, fully-constructed main()-owned Agent by the
 /// time this is called, so taking its address here is safe (this helper
 /// only reads through the pointer, it never owns or returns Agent storage).
-pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *main_mod.Agent, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
+pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "repl"))) return false;
     var repl_ctx = repl_glue.ReplCtx{
         .io = io,
@@ -85,7 +88,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *main_
 /// denies anything not pre-approved instead of prompting (there's no one to
 /// ask). Moved out of main() verbatim (600-line goal); `root`/`tracer` are
 /// already stable main()-owned storage by the time this runs.
-pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *main_mod.Agent, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
+pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_mod.Agent, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
     main_mod.unattended = true;
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
@@ -139,7 +142,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *main_mo
 /// its own `defer` for `approvals.prefixes` right after the call (a `defer`
 /// registered inside this helper would fire at the WRONG time — when this
 /// function returns, not when main() does).
-pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, approvals: *main_mod.Approvals, flags: args.Flags, out: *Io.Writer, json_mode: bool) !void {
+pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, approvals: *approvals_mod.Approvals, flags: args.Flags, out: *Io.Writer, json_mode: bool) !void {
     approvals.* = .{ .yolo = flags.yolo_flag };
     const persisted_approvals = approvals.loadPersisted(io, gpa, arena);
 
@@ -147,21 +150,21 @@ pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ
     fleet.g_home = keys_cli.homeEnv(environ_map); // for /agents promote's personal tier
     fleet.g_agent_types = fleet.loadAgentTypes(io, arena, fleet.g_home); // builtin < ~/.harness/agents (personal) < ./.harness/agents (private)
     if (persisted_approvals > 0 and !json_mode and flags.oneshot_prompt == null) {
-        try out.print("{s}loaded {d} saved approval(s) from {s}{s}\n", .{ ansi.style.dim, persisted_approvals, main_mod.Approvals.settings_path, ansi.style.reset });
+        try out.print("{s}loaded {d} saved approval(s) from {s}{s}\n", .{ ansi.style.dim, persisted_approvals, approvals_mod.Approvals.settings_path, ansi.style.reset });
         try out.flush();
     }
     // Lifecycle hooks (pre_tool/post_tool/turn_end) from the same file.
     // (Per-skill opt-outs were loaded earlier, before the muonry auto-connect.)
     main_mod.g_hooks = hooks.loadHooks(io, arena);
     if (main_mod.g_hooks.total() > 0 and !json_mode and flags.oneshot_prompt == null) {
-        try out.print("{s}loaded {d} lifecycle hook(s) from {s} — /hooks lists them{s}\n", .{ ansi.style.dim, main_mod.g_hooks.total(), main_mod.Approvals.settings_path, ansi.style.reset });
+        try out.print("{s}loaded {d} lifecycle hook(s) from {s} — /hooks lists them{s}\n", .{ ansi.style.dim, main_mod.g_hooks.total(), approvals_mod.Approvals.settings_path, ansi.style.reset });
         try out.flush();
     }
 }
 
 /// Constructs the root Agent: snapshots/client/tracer/approvals/registry are
 /// all ALREADY stable main()-owned storage by the time this is called (the
-/// caller passes their addresses in), so this returns `main_mod.Agent` by
+/// caller passes their addresses in), so this returns `agent_mod.Agent` by
 /// value safely — its pointer fields reference external, already-placed
 /// storage, not anything local to this function (see this file's header).
 /// Also does the post-construction config (session name, persisted
@@ -178,16 +181,16 @@ pub fn buildRootAgent(
     out: *Io.Writer,
     in: *Io.Reader,
     registry: ?*mcp.Registry,
-    approvals: *main_mod.Approvals,
+    approvals: *approvals_mod.Approvals,
     tracer: *trace.Tracer,
     sys_normal: []const u8,
     sys_strict: []const u8,
     mcp_tools: []const mcp.Tool,
-    snaps: *main_mod.Snapshots,
+    snaps: *tools_mod.Snapshots,
     flags: args.Flags,
     telem_endpoint: []const u8,
-) !main_mod.Agent {
-    var root: main_mod.Agent = .{
+) !agent_mod.Agent {
+    var root: agent_mod.Agent = .{
         .snapshots = snaps,
         .gpa = gpa,
         .arena = arena,
@@ -235,7 +238,7 @@ pub fn buildRootAgent(
 /// resume-target reload for a resumed one-shot. Moved out of main() verbatim
 /// (600-line goal). Both are best-effort (`catch {}`), matching main()'s
 /// former inline behavior exactly.
-pub fn saveOrResumeSession(root: *main_mod.Agent, keys: provider_mod.Keys, arena: Allocator, flags: args.Flags) void {
+pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: provider_mod.Keys, arena: Allocator, flags: args.Flags) void {
     const will_resume = flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag;
     if (!will_resume) session.saveSession(root, arena, root.session_name) catch {};
     if (flags.oneshot_prompt != null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) {
@@ -249,7 +252,7 @@ pub fn saveOrResumeSession(root: *main_mod.Agent, keys: provider_mod.Keys, arena
 /// as what would trigger live compaction, summarizes up front instead of
 /// re-billing the whole thing on the first turn. Moved out of main()
 /// verbatim (600-line goal); `root` is already stable main()-owned storage.
-pub fn restoreResumedSession(io: Io, arena: Allocator, out: *Io.Writer, root: *main_mod.Agent, keys: provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
+pub fn restoreResumedSession(io: Io, arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, keys: provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
     if (!(flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag)) return;
     if (session.loadSession(root, keys, arena, root.session_name)) |_| {
         if (root.messages.items.len > 0) {
@@ -282,7 +285,7 @@ pub fn restoreResumedSession(io: Io, arena: Allocator, out: *Io.Writer, root: *m
 /// + the worktree checkpoint commit for any edits an interrupted/aborted
 /// final turn left uncommitted. Moved out of main() verbatim (600-line
 /// goal); `root` is already stable main()-owned storage.
-pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer, root: *main_mod.Agent, json_mode: bool) !void {
+pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, json_mode: bool) !void {
     if (!json_mode and root.messages.items.len > 0) {
         session.saveSession(root, arena, root.session_name) catch |err| {
             out.print("{s}⚠ session save failed: {t}{s}\n", .{ ansi.style.yellow, err, ansi.style.reset }) catch {};

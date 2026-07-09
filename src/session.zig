@@ -3,22 +3,24 @@
 //! plus the list/rename/age helpers behind `/sessions`, `/resume`, and the
 //! AI-title auto-rename. Split out of main.zig (600-line goal, #123).
 //!
-//! Every function here takes `*main_mod.Agent` (several params are named
-//! `root`, so the back-import is aliased `main_mod`, not `root`, to avoid
-//! shadowing). saveSession/loadSession/listSavedSessions/sessionAge/
-//! session_ext stay pub — commands_session.zig, commands_misc.zig, and
-//! readline.zig already back-import them as `main_mod.saveSession` etc.
+//! Every function here takes `*agent_mod.Agent` (several params are named
+//! `root`, matching the harness-wide root-agent convention). saveSession/
+//! loadSession/listSavedSessions/sessionAge/session_ext stay pub —
+//! commands_session.zig, commands_misc.zig, and readline.zig import them
+//! directly as `session.saveSession` etc.
 
 const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
-const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
-const Keys = main_mod.Keys;
-const unixMs = main_mod.unixMs;
-const utf8Prefix = main_mod.utf8Prefix;
+const agent_mod = @import("agent.zig");
+const provider_mod = @import("provider.zig");
+const util = @import("util.zig");
+const Agent = agent_mod.Agent;
+const Keys = provider_mod.Keys;
+const unixMs = util.unixMs;
+const utf8Prefix = util.utf8Prefix;
 
 pub const session_ext = ".session.json";
 const sessions_dir = ".graff/sessions"; // title-named session files live here (resume reads this)

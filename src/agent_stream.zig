@@ -17,7 +17,8 @@ const Io = std.Io;
 const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
+const agent_mod = @import("agent.zig");
+const Agent = agent_mod.Agent;
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;

@@ -22,7 +22,8 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
-const Provider = main_mod.Provider;
+const provider_mod = @import("provider.zig");
+const Provider = provider_mod.Provider;
 const ReasoningEffort = main_mod.ReasoningEffort;
 
 const mcp = @import("mcp.zig");

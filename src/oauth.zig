@@ -22,7 +22,7 @@ const strFieldObj = util.strFieldObj;
 const intFieldObj = util.intFieldObj;
 
 const root = @import("main.zig");
-const unixMs = root.unixMs;
+const unixMs = util.unixMs;
 const kimi_user_agent = root.kimi_user_agent;
 const codegraff_device_base = root.codegraff_device_base;
 
@@ -215,7 +215,6 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
     try out.print("✓ logged into Codex (account {s}…) — wrote ~/.codex/auth.json. /model gpt-5.5\n", .{account[0..@min(account.len, 8)]});
     try out.flush();
 }
-
 
 /// Extract a query-string parameter from an HTTP request line ("GET /p?k=v…").
 fn queryParam(req_line: []const u8, key: []const u8) ?[]const u8 {
@@ -429,7 +428,6 @@ fn httpJsonPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body:
     if (v != .object) return error.BadOAuthResponse;
     return v.object;
 }
-
 
 pub fn codegraffLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
     var obuf: [4096]u8 = undefined;

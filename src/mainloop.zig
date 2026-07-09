@@ -30,6 +30,9 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
+const util = @import("util.zig");
+const agent_mod = @import("agent.zig");
+const provider_mod = @import("provider.zig");
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
@@ -62,8 +65,8 @@ pub const Ctx = struct {
     gpa: Allocator,
     io: Io,
     arena: Allocator,
-    root: *main_mod.Agent,
-    keys: *main_mod.Keys,
+    root: *agent_mod.Agent,
+    keys: *provider_mod.Keys,
     out: *Io.Writer,
     in: *Io.Reader,
     history: *std.ArrayList([]const u8),
@@ -114,7 +117,7 @@ pub fn run(ctx: *Ctx) !void {
             if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
         }
 
-        if (!main_mod.json_mode and main_mod.isSlashCommandLine(line) and loop_prompt == null) {
+        if (!main_mod.json_mode and repl_glue.isSlashCommandLine(line) and loop_prompt == null) {
             // Bare "/" on a TTY: open the filterable command menu.
             if (ctx.interactive and line.len == 1) {
                 if (pickers.listPicker(ctx.root, ctx.arena, ctx.out, "Command ›", &pickers.command_menu)) |idx| {
@@ -259,15 +262,15 @@ pub fn run(ctx: *Ctx) !void {
                         return if (o.get(k)) |v| (if (v == .string) v.string else "") else "";
                     }
                 };
-                const judge_id = main_mod.utf8Prefix(reqStr.s(parsed.object, "judge_id"), 64);
-                const artifact_sha = main_mod.utf8Prefix(reqStr.s(parsed.object, "artifact_sha"), 64);
+                const judge_id = util.utf8Prefix(reqStr.s(parsed.object, "judge_id"), 64);
+                const artifact_sha = util.utf8Prefix(reqStr.s(parsed.object, "artifact_sha"), 64);
                 // DGM lever: when the score omits eval_set_hash but an --eval suite is
                 // configured, stamp the suite's stable fingerprint so scores group into a
                 // promotable (niche × tier × suite) cell. Same --eval cmd → same hash
                 // across installs → the fleet can rank + promote a champion.
                 var esh_buf: [16]u8 = undefined;
                 const eval_set_hash = eshblk: {
-                    const provided = main_mod.utf8Prefix(reqStr.s(parsed.object, "eval_set_hash"), 64);
+                    const provided = util.utf8Prefix(reqStr.s(parsed.object, "eval_set_hash"), 64);
                     if (provided.len > 0) break :eshblk provided;
                     if (ctx.root.eval_cmd) |c| {
                         esh_buf = scoring.promptFingerprint(c);
@@ -276,7 +279,7 @@ pub fn run(ctx: *Ctx) !void {
                     break :eshblk "";
                 };
                 const req_run = reqStr.s(parsed.object, "run_id");
-                const run_id: []const u8 = if (req_run.len > 0) main_mod.utf8Prefix(req_run, 64) else &scoring.g_run_id;
+                const run_id: []const u8 = if (req_run.len > 0) util.utf8Prefix(req_run, 64) else &scoring.g_run_id;
                 const sig = scoring.signScore(sha, parent, sc, run_id, judge_id, artifact_sha, eval_set_hash);
                 const signed = scoring.g_score_key != null;
                 if (trace.g_traj) |tj| tj.node(.{
@@ -284,7 +287,7 @@ pub fn run(ctx: *Ctx) !void {
                     .prompt_sha = sha,
                     .parent_sha = parent,
                     .score = sc,
-                    .notes = main_mod.utf8Prefix(notes, 200),
+                    .notes = util.utf8Prefix(notes, 200),
                     .run_id = run_id,
                     .judge_id = judge_id,
                     .artifact_sha = artifact_sha,
@@ -373,7 +376,7 @@ pub fn run(ctx: *Ctx) !void {
         var title_fut: ?Io.Future(?[]const u8) = null;
         if (!main_mod.json_mode and ctx.root.ai_title and !ctx.root.ai_title_done) {
             ctx.root.ai_title_done = true;
-            title_fut = ctx.io.async(main_mod.titleTask, .{ ctx.gpa, ctx.io, ctx.root.client, ctx.root.provider, base_msg });
+            title_fut = ctx.io.async(title_mod.titleTask, .{ ctx.gpa, ctx.io, ctx.root.client, ctx.root.provider, base_msg });
         }
         defer if (title_fut) |*f| {
             _ = f.await(ctx.io);
@@ -456,7 +459,7 @@ pub fn run(ctx: *Ctx) !void {
                 .ms = turn_ms,
                 .prompt_sha = &fp,
                 .prompt_mutated = !std.mem.eql(u8, &fp, &prev_prompt_fp),
-                .task = main_mod.utf8Prefix(base_msg, 160),
+                .task = util.utf8Prefix(base_msg, 160),
                 .tools = turn_tools,
                 .ok = turn_ok,
                 .context_tokens = ctx.root.last_context_tokens,

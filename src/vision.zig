@@ -12,8 +12,10 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
-const Provider = main_mod.Provider;
+const agent_mod = @import("agent.zig");
+const provider_mod = @import("provider.zig");
+const Agent = agent_mod.Agent;
+const Provider = provider_mod.Provider;
 const input_util = @import("input_util.zig");
 const isImagePath = input_util.isImagePath;
 

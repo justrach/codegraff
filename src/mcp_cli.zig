@@ -10,8 +10,9 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
+const skills = @import("skills.zig");
 const mcp_config_path = root.mcp_config_path;
-const companion_servers = root.companion_servers;
+const companion_servers = skills.companion_servers;
 
 fn trustedMcpEntry(name: []const u8, cfg: Value) bool {
     if (cfg != .object) return false;

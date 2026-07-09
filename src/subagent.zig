@@ -15,7 +15,10 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
+const agent_mod = @import("agent.zig");
+const util = @import("util.zig");
+const repl_glue = @import("repl_glue.zig");
+const Agent = agent_mod.Agent;
 
 const tools = @import("tools.zig");
 const ToolCtx = tools.ToolCtx;
@@ -133,7 +136,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             .prompt_sha = &fp,
             .prompt_mutated = sys_override != null,
             .niche = niche, // MAP-Elites niche, so a local /agents promote can group scores by it
-            .task = main_mod.utf8Prefix(prompt, 160),
+            .task = util.utf8Prefix(prompt, 160),
             .tools = used_tools,
             .ok = run_ok,
             .context_tokens = agent.last_context_tokens,
@@ -173,7 +176,7 @@ pub fn judgeTask(ctx: ToolCtx, prompt: []const u8) ToolOutput {
 /// task on a 0-100 scale (see scoreVariants). Bounded: the task spec and output
 /// tail are truncated so a fat phase can't blow up the judge's context.
 fn variantJudgePrompt(arena: Allocator, title: []const u8, task: []const u8, output: []const u8) ![]const u8 {
-    const spec = main_mod.utf8Prefix(task, 1200);
+    const spec = util.utf8Prefix(task, 1200);
     const work = if (output.len > 2000) output[output.len - 2000 ..] else output;
     return std.fmt.allocPrint(arena,
         \\An agent variant ran the task below as part of the "{s}" phase of a workflow.
@@ -246,7 +249,7 @@ pub fn scoreVariants(
         const jout = jf.await(ctx.io);
         defer ctx.gpa.free(jout.text);
         if (jout.is_error) continue;
-        const s = main_mod.parseEvalScore(jout.text) orelse continue;
+        const s = repl_glue.parseEvalScore(jout.text) orelse continue;
         if (s <= 0) continue; // skip the total-failure 0 (don't pollute the cell mean), mirroring runEval
         const genome_fp = promptFingerprint(overrides[i].?);
         const esh_fp = promptFingerprint(raws[i]);
@@ -278,5 +281,5 @@ test "variantJudgePrompt: bounded, names the phase, keeps the score contract" {
     // The `score:` contract parseEvalScore depends on is spelled out…
     try std.testing.expect(std.mem.indexOf(u8, p, "score: <N>") != null);
     // …and it round-trips: a judge tail like this parses back to the score.
-    try std.testing.expectEqual(@as(?f64, 87), main_mod.parseEvalScore("ok\nscore: 87"));
+    try std.testing.expectEqual(@as(?f64, 87), repl_glue.parseEvalScore("ok\nscore: 87"));
 }

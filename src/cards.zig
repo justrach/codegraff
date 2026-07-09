@@ -17,7 +17,8 @@ const term = @import("term.zig");
 const termCols = term.termCols;
 
 const root = @import("main.zig");
-const utf8Prefix = root.utf8Prefix;
+const util = @import("util.zig");
+const utf8Prefix = util.utf8Prefix;
 
 // ── Subagent cards (#51) ───────────────────────────────────────────────────
 //

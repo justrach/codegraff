@@ -11,8 +11,9 @@ const Io = std.Io;
 const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
-const ToolCall = main_mod.ToolCall;
+const agent_mod = @import("agent.zig");
+const Agent = agent_mod.Agent;
+const ToolCall = tools_mod.ToolCall;
 const ExecResult = tools_mod.ExecResult;
 
 const AnswerRequest = tools_mod.AnswerRequest;

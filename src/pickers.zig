@@ -27,10 +27,13 @@ const providers = @import("providers.zig");
 const switchProvider = providers.switchProvider;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
-const Keys = main_mod.Keys;
-const provider_specs = main_mod.provider_specs;
-const storeKey = main_mod.storeKey;
+const agent_mod = @import("agent.zig");
+const provider_mod = @import("provider.zig");
+const keys_cli = @import("keys_cli.zig");
+const Agent = agent_mod.Agent;
+const Keys = provider_mod.Keys;
+const provider_specs = provider_mod.provider_specs;
+const storeKey = keys_cli.storeKey;
 
 /// Case-insensitive subsequence match (fzf-style): every char of `needle`
 /// appears in `hay` in order, gaps allowed — so "gpt5.5" matches "gpt-5.5".

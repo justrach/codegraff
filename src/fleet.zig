@@ -17,8 +17,10 @@ const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
 
 const root = @import("main.zig");
-const Telemetry = root.Telemetry;
-const trajectory_path = root.trajectory_path;
+const trace = @import("trace.zig");
+const telemetry_mod = @import("telemetry.zig");
+const Telemetry = telemetry_mod.Telemetry;
+const trajectory_path = trace.trajectory_path;
 
 // ── Agent types (the MAP-Elites niches) ─────────────────────────────────────
 

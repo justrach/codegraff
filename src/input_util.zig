@@ -25,9 +25,11 @@ const pricing = @import("pricing.zig");
 const model_table = pricing.model_table;
 
 const main_mod = @import("main.zig");
-const provider_specs = main_mod.provider_specs;
+const provider_mod = @import("provider.zig");
+const tools_mod = @import("tools.zig");
+const provider_specs = provider_mod.provider_specs;
 const repl_commands = main_mod.repl_commands;
-const bash_stdout_cap = main_mod.bash_stdout_cap;
+const bash_stdout_cap = tools_mod.bash_stdout_cap;
 
 pub var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 

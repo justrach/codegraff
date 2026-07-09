@@ -12,8 +12,10 @@ const std = @import("std");
 const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
-const ToolCall = main_mod.ToolCall;
+const agent_mod = @import("agent.zig");
+const tools_mod = @import("tools.zig");
+const Agent = agent_mod.Agent;
+const ToolCall = tools_mod.ToolCall;
 
 const messages_mod = @import("messages.zig");
 const toolResultMessage = messages_mod.toolResultMessage;

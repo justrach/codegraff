@@ -17,7 +17,9 @@ const std = @import("std");
 const Io = std.Io;
 
 const main_mod = @import("main.zig");
-const Agent = main_mod.Agent;
+const agent_mod = @import("agent.zig");
+const repl_glue = @import("repl_glue.zig");
+const Agent = agent_mod.Agent;
 
 const terminal = @import("term.zig");
 const tty = terminal.tty;
@@ -121,7 +123,7 @@ pub fn escPressed(echo: bool) bool {
                 if (echo and main_mod.g_steer_echoed) {
                     var qbuf: [64]u8 = undefined;
                     const qmsg = std.fmt.bufPrint(&qbuf, "  \x1b[2m[queued · {d} waiting]\x1b[0m\n", .{main_mod.g_steer_queue.items.len}) catch "\n";
-                    main_mod.steerEcho(qmsg);
+                    repl_glue.steerEcho(qmsg);
                 }
             } else if (main_mod.g_steer_queue.items.len > 0) {
                 // Double-enter (empty line + queue non-empty): force —
@@ -131,8 +133,8 @@ pub fn escPressed(echo: bool) bool {
                 esc_found = true;
                 main_mod.g_force_interrupt = true;
                 if (echo) {
-                    if (main_mod.g_steer_echoed) main_mod.steerEcho("\n");
-                    main_mod.steerEcho("\x1b[33m↳ force › interrupting…\x1b[0m\n");
+                    if (main_mod.g_steer_echoed) repl_glue.steerEcho("\n");
+                    repl_glue.steerEcho("\x1b[33m↳ force › interrupting…\x1b[0m\n");
                 }
             }
             main_mod.g_steer_echoed = false;
@@ -141,7 +143,7 @@ pub fn escPressed(echo: bool) bool {
         } else if (c == 0x7f or c == 0x08) { // backspace / Ctrl-H
             if (main_mod.g_steer_buf.items.len > 0) {
                 _ = main_mod.g_steer_buf.pop();
-                if (echo) main_mod.steerEcho("\x08 \x08");
+                if (echo) repl_glue.steerEcho("\x08 \x08");
             }
             continue;
         } else if (c == 0x14) { // Ctrl-T: fold/unfold the live Thinking block (#92)
@@ -154,10 +156,10 @@ pub fn escPressed(echo: bool) bool {
         if (echo) {
             if (!main_mod.g_steer_echoed) {
                 main_mod.g_steer_visible.store(true, .release);
-                main_mod.steerEcho("\n\x1b[36m↳ steer ›\x1b[0m ");
+                repl_glue.steerEcho("\n\x1b[36m↳ steer ›\x1b[0m ");
                 main_mod.g_steer_echoed = true;
             }
-            main_mod.steerEcho(buf[i .. i + 1]);
+            repl_glue.steerEcho(buf[i .. i + 1]);
         }
     }
     return esc_found;

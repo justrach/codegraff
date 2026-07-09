@@ -11,8 +11,10 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
-const ToolOutput = root.ToolOutput;
-const Agent = root.Agent;
+const agent_mod = @import("agent.zig");
+const tools_mod = @import("tools.zig");
+const ToolOutput = tools_mod.ToolOutput;
+const Agent = agent_mod.Agent;
 
 const CappedRun = struct {
     term: std.process.Child.Term,

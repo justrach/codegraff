@@ -13,7 +13,8 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
-const ToolCall = main_mod.ToolCall;
+const util = @import("util.zig");
+const ToolCall = tools.ToolCall;
 
 const tools = @import("tools.zig");
 const ToolCtx = tools.ToolCtx;
@@ -238,7 +239,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // API calls. Cap what reaches the model and point it at targeted reads.
         if (text.len > codedb_result_cap) {
             defer gpa.free(text);
-            const head = main_mod.utf8Prefix(text, codedb_result_cap);
+            const head = util.utf8Prefix(text, codedb_result_cap);
             return .{ .text = try std.fmt.allocPrint(gpa, "{s}\n[codedb output truncated at {d} KB — prefer targeted queries: outline <path>, symbol <name> --body, or search, instead of whole-file reads]", .{ head, codedb_result_cap / 1024 }) };
         }
         return .{ .text = text };

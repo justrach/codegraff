@@ -20,8 +20,10 @@ const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
 
 const main_mod = @import("main.zig");
-const Approvals = main_mod.Approvals;
-const runCapped = main_mod.runCapped;
+const approvals_mod = @import("approvals.zig");
+const jobs = @import("jobs.zig");
+const Approvals = approvals_mod.Approvals;
+const runCapped = jobs.runCapped;
 
 /// Codex-style optional skills: known companion tools the harness quietly
 /// upgrades itself with when they're installed. Progressive disclosure, same

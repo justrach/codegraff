@@ -15,8 +15,10 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
-const Approvals = root.Approvals;
-const win = root.win;
+const approvals_mod = @import("approvals.zig");
+const terminal = @import("term.zig");
+const Approvals = approvals_mod.Approvals;
+const win = terminal.win;
 
 /// Lifecycle hooks (codex/Claude-style), loaded once at startup from
 /// .harness/settings.json's "hooks" object. Three events:

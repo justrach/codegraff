@@ -11,8 +11,10 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
-const Provider = root.Provider;
-const utf8Prefix = root.utf8Prefix;
+const provider_mod = @import("provider.zig");
+const util = @import("util.zig");
+const Provider = provider_mod.Provider;
+const utf8Prefix = util.utf8Prefix;
 
 pub fn textMessage(arena: Allocator, role: []const u8, text: []const u8) !Value {
     var msg: std.json.ObjectMap = .empty;

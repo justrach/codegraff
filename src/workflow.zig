@@ -13,6 +13,7 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
+const util = @import("util.zig");
 
 const tools = @import("tools.zig");
 const ToolCtx = tools.ToolCtx;
@@ -44,7 +45,7 @@ const prev_tail_keep = 600;
 /// outputs pass through untouched; over the cap, head + truncation marker + tail.
 fn cappedPrevBody(arena: Allocator, text: []const u8) []const u8 {
     if (text.len <= max_prev_per_task) return text;
-    const head = main_mod.utf8Prefix(text, max_prev_per_task - prev_tail_keep);
+    const head = util.utf8Prefix(text, max_prev_per_task - prev_tail_keep);
     const tail = text[text.len - prev_tail_keep ..];
     return std.fmt.allocPrint(arena, "{s}\n\n…[{d} chars truncated — full result in the inspect file below]…\n\n{s}", .{ head, text.len - head.len - tail.len, tail }) catch text;
 }
