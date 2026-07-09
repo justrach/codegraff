@@ -112,6 +112,7 @@ test {
     _ = trace;
     _ = cards;
     _ = jobs;
+    _ = title_mod;
 }
 
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
@@ -664,185 +665,19 @@ pub var g_worktree_autocommit: bool = true; // --no-autocommit turns off the per
 
 /// Short task label for terminal/TUI headers. Mirrors the GUI's first-prompt
 /// fallback: use the user's first message as a compact tab/session title.
-fn titleFromPrompt(prompt: []const u8) []const u8 {
-    const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
-    if (trimmed.len == 0) return "Chat";
-    var end: usize = 0;
-    var codepoints: usize = 0;
-    while (end < trimmed.len and codepoints < 64) {
-        if (trimmed[end] == '\n' or trimmed[end] == '\r' or trimmed[end] == '\t') break;
-        const cp_len = std.unicode.utf8ByteSequenceLength(trimmed[end]) catch 1;
-        end += cp_len;
-        codepoints += 1;
-    }
-    var out = std.mem.trim(u8, trimmed[0..@min(end, trimmed.len)], " \t\r\n");
-    if (out.len == 0) return "Chat";
-    if (codepoints >= 64 and end < trimmed.len) {
-        if (std.mem.lastIndexOfScalar(u8, out, ' ')) |sp| {
-            if (sp >= 12) out = std.mem.trim(u8, out[0..sp], " ");
-        }
-    }
-    return out;
-}
-
-fn folderBasename(path: []const u8) []const u8 {
-    var end = path.len;
-    while (end > 1 and path[end - 1] == '/') end -= 1;
-    const trimmed = path[0..end];
-    if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |idx| return trimmed[idx + 1 ..];
-    return trimmed;
-}
-
-fn firstUserTitle(arena: Allocator, msgs: std.json.Array) []const u8 {
-    for (msgs.items) |m| {
-        if (m != .object) continue;
-        const role = if (m.object.get("role")) |r| (if (r == .string) r.string else "") else "";
-        if (!std.mem.eql(u8, role, "user")) continue;
-        return titleFromPrompt(extractText(arena, m));
-    }
-    return "Chat";
-}
-
-fn setTerminalTitle(w: *Io.Writer, title: []const u8, folder: []const u8) void {
-    if (!use_color or json_mode) return;
-    const folder_name = folderBasename(folder);
-    // OSC 0 is conventional xterm title; OSC 1/2 make iTerm/Ghostty-style tab
-    // and window titles update too instead of leaving the launch command there.
-    w.print("\x1b]0;{s} — {s}\x07\x1b]1;{s} — {s}\x07\x1b]2;{s} — {s}\x07", .{ title, folder_name, title, folder_name, title, folder_name }) catch return;
-    w.flush() catch return;
-}
-
-fn printSessionHeader(w: *Io.Writer, title: []const u8, folder: []const u8) !void {
-    if (json_mode) return;
-    try w.print("\n{s}╭─ Codegraff{s}\n{s}│ Working on:{s} {s}\n{s}│ Folder:{s} {s}\n{s}╰────────────────────────────{s}\n", .{
-        style.dim,   style.reset,
-        style.dim,   style.reset,
-        title,       style.dim,
-        style.reset, folder,
-        style.dim,   style.reset,
-    });
-    try w.flush();
-}
-
-/// Extracts the reasoning/thinking text from one streamed SSE delta object for
-/// the given provider wire format, or "" when this delta carries no reasoning.
-/// deepseek/openai stream `reasoning_content`, anthropic a `thinking_delta`,
-/// codex/responses a `response.reasoning_summary_text.delta`.
-fn reasoningDelta(kind: Provider.Kind, obj: std.json.ObjectMap) []const u8 {
-    return switch (kind) {
-        .anthropic => blk: {
-            const d = obj.get("delta") orelse break :blk "";
-            if (d != .object) break :blk "";
-            const dt = d.object.get("type") orelse break :blk "";
-            if (dt != .string or !std.mem.eql(u8, dt.string, "thinking_delta")) break :blk "";
-            const x = d.object.get("thinking") orelse break :blk "";
-            break :blk if (x == .string) x.string else "";
-        },
-        .openai => blk: {
-            const choices = obj.get("choices") orelse break :blk "";
-            if (choices != .array or choices.array.items.len == 0) break :blk "";
-            const c0 = choices.array.items[0];
-            if (c0 != .object) break :blk "";
-            const d = c0.object.get("delta") orelse break :blk "";
-            if (d != .object) break :blk "";
-            const x = d.object.get("reasoning_content") orelse d.object.get("reasoning") orelse break :blk "";
-            break :blk if (x == .string) x.string else "";
-        },
-        .responses => blk: {
-            const t = obj.get("type") orelse break :blk "";
-            if (t != .string or !std.mem.eql(u8, t.string, "response.reasoning_summary_text.delta")) break :blk "";
-            const x = obj.get("delta") orelse break :blk "";
-            break :blk if (x == .string) x.string else "";
-        },
-    };
-}
-
-/// Pulls the assistant's text out of a non-streamed completion response for the
-/// given provider wire format — the shape both compaction and AI title naming
-/// read back.
-fn assistantText(kind: Provider.Kind, root: std.json.ObjectMap) []const u8 {
-    return switch (kind) {
-        .anthropic => blk: {
-            const content = root.get("content") orelse break :blk "";
-            if (content != .array) break :blk "";
-            for (content.array.items) |block| {
-                if (block != .object) continue;
-                const bt = if (block.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-                if (std.mem.eql(u8, bt, "text"))
-                    if (block.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
-            }
-            break :blk "";
-        },
-        .openai => blk: {
-            const choices = root.get("choices") orelse break :blk "";
-            if (choices != .array or choices.array.items.len == 0) break :blk "";
-            const c0 = choices.array.items[0];
-            if (c0 != .object) break :blk "";
-            const message = c0.object.get("message") orelse break :blk "";
-            if (message != .object) break :blk "";
-            const c = message.object.get("content") orelse break :blk "";
-            break :blk if (c == .string) c.string else "";
-        },
-        .responses => blk: {
-            const output = root.get("output") orelse break :blk "";
-            if (output != .array) break :blk "";
-            for (output.array.items) |item| {
-                if (item != .object) continue;
-                const it = if (item.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-                if (!std.mem.eql(u8, it, "message")) continue;
-                if (item.object.get("content")) |c| if (c == .array) {
-                    for (c.array.items) |b| {
-                        if (b != .object) continue;
-                        const bt = if (b.object.get("type")) |x| (if (x == .string) x.string else "") else "";
-                        if (std.mem.eql(u8, bt, "output_text")) {
-                            if (b.object.get("text")) |txt| if (txt == .string) break :blk txt.string;
-                        }
-                    }
-                };
-            }
-            break :blk "";
-        },
-    };
-}
-
-/// Strips matched wrapping quotes/backticks (ASCII and curly), repeatedly, that a
-/// model may add around a one-line title — `"'Fix bug'"` becomes `Fix bug`.
-fn stripWrappingQuotes(s_in: []const u8) []const u8 {
-    var s = s_in;
-    const pairs = [_][2][]const u8{
-        .{ "\"", "\"" },
-        .{ "'", "'" },
-        .{ "`", "`" },
-        .{ "“", "”" },
-        .{ "‘", "’" },
-    };
-    var changed = true;
-    while (changed) {
-        changed = false;
-        for (pairs) |p| {
-            if (s.len >= p[0].len + p[1].len and std.mem.startsWith(u8, s, p[0]) and std.mem.endsWith(u8, s, p[1])) {
-                s = std.mem.trim(u8, s[p[0].len .. s.len - p[1].len], " \t");
-                changed = true;
-            }
-        }
-    }
-    return s;
-}
-
-/// Normalizes a model's raw reply into a tab-label title: first line only, drop a
-/// leading "Title:" label and wrapping quotes, trim trailing sentence punctuation,
-/// then cap to one line at a word boundary (via titleFromPrompt). Returns null
-/// when nothing usable remains, so the caller keeps the mechanical title.
-fn cleanTitle(raw: []const u8) ?[]const u8 {
-    var s = std.mem.trim(u8, raw, " \t\r\n");
-    if (std.mem.indexOfScalar(u8, s, '\n')) |nl| s = std.mem.trim(u8, s[0..nl], " \t\r");
-    if (s.len >= 6 and std.ascii.eqlIgnoreCase(s[0..6], "title:")) s = std.mem.trim(u8, s[6..], " \t");
-    s = stripWrappingQuotes(s);
-    while (s.len > 0 and (s[s.len - 1] == '.' or s[s.len - 1] == '!' or s[s.len - 1] == '?')) s = s[0 .. s.len - 1];
-    s = std.mem.trim(u8, s, " \t");
-    if (s.len == 0) return null;
-    return titleFromPrompt(s);
-}
+// Session-title + header rendering + provider-response text parsers live in
+// title.zig (600-line goal). All 9 helpers aliased back so call sites (incl.
+// the Agent-coupled titleTask below) stay unqualified.
+const title_mod = @import("title.zig");
+const titleFromPrompt = title_mod.titleFromPrompt;
+const folderBasename = title_mod.folderBasename;
+const firstUserTitle = title_mod.firstUserTitle;
+const setTerminalTitle = title_mod.setTerminalTitle;
+const printSessionHeader = title_mod.printSessionHeader;
+const reasoningDelta = title_mod.reasoningDelta;
+const assistantText = title_mod.assistantText;
+const stripWrappingQuotes = title_mod.stripWrappingQuotes;
+const cleanTitle = title_mod.cleanTitle;
 
 /// Generate a terse tab-label title for the turn's first prompt — runs on its
 /// own arena + a throwaway one-message sub-Agent, so it can be spawned via
@@ -4264,7 +4099,7 @@ fn mcpCommand(io: Io, arena: Allocator, args: []const []const u8) !void {
 
 /// Pull plain text out of a message's content (string, or the text blocks of a
 /// content array — anthropic "text", openai "text", responses "input/output_text").
-fn extractText(arena: Allocator, m: Value) []const u8 {
+pub fn extractText(arena: Allocator, m: Value) []const u8 {
     if (m != .object) return "";
     const c = m.object.get("content") orelse return "";
     if (c == .string) return c.string;
@@ -12016,13 +11851,6 @@ test "Keys.defaultProvider: first keyed provider on its default model" {
     try std.testing.expectError(error.MissingKey, none.defaultProvider());
 }
 
-test "titleFromPrompt and folderBasename format TUI headers" {
-    try std.testing.expectEqualStrings("Chat", titleFromPrompt(" \n\t "));
-    try std.testing.expectEqualStrings("Refactor the auth middleware", titleFromPrompt("  Refactor the auth middleware\nwith tests"));
-    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/rach/src/codegraff"));
-    try std.testing.expectEqualStrings("codegraff", folderBasename("/Users/rach/src/codegraff/"));
-}
-
 test "ultracode toggle choices put the opposite state first" {
     try std.testing.expectEqualStrings("on", ultracodeToggleItems(false)[0].name);
     try std.testing.expectEqualStrings("off", ultracodeToggleItems(false)[1].name);
@@ -12259,30 +12087,6 @@ test "/bash slash command runs the bash tool and frees its gpa-allocated result"
     try std.testing.expect(std.mem.indexOf(u8, written, "leak-guard-XYZ") != null);
 }
 
-test "reasoningDelta extracts thinking/reasoning per provider wire format (#75)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const mk = struct {
-        fn p(al: Allocator, s: []const u8) std.json.ObjectMap {
-            return (std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable).object;
-        }
-    }.p;
-
-    // anthropic streams a thinking_delta inside content_block_delta
-    const an = mk(a, "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ponder\"}}");
-    try std.testing.expectEqualStrings("ponder", reasoningDelta(.anthropic, an));
-    // openai/deepseek stream reasoning_content (or reasoning) on choices[0].delta
-    const oa = mk(a, "{\"choices\":[{\"delta\":{\"reasoning_content\":\"hmm\"}}]}");
-    try std.testing.expectEqualStrings("hmm", reasoningDelta(.openai, oa));
-    // codex/responses stream a reasoning summary delta
-    const re = mk(a, "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"plan\"}");
-    try std.testing.expectEqualStrings("plan", reasoningDelta(.responses, re));
-    // a plain answer-text delta carries no reasoning
-    const txt = mk(a, "{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}");
-    try std.testing.expectEqualStrings("", reasoningDelta(.openai, txt));
-}
-
 test "slugifyTitle makes a filesystem-safe slug from an AI title" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -12291,95 +12095,4 @@ test "slugifyTitle makes a filesystem-safe slug from an AI title" {
     try std.testing.expectEqualStrings("add-dark-mode", slugifyTitle(a, "Add dark mode!!"));
     try std.testing.expectEqualStrings("planning-v2", slugifyTitle(a, "  Planning — v2  ")); // trim + collapse
     try std.testing.expectEqualStrings("", slugifyTitle(a, "🎉 ✨")); // symbol-only → "" (keeps the session-<ts> name)
-}
-
-test "firstUserTitle: first user message becomes the header title, else Chat (#83)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const mk = struct {
-        fn p(al: Allocator, s: []const u8) Value {
-            return std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable;
-        }
-    }.p;
-
-    var msgs = std.json.Array.init(a);
-    try msgs.append(mk(a, "{\"role\":\"assistant\",\"content\":\"hi\"}"));
-    try msgs.append(mk(a, "{\"role\":\"user\",\"content\":\"Fix the parser\\nmore detail\"}"));
-    try std.testing.expectEqualStrings("Fix the parser", firstUserTitle(a, msgs));
-
-    const empty = std.json.Array.init(a);
-    try std.testing.expectEqualStrings("Chat", firstUserTitle(a, empty));
-}
-
-test "titleFromPrompt: truncates long prompts at a word boundary, UTF-8 intact (#83)" {
-    const long = "Refactor the streaming parser and add tests for partial UTF-8 edge cases that panic";
-    const t = titleFromPrompt(long);
-    try std.testing.expect(t.len < long.len); // capped
-    try std.testing.expect(std.mem.startsWith(u8, long, t)); // a clean prefix
-    try std.testing.expect(t[t.len - 1] != ' '); // trailing space trimmed
-    // a short multibyte prompt is returned whole, never split mid-codepoint
-    try std.testing.expectEqualStrings("héllo wörld", titleFromPrompt("héllo wörld"));
-}
-
-test "printSessionHeader renders the working-on title and folder (#83)" {
-    const saved = json_mode;
-    json_mode = false;
-    defer json_mode = saved;
-
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    try printSessionHeader(&aw.writer, "Fix the bug", "/tmp/proj");
-    const s = aw.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, s, "Codegraff") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s, "Fix the bug") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s, "/tmp/proj") != null);
-
-    // JSON mode emits nothing (the header would corrupt the event stream).
-    json_mode = true;
-    var jw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer jw.deinit();
-    try printSessionHeader(&jw.writer, "x", "/y");
-    try std.testing.expectEqual(@as(usize, 0), jw.writer.buffered().len);
-}
-
-test "setTerminalTitle emits OSC title with folder basename, gated by color/json (#83)" {
-    const sc = use_color;
-    const sj = json_mode;
-    defer {
-        use_color = sc;
-        json_mode = sj;
-    }
-
-    use_color = true;
-    json_mode = false;
-    var on: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer on.deinit();
-    setTerminalTitle(&on.writer, "Add dark mode", "/a/b/myproj");
-    const s = on.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, s, "Add dark mode — myproj") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s, "\x1b]0;") != null); // window title
-    try std.testing.expect(std.mem.indexOf(u8, s, "\x1b]2;") != null); // tab title
-
-    // Gated off in JSON mode (would corrupt the stream) and when color is off.
-    json_mode = true;
-    var off: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer off.deinit();
-    setTerminalTitle(&off.writer, "x", "/y");
-    try std.testing.expectEqual(@as(usize, 0), off.writer.buffered().len);
-}
-
-test "cleanTitle: normalizes a model reply into a tab label, else null (/title)" {
-    // plain title passes through (capped/word-boundaried by titleFromPrompt)
-    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("Fix The Parser").?);
-    // wrapping quotes, a leading label, and trailing punctuation are stripped
-    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("  \"Fix The Parser\"  ").?);
-    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("Title: Fix The Parser.").?);
-    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("'`Fix The Parser`'").?);
-    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("“Fix The Parser”").?);
-    // only the first line is used
-    try std.testing.expectEqualStrings("Fix The Parser", cleanTitle("Fix The Parser\nsome rambling").?);
-    // nothing usable → null so the caller keeps the mechanical titleFromPrompt label
-    try std.testing.expect(cleanTitle("   ") == null);
-    try std.testing.expect(cleanTitle("\"\"") == null);
 }
