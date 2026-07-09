@@ -59,7 +59,7 @@ var show_cost = false;
 pub var json_mode = false; // --json: structured JSONL events on stdout instead of human text
 var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
 var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
-var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes
+pub var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes
 var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
 
 // Model pricing/catalog + the session cost tally live in pricing.zig (#123).
@@ -122,6 +122,10 @@ test {
     _ = skills;
     _ = input_util;
     _ = readline_mod;
+    _ = tools_mod;
+    _ = subagent;
+    _ = workflow;
+    _ = exec;
 }
 
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
@@ -498,7 +502,7 @@ fn isSlashCommandLine(line: []const u8) bool {
 // pre/post/turn-end dispatch, and the codedb-guard file-index cache stay here.
 const hooks = @import("hooks.zig");
 
-var g_hooks: hooks.Hooks = .{};
+pub var g_hooks: hooks.Hooks = .{};
 
 /// Built-in codedb guard (issue #626): when a repo is codedb-indexed, agents
 /// reflexively grep/sed/cat source files and never touch the structural tools,
@@ -506,8 +510,8 @@ var g_hooks: hooks.Hooks = .{};
 /// that scans/reads a concrete source file is blocked with a redirect to the
 /// codedb tool. Off when GRAFF_NO_CODEDB_GUARD is set; the tri-state cache
 /// records whether `codedb` is actually on PATH (no redirect if it isn't).
-var g_codedb_guard = true;
-var g_codedb_present: ?bool = null;
+pub var g_codedb_guard = true;
+pub var g_codedb_present: ?bool = null;
 
 /// Per-file cache for the codedb guard: `codedb outline <path>` is run once
 /// per source file to check whether codedb actually indexed it (large files
@@ -522,7 +526,7 @@ var g_codedb_file_mu: Io.Mutex = .init;
 /// (cached): returns "not indexed: <path>" when the file is too large or
 /// otherwise skipped, so the guard knows to let bash through instead of
 /// trapping the agent between a blocked grep and an empty codedb result.
-fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
+pub fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
     g_codedb_file_mu.lockUncancelable(io);
     for (g_codedb_file_checks.items) |e| {
         if (std.mem.eql(u8, e.path, path)) {
@@ -550,11 +554,11 @@ fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
 // companion_servers, mcp_notes, install-status + opt-out helpers, the
 // companion tool-name classifiers, and the codedbpro license probe + note
 // picker) lives in skills.zig (600-line goal). companionRoute and
-// companionNativeFallback stay here — they take ToolCtx/ToolCall, not yet
-// extracted (tools/exec region). g_path_env/g_skill_disabled/
-// g_companion_disabled stay `pub var` here (main's own /skills command
-// handler + startup code read/write them directly too); skills.zig reads/
-// writes them live via main_mod.g_x, never by-value.
+// companionNativeFallback moved to tools.zig (they take ToolCtx/ToolCall —
+// the tools/exec region). g_path_env/g_skill_disabled/g_companion_disabled
+// stay `pub var` here (main's own /skills command handler + startup code
+// read/write them directly too); skills.zig reads/writes them live via
+// main_mod.g_x, never by-value.
 const skills = @import("skills.zig");
 const skills_registry = skills.skills_registry;
 const mcp_notes = skills.mcp_notes;
@@ -689,7 +693,7 @@ fn goalSteeringNote(arena: Allocator, goal: ?[]const u8, todos_render: []const u
 /// Extract a 0-100 score from an eval command's output: a `score` key (JSON or
 /// key=val) if present, else the last numeric line. Values in [0,1] are read as
 /// fractions and scaled to 0-100.
-fn parseEvalScore(out: []const u8) ?f64 {
+pub fn parseEvalScore(out: []const u8) ?f64 {
     if (std.mem.indexOf(u8, out, "score")) |i| {
         var j = i + 5;
         while (j < out.len and out[j] != ':' and out[j] != '=' and out[j] != '\n') j += 1;
@@ -862,8 +866,8 @@ const SteerEntry = struct { text: []const u8, force: bool };
 var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
 var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
 var g_steer_visible: std.atomic.Value(bool) = .init(false); // visible live steering row; pauses spinner redraws
-var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
-var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + Agent.emit)
+pub var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
+pub var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + Agent.emit)
 var g_force_interrupt = false; // Force-prompt path caused the last interrupt (Ctrl-F/double-enter).
 var g_thinking_fold_request: bool = false; // Ctrl-T in escPressed → fold/unfold the live Thinking block (#92)
 var g_thinking_open: bool = false; // a live Thinking block is on screen (gates the mouse-click fold, #92)
@@ -4181,7 +4185,7 @@ fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !vo
 }
 
 /// A normalized tool invocation — same shape for both providers.
-const ToolCall = struct {
+pub const ToolCall = struct {
     id: []const u8,
     name: []const u8,
     input: Value,
@@ -4375,7 +4379,7 @@ pub const Agent = struct {
         w.writeByte('\n') catch return;
         w.flush() catch return;
     }
-    fn systemPrompt(self: *const Agent) []const u8 {
+    pub fn systemPrompt(self: *const Agent) []const u8 {
         if (self.sub) return self.sys_override orelse sub_system_prompt;
         return if (self.strict) self.sys_strict else self.sys_normal;
     }
@@ -4398,7 +4402,7 @@ pub const Agent = struct {
 
     /// Run until the model stops (or, in strict mode, calls
     /// attempt_completion). Returns the final assistant text (arena-owned).
-    fn runTurn(self: *Agent) anyerror![]const u8 {
+    pub fn runTurn(self: *Agent) anyerror![]const u8 {
         self.completed = null;
         if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
         while (true) {
@@ -7609,431 +7613,6 @@ const streamStallTask = http.streamStallTask;
 const headStallTask = http.headStallTask;
 const postWatched = http.postWatched;
 
-pub const ToolOutput = struct {
-    text: []u8 = &.{}, // gpa-owned
-    is_error: bool = false,
-    ms: i64 = 0, // set by execTool
-};
-
-/// Everything a tool executor may touch from a pool thread. All fields are
-/// thread-safe (gpa, io, shared http client, mutex-guarded registry and
-/// approvals) or read-only.
-/// One pre-edit file snapshot, tagged with the turn that's about to modify it.
-/// `before == null` means the file didn't exist (rewind deletes it).
-const Snapshot = struct { turn: u32, path: []const u8, before: ?[]const u8 };
-
-/// Per-session record of file mutations (write_file/edit_file), so `/rewind`
-/// can restore the working tree to an earlier turn. Mutex-guarded — tools run
-/// on the pool concurrently. Bash edits are NOT tracked.
-const Snapshots = struct {
-    gpa: Allocator,
-    io: Io,
-    mutex: Io.Mutex = .init,
-    list: std.ArrayList(Snapshot) = .empty,
-    turn: u32 = 0, // the turn currently executing (set by the REPL loop)
-
-    /// Record a file's pre-modification content (called before the write).
-    fn record(self: *Snapshots, path: []const u8, before: ?[]const u8) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        const p = self.gpa.dupe(u8, path) catch return;
-        const b: ?[]const u8 = if (before) |x| (self.gpa.dupe(u8, x) catch {
-            self.gpa.free(p);
-            return;
-        }) else null;
-        self.list.append(self.gpa, .{ .turn = self.turn, .path = p, .before = b }) catch {
-            self.gpa.free(p);
-            if (b) |bb| self.gpa.free(bb);
-        };
-    }
-
-    /// Restore every file modified at turn ≥ n to its state before turn n, then
-    /// drop those snapshots. Returns the number of files restored.
-    fn restore(self: *Snapshots, n: u32) usize {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        var done: std.ArrayList([]const u8) = .empty;
-        defer done.deinit(self.gpa);
-        var restored: usize = 0;
-        for (self.list.items) |snap| {
-            if (snap.turn < n) continue;
-            var seen = false;
-            for (done.items) |d| if (std.mem.eql(u8, d, snap.path)) {
-                seen = true;
-            };
-            if (seen) continue; // earliest snapshot per path wins (= state before turn n)
-            done.append(self.gpa, snap.path) catch {};
-            if (snap.before) |b| {
-                Io.Dir.cwd().writeFile(self.io, .{ .sub_path = snap.path, .data = b }) catch continue;
-            } else {
-                Io.Dir.cwd().deleteFile(self.io, snap.path) catch {};
-            }
-            restored += 1;
-        }
-        // Drop (and free) snapshots from the rewound turns.
-        var i: usize = 0;
-        while (i < self.list.items.len) {
-            if (self.list.items[i].turn >= n) {
-                const s = self.list.orderedRemove(i);
-                self.gpa.free(s.path);
-                if (s.before) |b| self.gpa.free(b);
-            } else i += 1;
-        }
-        return restored;
-    }
-
-    fn deinit(self: *Snapshots) void {
-        for (self.list.items) |s| {
-            self.gpa.free(s.path);
-            if (s.before) |b| self.gpa.free(b);
-        }
-        self.list.deinit(self.gpa);
-    }
-};
-
-const ToolCtx = struct {
-    gpa: Allocator,
-    io: Io,
-    client: *std.http.Client,
-    provider: Provider,
-    registry: ?*mcp.Registry,
-    from_sub: bool,
-    approvals: ?*Approvals,
-    tracer: ?*Tracer,
-    snapshots: ?*Snapshots = null,
-    tools_used: ?*ToolSink = null, // the calling agent's tool log (trajectory/process mining)
-};
-
-/// Event JSON for a tool lifecycle hook: {"event","tool","input"[,
-/// "is_error","output"]} — written to the hook's stdin. gpa-owned.
-fn hookPayload(gpa: Allocator, event: []const u8, call: ToolCall, output: ?*const ToolOutput) ?[]u8 {
-    var aw: Io.Writer.Allocating = .init(gpa);
-    const built = blk: {
-        var s: std.json.Stringify = .{ .writer = &aw.writer };
-        s.beginObject() catch break :blk false;
-        s.objectField("event") catch break :blk false;
-        s.write(event) catch break :blk false;
-        s.objectField("tool") catch break :blk false;
-        s.write(call.name) catch break :blk false;
-        s.objectField("input") catch break :blk false;
-        s.write(call.input) catch break :blk false;
-        if (output) |o| {
-            // Cap the echoed output and keep the cut on a UTF-8 boundary so
-            // the JSON stays valid.
-            var t = o.text[0..@min(o.text.len, 4096)];
-            var strips: usize = 0;
-            while (strips < 3 and t.len > 0 and !std.unicode.utf8ValidateSlice(t)) : (strips += 1) t = t[0 .. t.len - 1];
-            if (!std.unicode.utf8ValidateSlice(t)) t = "";
-            s.objectField("is_error") catch break :blk false;
-            s.write(o.is_error) catch break :blk false;
-            s.objectField("output") catch break :blk false;
-            s.write(t) catch break :blk false;
-        }
-        s.endObject() catch break :blk false;
-        break :blk true;
-    };
-    if (!built) {
-        aw.deinit();
-        return null;
-    }
-    return aw.toOwnedSlice() catch {
-        aw.deinit();
-        return null;
-    };
-}
-
-/// pre_tool hooks: first matching hook that exits 2 blocks the call; its
-/// stderr becomes the tool result the model sees. Timeouts and other exit
-/// codes allow — a broken hook must never brick the loop.
-fn hookGate(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
-    if (g_hooks.pre_tool.len == 0) return null;
-    const payload = hookPayload(ctx.gpa, "pre_tool", call, null) orelse return null;
-    defer ctx.gpa.free(payload);
-    for (g_hooks.pre_tool) |h| {
-        if (!h.matches(call.name)) continue;
-        const res = hooks.runHookCmd(ctx.gpa, ctx.io, h.command, payload, h.timeout_ms);
-        defer if (res.stderr.len > 0) ctx.gpa.free(res.stderr);
-        if (res.code) |c| if (c == 2) {
-            const msg: []const u8 = if (res.stderr.len > 0) res.stderr else "denied by hook";
-            const text = std.fmt.allocPrint(ctx.gpa, "blocked by pre_tool hook: {s}", .{msg}) catch
-                return .{ .text = &.{}, .is_error = true };
-            return .{ .text = text, .is_error = true };
-        };
-    }
-    return null;
-}
-
-/// post_tool hooks: best-effort, sequential (a formatter should finish
-/// before the next tool runs), exit codes ignored.
-fn runPostToolHooks(ctx: ToolCtx, call: ToolCall, out: ToolOutput) void {
-    if (g_hooks.post_tool.len == 0) return;
-    const payload = hookPayload(ctx.gpa, "post_tool", call, &out) orelse return;
-    defer ctx.gpa.free(payload);
-    for (g_hooks.post_tool) |h| {
-        if (!h.matches(call.name)) continue;
-        const res = hooks.runHookCmd(ctx.gpa, ctx.io, h.command, payload, h.timeout_ms);
-        if (res.stderr.len > 0) ctx.gpa.free(res.stderr);
-    }
-}
-
-/// Built-in pre_tool guard for issue #626. Blocks a bash command that scans or
-/// reads a *concrete source file* (`grep`/`sed`/`cat`/… on a path ending in a
-/// known code extension) and redirects the model to the codedb tool, whose
-/// structural queries (symbol/callers/deps/outline/context) otherwise go
-/// unused. Narrow on purpose: only known scan/read utilities, only a concrete
-/// source path (globs like `*.zig` are left alone), only when `codedb` is on
-/// PATH (else the model would be stuck between a blocked grep and no tool), and
-/// never when GRAFF_NO_CODEDB_GUARD is set. A block returns is_error so the
-/// model adapts — same contract as a pre_tool hook's exit 2.
-fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
-    if (!g_codedb_guard) return null;
-    if (!std.mem.eql(u8, call.name, "bash")) return null;
-    const cmd = strField(call.input, "command") orelse return null;
-
-    // First word must be a code scan/read utility (basename, so /usr/bin/grep
-    // counts; sudo/env prefixes are intentionally not unwrapped).
-    const trimmed = std.mem.trim(u8, cmd, " \t");
-    const word_end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
-    const tool = std.fs.path.basename(trimmed[0..word_end]);
-    const scanners = [_][]const u8{
-        "grep", "egrep",  "fgrep", "rg",   "ripgrep", "ag", "ack",
-        "sed",  "awk",    "cat",   "head", "tail",    "wc", "nl",
-        "bat",  "batcat",
-    };
-    var is_scanner = false;
-    for (scanners) |s| if (std.mem.eql(u8, s, tool)) {
-        is_scanner = true;
-    };
-    if (!is_scanner) return null;
-
-    // …aimed at a concrete source file (not a glob — codedb glob/tree cover that).
-    const src_path = extractSourceFilePath(cmd) orelse return null;
-
-    // Only redirect when codedb is actually installed (cache the PATH lookup).
-    if (g_codedb_present == null) g_codedb_present = binOnPath(ctx.io, "codedb");
-    if (g_codedb_present != true) return null;
-
-    // Only redirect when codedb actually indexed this file. Large files
-    // (e.g. a 13K-line main.zig) are silently skipped by codedb; blocking
-    // bash grep on them traps the agent between a blocked grep and an empty
-    // codedb result. Let bash through for un-indexed files (issue #54).
-    if (!codedbFileIndexed(ctx.io, ctx.gpa, src_path)) return null;
-
-    const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool (indexed + structural): search <query> · symbol <name> [--body] · callers <name> · deps <path> · outline <path> · read <path> · context <task>. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
-    return .{ .text = msg, .is_error = true };
-}
-
-/// Extract the first concrete source file path from a bash command (after
-/// the command word). Returns null for globs or non-source tokens. Used by
-/// the codedb guard to check whether the target file is actually indexed
-/// before redirecting bash to codedb — a file codedb skipped (too large)
-/// must be allowed through bash, or the agent is trapped.
-fn extractSourceFilePath(cmd: []const u8) ?[]const u8 {
-    const exts = [_][]const u8{
-        ".zig",  ".rs",  ".ts",  ".tsx", ".js",    ".jsx",   ".mjs",    ".cjs",
-        ".py",   ".go",  ".c",   ".h",   ".cc",    ".cpp",   ".hpp",    ".cxx",
-        ".java", ".kt",  ".rb",  ".php", ".swift", ".scala", ".cs",     ".lua",
-        ".ex",   ".exs", ".erl", ".clj", ".dart",  ".vue",   ".svelte",
-    };
-    var it = std.mem.tokenizeAny(u8, cmd, " \t\n");
-    var first = true;
-    while (it.next()) |raw| {
-        if (first) {
-            first = false;
-            continue; // skip the command word itself
-        }
-        const tok = std.mem.trim(u8, raw, "'\"`()");
-        if (std.mem.indexOfAny(u8, tok, "*?") != null) continue; // glob, not a path
-        for (exts) |e| if (std.mem.endsWith(u8, tok, e)) return tok;
-    }
-    return null;
-}
-
-/// True when `cmd` names a concrete source file (delegates to
-/// extractSourceFilePath). Kept for the /hooks display and tests.
-fn referencesSourceFile(cmd: []const u8) bool {
-    return extractSourceFilePath(cmd) != null;
-}
-
-/// Built-in pre_tool router for the metered companion — the tool-layer twin of
-/// providerFor()'s model routing (prefer the configured target, fall back to a
-/// default). codedb-pro's tools (mcp__codedbpro__*) are only advertised while it
-/// is connected; if the model calls one when the companion is gone (disconnected
-/// mid-session, or a stale tool name carried over from a prior turn), don't hand
-/// back a bare "unknown tool" — redirect to the native equivalent, which is
-/// always registered. Returns null (let the call run) when the companion IS
-/// connected, or when this isn't a companion tool at all.
-fn companionRoute(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
-    const bare = companionToolName(call.name) orelse return null;
-    if (ctx.registry) |reg| {
-        for (companion_servers) |c| if (mcpServerConnected(reg.tools, c.server)) return null;
-    }
-    const native = companionNativeFallback(bare);
-    const msg = std.fmt.allocPrint(ctx.gpa, "the codedb-pro companion isn't connected this session, so {s} can't run — it was only an accelerator. Use the native {s} instead (always available).", .{ call.name, native }) catch return .{ .text = &.{}, .is_error = true };
-    return .{ .text = msg, .is_error = true };
-}
-
-/// Map a companion tool (bare name, sans the mcp__<server>__ prefix) to the
-/// native tool that does the same job — the fallback companionRoute steers to.
-fn companionNativeFallback(bare: []const u8) []const u8 {
-    if (std.mem.eql(u8, bare, "read")) return "read_file tool";
-    if (std.mem.eql(u8, bare, "search") or std.mem.eql(u8, bare, "faster_search") or std.mem.eql(u8, bare, "meta_search"))
-        return "codedb tool (search/symbol/callers/outline), or bash grep";
-    if (std.mem.eql(u8, bare, "edit") or std.mem.eql(u8, bare, "patch") or std.mem.eql(u8, bare, "replace"))
-        return "edit_file tool";
-    if (std.mem.eql(u8, bare, "create")) return "write_file tool";
-    if (std.mem.eql(u8, bare, "diff")) return "bash `git diff`";
-    if (std.mem.eql(u8, bare, "lint")) return "bash to run the linter directly";
-    return "native read_file/edit_file/codedb/bash tools";
-}
-
-/// Runs on a pool thread; never throws — failures become is_error results.
-/// Every execution is timed (out.ms) and traced.
-fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
-    const t0: Io.Timestamp = .now(ctx.io, .awake);
-    if (codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call)) |blocked| {
-        var out = blocked;
-        out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
-        if (ctx.tracer) |tr| tr.tool(call.name, out.ms, true, out.text.len, ctx.from_sub);
-        if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, true);
-        return out;
-    }
-    var out = execToolInner(ctx, call) catch |err| blk: {
-        // Harness-level tool failure (spawn error, OOM, broken pipe) — not a
-        // tool that ran and returned is_error; those are normal agent
-        // feedback and already counted in the session summary.
-        var ebuf: [160]u8 = undefined;
-        const detail = std.fmt.bufPrint(&ebuf, "{s}: {t}", .{ call.name, err }) catch @errorName(err);
-        if (telemetry.g_telem) |t| t.errorEvent("tool", detail);
-        break :blk failure(ctx.gpa, err);
-    };
-    out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
-    if (ctx.tracer) |tr| tr.tool(call.name, out.ms, out.is_error, out.text.len, ctx.from_sub);
-    if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, out.is_error);
-    runPostToolHooks(ctx, call, out);
-    return out;
-}
-
-fn failure(gpa: Allocator, err: anyerror) ToolOutput {
-    const text = std.fmt.allocPrint(gpa, "error: {t}", .{err}) catch return .{ .is_error = true };
-    return .{ .text = text, .is_error = true };
-}
-
-/// A required string argument, or null if absent / wrong type. Guards
-/// against malformed model output panicking the process (DoS).
-/// Pull a human-readable message from an OpenAI-style error envelope, handling
-/// both `{"error":{"message":...}}` (OpenAI/Anthropic) and `{"error":"...","code":...}`
-/// where `error` is a bare string (the codegraff gateway's shape, e.g. grok-build
-/// rejecting an unsupported parameter). Returns null when there is no error field
-/// (or it is explicitly null), so a normal response is never mistaken for an error.
-fn apiErrorMessage(root: std.json.ObjectMap) ?[]const u8 {
-    const e = root.get("error") orelse return null;
-    return switch (e) {
-        .null => null,
-        .string => e.string,
-        .object => if (e.object.get("message")) |m| (if (m == .string) m.string else "unknown error") else "unknown error",
-        else => "unknown error",
-    };
-}
-
-/// Does an API error message complain about the reasoning-effort hint? Gateways
-/// word it differently: OpenAI says "reasoning_effort", the codegraff gateway
-/// (e.g. for grok-build) says "reasoningEffort". Either means: drop it and retry.
-fn mentionsReasoningEffort(msg: []const u8) bool {
-    return std.mem.indexOf(u8, msg, "reasoning_effort") != null or
-        std.mem.indexOf(u8, msg, "reasoningEffort") != null;
-}
-
-fn strField(input: Value, name: []const u8) ?[]const u8 {
-    if (input != .object) return null;
-    const v = input.object.get(name) orelse return null;
-    return if (v == .string) v.string else null;
-}
-
-/// An integer argument, or null if absent / wrong type (same DoS guard).
-fn intField(input: Value, name: []const u8) ?i64 {
-    if (input != .object) return null;
-    const v = input.object.get(name) orelse return null;
-    return if (v == .integer) v.integer else null;
-}
-
-fn missingArg(gpa: Allocator, name: []const u8) !ToolOutput {
-    return .{ .text = try std.fmt.allocPrint(gpa, "missing or non-string argument: {s}", .{name}), .is_error = true };
-}
-
-fn outsideCwd(gpa: Allocator, path: []const u8) !ToolOutput {
-    return .{
-        .text = try std.fmt.allocPrint(gpa, "path '{s}' is outside the working directory — file tools are confined to the cwd subtree (no absolute paths, no '..'). Use bash for paths elsewhere.", .{path}),
-        .is_error = true,
-    };
-}
-
-pub const bash_stdout_cap = 128 * 1024;
-const bash_stderr_cap = 32 * 1024;
-const webfetch_cap = 256 * 1024;
-const codedb_result_cap = 64 * 1024;
-
-/// True when the text carries no real content (empty, or whitespace only) —
-/// kuri-fetch "succeeds" on JS-rendered SPAs but emits pages of blank lines.
-fn blankText(text: []const u8) bool {
-    var meaningful: usize = 0;
-    for (text) |c| switch (c) {
-        ' ', '\t', '\r', '\n' => {},
-        else => meaningful += 1,
-    };
-    return meaningful < 16;
-}
-
-/// Fallback webfetch path: a plain GET via the harness's shared HTTP client,
-/// raw body (HTML/text), capped at webfetch_cap. Load-bearing even when kuri
-/// is installed — it covers the servers kuri's TLS stack rejects and the
-/// SPAs it renders blank.
-fn rawFetch(gpa: Allocator, client: *std.http.Client, url: []const u8) ToolOutput {
-    const buf = gpa.alloc(u8, webfetch_cap) catch return .{ .is_error = true };
-    defer gpa.free(buf);
-    var w: Io.Writer = .fixed(buf);
-    var truncated = false;
-    var status: ?std.http.Status = null;
-    if (client.fetch(.{
-        .location = .{ .url = url },
-        .method = .GET,
-        .response_writer = &w,
-        .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
-    })) |res| {
-        status = res.status;
-    } else |err| switch (err) {
-        error.WriteFailed => truncated = true, // body hit the cap: keep what we have
-        else => return failure(gpa, err),
-    }
-    const body = w.buffered();
-    if (status) |st| {
-        const code = @intFromEnum(st);
-        if (code < 200 or code >= 300) return .{
-            .text = std.fmt.allocPrint(gpa, "HTTP {d} {s}", .{ code, st.phrase() orelse "" }) catch return .{ .is_error = true },
-            .is_error = true,
-        };
-    }
-    if (std.mem.indexOfScalar(u8, body[0..@min(body.len, 4096)], 0) != null) return .{
-        .text = std.fmt.allocPrint(gpa, "{s} returned binary content ({d} bytes) — webfetch only handles text; use bash (e.g. curl -o) to download it", .{ url, body.len }) catch return .{ .is_error = true },
-        .is_error = true,
-    };
-    if (blankText(body)) return .{ .text = gpa.dupe(u8, "(empty response body)") catch return .{ .is_error = true } };
-    var aw: Io.Writer.Allocating = .init(gpa);
-    aw.writer.writeAll(body) catch {
-        aw.deinit();
-        return .{ .is_error = true };
-    };
-    if (truncated) aw.writer.print("\n[truncated at {d} KB]", .{webfetch_cap / 1024}) catch {};
-    return .{ .text = aw.toOwnedSlice() catch return .{ .is_error = true } };
-}
-
-/// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
-/// threads with no TTY, so there is no Esc to kill a runaway command — without
-/// this, a codedb refusal that pushes a subagent onto an unfiltered `grep ~/`
-/// hangs the whole workflow for ~48 min (#93). The root keeps its Esc-only,
-/// no-deadline behavior (a human is watching and may want a long build).
-const subagent_bash_deadline_ms: u64 = 120 * 1000;
-
 // Subprocess execution: the capped runner (runCapped), git-worktree management,
 // and the background bash-job pool live in jobs.zig (600-line goal). runCapped
 // is re-exported (hooks.zig back-imports it); the worktree + job entry points
@@ -8047,864 +7626,34 @@ const jobOutput = jobs.jobOutput;
 const jobKill = jobs.jobKill;
 const jobsReap = jobs.jobsReap;
 const shellArgv = jobs.shellArgv;
+// Tool execution: the tool-call context (ToolCtx), file-edit snapshots for
+// /rewind, pre/post-tool lifecycle-hook dispatch, the codedb-guard (#626)
+// and metered-companion router, and small per-tool helpers live in tools.zig
+// (600-line goal; imported as tools_mod — Agent.request/buildBody already
+// have a `tools` parameter, which a bare `tools` import would shadow).
+// Subagent/workflow-task spawning (execSubagent/runSub/workflowTask/
+// judgeTask + the ultracode/DGM variant judge) lives in subagent.zig —
+// judgeTask is aliased back (Agent.runJudge, above, spawns it directly via
+// io.async). Dynamic workflows-as-data (phases + pipeline mode) live in
+// workflow.zig. The tool dispatcher itself (execTool/execToolInner) lives in
+// exec.zig, importing the three as siblings; execTool is aliased back
+// (Agent.runTools' io.async spawn + the /bash slash-command handler above).
+const tools_mod = @import("tools.zig");
+pub const ToolOutput = tools_mod.ToolOutput;
+pub const ToolCtx = tools_mod.ToolCtx;
+pub const Snapshots = tools_mod.Snapshots;
+pub const bash_stdout_cap = tools_mod.bash_stdout_cap; // input_util.zig back-imports this for its file-collection caps
+const apiErrorMessage = tools_mod.apiErrorMessage;
+const mentionsReasoningEffort = tools_mod.mentionsReasoningEffort;
 
-fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
-    const gpa = ctx.gpa;
-    const io = ctx.io;
+const subagent = @import("subagent.zig");
+const judgeTask = subagent.judgeTask;
 
-    // Plan mode backstop: the root gate already denies these with a nicer
-    // message; this catches subagents (which skip the gate entirely).
-    if (plan_mode) {
-        if (std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or mcp.Registry.isMcp(call.name)) return .{
-            .text = try gpa.dupe(u8, "plan mode is on — read-only; describe the change instead of making it"),
-            .is_error = true,
-        };
-        if (std.mem.eql(u8, call.name, "bash")) {
-            if (strField(call.input, "command")) |cmd| if (!Approvals.readOnlyAllowed(cmd)) return .{
-                .text = try gpa.dupe(u8, "plan mode is on — only read-only commands run; describe this command in the plan instead"),
-                .is_error = true,
-            };
-        }
-    }
+const workflow = @import("workflow.zig");
 
-    if (mcp.Registry.isMcp(call.name)) {
-        const reg = ctx.registry orelse return .{
-            .text = try gpa.dupe(u8, "MCP not available in this context"),
-            .is_error = true,
-        };
-        const r = try reg.call(gpa, call.name, call.input);
-        return .{ .text = r.text, .is_error = r.is_error };
-    }
-
-    const input = call.input;
-    if (std.mem.eql(u8, call.name, "bash")) {
-        const cmd = strField(input, "command") orelse return missingArg(gpa, "command");
-        // Subagents have no stdin to prompt on; their gate is the allowlist.
-        if (ctx.from_sub) if (ctx.approvals) |ap| if (!ap.allowed(ctx.io, cmd)) return .{
-            .text = try gpa.dupe(u8, "command not pre-approved — subagents may only run user-approved or read-only commands, with no chaining/pipes/redirection. Use read_file/edit_file/write_file, or report back what you need run."),
-            .is_error = true,
-        };
-        const bg = if (input == .object) (if (input.object.get("run_in_background")) |v| v == .bool and v.bool else false) else false;
-        if (bg) {
-            const job = spawnJob(gpa, io, cmd) catch |err| return .{
-                .text = try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err}),
-                .is_error = true,
-            };
-            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.", .{ job.id, job.cmd, job.id }) };
-        }
-        const sh = shellArgv(cmd);
-        const run = try runCapped(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, if (ctx.from_sub) subagent_bash_deadline_ms else 0);
-        defer gpa.free(run.stdout);
-        defer gpa.free(run.stderr);
-
-        const exit_code: ?u8 = switch (run.term) {
-            .exited => |code| code,
-            else => null,
-        };
-        var aw: Io.Writer.Allocating = .init(gpa);
-        errdefer aw.deinit();
-        const w = &aw.writer;
-        if (run.stdout.len > 0) try w.writeAll(run.stdout);
-        if (run.stdout_truncated) try w.print("\n[stdout truncated at {d} KB]", .{bash_stdout_cap / 1024});
-        if (run.stderr.len > 0) try w.print("\n[stderr]\n{s}", .{run.stderr});
-        if (run.stderr_truncated) try w.print("\n[stderr truncated at {d} KB]", .{bash_stderr_cap / 1024});
-        if (run.timed_out) {
-            try w.print("\n[timed out after {d}s and was killed — too long for a subagent. Don't retry as-is: scope it to specific paths or globs instead of scanning the whole directory, or report back what you need run.]", .{subagent_bash_deadline_ms / 1000});
-        } else if (exit_code) |code| {
-            if (code != 0) try w.print("\n[exit code {d}]", .{code});
-        } else try w.writeAll("\n[terminated abnormally]");
-        if (run.stdout.len == 0 and run.stderr.len == 0 and exit_code == 0) try w.writeAll("(no output)");
-        return .{ .text = try aw.toOwnedSlice(), .is_error = exit_code == null or exit_code.? != 0 };
-    }
-    if (std.mem.eql(u8, call.name, "bash_output")) {
-        const id = intField(input, "id") orelse return missingArg(gpa, "id");
-        const wait_ms = intField(input, "wait_ms") orelse 0;
-        if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid job id"), .is_error = true };
-        return jobOutput(gpa, io, @intCast(id), @intCast(@max(wait_ms, 0)));
-    }
-    if (std.mem.eql(u8, call.name, "bash_kill")) {
-        const id = intField(input, "id") orelse return missingArg(gpa, "id");
-        if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid job id"), .is_error = true };
-        return jobKill(gpa, io, @intCast(id));
-    }
-    if (std.mem.eql(u8, call.name, "webfetch")) {
-        const url = strField(input, "url") orelse return missingArg(gpa, "url");
-        if (!std.mem.startsWith(u8, url, "http://") and !std.mem.startsWith(u8, url, "https://")) return .{
-            .text = try gpa.dupe(u8, "webfetch only handles absolute http:// and https:// URLs"),
-            .is_error = true,
-        };
-        // kuri-preferred, never kuri-dependent: kuri-fetch converts HTML to
-        // markdown, but its TLS stack rejects some servers and JS-rendered
-        // SPAs come back blank — any failure or empty result falls through
-        // to the harness's own HTTP client below.
-        if (!skillDisabled("kuri") and binOnPath(io, "kuri-fetch")) kuri: {
-            const run = runCapped(gpa, io, &.{ "kuri-fetch", "-q", "--no-color", url }, webfetch_cap, 4096, 0) catch break :kuri;
-            defer {
-                gpa.free(run.stdout);
-                gpa.free(run.stderr);
-            }
-            if (run.term != .exited or run.term.exited != 0) break :kuri;
-            if (blankText(run.stdout)) break :kuri; // SPA / conversion failure
-            var aw: Io.Writer.Allocating = .init(gpa);
-            errdefer aw.deinit();
-            try aw.writer.writeAll(run.stdout);
-            if (run.stdout_truncated) try aw.writer.print("\n[truncated at {d} KB]", .{webfetch_cap / 1024});
-            return .{ .text = try aw.toOwnedSlice() };
-        }
-        return rawFetch(gpa, ctx.client, url);
-    }
-    if (std.mem.eql(u8, call.name, "read_file")) {
-        const path = strField(input, "path") orelse return missingArg(gpa, "path");
-        if (!confinedPath(path) or !noSymlinkEscape(io, path)) return outsideCwd(gpa, path);
-        const data = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(256 * 1024));
-        // Binary guard: PDFs/images/archives would only poison the context
-        // with mojibake — point the model at bash converters instead.
-        if (binaryFileExt(path) or std.mem.indexOfScalar(u8, data[0..@min(data.len, 4096)], 0) != null) {
-            defer gpa.free(data);
-            return .{ .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ path, data.len }), .is_error = true };
-        }
-        return .{ .text = data };
-    }
-    if (std.mem.eql(u8, call.name, "codedb")) {
-        const cmd = strField(input, "command") orelse return missingArg(gpa, "command");
-        var it = std.mem.tokenizeAny(u8, cmd, " \t");
-        const sub = it.next() orelse return .{ .text = try gpa.dupe(u8, "usage: codedb <subcommand> [args] — e.g. search <q>, symbol <name>, callers <name>, outline <path>"), .is_error = true };
-        // Allowlist read-only subcommands: never run the long-lived daemons
-        // (serve/mcp) — they'd block this tool forever — or the destructive
-        // ones (update/nuke).
-        const ok_subs = [_][]const u8{ "search", "symbol", "callers", "find", "outline", "read", "tree", "context", "word", "deps", "glob", "ls", "file", "hot" };
-        var allowed = false;
-        for (ok_subs) |s| if (std.mem.eql(u8, s, sub)) {
-            allowed = true;
-        };
-        if (!allowed) return .{ .text = try std.fmt.allocPrint(gpa, "codedb subcommand '{s}' is not allowed here — use one of: search, symbol, callers, find, outline, read, tree, context, word, deps, glob, ls, file, hot", .{sub}), .is_error = true };
-        var argv: std.ArrayList([]const u8) = .empty;
-        defer argv.deinit(gpa);
-        argv.append(gpa, "codedb") catch {};
-        argv.append(gpa, sub) catch {};
-        while (it.next()) |tok| argv.append(gpa, tok) catch {};
-        var child = std.process.spawn(io, .{ .argv = argv.items, .stdin = .ignore, .stdout = .pipe, .stderr = .ignore }) catch {
-            return .{ .text = try gpa.dupe(u8, "codedb isn't installed — it's open source at github.com/justrach/codedb; install it, then run `codedb` once in the repo to index it"), .is_error = true };
-        };
-        const out_file = child.stdout orelse return .{ .text = try gpa.dupe(u8, "codedb: no output stream"), .is_error = true };
-        var rbuf: [4096]u8 = undefined;
-        var fr = out_file.readerStreaming(io, &rbuf);
-        const text = fr.interface.allocRemaining(gpa, .limited(512 * 1024)) catch |e| return failure(gpa, e);
-        _ = child.wait(io) catch {};
-        if (text.len == 0) return .{ .text = try gpa.dupe(u8, "(codedb returned nothing — try `codedb tree` to confirm the repo is indexed, or refine the query)") };
-        // Context guard: an unbounded `read <big file>` once dumped 500KB into
-        // a subagent's context, ballooning it to 160k tokens and minutes-long
-        // API calls. Cap what reaches the model and point it at targeted reads.
-        if (text.len > codedb_result_cap) {
-            defer gpa.free(text);
-            const head = utf8Prefix(text, codedb_result_cap);
-            return .{ .text = try std.fmt.allocPrint(gpa, "{s}\n[codedb output truncated at {d} KB — prefer targeted queries: outline <path>, symbol <name> --body, or search, instead of whole-file reads]", .{ head, codedb_result_cap / 1024 }) };
-        }
-        return .{ .text = text };
-    }
-    if (std.mem.eql(u8, call.name, "edit_file")) {
-        const path = strField(input, "path") orelse return missingArg(gpa, "path");
-        const old = strField(input, "old_string") orelse return missingArg(gpa, "old_string");
-        const new = strField(input, "new_string") orelse return missingArg(gpa, "new_string");
-        if (!confinedPath(path) or !noSymlinkEscape(io, path)) return outsideCwd(gpa, path);
-        const all = if (input.object.get("replace_all")) |v| v == .bool and v.bool else false;
-        if (old.len == 0) return .{ .text = try gpa.dupe(u8, "old_string must not be empty"), .is_error = true };
-
-        const data = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1024 * 1024));
-        defer gpa.free(data);
-        const count = std.mem.count(u8, data, old);
-        if (count == 0) return .{
-            .text = try std.fmt.allocPrint(gpa, "old_string not found in {s} — read_file it and match the existing text exactly", .{path}),
-            .is_error = true,
-        };
-        if (count > 1 and !all) return .{
-            .text = try std.fmt.allocPrint(gpa, "old_string matches {d} places in {s} — include more surrounding context to make it unique, or set replace_all", .{ count, path }),
-            .is_error = true,
-        };
-
-        const replaced = try gpa.alloc(u8, std.mem.replacementSize(u8, data, old, new));
-        defer gpa.free(replaced);
-        _ = std.mem.replace(u8, data, old, new, replaced);
-        if (ctx.snapshots) |snaps| if (!ctx.from_sub) snaps.record(path, data); // pre-edit content for /rewind
-        // Premium splice: when the zigrep suite is installed, zigpatch does
-        // the write — an atomic tmp+rename byte-level --all splice (our count
-        // checks above already enforce the uniqueness semantics). Any
-        // failure, including the tool simply not being on PATH, falls back
-        // to the native in-place write below.
-        zp: {
-            const run = runCapped(gpa, io, &.{ "zigpatch", path, "-p", old, "--all", "--content", new }, 4096, 4096, 0) catch break :zp;
-            defer {
-                gpa.free(run.stdout);
-                gpa.free(run.stderr);
-            }
-            const ok = switch (run.term) {
-                .exited => |code| code == 0,
-                else => false,
-            };
-            if (ok and std.mem.indexOf(u8, run.stdout, "\"ok\":true") != null)
-                return .{ .text = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (zigpatch)", .{ count, path }) };
-        }
-        try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = replaced });
-        return .{ .text = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s}", .{ count, path }) };
-    }
-    if (std.mem.eql(u8, call.name, "write_file")) {
-        const path = strField(input, "path") orelse return missingArg(gpa, "path");
-        const content = strField(input, "content") orelse return missingArg(gpa, "content");
-        if (!confinedPath(path) or !noSymlinkEscape(io, path)) return outsideCwd(gpa, path);
-        if (ctx.snapshots) |snaps| if (!ctx.from_sub) {
-            // capture the prior content (or absence) before overwriting, for /rewind
-            const before = Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(4 * 1024 * 1024)) catch null;
-            defer if (before) |b| gpa.free(b);
-            snaps.record(path, before);
-        };
-        try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = content });
-        return .{ .text = try std.fmt.allocPrint(gpa, "wrote {d} bytes to {s}", .{ content.len, path }) };
-    }
-    if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
-    if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
-    return .{ .text = try std.fmt.allocPrint(gpa, "unknown tool: {s}", .{call.name}), .is_error = true };
-}
-
-/// Spawn a one-level-deep subagent: fresh arena, fresh history, same shared
-/// http client and provider. Runs entirely on this pool thread; its own tool
-/// calls fan out further via io.async.
-fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
-    if (ctx.from_sub) return .{
-        .text = try ctx.gpa.dupe(u8, "subagents cannot spawn subagents — do this work yourself"),
-        .is_error = true,
-    };
-    const label = if (input.object.get("description")) |d| (if (d == .string) d.string else "subagent") else "subagent";
-    const prompt = if (input.object.get("prompt")) |p| (if (p == .string) p.string else "") else "";
-    if (prompt.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
-    const sys_override = resolveOverride(input.object);
-    return runSub(ctx, "subagent", label, prompt, sys_override, resolveNiche(input.object));
-}
-
-/// Surface a workflow subagent as a synthetic `tool_call` / `tool_result` on the
-/// --json GUI stream so each parallel worker shows as its own live row — the
-/// orchestrator's children otherwise run detached (out=null), so the GUI only
-/// ever saw the single `workflow` op. Pool-thread safe: serializes on g_gui_mu
-/// with Agent.emit (same json stdout writer, g_out). No-op outside --json mode.
-fn guiEmit(io: Io, ev: anytype) void {
-    if (!json_mode) return;
-    const w = g_out orelse return;
-    g_gui_mu.lockUncancelable(io);
-    defer g_gui_mu.unlock(io);
-    var s: std.json.Stringify = .{ .writer = w };
-    s.write(ev) catch return;
-    w.writeByte('\n') catch return;
-    w.flush() catch return;
-}
-
-/// Run one isolated subagent to completion: fresh arena, fresh history,
-/// same shared http client and provider. Runs entirely on this pool thread;
-/// its own tool calls fan out further via io.async. `sys_override` swaps the
-/// lean default system prompt for a per-child variant (swarm prompt
-/// evolution); either way the run is recorded as a trajectory node under
-/// the turn that spawned it, with the prompt's fingerprint.
-fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) !ToolOutput {
-    const gpa = ctx.gpa;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var agent: Agent = .{
-        .gpa = gpa,
-        .arena = arena,
-        .io = ctx.io,
-        .client = ctx.client,
-        .provider = ctx.provider,
-        .messages = std.json.Array.init(arena),
-        .sub = true,
-        .label = label,
-        .out = null,
-        .approvals = ctx.approvals,
-        .tracer = ctx.tracer,
-        .sys_override = sys_override,
-    };
-    const sub_start = Io.Timestamp.now(ctx.io, .awake);
-    if (sys_override) |so| if (telemetry.g_telem) |t| {
-        t.countVariant();
-        // fleet:propose (docs §9.B) — a niche's elite was mutated into a variant.
-        const child_fp = promptFingerprint(so);
-        var parent_buf: [16]u8 = undefined;
-        var parent_sha: []const u8 = "";
-        if (niche.len > 0) if (agentTypePrompt(niche)) |ep| {
-            parent_buf = promptFingerprint(ep);
-            parent_sha = &parent_buf;
-        };
-        t.fleetEvent("propose", niche, &child_fp, parent_sha, providerClass(ctx.provider.model), "", 0, so);
-    };
-    // Stable id + sprite for this child's card and its inspectable detail file.
-    const ordinal = cards.g_subagent_seq.fetchAdd(1, .monotonic);
-    var id_buf: [40]u8 = undefined;
-    const sub_id = subagentId(&id_buf, ordinal, label, prompt);
-    const sprite = subagentSprite(ordinal);
-    subagentLaunchCard(arena, sub_id, sprite, label, kind, prompt);
-    // Live agent tree: surface workflow_task children as their own GUI rows.
-    const wf_task = std.mem.eql(u8, kind, "workflow_task");
-    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label } });
-    try agent.messages.append(try textMessage(arena, "user", prompt));
-    defer agent.tools_used.deinit(gpa);
-    const report = agent.runTurn();
-    const run_ms: i64 = @intCast(@max(0, sub_start.untilNow(ctx.io, .awake).toMilliseconds()));
-    const run_ok = if (report) |r| r.len > 0 else |_| false;
-    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_result", .name = "subagent", .is_error = !run_ok });
-    const tools = agent.tools_used.render(arena);
-    const fp = promptFingerprint(agent.systemPrompt());
-    if (trace.g_traj) |tj| {
-        tj.capturePrompt(fp, agent.systemPrompt());
-        tj.node(.{
-            .id = tj.nextId(),
-            .parent = tj.currentTurn(),
-            .kind = kind,
-            .label = label,
-            .t = tj.elapsedMs(),
-            .ms = run_ms,
-            .prompt_sha = &fp,
-            .prompt_mutated = sys_override != null,
-            .niche = niche, // MAP-Elites niche, so a local /agents promote can group scores by it
-            .task = utf8Prefix(prompt, 160),
-            .tools = tools,
-            .ok = run_ok,
-            .context_tokens = agent.last_context_tokens,
-        });
-    }
-    if (telemetry.g_telem) |t| t.runEvent(&fp, sys_override != null, run_ok, run_ms, tools);
-    const text = try report;
-    const empty = text.len == 0;
-    const report_body = if (empty) "subagent finished without a report" else text;
-    // Persist the full report + metadata so it can be inspected from the
-    // terminal, then render the completion card with the inspect: path.
-    const detail = writeSubagentDetail(ctx.io, arena, sub_id, label, kind, prompt, report_body, !empty, run_ms, tools);
-    subagentDoneCard(arena, sub_id, sprite, label, !empty, run_ms, tools, detail);
-    if (empty) return .{ .text = try gpa.dupe(u8, report_body), .is_error = true };
-    // Append the inspect: path so the orchestrator can cite the detail file.
-    if (detail) |p|
-        return .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[subagent {s} · inspect: {s}]", .{ text, sub_id, p }) };
-    return .{ .text = try gpa.dupe(u8, text) };
-}
-
-/// One task inside a workflow phase; never throws, suitable for io.async.
-/// `niche` is the task's MAP-Elites cell, threaded through so runSub's
-/// fleet:propose — and scoreVariants' submit — tag the variant's genome.
-fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) ToolOutput {
-    return runSub(ctx, "workflow_task", label, prompt, sys_override, niche) catch |err| failure(ctx.gpa, err);
-}
-
-/// The --judge LLM-as-judge run (see runJudge): an isolated subagent scores the
-/// work against the rubric and ends with a `score:` line. Mirrors workflowTask —
-/// a thin runSub wrapper — so the eval handler can io.async it on a pool thread.
-fn judgeTask(ctx: ToolCtx, prompt: []const u8) ToolOutput {
-    return runSub(ctx, "judge_task", "judge", prompt, null, "") catch |err| failure(ctx.gpa, err);
-}
-
-/// Build the judge prompt that scores one workflow variant's output against its
-/// task on a 0-100 scale (see scoreVariants). Bounded: the task spec and output
-/// tail are truncated so a fat phase can't blow up the judge's context.
-fn variantJudgePrompt(arena: Allocator, title: []const u8, task: []const u8, output: []const u8) ![]const u8 {
-    const spec = utf8Prefix(task, 1200);
-    const work = if (output.len > 2000) output[output.len - 2000 ..] else output;
-    return std.fmt.allocPrint(arena,
-        \\An agent variant ran the task below as part of the "{s}" phase of a workflow.
-        \\Judge how well its OUTPUT accomplishes the TASK, on a 0-100 scale. Be
-        \\discriminating: reward correctness, completeness, and usefulness; penalize
-        \\hand-waving, non-answers, and ignored requirements. Do not reward length.
-        \\
-        \\TASK:
-        \\{s}
-        \\
-        \\VARIANT OUTPUT:
-        \\{s}
-        \\
-        \\Inspect any files the work references if you need to, then end your reply
-        \\with a single final line `score: <N>` where N is an integer from 0 to 100.
-    , .{ title, spec, work });
-}
-
-/// #1 — Score this phase's persona variants and submit niche-tagged fitness to
-/// the fleet, turning every ultracode tournament into a DGM scoring round. Each
-/// surviving variant task is judged 0-100 against its task; the score is signed
-/// and submitted under the task's niche so a MAP-Elites cell accrues real fitness
-/// and the promote pass can crown a winner. Mirrors runEval's submit exactly but
-/// with a NON-EMPTY niche — the gap that previously forced bootstrap seeding.
-/// Best-effort and gated: no judge runs unless ≥2 variants competed and the
-/// fleet (telemetry) is on, so ordinary fan-outs pay nothing.
-fn scoreVariants(
-    ctx: ToolCtx,
-    arena: Allocator,
-    title: []const u8,
-    prompts: [][]const u8,
-    raws: [][]const u8,
-    overrides: []?[]const u8,
-    niches: [][]const u8,
-    outputs: []ToolOutput,
-) void {
-    if (!g_fleet) return;
-    const t = telemetry.g_telem orelse return;
-
-    // Variant tasks that produced a usable result; a tournament needs ≥2.
-    var vidx: [max_workflow_tasks]usize = undefined;
-    var vn: usize = 0;
-    for (overrides, outputs, 0..) |o, out, i| {
-        if (o != null and !out.is_error) {
-            vidx[vn] = i;
-            vn += 1;
-        }
-    }
-    if (vn < 2) return;
-
-    // All fallible work (prompt builds) before any future spawns, so an early
-    // return can never abandon a running judge.
-    const jprompts = arena.alloc([]const u8, vn) catch return;
-    for (jprompts, 0..) |*jp, k| {
-        const i = vidx[k];
-        jp.* = variantJudgePrompt(arena, title, prompts[i], outputs[i].text) catch return;
-    }
-    const jfuts = arena.alloc(Io.Future(ToolOutput), vn) catch return;
-    for (jfuts, jprompts) |*jf, jp| jf.* = ctx.io.async(judgeTask, .{ ctx, jp });
-
-    const pclass = providerClass(ctx.provider.model);
-    const run_id: []const u8 = &scoring.g_run_id;
-    for (jfuts, 0..) |*jf, k| {
-        const i = vidx[k];
-        const jout = jf.await(ctx.io);
-        defer ctx.gpa.free(jout.text);
-        if (jout.is_error) continue;
-        const s = parseEvalScore(jout.text) orelse continue;
-        if (s <= 0) continue; // skip the total-failure 0 (don't pollute the cell mean), mirroring runEval
-        const genome_fp = promptFingerprint(overrides[i].?);
-        const esh_fp = promptFingerprint(raws[i]);
-        const genome: []const u8 = &genome_fp;
-        const esh: []const u8 = &esh_fp;
-        const sig = signScore(genome, "", s, run_id, "", "", esh);
-        const sig_s: []const u8 = if (scoring.g_score_key != null) &sig else "";
-        var provbuf: [512]u8 = undefined;
-        const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, "" }) catch "";
-        t.scoreEvent(genome, "", s, run_id, sig_s, prov);
-        t.fleetEvent("submit", niches[i], genome, "", pclass, esh, 0, "");
-    }
-}
-
-const max_workflow_phases = 5;
-const max_workflow_tasks = 8;
-
-// Per-task cap on each phase result fed into {{prev}} (#4): a wide or runaway
-// phase would otherwise push its full output into every next-phase task, so
-// phase N+1 pays N× context. Over the cap we keep the head (the substance) plus
-// a short tail — which carries the `inspect:` pointer to the full detail file —
-// with a truncation marker between, so nothing is actually lost. (A synthesis/
-// compress pass is the heavier alternative; per-task slicing is the cheap,
-// no-extra-LLM-call lever.)
-const max_prev_per_task = 6000;
-const prev_tail_keep = 600;
-
-/// Bound one task's output before it enters the {{prev}} buffer (#4). Short
-/// outputs pass through untouched; over the cap, head + truncation marker + tail.
-fn cappedPrevBody(arena: Allocator, text: []const u8) []const u8 {
-    if (text.len <= max_prev_per_task) return text;
-    const head = utf8Prefix(text, max_prev_per_task - prev_tail_keep);
-    const tail = text[text.len - prev_tail_keep ..];
-    return std.fmt.allocPrint(arena, "{s}\n\n…[{d} chars truncated — full result in the inspect file below]…\n\n{s}", .{ head, text.len - head.len - tail.len, tail }) catch text;
-}
-
-/// #5 conditional-phase gate: a phase carrying a non-empty `when` runs only when
-/// that substring appears (case-insensitively) in the previous phase's results —
-/// e.g. gate a synthesis phase on a findings sentinel so it never runs when the
-/// earlier phase turned up nothing. Empty `when` (or phase 1, no prev) → runs.
-fn gateAllows(prev: []const u8, when: []const u8) bool {
-    return when.len == 0 or std.ascii.indexOfIgnoreCase(prev, when) != null;
-}
-
-// ── Pipeline mode (#3) ──────────────────────────────────────────────────────
-// Phases fan out then synthesize: a barrier between phases, since every
-// next-phase task waits on ALL of the previous phase via {{prev}}. Pipeline
-// instead maps each ITEM through a chain of STAGES with NO barrier — item A can
-// be in stage 3 while item B is still in stage 1, so wall-clock is the slowest
-// single chain, not the sum of slowest-per-stage. Use it for per-item work
-// (transform/verify each file); use phases for fan-out + synthesis.
-const max_pipeline_items = 8;
-const max_pipeline_stages = 5;
-
-const StageSpec = struct {
-    label: []const u8,
-    prompt: []const u8, // raw; may contain {{item}} / {{prev}}
-    override: ?[]const u8,
-    niche: []const u8,
-};
-
-/// Replace every `needle` in `hay` with `repl` (arena-allocated); returns `hay`
-/// unchanged when the needle is absent.
-fn replacePlaceholder(arena: Allocator, hay: []const u8, needle: []const u8, with: []const u8) ![]const u8 {
-    if (std.mem.indexOf(u8, hay, needle) == null) return hay;
-    const size = std.mem.replacementSize(u8, hay, needle, with);
-    const buf = try arena.alloc(u8, size);
-    _ = std.mem.replace(u8, hay, needle, with, buf);
-    return buf;
-}
-
-/// Resolve a pipeline stage prompt for one item: substitute {{item}}, and from
-/// stage 2 {{prev}} = this item's bounded previous-stage result. Either is
-/// appended when its placeholder is omitted (mirrors phases-mode {{prev}}).
-fn pipelinePrompt(arena: Allocator, raw: []const u8, item: []const u8, prev: []const u8, stage_no: usize) ![]const u8 {
-    const cp = if (stage_no > 1) cappedPrevBody(arena, prev) else "";
-    var p = raw;
-    if (std.mem.indexOf(u8, p, "{{item}}") != null)
-        p = try replacePlaceholder(arena, p, "{{item}}", item)
-    else
-        p = try std.fmt.allocPrint(arena, "{s}\n\nItem: {s}", .{ p, item });
-    if (std.mem.indexOf(u8, p, "{{prev}}") != null)
-        p = try replacePlaceholder(arena, p, "{{prev}}", cp)
-    else if (stage_no > 1)
-        p = try std.fmt.allocPrint(arena, "{s}\n\nResult from the previous stage:\n\n{s}", .{ p, cp });
-    return p;
-}
-
-/// One item's journey through every stage, run on a pool thread (spawned by
-/// runPipeline). Stages run SEQUENTIALLY here via DIRECT runSub calls — never a
-/// nested io.async, which on a bounded pool could deadlock; different items run
-/// concurrently. A failed stage is retried once (#2); a stage that still fails
-/// ends the chain with a terse marker rather than feeding its error downstream.
-fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) ToolOutput {
-    const gpa = ctx.gpa;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var prev: []const u8 = "";
-    for (stages, 1..) |st, stage_no| {
-        const prompt = pipelinePrompt(arena, st.prompt, item, prev, stage_no) catch |e| return failure(gpa, e);
-        var out = runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche) catch |e| failure(gpa, e);
-        if (out.is_error) {
-            gpa.free(out.text);
-            out = runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche) catch |e| failure(gpa, e);
-            if (out.is_error) {
-                gpa.free(out.text);
-                return .{
-                    .text = std.fmt.allocPrint(gpa, "(pipeline stopped at stage {d}/{d} \"{s}\": task failed)", .{ stage_no, stages.len, st.label }) catch (gpa.dupe(u8, "(pipeline stage failed)") catch ""),
-                    .is_error = true,
-                };
-            }
-        }
-        const duped = arena.dupe(u8, out.text) catch {
-            gpa.free(out.text);
-            return failure(gpa, error.OutOfMemory);
-        };
-        gpa.free(out.text);
-        prev = duped;
-    }
-    return .{ .text = gpa.dupe(u8, prev) catch "" };
-}
-
-/// Pipeline mode entry (#3): validate {items, stages}, then run one independent
-/// chain per item concurrently (no barrier) and return the labeled final-stage
-/// result for each item.
-fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
-    const gpa = ctx.gpa;
-    if (pv != .object) return .{ .text = try gpa.dupe(u8, "pipeline must be an object with items + stages"), .is_error = true };
-    const items_val = pv.object.get("items") orelse return .{ .text = try gpa.dupe(u8, "pipeline needs an items array"), .is_error = true };
-    const stages_val = pv.object.get("stages") orelse return .{ .text = try gpa.dupe(u8, "pipeline needs a stages array"), .is_error = true };
-    if (items_val != .array or stages_val != .array) return .{ .text = try gpa.dupe(u8, "pipeline items and stages must both be arrays"), .is_error = true };
-    const items = items_val.array.items;
-    const stage_vals = stages_val.array.items;
-    if (items.len == 0 or items.len > max_pipeline_items) return .{ .text = try std.fmt.allocPrint(gpa, "pipeline needs 1-{d} items", .{max_pipeline_items}), .is_error = true };
-    if (stage_vals.len == 0 or stage_vals.len > max_pipeline_stages) return .{ .text = try std.fmt.allocPrint(gpa, "pipeline needs 1-{d} stages", .{max_pipeline_stages}), .is_error = true };
-
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    // Parse stages once — shared (read-only) by every item chain.
-    const stages = try arena.alloc(StageSpec, stage_vals.len);
-    for (stage_vals, stages) |sv, *sp| {
-        if (sv != .object) return .{ .text = try gpa.dupe(u8, "each pipeline stage must be an object"), .is_error = true };
-        const so = sv.object;
-        sp.label = if (so.get("description")) |d| (if (d == .string) d.string else "stage") else "stage";
-        const raw = if (so.get("prompt")) |p| (if (p == .string) p.string else "") else "";
-        if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each pipeline stage needs a non-empty \"prompt\""), .is_error = true };
-        sp.prompt = raw;
-        sp.override = resolveOverride(so);
-        const an = resolveNiche(so);
-        sp.niche = if (an.len > 0) an else sp.label;
-    }
-
-    const item_strs = try arena.alloc([]const u8, items.len);
-    for (items, item_strs) |iv, *is| {
-        if (iv != .string or iv.string.len == 0) return .{ .text = try gpa.dupe(u8, "pipeline items must be non-empty strings"), .is_error = true };
-        is.* = iv.string;
-    }
-
-    const wf_start = Io.Timestamp.now(ctx.io, .awake);
-    std.debug.print("  [workflow] pipeline: {d} item(s) × {d} stage(s), no barrier\n", .{ items.len, stages.len });
-
-    // Spawn one chain per item — all joined before any fallible work so an early
-    // return can never abandon a running chain.
-    const futures = try arena.alloc(Io.Future(ToolOutput), items.len);
-    const outputs = try arena.alloc(ToolOutput, items.len);
-    for (item_strs, futures) |item, *fut| fut.* = ctx.io.async(pipelineChain, .{ ctx, item, stages });
-    for (futures, outputs) |*fut, *out| out.* = fut.await(ctx.io);
-    defer for (outputs) |out| gpa.free(out.text);
-
-    var failed: usize = 0;
-    for (outputs) |out| if (out.is_error) {
-        failed += 1;
-    };
-    if (telemetry.g_telem) |t| t.workflowEvent(stages.len, items.len * stages.len, failed, @intCast(@max(0, wf_start.untilNow(ctx.io, .awake).toMilliseconds())));
-
-    var aw: Io.Writer.Allocating = .init(arena);
-    for (item_strs, outputs) |item, out| {
-        try aw.writer.print("### {s}{s}\n{s}\n\n", .{ item, if (out.is_error) " (failed)" else "", out.text });
-    }
-    return .{ .text = try gpa.dupe(u8, std.mem.trimEnd(u8, aw.writer.buffered(), "\n")) };
-}
-
-/// Dynamic workflows as data: sequential phases, parallel tasks. Each task
-/// is an isolated subagent; "{{prev}}" in a task prompt is replaced with
-/// the labeled results of the previous phase (appended when omitted).
-/// Returns the final phase's results.
-fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
-    const gpa = ctx.gpa;
-    if (ctx.from_sub) return .{
-        .text = try gpa.dupe(u8, "subagents cannot run workflows — do this work yourself"),
-        .is_error = true,
-    };
-    // Pipeline mode (#3): {pipeline:{items,stages}} maps each item through the
-    // stages with no barrier — distinct from phases (fan-out + synthesis).
-    if (input.object.get("pipeline")) |pv| return runPipeline(ctx, pv);
-    const phases_val = input.object.get("phases") orelse return .{
-        .text = try gpa.dupe(u8, "workflow needs a \"phases\" array (or a \"pipeline\" object)"),
-        .is_error = true,
-    };
-    const phases = phases_val.array.items;
-    if (phases.len == 0 or phases.len > max_workflow_phases) return .{
-        .text = try std.fmt.allocPrint(gpa, "workflow needs 1-{d} phases", .{max_workflow_phases}),
-        .is_error = true,
-    };
-
-    // All intermediate strings live in this arena; the final result is
-    // duped into gpa for the caller.
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    // Telemetry: one "workflow" record per run — phase/task/failure counts
-    // and wall-clock — emitted however the run ends.
-    const wf_start = Io.Timestamp.now(ctx.io, .awake);
-    var wf_tasks: usize = 0;
-    var wf_failed: usize = 0;
-    defer if (telemetry.g_telem) |t| t.workflowEvent(
-        phases.len,
-        wf_tasks,
-        wf_failed,
-        @intCast(@max(0, wf_start.untilNow(ctx.io, .awake).toMilliseconds())),
-    );
-
-    var prev_results: []const u8 = "";
-    for (phases, 1..) |phase_val, phase_no| {
-        if (phase_val != .object) return .{ .text = try gpa.dupe(u8, "each phase must be an object"), .is_error = true };
-        const phase = phase_val.object;
-        const title = if (phase.get("title")) |t| (if (t == .string) t.string else "phase") else "phase";
-        const tasks_val = phase.get("tasks") orelse return .{
-            .text = try gpa.dupe(u8, "each phase needs a tasks array"),
-            .is_error = true,
-        };
-        if (tasks_val != .array) return .{ .text = try gpa.dupe(u8, "phase tasks must be an array"), .is_error = true };
-        const tasks = tasks_val.array.items;
-        if (tasks.len == 0 or tasks.len > max_workflow_tasks) return .{
-            .text = try std.fmt.allocPrint(gpa, "each phase needs 1-{d} tasks", .{max_workflow_tasks}),
-            .is_error = true,
-        };
-        // #5 — conditional phase: skip when its `when` substring is absent from
-        // the previous phase's results (case-insensitive). Phase 1 has no prev so
-        // its `when` never gates; a skipped phase leaves {{prev}} untouched, so a
-        // skipped final phase just returns the prior phase's results (early-exit).
-        if (phase_no > 1) if (phase.get("when")) |wv| if (wv == .string and !gateAllows(prev_results, wv.string)) {
-            std.debug.print("  [workflow] phase {d}/{d}: {s} — SKIPPED (when \"{s}\" absent)\n", .{ phase_no, phases.len, title, wv.string });
-            continue;
-        };
-        std.debug.print("  [workflow] phase {d}/{d}: {s} ({d} task(s))\n", .{ phase_no, phases.len, title, tasks.len });
-
-        // Resolve prompts: substitute or append the previous phase results.
-        // raws keeps each task's pre-substitution spec (a stable eval-set id for
-        // scoring, unlike the prev-injected prompt); niches is its MAP-Elites
-        // cell — the agent type, else the phase title for an inline variant.
-        const prompts = try arena.alloc([]const u8, tasks.len);
-        const labels = try arena.alloc([]const u8, tasks.len);
-        const overrides = try arena.alloc(?[]const u8, tasks.len);
-        const raws = try arena.alloc([]const u8, tasks.len);
-        const niches = try arena.alloc([]const u8, tasks.len);
-        for (tasks, prompts, labels, overrides, raws, niches) |task_val, *prompt, *label, *override, *rawp, *niche| {
-            if (task_val != .object) return .{ .text = try gpa.dupe(u8, "each task must be an object"), .is_error = true };
-            const task = task_val.object;
-            label.* = if (task.get("description")) |d| (if (d == .string) d.string else "task") else "task";
-            override.* = resolveOverride(task);
-            const agent_niche = resolveNiche(task);
-            niche.* = if (agent_niche.len > 0) agent_niche else title;
-            const raw = if (task.get("prompt")) |p| (if (p == .string) p.string else "") else "";
-            if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each task needs a non-empty \"prompt\""), .is_error = true };
-            rawp.* = raw;
-            if (phase_no == 1) {
-                prompt.* = raw;
-            } else if (std.mem.indexOf(u8, raw, "{{prev}}") != null) {
-                const size = std.mem.replacementSize(u8, raw, "{{prev}}", prev_results);
-                const buf = try arena.alloc(u8, size);
-                _ = std.mem.replace(u8, raw, "{{prev}}", prev_results, buf);
-                prompt.* = buf;
-            } else {
-                prompt.* = try std.fmt.allocPrint(arena, "{s}\n\nResults from the previous workflow phase:\n\n{s}", .{ raw, prev_results });
-            }
-        }
-
-        // Join ALL tasks before any fallible work, so an early error return
-        // can never abandon running subagents or free their result slots.
-        const futures = try arena.alloc(Io.Future(ToolOutput), tasks.len);
-        const outputs = try arena.alloc(ToolOutput, tasks.len);
-        for (labels, prompts, overrides, niches, futures) |label, prompt, override, niche, *fut| {
-            fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche });
-        }
-        for (futures, outputs) |*fut, *out| out.* = fut.await(ctx.io);
-        defer for (outputs) |out| gpa.free(out.text);
-        wf_tasks += tasks.len;
-
-        // #2 — Retry transient failures once. A single flaky subagent (an empty
-        // report, a dropped stream) shouldn't fail the phase or poison {{prev}}
-        // for the next one. We can't reliably tell a transient failure from a
-        // deterministic one, so we retry every failure exactly once: a permanent
-        // failure just costs one more attempt and stays failed.
-        var fidx: [max_workflow_tasks]usize = undefined;
-        var nf: usize = 0;
-        for (outputs, 0..) |out, i| if (out.is_error) {
-            fidx[nf] = i;
-            nf += 1;
-        };
-        if (nf > 0) {
-            const refut = try arena.alloc(Io.Future(ToolOutput), nf);
-            for (refut, 0..) |*rf, k| {
-                const i = fidx[k];
-                rf.* = ctx.io.async(workflowTask, .{ ctx, labels[i], prompts[i], overrides[i], niches[i] });
-            }
-            for (refut, 0..) |*rf, k| {
-                const retry = rf.await(ctx.io);
-                const i = fidx[k];
-                if (!retry.is_error) {
-                    gpa.free(outputs[i].text);
-                    outputs[i] = retry;
-                } else gpa.free(retry.text);
-            }
-        }
-        // Tally this phase's surviving failures into the run total (post-retry,
-        // so a recovered task no longer counts). Accumulates across phases, like
-        // wf_tasks, for the single end-of-run workflowEvent.
-        for (outputs) |out| if (out.is_error) {
-            wf_failed += 1;
-        };
-
-        // #1 — Ultracode → DGM engine: when ≥2 persona variants competed this
-        // phase, score each survivor and submit its niche-tagged fitness so the
-        // fleet can rank and promote the winner (docs/hyperagents.md §9.B). The
-        // propose half already fired in runSub; this closes the loop runEval left
-        // open (it submits niche=""). Gated on the fleet — no judge cost otherwise.
-        scoreVariants(ctx, arena, title, prompts, raws, overrides, niches, outputs);
-
-        var aw: Io.Writer.Allocating = .init(arena);
-        for (labels, outputs) |label, out| {
-            if (out.is_error) {
-                // Keep the failure visible to the next phase, but never feed its
-                // raw error text into {{prev}} as if it were a real result (#2).
-                try aw.writer.print("### {s} (no result — task failed)\n\n", .{label});
-            } else {
-                try aw.writer.print("### {s}\n{s}\n\n", .{ label, cappedPrevBody(arena, out.text) });
-            }
-        }
-        prev_results = std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
-    }
-    return .{ .text = try gpa.dupe(u8, prev_results) };
-}
-
+const exec = @import("exec.zig");
+const execTool = exec.execTool;
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────
-
-test "variantJudgePrompt: bounded, names the phase, keeps the score contract" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const big_task = "T" ** 4000;
-    const big_out = "O" ** 5000;
-    const p = try variantJudgePrompt(a, "code-review", big_task, big_out);
-
-    // Names the shared phase so the judge has the tournament context.
-    try std.testing.expect(std.mem.indexOf(u8, p, "\"code-review\" phase") != null);
-    // Task is prefix-capped and output tail-capped — neither lands verbatim.
-    try std.testing.expect(std.mem.indexOf(u8, p, big_task) == null);
-    try std.testing.expect(std.mem.indexOf(u8, p, big_out) == null);
-    // The `score:` contract parseEvalScore depends on is spelled out…
-    try std.testing.expect(std.mem.indexOf(u8, p, "score: <N>") != null);
-    // …and it round-trips: a judge tail like this parses back to the score.
-    try std.testing.expectEqual(@as(?f64, 87), parseEvalScore("ok\nscore: 87"));
-}
-
-test "cappedPrevBody bounds a wide phase output, keeps head + inspect tail (#4)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    // A short result passes through untouched — most outputs never hit the cap.
-    try std.testing.expectEqualStrings("hi", cappedPrevBody(a, "hi"));
-
-    // A huge result is capped: head kept, the trailing inspect: pointer kept,
-    // a truncation marker added, and the full text never lands verbatim.
-    const big = ("X" ** 9000) ++ "\n[subagent sa-007-abcd · inspect: .graff/subagents/sa-007-abcd.md]";
-    const capped = cappedPrevBody(a, big);
-    try std.testing.expect(capped.len < big.len);
-    try std.testing.expect(capped.len <= max_prev_per_task + 200); // head + tail + marker overhead
-    try std.testing.expect(std.mem.indexOf(u8, capped, "truncated") != null);
-    try std.testing.expect(std.mem.indexOf(u8, capped, "inspect: .graff/subagents/sa-007-abcd.md") != null);
-    try std.testing.expect(std.mem.indexOf(u8, capped, big) == null);
-}
-
-test "gateAllows: empty when always runs, else case-insensitive substring (#5)" {
-    try std.testing.expect(gateAllows("anything", "")); // no gate → always run
-    try std.testing.expect(gateAllows("found 3 ISSUES here", "issues")); // case-insensitive hit
-    try std.testing.expect(!gateAllows("all clean, no findings", "ISSUE")); // absent → skip
-    try std.testing.expect(!gateAllows("", "ready")); // empty prev → skip
-}
-
-test "pipelinePrompt substitutes {{item}}/{{prev}} and appends when omitted (#3)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    // {{item}} substituted on stage 1; no previous-stage section.
-    const s1 = try pipelinePrompt(a, "Audit {{item}} for bugs.", "src/x.zig", "", 1);
-    try std.testing.expect(std.mem.indexOf(u8, s1, "Audit src/x.zig for bugs.") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s1, "previous stage") == null);
-
-    // {{item}} and {{prev}} both substituted on stage 2.
-    const s2 = try pipelinePrompt(a, "Given {{prev}}, fix {{item}}.", "src/x.zig", "BUG: off-by-one", 2);
-    try std.testing.expect(std.mem.indexOf(u8, s2, "Given BUG: off-by-one, fix src/x.zig.") != null);
-
-    // Omitted placeholders are appended (item on stage 1, prev on stage 2+).
-    const s3 = try pipelinePrompt(a, "Summarize the result.", "ticket-7", "DONE", 2);
-    try std.testing.expect(std.mem.indexOf(u8, s3, "Item: ticket-7") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s3, "Result from the previous stage:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s3, "DONE") != null);
-}
-
-test "codedbGuard.referencesSourceFile: concrete code paths, not globs/logs/configs" {
-    // The exact #626 screenshot commands — every one reads a source file.
-    try std.testing.expect(referencesSourceFile("grep -n \"description\" src/mcp.zig"));
-    try std.testing.expect(referencesSourceFile("wc -l src/mcp.zig"));
-    try std.testing.expect(referencesSourceFile("sed -n '600,700p' src/mcp.zig"));
-    try std.testing.expect(referencesSourceFile("cat gui/src/hooks/types/copy.ts"));
-    // Globs are discovery, not a read — codedb glob/tree cover those separately.
-    try std.testing.expect(!referencesSourceFile("find . -name '*.zig'"));
-    try std.testing.expect(!referencesSourceFile("grep -r foo --include=*.rs ."));
-    // No concrete source path → leave it alone (logs, docs, bare commands).
-    try std.testing.expect(!referencesSourceFile("grep error /var/log/app.log"));
-    try std.testing.expect(!referencesSourceFile("cat README.md"));
-    try std.testing.expect(!referencesSourceFile("ls -la"));
-    // The command word itself ending in a code ext must not self-trigger.
-    try std.testing.expect(!referencesSourceFile("./build.zig"));
-}
 
 test "incremental markdown streaming renders like renderMdLine" {
     // style is the empty default in tests, so styled output == de-marked text.
@@ -9143,23 +7892,6 @@ test "scoreSigMessage: canonical bytes are cross-language stable" {
     try std.testing.expectEqualStrings("v1\na1b2\n\n1.000000\n\n\n\n", empty);
 }
 
-test "blankText: webfetch empty-output heuristic" {
-    try std.testing.expect(blankText(""));
-    try std.testing.expect(blankText("   \n\n\t\r\n  \n")); // SPA: pages of blank lines
-    try std.testing.expect(blankText("ok\n")); // a couple of stray chars is still no content
-    try std.testing.expect(!blankText("# Example Domain\n\nThis domain is for use..."));
-}
-
-test "companionNativeFallback: every companion tool maps to a native equivalent" {
-    try std.testing.expectEqualStrings("read_file tool", companionNativeFallback("read"));
-    try std.testing.expectEqualStrings("edit_file tool", companionNativeFallback("patch"));
-    try std.testing.expectEqualStrings("edit_file tool", companionNativeFallback("edit"));
-    try std.testing.expectEqualStrings("write_file tool", companionNativeFallback("create"));
-    try std.testing.expect(std.mem.indexOf(u8, companionNativeFallback("faster_search"), "codedb") != null);
-    // an unknown/new companion tool still gets a sane native pointer
-    try std.testing.expect(std.mem.indexOf(u8, companionNativeFallback("memo"), "native") != null);
-}
-
 test "parseAnswerRequest: preserves multiline text and optional call id" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -9277,27 +8009,6 @@ test "Keys.defaultProvider: first keyed provider on its default model" {
     try std.testing.expectError(error.MissingKey, none.defaultProvider());
 }
 
-test "strField/intField: typed JSON field extraction, null on wrong type or non-object" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const v = std.json.parseFromSliceLeaky(Value, a, "{\"s\":\"hi\",\"n\":42,\"b\":true}", .{}) catch unreachable;
-    try std.testing.expectEqualStrings("hi", strField(v, "s").?);
-    try std.testing.expect(strField(v, "n") == null); // present but not a string
-    try std.testing.expect(strField(v, "missing") == null);
-    try std.testing.expect(strField(Value{ .null = {} }, "s") == null); // non-object input
-    try std.testing.expectEqual(@as(i64, 42), intField(v, "n").?);
-    try std.testing.expect(intField(v, "s") == null); // present but not an integer
-    try std.testing.expect(intField(v, "missing") == null);
-}
-
-test "missingArg: builds an is_error result naming the argument" {
-    const o = try missingArg(std.testing.allocator, "path");
-    defer std.testing.allocator.free(o.text);
-    try std.testing.expect(o.is_error);
-    try std.testing.expect(std.mem.indexOf(u8, o.text, "path") != null);
-}
-
 test "extractText: string content, joined text blocks, and empties" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -9333,31 +8044,6 @@ test "Agent.isTableSeparator: only |, -, :, space and at least one dash" {
     try std.testing.expect(!Agent.isTableSeparator("| a | b |")); // letters
     try std.testing.expect(!Agent.isTableSeparator("|   |   |")); // no dash
     try std.testing.expect(!Agent.isTableSeparator("")); // empty
-}
-
-test "apiErrorMessage: object-message, bare-string, and absent envelopes" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const mk = struct {
-        fn p(al: Allocator, s: []const u8) Value {
-            return std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable;
-        }
-    }.p;
-    try std.testing.expectEqualStrings("bad thing", apiErrorMessage(mk(a, "{\"error\":{\"message\":\"bad thing\"}}").object).?);
-    // codegraff gateway shape: error is a bare string (the grok-build case)
-    try std.testing.expectEqualStrings(
-        "Model grok-build-0.1 does not support parameter reasoningEffort.",
-        apiErrorMessage(mk(a, "{\"code\":\"invalid-argument\",\"error\":\"Model grok-build-0.1 does not support parameter reasoningEffort.\"}").object).?,
-    );
-    try std.testing.expect(apiErrorMessage(mk(a, "{\"choices\":[]}").object) == null);
-    try std.testing.expect(apiErrorMessage(mk(a, "{\"error\":null}").object) == null);
-}
-
-test "mentionsReasoningEffort: matches snake_case and camelCase wording" {
-    try std.testing.expect(mentionsReasoningEffort("Unknown parameter: reasoning_effort"));
-    try std.testing.expect(mentionsReasoningEffort("Model X does not support parameter reasoningEffort."));
-    try std.testing.expect(!mentionsReasoningEffort("some other error"));
 }
 
 test "absolute path prompts are not mistaken for slash commands" {
