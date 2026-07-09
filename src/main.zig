@@ -132,6 +132,10 @@ test {
     _ = serde;
     _ = mcp_cli;
     _ = cli;
+    _ = prompts;
+    _ = session;
+    _ = keys_cli;
+    _ = repl_glue;
     _ = vision;
     _ = providers;
     _ = pickers;
@@ -201,75 +205,17 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.5" },
 };
 
-const main_system_prompt =
-    \\You are a coding agent running in a minimal terminal harness on the
-    \\user's machine. Use the provided tools to inspect and modify the current
-    \\working directory and to run commands. read_file before editing; prefer
-    \\edit_file for changes to existing files and write_file only for new
-    \\files or full rewrites. To navigate code — finding symbols, callers,
-    \\definitions, or where logic lives — prefer the codedb tool (it's indexed
-    \\and structural) over bash grep/find/ls. Some bash commands need user approval — if one
-    \\is declined, try another approach or ask. For independent,
-    \\self-contained chunks of work — exploring several directories, running
-    \\unrelated checks, summarizing multiple files — fan out: call the
-    \\subagent tool several times in a single response and the subagents run
-    \\in parallel. For larger fan-out work that needs a synthesis step, use
-    \\the workflow tool: sequential phases of parallel subagents, with
-    \\{{prev}} carrying each phase's results into the next. Use todo_write to
-    \\track multi-step work. Work directly for small sequential steps.
-    \\
-    \\The harness writes a JSONL event trace of this session to
-    \\harness.trace.jsonl in the working directory: one object per line with
-    \\"ev" of "api" (model round trips: ms latency, request/response bytes,
-    \\context_tokens) or "tool" (tool executions: name, ms, result bytes,
-    \\errors), and "t" = ms since session start. When asked to debug, profile,
-    \\or explain the harness's own behavior — including your own — read that
-    \\file and analyze it.
-    \\
-    \\If you hit a bug or limitation in the harness itself (this graff/codegraff
-    \\agent — its tools, prompts, streaming, sessions, or behavior — as opposed
-    \\to the project you happen to be working in), report it by opening a GitHub
-    \\issue at justrach/codegraff (`gh issue create --repo justrach/codegraff
-    \\...`), never in the current working repository's issue tracker.
-    \\
-    \\When making git commits on behalf of the user, always set the author
-    \\to Codegraff <blackfloofie@codegraff.com> — pass GIT_AUTHOR_NAME,
-    \\GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and GIT_COMMITTER_EMAIL env vars
-    \\on every git command so the bot identity is preserved in the commit log.
-    \\
-    \\Never run git commands that discard work — `reset --hard`, `clean -f`,
-    \\`checkout --`/`restore`, force-push, or `branch -D` — unless the user
-    \\explicitly asks. Their existing commits and any -w worktree
-    \\auto-checkpoints are the user's safety net; do not blow them away.
-    \\
-    \\Be direct and concise.
-;
-
-const strict_note =
-    \\
-    \\
-    \\STRICT MODE: Respond ONLY by calling exactly one tool per message — never
-    \\reply with plain prose. When the task is fully complete, call
-    \\attempt_completion with your final answer in the "result" field.
-;
-
-const main_system_prompt_strict = main_system_prompt ++ strict_note;
-
-const sub_system_prompt =
-    \\You are a subagent spawned by an orchestrator agent inside a terminal
-    \\harness. Complete the assigned task using your tools, without asking
-    \\questions — make reasonable assumptions. Your final message is returned
-    \\verbatim to the orchestrator as the result of the task: make it a
-    \\concise, complete report with the concrete facts you found.
-;
-
-pub const compact_instruction =
-    \\Summarize this entire conversation for a context handoff. Capture: the
-    \\user's goals, all important facts and decisions, file paths and code
-    \\that was created or modified, command results that matter, and any
-    \\pending or unfinished work. Be thorough but compact. Reply with only
-    \\the summary.
-;
+// System-prompt text (main_system_prompt, strict_note,
+// main_system_prompt_strict, sub_system_prompt, compact_instruction) lives in
+// prompts.zig (600-line goal, #123). All aliased back — the Agent struct's
+// default field values and main()'s prompt-selection logic read unchanged.
+// compact_instruction stays pub (agent_compact.zig back-imports it).
+const prompts = @import("prompts.zig");
+const main_system_prompt = prompts.main_system_prompt;
+const strict_note = prompts.strict_note;
+const main_system_prompt_strict = prompts.main_system_prompt_strict;
+const sub_system_prompt = prompts.sub_system_prompt;
+pub const compact_instruction = prompts.compact_instruction;
 
 // -------------------------------------------------------------------------
 // Tool-schema + provider-tool JSON emission (the ToolSpec catalog, per-provider
@@ -660,204 +606,30 @@ fn titleTask(gpa: Allocator, io: Io, client: *std.http.Client, provider: Provide
 /// Opaque context handed to repl.run so the REPL can run a real agent turn —
 /// reuses the root agent's tool set, MCP registry, and system prompt (built in
 /// main()). No harness internals leak into repl.zig; it only sees a callback.
-const ReplCtx = struct {
-    io: Io,
-    client: *std.http.Client,
-    provider: Provider,
-    registry: ?*mcp.Registry,
-    sys_normal: []const u8,
-    tools_anthropic: []const u8,
-    tools_openai: []const u8,
-    tools_responses: []const u8,
-};
-
-/// A thread-safe sink the worker writes the agent's output to and the repl's
-/// render loop polls — this is what makes `graff repl` stream live. Custom
-/// Io.Writer whose drain appends (under the StreamBuf mutex) to the repl buffer.
-const ReplStreamSink = struct {
-    target: *repl.StreamBuf,
-    buf: [4096]u8 = undefined,
-    writer: Io.Writer = undefined,
-
-    const vtable: Io.Writer.VTable = .{ .drain = drain };
-
-    fn init(self: *ReplStreamSink, target: *repl.StreamBuf) void {
-        self.target = target;
-        self.writer = .{ .vtable = &vtable, .buffer = &self.buf, .end = 0 };
-    }
-
-    fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        const self: *ReplStreamSink = @alignCast(@fieldParentPtr("writer", w));
-        self.target.appendBytes(w.buffer[0..w.end]);
-        w.end = 0;
-        const slices = data[0 .. data.len - 1];
-        const pattern = data[data.len - 1];
-        var written: usize = 0;
-        for (slices) |b| {
-            self.target.appendBytes(b);
-            written += b.len;
-        }
-        var i: usize = 0;
-        while (i < splat) : (i += 1) self.target.appendBytes(pattern);
-        written += pattern.len * splat;
-        return written;
-    }
-};
-
-/// The standing-goal steering note appended to each turn when /goal is set: the
-/// objective, an instruction to track it as a todo_write checklist, and the
-/// current checklist render when one exists. Returns "" when goal is null so the
-/// caller can skip the append. Pass todos_render="" when there are no todos — do
-/// NOT pass renderTodos()'s "(no todos)" placeholder, which would leak into the prompt.
-fn goalSteeringNote(arena: Allocator, goal: ?[]const u8, todos_render: []const u8) ![]const u8 {
-    const g = goal orelse return "";
-    const progress: []const u8 = if (todos_render.len > 0)
-        try std.fmt.allocPrint(arena, "\n\nChecklist so far:\n{s}", .{todos_render})
-    else
-        "";
-    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a todo_write checklist and work through it, marking each item in_progress when you start and completed when done.]{s}", .{ g, progress });
-}
-
-/// Extract a 0-100 score from an eval command's output: a `score` key (JSON or
-/// key=val) if present, else the last numeric line. Values in [0,1] are read as
-/// fractions and scaled to 0-100.
-pub fn parseEvalScore(out: []const u8) ?f64 {
-    if (std.mem.indexOf(u8, out, "score")) |i| {
-        var j = i + 5;
-        while (j < out.len and out[j] != ':' and out[j] != '=' and out[j] != '\n') j += 1;
-        if (j < out.len and (out[j] == ':' or out[j] == '=')) {
-            j += 1;
-            while (j < out.len and (out[j] == ' ' or out[j] == '\t' or out[j] == '"')) j += 1;
-            if (parseLeadingNumber(out[j..])) |v| return normalizeScore(v);
-        }
-    }
-    const trimmed = std.mem.trimEnd(u8, out, " \t\r\n");
-    const last = if (std.mem.lastIndexOfScalar(u8, trimmed, '\n')) |k| trimmed[k + 1 ..] else trimmed;
-    if (parseLeadingNumber(std.mem.trim(u8, last, " \t\r\n"))) |v| return normalizeScore(v);
-    return null;
-}
-
-fn parseLeadingNumber(s: []const u8) ?f64 {
-    var end: usize = 0;
-    while (end < s.len and (std.ascii.isDigit(s[end]) or s[end] == '.' or s[end] == '-' or s[end] == '+')) end += 1;
-    if (end == 0) return null;
-    return std.fmt.parseFloat(f64, s[0..end]) catch null;
-}
-
-fn normalizeScore(v: f64) f64 {
-    if (v >= 0.0 and v <= 1.0) return v * 100.0;
-    return v;
-}
-
-/// Steering injected each turn when --eval is set: the eval-driven loop
-/// discipline (score -> one focused change -> re-score -> log -> stop at
-/// target). Returns "" when no eval command is configured.
-fn evalSteeringNote(arena: Allocator, eval_cmd: ?[]const u8, target: u8, has_judge: bool) ![]const u8 {
-    if (eval_cmd == null) return "";
-    const gate = if (has_judge)
-        " An LLM judge is also configured, so the target is met only when BOTH the deterministic score AND the judge score reach it - read both numbers the `eval` tool reports."
-    else
-        "";
-    return std.fmt.allocPrint(arena, "[eval-driven loop active. A scoring command is configured. Work it as a scored improvement loop: (1) call the `eval` tool to score the current state - the harness runs the command and logs to .graff/eval-log.tsv, so do NOT run it yourself via bash; (2) read the score, best-so-far, and output; (3) find the SINGLE biggest failure (inspect any artifacts or images directly); (4) make ONE focused change targeting it; (5) call `eval` again. Continue until `eval` reports the target ({d}/100) is met.{s} Do not stop at the first passing result, and do not revert unless `eval` shows a clear regression. After each `eval`, briefly note what you changed.]", .{ target, gate });
-}
-
-test "goalSteeringNote: goal + checklist assembly, no (no todos) leak" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const ar = arena.allocator();
-
-    // No goal -> empty note, caller skips the append.
-    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, null, ""));
-
-    // Goal, no todos -> bracket note, no checklist, and never the "(no todos)" placeholder.
-    const n1 = try goalSteeringNote(ar, "close all issues", "");
-    try std.testing.expect(std.mem.startsWith(u8, n1, "[standing goal: close all issues - track this as a todo_write checklist"));
-    try std.testing.expect(std.mem.indexOf(u8, n1, "Checklist so far") == null);
-    try std.testing.expect(std.mem.indexOf(u8, n1, "(no todos)") == null);
-
-    // Goal + live todos -> the rendered checklist is appended verbatim.
-    const n2 = try goalSteeringNote(ar, "ship 0.0.177", "[x] wire steering\n[ ] add test");
-    try std.testing.expect(std.mem.indexOf(u8, n2, "Checklist so far:\n[x] wire steering\n[ ] add test") != null);
-}
-
-/// repl.TurnFn — run a full ROOT agent turn (tools + MCP) for `graff repl`, so
-/// the model can read files, run bash, search the codebase, etc. — not a bare
-/// completion. Auto-approves tools (yolo: the chat repl has no permission UI),
-/// in=null (never blocks on a prompt). Output streams into a thread-safe sink
-/// the repl polls to render live; the clean final text is runTurn's return
-/// value. Returns the final assistant text (raw markdown, owned by gpa) or null.
-fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Turn, params: repl.Params, stream: *repl.StreamBuf) ?[]const u8 {
-    const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var sink: ReplStreamSink = undefined;
-    sink.init(stream); // agent output streams into the repl's live pane (thread-safe)
-    var approvals: Approvals = .{ .yolo = true };
-    const sys = if (params.goal.len > 0)
-        (std.fmt.allocPrint(arena, "{s}\n\n# Standing goal (from the user)\n{s}\n\nTrack this as a todo_write checklist and work through it across turns - mark each item in_progress when you start and completed when done. Keep the list current; don't repeat finished items.", .{ c.sys_normal, params.goal }) catch c.sys_normal)
-    else
-        c.sys_normal;
-    var agent: Agent = .{
-        .gpa = gpa,
-        .arena = arena,
-        .io = c.io,
-        .client = c.client,
-        .provider = c.provider,
-        .messages = std.json.Array.init(arena),
-        .sub = false, // root: enables the full tool set + agentic loop
-        .label = "repl",
-        .out = &sink.writer,
-        .in = null, // never prompt for tool approval / ask_user
-        .stream_quiet = false, // stream tokens live into the repl pane
-        .registry = c.registry,
-        .approvals = &approvals,
-        .sys_normal = sys,
-        .tools_anthropic = c.tools_anthropic,
-        .tools_openai = c.tools_openai,
-        .tools_responses = c.tools_responses,
-        .reasoning = switch (params.effort) {
-            .low => .low,
-            .medium => .medium,
-            .high => .high,
-        },
-        .fast = params.fast,
-        .ultracode_mode = params.ultracode,
-        .show_thinking = params.thinking,
-    };
-    defer agent.tools_used.deinit(gpa);
-    for (history) |t| {
-        const role = switch (t.role) {
-            .user => "user",
-            .assistant => "assistant",
-        };
-        agent.messages.append(textMessage(arena, role, t.text) catch return null) catch return null;
-    }
-    const final = agent.runTurn() catch return null;
-    const trimmed = std.mem.trim(u8, final, " \t\r\n");
-    if (trimmed.len == 0) return null;
-    return gpa.dupe(u8, trimmed) catch null;
-}
-
-/// repl.ModelFn adapter — switch the active model by name. Keeps the working
-/// provider resolved at startup (its url/key/kind — e.g. the codegraff gateway
-/// login) and only swaps the model field; re-resolving via providerFor can pick
-/// a different, unauthenticated provider for the same model name. Returns the
-/// new model name, or null on failure.
-fn replModelCb(ctx_ptr: ?*anyopaque, gpa: Allocator, name: []const u8) ?[]const u8 {
-    const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
-    c.provider.model = gpa.dupe(u8, name) catch return null;
-    c.provider.context = contextFor(c.provider.id, c.provider.model);
-    return gpa.dupe(u8, name) catch null;
-}
-/// repl.CancelFn adapter — force-interrupt the running repl turn. Sets the
-/// Agent-wide esc_cancel flag the streaming loops + watchdog poll, so the
-/// in-flight runTurn unwinds (error.Interrupted) and the repl drains its steer
-/// queue. Cross-thread safe (atomic) — the same signal the TTY esc-watch uses.
-fn replCancelCb(ctx_ptr: ?*anyopaque) void {
-    _ = ctx_ptr;
-    Agent.esc_cancel.store(true, .release);
-}
+// The `graff repl` bridge (ReplCtx/ReplStreamSink + replTurnCb/ModelCb/
+// CancelCb), the goal/eval steering-note assembly, the Codex-style steering
+// queue drain (popSteer/resetSteerPartial/steerEcho), and the /effort /fast
+// /ultracode persistence (save/loadThinkingSettings) live in repl_glue.zig
+// (600-line goal, #123). parseEvalScore/steerEcho/saveThinkingSettings stay
+// pub — subagent.zig, agent_compact.zig, agent_interrupt.zig, and
+// commands_model.zig already back-import them as `main_mod.X`. The mutable
+// steer/thinking globals below (g_steer_buf, g_steer_queue, g_steer_echoed,
+// g_steer_visible, g_out) stay here and are read/written live via
+// `main_mod.g_x` from repl_glue.zig (never aliased — they're `var`s).
+const repl_glue = @import("repl_glue.zig");
+const ReplCtx = repl_glue.ReplCtx;
+const ReplStreamSink = repl_glue.ReplStreamSink;
+const goalSteeringNote = repl_glue.goalSteeringNote;
+pub const parseEvalScore = repl_glue.parseEvalScore;
+const evalSteeringNote = repl_glue.evalSteeringNote;
+const replTurnCb = repl_glue.replTurnCb;
+const replModelCb = repl_glue.replModelCb;
+const replCancelCb = repl_glue.replCancelCb;
+const popSteer = repl_glue.popSteer;
+const resetSteerPartial = repl_glue.resetSteerPartial;
+pub const steerEcho = repl_glue.steerEcho;
+pub const saveThinkingSettings = repl_glue.saveThinkingSettings;
+const loadThinkingSettings = repl_glue.loadThinkingSettings;
 
 /// Per-skill user opt-out, persisted as {"skills": {"kuri": false}} in
 /// .harness/settings.json. A disabled skill is treated as not installed
@@ -890,7 +662,7 @@ const anim = @import("anim.zig");
 // stream reader is blocked; g_steer_visible pauses spinner redraws so the live
 // steering row is not cleared out from under the user.
 pub var g_steer_buf: std.ArrayList(u8) = .empty; // in-progress line (page-alloc)
-const SteerEntry = struct { text: []const u8, force: bool };
+const SteerEntry = repl_glue.SteerEntry; // struct { text: []const u8, force: bool }; moved to repl_glue.zig
 pub var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
 pub var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
 pub var g_steer_visible: std.atomic.Value(bool) = .init(false); // visible live steering row; pauses spinner redraws
@@ -901,115 +673,6 @@ pub var g_thinking_fold_request: bool = false; // Ctrl-T in escPressed → fold/
 pub var g_thinking_open: bool = false; // a live Thinking block is on screen (gates the mouse-click fold, #92)
 pub var g_5xx_body_buf: [600]u8 = undefined; // snippet of the last 5xx/429 error body
 pub var g_5xx_body_len: usize = 0; // 0 = no body captured
-
-/// Pops the next queued steering prompt (FIFO), or null if none.
-fn popSteer() ?SteerEntry {
-    if (g_steer_queue.items.len == 0) return null;
-    return g_steer_queue.orderedRemove(0);
-}
-
-/// Drops any half-typed steering line (no Enter yet) — called at the top
-/// of each REPL iteration so a partial mid-turn draft never leaks into the
-/// next prompt.
-fn resetSteerPartial() void {
-    g_steer_buf.clearRetainingCapacity();
-    g_steer_echoed = false;
-    g_steer_visible.store(false, .release);
-}
-
-/// Writes steering echo to the stdout writer (the same buffered writer the
-/// streaming text uses, already flushed before escPressed runs, so ordering
-/// stays correct) and flushes so the user sees queued keystrokes live.
-pub fn steerEcho(bytes: []const u8) void {
-    if (g_out) |w| {
-        w.writeAll(bytes) catch {};
-        w.flush() catch {};
-    }
-}
-
-/// Persist the thinking controls (/effort, /fast) to .harness/settings.json,
-/// preserving every other key. Default values (medium effort, fast off) are
-/// removed rather than written so the file stays clean. Best-effort.
-pub fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool, ultracode: bool, show_thinking: bool, ai_title: bool) bool {
-    Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {}; // already-exists is fine
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var root_obj: std.json.ObjectMap = .empty;
-    if (Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, a, .limited(1 << 20))) |data| {
-        if (std.json.parseFromSliceLeaky(Value, a, data, .{ .allocate = .alloc_always })) |v| {
-            if (v == .object) root_obj = v.object;
-        } else |_| {}
-    } else |_| {}
-    if (effort == .medium) {
-        _ = root_obj.orderedRemove("effort");
-    } else {
-        root_obj.put(a, "effort", .{ .string = @tagName(effort) }) catch return false;
-    }
-    if (!fast) {
-        _ = root_obj.orderedRemove("fast");
-    } else {
-        root_obj.put(a, "fast", .{ .bool = true }) catch return false;
-    }
-    if (!ultracode) {
-        _ = root_obj.orderedRemove("ultracode");
-    } else {
-        root_obj.put(a, "ultracode", .{ .bool = true }) catch return false;
-    }
-    if (show_thinking) {
-        _ = root_obj.orderedRemove("show_thinking");
-    } else {
-        root_obj.put(a, "show_thinking", .{ .bool = false }) catch return false;
-    }
-    if (ai_title) {
-        _ = root_obj.orderedRemove("ai_title");
-    } else {
-        root_obj.put(a, "ai_title", .{ .bool = false }) catch return false;
-    }
-    var aw: Io.Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    var s: std.json.Stringify = .{ .writer = &aw.writer, .options = .{ .whitespace = .indent_2 } };
-    s.write(Value{ .object = root_obj }) catch return false;
-    const f = Io.Dir.cwd().createFile(io, Approvals.settings_path, .{}) catch return false;
-    defer f.close(io);
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    fw.interface.writeAll(aw.writer.buffered()) catch return false;
-    fw.interface.writeAll("\n") catch return false;
-    fw.interface.flush() catch return false;
-    return true;
-}
-
-/// Load persisted thinking controls into the root agent at startup:
-/// {"effort": "low|medium|high"} and {"fast": true}. Best-effort — a missing
-/// or garbled file just leaves the defaults (medium, off).
-fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
-    const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
-    if (v != .object) return;
-    if (v.object.get("effort")) |e| if (e == .string) {
-        if (std.mem.eql(u8, e.string, "low")) {
-            root.reasoning = .low;
-        } else if (std.mem.eql(u8, e.string, "medium")) {
-            root.reasoning = .medium;
-        } else if (std.mem.eql(u8, e.string, "high")) {
-            root.reasoning = .high;
-        }
-    };
-    if (v.object.get("fast")) |fv| if (fv == .bool) {
-        root.fast = fv.bool;
-    };
-    if (v.object.get("ultracode")) |uv| if (uv == .bool) {
-        root.ultracode_mode = uv.bool;
-    };
-    if (v.object.get("show_thinking")) |sv| if (sv == .bool) {
-        root.show_thinking = sv.bool;
-    };
-    if (v.object.get("ai_title")) |tv| if (tv == .bool) {
-        root.ai_title = tv.bool;
-    };
-}
-
 // fillCompletions/wrapAt/LineRender/parseDsrCol moved to input_util.zig
 // (see the breadcrumb below the term.zig import block for the aliases
 // this file still needs).
@@ -1052,94 +715,21 @@ const writeOpenAIMessageNormalized = serde.writeOpenAIMessageNormalized;
 
 pub const harness_version: []const u8 = @import("build_options").version;
 
-/// Shown under `graff --version` — a terse "what's new" for recent releases.
-/// Keep it short and current; bump alongside the version each release.
-const changelog_text =
-    \\What's new
-    \\──────────
-    \\0.0.166
-    \\  • Trace/trajectory JSONL never corrupts on a failed write (#86)
-    \\  • Auto-compaction recovers instead of wedging on huge context (#88)
-    \\  • New providers: Sakana AI (fugu) + Fireworks AI (deepseek, kimi, glm…)
-    \\0.0.165
-    \\  • TUI: live /thinking reasoning stream, AI /title, session headers
-    \\  • GUI: /ultracode toggle, prompt-history image fix, segmented borders
-    \\
-;
-
 /// OTLP endpoint baked into release builds (-Dtelemetry-endpoint); "" in dev
 /// builds → telemetry stays off unless an env var configures it. Used as the
 /// lowest-precedence telemetry endpoint, below env overrides and opt-out.
 const default_telemetry_endpoint: []const u8 = @import("build_options").telemetry_endpoint;
 
-const usage_text =
-    \\graff — a minimal agentic coding harness in Zig (zero deps)
-    \\
-    \\usage:
-    \\  graff [flags]                    start the REPL
-    \\  graff [-p] "prompt"              one-shot: run the prompt, print the answer, exit
-    \\  graff login                      get a codegraff key (device-code OAuth)
-    \\  graff login codex [--refresh]    ChatGPT/Codex OAuth login (PKCE)
-    \\  graff login kimi                 Kimi Code OAuth login (device-code)
-    \\  graff key set <provider> <key>   store a key (macOS Keychain, else 0600 file)
-    \\  graff key list                   show which providers have keys
-    \\  graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
-    \\  graff mcp                         list configured MCP servers
-    \\  graff worktree list              list the per-tab worktrees created by -w
-    \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
-    \\  graff sandboxes                  list your gateway sandboxes (what's burning credits)
-    \\  graff sandboxes stop <id>        spin a sandbox down (stops it + settles the meter)
-    \\  graff cube new                   spin up a cloud graff (sandbox + serve + preview URL)
-    \\  graff cube [status|stop]         inspect the running cube or spin it down
-    \\  graff --schema                   print the machine-readable interface (SDK codegen)
-    \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
-    \\                                   (--host/--port/--token; sessions are --json children)
-    \\  graff update [--force|--check]   update graff to the latest GitHub release
-    \\  graff title <prompt>            print the AI tab-title for a prompt (test title styles)
-    \\
-    \\flags:
-    \\  --model <name>   start on this model (same fuzzy resolution as /model)
-    \\  --resume <name>  resume/autosave <name>.session.json
-    \\  --new            start a fresh autosaved session (default)
-    \\  --no-resume      ignore --resume and start fresh
-    \\  --system-prompt <text>          replace the built-in system prompt
-    \\  --append-system-prompt <text>   append extra text to the system prompt
-    \\  --goal <text>                   seed a standing objective (tracked as a todo checklist) for every turn
-    \\  --eval <cmd>                    scoring command for an eval-driven loop (the `eval` tool runs it)
-    \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
-    \\  --niche <name>                  fleet niche this eval optimizes (reviewer/researcher/implementer/skeptic or a custom agent); tags submitted scores so the DGM can promote a champion for that role
-    \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
-    \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
-    \\  --yolo           skip all permission prompts for the session
-    \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
-    \\  --timing         show per-tool wall-clock on result lines
-    \\  --cost           show running session spend in the prompt
-    \\  --json           structured stdio protocol (JSON in, JSONL events out)
-    \\  --max-tool-calls N  reject root tool calls after N per turn (JSON-safe budget)
-    \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn
-    \\  --no-telemetry   disable anonymous usage telemetry for this run
-    \\  -h, --help       this help
-    \\  -V, --version    print version
-    \\
-    \\keys: <PROVIDER>_API_KEY env vars, `graff key set`, or `graff login`;
-    \\a Codex CLI login is picked up automatically.
-    \\inside the REPL: /help lists commands, a bare "/" opens the command menu,
-    \\"@" opens a fuzzy file picker (drag-and-dropped files paste as their path),
-    \\esc interrupts a streaming response, "always allow" persists to
-    \\.harness/settings.json.
-    \\telemetry: anonymous OTLP usage stats are sent only when
-    \\OTEL_EXPORTER_OTLP_ENDPOINT (or GRAFF_OTEL_ENDPOINT) is set; opt out
-    \\with --no-telemetry or GRAFF_NO_TELEMETRY=1.
-    \\
-;
-
 /// A parsed `MAJOR.MINOR.PATCH` (no pre-release/build suffix). Used to compare
 /// the running version against a GitHub release tag without the exact-string
 /// mismatch that `git describe` suffixes ("-3-gabc", "-dirty", "-dev") cause.
 // `graff update` (latest-release check + SemVer compare + install.sh delegation)
-// lives in cli.zig (600-line goal). updateCommand aliased back.
+// + the changelog_text/usage_text (--version/--help) blocks live in cli.zig
+// (600-line goal, #123). All three aliased back.
 const cli = @import("cli.zig");
 const updateCommand = cli.updateCommand;
+const changelog_text = cli.changelog_text;
+const usage_text = cli.usage_text;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -2559,147 +2149,25 @@ fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     try commands_misc.handleRest(line, out);
 }
 
-pub const session_ext = ".session.json";
-const sessions_dir = ".graff/sessions"; // title-named session files live here (resume reads this)
-
-/// Path to a session file: .graff/sessions/<name>.session.json.
-fn sessionPath(arena: Allocator, name: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ sessions_dir, name, session_ext });
-}
-
-/// Session-list metadata peeked from a session file WITHOUT parsing the
-/// (potentially multi-MB) messages array: saveSession writes "title" and
-/// "updated_ms" before "messages", so parsing the header slice alone is
-/// enough. Zero-value fields when the file predates them or the header
-/// can't be read — callers fall back to the raw session name (#109).
-const SessionMeta = struct { title: ?[]const u8 = null, updated_ms: i64 = 0 };
-
-fn sessionMetaFromBytes(arena: Allocator, data: []const u8) SessionMeta {
-    // Embedded quotes inside string values are escaped in the file, so the
-    // raw needle can only match the real top-level "messages" key.
-    const idx = std.mem.indexOf(u8, data, "\"messages\":") orelse return .{};
-    const header = std.mem.trimEnd(u8, data[0..idx], " \t\r\n");
-    if (header.len < 2 or header[header.len - 1] != ',') return .{};
-    const hjson = std.fmt.allocPrint(arena, "{s}}}", .{header[0 .. header.len - 1]}) catch return .{};
-    const parsed = std.json.parseFromSliceLeaky(Value, arena, hjson, .{ .allocate = .alloc_always }) catch return .{};
-    if (parsed != .object) return .{};
-    return .{
-        .title = if (parsed.object.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null,
-        .updated_ms = if (parsed.object.get("updated_ms")) |v| (if (v == .integer) v.integer else 0) else 0,
-    };
-}
-
-fn sessionMeta(root: *Agent, arena: Allocator, base: []const u8) SessionMeta {
-    const path = sessionPath(arena, base) catch return .{};
-    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch return .{};
-    return sessionMetaFromBytes(arena, data);
-}
-
-/// "3m ago"-style age for the session lists; "" when the timestamp is missing.
-pub fn sessionAge(arena: Allocator, io: Io, then_ms: i64) []const u8 {
-    if (then_ms <= 0) return "";
-    const s = @divTrunc(unixMs(io) - then_ms, 1000);
-    if (s < 60) return "just now";
-    if (s < 3600) return std.fmt.allocPrint(arena, "{d}m ago", .{@divTrunc(s, 60)}) catch "";
-    if (s < 86_400) return std.fmt.allocPrint(arena, "{d}h ago", .{@divTrunc(s, 3600)}) catch "";
-    return std.fmt.allocPrint(arena, "{d}d ago", .{@divTrunc(s, 86_400)}) catch "";
-}
-
-/// One row per saved session for the /resume picker and /sessions list:
-/// newest first, keyed (and resumed) by the file base name.
-const SessionEntry = struct { base: []const u8, title: ?[]const u8 = null, updated_ms: i64 = 0 };
-
-pub fn listSavedSessions(root: *Agent, arena: Allocator) std.ArrayList(SessionEntry) {
-    var entries: std.ArrayList(SessionEntry) = .empty;
-    var dir = Io.Dir.cwd().openDir(root.io, sessions_dir, .{ .iterate = true }) catch return entries;
-    defer dir.close(root.io);
-    var it = dir.iterate();
-    while (it.next(root.io) catch null) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, session_ext)) continue;
-        const base = arena.dupe(u8, entry.name[0 .. entry.name.len - session_ext.len]) catch continue;
-        const meta = sessionMeta(root, arena, base);
-        entries.append(arena, .{ .base = base, .title = meta.title, .updated_ms = meta.updated_ms }) catch {};
-    }
-    std.mem.sort(SessionEntry, entries.items, {}, struct {
-        fn newerFirst(_: void, a: SessionEntry, b: SessionEntry) bool {
-            return a.updated_ms > b.updated_ms;
-        }
-    }.newerFirst);
-    return entries;
-}
-
-test "sessionMetaFromBytes reads title + updated_ms from the header only" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const meta = sessionMetaFromBytes(arena,
-        \\{"provider":"codegraff","model":"glm-5.2","strict":false,"ultracode_mode":false,"goal":null,"title":"Fix \"login\" bug","updated_ms":1782294417239,"messages":[{"role":"user","content":"hi"}]}
-    );
-    try std.testing.expectEqualStrings("Fix \"login\" bug", meta.title.?);
-    try std.testing.expectEqual(@as(i64, 1782294417239), meta.updated_ms);
-}
-
-test "sessionMetaFromBytes falls back cleanly on legacy/invalid headers" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const legacy = sessionMetaFromBytes(arena,
-        \\{"provider":"kimi","model":"kimi-k2.7","strict":false,"messages":[]}
-    );
-    try std.testing.expect(legacy.title == null);
-    try std.testing.expectEqual(@as(i64, 0), legacy.updated_ms);
-    const tricky = sessionMetaFromBytes(arena,
-        \\{"provider":"x","model":"y","goal":"say \"messages\": then stop","title":"T","updated_ms":5,"messages":[]}
-    );
-    try std.testing.expectEqualStrings("T", tricky.title.?);
-    try std.testing.expectEqual(@as(i64, 5), tricky.updated_ms);
-    try std.testing.expect(sessionMetaFromBytes(arena, "not json").title == null);
-}
-
-/// Filesystem-safe slug of an AI title: lowercase alnum, any other run collapses
-/// to one '-', trimmed, capped at 60. "Fixing the login bug" -> "fixing-the-login-bug".
-/// Returns "" for an empty/symbol-only title.
-fn slugifyTitle(arena: Allocator, title: []const u8) []const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    var last_dash = true; // suppress a leading '-'
-    for (title) |c| {
-        if (buf.items.len >= 60) break;
-        const lc = std.ascii.toLower(c);
-        if ((lc >= 'a' and lc <= 'z') or (lc >= '0' and lc <= '9')) {
-            buf.append(arena, lc) catch break;
-            last_dash = false;
-        } else if (!last_dash) {
-            buf.append(arena, '-') catch break;
-            last_dash = true;
-        }
-    }
-    var s = buf.items;
-    while (s.len > 0 and s[s.len - 1] == '-') s = s[0 .. s.len - 1];
-    return s;
-}
-
-/// Rename an as-yet-untitled (session-<ts>) session to a slug of its AI title:
-/// point session_name at a free <slug>[-N], write it there, and remove the old
-/// file. Best-effort; only fires for the default timestamp name, so a manual
-/// /rename or a resumed session keeps its name.
-fn renameSession(root: *Agent, arena: Allocator, slug: []const u8) void {
-    if (slug.len == 0) return;
-    if (!std.mem.startsWith(u8, root.session_name, "session-")) return; // already titled
-    if (std.mem.eql(u8, slug, root.session_name)) return;
-    var name = slug;
-    var n: usize = 2;
-    while (n < 100) : (n += 1) {
-        const p = sessionPath(arena, name) catch return;
-        if (Io.Dir.cwd().statFile(root.io, p, .{})) |_| {
-            name = std.fmt.allocPrint(arena, "{s}-{d}", .{ slug, n }) catch return;
-        } else |_| break; // free
-    }
-    const old_name = root.session_name;
-    root.session_name = arena.dupe(u8, name) catch return;
-    saveSession(root, arena, root.session_name) catch {};
-    if (sessionPath(arena, old_name)) |op| (Io.Dir.cwd().deleteFile(root.io, op) catch {}) else |_| {}
-}
+// Session persistence (save/load/list/rename/age + the .graff/sessions path
+// helpers) lives in session.zig (600-line goal, #123). session_ext/
+// saveSession/loadSession/listSavedSessions/sessionAge stay pub —
+// commands_session.zig, commands_misc.zig, and readline.zig already
+// back-import them as `main_mod.saveSession` etc.
+const session = @import("session.zig");
+pub const session_ext = session.session_ext;
+const sessionPath = session.sessionPath;
+const SessionMeta = session.SessionMeta;
+const sessionMetaFromBytes = session.sessionMetaFromBytes;
+const sessionMeta = session.sessionMeta;
+pub const sessionAge = session.sessionAge;
+const SessionEntry = session.SessionEntry;
+pub const listSavedSessions = session.listSavedSessions;
+const slugifyTitle = session.slugifyTitle;
+const renameSession = session.renameSession;
+const sessionTitle = session.sessionTitle;
+pub const saveSession = session.saveSession;
+pub const loadSession = session.loadSession;
 
 // Provider login/credential flows (Codex PKCE, Kimi + Codegraff device-code)
 // live in oauth.zig (#123); it imports ansi + util and back-imports main for
@@ -2707,63 +2175,19 @@ fn renameSession(root: *Agent, arena: Allocator, slug: []const u8) void {
 const oauth = @import("oauth.zig");
 const CodexAuth = oauth.CodexAuth;
 
-/// True for a provider served by a local server (LM Studio, mlx-lm) on the
-/// loopback host — these expose a live, user-controlled model set.
-pub fn isLocalUrl(url: []const u8) bool {
-    return std.mem.indexOf(u8, url, "127.0.0.1") != null or std.mem.indexOf(u8, url, "localhost") != null;
-}
-
-/// Derive the OpenAI-compatible `/v1/models` URL from a provider's chat URL
-/// (`…/v1/chat/completions` → `…/v1/models`).
-pub fn openAiModelsUrl(arena: Allocator, chat_url: []const u8) []const u8 {
-    const suffix = "/chat/completions";
-    if (std.mem.endsWith(u8, chat_url, suffix))
-        return std.fmt.allocPrint(arena, "{s}/models", .{chat_url[0 .. chat_url.len - suffix.len]}) catch chat_url;
-    return chat_url;
-}
-
-/// GET an OpenAI-compatible `/v1/models` endpoint and return every model id it
-/// advertises (arena-owned), or an empty slice on any failure. Lets `/model
-/// <local-provider>` list what a local server (LM Studio :1234, mlx-lm :8080)
-/// actually has loaded instead of a baked-in name.
-pub fn fetchOpenAIModels(io: Io, gpa: Allocator, arena: Allocator, models_url: []const u8, key: []const u8) [][]const u8 {
-    var list: std.ArrayList([]const u8) = .empty;
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var aw: Io.Writer.Allocating = .init(arena);
-    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{key}) catch return list.items;
-    const extra = [_]std.http.Header{
-        .{ .name = "authorization", .value = bearer },
-        .{ .name = "Accept", .value = "application/json" },
-    };
-    const res = client.fetch(.{
-        .location = .{ .url = models_url },
-        .method = .GET,
-        .response_writer = &aw.writer,
-        .extra_headers = &extra,
-    }) catch return list.items;
-    if (@intFromEnum(res.status) != 200) return list.items;
-    const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch return list.items;
-    if (v != .object) return list.items;
-    const data = v.object.get("data") orelse return list.items;
-    if (data != .array) return list.items;
-    for (data.array.items) |item| {
-        if (item != .object) continue;
-        if (strFieldObj(item.object, "id")) |id| if (id.len > 0)
-            list.append(arena, arena.dupe(u8, id) catch continue) catch {};
-    }
-    return list.toOwnedSlice(arena) catch list.items;
-}
-
-test "openAiModelsUrl derives /v1/models from the chat URL; isLocalUrl flags loopback" {
-    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer a.deinit();
-    try std.testing.expectEqualStrings("http://127.0.0.1:1234/v1/models", openAiModelsUrl(a.allocator(), "http://127.0.0.1:1234/v1/chat/completions"));
-    try std.testing.expectEqualStrings("http://127.0.0.1:8080/v1/models", openAiModelsUrl(a.allocator(), "http://127.0.0.1:8080/v1/chat/completions"));
-    try std.testing.expect(isLocalUrl("http://127.0.0.1:1234/v1/chat/completions"));
-    try std.testing.expect(isLocalUrl("http://localhost:1234/v1/chat/completions"));
-    try std.testing.expect(!isLocalUrl("https://api.openai.com/v1/chat/completions"));
-}
+// API-key storage + the `graff key` CLI + OpenAI-compatible model listing
+// live in keys_cli.zig (600-line goal, #123). isLocalUrl/openAiModelsUrl/
+// fetchOpenAIModels/storeKey stay pub (commands_model.zig + pickers.zig
+// back-import them as `main_mod.X`); homeEnv/loadStoredKey/keyCommand are
+// used only from within main() here, so their aliases stay bare.
+const keys_cli = @import("keys_cli.zig");
+pub const isLocalUrl = keys_cli.isLocalUrl;
+pub const openAiModelsUrl = keys_cli.openAiModelsUrl;
+pub const fetchOpenAIModels = keys_cli.fetchOpenAIModels;
+const homeEnv = keys_cli.homeEnv;
+pub const storeKey = keys_cli.storeKey;
+const loadStoredKey = keys_cli.loadStoredKey;
+const keyCommand = keys_cli.keyCommand;
 
 // ---------------------------------------------------------------------------
 // `harness serve` — the same --json session protocol, served over HTTP so
@@ -2803,235 +2227,6 @@ pub const codegraff_device_base = "https://gateway.codegraff.com";
 // `graff cube` / `graff sandboxes` + the gateway REST helpers live in cube.zig
 // (#123); it back-imports main for strFieldObj/intFieldObj + the gateway base.
 const cube = @import("cube.zig");
-
-// Safe API-key store. On macOS, keys live in the login Keychain (service
-// "simple-harness", account=provider id) via the `security` CLI — never on
-// disk in plaintext. Elsewhere they fall back to a 0600 file
-// (~/.simple-harness-keys.json). `harness key set <provider> <key>` writes;
-// startup reads for any provider whose env var isn't set (env always wins).
-const keychain_service = "simple-harness";
-const keys_file = ".simple-harness-keys.json";
-
-/// User home directory env value: $HOME, or %USERPROFILE% on Windows (which has
-/// no HOME). Key storage, sessions, history, login credentials, and saved model
-/// all hang off this, so the Windows fallback is what makes them work there.
-fn homeEnv(env: anytype) ?[]const u8 {
-    if (env.get("HOME")) |h| return h;
-    if (builtin.os.tag == .windows) {
-        if (env.get("USERPROFILE")) |h| return h;
-    }
-    return null;
-}
-
-pub fn storeKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider: []const u8, key: []const u8) bool {
-    if (builtin.os.tag == .macos) {
-        var child = std.process.spawn(io, .{
-            .argv = &.{ "security", "add-generic-password", "-U", "-s", keychain_service, "-a", provider, "-w", key },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        }) catch return false;
-        const term = child.wait(io) catch return false;
-        return term == .exited and term.exited == 0;
-    }
-    // Linux/other: merge into a 0600 JSON file.
-    _ = gpa;
-    const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file }) catch return false;
-    var obj: std.json.ObjectMap = .empty;
-    if (Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024))) |data| {
-        if (std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always })) |v| {
-            if (v == .object) obj = v.object;
-        } else |_| {}
-    } else |_| {}
-    obj.put(arena, provider, .{ .string = key }) catch return false;
-    var aw: Io.Writer.Allocating = .init(arena);
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    s.write(Value{ .object = obj }) catch return false;
-    const f = Io.Dir.cwd().createFile(io, path, .{}) catch return false;
-    defer f.close(io);
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    fw.interface.writeAll(aw.writer.buffered()) catch return false;
-    fw.interface.flush() catch return false;
-    return true;
-}
-
-fn loadStoredKey(io: Io, arena: Allocator, home: []const u8, provider: []const u8) ?[]const u8 {
-    if (builtin.os.tag == .macos) {
-        var child = std.process.spawn(io, .{
-            .argv = &.{ "security", "find-generic-password", "-s", keychain_service, "-a", provider, "-w" },
-            .stdin = .ignore,
-            .stdout = .pipe,
-            .stderr = .ignore,
-        }) catch return null;
-        defer _ = child.wait(io) catch {};
-        const f = child.stdout orelse return null;
-        var rbuf: [8 * 1024]u8 = undefined;
-        var fr = f.readerStreaming(io, &rbuf);
-        const out = fr.interface.allocRemaining(arena, .limited(64 * 1024)) catch return null;
-        const key = std.mem.trim(u8, out, " \t\r\n");
-        return if (key.len > 0) key else null;
-    }
-    const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file }) catch return null;
-    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return null;
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
-    if (v != .object) return null;
-    if (v.object.get(provider)) |k| if (k == .string and k.string.len > 0) return k.string;
-    return null;
-}
-
-/// `harness key set <provider> <key>` / `harness key list` — manage the safe
-/// key store. Validates the provider id against provider_specs.
-fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, args: []const []const u8) !void {
-    var obuf: [4096]u8 = undefined;
-    var ow = Io.File.stdout().writer(io, &obuf);
-    const out = &ow.interface;
-
-    if (args.len == 0 or std.mem.eql(u8, args[0], "list")) {
-        try out.writeAll("provider        env var               stored\n");
-        for (provider_specs) |spec| {
-            const stored = loadStoredKey(io, arena, home, spec.id) != null;
-            try out.print("  {s:<14}{s:<22}{s}\n", .{ spec.id, spec.env_key, if (stored) "yes" else "—" });
-        }
-        try out.flush();
-        return;
-    }
-    if (std.mem.eql(u8, args[0], "set")) {
-        if (args.len < 3) {
-            try out.writeAll("usage: graff key set <provider> <key>\n");
-            try out.flush();
-            return;
-        }
-        const provider = args[1];
-        const key = args[2];
-        var known = false;
-        for (provider_specs) |spec| {
-            if (std.mem.eql(u8, spec.id, provider)) known = true;
-        }
-        if (!known) {
-            try out.print("unknown provider '{s}' — see /models for valid ids\n", .{provider});
-            try out.flush();
-            return;
-        }
-        if (storeKey(io, gpa, arena, home, provider, key)) {
-            const where = if (builtin.os.tag == .macos) "macOS Keychain" else "~/" ++ keys_file;
-            try out.print("✓ stored {s} key in the {s}\n", .{ provider, where });
-        } else {
-            try out.writeAll("✗ failed to store key\n");
-        }
-        try out.flush();
-        return;
-    }
-    try out.writeAll("usage: graff key set <provider> <key>  |  graff key list\n");
-    try out.flush();
-}
-
-fn sessionTitle(root: *Agent) []const u8 {
-    if (root.session_title) |title| return title;
-    for (root.messages.items) |m| {
-        if (m != .object) continue;
-        const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
-        if (!std.mem.eql(u8, role, "user")) continue;
-        if (m.object.get("content")) |c| switch (c) {
-            .string => |text| return utf8Prefix(std.mem.trim(u8, text, " \t\r\n"), 80),
-            .array => |arr| for (arr.items) |part| {
-                if (part == .object) {
-                    const typ = if (part.object.get("type")) |v| (if (v == .string) v.string else "") else "";
-                    if (std.mem.eql(u8, typ, "text")) {
-                        if (part.object.get("text")) |tv| if (tv == .string) return utf8Prefix(std.mem.trim(u8, tv.string, " \t\r\n"), 80);
-                    }
-                }
-            },
-            else => {},
-        };
-    }
-    return "Untitled session";
-}
-
-/// Save the conversation (messages + provider id/model + strict flag) to
-/// <name>.session.json in the cwd. The JSON message array is already the
-/// provider-native wire shape, so resume is a verbatim restore.
-pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
-    var aw: Io.Writer.Allocating = .init(root.gpa);
-    defer aw.deinit();
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    try s.beginObject();
-    try s.objectField("provider");
-    try s.write(root.provider.id);
-    try s.objectField("model");
-    try s.write(root.provider.model);
-    try s.objectField("strict");
-    try s.write(root.strict);
-    try s.objectField("ultracode_mode");
-    try s.write(root.ultracode_mode);
-    try s.objectField("goal");
-    if (root.goal) |goal| try s.write(goal) else try s.write(null);
-    try s.objectField("title");
-    if (root.session_title) |title| try s.write(title) else try s.write(sessionTitle(root));
-    try s.objectField("updated_ms");
-    try s.write(unixMs(root.io));
-    try s.objectField("messages");
-    try s.write(Value{ .array = root.messages });
-    try s.endObject();
-
-    Io.Dir.cwd().createDir(root.io, ".graff", .default_dir) catch {};
-    Io.Dir.cwd().createDir(root.io, sessions_dir, .default_dir) catch {};
-    const path = try sessionPath(arena, name);
-    try Io.Dir.cwd().writeFile(root.io, .{ .sub_path = path, .data = aw.writer.buffered() });
-}
-
-/// Restore a saved session: parse the file (arena-owned), rebuild the
-/// provider, and replace the live history. The wire format must still match
-/// the restored provider's kind — same provider id guarantees it.
-pub fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !void {
-    const path = try sessionPath(arena, name);
-    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch blk: {
-        // backward-compat: older builds wrote <name>.session.json in cwd.
-        const legacy = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, session_ext });
-        break :blk try Io.Dir.cwd().readFileAlloc(root.io, legacy, arena, .limited(8 * 1024 * 1024));
-    };
-    const parsed = try std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always });
-    if (parsed != .object) return error.BadSession;
-    const obj = parsed.object;
-    const pid = if (obj.get("provider")) |v| v.string else return error.BadSession;
-    const model = if (obj.get("model")) |v| v.string else return error.BadSession;
-    const msgs = if (obj.get("messages")) |v| (if (v == .array) v.array else return error.BadSession) else return error.BadSession;
-    const strict = if (obj.get("strict")) |v| (v == .bool and v.bool) else false;
-    const ultracode_mode = if (obj.get("ultracode_mode")) |v| (v == .bool and v.bool) else false;
-    const goal = if (obj.get("goal")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
-    const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
-
-    root.provider = try keys.providerById(pid, model);
-    root.messages = msgs;
-    // Repair histories written by older builds where a Responses
-    // `function_call_output.output` was persisted as a byte array instead of a
-    // string. The Responses API rejects that ("input[N].output[0]: expected an
-    // object, got an integer instead"), and we restore messages verbatim — so a
-    // poisoned last.session.json would otherwise re-break every resume.
-    for (root.messages.items) |*m| {
-        if (m.* != .object) continue;
-        const mtype = if (m.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-        if (!std.mem.eql(u8, mtype, "function_call_output")) continue;
-        const out = m.object.get("output") orelse continue;
-        if (out == .string) continue; // already correct
-        var repaired: std.ArrayList(u8) = .empty;
-        if (out == .array) {
-            for (out.array.items) |el| {
-                if (el == .integer and el.integer >= 0 and el.integer <= 255) {
-                    try repaired.append(arena, @intCast(el.integer));
-                }
-            }
-        }
-        try m.object.put(arena, "output", .{ .string = repaired.items });
-    }
-    root.strict = strict;
-    root.ultracode_mode = ultracode_mode;
-    root.goal = goal;
-    root.session_title = title;
-    root.last_context_tokens = 0;
-    root.cap_new = false; // per-provider; relearn on rejection
-    root.effort_rejected = false;
-}
 
 /// A normalized tool invocation — same shape for both providers.
 pub const ToolCall = struct {
@@ -3971,14 +3166,4 @@ test "/bash slash command runs the bash tool and frees its gpa-allocated result"
 
     const written = aw.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "leak-guard-XYZ") != null);
-}
-
-test "slugifyTitle makes a filesystem-safe slug from an AI title" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    try std.testing.expectEqualStrings("fixing-the-login-bug", slugifyTitle(a, "Fixing the login bug"));
-    try std.testing.expectEqualStrings("add-dark-mode", slugifyTitle(a, "Add dark mode!!"));
-    try std.testing.expectEqualStrings("planning-v2", slugifyTitle(a, "  Planning — v2  ")); // trim + collapse
-    try std.testing.expectEqualStrings("", slugifyTitle(a, "🎉 ✨")); // symbol-only → "" (keeps the session-<ts> name)
 }

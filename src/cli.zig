@@ -3,6 +3,10 @@
 //! dev/newer build) and delegate the download / codesign / atomic swap to
 //! install.sh. Split out of main.zig (600-line goal). Back-imports main for
 //! harness_version. main aliases updateCommand back.
+//!
+//! changelog_text/usage_text (the `--version`/`--help` text blocks) also live
+//! here (600-line goal, #123) — pure string consts, aliased back in main.zig
+//! since they're only ever printed from within main().
 
 const std = @import("std");
 const Io = std.Io;
@@ -11,6 +15,82 @@ const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
 const harness_version = root.harness_version;
+
+/// Shown under `graff --version` — a terse "what's new" for recent releases.
+/// Keep it short and current; bump alongside the version each release.
+pub const changelog_text =
+    \\What's new
+    \\──────────
+    \\0.0.166
+    \\  • Trace/trajectory JSONL never corrupts on a failed write (#86)
+    \\  • Auto-compaction recovers instead of wedging on huge context (#88)
+    \\  • New providers: Sakana AI (fugu) + Fireworks AI (deepseek, kimi, glm…)
+    \\0.0.165
+    \\  • TUI: live /thinking reasoning stream, AI /title, session headers
+    \\  • GUI: /ultracode toggle, prompt-history image fix, segmented borders
+    \\
+;
+
+pub const usage_text =
+    \\graff — a minimal agentic coding harness in Zig (zero deps)
+    \\
+    \\usage:
+    \\  graff [flags]                    start the REPL
+    \\  graff [-p] "prompt"              one-shot: run the prompt, print the answer, exit
+    \\  graff login                      get a codegraff key (device-code OAuth)
+    \\  graff login codex [--refresh]    ChatGPT/Codex OAuth login (PKCE)
+    \\  graff login kimi                 Kimi Code OAuth login (device-code)
+    \\  graff key set <provider> <key>   store a key (macOS Keychain, else 0600 file)
+    \\  graff key list                   show which providers have keys
+    \\  graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
+    \\  graff mcp                         list configured MCP servers
+    \\  graff worktree list              list the per-tab worktrees created by -w
+    \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
+    \\  graff sandboxes                  list your gateway sandboxes (what's burning credits)
+    \\  graff sandboxes stop <id>        spin a sandbox down (stops it + settles the meter)
+    \\  graff cube new                   spin up a cloud graff (sandbox + serve + preview URL)
+    \\  graff cube [status|stop]         inspect the running cube or spin it down
+    \\  graff --schema                   print the machine-readable interface (SDK codegen)
+    \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
+    \\                                   (--host/--port/--token; sessions are --json children)
+    \\  graff update [--force|--check]   update graff to the latest GitHub release
+    \\  graff title <prompt>            print the AI tab-title for a prompt (test title styles)
+    \\
+    \\flags:
+    \\  --model <name>   start on this model (same fuzzy resolution as /model)
+    \\  --resume <name>  resume/autosave <name>.session.json
+    \\  --new            start a fresh autosaved session (default)
+    \\  --no-resume      ignore --resume and start fresh
+    \\  --system-prompt <text>          replace the built-in system prompt
+    \\  --append-system-prompt <text>   append extra text to the system prompt
+    \\  --goal <text>                   seed a standing objective (tracked as a todo checklist) for every turn
+    \\  --eval <cmd>                    scoring command for an eval-driven loop (the `eval` tool runs it)
+    \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
+    \\  --niche <name>                  fleet niche this eval optimizes (reviewer/researcher/implementer/skeptic or a custom agent); tags submitted scores so the DGM can promote a champion for that role
+    \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
+    \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
+    \\  --yolo           skip all permission prompts for the session
+    \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
+    \\  --timing         show per-tool wall-clock on result lines
+    \\  --cost           show running session spend in the prompt
+    \\  --json           structured stdio protocol (JSON in, JSONL events out)
+    \\  --max-tool-calls N  reject root tool calls after N per turn (JSON-safe budget)
+    \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn
+    \\  --no-telemetry   disable anonymous usage telemetry for this run
+    \\  -h, --help       this help
+    \\  -V, --version    print version
+    \\
+    \\keys: <PROVIDER>_API_KEY env vars, `graff key set`, or `graff login`;
+    \\a Codex CLI login is picked up automatically.
+    \\inside the REPL: /help lists commands, a bare "/" opens the command menu,
+    \\"@" opens a fuzzy file picker (drag-and-dropped files paste as their path),
+    \\esc interrupts a streaming response, "always allow" persists to
+    \\.harness/settings.json.
+    \\telemetry: anonymous OTLP usage stats are sent only when
+    \\OTEL_EXPORTER_OTLP_ENDPOINT (or GRAFF_OTEL_ENDPOINT) is set; opt out
+    \\with --no-telemetry or GRAFF_NO_TELEMETRY=1.
+    \\
+;
 
 const Version = struct {
     major: u32,
