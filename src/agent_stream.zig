@@ -43,6 +43,7 @@ const sendHeadTask = http.sendHeadTask;
 const headStallTask = http.headStallTask;
 const streamLineTask = http.streamLineTask;
 const streamStallTask = http.streamStallTask;
+const watchdogError = http.watchdogError;
 
 // escPressed/drainSteerStdin/rawNonblockStdin/ssePayload live in
 // agent_interrupt.zig; reached through the Agent struct's member aliases.
@@ -283,7 +284,7 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
             },
             .stall => |w| {
                 if (req.connection) |conn| conn.closing = true;
-                return if (w == .esc) error.Interrupted else error.HungRequest;
+                return watchdogError(w, error.HungRequest);
             },
         }
     }
@@ -353,11 +354,16 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
                 .stall => |w| {
                     self.flushStreamTail();
                     if (req.connection) |conn| conn.closing = true;
+                    // A user Esc is a deliberate cancel; a `.deadline` is a dead
+                    // or idle stream (no SSE bytes for stream_stall_ms) — end the
+                    // turn, but as error.StreamStalled so it is never recorded as
+                    // "[response interrupted by user]" (#134). The notice below is
+                    // for the deadline case only (Esc has its own message path).
                     if (w == .deadline and !main_mod.json_mode) if (self.out) |o| {
                         o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
                         o.flush() catch {};
                     };
-                    return error.Interrupted;
+                    return watchdogError(w, error.StreamStalled);
                 },
             }
         }

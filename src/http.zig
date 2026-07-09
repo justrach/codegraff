@@ -136,6 +136,29 @@ const post_deadline_ms: u64 = 5 * 60 * 1000;
 
 pub const WatchdogFired = enum { esc, deadline };
 
+/// Classify a fired stream/head watchdog into an error. A user Esc is a
+/// deliberate cancel — error.Interrupted, which request()'s retry loop never
+/// retries and mainloop records as a user interruption. A `.deadline` is a
+/// dead/idle connection, NOT the user: the caller passes the error it wants
+/// for that case (HungRequest to retry the head, StreamStalled to end the
+/// turn). This is the seam that keeps a stall from being mislabeled as an
+/// Esc — the root cause of #134.
+pub fn watchdogError(w: WatchdogFired, on_deadline: anyerror) anyerror {
+    return if (w == .esc) error.Interrupted else on_deadline;
+}
+
+test "watchdogError (#134): Esc -> Interrupted; a deadline is the caller's error, never Interrupted" {
+    // A real user Esc is always a deliberate interrupt, whatever the caller's deadline error.
+    try std.testing.expect(watchdogError(.esc, error.HungRequest) == error.Interrupted);
+    try std.testing.expect(watchdogError(.esc, error.StreamStalled) == error.Interrupted);
+    // A deadline (idle/dead connection) surfaces as whatever the caller chose:
+    // HungRequest for the head (retry), StreamStalled for a mid-stream stall (end turn).
+    try std.testing.expect(watchdogError(.deadline, error.HungRequest) == error.HungRequest);
+    try std.testing.expect(watchdogError(.deadline, error.StreamStalled) == error.StreamStalled);
+    // The #134 regression guard: a stall must NEVER be reported as a user Esc.
+    try std.testing.expect(watchdogError(.deadline, error.StreamStalled) != error.Interrupted);
+}
+
 /// Watchdog arm for postWatched: ticks every 200ms so a user Esc aborts a
 /// stuck subagent request promptly; otherwise fires at the hard deadline.
 fn postWatchdog(io: Io) WatchdogFired {
@@ -148,12 +171,17 @@ fn postWatchdog(io: Io) WatchdogFired {
     return .deadline;
 }
 
-// A streaming response idle this long (no SSE bytes — a dead/stalled
-// connection, or a model that hung before its first token or mid-answer) is
-// given up on, so a turn can't hang forever. Generous, so a legit reasoning
-// pause doesn't trip it. The TTY Esc-interrupt is the only other escape and
-// doesn't apply to --json/GUI sessions, where this matters most.
-const stream_stall_ms: u64 = 120 * 1000;
+// A streaming response idle THIS LONG between SSE events (not total response
+// time — streamStallTask resets its clock on every line, so it measures the
+// gap between tokens/keep-alives/reasoning deltas) is treated as a dead or
+// hung connection and given up on, so a turn can't wait forever. Generous, so
+// a legit reasoning pause between tokens doesn't trip it; a model that streams
+// — even slowly — never does, since each event resets the clock. Only TOTAL
+// silence trips it. Tunable via GRAFF_STREAM_STALL_SECS (wired in
+// session_run.setupSkillsAndTheme) for providers that buffer a long reasoning
+// phase in complete silence. Giving up here is error.StreamStalled — a
+// harness stall, NEVER a user Esc interruption (#134).
+pub var stream_stall_ms: u64 = 120 * 1000;
 
 /// A response head (HTTP status line + headers) idle this long means the
 /// server accepted the connection but isn't responding — common right
@@ -289,6 +317,6 @@ pub fn postWatched(gpa: Allocator, io: Io, client: *std.http.Client, provider: P
     drainPostSelect(gpa, &sel);
     return switch (first) {
         .posted => |p| p,
-        .watchdog => |w| if (w == .esc) error.Interrupted else error.HungRequest,
+        .watchdog => |w| watchdogError(w, error.HungRequest),
     };
 }

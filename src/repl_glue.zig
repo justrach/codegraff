@@ -210,7 +210,21 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         };
         agent.messages.append(textMessage(arena, role, t.text) catch return null) catch return null;
     }
-    const final = agent.runTurn() catch return null;
+    const final = agent.runTurn() catch |err| switch (err) {
+        // A mid-stream stall (#134): the repl turn IS live (stream_quiet=false),
+        // so postStream can return error.StreamStalled. Don't collapse it to
+        // null — the pane renders that as "model call failed — check /model and
+        // your API key", mislabeling a harness stall as an auth/config problem.
+        // Keep the streamed partial + an honest marker, mirroring mainloop.
+        error.StreamStalled => {
+            const partial = std.mem.trim(u8, agent.partial_text.items, " \t\r\n");
+            return if (partial.len > 0)
+                std.fmt.allocPrint(gpa, "{s}\n\n[response ended early: stream stalled]", .{partial}) catch null
+            else
+                gpa.dupe(u8, "[response ended early: stream stalled]") catch null;
+        },
+        else => return null,
+    };
     const trimmed = std.mem.trim(u8, final, " \t\r\n");
     if (trimmed.len == 0) return null;
     return gpa.dupe(u8, trimmed) catch null;

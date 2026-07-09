@@ -28,6 +28,7 @@ const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const approvals_mod = @import("approvals.zig");
 const tools_mod = @import("tools.zig");
+const http = @import("http.zig");
 const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const pricing = @import("pricing.zig");
@@ -331,6 +332,14 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     // auto-detection above it, NOT arbitrary workspace config.
     main_mod.g_path_env = try arena.dupe(u8, environ_map.get("PATH") orelse "");
     main_mod.g_codedb_guard = environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
+    // #134: let a provider that buffers a long reasoning phase in total silence
+    // raise the mid-stream idle-stall cutoff (default 120s). Seconds; ignored if
+    // unparseable or 0. A stall is never a user interrupt regardless of the value.
+    if (environ_map.get("GRAFF_STREAM_STALL_SECS")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
+            if (secs > 0) http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
+        } else |_| {}
+    }
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme

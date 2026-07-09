@@ -470,6 +470,7 @@ pub fn run(ctx: *Ctx) !void {
             if (!turn_ok) {
                 const fail_detail: []const u8 = if (turn_result) |_| "" else |e| switch (e) {
                     error.ApiError => ctx.root.last_api_error orelse "api error",
+                    error.StreamStalled => ctx.root.last_api_error orelse "stream stalled — ended turn",
                     else => @errorName(e),
                 };
                 tj.node(.{ .kind = "turn_error", .parent = turn_id, .t = tj.elapsedMs(), .detail = fail_detail });
@@ -493,6 +494,26 @@ pub fn run(ctx: *Ctx) !void {
                 main_mod.g_force_interrupt = false;
                 try ctx.out.print("{s}{s}{s}\n", .{ style.yellow, int_msg, style.reset });
                 try ctx.out.flush();
+                session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
+                continue;
+            },
+            error.StreamStalled => {
+                // A dead/idle stream (no SSE bytes for stream_stall_ms): the
+                // harness gave up, NOT the user (#134) — keep the partial but
+                // tag it a stall, and emit the structured error for --json.
+                const partial = std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n");
+                const marker: []const u8 = if (partial.len > 0)
+                    try std.fmt.allocPrint(ctx.arena, "{s}\n\n[response ended early: stream stalled]", .{partial})
+                else
+                    "[response ended early: stream stalled]";
+                try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", marker));
+                if (main_mod.json_mode) {
+                    ctx.root.emit(.{ .type = "error", .message = ctx.root.last_api_error orelse "stream stalled — ending turn" });
+                    if (partial.len > 0) {
+                        ctx.root.emit(.{ .type = "finalizing" });
+                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = ctx.root.last_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = ctx.root.last_context_tokens > 0 });
+                    }
+                }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
                 continue;
             },

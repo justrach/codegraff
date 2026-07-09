@@ -81,6 +81,18 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     self.streamed_args = .none;
                     // Esc is a deliberate stop, not a flaky network — no retry.
                     if (err == error.Interrupted) return error.Interrupted;
+                    // A mid-stream idle stall already streamed its partial text
+                    // and printed the "stream stalled" notice; retrying would
+                    // re-stream the whole answer from scratch. End the turn — but
+                    // as error.StreamStalled, recorded with the timeout + reason,
+                    // so it is classified as a harness stall and never as a user
+                    // Esc interruption (#134).
+                    if (err == error.StreamStalled) {
+                        self.last_api_error = std.fmt.allocPrint(self.arena, "stream stalled: no data from the model for {d}s — ended the turn (raise GRAFF_STREAM_STALL_SECS if your model needs longer)", .{http.stream_stall_ms / 1000}) catch null;
+                        if (telemetry.g_telem) |t| t.errorEvent("stream_stall", self.last_api_error orelse "stream stalled");
+                        if (self.tracer) |tr| tr.note("stream_stall", self.last_api_error orelse "stream stalled");
+                        return error.StreamStalled;
+                    }
                     // 429/5xx: the server asked us to back off — wait
                     // (1s·2ⁿ, capped at 8s; Esc cancels) and allow a few
                     // more attempts than a plain transport flake gets.
