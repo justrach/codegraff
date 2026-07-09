@@ -1,0 +1,512 @@
+//! The provider round trip: request() builds+sends the body (with the
+//! retry/backoff loop for flaky transport and 429/5xx), buildBody()
+//! serializes it per wire format (Anthropic/OpenAI/Responses), and
+//! recordUsage/recordUsageResponses/recordCost tally tokens + cost into
+//! the session-wide g_cost. parseResponses reassembles the Codex/Responses
+//! SSE stream into a synthetic {output, usage} object (the streaming
+//! Anthropic/OpenAI SSE reassembly — assembleAnthropic/assembleOpenAI —
+//! lives in agent_steps.zig instead, since it feeds the step* functions
+//! there). Split out of the Agent struct (#123, 600-line goal).
+
+const std = @import("std");
+const Io = std.Io;
+const Value = std.json.Value;
+
+const main_mod = @import("main.zig");
+const Agent = main_mod.Agent;
+const max_tokens = main_mod.max_tokens;
+
+const pricing = @import("pricing.zig");
+const g_cost = &pricing.g_cost;
+
+const messages_mod = @import("messages.zig");
+const sanitizeMessagesUtf8 = messages_mod.sanitizeMessagesUtf8;
+const normalizeResponsesHistory = messages_mod.normalizeResponsesHistory;
+const normalizeOpenAIHistory = messages_mod.normalizeOpenAIHistory;
+
+const serde = @import("serde.zig");
+const writeAnthropicMessages = serde.writeAnthropicMessages;
+const writeOpenAIMessageNormalized = serde.writeOpenAIMessageNormalized;
+
+const http = @import("http.zig");
+const postWatched = http.postWatched;
+const RetryPlan = http.RetryPlan;
+
+const tools_mod = @import("tools.zig");
+const apiErrorMessage = tools_mod.apiErrorMessage;
+const mentionsReasoningEffort = tools_mod.mentionsReasoningEffort;
+
+const telemetry = @import("telemetry.zig");
+
+/// POST the current history; returns the parsed response root object
+/// (arena-owned). Reports API error envelopes and returns error.ApiError.
+/// In strict mode we force tool_choice; if a provider rejects that (e.g.
+/// the codegraff gateway with thinking on), we retry once without forcing
+/// and lean on the strict system prompt instead. Root requests stream:
+/// text deltas print live (postStream) and the buffered SSE events are
+/// reassembled into the non-streaming response shape afterwards.
+pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
+    var force = self.strict and tools != null;
+    var stream_usage = true; // openai stream_options; dropped if rejected
+    // #95: scrub any malformed function_call_output before it hits the wire.
+    sanitizeMessagesUtf8(self.arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
+    if (self.provider.kind == .responses) normalizeResponsesHistory(self.arena, &self.messages);
+    if (self.provider.kind == .openai) normalizeOpenAIHistory(self.arena, &self.messages); // #99: chat-completions sibling of the above
+    while (true) {
+        const live = !self.sub and self.out != null and !self.stream_quiet;
+        self.streamed_text = false;
+        self.streamed_args = .none;
+        const body = try self.buildBody(tools, force, live, stream_usage);
+        defer self.gpa.free(body);
+        const t0: Io.Timestamp = .now(self.io, .awake);
+        if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_started", .provider = self.provider.id, .model = self.provider.model });
+        // HTTP calls are flaky: a kept-alive connection the server closed
+        // (HttpConnectionClosing), a reset, a truncated TLS read. Retry a
+        // few times with a fresh connection; on persistent failure surface
+        // error.ApiError so the REPL returns to the prompt, never crashes.
+        const resp_body = blk: {
+            var attempt: usize = 0;
+            while (true) : (attempt += 1) {
+                const attempt_body = if (live)
+                    self.postStream(body)
+                else
+                    postWatched(self.gpa, self.io, self.client, self.provider, body);
+                if (attempt_body) |ok| break :blk ok else |err| {
+                    if (self.streamed_text) if (self.out) |w| {
+                        w.writeAll("\n") catch {};
+                        w.flush() catch {};
+                    };
+                    self.streamed_text = false;
+                    self.streamed_args = .none;
+                    // Esc is a deliberate stop, not a flaky network — no retry.
+                    if (err == error.Interrupted) return error.Interrupted;
+                    // 429/5xx: the server asked us to back off — wait
+                    // (1s·2ⁿ, capped at 8s; Esc cancels) and allow a few
+                    // more attempts than a plain transport flake gets.
+                    const throttled = err == error.RateLimited or err == error.ServerError;
+                    const max_attempts: usize = RetryPlan.maxAttempts(throttled);
+                    if (attempt < max_attempts) {
+                        if (throttled) {
+                            const delay_ms = RetryPlan.delayMs(throttled, attempt);
+                            const what: []const u8 = if (err == error.RateLimited) "rate limited (429)" else "server error (5xx)";
+                            if (main_mod.g_5xx_body_len > 0) {
+                                try self.say("[{s} — retrying in {d}s ({d}/{d})] {s}\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] });
+                            } else {
+                                try self.say("[{s} — retrying in {d}s ({d}/{d})]\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts });
+                            }
+                            if (self.tracer) |tr| tr.note("retry", if (main_mod.g_5xx_body_len > 0) main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] else what);
+                            self.sleepInterruptible(delay_ms) catch return error.Interrupted;
+                        } else {
+                            // Transport flake (HttpConnectionClosing, a reset,
+                            // a truncated TLS read): back off before a fresh
+                            // connection. Rapid-fire retries against a
+                            // just-closed keep-alive almost always re-fail
+                            // (#86). 250ms·2ⁿ, capped at 4s over 6 tries; Esc cancels.
+                            const delay_ms = RetryPlan.delayMs(throttled, attempt);
+                            try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
+                            self.sleepInterruptible(delay_ms) catch return error.Interrupted;
+                        }
+                        continue;
+                    }
+                    if (main_mod.g_5xx_body_len > 0) {
+                        try self.say("[request failed: {t} — giving up this turn] {s}\n", .{ err, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] });
+                    } else {
+                        try self.say("[request failed: {t} — giving up this turn]\n", .{err});
+                    }
+                    // Network give-up is its own error kind: the ApiError
+                    // handler's last_api_error would otherwise be an API
+                    // envelope, stale or null on a pure transport failure —
+                    // record the real reason so the failed turn's --json error
+                    // event and trajectory node preserve it (#86).
+                    self.last_api_error = std.fmt.allocPrint(self.arena, "network error: {s} (gave up after {d} attempts)", .{ @errorName(err), max_attempts }) catch null;
+                    if (telemetry.g_telem) |t| t.errorEvent("net", @errorName(err));
+                    if (self.tracer) |tr| tr.api(self.label, self.provider.model, 0, body.len, 0, 0, 0, true);
+                    return error.ApiError;
+                }
+            }
+        };
+        defer self.gpa.free(resp_body);
+        const ms: i64 = t0.untilNow(self.io, .awake).toMilliseconds();
+
+        // object — pull the final `response` out of it (or an error).
+        // object — pull the final `response` out of it (or an error).
+        if (self.provider.kind == .responses) {
+            const r = self.parseResponses(resp_body) catch {
+                try self.say("unparseable codex response: {s}\n", .{resp_body[0..@min(resp_body.len, 600)]});
+                if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
+                return error.ApiError;
+            };
+            switch (r) {
+                .ok => |obj| {
+                    self.recordUsageResponses(obj);
+                    if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+                    if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
+                    return obj;
+                },
+                .err => |msg| {
+                    if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
+                    try self.sayApiError("codex api error: {s}", .{msg});
+                    return error.ApiError;
+                },
+            }
+        }
+
+        // Streamed anthropic/openai bodies are SSE too: reassemble them.
+        // null → the body wasn't SSE (a JSON error envelope, or a
+        // provider that ignored `stream`) — fall through to the regular
+        // parse, which also handles the soft-strict retry.
+        if (live) {
+            if (try self.assembleStream(resp_body)) |root| {
+                if (root.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "error")) {
+                    const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
+                    const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
+                    const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
+                    if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
+                    try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
+                    return error.ApiError;
+                };
+                self.recordUsage(root);
+                if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+                if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
+                return root;
+            }
+        }
+
+        const resp = std.json.parseFromSliceLeaky(Value, self.arena, resp_body, .{
+            .allocate = .alloc_always,
+        }) catch {
+            try self.sayApiError("unparseable response: {s}", .{resp_body[0..@min(resp_body.len, 400)]});
+            return error.ApiError;
+        };
+        const root = resp.object;
+
+        if (root.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "error")) {
+            const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
+            const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
+            const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
+            if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
+            try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
+            return error.ApiError;
+        };
+        if (apiErrorMessage(root)) |msg| {
+            if (force and std.mem.indexOf(u8, msg, "tool_choice") != null) {
+                force = false; // provider can't force a tool; soft-strict
+                continue;
+            }
+            if (stream_usage and std.mem.indexOf(u8, msg, "stream_options") != null) {
+                stream_usage = false; // provider can't report streamed usage
+                continue;
+            }
+            if (!self.cap_new and std.mem.indexOf(u8, msg, "max_completion_tokens") != null) {
+                self.cap_new = true; // provider wants the post-deprecation name
+                continue;
+            }
+            if (!self.effort_rejected and mentionsReasoningEffort(msg)) {
+                self.effort_rejected = true; // model rejects the effort hint here; drop + retry
+                continue;
+            }
+            if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
+            try self.sayApiError("api error: {s}", .{msg});
+            return error.ApiError;
+        }
+
+        self.recordUsage(root);
+        if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+        if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
+        return root;
+    }
+}
+
+pub fn recordUsage(self: *Agent, root: std.json.ObjectMap) void {
+    const usage = root.get("usage") orelse return;
+    if (usage != .object) return;
+    const u = usage.object;
+    self.last_cache_read = 0;
+    switch (self.provider.kind) {
+        .anthropic => {
+            var total: i64 = 0;
+            const fields = [_][]const u8{
+                "input_tokens",            "output_tokens",
+                "cache_read_input_tokens", "cache_creation_input_tokens",
+            };
+            for (fields) |f| total += usageInt(u, f);
+            if (total > 0) self.last_context_tokens = @intCast(total);
+            const cache = usageInt(u, "cache_read_input_tokens");
+            if (cache > 0) self.last_cache_read = @intCast(cache);
+            // cache writes bill ~like input; fold them into uncached input.
+            self.recordCost(usageInt(u, "input_tokens") + usageInt(u, "cache_creation_input_tokens"), cache, usageInt(u, "output_tokens"));
+        },
+        .openai => {
+            if (usageInt(u, "total_tokens") > 0) self.last_context_tokens = @intCast(usageInt(u, "total_tokens"));
+            // deepseek reports prompt_cache_hit_tokens; the OpenAI shape
+            // nests cached_tokens under prompt_tokens_details.
+            var cache = usageInt(u, "prompt_cache_hit_tokens");
+            if (cache == 0) if (u.get("prompt_tokens_details")) |d| if (d == .object) {
+                cache = usageInt(d.object, "cached_tokens");
+            };
+            if (cache > 0) self.last_cache_read = @intCast(cache);
+            self.recordCost(usageInt(u, "prompt_tokens") - cache, cache, usageInt(u, "completion_tokens"));
+        },
+        // codex uses recordUsageResponses on its own path.
+        .responses => {},
+    }
+}
+
+/// An integer usage field, or 0 if absent / wrong type.
+pub fn usageInt(obj: std.json.ObjectMap, name: []const u8) i64 {
+    if (obj.get(name)) |v| if (v == .integer) return v.integer;
+    return 0;
+}
+
+/// Record one request's usage into the session-wide tally (g_cost):
+/// token counts always; USD only for API-key providers with a
+/// price_table row. Subscription providers (codex, claude) bill flat
+/// and tally as sub_calls; unpriced models as unpriced_calls.
+pub fn recordCost(self: *Agent, uncached_in: i64, cache_in: i64, out: i64) void {
+    g_cost.add(self.io, self.provider.id, self.provider.model, uncached_in, cache_in, out);
+}
+
+pub const ResponsesResult = union(enum) { ok: std.json.ObjectMap, err: []const u8 };
+
+/// Pull the final `response` object out of a Codex SSE stream. Scans
+/// `data:` lines for the last `response.completed`/`response.incomplete`
+/// event; reports `response.failed`/`error` events or a plain JSON error
+/// body as an error.
+pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
+    // The final output items arrive as individual `response.output_item.done`
+    // events; `response.completed` carries usage but an empty output array.
+    // Collect the done-items and synthesize a {output, usage} object.
+    var items = std.json.Array.init(self.arena);
+    var usage: ?Value = null;
+    var saw_completed = false;
+    var err_msg: ?[]const u8 = null;
+    var it = std.mem.tokenizeScalar(u8, body, '\n');
+    while (it.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \r");
+        if (!std.mem.startsWith(u8, line, "data:")) continue;
+        const payload = std.mem.trim(u8, line["data:".len..], " ");
+        if (payload.len == 0 or std.mem.eql(u8, payload, "[DONE]")) continue;
+        const v = std.json.parseFromSliceLeaky(Value, self.arena, payload, .{ .allocate = .alloc_always }) catch continue;
+        if (v != .object) continue;
+        const t = v.object.get("type") orelse continue;
+        if (t != .string) continue;
+        if (std.mem.eql(u8, t.string, "response.output_item.done")) {
+            if (v.object.get("item")) |item| try items.append(item);
+        } else if (std.mem.eql(u8, t.string, "response.completed") or std.mem.eql(u8, t.string, "response.incomplete")) {
+            saw_completed = true;
+            if (v.object.get("response")) |r| if (r == .object) {
+                if (r.object.get("usage")) |u| usage = u;
+            };
+        } else if (std.mem.eql(u8, t.string, "response.failed") or std.mem.eql(u8, t.string, "error")) {
+            err_msg = errorMessage(v.object) orelse "codex stream reported a failure";
+        }
+    }
+    if (saw_completed or items.items.len > 0) {
+        var resp: std.json.ObjectMap = .empty;
+        try resp.put(self.arena, "output", .{ .array = items });
+        if (usage) |u| try resp.put(self.arena, "usage", u);
+        return .{ .ok = resp };
+    }
+    if (err_msg) |m| return .{ .err = m };
+    // Not an SSE stream — maybe a JSON error body (401, rate limit, …).
+    const v = std.json.parseFromSliceLeaky(Value, self.arena, body, .{ .allocate = .alloc_always }) catch return error.Unparseable;
+    if (v == .object) if (errorMessage(v.object)) |m| return .{ .err = m };
+    return error.Unparseable;
+}
+
+pub fn errorMessage(obj: std.json.ObjectMap) ?[]const u8 {
+    if (obj.get("error")) |e| {
+        if (e == .object) {
+            if (e.object.get("message")) |m| if (m == .string) return m.string;
+        } else if (e == .string) return e.string;
+    }
+    if (obj.get("response")) |r| if (r == .object) {
+        if (r.object.get("error")) |e| if (e == .object) {
+            if (e.object.get("message")) |m| if (m == .string) return m.string;
+        };
+    };
+    if (obj.get("detail")) |d| if (d == .string) return d.string;
+    if (obj.get("message")) |m| if (m == .string) return m.string;
+    return null;
+}
+
+pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap) void {
+    self.last_cache_read = 0;
+    const usage = response.get("usage") orelse return;
+    if (usage != .object) return;
+    const u = usage.object;
+    const in_tokens = usageInt(u, "input_tokens");
+    const out_tokens = usageInt(u, "output_tokens");
+    const total_tokens = usageInt(u, "total_tokens");
+    if (total_tokens > 0) {
+        self.last_context_tokens = @intCast(total_tokens);
+    } else {
+        // Some Codex/Responses builds report only input/output counts.
+        // Still surface the prompt token counter instead of leaving the
+        // prompt stuck at "model · sub" with no context usage.
+        const computed_total = in_tokens + out_tokens;
+        if (computed_total > 0) self.last_context_tokens = @intCast(computed_total);
+    }
+    var cached: i64 = 0;
+    if (u.get("input_tokens_details")) |d| if (d == .object) {
+        cached = usageInt(d.object, "cached_tokens");
+        if (cached > 0) self.last_cache_read = @intCast(cached);
+    };
+    self.recordCost(in_tokens - cached, cached, out_tokens);
+}
+
+pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: bool, stream_usage: bool) ![]u8 {
+    var aw: Io.Writer.Allocating = .init(self.gpa);
+    errdefer aw.deinit();
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try s.beginObject();
+    try s.objectField("model");
+    try s.write(self.provider.model);
+    switch (self.provider.kind) {
+        .anthropic => {
+            try s.objectField("max_tokens");
+            try s.write(max_tokens);
+            if (stream) {
+                try s.objectField("stream");
+                try s.write(true);
+            }
+            // Forced tool_choice conflicts with adaptive thinking; skip
+            // thinking only when forcing.
+            if (!force_tool) {
+                try s.objectField("thinking");
+                try s.print("{s}", .{"{\"type\":\"adaptive\"}"});
+            }
+            // Prompt caching (Anthropic): a cache_control breakpoint on the
+            // system block caches the whole stable prefix (system + tools).
+            // Must be block-level — a top-level cache_control is invalid.
+            // Other anthropic-format providers (minimax) get a plain
+            // string, since cache_control isn't part of their API.
+            try s.objectField("system");
+            const cc = "{\"type\":\"ephemeral\"}";
+            if (std.mem.eql(u8, self.provider.id, "anthropic")) {
+                try s.beginArray();
+                try s.beginObject();
+                try s.objectField("type");
+                try s.write("text");
+                try s.objectField("text");
+                try s.write(self.systemPrompt());
+                try s.objectField("cache_control");
+                try s.print("{s}", .{cc});
+                try s.endObject();
+                try s.endArray();
+            } else {
+                try s.write(self.systemPrompt());
+            }
+            if (tools) |t| {
+                try s.objectField("tools");
+                try s.print("{s}", .{t});
+                if (force_tool) {
+                    try s.objectField("tool_choice");
+                    try s.print("{s}", .{"{\"type\":\"any\"}"});
+                }
+            }
+            try s.objectField("messages");
+            // Cache the conversation prefix too (not just system) on the real
+            // Anthropic API: a rolling cache_control breakpoint on the last
+            // message. minimax (anthropic-format, no cache_control) is excluded.
+            const cache_msgs = std.mem.eql(u8, self.provider.id, "anthropic");
+            try writeAnthropicMessages(&s, self.messages, cache_msgs);
+        },
+        .openai => {
+            // graff's MakeOpenAiCompat: OpenAI deprecated max_tokens in
+            // favor of max_completion_tokens — send the new name to the
+            // direct OpenAI API, and to any provider that rejected the
+            // old one (cap_new, learned via the retry in request()).
+            const cap_field = if (std.mem.eql(u8, self.provider.id, "openai") or self.cap_new)
+                "max_completion_tokens"
+            else
+                "max_tokens";
+            try s.objectField(cap_field);
+            try s.write(max_tokens);
+            if (stream) {
+                try s.objectField("stream");
+                try s.write(true);
+                // Without include_usage the stream carries no token
+                // counts (context tracking + auto-compaction need them).
+                if (stream_usage) {
+                    try s.objectField("stream_options");
+                    try s.print("{s}", .{"{\"include_usage\":true}"});
+                }
+            }
+            if (tools) |t| {
+                try s.objectField("tools");
+                try s.print("{s}", .{t});
+                if (force_tool) {
+                    try s.objectField("tool_choice");
+                    try s.write("required");
+                }
+            }
+            try s.objectField("messages");
+            try s.beginArray();
+            try s.beginObject();
+            try s.objectField("role");
+            try s.write("system");
+            try s.objectField("content");
+            try s.write(self.systemPrompt());
+            try s.endObject();
+            for (self.messages.items) |m| try writeOpenAIMessageNormalized(&s, m);
+            try s.endArray();
+            // Reasoning-effort hint for OpenAI-compatible providers that
+            // honor it (codegraff gateway, deepseek). Mirrors the
+            // Responses `reasoning.effort` set in the branch below.
+            if (self.effortApplies() and !self.effort_rejected) {
+                try s.objectField("reasoning_effort");
+                try s.write(@tagName(self.reasoning));
+            }
+            // Kimi K2.7's model card recommends temperature 1.0 + top_p 0.95
+            // for its (always-on) Thinking mode; graff otherwise leaves
+            // sampling to the server default.
+            if (std.mem.eql(u8, self.provider.id, "kimi")) {
+                try s.objectField("temperature");
+                try s.write(@as(f64, 1.0));
+                try s.objectField("top_p");
+                try s.write(@as(f64, 0.95));
+            }
+        },
+        .responses => {
+            // Codex / ChatGPT Responses API. system prompt → instructions;
+            // history items are valid input items; stream is required by
+            // the backend (we buffer + parse the SSE). reasoning items are
+            // returned encrypted and passed back for cross-turn continuity.
+            try s.objectField("instructions");
+            try s.write(self.systemPrompt());
+            try s.objectField("input");
+            try s.write(Value{ .array = self.messages });
+            if (tools) |t| {
+                try s.objectField("tools");
+                try s.print("{s}", .{t});
+                try s.objectField("tool_choice");
+                try s.write(if (force_tool) "required" else "auto");
+                try s.objectField("parallel_tool_calls");
+                try s.write(true);
+            }
+            // Codex "fast" mode (/fast): request the priority service
+            // tier for lower latency. This branch is codex-only, so it is
+            // never emitted for other providers.
+            if (self.fast) {
+                try s.objectField("service_tier");
+                try s.write("priority");
+            }
+            try s.objectField("reasoning");
+            try s.beginObject();
+            try s.objectField("effort");
+            try s.write(@tagName(self.reasoning));
+            try s.endObject();
+            try s.objectField("include");
+            try s.beginArray();
+            try s.write("reasoning.encrypted_content");
+            try s.endArray();
+            try s.objectField("store");
+            try s.write(false);
+            try s.objectField("stream");
+            try s.write(true);
+        },
+    }
+    try s.endObject();
+    return aw.toOwnedSlice();
+}
