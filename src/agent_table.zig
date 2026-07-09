@@ -202,3 +202,42 @@ pub fn isTableSeparator(body: []const u8) bool {
     };
     return any_dash;
 }
+
+test "table cell wrapping: fitWidths caps the grid, wrapCell wraps on atoms" {
+    // fitWidths shaves the widest column down to the budget, floor 8.
+    var widths = [_]usize{ 12, 60, 20 };
+    fitWidths(&widths, 50);
+    try std.testing.expectEqual(@as(usize, 50), widths[0] + widths[1] + widths[2]);
+    try std.testing.expectEqual(@as(usize, 12), widths[0]); // untouched
+    try std.testing.expect(widths[1] >= 8 and widths[2] >= 8);
+    // Below the readable floor the widths are left alone.
+    var tight = [_]usize{ 20, 20 };
+    fitWidths(&tight, 10);
+    try std.testing.expectEqual(@as(usize, 20), tight[0]);
+
+    // wrapCell: greedy word wrap, styled spans atomic, oversized atoms split.
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    wrapCell(std.testing.allocator, "alpha beta **two words** gamma", 11, &out);
+    try std.testing.expectEqual(@as(usize, 3), out.items.len);
+    try std.testing.expectEqualStrings("alpha beta", out.items[0]);
+    try std.testing.expectEqualStrings("**two words**", out.items[1]); // 9 visible
+    try std.testing.expectEqualStrings("gamma", out.items[2]);
+    out.clearRetainingCapacity();
+    wrapCell(std.testing.allocator, "supercalifragilistic", 7, &out);
+    try std.testing.expectEqual(@as(usize, 3), out.items.len);
+    try std.testing.expectEqualStrings("superca", out.items[0]);
+    out.clearRetainingCapacity();
+    wrapCell(std.testing.allocator, "", 10, &out);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expectEqualStrings("", out.items[0]);
+}
+
+test "isTableSeparator: only |, -, :, space and at least one dash" {
+    try std.testing.expect(isTableSeparator("|---|---|"));
+    try std.testing.expect(isTableSeparator("| :--- | ---: |"));
+    try std.testing.expect(isTableSeparator("---"));
+    try std.testing.expect(!isTableSeparator("| a | b |")); // letters
+    try std.testing.expect(!isTableSeparator("|   |   |")); // no dash
+    try std.testing.expect(!isTableSeparator("")); // empty
+}

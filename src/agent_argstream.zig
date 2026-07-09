@@ -6,6 +6,7 @@
 //! struct (#123, 600-line goal).
 
 const std = @import("std");
+const Io = std.Io;
 
 const main_mod = @import("main.zig");
 const Agent = main_mod.Agent;
@@ -338,4 +339,57 @@ pub fn argStreamedFully(self: *Agent, call: ToolCall) bool {
     if (at == .none or at != self.streamed_args) return false;
     const v = call.input.object.get(argField(at)) orelse return false;
     return v == .string and v.string.len == self.streamed_args_len;
+}
+
+test "ArgLive streams the target argument field across fragment splits" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var a: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = std.testing.allocator,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = &aw.writer,
+    };
+    defer a.partial_text.deinit(std.testing.allocator);
+
+    // attempt_completion: the result value streams as it arrives, with
+    // escapes (split across fragments) unescaped.
+    a.arg_live.open("attempt_completion", 0);
+    a.arg_live.feed(&a, 0, "{\"res");
+    a.arg_live.feed(&a, 0, "ult\": \"Hello ");
+    try std.testing.expectEqualStrings("Hello ", aw.writer.buffered());
+    a.arg_live.feed(&a, 0, "line\\");
+    a.arg_live.feed(&a, 0, "nnext \\\"q\\\"");
+    try std.testing.expectEqualStrings("Hello line\nnext \"q\"", aw.writer.buffered());
+    a.arg_live.feed(&a, 0, "\"}");
+    try std.testing.expectEqualStrings("Hello line\nnext \"q\"", aw.writer.buffered());
+    try std.testing.expect(a.streamed_args == .attempt_completion);
+    // The emitted byte count matches the parsed value — re-print suppressible.
+    try std.testing.expectEqual("Hello line\nnext \"q\"".len, a.streamed_args_len);
+    aw.clearRetainingCapacity();
+
+    // ask_user: a non-target field first (options array with tricky strings)
+    // is skipped; the question prints. \u escapes decode, surrogate pairs too.
+    a.streamed_args = .none;
+    a.arg_live.open("ask_user", 2);
+    a.arg_live.feed(&a, 2, "{\"options\": [\"a \\\"x\\\"\", \"b, {c}\"], ");
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    a.arg_live.feed(&a, 2, "\"question\": \"caf\\u00e9 \\ud83d\\ude00?\"}");
+    try std.testing.expectEqualStrings("café 😀?", aw.writer.buffered());
+    try std.testing.expect(a.streamed_args == .ask_user);
+    try std.testing.expectEqual("café 😀?".len, a.streamed_args_len);
+    aw.clearRetainingCapacity();
+
+    // Wrong index and non-whitelisted tools print nothing.
+    a.streamed_args = .none;
+    a.arg_live.feed(&a, 5, "{\"question\": \"nope\"}");
+    a.arg_live.open("bash", 3);
+    a.arg_live.feed(&a, 3, "{\"result\": \"nope\"}");
+    try std.testing.expectEqualStrings("", aw.writer.buffered());
+    try std.testing.expect(a.streamed_args == .none);
 }

@@ -176,3 +176,13 @@ test "signScore: matches the Python SDK HMAC for a known key" {
     const unsigned = signScore("a1b2", "c3d4", 0.5, "run1", "replay-v1", "art", "evalhash");
     try std.testing.expectEqual(@as(u8, 0), unsigned[0]); // no key -> zeroed sig
 }
+
+test "scoreSigMessage: canonical bytes are cross-language stable" {
+    // The Python SDK (score_signature) and the telemetry worker recompute
+    // this byte-for-byte; {d:.6} drifting would silently break every sig.
+    var buf: [512]u8 = undefined;
+    const msg = scoreSigMessage(&buf, "a1b2", "c3d4", 0.5, "run1", "replay-v1", "art", "evalhash").?;
+    try std.testing.expectEqualStrings("v1\na1b2\nc3d4\n0.500000\nrun1\nreplay-v1\nart\nevalhash", msg);
+    const empty = scoreSigMessage(&buf, "a1b2", "", 1.0, "", "", "", "").?;
+    try std.testing.expectEqualStrings("v1\na1b2\n\n1.000000\n\n\n\n", empty);
+}

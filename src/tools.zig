@@ -18,7 +18,46 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
-const ToolCall = main_mod.ToolCall;
+/// A normalized tool invocation — same shape for both providers.
+pub const ToolCall = struct {
+    id: []const u8,
+    name: []const u8,
+    input: Value,
+};
+
+/// A tool's outcome, arena-owned, ready to wire into either format.
+pub const ExecResult = struct {
+    text: []const u8,
+    is_error: bool,
+    ms: i64 = 0, // wall-clock of the tool exec (external tools only; --timing)
+};
+
+pub const AnswerRequest = struct {
+    text: []const u8,
+    cancelled: bool,
+    call_id: []const u8,
+};
+
+pub fn answerParseError(err: anyerror) []const u8 {
+    return switch (err) {
+        error.AnswerNotObject => "answer must be a JSON object",
+        error.AnswerWrongType => "expected answer request for ask_user",
+        error.AnswerCallIdMismatch => "answer call_id did not match active ask_user prompt",
+        else => "invalid answer JSON for ask_user",
+    };
+}
+
+pub fn parseAnswerRequest(parsed: Value, expected_call_id: []const u8) !AnswerRequest {
+    if (parsed != .object) return error.AnswerNotObject;
+    const rtype = if (parsed.object.get("type")) |v| (if (v == .string) v.string else "") else "";
+    if (!std.mem.eql(u8, rtype, "answer")) return error.AnswerWrongType;
+    const call_id = if (parsed.object.get("call_id")) |v| (if (v == .string) v.string else "") else "";
+    if (call_id.len > 0 and expected_call_id.len > 0 and !std.mem.eql(u8, call_id, expected_call_id))
+        return error.AnswerCallIdMismatch;
+    const cancelled = if (parsed.object.get("cancelled")) |v| v == .bool and v.bool else false;
+    const text = if (parsed.object.get("text")) |v| (if (v == .string) v.string else "") else "";
+    return .{ .text = text, .cancelled = cancelled, .call_id = call_id };
+}
 const Provider = main_mod.Provider;
 const harness_version = main_mod.harness_version;
 
@@ -500,4 +539,34 @@ test "mentionsReasoningEffort: matches snake_case and camelCase wording" {
     try std.testing.expect(mentionsReasoningEffort("Unknown parameter: reasoning_effort"));
     try std.testing.expect(mentionsReasoningEffort("Model X does not support parameter reasoningEffort."));
     try std.testing.expect(!mentionsReasoningEffort("some other error"));
+}
+
+test "parseAnswerRequest: preserves multiline text and optional call id" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"type":"answer","text":"line 1\nline 2","cancelled":false,"call_id":"call-1"}
+    , .{});
+    const answer = try parseAnswerRequest(v, "call-1");
+    try std.testing.expectEqualStrings("line 1\nline 2", answer.text);
+    try std.testing.expectEqualStrings("call-1", answer.call_id);
+    try std.testing.expect(!answer.cancelled);
+}
+
+test "parseAnswerRequest: explicit cancel and mismatched call id" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const cancelled = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"type":"answer","cancelled":true,"call_id":"call-1"}
+    , .{});
+    const answer = try parseAnswerRequest(cancelled, "call-1");
+    try std.testing.expect(answer.cancelled);
+    try std.testing.expectEqualStrings("", answer.text);
+
+    const mismatch = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"type":"answer","text":"nope","call_id":"call-2"}
+    , .{});
+    try std.testing.expectError(error.AnswerCallIdMismatch, parseAnswerRequest(mismatch, "call-1"));
 }

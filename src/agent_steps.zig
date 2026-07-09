@@ -386,3 +386,36 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     if (usage) |u| try r.put(self.arena, "usage", u);
     return r;
 }
+
+test "assembleOpenAI preserves streamed reasoning history" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+
+    const root = (try agent.assembleOpenAI(
+        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think \"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"deep\"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"alt \"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"path\"}}]}\n" ++
+            "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n" ++
+            "data: [DONE]\n",
+    )).?;
+    const choices = root.get("choices").?;
+    const message = choices.array.items[0].object.get("message").?.object;
+    try std.testing.expectEqualStrings("assistant", message.get("role").?.string);
+    try std.testing.expectEqualStrings("done", message.get("content").?.string);
+    try std.testing.expectEqualStrings("think deep", message.get("reasoning_content").?.string);
+    try std.testing.expectEqualStrings("alt path", message.get("reasoning").?.string);
+}

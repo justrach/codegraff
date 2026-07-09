@@ -197,3 +197,34 @@ pub fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, ar
     try out.writeAll("usage: graff key set <provider> <key>  |  graff key list\n");
     try out.flush();
 }
+
+/// Load (or create on first run) a 32-hex-char anonymous id at ~/<fname>.
+/// All-zero id when HOME is missing or the file can't be created.
+pub fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [32]u8 {
+    var id: [32]u8 = @splat('0');
+    if (home.len == 0) return id;
+    var pbuf: [512]u8 = undefined;
+    const path = std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ home, fname }) catch return id;
+    existing: {
+        const data = Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64)) catch break :existing;
+        defer gpa.free(data);
+        const trimmed = std.mem.trim(u8, data, " \t\r\n");
+        if (trimmed.len != 32) break :existing;
+        for (trimmed) |c| switch (c) { // lowercase hex only, like the writer
+            '0'...'9', 'a'...'f' => {},
+            else => break :existing,
+        };
+        @memcpy(&id, trimmed);
+        return id;
+    }
+    var raw: [16]u8 = undefined;
+    io.random(&raw);
+    id = std.fmt.bytesToHex(raw, .lower);
+    const f = Io.Dir.cwd().createFile(io, path, .{}) catch return id;
+    defer f.close(io);
+    var wbuf: [64]u8 = undefined;
+    var fw = f.writer(io, &wbuf);
+    fw.interface.print("{s}\n", .{&id}) catch return id;
+    fw.interface.flush() catch return id;
+    return id;
+}

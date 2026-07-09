@@ -36,6 +36,10 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
 const repl = @import("repl.zig");
+// The interactive-REPL / --json-protocol turn loop that used to be the tail
+// of main() lives in mainloop.zig (600-line goal); main() just builds a
+// mainloop.Ctx of pointers into its own stack locals and calls run() once.
+const mainloop = @import("mainloop.zig");
 
 const builtin = @import("builtin");
 
@@ -71,7 +75,7 @@ pub var use_color = false; // stdout is a TTY and NO_COLOR unset → enables col
 
 // Optional displays toggled by CLI flags (--timing, --cost).
 pub var show_timing = false;
-var show_cost = false;
+pub var show_cost = false;
 pub var json_mode = false; // --json: structured JSONL events on stdout instead of human text
 pub var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
 pub var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
@@ -158,52 +162,12 @@ test {
     _ = agent_request;
     _ = agent_interrupt;
     _ = agent_stream;
+    _ = mainloop;
+    _ = provider_mod;
+    _ = agent_mod;
 }
 
-/// Wire format + auth style + endpoint per provider. Base URLs and env-var
-/// names from models.dev/api.json (snapshot 2026-06-10); the anthropic and
-/// openai bases are the canonical ones (models.dev lists them as null).
-/// minimax serves the Anthropic Messages format with bearer auth. Order is
-/// the default-provider priority at startup, and the tiebreak when one model
-/// name is served by several providers.
-const ProviderSpec = struct {
-    id: []const u8,
-    kind: Provider.Kind, // wire format
-    auth: Provider.Auth, // header style
-    url: []const u8,
-    env_key: []const u8,
-    default_model: []const u8,
-};
-
-pub const provider_specs = [_]ProviderSpec{
-    .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "https://api.anthropic.com/v1/messages", .env_key = "ANTHROPIC_API_KEY", .default_model = "claude-opus-4-8" },
-    .{ .id = "codegraff", .kind = .openai, .auth = .bearer, .url = "https://gateway.codegraff.com/v1/chat/completions", .env_key = "CODEGRAFF_API_KEY", .default_model = "deepseek-v4-pro" },
-    .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "https://api.deepseek.com/chat/completions", .env_key = "DEEPSEEK_API_KEY", .default_model = "deepseek-v4-pro" },
-    .{ .id = "openai", .kind = .openai, .auth = .bearer, .url = "https://api.openai.com/v1/chat/completions", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.5" },
-    .{ .id = "minimax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
-    .{ .id = "xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
-    // OpenAI-format direct providers (matched to graff's provider.json).
-    .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/chat/completions", .env_key = "KIMI_API_KEY", .default_model = "kimi-k2.7" },
-    // moonshot: the regular Kimi Open Platform (pay-as-you-go API key, not the
-    // Coding plan). OpenAI-compatible; .cn host for China. kimi-latest tracks
-    // the newest Kimi. Same /v1/models discovery applies if wired later.
-    .{ .id = "moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
-    .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
-    .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
-    .{ .id = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
-    .{ .id = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro" },
-    // mlx: a local model served by mlx-lm (`mlx_lm.server`) on Apple Silicon —
-    // OpenAI-compatible, no real key (MLX_API_KEY=local just clears graff's boot gate).
-    .{ .id = "mlx", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:8080/v1/chat/completions", .env_key = "MLX_API_KEY", .default_model = "mlx-community/Qwen3.6-27B-OptiQ-4bit" },
-    // lm-studio: the LM Studio app's local OpenAI-compatible server (default :1234).
-    // Load a model in LM Studio, then `LMSTUDIO_API_KEY=local graff --model lmstudio`.
-    .{ .id = "lmstudio", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:1234/v1/chat/completions", .env_key = "LMSTUDIO_API_KEY", .default_model = "lmstudio" },
-    // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
-    // — it's the OAuth access token read from ~/.codex/auth.json at startup
-    // (see loadCodexAuth), the same on-disk-credential trick used for the
-    // codegraff gateway key in ~/forge/.credentials.json.
-    .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.5" },
-};
+pub const provider_specs = provider_mod.provider_specs;
 
 // System-prompt text (main_system_prompt, strict_note,
 // main_system_prompt_strict, sub_system_prompt, compact_instruction) lives in
@@ -234,100 +198,14 @@ pub const emitSchema = schema.emitSchema;
 pub const schema_version = schema.schema_version;
 // -------------------------------------------------------------------------
 
-pub const Provider = struct {
-    id: []const u8,
-    kind: Kind,
-    auth: Auth,
-    url: []const u8,
-    api_key: []const u8,
-    model: []const u8,
-    context: u64,
-    account: []const u8 = "", // ChatGPT account id, codex/responses only
-
-    // Wire format. `responses` is the OpenAI Responses API as served by the
-    // ChatGPT backend (Codex login) — input items, not chat messages.
-    pub const Kind = enum { anthropic, openai, responses };
-    pub const Auth = enum { x_api_key, bearer };
-
-    /// Auto-compact past 80% of the model's context window.
-    fn compactAt(p: Provider) u64 {
-        return p.context / 10 * 8;
-    }
-};
-
-/// One optional API key per provider_specs entry, read from the environment.
-pub const Keys = struct {
-    values: [provider_specs.len]?[]const u8,
-    codex_account: []const u8 = "", // ChatGPT account id for the codex provider
-
-    pub fn get(keys: Keys, provider_id: []const u8) ?[]const u8 {
-        for (provider_specs, keys.values) |spec, value| {
-            if (std.mem.eql(u8, spec.id, provider_id)) return value;
-        }
-        return null;
-    }
-
-    pub fn build(keys: Keys, spec: ProviderSpec, key: []const u8, model: []const u8) Provider {
-        return .{
-            .id = spec.id,
-            .kind = spec.kind,
-            .auth = spec.auth,
-            .url = spec.url,
-            .api_key = key,
-            .model = model,
-            .context = contextFor(spec.id, model),
-            .account = if (std.mem.eql(u8, spec.id, "codex")) keys.codex_account else "",
-        };
-    }
-
-    /// Route a model to a provider: first model_table row whose provider has
-    /// a key wins (spec order breaks ties). Unknown claude* models go to
-    /// Anthropic; any other unknown model goes to the codegraff gateway.
-    pub fn providerFor(keys: Keys, model: []const u8) error{MissingKey}!Provider {
-        // Prefer a direct provider the user keyed over the codegraff gateway: the
-        // gateway proxies almost every model, so a low gateway balance would
-        // otherwise block models the user can serve with their own key. Pass 1
-        // skips the gateway (direct keys win); pass 2 lets it back in as fallback.
-        for ([_]bool{ false, true }) |allow_gateway| {
-            for (provider_specs, keys.values) |spec, value| {
-                const key = value orelse continue;
-                if (std.mem.eql(u8, spec.id, "codegraff") != allow_gateway) continue;
-                for (model_table) |m| {
-                    if (std.mem.eql(u8, m.provider, spec.id) and std.mem.eql(u8, m.name, model))
-                        return keys.build(spec, key, model);
-                }
-            }
-        }
-        const fallback_id: []const u8 = if (std.mem.startsWith(u8, model, "claude")) "anthropic" else "codegraff";
-        for (provider_specs, keys.values) |spec, value| {
-            if (!std.mem.eql(u8, spec.id, fallback_id)) continue;
-            const key = value orelse break;
-            return keys.build(spec, key, model);
-        }
-        return error.MissingKey;
-    }
-
-    /// The startup default: the first provider (in spec order) with a key,
-    /// on its default model.
-    fn defaultProvider(keys: Keys) error{MissingKey}!Provider {
-        for (provider_specs, keys.values) |spec, value| {
-            const key = value orelse continue;
-            return keys.build(spec, key, spec.default_model);
-        }
-        return error.MissingKey;
-    }
-
-    /// Rebuild a provider from a saved session's (id, model). Falls back to
-    /// model-based routing if the id is unknown.
-    pub fn providerById(keys: Keys, id: []const u8, model: []const u8) error{MissingKey}!Provider {
-        for (provider_specs, keys.values) |spec, value| {
-            if (!std.mem.eql(u8, spec.id, id)) continue;
-            const key = value orelse return error.MissingKey;
-            return keys.build(spec, key, model);
-        }
-        return keys.providerFor(model);
-    }
-};
+// The provider/keys core (ProviderSpec/provider_specs, Provider, Keys) lives
+// in provider.zig (600-line goal). Re-exported so the ~everywhere
+// `main_mod.Provider`/`main_mod.Keys`/`main_mod.provider_specs` back-imports
+// across the other split files keep resolving unchanged regardless of
+// physical file.
+const provider_mod = @import("provider.zig");
+pub const Provider = provider_mod.Provider;
+pub const Keys = provider_mod.Keys;
 
 // Approvals (command/tool approval gate) + confinedPath/noSymlinkEscape live in
 // approvals.zig (#123). Re-exported here so `Approvals.*`, the two path-gate
@@ -389,16 +267,9 @@ const writeSubagentDetail = cards.writeSubagentDetail;
 
 // ToolSink (the per-agent tool-call log) lives in trace.zig (600-line goal).
 
-/// Largest prefix of `s` up to `max` bytes that doesn't split a UTF-8
-/// codepoint (std.json would otherwise serialize the slice as an int array).
-pub fn utf8Prefix(s: []const u8, max: usize) []const u8 {
-    if (s.len <= max) return s;
-    var p = s[0..max];
-    var strips: usize = 0;
-    while (strips < 3 and p.len > 0 and !std.unicode.utf8ValidateSlice(p)) : (strips += 1)
-        p = p[0 .. p.len - 1];
-    return p;
-}
+// utf8Prefix moved to util.zig (600-line goal); re-exported since
+// it's back-imported nearly everywhere as main_mod.utf8Prefix.
+pub const utf8Prefix = util.utf8Prefix;
 
 // ── Telemetry (OTEL) ───────────────────────────────────────────
 // The Telemetry sink + its session-global pointer live in telemetry.zig
@@ -412,64 +283,20 @@ pub const Telemetry = telemetry.Telemetry;
 /// usage telemetry is separate (GRAFF_NO_TELEMETRY).
 pub var g_fleet: bool = true;
 
-/// Wall-clock unix milliseconds (OTLP timestamps need real time; the
-/// harness otherwise only uses the monotonic Io clock).
-pub fn unixMs(io: Io) i64 {
-    const ts = Io.Timestamp.now(io, .real);
-    return @intCast(@divTrunc(ts.nanoseconds, 1_000_000));
-}
-
-/// Load (or create on first run) a 32-hex-char anonymous id at ~/<fname>.
-/// All-zero id when HOME is missing or the file can't be created.
-fn loadOrCreateId(io: Io, gpa: Allocator, home: []const u8, fname: []const u8) [32]u8 {
-    var id: [32]u8 = @splat('0');
-    if (home.len == 0) return id;
-    var pbuf: [512]u8 = undefined;
-    const path = std.fmt.bufPrint(&pbuf, "{s}/{s}", .{ home, fname }) catch return id;
-    existing: {
-        const data = Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64)) catch break :existing;
-        defer gpa.free(data);
-        const trimmed = std.mem.trim(u8, data, " \t\r\n");
-        if (trimmed.len != 32) break :existing;
-        for (trimmed) |c| switch (c) { // lowercase hex only, like the writer
-            '0'...'9', 'a'...'f' => {},
-            else => break :existing,
-        };
-        @memcpy(&id, trimmed);
-        return id;
-    }
-    var raw: [16]u8 = undefined;
-    io.random(&raw);
-    id = std.fmt.bytesToHex(raw, .lower);
-    const f = Io.Dir.cwd().createFile(io, path, .{}) catch return id;
-    defer f.close(io);
-    var wbuf: [64]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    fw.interface.print("{s}\n", .{&id}) catch return id;
-    fw.interface.flush() catch return id;
-    return id;
-}
+// unixMs moved to util.zig (600-line goal), re-exported since it's
+// back-imported nearly everywhere as main_mod.unixMs. loadOrCreateId moved
+// to keys_cli.zig instead; its only caller is the telemetry-init block
+// below, which calls keys_cli.loadOrCreateId directly.
+pub const unixMs = util.unixMs;
 
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 pub const ReasoningEffort = enum { low, medium, high };
 
 pub const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/thinking", "/title", "/reasoning", "/strict", "/yolo", "/trace", "/fleet", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/theme", "/mcp", "/help" };
 
-/// REPL slash commands share the leading `/` with absolute POSIX paths. Only
-/// treat the line as command syntax when the first token is command-shaped;
-/// `/System/Library/... explain this` should be sent to the model as a prompt,
-/// not rejected as an unknown slash command.
-fn isSlashCommandLine(line: []const u8) bool {
-    if (line.len == 0 or line[0] != '/') return false;
-    if (line.len == 1) return true; // bare `/` opens the command picker
-
-    const token_end = std.mem.indexOfAny(u8, line, " \t") orelse line.len;
-    const token = line[0..token_end];
-    // Absolute paths with more than one component are prompts/attachments.
-    if (token.len > 1 and std.mem.indexOfScalar(u8, token[1..], '/') != null) return false;
-
-    return true;
-}
+// isSlashCommandLine moved to repl_glue.zig (600-line goal); re-exported
+// since mainloop.zig back-imports it as main_mod.isSlashCommandLine.
+pub const isSlashCommandLine = repl_glue.isSlashCommandLine;
 
 // Lifecycle hooks (Hook/Hooks config types + settings loader + per-hook
 // subprocess runner) live in hooks.zig (#123). g_hooks below, the
@@ -487,42 +314,11 @@ pub var g_hooks: hooks.Hooks = .{};
 pub var g_codedb_guard = true;
 pub var g_codedb_present: ?bool = null;
 
-/// Per-file cache for the codedb guard: `codedb outline <path>` is run once
-/// per source file to check whether codedb actually indexed it (large files
-/// are silently skipped — e.g. a 13K-line main.zig). Entries are page-alloc
-/// and never freed; the set is small (only files the agent greps). A mutex
-/// guards concurrent tool-thread access; a miss is benign (duplicate probe).
-const CodedbFileCheck = struct { path: []const u8, indexed: bool };
-var g_codedb_file_checks: std.ArrayList(CodedbFileCheck) = .empty;
-var g_codedb_file_mu: Io.Mutex = .init;
-
-/// True when `path` is in codedb's symbol index. Runs `codedb outline <path>`
-/// (cached): returns "not indexed: <path>" when the file is too large or
-/// otherwise skipped, so the guard knows to let bash through instead of
-/// trapping the agent between a blocked grep and an empty codedb result.
-pub fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
-    g_codedb_file_mu.lockUncancelable(io);
-    for (g_codedb_file_checks.items) |e| {
-        if (std.mem.eql(u8, e.path, path)) {
-            g_codedb_file_mu.unlock(io);
-            return e.indexed;
-        }
-    }
-    g_codedb_file_mu.unlock(io);
-    // Cache miss: probe once, then store. On error, assume indexed (safe:
-    // the guard still redirects to codedb, which is the status-quo behavior).
-    const run = runCapped(gpa, io, &.{ "codedb", "outline", path }, 512, 256, 0) catch return true;
-    defer gpa.free(run.stdout);
-    defer gpa.free(run.stderr);
-    const not_indexed = std.mem.indexOf(u8, run.stdout, "not indexed") != null or
-        std.mem.indexOf(u8, run.stderr, "not indexed") != null;
-    const result: bool = !not_indexed;
-    g_codedb_file_mu.lockUncancelable(io);
-    defer g_codedb_file_mu.unlock(io);
-    const dup = gpa.dupe(u8, path) catch return result;
-    g_codedb_file_checks.append(gpa, .{ .path = dup, .indexed = result }) catch gpa.free(dup);
-    return result;
-}
+// CodedbFileCheck + codedbFileIndexed (the per-file index cache) moved to
+// hooks.zig (600-line goal); re-exported since tools.zig back-imports
+// codedbFileIndexed as main_mod.codedbFileIndexed.
+pub const CodedbFileCheck = hooks.CodedbFileCheck;
+pub const codedbFileIndexed = hooks.codedbFileIndexed;
 
 // Codex-style optional skills / companion-server subsystem (skills_registry,
 // companion_servers, mcp_notes, install-status + opt-out helpers, the
@@ -575,33 +371,10 @@ const assistantText = title_mod.assistantText;
 const stripWrappingQuotes = title_mod.stripWrappingQuotes;
 const cleanTitle = title_mod.cleanTitle;
 
-/// Generate a terse tab-label title for the turn's first prompt — runs on its
-/// own arena + a throwaway one-message sub-Agent, so it can be spawned via
-/// io.async and overlap the real turn instead of blocking after it. Returns a
-/// gpa-owned title (caller frees), or null on any failure.
-fn titleTask(gpa: Allocator, io: Io, client: *std.http.Client, provider: Provider, prompt: []const u8) ?[]const u8 {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var agent: Agent = .{
-        .gpa = gpa,
-        .arena = arena,
-        .io = io,
-        .client = client,
-        .provider = provider,
-        .messages = std.json.Array.init(arena),
-        .sub = true, // pool thread: never touches stdout or the main agent's state
-        .label = "title",
-        .out = null,
-        .sys_override = "You summarize what a coding session is about in a short, natural phrase. Reply with only the phrase.",
-    };
-    defer agent.tools_used.deinit(gpa);
-    const instr = std.fmt.allocPrint(arena, "In a short natural phrase (about 3-8 words, sentence case, no quotes, no period), say what the user is working on — e.g. 'defining what a dragon is', 'fixing the login bug', 'planning the release'. Reply with ONLY the phrase.\n\nTask:\n{s}", .{prompt}) catch return null;
-    agent.messages.append(textMessage(arena, "user", instr) catch return null) catch return null;
-    const root = agent.request(null) catch return null;
-    const cleaned = cleanTitle(assistantText(provider.kind, root)) orelse return null;
-    return gpa.dupe(u8, cleaned) catch null;
-}
+// titleTask moved to title.zig (600-line goal); re-exported since main()'s
+// own `graff title` subcommand and mainloop.zig both call it unqualified /
+// as main_mod.titleTask.
+pub const titleTask = title_mod.titleTask;
 
 /// Opaque context handed to repl.run so the REPL can run a real agent turn —
 /// reuses the root agent's tool set, MCP registry, and system prompt (built in
@@ -1203,7 +976,7 @@ pub fn main(init: std.process.Init) !void {
         .gpa = gpa,
         .client = &client,
         .endpoint = telem_endpoint,
-        .install_id = if (telem_endpoint.len > 0) loadOrCreateId(io, gpa, telem_home, ".simple-harness-install-id") else @splat('0'),
+        .install_id = if (telem_endpoint.len > 0) keys_cli.loadOrCreateId(io, gpa, telem_home, ".simple-harness-install-id") else @splat('0'),
         .client_name = init.environ_map.get("HARNESS_CLIENT") orelse "harness",
         .sdk_install_id = init.environ_map.get("HARNESS_SDK_INSTALL_ID") orelse "",
         .start = Io.Timestamp.now(io, .awake),
@@ -1533,12 +1306,6 @@ pub fn main(init: std.process.Init) !void {
         root.tools_used.deinit(gpa);
     }
     const interactive = use_color and !json_mode; // stdout is a TTY → enable line editing
-
-    // Trajectory spine state: each turn's parent is the previous turn, and a
-    // changed prompt fingerprint marks a set_system_prompt mutation edge.
-    var prev_turn_id: u64 = 0;
-    var prev_prompt_fp: [16]u8 = promptFingerprint(root.systemPrompt());
-
     // Explicit resume only: bare `graff` starts fresh, while `--resume <name>`
     // restores that autosave target. Best-effort: a missing/keyless/corrupt
     // file silently starts fresh.
@@ -1569,495 +1336,27 @@ pub fn main(init: std.process.Init) !void {
         } else |_| {}
     }
 
-    while (true) {
-        // Steering drain: prompts typed while the previous turn streamed
-        // were captured into g_steer_queue. Run them now, one after
-        // another, in place of reading a fresh line — Codex-style
-        // follow-up queueing. (Empty in --json/GUI mode: no capture.)
-        resetSteerPartial();
-        const steer_entry: ?SteerEntry = popSteer();
-        defer if (steer_entry) |e| std.heap.page_allocator.free(e.text);
-        const raw_line: []const u8 = if (steer_entry) |e| blk: {
-            if (e.force) {
-                try out.print("{s}↳ force ›{s} {s}\n", .{ style.yellow, style.reset, e.text });
-            } else {
-                try out.print("{s}↳ steer ›{s} {s}\n", .{ style.cyan, style.reset, e.text });
-            }
-            try out.flush();
-            break :blk e.text;
-        } else if (interactive) blk: {
-            try root.prompt();
-            break :blk (try readLine(&root, in, out, gpa, &history, &linebuf)) orelse break;
-        } else (try in.takeDelimiter('\n')) orelse break;
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0) continue;
-        const loop_prompt: ?[]const u8 = if (!json_mode and std.mem.startsWith(u8, line, "/loop "))
-            std.mem.trim(u8, line["/loop".len..], " \t")
-        else
-            null;
-        if (!json_mode) {
-            const l = if (line.len > 0 and line[0] == '/') line[1..] else line;
-            if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
-        }
-
-        if (!json_mode and isSlashCommandLine(line) and loop_prompt == null) {
-            // Bare "/" on a TTY: open the filterable command menu.
-            if (interactive and line.len == 1) {
-                if (listPicker(&root, arena, out, "Command ›", &command_menu)) |idx| {
-                    try handleCommand(&root, &keys, arena, command_menu[idx].name, out);
-                }
-                continue;
-            }
-            try handleCommand(&root, &keys, arena, line, out);
-            continue;
-        }
-
-        // The user message for this turn. In --json mode each input line is a
-        // {"type":"user","text":"..."} request; {"type":"set_system_prompt",
-        // "text":"...","append":bool} mutates the root system prompt between
-        // turns (append=true tacks onto the current prompt instead of
-        // replacing it) and acks with a system_prompt event — no turn runs;
-        // {"type":"score","prompt_sha":"...","score":0.7,"notes":"..."}
-        // appends an evaluation record for an agent variant to the
-        // trajectory archive (the DGM evaluation phase writing back).
-        const base_msg: []const u8 = if (loop_prompt) |lp| lp else if (json_mode) blk: {
-            const parsed = std.json.parseFromSliceLeaky(Value, arena, line, .{ .allocate = .alloc_always }) catch {
-                root.emit(.{ .type = "error", .message = "invalid JSON (expect {\"type\":\"user\",\"text\":\"...\"})" });
-                continue;
-            };
-            const rtype = if (parsed == .object)
-                (if (parsed.object.get("type")) |v| (if (v == .string) v.string else "") else "")
-            else
-                "";
-            if (std.mem.eql(u8, rtype, "set_model")) {
-                const provider_field = if (parsed.object.get("provider")) |v| (if (v == .string) v.string else "") else "";
-                const model_field = if (parsed.object.get("model")) |v| (if (v == .string) v.string else "") else "";
-                const legacy_name = if (parsed.object.get("name")) |v| (if (v == .string) v.string else "") else "";
-                const provider = resolveProviderControlRequest(&keys, arena, provider_field, model_field, legacy_name) catch |err| {
-                    const label = setModelRequestLabel(arena, provider_field, model_field, legacy_name) catch "<requested model>";
-                    const message = switch (err) {
-                        error.MissingKey => try std.fmt.allocPrint(arena, "no key/login for requested model '{s}'", .{label}),
-                        error.InvalidModelRequest => "set_model needs a non-empty provider/model or legacy name",
-                        else => try std.fmt.allocPrint(arena, "failed to switch model '{s}': {s}", .{ label, @errorName(err) }),
-                    };
-                    root.emit(.{ .type = "error", .message = message });
-                    continue;
-                };
-                const note = applyProvider(&root, arena, provider);
-                root.emit(.{ .type = "model", .ok = true, .provider = provider.id, .model = provider.model, .context = provider.context, .note = note });
-                continue;
-            }
-            if (std.mem.eql(u8, rtype, "compact")) {
-                const chars = root.compact() catch |err| {
-                    const message = switch (err) {
-                        error.EmptySummary => "compaction failed: empty summary, history unchanged",
-                        else => try std.fmt.allocPrint(arena, "compaction failed: {s}", .{@errorName(err)}),
-                    };
-                    root.emit(.{ .type = "error", .message = message });
-                    continue;
-                };
-                root.emit(.{ .type = "compact", .ok = true, .chars = chars });
-                continue;
-            }
-            if (std.mem.eql(u8, rtype, "set_mode")) {
-                const mode = if (parsed.object.get("mode")) |v| (if (v == .string) v.string else "") else "";
-                if (std.mem.eql(u8, mode, "plan")) {
-                    plan_mode = true;
-                } else if (std.mem.eql(u8, mode, "normal")) {
-                    plan_mode = false;
-                } else {
-                    root.emit(.{ .type = "error", .message = "set_mode needs mode 'plan' or 'normal'" });
-                    continue;
-                }
-                root.emit(.{ .type = "mode", .ok = true, .mode = mode });
-                continue;
-            }
-            if (std.mem.eql(u8, rtype, "set_agent")) {
-                const id = if (parsed.object.get("id")) |v| (if (v == .string) v.string else "") else "";
-                if (id.len == 0) {
-                    root.sys_normal = sys_normal;
-                    root.sys_strict = sys_strict;
-                    root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = root.sys_normal.len });
-                    continue;
-                }
-                const prompt = agentTypePrompt(id) orelse {
-                    const message = try std.fmt.allocPrint(arena, "unknown agent '{s}' (see /agents)", .{id});
-                    root.emit(.{ .type = "error", .message = message });
-                    continue;
-                };
-                root.sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, prompt });
-                root.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ root.sys_normal, strict_note });
-                root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = root.sys_normal.len });
-                continue;
-            }
-            if (std.mem.eql(u8, rtype, "set_effort")) {
-                const level = if (parsed.object.get("level")) |v| (if (v == .string) v.string else "") else "";
-                if (std.mem.eql(u8, level, "low")) {
-                    root.reasoning = .low;
-                } else if (std.mem.eql(u8, level, "medium")) {
-                    root.reasoning = .medium;
-                } else if (std.mem.eql(u8, level, "high")) {
-                    root.reasoning = .high;
-                } else {
-                    root.emit(.{ .type = "error", .message = "set_effort needs level 'low', 'medium', or 'high'" });
-                    continue;
-                }
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
-                root.emit(.{ .type = "effort", .ok = true, .level = level, .applies = root.effortApplies() });
-                continue;
-            }
-            if (std.mem.eql(u8, rtype, "set_fast")) {
-                const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
-                root.fast = on;
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
-                root.emit(.{ .type = "fast", .ok = true, .on = on, .applies = root.provider.kind == .responses });
-                continue;
-            }
-            if (std.mem.eql(u8, rtype, "set_ultracode")) {
-                const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
-                root.ultracode_mode = on;
-                _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
-                root.emit(.{ .type = "ultracode", .ok = true, .on = on });
-                continue;
-            }
-            if (std.mem.eql(u8, rtype, "score")) {
-                const sha = if (parsed.object.get("prompt_sha")) |v| (if (v == .string) v.string else "") else "";
-                const sc: f64 = if (parsed.object.get("score")) |v| switch (v) {
-                    .float => |x| x,
-                    .integer => |x| @floatFromInt(x),
-                    else => std.math.nan(f64),
-                } else std.math.nan(f64);
-                if (sha.len != 16 or std.math.isNan(sc)) {
-                    root.emit(.{ .type = "error", .message = "score needs prompt_sha (16 hex chars) and a numeric score" });
-                    continue;
-                }
-                const notes = if (parsed.object.get("notes")) |v| (if (v == .string) v.string else "") else "";
-                // Optional genome lineage: which prompt this variant was
-                // mutated from — the children-count input for DGM parent
-                // selection.
-                const parent = if (parsed.object.get("parent_sha")) |v| (if (v == .string and v.string.len == 16) v.string else "") else "";
-                // Provenance (Step 0): the driver names which judge produced
-                // the score, the artifact it judged, and the eval-set hash;
-                // run_id defaults to this session's. All are HMAC-signed so a
-                // forged trajectory row is detectable.
-                const reqStr = struct {
-                    fn s(o: std.json.ObjectMap, k: []const u8) []const u8 {
-                        return if (o.get(k)) |v| (if (v == .string) v.string else "") else "";
-                    }
-                };
-                const judge_id = utf8Prefix(reqStr.s(parsed.object, "judge_id"), 64);
-                const artifact_sha = utf8Prefix(reqStr.s(parsed.object, "artifact_sha"), 64);
-                // DGM lever: when the score omits eval_set_hash but an --eval suite is
-                // configured, stamp the suite's stable fingerprint so scores group into a
-                // promotable (niche × tier × suite) cell. Same --eval cmd → same hash
-                // across installs → the fleet can rank + promote a champion.
-                var esh_buf: [16]u8 = undefined;
-                const eval_set_hash = eshblk: {
-                    const provided = utf8Prefix(reqStr.s(parsed.object, "eval_set_hash"), 64);
-                    if (provided.len > 0) break :eshblk provided;
-                    if (root.eval_cmd) |c| {
-                        esh_buf = promptFingerprint(c);
-                        break :eshblk @as([]const u8, &esh_buf);
-                    }
-                    break :eshblk "";
-                };
-                const req_run = reqStr.s(parsed.object, "run_id");
-                const run_id: []const u8 = if (req_run.len > 0) utf8Prefix(req_run, 64) else &scoring.g_run_id;
-                const sig = signScore(sha, parent, sc, run_id, judge_id, artifact_sha, eval_set_hash);
-                const signed = scoring.g_score_key != null;
-                if (trace.g_traj) |tj| tj.node(.{
-                    .kind = "score",
-                    .prompt_sha = sha,
-                    .parent_sha = parent,
-                    .score = sc,
-                    .notes = utf8Prefix(notes, 200),
-                    .run_id = run_id,
-                    .judge_id = judge_id,
-                    .artifact_sha = artifact_sha,
-                    .eval_set_hash = eval_set_hash,
-                    .sig = if (signed) @as([]const u8, &sig) else "",
-                    .t = tj.elapsedMs(),
-                });
-                var provbuf: [512]u8 = undefined;
-                // prov = judge_id, artifact_sha, eval_set_hash (the signed Step-0 fields)
-                // + provider_class, niche (unsigned transport) so harness_scores can form
-                // (niche x provider_class x eval_set_hash) cells the fleet ranks over.
-                const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ judge_id, artifact_sha, eval_set_hash, providerClass(root.provider.model), reqStr.s(parsed.object, "niche") }) catch "";
-                if (telemetry.g_telem) |t| t.scoreEvent(sha, parent, sc, run_id, if (signed) @as([]const u8, &sig) else "", prov);
-                // fleet:submit (docs §9.B) — a scored, pinned-eval variant entered the fleet grid.
-                if (eval_set_hash.len > 0) if (telemetry.g_telem) |t| t.fleetEvent("submit", reqStr.s(parsed.object, "niche"), sha, "", providerClass(root.provider.model), eval_set_hash, 0, "");
-                root.emit(.{ .type = "score", .ok = true, .prompt_sha = sha, .signed = signed });
-                continue;
-            }
-            if (std.mem.eql(u8, rtype, "answer")) {
-                root.emit(.{ .type = "error", .message = "answer received with no active ask_user prompt" });
-                continue;
-            }
-            const t = if (parsed == .object) parsed.object.get("text") else null;
-            const text = if (t) |v| (if (v == .string) v.string else "") else "";
-            if (text.len == 0) {
-                root.emit(.{ .type = "error", .message = "request needs a non-empty \"text\" field" });
-                continue;
-            }
-            if (std.mem.eql(u8, rtype, "set_system_prompt")) {
-                const append = if (parsed.object.get("append")) |v| v == .bool and v.bool else false;
-                root.sys_normal = if (append)
-                    try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ root.sys_normal, text })
-                else
-                    try arena.dupe(u8, text);
-                root.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ root.sys_normal, strict_note });
-                root.emit(.{ .type = "system_prompt", .ok = true, .append = append, .chars = root.sys_normal.len });
-                continue;
-            }
-            if (parsed.object.get("maxToolCalls") orelse parsed.object.get("max_tool_calls")) |v| switch (v) {
-                .integer => |n| max_tool_calls = if (n >= 0) @intCast(n) else null,
-                .null => max_tool_calls = null,
-                else => {},
-            };
-            if (parsed.object.get("dedupeToolCalls") orelse parsed.object.get("dedupe_tool_calls")) |v| {
-                if (v == .bool) dedupe_tool_calls = v.bool;
-            }
-            break :blk text;
-        } else line;
-
-        // Persistent goal steering: the objective plus a nudge to track it as a
-        // live todo_write checklist, with the current list appended so the model
-        // resumes the plan instead of re-deriving it (assembled by goalSteeringNote).
-        const todos_render: []const u8 = if (root.todos.items.len > 0) root.renderTodos() else "";
-        const goal_note = try goalSteeringNote(arena, root.goal, todos_render);
-        const eval_note = try evalSteeringNote(arena, root.eval_cmd, root.eval_target, root.eval_judge != null);
-        var goal_msg: []const u8 = base_msg;
-        if (goal_note.len > 0) goal_msg = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ goal_msg, goal_note });
-        if (eval_note.len > 0) goal_msg = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ goal_msg, eval_note });
-
-        // /loop asks the model to work autonomously through plan→act→verify.
-        const loop_msg: []const u8 = if (loop_prompt != null) try std.fmt.allocPrint(arena,
-            \\{s}
-            \\
-            \\[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps.]
-        , .{goal_msg}) else goal_msg;
-
-        // Plan mode: steer the model to explore read-only and present a plan
-        // (the gate enforces the read-only part regardless).
-        const msg: []const u8 = if (!plan_mode) loop_msg else try std.fmt.allocPrint(arena,
-            \\{s}
-            \\
-            \\[harness note: plan mode is ON — read-only. Explore with read-only
-            \\tools as needed, then present a concrete plan (files to change,
-            \\the changes themselves, sequence, risks) and ask the user to
-            \\approve it. Do not write files or run mutating commands — the
-            \\gate will deny them. The user toggles execution back on with /plan.]
-        , .{loop_msg});
-
-        // Promote a GUI `@[image]` attachment to a native vision block when the
-        // model can see (otherwise it only gets the path and resorts to OCR).
-        stageGuiImageAttachment(&root, msg);
-
-        // Generate the AI tab-title concurrently (io.async), spawned BEFORE the
-        // header so the first-turn header can wait for the summary title; reaped
-        // after the turn (below) or by this defer on an early bail-out.
-        var title_fut: ?Io.Future(?[]const u8) = null;
-        if (!json_mode and root.ai_title and !root.ai_title_done) {
-            root.ai_title_done = true;
-            title_fut = io.async(titleTask, .{ gpa, io, root.client, root.provider, base_msg });
-        }
-        defer if (title_fut) |*f| {
-            _ = f.await(io);
-        };
-
-        // TUI/session header: once the first real prompt materializes the chat,
-        // show what this terminal tab is working on and the exact folder, and
-        // keep the window title in sync each turn.
-        if (!json_mode) {
-            if (!root.tui_header_shown) {
-                // Print the header IMMEDIATELY with the fast prompt-derived title so
-                // the AI summary call (titleTask, spawned just above with io.async)
-                // never blocks the response. The printed header scrolls into
-                // scrollback and can't be redrawn, so it keeps the prompt title; the
-                // AI summary runs in the background overlapping the turn and lands on
-                // the redrawable window title + the session filename in the post-turn
-                // handler below. (#91 made the reverse trade — blocking the turn so the
-                // *printed* card read as a summary — but an extra round-trip in front
-                // of every first response isn't worth it.)
-                const turn_title = titleFromPrompt(base_msg);
-                setTerminalTitle(out, turn_title, g_cwd_display);
-                try printSessionHeader(out, turn_title, g_cwd_display);
-                root.tui_header_shown = true;
-            } else {
-                // Later turns: keep the OSC tab/window title synced; header shown.
-                const turn_title = root.session_title orelse titleFromPrompt(base_msg);
-                setTerminalTitle(out, turn_title, g_cwd_display);
-            }
-        }
-
-        // "ultracode" codeword or persistent /ultracode mode: opt turns into multi-agent workflow mode.
-        const ultracode_msg = try applyUltracodeSteering(arena, msg, root.ultracode_mode);
-        if (ultracode_msg.explicit) {
-            if (!json_mode) {
-                if (interactive) {
-                    anim.ultracodeShine(out, io);
-                    try out.writeAll("⚡ multi-agent workflow mode engaged\n");
-                } else {
-                    try out.writeAll("⚡ ultracode — multi-agent workflow mode engaged\n");
-                }
-                try out.flush();
-            }
-            tracer.note("ultracode", msg[0..@min(msg.len, 120)]);
-            if (telemetry.g_telem) |t| t.ultracode();
-        }
-        if (root.pending_image) |img| {
-            try root.messages.append(try imageMessage(arena, root.provider.kind, ultracode_msg.text, img));
-            root.pending_image = null;
-        } else try root.messages.append(try textMessage(arena, "user", ultracode_msg.text));
-        snaps.turn += 1; // tag file edits in this turn (matches /rewind numbering)
-        if (telemetry.g_telem) |t| t.countTurn();
-        // Trajectory: claim this turn's node id up front so subagents spawned
-        // during the turn can attach to it as their parent.
-        const turn_id: u64 = if (trace.g_traj) |tj| blk: {
-            const id = tj.nextId();
-            tj.setTurn(id);
-            break :blk id;
-        } else 0;
-        root.tools_used.clear(io); // per-turn tool log for the turn's node
-        root.tool_calls_this_turn = 0;
-        root.seen_tool_keys.clearRetainingCapacity();
-        if (json_mode) root.emit(.{ .type = "started", .provider = root.provider.id, .model = root.provider.model });
-        const turn_started = Io.Timestamp.now(io, .awake);
-        // A failed turn must never kill the session: ApiError is already
-        // reported inside request(); anything else is surfaced here. Either
-        // way we drop back to the prompt (or emit a JSON error/turn event).
-        const turn_result = root.runTurn();
-        if (trace.g_traj) |tj| {
-            const fp = promptFingerprint(root.systemPrompt());
-            const turn_ms: i64 = @intCast(@max(0, turn_started.untilNow(io, .awake).toMilliseconds()));
-            const turn_ok = if (turn_result) |_| true else |_| false;
-            const turn_tools = root.tools_used.render(arena);
-            tj.capturePrompt(fp, root.systemPrompt());
-            tj.node(.{
-                .id = turn_id,
-                .parent = prev_turn_id,
-                .kind = "turn",
-                .label = root.provider.model,
-                .t = tj.elapsedMs(),
-                .ms = turn_ms,
-                .prompt_sha = &fp,
-                .prompt_mutated = !std.mem.eql(u8, &fp, &prev_prompt_fp),
-                .task = utf8Prefix(base_msg, 160),
-                .tools = turn_tools,
-                .ok = turn_ok,
-                .context_tokens = root.last_context_tokens,
-            });
-            // Preserve the failure reason in the archive: the turn node only
-            // records ok:false, so an adjacent error record keeps the
-            // user-visible detail (network give-up, api error) joinable to it (#86).
-            if (!turn_ok) {
-                const fail_detail: []const u8 = if (turn_result) |_| "" else |e| switch (e) {
-                    error.ApiError => root.last_api_error orelse "api error",
-                    else => @errorName(e),
-                };
-                tj.node(.{ .kind = "turn_error", .parent = turn_id, .t = tj.elapsedMs(), .detail = fail_detail });
-            }
-            if (telemetry.g_telem) |t| t.runEvent(&fp, !std.mem.eql(u8, &fp, &prev_prompt_fp), turn_ok, turn_ms, turn_tools);
-            prev_turn_id = turn_id;
-            prev_prompt_fp = fp;
-        }
-        const final_text = turn_result catch |err| switch (err) {
-            error.Interrupted => {
-                // Esc: keep what streamed so far in history (as an assistant
-                // turn with an explicit marker) so the conversation stays
-                // coherent, then drop back to the prompt.
-                const partial = std.mem.trim(u8, root.partial_text.items, " \t\r\n");
-                const marker: []const u8 = if (partial.len > 0)
-                    try std.fmt.allocPrint(arena, "{s}\n\n[response interrupted by user]", .{partial})
-                else
-                    "[response interrupted by user]";
-                try root.messages.append(try textMessage(arena, "assistant", marker));
-                const int_msg: []const u8 = if (g_force_interrupt) "✗ interrupted (force)" else "✗ interrupted (esc)";
-                g_force_interrupt = false;
-                try out.print("{s}{s}{s}\n", .{ style.yellow, int_msg, style.reset });
-                try out.flush();
-                saveSession(&root, arena, root.session_name) catch {};
-                continue;
-            },
-            error.ApiError => {
-                if (telemetry.g_telem) |t| t.errorEvent("api", root.last_api_error orelse "api error");
-                if (json_mode) {
-                    root.emit(.{ .type = "error", .message = root.last_api_error orelse "api error" });
-                    const partial = std.mem.trim(u8, root.partial_text.items, " \t\r\n");
-                    if (partial.len > 0) {
-                        root.emit(.{ .type = "finalizing" });
-                        root.emit(.{ .type = "turn", .text = partial, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = false, .metadata_complete = root.last_context_tokens > 0 });
-                    }
-                }
-                // A turn can fail because the context window overflowed; if we're
-                // over the compaction threshold, compact (or emergency-trim) now
-                // so the next turn isn't doomed to fail at the same size (#88).
-                if (root.last_context_tokens >= root.provider.compactAt()) root.compactOrRecover(true);
-                saveSession(&root, arena, root.session_name) catch {};
-                continue;
-            },
-            else => |e| {
-                if (telemetry.g_telem) |t| t.errorEvent("turn", @errorName(e));
-                if (json_mode) {
-                    root.emit(.{ .type = "error", .message = @errorName(e) });
-                } else {
-                    root.say("[turn aborted: {t}]\n", .{e}) catch {};
-                }
-                saveSession(&root, arena, root.session_name) catch {};
-                continue;
-            },
-        };
-        if (json_mode) {
-            const emitted_text = if (final_text.len == 0 and root.partial_text.items.len > 0)
-                std.mem.trim(u8, root.partial_text.items, " \t\r\n")
-            else
-                final_text;
-            root.emit(.{ .type = "finalizing" });
-            root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = root.last_context_tokens, .cost_usd = g_cost.snap(io).usd, .complete = true, .metadata_complete = root.last_context_tokens > 0 });
-        }
-
-        // Apply the AI summary title + fleet champions that ran in the background
-        // overlapping the turn — both off the critical path. The printed header kept
-        // the fast prompt title; the summary now lands on the redrawable window title
-        // and the saved session filename. Usually already resolved by here.
-        if (title_fut) |*f| {
-            if (f.await(io)) |t| {
-                root.session_title = arena.dupe(u8, t) catch null;
-                gpa.free(t);
-                if (root.session_title) |st| {
-                    setTerminalTitle(out, st, g_cwd_display);
-                    renameSession(&root, arena, slugifyTitle(arena, st));
-                }
-            }
-            title_fut = null;
-        }
-        joinElites(io); // publish backgrounded fleet champions for the next turn (no-op once joined)
-
-        // turn_end lifecycle hooks (best-effort; interrupted/errored turns
-        // `continue` above and never reach here, so ok is always true).
-        if (g_hooks.turn_end.len > 0) {
-            for (g_hooks.turn_end) |h| {
-                const res = hooks.runHookCmd(gpa, io, h.command, "{\"event\":\"turn_end\",\"ok\":true}", h.timeout_ms);
-                if (res.stderr.len > 0) gpa.free(res.stderr);
-            }
-        }
-
-        if (root.last_context_tokens >= root.provider.compactAt()) {
-            // Trim on failure only when we're genuinely against the window — at
-            // 80–95% a transient compaction failure can recover next turn.
-            const near_cap = root.provider.context > 0 and root.last_context_tokens * 100 >= root.provider.context * 95;
-            root.compactOrRecover(near_cap);
-        }
-        // opencode-style continuous autosave: persist after every turn so a
-        // crash or quit never loses the thread — last.session.json, the same
-        // file /resume reads. Best-effort; a write failure never breaks the loop.
-        saveSession(&root, arena, root.session_name) catch {};
-
-        // --worktree checkpoint: commit this turn's edits to the scratch branch
-        // so the work is durable + rewindable across restarts. No-op when not in
-        // a worktree or when --no-autocommit is set.
-        worktreeAutoCommit(gpa, io, std.fmt.allocPrint(arena, "wip: {s}", .{titleFromPrompt(base_msg)}) catch "wip: graff checkpoint");
-    }
+    // The interactive-REPL / --json-protocol turn loop lives in mainloop.zig
+    // (600-line goal). main() keeps owning every piece of storage the loop
+    // touches (root, keys, tracer/traj/telem via root, history, linebuf, the
+    // stdin/stdout writers) — Ctx below only holds POINTERS into this
+    // stack frame, so nothing dangles once run() returns and the post-loop
+    // cleanup below (unchanged) resumes.
+    var loop_ctx: mainloop.Ctx = .{
+        .gpa = gpa,
+        .io = io,
+        .arena = arena,
+        .root = &root,
+        .keys = &keys,
+        .out = out,
+        .in = in,
+        .history = &history,
+        .linebuf = &linebuf,
+        .interactive = interactive,
+        .sys_normal = sys_normal,
+        .sys_strict = sys_strict,
+    };
+    try mainloop.run(&loop_ctx);
     // Final save on exit also captures command-driven edits since the last turn
     // (/clear, /rewind) so the next start resumes the true end state.
     if (!json_mode and root.messages.items.len > 0) {
@@ -2092,23 +1391,9 @@ const countMcpServers = mcp_cli.countMcpServers;
 const persistMcpServer = mcp_cli.persistMcpServer;
 const mcpCommand = mcp_cli.mcpCommand;
 
-/// Pull plain text out of a message's content (string, or the text blocks of a
-/// content array — anthropic "text", openai "text", responses "input/output_text").
-pub fn extractText(arena: Allocator, m: Value) []const u8 {
-    if (m != .object) return "";
-    const c = m.object.get("content") orelse return "";
-    if (c == .string) return c.string;
-    if (c != .array) return "";
-    var b: std.ArrayList(u8) = .empty;
-    for (c.array.items) |blk| {
-        if (blk != .object) continue;
-        if (blk.object.get("text")) |t| if (t == .string) {
-            if (b.items.len > 0) b.append(arena, '\n') catch {};
-            b.appendSlice(arena, t.string) catch {};
-        };
-    }
-    return b.items;
-}
+// extractText moved to providers.zig (600-line goal); re-exported since
+// title.zig and others already back-import it as main_mod.extractText.
+pub const extractText = providers.extractText;
 
 // Provider-switch core (translateHistory, applyProvider, resolveProvider*,
 // setModelRequestLabel, switchProvider) lives in providers.zig; the
@@ -2142,7 +1427,7 @@ const commands_session = @import("commands_session.zig");
 const commands_model = @import("commands_model.zig");
 const commands_misc = @import("commands_misc.zig");
 
-fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !void {
+pub fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !void {
     if (try commands_session.tryHandle(root, keys, arena, line, out)) return;
     if (try commands_model.tryHandle(root, keys, arena, line, out)) return;
     if (try commands_misc.tryHandle(root, keys, arena, line, out)) return;
@@ -2228,409 +1513,25 @@ pub const codegraff_device_base = "https://gateway.codegraff.com";
 // (#123); it back-imports main for strFieldObj/intFieldObj + the gateway base.
 const cube = @import("cube.zig");
 
-/// A normalized tool invocation — same shape for both providers.
-pub const ToolCall = struct {
-    id: []const u8,
-    name: []const u8,
-    input: Value,
-};
+// ToolCall/ExecResult/AnswerRequest/answerParseError/parseAnswerRequest
+// moved to tools.zig (600-line goal); re-exported since agent_tools.zig,
+// agent_steps.zig, exec.zig, and others already back-import them as
+// main_mod.X.
+pub const ToolCall = tools_mod.ToolCall;
+pub const ExecResult = tools_mod.ExecResult;
+pub const AnswerRequest = tools_mod.AnswerRequest;
+pub const answerParseError = tools_mod.answerParseError;
+pub const parseAnswerRequest = tools_mod.parseAnswerRequest;
 
-/// A tool's outcome, arena-owned, ready to wire into either format.
-pub const ExecResult = struct {
-    text: []const u8,
-    is_error: bool,
-    ms: i64 = 0, // wall-clock of the tool exec (external tools only; --timing)
-};
-
-pub const AnswerRequest = struct {
-    text: []const u8,
-    cancelled: bool,
-    call_id: []const u8,
-};
-
-pub fn answerParseError(err: anyerror) []const u8 {
-    return switch (err) {
-        error.AnswerNotObject => "answer must be a JSON object",
-        error.AnswerWrongType => "expected answer request for ask_user",
-        error.AnswerCallIdMismatch => "answer call_id did not match active ask_user prompt",
-        else => "invalid answer JSON for ask_user",
-    };
-}
-
-pub fn parseAnswerRequest(parsed: Value, expected_call_id: []const u8) !AnswerRequest {
-    if (parsed != .object) return error.AnswerNotObject;
-    const rtype = if (parsed.object.get("type")) |v| (if (v == .string) v.string else "") else "";
-    if (!std.mem.eql(u8, rtype, "answer")) return error.AnswerWrongType;
-    const call_id = if (parsed.object.get("call_id")) |v| (if (v == .string) v.string else "") else "";
-    if (call_id.len > 0 and expected_call_id.len > 0 and !std.mem.eql(u8, call_id, expected_call_id))
-        return error.AnswerCallIdMismatch;
-    const cancelled = if (parsed.object.get("cancelled")) |v| v == .bool and v.bool else false;
-    const text = if (parsed.object.get("text")) |v| (if (v == .string) v.string else "") else "";
-    return .{ .text = text, .cancelled = cancelled, .call_id = call_id };
-}
-
-pub const TodoItem = struct {
-    content: []const u8,
-    status: []const u8,
-};
-
-/// One agent: a message history plus the POST/tool-dispatch loop. The root
-/// agent prints to stdout; subagents (sub = true) run on pool threads and
-/// log through std.debug.print, which locks stderr and is thread-safe.
-pub const Agent = struct {
-    gpa: Allocator,
-    arena: Allocator,
-    io: Io,
-    client: *std.http.Client,
-    provider: Provider,
-    messages: std.json.Array,
-    sub: bool,
-    label: []const u8,
-    out: ?*Io.Writer,
-    in: ?*Io.Reader = null, // stdin, root only — backs the ask_user tool
-    registry: ?*mcp.Registry = null,
-    approvals: ?*Approvals = null, // shared bash-approval state, set by main()
-    tracer: ?*Tracer = null, // shared JSONL event trace, set by main()
-    last_cache_read: u64 = 0, // KV-cache read tokens from the latest response
-    sys_normal: []const u8 = main_system_prompt, // root system prompt (+ project instructions)
-    sys_override: ?[]const u8 = null, // subagent-only: per-child system prompt (swarm prompt variants)
-    tools_used: ToolSink = .{}, // external tool calls this agent made (per turn for the root)
-    tool_calls_this_turn: u64 = 0, // root-only hard budget counter (--max-tool-calls)
-    seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
-    md_buf: std.ArrayList(u8) = .empty, // current incomplete streamed line (markdown rendering)
-    md_fence: bool = false, // inside a ``` code fence while streaming
-    md_kind: MdKind = .classify, // incremental renderer: current line's classification
-    md_span: MdSpan = .normal, // incremental renderer: inline **bold**/`code` span state
-    md_table: std.ArrayList([]const u8) = .empty, // buffered table rows (gpa-duped), aligned+rendered when the table ends
-    md_word: std.ArrayList(u8) = .empty, // prose wrap: pending word (incl. style bytes)
-    md_word_vis: usize = 0, // its visible width
-    md_col: usize = 0, // visible column on the current prose line
-    md_indent: usize = 0, // hanging indent for wrapped continuation lines
-    md_width: usize = 0, // cached termCols() for the current line (0 = unset)
-    snapshots: ?*Snapshots = null, // file-edit history for /rewind (root only)
-    pending_image: ?PendingImage = null, // staged by /image, sent with the next turn
-    home: []const u8 = "", // $HOME, for /key persistence (set by main)
-    keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
-    reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
-    fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
-    ultracode_mode: bool = false, // persistent ultracode (multi-agent workflow) mode (/ultracode)
-    show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
-    ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
-    goal: ?[]const u8 = null, // persistent objective steering (/goal)
-    session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
-    session_title: ?[]const u8 = null, // human-readable title/rename metadata
-    sys_strict: []const u8 = main_system_prompt_strict,
-    tools_anthropic: []const u8 = tools_anthropic_sub,
-    tools_openai: []const u8 = tools_openai_sub,
-    tools_responses: []const u8 = tools_responses_sub,
-    todos: std.ArrayList(TodoItem) = .empty,
-    eval_cmd: ?[]const u8 = null, // --eval: shell command that scores the current output (eval-driven loop)
-    eval_target: u8 = 90, // --until: stop when the score reaches this (0-100)
-    eval_niche: []const u8 = "", // --niche: fleet niche this eval session optimizes; tags submitted scores into a promotable (niche × tier × suite) cell
-    eval_judge: ?[]const u8 = null, // --judge: LLM-as-judge rubric, min()-blended with the --eval score (runJudge). Dormant until a CLI flag sets it.
-    eval_iter: u32 = 0, // eval-loop iteration counter (scores log)
-    eval_best: f64 = -1, // best score seen this session (-1 = none yet)
-    strict: bool = false,
-    completed: ?[]const u8 = null,
-    last_context_tokens: u64 = 0,
-    /// Detail of the most recent API error — carried into the --json `error`
-    /// event, which otherwise only knows "api error".
-    last_api_error: ?[]const u8 = null,
-    /// Text streamed so far in the current request — on Esc-interrupt this is
-    /// what survives into history (with an "[interrupted]" marker appended).
-    partial_text: std.ArrayList(u8) = .empty,
-    stream_quiet: bool = false, // suppress live streaming (compaction summary)
-    streamed_text: bool = false, // the last request printed its text live
-    thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
-    thinking_rows: usize = 0, // on-screen rows the live Thinking block spans (#75 collapse)
-    thinking_col: usize = 0, // running column within the block, for soft-wrap counting
-    thinking_overflow: bool = false, // block scrolled past the screen -> don't erase on collapse
-    thinking_folded: bool = false, // user folded the live Thinking block (#92)
-    thinking_text: std.ArrayList(u8) = .empty, // buffered reasoning, so a fold can unfold (#92)
-    ai_title_done: bool = false, // the one-time AI tab-title call has run this session
-    arg_live: ArgLive = .{}, // live attempt_completion/ask_user argument text
-    streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
-    streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
-    cap_new: bool = false, // provider rejected max_tokens → use max_completion_tokens
-    effort_rejected: bool = false, // model rejected reasoning_effort → drop it (e.g. gpt-5.5 on chat/completions wants /v1/responses)
-    next_ask_id: u64 = 1,
-    tui_header_shown: bool = false,
-
-    pub fn prompt(self: *Agent) !void {
-        if (json_mode) return; // SDK drives turns; no human prompt
-        const w = self.out orelse return;
-        const flag: []const u8 = if (self.strict and plan_mode) " strict·plan" else if (self.strict) " strict" else if (plan_mode) " plan" else "";
-        var cbuf: [40]u8 = undefined;
-        const cost: []const u8 = if (!show_cost) "" else blk: {
-            if (std.mem.eql(u8, self.provider.id, "codex"))
-                break :blk " · sub";
-            if (priceFor(self.provider.model) == null) break :blk " · $?";
-            break :blk std.fmt.bufPrint(&cbuf, " · ${d:.4}", .{g_cost.snap(self.io).usd}) catch "";
-        };
-        // Prompt-cache hit from the last response — proof caching is working.
-        var kbuf: [32]u8 = undefined;
-        const cached: []const u8 = if (self.last_cache_read > 0)
-            (std.fmt.bufPrint(&kbuf, " · ⚡{d} cached", .{self.last_cache_read}) catch "")
-        else
-            "";
-        if (self.last_context_tokens > 0) {
-            const threshold = self.provider.compactAt();
-            // % of the compaction budget already used — glanceable headroom.
-            const pct = if (threshold > 0) self.last_context_tokens * 100 / threshold else 0;
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · cwd {s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
-                style.dim,   style.reset,   style.cyan,  self.provider.model,      flag,             style.dim,
-                style.reset, g_cwd_display, style.dim,   self.last_context_tokens, threshold / 1000, pct,
-                cached,      cost,          style.reset, style.bold,               style.reset,
-            });
-        } else {
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · cwd {s}{s}{s}{s}]{s} {s}›{s} ", .{
-                style.dim,   style.reset,   style.cyan, self.provider.model, flag,        style.dim,
-                style.reset, g_cwd_display, style.dim,  cost,                style.reset, style.bold,
-                style.reset,
-            });
-        }
-        try w.flush();
-    }
-
-    pub fn say(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
-        if (self.out) |w| {
-            try w.print(fmt, args);
-            try w.flush();
-        } else {
-            std.debug.print("  [{s}] " ++ fmt, .{self.label} ++ args);
-        }
-    }
-
-    /// Report an API error: remember the formatted message so the --json
-    /// `error` event can carry the detail, then print it like say().
-    pub fn sayApiError(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
-        self.last_api_error = std.fmt.allocPrint(self.arena, fmt, args) catch null;
-        try self.say(fmt ++ "\n", args);
-    }
-
-    /// Emit one structured JSONL event to stdout (--json mode). `ev` is any
-    /// struct/anonymous struct; field names become JSON keys (a std.json.Value
-    /// field, e.g. tool input, serializes correctly). Best-effort.
-    pub fn emit(self: *Agent, ev: anytype) void {
-        const w = self.out orelse return;
-        // --json: the GUI stream is shared with pool-thread subagent emits
-        // (guiEmit), so serialize + flush under the lock — a raw line must never
-        // land mid-buffer and two writers must never interleave on stdout.
-        if (json_mode) g_gui_mu.lockUncancelable(self.io);
-        defer if (json_mode) g_gui_mu.unlock(self.io);
-        var s: std.json.Stringify = .{ .writer = w };
-        s.write(ev) catch return;
-        w.writeByte('\n') catch return;
-        w.flush() catch return;
-    }
-    pub fn systemPrompt(self: *const Agent) []const u8 {
-        if (self.sub) return self.sys_override orelse sub_system_prompt;
-        return if (self.strict) self.sys_strict else self.sys_normal;
-    }
-
-    /// Whether the active provider honors a reasoning-effort hint: the
-    /// Responses API (codex) via reasoning.effort, and the OpenAI-compatible
-    /// providers we know normalize a top-level reasoning_effort — the
-    /// codegraff gateway and deepseek. Everything else ignores it.
-    pub fn effortApplies(self: *const Agent) bool {
-        return providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
-    }
-
-    pub fn toolsJson(self: *const Agent) []const u8 {
-        return switch (self.provider.kind) {
-            .anthropic => if (self.sub) tools_anthropic_sub else self.tools_anthropic,
-            .openai => if (self.sub) tools_openai_sub else self.tools_openai,
-            .responses => if (self.sub) tools_responses_sub else self.tools_responses,
-        };
-    }
-
-    /// Run until the model stops (or, in strict mode, calls
-    /// attempt_completion). Returns the final assistant text (arena-owned).
-    pub fn runTurn(self: *Agent) anyerror![]const u8 {
-        self.completed = null;
-        if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
-        while (true) {
-            // Esc during a tool join (set by escWatchTask) lands here: the
-            // root consumes the flag and aborts before the next request;
-            // subagents see it too and bail without consuming.
-            if (esc_cancel.load(.acquire)) {
-                if (!self.sub) esc_cancel.store(false, .release);
-                return error.Interrupted;
-            }
-            const root = try self.request(self.toolsJson());
-            const done = switch (self.provider.kind) {
-                .anthropic => try self.stepAnthropic(root),
-                .openai => try self.stepOpenAI(root),
-                .responses => try self.stepResponses(root),
-            };
-            if (done) |final_text| return final_text;
-        }
-    }
-
-    // The provider round trip (request/buildBody + usage/cost recording +
-    // Codex/Responses SSE reassembly) lives in agent_request.zig (#123,
-    // 600-line goal). Member-aliased so self.request(...)/etc. resolve
-    // unchanged.
-    pub const request = @import("agent_request.zig").request;
-    pub const recordUsage = @import("agent_request.zig").recordUsage;
-    pub const usageInt = @import("agent_request.zig").usageInt;
-    pub const recordCost = @import("agent_request.zig").recordCost;
-    pub const ResponsesResult = @import("agent_request.zig").ResponsesResult;
-    pub const parseResponses = @import("agent_request.zig").parseResponses;
-    pub const errorMessage = @import("agent_request.zig").errorMessage;
-    pub const recordUsageResponses = @import("agent_request.zig").recordUsageResponses;
-    pub const buildBody = @import("agent_request.zig").buildBody;
-    // Non-streaming response parsing (step*) + SSE-stream reassembly
-    // (assemble*) live in agent_steps.zig (#123, 600-line goal).
-    // Member-aliased so self.stepAnthropic(...)/etc. resolve unchanged.
-    pub const stepResponses = @import("agent_steps.zig").stepResponses;
-    pub const stepAnthropic = @import("agent_steps.zig").stepAnthropic;
-    pub const stepOpenAI = @import("agent_steps.zig").stepOpenAI;
-    pub const assembleStream = @import("agent_steps.zig").assembleStream;
-    pub const assembleAnthropic = @import("agent_steps.zig").assembleAnthropic;
-    pub const assembleOpenAI = @import("agent_steps.zig").assembleOpenAI;
-
-    // Tool-call dispatch (runTools, the human-approval gate, meta-tool
-    // handling, tool-call/result UX lines) lives in agent_tools.zig (#123,
-    // 600-line goal). Member-aliased so self.runTools(...)/etc. resolve
-    // unchanged.
-    pub const runTools = @import("agent_tools.zig").runTools;
-    pub const rejectToolCall = @import("agent_tools.zig").rejectToolCall;
-    pub const toolDedupeKey = @import("agent_tools.zig").toolDedupeKey;
-    pub const emitToolRejected = @import("agent_tools.zig").emitToolRejected;
-    pub const gateTool = @import("agent_tools.zig").gateTool;
-    pub const firstWord = @import("agent_tools.zig").firstWord;
-    pub const handleMeta = @import("agent_tools.zig").handleMeta;
-    pub const askUser = @import("agent_tools.zig").askUser;
-    pub const emitAskUser = @import("agent_tools.zig").emitAskUser;
-    pub const sayToolUse = @import("agent_tools.zig").sayToolUse;
-    pub const sayToolResult = @import("agent_tools.zig").sayToolResult;
-    pub fn renderTodos(self: *Agent) []const u8 {
-        if (self.todos.items.len == 0) return "(no todos)";
-        var aw: Io.Writer.Allocating = .init(self.arena);
-        const w = &aw.writer;
-        for (self.todos.items) |t| {
-            const mark = if (std.mem.eql(u8, t.status, "completed"))
-                "[x]"
-            else if (std.mem.eql(u8, t.status, "in_progress"))
-                "[~]"
-            else
-                "[ ]";
-            w.print("{s} {s}\n", .{ mark, t.content }) catch break;
-        }
-        return std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
-    }
-
-    // Context management (compaction/emergency-trim) and the --eval/--until
-    // eval-driven loop (+ optional LLM-as-judge) live in agent_compact.zig
-    // (#123, 600-line goal). Member-aliased so self.compact(...)/etc.
-    // resolve unchanged.
-    pub const runEval = @import("agent_compact.zig").runEval;
-    pub const appendEvalLog = @import("agent_compact.zig").appendEvalLog;
-    pub const runJudge = @import("agent_compact.zig").runJudge;
-    pub const compact = @import("agent_compact.zig").compact;
-    pub const cleanUserTurn = @import("agent_compact.zig").cleanUserTurn;
-    pub const emergencyCutIndex = @import("agent_compact.zig").emergencyCutIndex;
-    pub const emergencyTrim = @import("agent_compact.zig").emergencyTrim;
-    pub const compactOrRecover = @import("agent_compact.zig").compactOrRecover;
-
-    // The live streaming path (thinking spinner, live "Thinking" reasoning
-    // block, and postStream itself — the root agent's streaming POST) lives
-    // in agent_stream.zig (#123, 600-line goal). Member-aliased so
-    // self.postStream(...)/etc. resolve unchanged. g_spin_stop/g_spin_future
-    // below stay here (never alias a `var`).
-    // ── thinking spinner ────────────────────────────────────────────────
-    // An animated indicator on the root agent's line while the model is
-    // silent: from request send, through connect + time-to-first-token,
-    // and through reasoning-model thinking deltas (which print nothing) —
-    // cleared the moment the first visible text byte streams (printDelta)
-    // or the stream ends (postStream's defer). Root + interactive TTY only;
-    // single-threaded start/stop (root thread), the task itself is on the
-    // pool and polls the stop flag every 20ms so stopping is near-instant.
-    // The animation is picked via /animation (ported in spirit from
-    // arpagon/pi-animations, MIT) and persists in .harness/settings.json.
-    pub var g_spin_stop: std.atomic.Value(bool) = .init(true);
-    pub var g_spin_future: ?Io.Future(void) = null;
-    pub const spinnerTask = @import("agent_stream.zig").spinnerTask;
-    pub const spinnerStart = @import("agent_stream.zig").spinnerStart;
-    pub const spinnerStop = @import("agent_stream.zig").spinnerStop;
-    pub const streamThinking = @import("agent_stream.zig").streamThinking;
-    pub const closeThinkingBlock = @import("agent_stream.zig").closeThinkingBlock;
-    pub const toggleThinkingFold = @import("agent_stream.zig").toggleThinkingFold;
-    pub const postStream = @import("agent_stream.zig").postStream;
-    pub const printDelta = @import("agent_stream.zig").printDelta;
-    /// Esc-during-tools cancellation. postStream only watches stdin while an
-    /// HTTP stream is live, so a long tool join (bash, a subagent fan-out, a
-    /// whole workflow) used to be Esc-deaf — exactly when turns feel longest.
-    /// While the root awaits tool futures, escWatchTask polls stdin from the
-    /// pool; Esc sets esc_cancel, which subagents poll between SSE lines and
-    /// turn iterations, and the root consumes at its next loop head as
-    /// error.Interrupted.
-    pub var esc_cancel: std.atomic.Value(bool) = .init(false);
-    pub var esc_watch_done: std.atomic.Value(bool) = .init(true);
-
-    // Esc-cancel handling (the stdin scanner + steering-buffer capture +
-    // interruptible sleep) lives in agent_interrupt.zig (#123, 600-line
-    // goal). Member-aliased so self.sleepInterruptible(...)/etc. resolve
-    // unchanged. esc_cancel/esc_watch_done above stay here (never alias a
-    // `var`); ssePayload/sseIndex live there too since they're only
-    // consumed alongside the interrupt-watch plumbing in postStream.
-    pub const escWatchTask = @import("agent_interrupt.zig").escWatchTask;
-    pub const escPressed = @import("agent_interrupt.zig").escPressed;
-    pub const drainSteerStdin = @import("agent_interrupt.zig").drainSteerStdin;
-    pub const drainStdin = @import("agent_interrupt.zig").drainStdin;
-    pub const rawNonblockStdin = @import("agent_interrupt.zig").rawNonblockStdin;
-    pub const sleepInterruptible = @import("agent_interrupt.zig").sleepInterruptible;
-    pub const ssePayload = @import("agent_interrupt.zig").ssePayload;
-    pub const sseIndex = @import("agent_interrupt.zig").sseIndex;
-
-    // Live streaming of attempt_completion/ask_user tool-argument prose (the
-    // ArgLive byte-scanner) lives in agent_argstream.zig (#123, 600-line
-    // goal). Member-aliased so self.arg_live's type + the streaming callbacks
-    // resolve unchanged regardless of physical file.
-    pub const ArgTool = @import("agent_argstream.zig").ArgTool;
-    pub const ArgLive = @import("agent_argstream.zig").ArgLive;
-    pub const argToolFor = @import("agent_argstream.zig").argToolFor;
-    pub const argField = @import("agent_argstream.zig").argField;
-    pub const outputIndex = @import("agent_argstream.zig").outputIndex;
-    pub const argLiveDelta = @import("agent_argstream.zig").argLiveDelta;
-    pub const emitArgText = @import("agent_argstream.zig").emitArgText;
-    pub const argStreamedFully = @import("agent_argstream.zig").argStreamedFully;
-
-    // The incremental streaming markdown renderer (byte-at-a-time line
-    // classifier + non-streaming renderMdLine) lives in agent_render.zig
-    // (#123, 600-line goal). Member-aliased so `self.streamMarkdown(...)`
-    // and the field types below resolve unchanged regardless of physical
-    // file.
-    pub const MdKind = @import("agent_render.zig").MdKind;
-    pub const MdSpan = @import("agent_render.zig").MdSpan;
-    pub const streamMarkdown = @import("agent_render.zig").streamMarkdown;
-    pub const inlineVisibleLen = @import("agent_render.zig").inlineVisibleLen;
-    pub const codepointCount = @import("agent_render.zig").codepointCount;
-    pub const flushStreamTail = @import("agent_render.zig").flushStreamTail;
-    pub const renderMdLine = @import("agent_render.zig").renderMdLine;
-    pub const renderInline = @import("agent_render.zig").renderInline;
-    pub const mdByte = @import("agent_render.zig").mdByte;
-    pub const mdTryClassify = @import("agent_render.zig").mdTryClassify;
-    pub const mdStartProse = @import("agent_render.zig").mdStartProse;
-    pub const mdSpanByte = @import("agent_render.zig").mdSpanByte;
-    pub const mdWrapByte = @import("agent_render.zig").mdWrapByte;
-    pub const mdStyle = @import("agent_render.zig").mdStyle;
-    pub const mdFlushWord = @import("agent_render.zig").mdFlushWord;
-    pub const mdWrapBreak = @import("agent_render.zig").mdWrapBreak;
-    pub const mdWidth = @import("agent_render.zig").mdWidth;
-    pub const mdSpanEnd = @import("agent_render.zig").mdSpanEnd;
-    pub const mdFinishLine = @import("agent_render.zig").mdFinishLine;
-    // Streamed-markdown table rendering (buffered rows -> aligned columns,
-    // word-wrapped to termCols()) lives in agent_table.zig (#123, 600-line
-    // goal). Member-aliased so `self.flushTable(...)`/`Agent.isTableSeparator(...)`
-    // resolve unchanged regardless of physical file.
-    pub const flushTable = @import("agent_table.zig").flushTable;
-    pub const fitWidths = @import("agent_table.zig").fitWidths;
-    pub const atomEnd = @import("agent_table.zig").atomEnd;
-    pub const wrapCell = @import("agent_table.zig").wrapCell;
-    pub const isTableSeparator = @import("agent_table.zig").isTableSeparator;
-};
+// The Agent struct itself (fields + smallest methods) + TodoItem live in
+// agent.zig (600-line goal). Re-exported so the ~everywhere
+// `main_mod.Agent`/`main_mod.TodoItem` back-imports across the other split
+// files keep resolving unchanged regardless of physical file. Named
+// agent_mod (not `agent`) — several functions in this file have a local
+// `var agent: Agent = ...`, which would shadow a bare `agent` import.
+const agent_mod = @import("agent.zig");
+pub const Agent = agent_mod.Agent;
+pub const TodoItem = agent_mod.TodoItem;
 
 // Wire-format message construction + UTF-8/history normalization live in
 // messages.zig (600-line goal). Aliased back so call sites stay unqualified;
@@ -2817,310 +1718,21 @@ test "incremental markdown streaming renders like renderMdLine" {
     try std.testing.expectEqualStrings("abc defghijklm\n", aw.writer.buffered());
 }
 
-test "table cell wrapping: fitWidths caps the grid, wrapCell wraps on atoms" {
-    // fitWidths shaves the widest column down to the budget, floor 8.
-    var widths = [_]usize{ 12, 60, 20 };
-    Agent.fitWidths(&widths, 50);
-    try std.testing.expectEqual(@as(usize, 50), widths[0] + widths[1] + widths[2]);
-    try std.testing.expectEqual(@as(usize, 12), widths[0]); // untouched
-    try std.testing.expect(widths[1] >= 8 and widths[2] >= 8);
-    // Below the readable floor the widths are left alone.
-    var tight = [_]usize{ 20, 20 };
-    Agent.fitWidths(&tight, 10);
-    try std.testing.expectEqual(@as(usize, 20), tight[0]);
-
-    // wrapCell: greedy word wrap, styled spans atomic, oversized atoms split.
-    var out: std.ArrayList([]const u8) = .empty;
-    defer out.deinit(std.testing.allocator);
-    Agent.wrapCell(std.testing.allocator, "alpha beta **two words** gamma", 11, &out);
-    try std.testing.expectEqual(@as(usize, 3), out.items.len);
-    try std.testing.expectEqualStrings("alpha beta", out.items[0]);
-    try std.testing.expectEqualStrings("**two words**", out.items[1]); // 9 visible
-    try std.testing.expectEqualStrings("gamma", out.items[2]);
-    out.clearRetainingCapacity();
-    Agent.wrapCell(std.testing.allocator, "supercalifragilistic", 7, &out);
-    try std.testing.expectEqual(@as(usize, 3), out.items.len);
-    try std.testing.expectEqualStrings("superca", out.items[0]);
-    out.clearRetainingCapacity();
-    Agent.wrapCell(std.testing.allocator, "", 10, &out);
-    try std.testing.expectEqual(@as(usize, 1), out.items.len);
-    try std.testing.expectEqualStrings("", out.items[0]);
-}
-
-test "ArgLive streams the target argument field across fragment splits" {
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = std.testing.allocator,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = &aw.writer,
-    };
-    defer a.partial_text.deinit(std.testing.allocator);
-
-    // attempt_completion: the result value streams as it arrives, with
-    // escapes (split across fragments) unescaped.
-    a.arg_live.open("attempt_completion", 0);
-    a.arg_live.feed(&a, 0, "{\"res");
-    a.arg_live.feed(&a, 0, "ult\": \"Hello ");
-    try std.testing.expectEqualStrings("Hello ", aw.writer.buffered());
-    a.arg_live.feed(&a, 0, "line\\");
-    a.arg_live.feed(&a, 0, "nnext \\\"q\\\"");
-    try std.testing.expectEqualStrings("Hello line\nnext \"q\"", aw.writer.buffered());
-    a.arg_live.feed(&a, 0, "\"}");
-    try std.testing.expectEqualStrings("Hello line\nnext \"q\"", aw.writer.buffered());
-    try std.testing.expect(a.streamed_args == .attempt_completion);
-    // The emitted byte count matches the parsed value — re-print suppressible.
-    try std.testing.expectEqual("Hello line\nnext \"q\"".len, a.streamed_args_len);
-    aw.clearRetainingCapacity();
-
-    // ask_user: a non-target field first (options array with tricky strings)
-    // is skipped; the question prints. \u escapes decode, surrogate pairs too.
-    a.streamed_args = .none;
-    a.arg_live.open("ask_user", 2);
-    a.arg_live.feed(&a, 2, "{\"options\": [\"a \\\"x\\\"\", \"b, {c}\"], ");
-    try std.testing.expectEqualStrings("", aw.writer.buffered());
-    a.arg_live.feed(&a, 2, "\"question\": \"caf\\u00e9 \\ud83d\\ude00?\"}");
-    try std.testing.expectEqualStrings("café 😀?", aw.writer.buffered());
-    try std.testing.expect(a.streamed_args == .ask_user);
-    try std.testing.expectEqual("café 😀?".len, a.streamed_args_len);
-    aw.clearRetainingCapacity();
-
-    // Wrong index and non-whitelisted tools print nothing.
-    a.streamed_args = .none;
-    a.arg_live.feed(&a, 5, "{\"question\": \"nope\"}");
-    a.arg_live.open("bash", 3);
-    a.arg_live.feed(&a, 3, "{\"result\": \"nope\"}");
-    try std.testing.expectEqualStrings("", aw.writer.buffered());
-    try std.testing.expect(a.streamed_args == .none);
-}
-
-test "assembleOpenAI preserves streamed reasoning history" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var agent: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = arena,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = null,
-    };
-
-    const root = (try agent.assembleOpenAI(
-        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n" ++
-            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think \"}}]}\n" ++
-            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"deep\"}}]}\n" ++
-            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"alt \"}}]}\n" ++
-            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"path\"}}]}\n" ++
-            "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n" ++
-            "data: [DONE]\n",
-    )).?;
-    const choices = root.get("choices").?;
-    const message = choices.array.items[0].object.get("message").?.object;
-    try std.testing.expectEqualStrings("assistant", message.get("role").?.string);
-    try std.testing.expectEqualStrings("done", message.get("content").?.string);
-    try std.testing.expectEqualStrings("think deep", message.get("reasoning_content").?.string);
-    try std.testing.expectEqualStrings("alt path", message.get("reasoning").?.string);
-}
-
-test "utf8Prefix truncates without splitting codepoints" {
-    try std.testing.expectEqualStrings("abc", utf8Prefix("abc", 10));
-    const s = [_]u8{ 'a', 'b', 0xC3, 0xA9, 'c' }; // "abéc"
-    try std.testing.expectEqualStrings("ab", utf8Prefix(&s, 3)); // é would split
-    try std.testing.expectEqualStrings("ab\xC3\xA9", utf8Prefix(&s, 4));
-}
-
-test "resolveModelName exact aliases and miss" {
-    const keys = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
-    try std.testing.expect(resolveModelName(keys, "gpt-5.5") != null); // exact name
-    try std.testing.expectEqualStrings("glm-5.2", resolveModelName(keys, "glm5.2").?); // natural alias
-    try std.testing.expect(resolveModelName(keys, "totally-unknown-zzz") == null);
-}
-
-test "scoreSigMessage: canonical bytes are cross-language stable" {
-    // The Python SDK (score_signature) and the telemetry worker recompute
-    // this byte-for-byte; {d:.6} drifting would silently break every sig.
-    var buf: [512]u8 = undefined;
-    const msg = scoreSigMessage(&buf, "a1b2", "c3d4", 0.5, "run1", "replay-v1", "art", "evalhash").?;
-    try std.testing.expectEqualStrings("v1\na1b2\nc3d4\n0.500000\nrun1\nreplay-v1\nart\nevalhash", msg);
-    const empty = scoreSigMessage(&buf, "a1b2", "", 1.0, "", "", "", "").?;
-    try std.testing.expectEqualStrings("v1\na1b2\n\n1.000000\n\n\n\n", empty);
-}
-
-test "parseAnswerRequest: preserves multiline text and optional call id" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const v = try std.json.parseFromSliceLeaky(Value, a,
-        \\{"type":"answer","text":"line 1\nline 2","cancelled":false,"call_id":"call-1"}
-    , .{});
-    const answer = try parseAnswerRequest(v, "call-1");
-    try std.testing.expectEqualStrings("line 1\nline 2", answer.text);
-    try std.testing.expectEqualStrings("call-1", answer.call_id);
-    try std.testing.expect(!answer.cancelled);
-}
-
-test "parseAnswerRequest: explicit cancel and mismatched call id" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const cancelled = try std.json.parseFromSliceLeaky(Value, a,
-        \\{"type":"answer","cancelled":true,"call_id":"call-1"}
-    , .{});
-    const answer = try parseAnswerRequest(cancelled, "call-1");
-    try std.testing.expect(answer.cancelled);
-    try std.testing.expectEqualStrings("", answer.text);
-
-    const mismatch = try std.json.parseFromSliceLeaky(Value, a,
-        \\{"type":"answer","text":"nope","call_id":"call-2"}
-    , .{});
-    try std.testing.expectError(error.AnswerCallIdMismatch, parseAnswerRequest(mismatch, "call-1"));
-}
+// table-cell-wrapping/isTableSeparator tests moved to agent_table.zig;
+// ArgLive test to agent_argstream.zig; assembleOpenAI test to
+// agent_steps.zig; utf8Prefix test to telemetry.zig; resolveModelName test
+// to pricing.zig; scoreSigMessage test to scoring.zig; parseAnswerRequest
+// tests to tools.zig — all moved alongside the functions they test.
 
 test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
 }
 
-test "Agent.firstWord: splits the command on the first whitespace" {
-    try std.testing.expectEqualStrings("git", Agent.firstWord("git status -s"));
-    try std.testing.expectEqualStrings("ls", Agent.firstWord("ls"));
-    try std.testing.expectEqualStrings("cat", Agent.firstWord("cat\tfile")); // tab delimiter
-    try std.testing.expectEqualStrings("", Agent.firstWord(""));
-    try std.testing.expectEqualStrings("", Agent.firstWord(" leading"));
-}
-
-test "Provider.compactAt: auto-compacts at 80% of the context window (long-horizon trigger)" {
-    const big = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 1_000_000 };
-    try std.testing.expectEqual(@as(u64, 800_000), big.compactAt());
-    const small = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 200_000 };
-    try std.testing.expectEqual(@as(u64, 160_000), small.compactAt());
-    const zero = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 0 };
-    try std.testing.expectEqual(@as(u64, 0), zero.compactAt());
-}
-
-test "Agent.cleanUserTurn: plain user text yes; assistant/tool_result no" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    try std.testing.expect(Agent.cleanUserTurn(try textMessage(a, "user", "hello")));
-    try std.testing.expect(!Agent.cleanUserTurn(try textMessage(a, "assistant", "hi")));
-    // an anthropic tool_result-only user message is NOT a clean conversation start
-    const tr = try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}", .{});
-    try std.testing.expect(!Agent.cleanUserTurn(tr));
-}
-
-test "Agent.emergencyCutIndex: cuts at a clean user turn at/after the midpoint" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var items = std.json.Array.init(a);
-    const roles = [_][]const u8{ "user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant" };
-    for (roles) |r| try items.append(try textMessage(a, r, "x"));
-    try std.testing.expectEqual(@as(?usize, 4), Agent.emergencyCutIndex(items.items)); // midpoint 4 is a user turn
-    try std.testing.expectEqual(@as(?usize, null), Agent.emergencyCutIndex(items.items[0..3])); // too short to trim
-}
-
-test "Agent.emergencyCutIndex: skips a tool_result user message at the midpoint" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var items = std.json.Array.init(a);
-    try items.append(try textMessage(a, "user", "x")); // 0
-    try items.append(try textMessage(a, "assistant", "x")); // 1
-    try items.append(try textMessage(a, "user", "x")); // 2
-    try items.append(try textMessage(a, "assistant", "x")); // 3
-    // 4: an anthropic tool_result-only user message (not a valid conversation start)
-    try items.append(try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"x\"}]}", .{})); // 4 (skip)
-    try items.append(try textMessage(a, "assistant", "x")); // 5
-    try items.append(try textMessage(a, "user", "x")); // 6 (first clean user >= midpoint)
-    try items.append(try textMessage(a, "assistant", "x")); // 7
-    try std.testing.expectEqual(@as(?usize, 6), Agent.emergencyCutIndex(items.items));
-}
-
-test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
-    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
-    const none = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
-    try std.testing.expectEqualStrings("anthropic", (try all.providerFor("claude-does-not-exist")).id);
-    try std.testing.expectEqualStrings("codegraff", (try all.providerFor("totally-made-up-model")).id);
-    try std.testing.expectEqualStrings("gpt-5.5", (try all.providerFor("gpt-5.5")).model);
-    try std.testing.expectError(error.MissingKey, none.providerFor("claude-opus-4-8"));
-}
-
-test "Keys.providerById: exact id wins, unknown id falls back to model routing" {
-    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
-    const p = try all.providerById("anthropic", "claude-opus-4-8");
-    try std.testing.expectEqualStrings("anthropic", p.id);
-    try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
-    const fb = try all.providerById("no-such-provider", "gpt-5.5");
-    try std.testing.expectEqualStrings("gpt-5.5", fb.model);
-}
-
-test "Keys.defaultProvider: first keyed provider on its default model" {
-    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
-    const p = try all.defaultProvider();
-    try std.testing.expectEqualStrings("anthropic", p.id); // anthropic leads provider_specs
-    try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
-    const none = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
-    try std.testing.expectError(error.MissingKey, none.defaultProvider());
-}
-
-test "extractText: string content, joined text blocks, and empties" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const plain = std.json.parseFromSliceLeaky(Value, a, "{\"content\":\"plain\"}", .{}) catch unreachable;
-    try std.testing.expectEqualStrings("plain", extractText(a, plain));
-    const blocks = std.json.parseFromSliceLeaky(Value, a, "{\"content\":[{\"type\":\"text\",\"text\":\"a\"},{\"type\":\"text\",\"text\":\"b\"}]}", .{}) catch unreachable;
-    try std.testing.expectEqualStrings("a\nb", extractText(a, blocks));
-    const empty = std.json.parseFromSliceLeaky(Value, a, "{}", .{}) catch unreachable;
-    try std.testing.expectEqualStrings("", extractText(a, empty));
-    try std.testing.expectEqualStrings("", extractText(a, Value{ .null = {} }));
-}
-
-test "Agent.codepointCount: counts UTF-8 codepoints, not bytes" {
-    try std.testing.expectEqual(@as(usize, 5), Agent.codepointCount("hello"));
-    try std.testing.expectEqual(@as(usize, 0), Agent.codepointCount(""));
-    try std.testing.expectEqual(@as(usize, 1), Agent.codepointCount("é")); // 2 bytes, 1 codepoint
-    try std.testing.expectEqual(@as(usize, 3), Agent.codepointCount("a→b")); // arrow is 3 bytes
-}
-
-test "Agent.inlineVisibleLen: matched **bold**/`code` markers drop from the visible width" {
-    try std.testing.expectEqual(@as(usize, 5), Agent.inlineVisibleLen("hello"));
-    try std.testing.expectEqual(@as(usize, 4), Agent.inlineVisibleLen("**bold**"));
-    try std.testing.expectEqual(@as(usize, 4), Agent.inlineVisibleLen("`code`"));
-    try std.testing.expectEqual(@as(usize, 1), Agent.inlineVisibleLen("é")); // wide glyph counts as one column
-    try std.testing.expectEqual(@as(usize, 2), Agent.inlineVisibleLen("**")); // unmatched marker is literal
-}
-
-test "Agent.isTableSeparator: only |, -, :, space and at least one dash" {
-    try std.testing.expect(Agent.isTableSeparator("|---|---|"));
-    try std.testing.expect(Agent.isTableSeparator("| :--- | ---: |"));
-    try std.testing.expect(Agent.isTableSeparator("---"));
-    try std.testing.expect(!Agent.isTableSeparator("| a | b |")); // letters
-    try std.testing.expect(!Agent.isTableSeparator("|   |   |")); // no dash
-    try std.testing.expect(!Agent.isTableSeparator("")); // empty
-}
-
-test "absolute path prompts are not mistaken for slash commands" {
-    try std.testing.expect(isSlashCommandLine("/"));
-    try std.testing.expect(isSlashCommandLine("/help"));
-    try std.testing.expect(isSlashCommandLine("/bash echo hi"));
-    try std.testing.expect(isSlashCommandLine("/not-a-command"));
-
-    try std.testing.expect(!isSlashCommandLine("/System/Library/PrivateFrameworks/StorageManagement.framework/PlugIns/StorageManagementService what causes this to start"));
-    try std.testing.expect(!isSlashCommandLine("/Users/blackfloofie/codedb/src/main.zig explain this"));
-}
-
+// Agent.firstWord/cleanUserTurn/emergencyCutIndex/codepointCount/
+// inlineVisibleLen/isTableSeparator tests moved with their functions to
+// agent_tools.zig/agent_compact.zig/agent_render.zig/agent_table.zig.
+// Provider.compactAt + Keys.providerFor/providerById/defaultProvider tests
+// moved to provider.zig. extractText's test moved to providers.zig.
 test "/bash slash command runs the bash tool and frees its gpa-allocated result" {
     // Regression guard for PR #38: the /bash slash handler routes through
     // execTool, whose result.text is gpa-owned (NOT arena-owned — every other

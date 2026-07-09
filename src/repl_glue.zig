@@ -343,3 +343,29 @@ pub fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
         root.ai_title = tv.bool;
     };
 }
+
+/// REPL slash commands share the leading `/` with absolute POSIX paths. Only
+/// treat the line as command syntax when the first token is command-shaped;
+/// `/System/Library/... explain this` should be sent to the model as a prompt,
+/// not rejected as an unknown slash command.
+pub fn isSlashCommandLine(line: []const u8) bool {
+    if (line.len == 0 or line[0] != '/') return false;
+    if (line.len == 1) return true; // bare `/` opens the command picker
+
+    const token_end = std.mem.indexOfAny(u8, line, " \t") orelse line.len;
+    const token = line[0..token_end];
+    // Absolute paths with more than one component are prompts/attachments.
+    if (token.len > 1 and std.mem.indexOfScalar(u8, token[1..], '/') != null) return false;
+
+    return true;
+}
+
+test "absolute path prompts are not mistaken for slash commands" {
+    try std.testing.expect(isSlashCommandLine("/"));
+    try std.testing.expect(isSlashCommandLine("/help"));
+    try std.testing.expect(isSlashCommandLine("/bash echo hi"));
+    try std.testing.expect(isSlashCommandLine("/not-a-command"));
+
+    try std.testing.expect(!isSlashCommandLine("/System/Library/PrivateFrameworks/StorageManagement.framework/PlugIns/StorageManagementService what causes this to start"));
+    try std.testing.expect(!isSlashCommandLine("/Users/blackfloofie/codedb/src/main.zig explain this"));
+}

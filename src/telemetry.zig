@@ -1,10 +1,12 @@
 //! Anonymous OTEL usage telemetry: the Telemetry sink — session counters
 //! (api/tool/turn/error/score/fleet/run/workflow events) exported as one
 //! best-effort OTLP/HTTP JSON batch POST at session end. Split out of main.zig
-//! (600-line goal). Owns g_telem. Back-imports main for utf8Prefix / unixMs /
-//! harness_version and the live g_fleet toggle; pulls g_cost from pricing.zig
-//! directly. main re-exports Telemetry (fleet.zig back-imports it) and
-//! mod-qualifies g_telem at its ~24 call sites.
+//! (600-line goal). Owns g_telem. utf8Prefix/unixMs live in util.zig and
+//! loadOrCreateId in keys_cli.zig (this file was itself pushing past 600).
+//! Back-imports main for harness_version and the live g_fleet toggle; pulls
+//! g_cost from pricing.zig, utf8Prefix/unixMs from util.zig directly. main
+//! re-exports Telemetry (fleet.zig back-imports it) and mod-qualifies
+//! g_telem at its ~24 call sites.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -15,11 +17,14 @@ const Allocator = std.mem.Allocator;
 const pricing = @import("pricing.zig");
 const g_cost = &pricing.g_cost;
 
+const util = @import("util.zig");
+const utf8Prefix = util.utf8Prefix;
+const unixMs = util.unixMs;
+
 const root = @import("main.zig");
-const utf8Prefix = root.utf8Prefix;
-const unixMs = root.unixMs;
 const harness_version = root.harness_version;
 
+// ── Telemetry (OTEL) ────────────────────────────────────────────────────────
 // ── Telemetry (OTEL) ────────────────────────────────────────────────────────
 
 /// Anonymous usage telemetry, exported as OTLP/HTTP JSON log records in one

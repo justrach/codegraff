@@ -321,3 +321,42 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
         }
     }
 }
+
+test "cleanUserTurn: plain user text yes; assistant/tool_result no" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expect(cleanUserTurn(try textMessage(a, "user", "hello")));
+    try std.testing.expect(!cleanUserTurn(try textMessage(a, "assistant", "hi")));
+    // an anthropic tool_result-only user message is NOT a clean conversation start
+    const tr = try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}", .{});
+    try std.testing.expect(!cleanUserTurn(tr));
+}
+
+test "emergencyCutIndex: cuts at a clean user turn at/after the midpoint" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var items = std.json.Array.init(a);
+    const roles = [_][]const u8{ "user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant" };
+    for (roles) |r| try items.append(try textMessage(a, r, "x"));
+    try std.testing.expectEqual(@as(?usize, 4), emergencyCutIndex(items.items)); // midpoint 4 is a user turn
+    try std.testing.expectEqual(@as(?usize, null), emergencyCutIndex(items.items[0..3])); // too short to trim
+}
+
+test "emergencyCutIndex: skips a tool_result user message at the midpoint" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var items = std.json.Array.init(a);
+    try items.append(try textMessage(a, "user", "x")); // 0
+    try items.append(try textMessage(a, "assistant", "x")); // 1
+    try items.append(try textMessage(a, "user", "x")); // 2
+    try items.append(try textMessage(a, "assistant", "x")); // 3
+    // 4: an anthropic tool_result-only user message (not a valid conversation start)
+    try items.append(try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"x\"}]}", .{})); // 4 (skip)
+    try items.append(try textMessage(a, "assistant", "x")); // 5
+    try items.append(try textMessage(a, "user", "x")); // 6 (first clean user >= midpoint)
+    try items.append(try textMessage(a, "assistant", "x")); // 7
+    try std.testing.expectEqual(@as(?usize, 6), emergencyCutIndex(items.items));
+}

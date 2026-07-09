@@ -2,7 +2,11 @@
 //! settings.json "hooks" loader, and the per-hook subprocess runner. Split out
 //! of main.zig (#123). Back-imports main only for Approvals (the settings-file
 //! path) and the win shim (Windows stderr-pipe peek). The pre/post/turn-end
-//! dispatch and the codedb-guard file-index cache stay in main.
+//! dispatch stays in main. The codedb-guard (issue #626) per-file index cache
+//! (CodedbFileCheck/codedbFileIndexed) also lives here (600-line goal); the
+//! guard's on/off + PATH-presence globals (g_codedb_guard/g_codedb_present)
+//! stay in main since they're read/written externally (tools.zig,
+//! commands_session.zig) as main_mod.g_x.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -179,4 +183,43 @@ test "parseHookList: defaults, malformed entries skipped" {
     try std.testing.expectEqual(@as(u64, 10_000), hooks[0].timeout_ms); // default timeout
     try std.testing.expectEqualStrings("bash", hooks[1].match);
     try std.testing.expectEqual(@as(u64, 500), hooks[1].timeout_ms);
+}
+
+const jobs = @import("jobs.zig");
+
+/// Per-file cache for the codedb guard: `codedb outline <path>` is run once
+/// per source file to check whether codedb actually indexed it (large files
+/// are silently skipped — e.g. a 13K-line main.zig). Entries are page-alloc
+/// and never freed; the set is small (only files the agent greps). A mutex
+/// guards concurrent tool-thread access; a miss is benign (duplicate probe).
+pub const CodedbFileCheck = struct { path: []const u8, indexed: bool };
+var g_codedb_file_checks: std.ArrayList(CodedbFileCheck) = .empty;
+var g_codedb_file_mu: Io.Mutex = .init;
+
+/// True when `path` is in codedb's symbol index. Runs `codedb outline <path>`
+/// (cached): returns "not indexed: <path>" when the file is too large or
+/// otherwise skipped, so the guard knows to let bash through instead of
+/// trapping the agent between a blocked grep and an empty codedb result.
+pub fn codedbFileIndexed(io: Io, gpa: Allocator, path: []const u8) bool {
+    g_codedb_file_mu.lockUncancelable(io);
+    for (g_codedb_file_checks.items) |e| {
+        if (std.mem.eql(u8, e.path, path)) {
+            g_codedb_file_mu.unlock(io);
+            return e.indexed;
+        }
+    }
+    g_codedb_file_mu.unlock(io);
+    // Cache miss: probe once, then store. On error, assume indexed (safe:
+    // the guard still redirects to codedb, which is the status-quo behavior).
+    const run = jobs.runCapped(gpa, io, &.{ "codedb", "outline", path }, 512, 256, 0) catch return true;
+    defer gpa.free(run.stdout);
+    defer gpa.free(run.stderr);
+    const not_indexed = std.mem.indexOf(u8, run.stdout, "not indexed") != null or
+        std.mem.indexOf(u8, run.stderr, "not indexed") != null;
+    const result: bool = !not_indexed;
+    g_codedb_file_mu.lockUncancelable(io);
+    defer g_codedb_file_mu.unlock(io);
+    const dup = gpa.dupe(u8, path) catch return result;
+    g_codedb_file_checks.append(gpa, .{ .path = dup, .indexed = result }) catch gpa.free(dup);
+    return result;
 }

@@ -1,7 +1,8 @@
 //! Model pricing, catalog, and the session cost tally — the first module
 //! split out of main.zig (#123). Pure tables + functions over std only:
-//! provider wiring (ProviderSpec/Keys) stays in main.zig, so the one
-//! routine that needs key state (resolveModelName) takes it as `anytype`.
+//! provider wiring (Provider/Keys) lives in provider.zig, so the one
+//! routine that needs key state (resolveModelName) takes it as `anytype`
+//! (its own co-located test back-imports main for Keys/provider_specs).
 
 const std = @import("std");
 const Io = std.Io;
@@ -323,4 +324,14 @@ test "priceFor: known model priced, unknown is null" {
     try std.testing.expect(priceFor("gpt-5.5") != null);
     try std.testing.expect(priceFor("claude-opus-4-8") != null);
     try std.testing.expect(priceFor("no-such-model") == null);
+}
+
+test "resolveModelName exact aliases and miss" {
+    const main_mod = @import("main.zig");
+    const Keys = main_mod.Keys;
+    const provider_specs = main_mod.provider_specs;
+    const keys = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    try std.testing.expect(resolveModelName(keys, "gpt-5.5") != null); // exact name
+    try std.testing.expectEqualStrings("glm-5.2", resolveModelName(keys, "glm5.2").?); // natural alias
+    try std.testing.expect(resolveModelName(keys, "totally-unknown-zzz") == null);
 }

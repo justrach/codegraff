@@ -1,8 +1,12 @@
 //! Small pure helpers shared across modules — currently the two JSON
 //! ObjectMap getters used by the gateway/cube CLI, the OAuth flows, and the
-//! trajectory renderer. Leaf module: std only. Split out of main.zig (#123).
+//! trajectory renderer, plus utf8Prefix (UTF-8-safe truncation, used nearly
+//! everywhere for capping strings before they hit JSON/telemetry) and
+//! unixMs (wall-clock milliseconds). Leaf module: std only. Split out of
+//! main.zig (#123).
 
 const std = @import("std");
+const Io = std.Io;
 const Value = std.json.Value;
 
 /// Read a string field from a JSON object, or null if absent/non-string.
@@ -27,4 +31,29 @@ test "strFieldObj/intFieldObj: object-map variants with defaults" {
     try std.testing.expectEqual(@as(i64, 42), intFieldObj(v.object, "n", -1));
     try std.testing.expectEqual(@as(i64, -1), intFieldObj(v.object, "s", -1)); // wrong type -> default
     try std.testing.expectEqual(@as(i64, -1), intFieldObj(v.object, "missing", -1));
+}
+
+/// Largest prefix of `s` up to `max` bytes that doesn't split a UTF-8
+/// codepoint (std.json would otherwise serialize the slice as an int array).
+pub fn utf8Prefix(s: []const u8, max: usize) []const u8 {
+    if (s.len <= max) return s;
+    var p = s[0..max];
+    var strips: usize = 0;
+    while (strips < 3 and p.len > 0 and !std.unicode.utf8ValidateSlice(p)) : (strips += 1)
+        p = p[0 .. p.len - 1];
+    return p;
+}
+
+/// Wall-clock unix milliseconds (OTLP timestamps need real time; the
+/// harness otherwise only uses the monotonic Io clock).
+pub fn unixMs(io: Io) i64 {
+    const ts = Io.Timestamp.now(io, .real);
+    return @intCast(@divTrunc(ts.nanoseconds, 1_000_000));
+}
+
+test "utf8Prefix truncates without splitting codepoints" {
+    try std.testing.expectEqualStrings("abc", utf8Prefix("abc", 10));
+    const s = [_]u8{ 'a', 'b', 0xC3, 0xA9, 'c' }; // "abéc"
+    try std.testing.expectEqualStrings("ab", utf8Prefix(&s, 3)); // é would split
+    try std.testing.expectEqualStrings("ab\xC3\xA9", utf8Prefix(&s, 4));
 }

@@ -492,3 +492,18 @@ pub fn renderInline(w: *Io.Writer, s: []const u8) void {
         i += 1;
     }
 }
+
+test "codepointCount: counts UTF-8 codepoints, not bytes" {
+    try std.testing.expectEqual(@as(usize, 5), codepointCount("hello"));
+    try std.testing.expectEqual(@as(usize, 0), codepointCount(""));
+    try std.testing.expectEqual(@as(usize, 1), codepointCount("é")); // 2 bytes, 1 codepoint
+    try std.testing.expectEqual(@as(usize, 3), codepointCount("a→b")); // arrow is 3 bytes
+}
+
+test "inlineVisibleLen: matched **bold**/`code` markers drop from the visible width" {
+    try std.testing.expectEqual(@as(usize, 5), inlineVisibleLen("hello"));
+    try std.testing.expectEqual(@as(usize, 4), inlineVisibleLen("**bold**"));
+    try std.testing.expectEqual(@as(usize, 4), inlineVisibleLen("`code`"));
+    try std.testing.expectEqual(@as(usize, 1), inlineVisibleLen("é")); // wide glyph counts as one column
+    try std.testing.expectEqual(@as(usize, 2), inlineVisibleLen("**")); // unmatched marker is literal
+}

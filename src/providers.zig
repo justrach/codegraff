@@ -26,7 +26,23 @@ const Agent = main_mod.Agent;
 const Keys = main_mod.Keys;
 const Provider = main_mod.Provider;
 const provider_specs = main_mod.provider_specs;
-const extractText = main_mod.extractText;
+/// Pull plain text out of a message's content (string, or the text blocks of a
+/// content array — anthropic "text", openai "text", responses "input/output_text").
+pub fn extractText(arena: Allocator, m: Value) []const u8 {
+    if (m != .object) return "";
+    const c = m.object.get("content") orelse return "";
+    if (c == .string) return c.string;
+    if (c != .array) return "";
+    var b: std.ArrayList(u8) = .empty;
+    for (c.array.items) |blk| {
+        if (blk != .object) continue;
+        if (blk.object.get("text")) |t| if (t == .string) {
+            if (b.items.len > 0) b.append(arena, '\n') catch {};
+            b.appendSlice(arena, t.string) catch {};
+        };
+    }
+    return b.items;
+}
 
 /// Rebuild the history as text-only user/assistant turns in `to_kind`'s format
 /// — used to carry the conversation across a wire-format switch. Tool-call
@@ -177,4 +193,17 @@ test "set_model control resolves explicit provider/model fields" {
     const legacy = try resolveProviderControlRequest(&all, arena, "", "", "codegraff gpt-5.5");
     try std.testing.expectEqualStrings("codegraff", legacy.id);
     try std.testing.expectEqualStrings("gpt-5.5", legacy.model);
+}
+
+test "extractText: string content, joined text blocks, and empties" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const plain = std.json.parseFromSliceLeaky(Value, a, "{\"content\":\"plain\"}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("plain", extractText(a, plain));
+    const blocks = std.json.parseFromSliceLeaky(Value, a, "{\"content\":[{\"type\":\"text\",\"text\":\"a\"},{\"type\":\"text\",\"text\":\"b\"}]}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("a\nb", extractText(a, blocks));
+    const empty = std.json.parseFromSliceLeaky(Value, a, "{}", .{}) catch unreachable;
+    try std.testing.expectEqualStrings("", extractText(a, empty));
+    try std.testing.expectEqualStrings("", extractText(a, Value{ .null = {} }));
 }

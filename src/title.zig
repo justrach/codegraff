@@ -15,8 +15,12 @@ const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
 const main_mod = @import("main.zig");
+const Agent = main_mod.Agent;
 const Provider = main_mod.Provider;
 const extractText = main_mod.extractText;
+
+const messages_mod = @import("messages.zig");
+const textMessage = messages_mod.textMessage;
 
 pub fn titleFromPrompt(prompt: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
@@ -317,4 +321,32 @@ test "cleanTitle: normalizes a model reply into a tab label, else null (/title)"
     // nothing usable → null so the caller keeps the mechanical titleFromPrompt label
     try std.testing.expect(cleanTitle("   ") == null);
     try std.testing.expect(cleanTitle("\"\"") == null);
+}
+
+/// Generate a terse tab-label title for the turn's first prompt — runs on its
+/// own arena + a throwaway one-message sub-Agent, so it can be spawned via
+/// io.async and overlap the real turn instead of blocking after it. Returns a
+/// gpa-owned title (caller frees), or null on any failure.
+pub fn titleTask(gpa: std.mem.Allocator, io: Io, client: *std.http.Client, provider: Provider, prompt: []const u8) ?[]const u8 {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = gpa,
+        .arena = arena,
+        .io = io,
+        .client = client,
+        .provider = provider,
+        .messages = std.json.Array.init(arena),
+        .sub = true, // pool thread: never touches stdout or the main agent's state
+        .label = "title",
+        .out = null,
+        .sys_override = "You summarize what a coding session is about in a short, natural phrase. Reply with only the phrase.",
+    };
+    defer agent.tools_used.deinit(gpa);
+    const instr = std.fmt.allocPrint(arena, "In a short natural phrase (about 3-8 words, sentence case, no quotes, no period), say what the user is working on — e.g. 'defining what a dragon is', 'fixing the login bug', 'planning the release'. Reply with ONLY the phrase.\n\nTask:\n{s}", .{prompt}) catch return null;
+    agent.messages.append(textMessage(arena, "user", instr) catch return null) catch return null;
+    const root = agent.request(null) catch return null;
+    const cleaned = cleanTitle(assistantText(provider.kind, root)) orelse return null;
+    return gpa.dupe(u8, cleaned) catch null;
 }

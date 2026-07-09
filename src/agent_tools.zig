@@ -448,3 +448,11 @@ pub fn sayToolResult(self: *Agent, name: []const u8, r: ExecResult) void {
     }) catch return;
     w.flush() catch return;
 }
+
+test "firstWord: splits the command on the first whitespace" {
+    try std.testing.expectEqualStrings("git", firstWord("git status -s"));
+    try std.testing.expectEqualStrings("ls", firstWord("ls"));
+    try std.testing.expectEqualStrings("cat", firstWord("cat\tfile")); // tab delimiter
+    try std.testing.expectEqualStrings("", firstWord(""));
+    try std.testing.expectEqualStrings("", firstWord(" leading"));
+}
