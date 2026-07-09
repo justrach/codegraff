@@ -108,6 +108,7 @@ test {
     _ = http;
     _ = terminal;
     _ = scoring;
+    _ = telemetry;
 }
 
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
@@ -379,7 +380,7 @@ const Tracer = struct {
     enabled: bool = true,
 
     fn api(self: *Tracer, label: []const u8, model: []const u8, ms: i64, req_bytes: usize, resp_bytes: usize, context_tokens: u64, cache_read: u64, is_error: bool) void {
-        if (g_telem) |t| t.countApi(model, is_error);
+        if (telemetry.g_telem) |t| t.countApi(model, is_error);
         self.write(.{
             .t = self.elapsedMs(),
             .ev = "api",
@@ -395,7 +396,7 @@ const Tracer = struct {
     }
 
     fn tool(self: *Tracer, name: []const u8, ms: i64, is_error: bool, result_bytes: usize, from_sub: bool) void {
-        if (g_telem) |t| t.countTool(is_error);
+        if (telemetry.g_telem) |t| t.countTool(is_error);
         self.write(.{
             .t = self.elapsedMs(),
             .ev = "tool",
@@ -797,503 +798,12 @@ pub fn utf8Prefix(s: []const u8, max: usize) []const u8 {
     return p;
 }
 
-// ── Telemetry (OTEL) ────────────────────────────────────────────────────────
-
-/// Anonymous usage telemetry, exported as OTLP/HTTP JSON log records in one
-/// best-effort POST at session end. Off entirely unless an endpoint is
-/// configured (OTEL_EXPORTER_OTLP_ENDPOINT or GRAFF_OTEL_ENDPOINT env);
-/// GRAFF_NO_TELEMETRY or --no-telemetry forces it off regardless. Counters
-/// feed from the same Tracer hooks that write harness.trace.jsonl, plus
-/// workflow/ultracode/turn events from the orchestrator. A per-install
-/// anonymous id (~/.simple-harness-install-id) identifies the install; SDKs
-/// pass their own id via HARNESS_SDK_INSTALL_ID + HARNESS_CLIENT so SDK
-/// users are counted separately. Flush failures never disturb the session.
-pub const Telemetry = struct {
-    mutex: Io.Mutex = .init,
-    io: Io,
-    gpa: Allocator,
-    endpoint: []const u8, // base OTLP endpoint; "" → disabled
-    client: ?*std.http.Client = null, // shared http client, set by main()
-    install_id: [32]u8, // anonymous hex id for this install
-    client_name: []const u8, // "harness", or "sdk-ts"/"sdk-py" via HARNESS_CLIENT
-    sdk_install_id: []const u8, // the SDK's own install id, if driving us
-    start: Io.Timestamp,
-    start_unix_ms: i64,
-
-    api_calls: u64 = 0,
-    api_errors: u64 = 0,
-    tool_calls: u64 = 0,
-    tool_errors: u64 = 0,
-    turns: u64 = 0,
-    ultracode_turns: u64 = 0,
-    workflows: u64 = 0,
-    workflow_tasks: u64 = 0,
-    prompt_variants: u64 = 0, // subagents spawned with a system-prompt override
-    scores_recorded: u64 = 0, // evaluation write-backs via the score request
-    models: std.ArrayList([]const u8) = .empty, // distinct models used (gpa-duped)
-    events: std.ArrayList(Event) = .empty, // discrete error/workflow records
-
-    /// One buffered log record. body "error": kind/detail set. body
-    /// "workflow": phases/tasks/failed/duration set. body "score":
-    /// detail = prompt_sha, score = the evaluation value.
-    const Event = struct {
-        t_ms: i64,
-        body: []const u8, // "error" | "workflow" | "ultracode" | "score" (static)
-        kind: []const u8 = "", // error source: "api" | "tool" | "turn" (static)
-        detail: []const u8 = "", // gpa-duped, truncated
-        extra: []const u8 = "", // gpa-duped: score → parent_sha, run → tool sequence
-        run_id: []const u8 = "", // gpa-duped: score → run_id (signed)
-        sig: []const u8 = "", // gpa-duped: score → HMAC signature ("" when unsigned)
-        prov: []const u8 = "", // gpa-duped: score → "judge_id\tartifact_sha\teval_set_hash" (signed)
-        phases: i64 = 0,
-        tasks: i64 = 0,
-        failed: i64 = 0,
-        ms: i64 = 0,
-        score: f64 = 0,
-        flag: bool = true, // run → ok
-        text: []const u8 = "", // gpa-duped: fleet:propose → the genome (persona prompt text)
-    };
-    const max_events = 64; // cap discrete records; counters keep full totals
-    const max_detail = 200;
-
-    fn on(self: *const Telemetry) bool {
-        return self.endpoint.len > 0;
-    }
-
-    fn elapsedMs(self: *Telemetry) i64 {
-        return @intCast(@max(0, self.start.untilNow(self.io, .awake).toMilliseconds()));
-    }
-
-    fn countApi(self: *Telemetry, model: []const u8, is_error: bool) void {
-        if (!self.on()) return;
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        self.api_calls += 1;
-        if (is_error) self.api_errors += 1;
-        for (self.models.items) |m| if (std.mem.eql(u8, m, model)) return;
-        const dup = self.gpa.dupe(u8, model) catch return;
-        self.models.append(self.gpa, dup) catch self.gpa.free(dup);
-    }
-
-    fn countTool(self: *Telemetry, is_error: bool) void {
-        if (!self.on()) return;
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        self.tool_calls += 1;
-        if (is_error) self.tool_errors += 1;
-    }
-
-    fn countTurn(self: *Telemetry) void {
-        if (!self.on()) return;
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        self.turns += 1;
-    }
-
-    fn ultracode(self: *Telemetry) void {
-        if (!self.on()) return;
-        {
-            self.mutex.lockUncancelable(self.io);
-            defer self.mutex.unlock(self.io);
-            self.ultracode_turns += 1;
-            self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "ultracode" });
-        }
-        self.maybeFlushEvents();
-    }
-
-    /// Record an issue (API failure, tool failure, aborted turn) as an ERROR
-    /// log record. `kind` and the truncated `detail` become attributes.
-    fn errorEvent(self: *Telemetry, kind: []const u8, detail: []const u8) void {
-        if (!self.on()) return;
-        {
-            self.mutex.lockUncancelable(self.io);
-            defer self.mutex.unlock(self.io);
-            self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "error", .kind = kind, .detail = self.dupDetail(detail) });
-        }
-        self.maybeFlushEvents();
-    }
-
-    /// Truncate to max_detail without splitting a UTF-8 codepoint, and force
-    /// the copy to valid UTF-8 — std.json serializes an invalid []u8 as an
-    /// ARRAY of integers, which is schema-invalid OTLP that makes a collector
-    /// reject the entire batch. detail can carry raw provider bytes (e.g.
-    /// "unparseable response: …"), so both the cut and the content matter.
-    fn dupDetail(self: *Telemetry, detail: []const u8) []const u8 {
-        var p = detail[0..@min(detail.len, max_detail)];
-        var strips: usize = 0; // a split codepoint needs at most 3 byte strips
-        while (strips < 3 and p.len > 0 and !std.unicode.utf8ValidateSlice(p)) : (strips += 1)
-            p = p[0 .. p.len - 1];
-        const dup = self.gpa.dupe(u8, p) catch return "";
-        if (!std.unicode.utf8ValidateSlice(dup)) for (dup) |*b| {
-            if (b.* >= 0x80) b.* = '?'; // invalid mid-string bytes: degrade to ASCII
-        };
-        return dup;
-    }
-
-    /// Count a subagent spawned with a system-prompt override (an agent-type
-    /// persona or an inline variant) — the swarm's prompt diversity signal.
-    fn countVariant(self: *Telemetry) void {
-        if (!self.on()) return;
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        self.prompt_variants += 1;
-    }
-
-    /// Record an evaluation write-back (the DGM scoring phase) so the OTEL
-    /// backend can validate that the evolution loop is actually running:
-    /// one log record per score, prompt_sha + value as attributes.
-    fn scoreEvent(self: *Telemetry, sha: []const u8, parent: []const u8, value: f64, run_id: []const u8, sig: []const u8, prov: []const u8) void {
-        if (!self.on()) return;
-        {
-            self.mutex.lockUncancelable(self.io);
-            defer self.mutex.unlock(self.io);
-            self.scores_recorded += 1;
-            const dup = self.gpa.dupe(u8, sha[0..@min(sha.len, 32)]) catch "";
-            const pdup = if (parent.len > 0) self.gpa.dupe(u8, parent[0..@min(parent.len, 32)]) catch "" else "";
-            const rdup = if (run_id.len > 0) self.gpa.dupe(u8, run_id[0..@min(run_id.len, 64)]) catch "" else "";
-            const sdup = if (sig.len > 0) self.gpa.dupe(u8, sig[0..@min(sig.len, 64)]) catch "" else "";
-            const vdup = if (prov.len > 0) self.gpa.dupe(u8, utf8Prefix(prov, 256)) catch "" else "";
-            self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "score", .detail = dup, .extra = pdup, .run_id = rdup, .sig = sdup, .prov = vdup, .score = value });
-        }
-        self.maybeFlushEvents();
-    }
-
-    /// Record a federated-fleet signal (docs/hyperagents.md §9): propose /
-    /// submit / elite_pull. body="fleet" with a kind attr, mirroring the SDK
-    /// _fleet_signal so the worker counts every client identically. signal is a
-    /// static literal; the rest are duped/truncated like scoreEvent.
-    pub fn fleetEvent(self: *Telemetry, signal: []const u8, niche: []const u8, prompt_sha: []const u8, parent_sha: []const u8, provider_class: []const u8, eval_set_hash: []const u8, n_elites: i64, prompt_text: []const u8) void {
-        if (!self.on() or !g_fleet) return;
-        {
-            self.mutex.lockUncancelable(self.io);
-            defer self.mutex.unlock(self.io);
-            const ddet = if (prompt_sha.len > 0) self.gpa.dupe(u8, prompt_sha[0..@min(prompt_sha.len, 32)]) catch "" else "";
-            const dnic = if (niche.len > 0) self.gpa.dupe(u8, utf8Prefix(niche, 64)) catch "" else "";
-            const dpar = if (parent_sha.len > 0) self.gpa.dupe(u8, parent_sha[0..@min(parent_sha.len, 32)]) catch "" else "";
-            var pbuf: [200]u8 = undefined;
-            const provdup = if (provider_class.len > 0 or eval_set_hash.len > 0)
-                self.gpa.dupe(u8, std.fmt.bufPrint(&pbuf, "{s}\t{s}", .{ provider_class, eval_set_hash }) catch "") catch ""
-            else
-                "";
-            const dtext = if (prompt_text.len > 0) self.gpa.dupe(u8, utf8Prefix(prompt_text, 8192)) catch "" else "";
-            self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "fleet", .kind = signal, .detail = ddet, .extra = dnic, .run_id = dpar, .prov = provdup, .tasks = n_elites, .text = dtext });
-        }
-        self.maybeFlushEvents();
-    }
-
-    /// Record a completed agent run (root turn or subagent) with its tool
-    /// sequence — the process-mining signal behind "which tool combinations
-    /// work". Lands as a generic body="run" record (attrs JSON) server-side.
-    fn runEvent(self: *Telemetry, sha: []const u8, variant: bool, ok: bool, ms: i64, tools: []const u8) void {
-        if (!self.on()) return;
-        {
-            self.mutex.lockUncancelable(self.io);
-            defer self.mutex.unlock(self.io);
-            const dsha = self.gpa.dupe(u8, sha[0..@min(sha.len, 32)]) catch "";
-            const dtools = if (tools.len > 0) self.gpa.dupe(u8, utf8Prefix(tools, 600)) catch "" else "";
-            self.push(.{
-                .t_ms = self.elapsedMsLocked(),
-                .body = "run",
-                .kind = if (variant) "variant" else "default",
-                .detail = dsha,
-                .extra = dtools,
-                .ms = ms,
-                .flag = ok,
-            });
-        }
-        self.maybeFlushEvents();
-    }
-
-    /// Record one workflow-tool run (the ultracode pipe): phase/task counts,
-    /// failed task count, and wall-clock duration.
-    fn workflowEvent(self: *Telemetry, phases: usize, tasks: usize, failed: usize, ms: i64) void {
-        if (!self.on()) return;
-        {
-            self.mutex.lockUncancelable(self.io);
-            defer self.mutex.unlock(self.io);
-            self.workflows += 1;
-            self.workflow_tasks += tasks;
-            self.push(.{
-                .t_ms = self.elapsedMsLocked(),
-                .body = "workflow",
-                .phases = @intCast(phases),
-                .tasks = @intCast(tasks),
-                .failed = @intCast(failed),
-                .ms = ms,
-            });
-        }
-        self.maybeFlushEvents();
-    }
-
-    // Callers hold the mutex. elapsedMs duplicated without locking because
-    // Io.Mutex is not reentrant.
-    fn elapsedMsLocked(self: *Telemetry) i64 {
-        return @intCast(@max(0, self.start.untilNow(self.io, .awake).toMilliseconds()));
-    }
-
-    fn push(self: *Telemetry, e: Event) void {
-        self.events.append(self.gpa, e) catch {
-            self.freeEvent(e);
-        };
-    }
-
-    fn freeEvent(self: *Telemetry, e: Event) void {
-        if (e.detail.len > 0) self.gpa.free(e.detail);
-        if (e.extra.len > 0) self.gpa.free(e.extra);
-        if (e.run_id.len > 0) self.gpa.free(e.run_id);
-        if (e.sig.len > 0) self.gpa.free(e.sig);
-        if (e.prov.len > 0) self.gpa.free(e.prov);
-        if (e.text.len > 0) self.gpa.free(e.text);
-    }
-
-    /// When the event buffer reaches max_events, ship it mid-session as an
-    /// events-only OTLP batch instead of dropping records — an evolution
-    /// driver can emit hundreds of scores in one session, and a crash after
-    /// a shipped batch loses at most max_events-1 events. Swaps the buffer
-    /// out under the mutex, posts without holding it.
-    fn maybeFlushEvents(self: *Telemetry) void {
-        var batch: std.ArrayList(Event) = .empty;
-        {
-            self.mutex.lockUncancelable(self.io);
-            defer self.mutex.unlock(self.io);
-            if (self.events.items.len < max_events) return;
-            batch = self.events;
-            self.events = .empty;
-        }
-        defer {
-            for (batch.items) |e| self.freeEvent(e);
-            batch.deinit(self.gpa);
-        }
-        self.sendBatch(batch.items, false);
-    }
-
-    fn deinit(self: *Telemetry) void {
-        for (self.models.items) |m| self.gpa.free(m);
-        self.models.deinit(self.gpa);
-        for (self.events.items) |e| self.freeEvent(e);
-        self.events.deinit(self.gpa);
-    }
-
-    /// Final flush at session end: the session summary plus any events not
-    /// already shipped by a mid-session batch.
-    fn flush(self: *Telemetry) void {
-        self.sendBatch(self.events.items, true);
-    }
-
-    /// Build an OTLP/HTTP JSON payload for `events` (plus the session
-    /// summary when `include_summary`) and POST it to <endpoint>/v1/logs
-    /// (per the OTLP env spec the endpoint is a base URL; it's used verbatim
-    /// only when it already ends in /v1/logs). The POST races a 3s deadline
-    /// so a dead or wedged collector can never hang the session.
-    /// Best-effort: any failure is swallowed.
-    fn sendBatch(self: *Telemetry, events: []const Event, include_summary: bool) void {
-        if (!self.on()) return;
-        const client = self.client orelse return;
-        if (events.len == 0 and !include_summary) return;
-        var aw: Io.Writer.Allocating = .init(self.gpa);
-        defer aw.deinit();
-        self.writeOtlp(&aw.writer, events, include_summary) catch return;
-        var ubuf: [512]u8 = undefined;
-        const trimmed = std.mem.trimEnd(u8, self.endpoint, "/");
-        const url = if (std.mem.endsWith(u8, trimmed, "/v1/logs"))
-            trimmed
-        else
-            std.fmt.bufPrint(&ubuf, "{s}/v1/logs", .{trimmed}) catch return;
-
-        const Done = union(enum) { posted: void, deadline: void };
-        var done_buf: [2]Done = undefined;
-        var sel: Io.Select(Done) = .init(self.io, &done_buf);
-        sel.concurrent(.posted, postOtlp, .{ client, url, aw.writer.buffered() }) catch return;
-        sel.concurrent(.deadline, flushDeadline, .{self.io}) catch {
-            _ = sel.await() catch {}; // no spare concurrency: wait unbounded
-            sel.cancelDiscard();
-            return;
-        };
-        _ = sel.await() catch {}; // first of POST / deadline wins
-        sel.cancelDiscard(); // cancel the loser (fetch's socket ops are cancelation points)
-    }
-
-    fn postOtlp(client: *std.http.Client, url: []const u8, payload: []const u8) void {
-        _ = client.fetch(.{
-            .location = .{ .url = url },
-            .method = .POST,
-            .payload = payload,
-            .headers = .{ .content_type = .{ .override = "application/json" } },
-        }) catch {};
-    }
-
-    fn flushDeadline(io: Io) void {
-        io.sleep(.fromSeconds(3), .awake) catch {};
-    }
-
-    const AttrVal = union(enum) { str: []const u8, int: i64, num: f64 };
-
-    fn attr(s: *std.json.Stringify, key: []const u8, v: AttrVal) !void {
-        try s.beginObject();
-        try s.objectField("key");
-        try s.write(key);
-        try s.objectField("value");
-        try s.beginObject();
-        switch (v) {
-            .str => |x| {
-                try s.objectField("stringValue");
-                try s.write(x);
-            },
-            .int => |x| { // proto3 JSON maps int64 to a decimal string
-                var b: [24]u8 = undefined;
-                try s.objectField("intValue");
-                try s.write(std.fmt.bufPrint(&b, "{d}", .{x}) catch unreachable);
-            },
-            .num => |x| { // doubleValue stays a JSON number
-                try s.objectField("doubleValue");
-                try s.write(x);
-            },
-        }
-        try s.endObject();
-        try s.endObject();
-    }
-
-    fn timeField(s: *std.json.Stringify, unix_ms: i64) !void {
-        var b: [32]u8 = undefined;
-        try s.objectField("timeUnixNano");
-        try s.write(std.fmt.bufPrint(&b, "{d}", .{unix_ms * 1_000_000}) catch unreachable);
-    }
-
-    fn writeOtlp(self: *Telemetry, w: *Io.Writer, events: []const Event, include_summary: bool) !void {
-        var s: std.json.Stringify = .{ .writer = w };
-        try s.beginObject();
-        try s.objectField("resourceLogs");
-        try s.beginArray();
-        try s.beginObject();
-        try s.objectField("resource");
-        try s.beginObject();
-        try s.objectField("attributes");
-        try s.beginArray();
-        try attr(&s, "service.name", .{ .str = "simple-harness" });
-        try attr(&s, "service.version", .{ .str = harness_version });
-        try attr(&s, "os.type", .{ .str = @tagName(builtin.os.tag) });
-        try attr(&s, "host.arch", .{ .str = @tagName(builtin.cpu.arch) });
-        try attr(&s, "install.id", .{ .str = &self.install_id });
-        try attr(&s, "client.name", .{ .str = self.client_name });
-        if (self.sdk_install_id.len > 0) try attr(&s, "sdk.install.id", .{ .str = self.sdk_install_id });
-        try s.endArray();
-        try s.endObject();
-        try s.objectField("scopeLogs");
-        try s.beginArray();
-        try s.beginObject();
-        try s.objectField("scope");
-        try s.beginObject();
-        try s.objectField("name");
-        try s.write("simple-harness");
-        try s.endObject();
-        try s.objectField("logRecords");
-        try s.beginArray();
-        for (events) |e| {
-            try s.beginObject();
-            try timeField(&s, self.start_unix_ms + e.t_ms);
-            try s.objectField("severityText");
-            try s.write(if (std.mem.eql(u8, e.body, "error")) "ERROR" else "INFO");
-            try s.objectField("body");
-            try s.beginObject();
-            try s.objectField("stringValue");
-            try s.write(e.body);
-            try s.endObject();
-            try s.objectField("attributes");
-            try s.beginArray();
-            if (std.mem.eql(u8, e.body, "score")) {
-                try attr(&s, "prompt_sha", .{ .str = e.detail });
-                try attr(&s, "value", .{ .num = e.score });
-                if (e.extra.len > 0) try attr(&s, "parent_sha", .{ .str = e.extra });
-                if (e.run_id.len > 0) try attr(&s, "run_id", .{ .str = e.run_id });
-                if (e.sig.len > 0) try attr(&s, "sig", .{ .str = e.sig });
-                if (e.prov.len > 0) {
-                    // prov = "judge_id\tartifact_sha\teval_set_hash" — split so
-                    // the worker can recompute the HMAC over the same fields.
-                    var it = std.mem.splitScalar(u8, e.prov, '\t');
-                    if (it.next()) |j| if (j.len > 0) try attr(&s, "judge_id", .{ .str = j });
-                    if (it.next()) |a| if (a.len > 0) try attr(&s, "artifact_sha", .{ .str = a });
-                    if (it.next()) |h| if (h.len > 0) try attr(&s, "eval_set_hash", .{ .str = h });
-                    if (it.next()) |pc| if (pc.len > 0) try attr(&s, "provider_class", .{ .str = pc });
-                    if (it.next()) |nc| if (nc.len > 0) try attr(&s, "niche", .{ .str = nc });
-                }
-            } else if (std.mem.eql(u8, e.body, "run")) {
-                try attr(&s, "prompt_sha", .{ .str = e.detail });
-                try attr(&s, "variant", .{ .int = @intFromBool(std.mem.eql(u8, e.kind, "variant")) });
-                try attr(&s, "ok", .{ .int = @intFromBool(e.flag) });
-                try attr(&s, "duration_ms", .{ .int = e.ms });
-                if (e.extra.len > 0) try attr(&s, "tools", .{ .str = e.extra });
-            } else if (std.mem.eql(u8, e.body, "fleet")) {
-                try attr(&s, "kind", .{ .str = e.kind });
-                if (e.extra.len > 0) try attr(&s, "niche", .{ .str = e.extra });
-                if (e.detail.len > 0) try attr(&s, "prompt_sha", .{ .str = e.detail });
-                if (e.run_id.len > 0) try attr(&s, "parent_sha", .{ .str = e.run_id });
-                if (e.prov.len > 0) {
-                    var fit = std.mem.splitScalar(u8, e.prov, '\t');
-                    if (fit.next()) |pc| if (pc.len > 0) try attr(&s, "provider_class", .{ .str = pc });
-                    if (fit.next()) |eh| if (eh.len > 0) try attr(&s, "eval_set_hash", .{ .str = eh });
-                }
-                if (std.mem.eql(u8, e.kind, "elite_pull")) try attr(&s, "n_elites", .{ .int = e.tasks });
-                if (e.text.len > 0) try attr(&s, "prompt_text", .{ .str = e.text });
-            } else {
-                if (e.kind.len > 0) try attr(&s, "kind", .{ .str = e.kind });
-                if (e.detail.len > 0) try attr(&s, "detail", .{ .str = e.detail });
-                if (std.mem.eql(u8, e.body, "workflow")) {
-                    try attr(&s, "phases", .{ .int = e.phases });
-                    try attr(&s, "tasks", .{ .int = e.tasks });
-                    try attr(&s, "failed_tasks", .{ .int = e.failed });
-                    try attr(&s, "duration_ms", .{ .int = e.ms });
-                }
-            }
-            try s.endArray();
-            try s.endObject();
-        }
-        // Session summary: the "general usage stats" record (final flush only).
-        if (include_summary) {
-            const models_joined = std.mem.join(self.gpa, ",", self.models.items) catch "";
-            defer if (models_joined.len > 0) self.gpa.free(models_joined);
-            try s.beginObject();
-            try timeField(&s, unixMs(self.io));
-            try s.objectField("severityText");
-            try s.write("INFO");
-            try s.objectField("body");
-            try s.beginObject();
-            try s.objectField("stringValue");
-            try s.write("session");
-            try s.endObject();
-            try s.objectField("attributes");
-            try s.beginArray();
-            try attr(&s, "duration_ms", .{ .int = self.elapsedMs() });
-            try attr(&s, "turns", .{ .int = @intCast(self.turns) });
-            try attr(&s, "api_calls", .{ .int = @intCast(self.api_calls) });
-            try attr(&s, "api_errors", .{ .int = @intCast(self.api_errors) });
-            try attr(&s, "tool_calls", .{ .int = @intCast(self.tool_calls) });
-            try attr(&s, "tool_errors", .{ .int = @intCast(self.tool_errors) });
-            try attr(&s, "workflows", .{ .int = @intCast(self.workflows) });
-            try attr(&s, "workflow_tasks", .{ .int = @intCast(self.workflow_tasks) });
-            try attr(&s, "ultracode_turns", .{ .int = @intCast(self.ultracode_turns) });
-            try attr(&s, "prompt_variants", .{ .int = @intCast(self.prompt_variants) });
-            try attr(&s, "scores_recorded", .{ .int = @intCast(self.scores_recorded) });
-            try attr(&s, "models", .{ .str = models_joined });
-            const c = g_cost.snap(self.io);
-            try attr(&s, "cost_usd", .{ .num = c.usd });
-            try attr(&s, "tokens_in", .{ .int = @intCast(c.in_tokens) });
-            try attr(&s, "tokens_cached", .{ .int = @intCast(c.cache_tokens) });
-            try attr(&s, "tokens_out", .{ .int = @intCast(c.out_tokens) });
-            try s.endArray();
-            try s.endObject();
-        }
-        try s.endArray(); // logRecords
-        try s.endObject(); // scopeLog entry
-        try s.endArray(); // scopeLogs
-        try s.endObject(); // resourceLog entry
-        try s.endArray(); // resourceLogs
-        try s.endObject();
-    }
-};
-
-/// Set once in main() when telemetry is configured; Tracer and the workflow
-/// runner feed it through this. Null → every hook is a no-op.
-var g_telem: ?*Telemetry = null;
+// ── Telemetry (OTEL) ───────────────────────────────────────────
+// The Telemetry sink + its session-global pointer live in telemetry.zig
+// (600-line goal). Telemetry is re-exported (fleet.zig back-imports it); the
+// sink pointer is reached telemetry.-qualified at its call sites.
+const telemetry = @import("telemetry.zig");
+pub const Telemetry = telemetry.Telemetry;
 
 /// Federated-fleet contribution toggle (docs/hyperagents.md §9). On by default;
 /// GRAFF_FLEET=off or /fleet off disables propose/submit/elite_pull. General
@@ -4080,13 +3590,13 @@ pub fn main(init: std.process.Init) !void {
         .start = Io.Timestamp.now(io, .awake),
         .start_unix_ms = unixMs(io),
     };
-    g_telem = &telem;
+    telemetry.g_telem = &telem;
     // Fleet contribution opt-out, independent of telemetry: GRAFF_FLEET=off|0|false|no.
     if (init.environ_map.get("GRAFF_FLEET")) |fv| {
         g_fleet = !(std.ascii.eqlIgnoreCase(fv, "off") or std.mem.eql(u8, fv, "0") or std.ascii.eqlIgnoreCase(fv, "false") or std.ascii.eqlIgnoreCase(fv, "no"));
     }
     defer {
-        g_telem = null;
+        telemetry.g_telem = null;
         telem.flush();
         telem.deinit();
     }
@@ -4105,7 +3615,7 @@ pub fn main(init: std.process.Init) !void {
     }
     var registry_storage: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path) catch |err| inner: {
         try out.print("[mcp] init failed: {t} — continuing without MCP\n", .{err});
-        if (g_telem) |t| t.errorEvent("mcp", @errorName(err));
+        if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;
     }) orelse mcp.Registry.empty(gpa, io)) else outer: {
         if (mcp_count > 0) try out.print("{s}skipped {d} workspace MCP server(s) — /mcp trust to connect them now (or re-run with --yolo){s}\n", .{ style.dim, mcp_count, style.reset });
@@ -4294,7 +3804,7 @@ pub fn main(init: std.process.Init) !void {
     // Background the fleet-champion pull: a ~0.3s TLS round-trip that used to block
     // the first prompt. Spawn it now; joinElites() reaps it on the main thread at the
     // first turn, so the user's typing hides the fetch (prompt paints ~0.3s sooner).
-    fleet.g_elites_future = io.async(pullElites, .{ io, arena, &client, g_telem, telem_endpoint, providerClass(root.provider.model), arena.dupe(u8, pull_esh) catch pull_esh, fleet.g_agent_types });
+    fleet.g_elites_future = io.async(pullElites, .{ io, arena, &client, telemetry.g_telem, telem_endpoint, providerClass(root.provider.model), arena.dupe(u8, pull_esh) catch pull_esh, fleet.g_agent_types });
     defer joinElites(io); // reap if the session quits before any turn joins it
 
     // Save from the start: if the harness is killed (Ctrl+C / SIGINT) before
@@ -4349,14 +3859,14 @@ pub fn main(init: std.process.Init) !void {
         const ultracode_msg = try applyUltracodeSteering(arena, prompt_text, root.ultracode_mode);
         if (ultracode_msg.explicit) {
             tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
-            if (g_telem) |t| t.ultracode();
+            if (telemetry.g_telem) |t| t.ultracode();
         }
         const goal_note = try goalSteeringNote(arena, root.goal, if (root.todos.items.len > 0) root.renderTodos() else "");
         const eval_note = try evalSteeringNote(arena, root.eval_cmd, root.eval_target, root.eval_judge != null);
         var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
         if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
         try root.messages.append(try textMessage(arena, "user", oneshot_user));
-        if (g_telem) |t| t.countTurn();
+        if (telemetry.g_telem) |t| t.countTurn();
         const final_text = root.runTurn() catch |err| switch (err) {
             error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
             else => |e| std.process.fatal("turn failed: {t}", .{e}),
@@ -4654,9 +4164,9 @@ pub fn main(init: std.process.Init) !void {
                 // + provider_class, niche (unsigned transport) so harness_scores can form
                 // (niche x provider_class x eval_set_hash) cells the fleet ranks over.
                 const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ judge_id, artifact_sha, eval_set_hash, providerClass(root.provider.model), reqStr.s(parsed.object, "niche") }) catch "";
-                if (g_telem) |t| t.scoreEvent(sha, parent, sc, run_id, if (signed) @as([]const u8, &sig) else "", prov);
+                if (telemetry.g_telem) |t| t.scoreEvent(sha, parent, sc, run_id, if (signed) @as([]const u8, &sig) else "", prov);
                 // fleet:submit (docs §9.B) — a scored, pinned-eval variant entered the fleet grid.
-                if (eval_set_hash.len > 0) if (g_telem) |t| t.fleetEvent("submit", reqStr.s(parsed.object, "niche"), sha, "", providerClass(root.provider.model), eval_set_hash, 0, "");
+                if (eval_set_hash.len > 0) if (telemetry.g_telem) |t| t.fleetEvent("submit", reqStr.s(parsed.object, "niche"), sha, "", providerClass(root.provider.model), eval_set_hash, 0, "");
                 root.emit(.{ .type = "score", .ok = true, .prompt_sha = sha, .signed = signed });
                 continue;
             }
@@ -4774,14 +4284,14 @@ pub fn main(init: std.process.Init) !void {
                 try out.flush();
             }
             tracer.note("ultracode", msg[0..@min(msg.len, 120)]);
-            if (g_telem) |t| t.ultracode();
+            if (telemetry.g_telem) |t| t.ultracode();
         }
         if (root.pending_image) |img| {
             try root.messages.append(try imageMessage(arena, root.provider.kind, ultracode_msg.text, img));
             root.pending_image = null;
         } else try root.messages.append(try textMessage(arena, "user", ultracode_msg.text));
         snaps.turn += 1; // tag file edits in this turn (matches /rewind numbering)
-        if (g_telem) |t| t.countTurn();
+        if (telemetry.g_telem) |t| t.countTurn();
         // Trajectory: claim this turn's node id up front so subagents spawned
         // during the turn can attach to it as their parent.
         const turn_id: u64 = if (g_traj) |tj| blk: {
@@ -4828,7 +4338,7 @@ pub fn main(init: std.process.Init) !void {
                 };
                 tj.node(.{ .kind = "turn_error", .parent = turn_id, .t = tj.elapsedMs(), .detail = fail_detail });
             }
-            if (g_telem) |t| t.runEvent(&fp, !std.mem.eql(u8, &fp, &prev_prompt_fp), turn_ok, turn_ms, turn_tools);
+            if (telemetry.g_telem) |t| t.runEvent(&fp, !std.mem.eql(u8, &fp, &prev_prompt_fp), turn_ok, turn_ms, turn_tools);
             prev_turn_id = turn_id;
             prev_prompt_fp = fp;
         }
@@ -4851,7 +4361,7 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             },
             error.ApiError => {
-                if (g_telem) |t| t.errorEvent("api", root.last_api_error orelse "api error");
+                if (telemetry.g_telem) |t| t.errorEvent("api", root.last_api_error orelse "api error");
                 if (json_mode) {
                     root.emit(.{ .type = "error", .message = root.last_api_error orelse "api error" });
                     const partial = std.mem.trim(u8, root.partial_text.items, " \t\r\n");
@@ -4868,7 +4378,7 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             },
             else => |e| {
-                if (g_telem) |t| t.errorEvent("turn", @errorName(e));
+                if (telemetry.g_telem) |t| t.errorEvent("turn", @errorName(e));
                 if (json_mode) {
                     root.emit(.{ .type = "error", .message = @errorName(e) });
                 } else {
@@ -7710,7 +7220,7 @@ pub const Agent = struct {
                         // record the real reason so the failed turn's --json error
                         // event and trajectory node preserve it (#86).
                         self.last_api_error = std.fmt.allocPrint(self.arena, "network error: {s} (gave up after {d} attempts)", .{ @errorName(err), max_attempts }) catch null;
-                        if (g_telem) |t| t.errorEvent("net", @errorName(err));
+                        if (telemetry.g_telem) |t| t.errorEvent("net", @errorName(err));
                         if (self.tracer) |tr| tr.api(self.label, self.provider.model, 0, body.len, 0, 0, 0, true);
                         return error.ApiError;
                     }
@@ -8513,7 +8023,7 @@ pub const Agent = struct {
         // real eval-driven work — only darwincode/JSON-proto runs ever submitted.
         if (combined) |s| {
             if (improved and s > 0) { // s>0: skip the initial-state / total-failure 0 (don't pollute the cell mean)
-                if (g_telem) |t| {
+                if (telemetry.g_telem) |t| {
                     const sys = self.systemPrompt();
                     const genome_fp = promptFingerprint(sys);
                     const esh_fp = promptFingerprint(cmd);
@@ -11247,7 +10757,7 @@ fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
         // feedback and already counted in the session summary.
         var ebuf: [160]u8 = undefined;
         const detail = std.fmt.bufPrint(&ebuf, "{s}: {t}", .{ call.name, err }) catch @errorName(err);
-        if (g_telem) |t| t.errorEvent("tool", detail);
+        if (telemetry.g_telem) |t| t.errorEvent("tool", detail);
         break :blk failure(ctx.gpa, err);
     };
     out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
@@ -12146,7 +11656,7 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
         .sys_override = sys_override,
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);
-    if (sys_override) |so| if (g_telem) |t| {
+    if (sys_override) |so| if (telemetry.g_telem) |t| {
         t.countVariant();
         // fleet:propose (docs §9.B) — a niche's elite was mutated into a variant.
         const child_fp = promptFingerprint(so);
@@ -12193,7 +11703,7 @@ fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8,
             .context_tokens = agent.last_context_tokens,
         });
     }
-    if (g_telem) |t| t.runEvent(&fp, sys_override != null, run_ok, run_ms, tools);
+    if (telemetry.g_telem) |t| t.runEvent(&fp, sys_override != null, run_ok, run_ms, tools);
     const text = try report;
     const empty = text.len == 0;
     const report_body = if (empty) "subagent finished without a report" else text;
@@ -12264,7 +11774,7 @@ fn scoreVariants(
     outputs: []ToolOutput,
 ) void {
     if (!g_fleet) return;
-    const t = g_telem orelse return;
+    const t = telemetry.g_telem orelse return;
 
     // Variant tasks that produced a usable result; a tournament needs ≥2.
     var vidx: [max_workflow_tasks]usize = undefined;
@@ -12471,7 +11981,7 @@ fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
     for (outputs) |out| if (out.is_error) {
         failed += 1;
     };
-    if (g_telem) |t| t.workflowEvent(stages.len, items.len * stages.len, failed, @intCast(@max(0, wf_start.untilNow(ctx.io, .awake).toMilliseconds())));
+    if (telemetry.g_telem) |t| t.workflowEvent(stages.len, items.len * stages.len, failed, @intCast(@max(0, wf_start.untilNow(ctx.io, .awake).toMilliseconds())));
 
     var aw: Io.Writer.Allocating = .init(arena);
     for (item_strs, outputs) |item, out| {
@@ -12514,7 +12024,7 @@ fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
     const wf_start = Io.Timestamp.now(ctx.io, .awake);
     var wf_tasks: usize = 0;
     var wf_failed: usize = 0;
-    defer if (g_telem) |t| t.workflowEvent(
+    defer if (telemetry.g_telem) |t| t.workflowEvent(
         phases.len,
         wf_tasks,
         wf_failed,
@@ -13006,66 +12516,6 @@ test "collapseWs flattens newlines/tabs to single spaces (#51)" {
     try std.testing.expectEqualStrings("hello world", collapseWs("  hello   world  ")); // trimmed + interior run collapsed
     try std.testing.expectEqualStrings("line one line two", collapseWs("line one\n\nline two"));
     try std.testing.expectEqualStrings("a b", collapseWs("a\t \n b\n"));
-}
-
-test "telemetry dupDetail never yields invalid UTF-8" {
-    var t: Telemetry = .{
-        .io = undefined, // dupDetail only touches gpa
-        .gpa = std.testing.allocator,
-        .endpoint = "x",
-        .install_id = @splat('0'),
-        .client_name = "harness",
-        .sdk_install_id = "",
-        .start = undefined,
-        .start_unix_ms = 0,
-    };
-    // The 200-byte cap lands mid-codepoint: 199 ASCII bytes + 2-byte 'é'.
-    var buf: [201]u8 = undefined;
-    @memset(buf[0..199], 'a');
-    buf[199] = 0xC3;
-    buf[200] = 0xA9;
-    const cut = t.dupDetail(&buf);
-    defer std.testing.allocator.free(cut);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(cut));
-    try std.testing.expectEqual(@as(usize, 199), cut.len); // split lead byte dropped
-    // Raw invalid bytes mid-string (unparseable provider response) degrade
-    // to ASCII instead of corrupting the OTLP payload.
-    const garbage = t.dupDetail("ok\xff\xfe more text here");
-    defer std.testing.allocator.free(garbage);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(garbage));
-    try std.testing.expect(std.mem.startsWith(u8, garbage, "ok??"));
-}
-
-test "telemetry writeOtlp emits a fleet record with kind + split prov attrs" {
-    var t: Telemetry = .{
-        .io = undefined, // writeOtlp(.., include_summary=false) never touches io
-        .gpa = std.testing.allocator,
-        .endpoint = "x",
-        .install_id = @splat('0'),
-        .client_name = "harness",
-        .sdk_install_id = "",
-        .start = undefined,
-        .start_unix_ms = 0,
-    };
-    const events = [_]Telemetry.Event{.{
-        .t_ms = 0,
-        .body = "fleet",
-        .kind = "propose",
-        .detail = "abcd1234", // prompt_sha
-        .extra = "reviewer", // niche
-        .run_id = "deadbeef", // parent_sha
-        .prov = "frontier\ta9134381", // provider_class \t eval_set_hash
-    }};
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    try t.writeOtlp(&aw.writer, &events, false);
-    const out = aw.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"stringValue\":\"fleet\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"propose\"") != null); // kind
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"reviewer\"") != null); // niche
-    try std.testing.expect(std.mem.indexOf(u8, out, "parent_sha") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"frontier\"") != null); // provider_class (split from prov)
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"a9134381\"") != null); // eval_set_hash (split from prov)
 }
 
 test "cleanDroppedPath unescapes terminal drops" {
