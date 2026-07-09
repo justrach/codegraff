@@ -35,7 +35,6 @@ const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
-const repl = @import("repl.zig");
 // The interactive-REPL / --json-protocol turn loop that used to be the tail
 // of main() lives in mainloop.zig (600-line goal); main() just builds a
 // mainloop.Ctx of pointers into its own stack locals and calls run() once.
@@ -69,8 +68,6 @@ pub const mcp_config_path = ".mcp.json";
 // reads across this file auto-deref the live palette; main flips ansi.style to
 // Style.ansi at startup once it confirms stdout is a TTY with color enabled.
 const ansi = @import("ansi.zig");
-const Style = ansi.Style;
-const style = &ansi.style;
 pub var use_color = false; // stdout is a TTY and NO_COLOR unset → enables color + markdown
 
 // Optional displays toggled by CLI flags (--timing, --cost).
@@ -80,36 +77,16 @@ pub var json_mode = false; // --json: structured JSONL events on stdout instead 
 pub var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
 pub var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
 pub var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes
-var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
+pub var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
 
 // Model pricing/catalog + the session cost tally live in pricing.zig (#123).
 // Aliased here so the existing call sites read unchanged; later split slices
 // can migrate call sites to `pricing.` and drop these.
 const pricing = @import("pricing.zig");
-const ModelPrice = pricing.ModelPrice;
-const price_table = pricing.price_table;
-const priceFor = pricing.priceFor;
 
 // Pure shared helpers (JSON ObjectMap getters) live in util.zig (#123). Aliased
 // so the ~50 existing strFieldObj/intFieldObj call sites stay unqualified.
 const util = @import("util.zig");
-const strFieldObj = util.strFieldObj;
-const intFieldObj = util.intFieldObj;
-const Billing = pricing.Billing;
-const billingFor = pricing.billingFor;
-const usdFor = pricing.usdFor;
-const CostTally = pricing.CostTally;
-const g_cost = &pricing.g_cost;
-const ModelInfo = pricing.ModelInfo;
-const codex_context_window = pricing.codex_context_window;
-const model_table = pricing.model_table;
-const default_context = pricing.default_context;
-const contextFor = pricing.contextFor;
-const normalizeModelAlias = pricing.normalizeModelAlias;
-const modelAliasEquals = pricing.modelAliasEquals;
-const resolveModelName = pricing.resolveModelName;
-const modelInTable = pricing.modelInTable;
-const providerModelInTable = pricing.providerModelInTable;
 
 test {
     // build.zig's unit_tests root is main.zig only — reference split-out
@@ -165,6 +142,8 @@ test {
     _ = mainloop;
     _ = args;
     _ = startup;
+    _ = session_start;
+    _ = session_run;
     _ = provider_mod;
     _ = agent_mod;
 }
@@ -175,13 +154,9 @@ pub const provider_specs = provider_mod.provider_specs;
 // main_system_prompt_strict, sub_system_prompt, compact_instruction) lives in
 // prompts.zig (600-line goal, #123). All aliased back — the Agent struct's
 // default field values and main()'s prompt-selection logic read unchanged.
-// compact_instruction stays pub (agent_compact.zig back-imports it).
+// compact_instruction is repointed to a direct prompts.zig import at its
+// one remaining consumer, agent_compact.zig.
 const prompts = @import("prompts.zig");
-const main_system_prompt = prompts.main_system_prompt;
-const strict_note = prompts.strict_note;
-const main_system_prompt_strict = prompts.main_system_prompt_strict;
-const sub_system_prompt = prompts.sub_system_prompt;
-pub const compact_instruction = prompts.compact_instruction;
 
 // -------------------------------------------------------------------------
 // Tool-schema + provider-tool JSON emission (the ToolSpec catalog, per-provider
@@ -189,13 +164,6 @@ pub const compact_instruction = prompts.compact_instruction;
 // the existing call sites stay unqualified; emitSchema + schema_version are
 // re-exported (pub) for serve.zig's back-import.
 const schema = @import("schema.zig");
-const renderRootTools = schema.renderRootTools;
-const root_specs = schema.root_specs;
-const isMetaName = schema.isMetaName;
-const tools_anthropic_sub = schema.tools_anthropic_sub;
-const tools_openai_sub = schema.tools_openai_sub;
-const tools_responses_sub = schema.tools_responses_sub;
-const providerTakesEffort = schema.providerTakesEffort;
 pub const emitSchema = schema.emitSchema;
 pub const schema_version = schema.schema_version;
 // -------------------------------------------------------------------------
@@ -214,8 +182,6 @@ pub const Keys = provider_mod.Keys;
 // helpers, and anim.zig's `root.Approvals` back-import resolve unchanged.
 const approvals_mod = @import("approvals.zig");
 pub const Approvals = approvals_mod.Approvals;
-const confinedPath = approvals_mod.confinedPath;
-const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 
 // Session tracing (harness.trace.jsonl Tracer) + the DGM trajectory archive
 // (harness.trajectory.jsonl Trajectory) + the per-line JSON writer live in
@@ -235,34 +201,18 @@ const trace_path = trace.trace_path;
 // (the session agent-type state) moved with it and are
 // reached fleet.-qualified.
 const fleet = @import("fleet.zig");
-const loadAgentTypes = fleet.loadAgentTypes;
-const promoteAgents = fleet.promoteAgents;
-const agentTypePrompt = fleet.agentTypePrompt;
-const pullElites = fleet.pullElites;
 const joinElites = fleet.joinElites;
-const resolveOverride = fleet.resolveOverride;
-const resolveNiche = fleet.resolveNiche;
 
 // Prompt/provider-class fingerprinting + DGM score signing live in scoring.zig
 // (600-line goal). Pure fns aliased back; the signing globals are
 // scoring.-qualified at their call sites.
 const scoring = @import("scoring.zig");
-const promptFingerprint = scoring.promptFingerprint;
-const providerClass = scoring.providerClass;
-const scoreSigMessage = scoring.scoreSigMessage;
-const signScore = scoring.signScore;
-const loadScoreKey = scoring.loadScoreKey;
 
 // ── Subagent cards (#51) ────────────────────────────────────────
 // The parallel-subagent launch/done cards + box helpers + the inspect-report
 // writer live in cards.zig (600-line goal). Renderers aliased back; the
 // subagent-ordinal counter is reached cards.-qualified.
 const cards = @import("cards.zig");
-const subagentSprite = cards.subagentSprite;
-const subagentId = cards.subagentId;
-const subagentLaunchCard = cards.subagentLaunchCard;
-const subagentDoneCard = cards.subagentDoneCard;
-const writeSubagentDetail = cards.writeSubagentDetail;
 
 // Score-channel signing (DGM fitness integrity) + the session signing globals
 // live in scoring.zig (600-line goal); reached scoring.-qualified.
@@ -316,12 +266,6 @@ pub var g_hooks: hooks.Hooks = .{};
 pub var g_codedb_guard = true;
 pub var g_codedb_present: ?bool = null;
 
-// CodedbFileCheck + codedbFileIndexed (the per-file index cache) moved to
-// hooks.zig (600-line goal); re-exported since tools.zig back-imports
-// codedbFileIndexed as main_mod.codedbFileIndexed.
-pub const CodedbFileCheck = hooks.CodedbFileCheck;
-pub const codedbFileIndexed = hooks.codedbFileIndexed;
-
 // Codex-style optional skills / companion-server subsystem (skills_registry,
 // companion_servers, mcp_notes, install-status + opt-out helpers, the
 // companion tool-name classifiers, and the codedbpro license probe + note
@@ -333,22 +277,9 @@ pub const codedbFileIndexed = hooks.codedbFileIndexed;
 // main_mod.g_x, never by-value.
 const skills = @import("skills.zig");
 const skills_registry = skills.skills_registry;
-const mcp_notes = skills.mcp_notes;
 pub const companion_servers = skills.companion_servers;
-const companionToolName = skills.companionToolName;
-const companionTrusted = skills.companionTrusted;
-const companionReadOnly = skills.companionReadOnly;
 const mcpServerConnected = skills.mcpServerConnected;
-const binOnPath = skills.binOnPath;
-const skillInstalled = skills.skillInstalled;
-const skillIndex = skills.skillIndex;
-const skillDisabled = skills.skillDisabled;
-const companionDisabled = skills.companionDisabled;
 const probeCodedbproLicensed = skills.probeCodedbproLicensed;
-const codedbproNote = skills.codedbproNote;
-const skillActive = skills.skillActive;
-const loadSkillSettings = skills.loadSkillSettings;
-const saveSkillSetting = skills.saveSkillSetting;
 
 /// PATH captured at startup for skill detection (PATH won't change mid-run).
 pub var g_path_env: []const u8 = "";
@@ -363,15 +294,6 @@ pub var g_worktree_autocommit: bool = true; // --no-autocommit turns off the per
 // title.zig (600-line goal). All 9 helpers aliased back so call sites (incl.
 // the Agent-coupled titleTask below) stay unqualified.
 const title_mod = @import("title.zig");
-const titleFromPrompt = title_mod.titleFromPrompt;
-const folderBasename = title_mod.folderBasename;
-const firstUserTitle = title_mod.firstUserTitle;
-const setTerminalTitle = title_mod.setTerminalTitle;
-const printSessionHeader = title_mod.printSessionHeader;
-const reasoningDelta = title_mod.reasoningDelta;
-const assistantText = title_mod.assistantText;
-const stripWrappingQuotes = title_mod.stripWrappingQuotes;
-const cleanTitle = title_mod.cleanTitle;
 
 // titleTask moved to title.zig (600-line goal); re-exported since main()'s
 // own `graff title` subcommand and mainloop.zig both call it unqualified /
@@ -392,19 +314,9 @@ pub const titleTask = title_mod.titleTask;
 // g_steer_visible, g_out) stay here and are read/written live via
 // `main_mod.g_x` from repl_glue.zig (never aliased — they're `var`s).
 const repl_glue = @import("repl_glue.zig");
-const ReplCtx = repl_glue.ReplCtx;
-const ReplStreamSink = repl_glue.ReplStreamSink;
-const goalSteeringNote = repl_glue.goalSteeringNote;
 pub const parseEvalScore = repl_glue.parseEvalScore;
-const evalSteeringNote = repl_glue.evalSteeringNote;
-const replTurnCb = repl_glue.replTurnCb;
-const replModelCb = repl_glue.replModelCb;
-const replCancelCb = repl_glue.replCancelCb;
-const popSteer = repl_glue.popSteer;
-const resetSteerPartial = repl_glue.resetSteerPartial;
 pub const steerEcho = repl_glue.steerEcho;
-pub const saveThinkingSettings = repl_glue.saveThinkingSettings;
-const loadThinkingSettings = repl_glue.loadThinkingSettings;
+// saveThinkingSettings repointed to repl_glue.zig directly at commands_model.zig.
 
 /// Per-skill user opt-out, persisted as {"skills": {"kuri": false}} in
 /// .harness/settings.json. A disabled skill is treated as not installed
@@ -459,34 +371,23 @@ pub var g_5xx_body_len: usize = 0; // 0 = no body captured
 const terminal = @import("term.zig");
 pub const win = terminal.win;
 const tty = terminal.tty;
-const termCols = terminal.termCols;
-const termRows = terminal.termRows;
-const advanceThinkingRows = terminal.advanceThinkingRows;
-const inputPending = terminal.inputPending;
-const inputPendingTimed = terminal.inputPendingTimed;
 
 // The rest of the line editor's input helpers (ultracode wave palette, the
 // `@` picker's binary/dir filters + file collection, drag-and-drop path
 // cleanup, and the redraw/setLine/delRange/prevWord/nextWord/addMark buffer
 // helpers hoisted out of readLine) live in input_util.zig; readLine() itself
 // (+ HistoryNav, #101) lives in readline.zig — both split out of main.zig
-// (600-line goal). isImagePath is re-exported (vision.zig back-imports it)
-// and binaryFileExt is aliased back (a read_file guard below calls it).
+// (600-line goal). isImagePath is repointed to a direct input_util.zig
+// import at its one remaining consumer, vision.zig; binaryFileExt is
+// aliased back (a read_file guard below calls it).
 const input_util = @import("input_util.zig");
-pub const isImagePath = input_util.isImagePath;
-const binaryFileExt = input_util.binaryFileExt;
 const readline_mod = @import("readline.zig");
-const readLine = readline_mod.readLine;
 
 // Session persistence (last model, input history) + the wire-format message
 // serializers live in serde.zig (600-line goal, std-only leaf). Aliased back.
 const serde = @import("serde.zig");
-const saveModel = serde.saveModel;
-const loadModel = serde.loadModel;
 const loadHistory = serde.loadHistory;
 const saveHistory = serde.saveHistory;
-const writeAnthropicMessages = serde.writeAnthropicMessages;
-const writeOpenAIMessageNormalized = serde.writeOpenAIMessageNormalized;
 
 pub const harness_version: []const u8 = @import("build_options").version;
 
@@ -502,9 +403,6 @@ const default_telemetry_endpoint: []const u8 = @import("build_options").telemetr
 // + the changelog_text/usage_text (--version/--help) blocks live in cli.zig
 // (600-line goal, #123). All three aliased back.
 const cli = @import("cli.zig");
-const updateCommand = cli.updateCommand;
-const changelog_text = cli.changelog_text;
-const usage_text = cli.usage_text;
 
 // CLI flag parsing (the Flags struct + main()'s former ~130-line flag loop)
 // lives in args.zig (600-line goal, #123 follow-up — the last file over the
@@ -512,12 +410,15 @@ const usage_text = cli.usage_text;
 // `flags.<name>` throughout, so there is no bare call-site to preserve.
 const args = @import("args.zig");
 
-// Post-arg-parse setup helpers (resolveKeys, buildSystemPrompt) that are
-// safely separable from main()'s stack-owned storage live in startup.zig
-// (600-line goal, #123 follow-up). See its header comment for why the rest
-// of main()'s setup (tracer/traj/telem construction, the MCP/approvals/
-// hooks/theme block) stays inline instead.
+// Post-arg-parse setup helpers (resolveKeys, buildSystemPrompt, the early
+// subcommand dispatch) live in startup.zig (600-line goal, #123 follow-up).
+// Everything after credentials/the http.Client exist (title/-w/banner,
+// trace/traj/telemetry/MCP-connect, repl/one-shot early-exits) lives in its
+// sibling session_start.zig — startup.zig itself crossed the line goal once
+// that content grew, so it moved out into its own file.
 const startup = @import("startup.zig");
+const session_start = @import("session_start.zig");
+const session_run = @import("session_run.zig");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -536,107 +437,7 @@ pub fn main(init: std.process.Init) !void {
 
     // `--help` / `--version`: handled before any subcommand dispatch, so
     // `harness login --help` prints usage instead of starting an OAuth flow.
-    if (flags.help_flag or flags.version_flag) {
-        var hbuf: [4096]u8 = undefined;
-        var hw = Io.File.stdout().writer(io, &hbuf);
-        if (flags.help_flag) try hw.interface.writeAll(usage_text) else try hw.interface.print("graff {s}\n\n{s}", .{ harness_version, changelog_text });
-        try hw.interface.flush();
-        return;
-    }
-
-    // `harness key set <provider> <key>` / `harness key list`: safe key store
-    // (macOS Keychain, else a 0600 file). Exits after.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "key")) {
-        const home = homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
-        try keyCommand(io, gpa, arena, home, flags.positionals.items[1..]);
-        return;
-    }
-
-    // `harness mcp add <name> -- <command> [args...]`: write workspace MCP config.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
-        try mcpCommand(io, arena, flags.positionals.items[1..]);
-        return;
-    }
-
-    // `harness login [codex] [--refresh]`: OAuth login. Default target is
-    // codegraff (device-code flow, writes ~/.simple-harness-codegraff.json);
-    // `codex` (or --refresh) runs the ChatGPT PKCE/refresh flow → ~/.codex/auth.json.
-    if (flags.login_flag) {
-        const home = homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
-        if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
-        return;
-    }
-
-    // `harness serve`: HTTP/NDJSON bridge over the --json protocol — each
-    // session is a `harness --json` child of this same binary. Keys are
-    // loaded by the children, not here.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "serve")) {
-        const token = flags.token_flag orelse init.environ_map.get("HARNESS_SERVE_TOKEN") orelse init.environ_map.get("GRAFF_SERVE_TOKEN");
-        const exe = std.process.executablePathAlloc(io, arena) catch
-            std.process.fatal("serve: cannot resolve own executable path", .{});
-        try serve.serveMain(gpa, io, .{
-            .host = flags.host_flag,
-            .port = flags.port_flag,
-            .token = token,
-            .yolo = flags.yolo_flag,
-            .model = flags.model_flag,
-            .system_prompt = flags.system_prompt_flag,
-            .append_system_prompt = flags.append_system_flag,
-        }, exe);
-        return;
-    }
-
-    // `harness update [--force|--check]`: self-update to the latest GitHub
-    // release. Version-checked (skips if already current), reuses install.sh
-    // for the actual download/codesign/atomic swap. Exits after.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "update")) {
-        // --check never installs, so --force has no effect on it — reject the
-        // contradictory combination up front rather than silently ignoring one.
-        if (flags.update_force and flags.update_check)
-            std.process.fatal("--force and --check are mutually exclusive — use `graff update` (without --check) to install", .{});
-        try updateCommand(io, gpa, arena, init.environ_map, flags.update_force, flags.update_check);
-        return;
-    }
-
-    // `graff worktree list` / `graff worktree merge <name>`: manage the per-tab
-    // scratch worktrees that -w creates. merge squash-lands a tab's work as one
-    // clean commit on the current branch, then removes the worktree + branch.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "worktree")) {
-        try worktreeCommand(gpa, io, arena, flags.positionals.items[1..]);
-        return;
-    }
-
-    // `graff sandboxes [stop <id>]`: list the account's gateway sandboxes or
-    // spin one down. Key resolution mirrors a normal run: CODEGRAFF_API_KEY
-    // env first, else the `graff login` file via loadCodegraffKey.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "sandboxes")) {
-        const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
-            (if (homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
-            std.process.fatal("sandboxes: no codegraff key — run `graff login` first", .{});
-        try cube.sandboxesCommand(io, gpa, arena, cg_key, flags.positionals.items[1..]);
-        return;
-    }
-
-    // `graff cube [new|status|stop]`: a personal cloud graff — a gateway
-    // sandbox running `graff serve` behind a Daytona preview URL. This is the
-    // broker the iOS app mirrors; any serve client can attach with the
-    // printed base + token.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "cube")) {
-        const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
-            (if (homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
-            std.process.fatal("cube: no codegraff key — run `graff login` first", .{});
-        try cube.cubeCommand(io, gpa, arena, cg_key, flags.positionals.items[1..]);
-        return;
-    }
-
-    // `--schema`: print the machine-readable interface and exit. No keys,
-    // network, or MCP — so it works anywhere (CI codegen calls this).
-    if (flags.schema_flag) {
-        var sbuf: [8 * 1024]u8 = undefined;
-        var sw = Io.File.stdout().writer(io, &sbuf);
-        try emitSchema(&sw.interface);
-        return;
-    }
+    if (try startup.runSubcommand(io, gpa, arena, init, flags)) return;
     // Credential/model resolution (env vars → codegraff/codex/kimi on-disk
     // logins → the `harness key set` store, env always wins; then --model or
     // the last-saved model) lives in startup.zig (600-line goal, #123
@@ -660,96 +461,17 @@ pub fn main(init: std.process.Init) !void {
     const out = &stdout_writer.interface;
     g_out = out;
 
-    // `graff title <prompt>` — print the tab-title the model would generate for
-    // that prompt (one title call, no session). For A/B-ing title prompts/styles.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "title")) {
-        if (flags.positionals.items.len < 2) std.process.fatal("usage: graff title <prompt>", .{});
-        const tprompt = try std.mem.join(arena, " ", flags.positionals.items[1..]);
-        if (titleTask(gpa, io, &client, default_provider, tprompt)) |t| {
-            defer gpa.free(t);
-            try out.print("{s}\n", .{t});
-        } else try out.writeAll("(title generation failed — check your model/key)\n");
-        try out.flush();
-        return;
-    }
-
-    // Color only on an interactive terminal, and honor NO_COLOR.
-    if (init.environ_map.get("NO_COLOR") == null and (Io.File.stdout().isTty(io) catch false)) {
-        ansi.style = Style.ansi;
-        use_color = true;
-    }
-    // --worktree/-w: run this session in an isolated git worktree so parallel
-    // agents don't collide on files. Creates .graff/worktrees/<name> on branch
-    // worktree-<name> (from HEAD) and enters it; reuses it if it already exists.
-    if (flags.worktree_flag) |wt| {
-        // POSIX-only: the chdir below goes through libc's `chdir`, which Windows
-        // builds don't link. -w is a parallel-agent dev workflow (mac/linux); on
-        // Windows we bail with a clear message rather than break the cross-build.
-        // The comptime `if` elides the chdir branch entirely on Windows.
-        if (builtin.os.tag == .windows) {
-            std.process.fatal("--worktree is not yet supported on Windows (POSIX-only chdir) — run without -w", .{});
-        } else {
-            const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{wt});
-            const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{wt});
-            if (runCapped(gpa, io, &.{ "git", "worktree", "add", wt_path, "-b", wt_branch }, 8192, 8192, 60_000)) |r| {
-                gpa.free(r.stdout);
-                gpa.free(r.stderr);
-            } else |_| {}
-            const wt_z = arena.dupeZ(u8, wt_path) catch std.process.fatal("--worktree: out of memory", .{});
-            if (std.posix.system.chdir(wt_z.ptr) != 0)
-                std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, wt_path });
-            g_worktree_branch = wt_branch; // non-null = auto-commit each turn to this scratch branch
-            if (!json_mode) {
-                const ac: []const u8 = if (g_worktree_autocommit) " · auto-committing each turn (`graff worktree merge` to land it)" else "";
-                out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{ style.dim, style.reset, style.cyan, wt_path, style.reset, wt_branch, ac }) catch {};
-                out.flush() catch {};
-            }
-        }
-    }
-    var cwd_buf: [4096]u8 = undefined;
-    g_cwd_display = if (flags.worktree_flag) |wt|
-        // After chdir into the worktree, realPath(AT_FDCWD) is unreliable; derive from the launch dir.
-        std.fmt.allocPrint(arena, "{s}/.graff/worktrees/{s}", .{ init.environ_map.get("PWD") orelse ".", wt }) catch try arena.dupe(u8, init.environ_map.get("PWD") orelse ".")
-    else if (Io.Dir.cwd().realPath(io, &cwd_buf)) |n|
-        try arena.dupe(u8, cwd_buf[0..n])
-    else |_|
-        try arena.dupe(u8, init.environ_map.get("PWD") orelse ".");
-
-    if (!json_mode and flags.oneshot_prompt == null) {
-        try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.cyan, g_cwd_display, style.reset, trace_path });
-        try out.flush();
-        if (codex_account) |acct| {
-            try out.print("logged into Codex (ChatGPT account {s}…) — /model gpt-5.5\n", .{acct[0..@min(acct.len, 8)]});
-            try out.flush();
-        }
-        if (flags.yolo_flag) {
-            try out.print("⚠ yolo mode (--yolo): all bash/tool/MCP permission prompts are skipped\n", .{});
-            try out.flush();
-        }
-        if (stale_saved_model) |nm| {
-            try out.print("{s}note: remembered model '{s}' isn't in the model table — starting on {s} instead{s}\n", .{ style.dim, nm, default_provider.model, style.reset });
-            try out.flush();
-        }
-        if (show_timing or show_cost) {
-            try out.print("{s}displays on:{s}{s}{s}\n", .{
-                style.dim,
-                if (show_timing) " per-tool timing" else "",
-                if (show_cost) " session cost" else "",
-                style.reset,
-            });
-            try out.flush();
-        }
-    }
+    if (try session_start.runTitleCommand(io, gpa, arena, &client, default_provider, out, flags)) return;
+    try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, trace_path, codex_account, stale_saved_model, default_provider);
 
     // Session trace (best-effort: a failed open just disables tracing).
-    const trace_file: ?Io.File = Io.Dir.cwd().createFile(io, trace_path, .{}) catch null;
-    defer if (trace_file) |f| f.close(io);
     var trace_buf: [8 * 1024]u8 = undefined;
-    var trace_writer = if (trace_file) |f| f.writer(io, &trace_buf) else undefined;
+    var trace_open = session_start.openTraceFile(io, trace_path, &trace_buf);
+    defer if (trace_open.file) |f| f.close(io);
     var tracer: Tracer = .{
         .io = io,
         .gpa = gpa,
-        .out = if (trace_file != null) &trace_writer.interface else null,
+        .out = if (trace_open.file != null) &trace_open.writer.interface else null,
         .start = Io.Timestamp.now(io, .awake),
     };
 
@@ -758,19 +480,13 @@ pub fn main(init: std.process.Init) !void {
     // sessions — it IS the archive a DGM-style driver selects parents from.
     // Each session starts with a `kind:"session"` header (node ids restart
     // per session; cross-session lineage threads through prompt_sha).
-    const traj_file: ?Io.File = Io.Dir.cwd().createFile(io, trajectory_path, .{ .truncate = false }) catch null;
-    defer if (traj_file) |f| f.close(io);
     var traj_buf: [8 * 1024]u8 = undefined;
-    var traj_writer = if (traj_file) |f| f.writer(io, &traj_buf) else undefined;
-    if (traj_file != null) {
-        if (Io.Dir.cwd().statFile(io, trajectory_path, .{})) |st| {
-            traj_writer.pos = st.size; // append after prior sessions
-        } else |_| {}
-    }
+    var traj_open = session_start.openTrajFile(io, trajectory_path, &traj_buf);
+    defer if (traj_open.file) |f| f.close(io);
     var traj: Trajectory = .{
         .io = io,
         .gpa = gpa,
-        .out = if (traj_file != null) &traj_writer.interface else null,
+        .out = if (traj_open.file != null) &traj_open.writer.interface else null,
         .start = Io.Timestamp.now(io, .awake),
     };
     trace.g_traj = &traj;
@@ -780,38 +496,9 @@ pub fn main(init: std.process.Init) !void {
     }
     traj.node(.{ .kind = "session", .version = harness_version, .unix_ms = unixMs(io) });
 
-    // Score-channel signing (Step 0): a per-session run_id and, if
-    // GRAFF_SCORE_KEY_FILE is set, the HMAC key — so score records written
-    // this session are signed and forged trajectory rows are detectable.
-    {
-        var raw: [8]u8 = undefined;
-        io.random(&raw);
-        scoring.g_run_id = std.fmt.bytesToHex(raw, .lower);
-    }
-    scoring.g_score_key = loadScoreKey(io, arena, init.environ_map);
+    session_start.initScoreSigning(io, arena, init.environ_map);
 
-    // Telemetry endpoint precedence: opt-out always wins → else an
-    // env-configured endpoint (dev / override) → else the release build's
-    // baked-in default (build_options.telemetry_endpoint, empty in dev). The
-    // install id file is only created when an endpoint is live.
-    const telem_endpoint: []const u8 = if (flags.no_telemetry_flag or init.environ_map.get("GRAFF_NO_TELEMETRY") != null)
-        ""
-    else
-        init.environ_map.get("OTEL_EXPORTER_OTLP_ENDPOINT") orelse
-            init.environ_map.get("GRAFF_OTEL_ENDPOINT") orelse
-            default_telemetry_endpoint;
-    const telem_home = homeEnv(init.environ_map) orelse "";
-    var telem: Telemetry = .{
-        .io = io,
-        .gpa = gpa,
-        .client = &client,
-        .endpoint = telem_endpoint,
-        .install_id = if (telem_endpoint.len > 0) keys_cli.loadOrCreateId(io, gpa, telem_home, ".simple-harness-install-id") else @splat('0'),
-        .client_name = init.environ_map.get("HARNESS_CLIENT") orelse "harness",
-        .sdk_install_id = init.environ_map.get("HARNESS_SDK_INSTALL_ID") orelse "",
-        .start = Io.Timestamp.now(io, .awake),
-        .start_unix_ms = unixMs(io),
-    };
+    var telem = session_start.initTelemetry(io, gpa, &client, init.environ_map, flags, default_telemetry_endpoint);
     telemetry.g_telem = &telem;
     // Fleet contribution opt-out, independent of telemetry: GRAFF_FLEET=off|0|false|no.
     if (init.environ_map.get("GRAFF_FLEET")) |fv| {
@@ -827,122 +514,35 @@ pub fn main(init: std.process.Init) !void {
     // arbitrary local commands, so opening an untrusted repo could run them.
     // Auto-connect only with --yolo (trusted) or explicit per-session consent;
     // otherwise start with an empty (but live) registry so `/mcp add` still works.
-    const mcp_count = countMcpServers(io, arena);
-    var connect_mcp = flags.yolo_flag or mcp_count == 0;
-    if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
-        try out.print("{s}⚠ this workspace's .mcp.json defines {d} MCP server(s) that run local commands. Connect them this session? [y/N] {s}", .{ style.bold, mcp_count, style.reset });
-        try out.flush();
-        const ans = in.takeDelimiter('\n') catch null;
-        connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
-    }
-    var registry_storage: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path) catch |err| inner: {
-        try out.print("[mcp] init failed: {t} — continuing without MCP\n", .{err});
-        if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
-        break :inner null;
-    }) orelse mcp.Registry.empty(gpa, io)) else outer: {
-        if (mcp_count > 0) try out.print("{s}skipped {d} workspace MCP server(s) — /mcp trust to connect them now (or re-run with --yolo){s}\n", .{ style.dim, mcp_count, style.reset });
-        break :outer mcp.Registry.empty(gpa, io);
-    };
+    var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, use_color, json_mode);
     defer registry_storage.deinit();
     const registry: ?*mcp.Registry = &registry_storage;
-    // Companion auto-activation: if the metered code-intelligence companion
-    // (codedb-pro, formerly muonry) is installed but nothing connected it (no
-    // workspace .mcp.json entry, or consent declined), spawn it directly — a
-    // user-installed companion at the same trust level as the skills
-    // auto-detection above it, NOT arbitrary workspace config. Failure just
-    // means native tools; the mcp_notes usage line below only enters context
-    // when the connect actually succeeded. Opt out like a skill:
-    // {"skills": {"codedbpro": false}}.
-    g_path_env = try arena.dupe(u8, init.environ_map.get("PATH") orelse "");
-    g_codedb_guard = init.environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
-    loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
-    anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
-    anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
-    const theme_on = anim.g_theme != null and use_color and !json_mode;
-    if (theme_on) {
-        out.writeAll(anim.themes[anim.g_theme.?].seq) catch {};
-        out.flush() catch {};
-    }
-    defer if (theme_on) {
+    // Per-skill/companion opt-outs, animation/theme settings, and the
+    // --selftest-spinner headless render live in session_start.zig
+    // (600-line goal). The theme/limyuxi-glam reset `defer`s stay HERE
+    // (registered in main()'s own frame, same order as before) so they fire
+    // when main() returns, not when the helper does.
+    const theme_setup = try session_run.setupSkillsAndTheme(io, arena, init.environ_map, out, flags, use_color, json_mode, g_cwd_display);
+    defer if (theme_setup.theme_on) {
         out.writeAll(anim.theme_reset) catch {};
         out.flush() catch {};
     };
-    // 🎂 yxlyx's birthday glam — when graff runs from her home dir, dress her
-    // Ghostty in the pastel-pink theme (limyuxi_theme: light pink bg, dark plum
-    // text, pink-leaning palette) and switch the spinner to glittery sparkles.
-    // Cosmetic, flagged, gated to her cwd; resets everything on exit.
-    const limyuxi_glam = anim.limyuxi_birthday_white and use_color and !json_mode and
-        (std.mem.eql(u8, g_cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, g_cwd_display, "/Users/limyuxi/"));
-    if (limyuxi_glam) {
-        out.writeAll(anim.limyuxi_theme) catch {};
-        out.flush() catch {};
-        if (anim.animIndex("dragon")) |gi| {
-            anim.g_anim_index = gi;
-            anim.g_anim_off = false;
-            anim.g_anim_random = false;
-        }
-    }
-    defer if (limyuxi_glam) {
+    defer if (theme_setup.limyuxi_glam) {
         out.writeAll(anim.limyuxi_reset) catch {};
         out.flush() catch {};
     };
-    if (flags.selftest_spinner_flag) {
-        // Headless render of the real thinking-spinner pool for the PTY anti-stealth
-        // test (scripts/test-pty-spinner.py): runs the real selection (so a cwd-gated
-        // pick surfaces) and prints every frame fn's output to stdout, where the test
-        // scans for the U+1F4A9 / supplementary-plane glyph class the poop hid in.
-        anim.selectSpinner(io);
-        out.print("selected: {s}\n", .{anim.anims[anim.g_anim_current].name}) catch {};
-        for (anim.anims) |a| {
-            var i: usize = 0;
-            while (i < 48) : (i += 1) {
-                a.frame(out, i) catch {};
-                out.writeByte('\n') catch {};
-            }
-        }
-        out.flush() catch {};
-        return;
-    }
-    anim.loadDevSpinnerOptOut(io, arena, init.environ_map);
-    connect: {
-        for (companion_servers) |c| if (mcpServerConnected(registry_storage.tools, c.server)) break :connect;
-        for (companion_servers) |c| {
-            if (companionDisabled(c.server) or !binOnPath(io, c.bin)) continue;
-            if (registry_storage.addServer(c.server, c.bin, &.{"--mcp"})) |_| {
-                break;
-            } else |err| {
-                if (!json_mode and flags.oneshot_prompt == null) {
-                    try out.print("{s}[mcp:{s}] auto-connect failed ({t}) — native tools only{s}\n", .{ style.dim, c.server, err, style.reset });
-                    try out.flush();
-                }
-            }
-        }
-    }
+    if (theme_setup.should_exit) return;
+    try session_start.connectCompanion(io, &registry_storage, flags, out, json_mode);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note
     // below can lean into the paid tools (vs the conservative free-codedb note).
     if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);
 
-    var approvals: Approvals = .{ .yolo = flags.yolo_flag };
+    var approvals: Approvals = undefined;
+    try session_run.initApprovalsHooksFleet(io, gpa, arena, init.environ_map, &approvals, flags, out, json_mode);
     defer {
         for (approvals.prefixes.items) |p| gpa.free(p);
         approvals.prefixes.deinit(gpa);
-    }
-    const persisted_approvals = approvals.loadPersisted(io, gpa, arena);
-
-    // Agent types: builtins + .harness/agents/*.md (the MAP-Elites niches).
-    fleet.g_home = homeEnv(init.environ_map); // for /agents promote's personal tier
-    fleet.g_agent_types = loadAgentTypes(io, arena, fleet.g_home); // builtin < ~/.harness/agents (personal) < ./.harness/agents (private)
-    if (persisted_approvals > 0 and !json_mode and flags.oneshot_prompt == null) {
-        try out.print("{s}loaded {d} saved approval(s) from {s}{s}\n", .{ style.dim, persisted_approvals, Approvals.settings_path, style.reset });
-        try out.flush();
-    }
-    // Lifecycle hooks (pre_tool/post_tool/turn_end) from the same file.
-    // (Per-skill opt-outs were loaded earlier, before the muonry auto-connect.)
-    g_hooks = hooks.loadHooks(io, arena);
-    if (g_hooks.total() > 0 and !json_mode and flags.oneshot_prompt == null) {
-        try out.print("{s}loaded {d} lifecycle hook(s) from {s} — /hooks lists them{s}\n", .{ style.dim, g_hooks.total(), Approvals.settings_path, style.reset });
-        try out.flush();
     }
 
     // Root system-prompt layering (base + AGENTS.md/HARNESS.md/CLAUDE.md +
@@ -967,137 +567,27 @@ pub fn main(init: std.process.Init) !void {
     defer snaps.deinit();
     // Background bash jobs die with the session: kill, await pumps, free.
     defer jobsReap(gpa, io);
-    var root: Agent = .{
-        .snapshots = &snaps,
-        .gpa = gpa,
-        .arena = arena,
-        .io = io,
-        .client = &client,
-        .provider = default_provider,
-        .home = homeEnv(init.environ_map) orelse "",
-        .messages = std.json.Array.init(arena),
-        .sub = false,
-        .label = "main",
-        .out = out,
-        .in = in,
-        .registry = registry,
-        .approvals = &approvals,
-        .tracer = &tracer,
-        .sys_normal = sys_normal,
-        .sys_strict = sys_strict,
-        .tools_anthropic = try renderRootTools(arena, .anthropic, &root_specs, mcp_tools),
-        .tools_openai = try renderRootTools(arena, .openai, &root_specs, mcp_tools),
-        .tools_responses = try renderRootTools(arena, .responses, &root_specs, mcp_tools),
-    };
-    const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(io)});
-    root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
-    loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
-    if (flags.goal_flag) |g| root.goal = try arena.dupe(u8, g); // --goal applies to every turn (incl. --json/-p/SDK)
-    if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
-    if (flags.eval_target_flag) |t| root.eval_target = t;
-    if (flags.eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);
-    tracer.note("session", root.provider.model);
-    // Distribute (docs §9.E): pull this tier's live fleet champions and prefer
-    // them over the baked builtins. Best-effort + bounded; emits fleet:elite_pull.
-    var esh_pull: [16]u8 = undefined;
-    const pull_esh: []const u8 = if (root.eval_cmd) |c| pblk: {
-        esh_pull = promptFingerprint(c);
-        break :pblk &esh_pull;
-    } else ""; // pull the champion for our eval suite (if any)
-    // Background the fleet-champion pull: a ~0.3s TLS round-trip that used to block
-    // the first prompt. Spawn it now; joinElites() reaps it on the main thread at the
-    // first turn, so the user's typing hides the fetch (prompt paints ~0.3s sooner).
-    fleet.g_elites_future = io.async(pullElites, .{ io, arena, &client, telemetry.g_telem, telem_endpoint, providerClass(root.provider.model), arena.dupe(u8, pull_esh) catch pull_esh, fleet.g_agent_types });
+    // Root Agent construction + post-construction config (session name,
+    // persisted thinking/goal/eval settings, the session-start trace note)
+    // + the backgrounded fleet-champion pull live in session_start.zig
+    // (600-line goal). `root`'s pointer fields (snapshots/client/tracer/
+    // approvals/registry) all reference already-stable main()-owned storage
+    // passed in by address, so returning the constructed Agent by value here
+    // is safe (see session_start.zig's header).
+    var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, sys_strict, mcp_tools, &snaps, flags, telem.endpoint);
     defer joinElites(io); // reap if the session quits before any turn joins it
 
-    // Save from the start: if the harness is killed (Ctrl+C / SIGINT) before
-    // any turn completes, the session file is already on disk with the initial
-    // state (provider, model, settings) so nothing is lost. EXCEPT when
-    // resuming: the resume target already holds the real conversation and
-    // loadSession below restores it — writing the empty initial state here
-    // would clobber the very session we're about to read back (data loss).
-    const will_resume = flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag;
-    if (!will_resume) saveSession(&root, arena, root.session_name) catch {};
-
-    if (flags.oneshot_prompt != null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) {
-        loadSession(&root, keys, arena, root.session_name) catch {};
-    }
+    session_run.saveOrResumeSession(&root, keys, arena, flags);
 
     // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL
     // agent loop — each prompt runs a full root turn (tools + MCP) via
     // replTurnCb, reusing the root agent's tool set + registry + system prompt.
     // Self-contained — exits after.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "repl")) {
-        var repl_ctx = ReplCtx{
-            .io = io,
-            .client = &client,
-            .provider = root.provider,
-            .registry = root.registry,
-            .sys_normal = root.sys_normal,
-            .tools_anthropic = root.tools_anthropic,
-            .tools_openai = root.tools_openai,
-            .tools_responses = root.tools_responses,
-        };
-        var models_buf = std.array_list.Managed(u8).init(arena);
-        for (model_table) |mi| {
-            if (mi.name.len == 0) continue;
-            if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
-            models_buf.appendSlice(mi.name) catch {};
-        }
-        if (Io.File.stdin().isTty(io) catch true)
-            try repl.run(gpa, io, init.environ_map, &repl_ctx, replTurnCb, replModelCb, replCancelCb, root.provider.model, models_buf.items)
-        else
-            try repl.runScripted(gpa, io, init.environ_map, in, out, &repl_ctx, replTurnCb, replModelCb, replCancelCb, root.provider.model, models_buf.items);
-        return;
-    }
+    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, &client, in, out, arena, flags)) return;
     // One-shot print mode: run the single prompt to completion, print the
-    // final text to stdout, exit. Tool progress goes to stderr (say() with no
-    // out writer), streaming stays quiet, and the gate denies anything not
-    // pre-approved instead of prompting (there's no one to ask).
+    // final text to stdout, exit.
     if (flags.oneshot_prompt) |prompt_text| {
-        unattended = true;
-        root.in = null; // gate: deny instead of prompt; ask_user: self-decide
-        root.out = null; // tool progress → stderr; stdout carries only the answer
-        root.stream_quiet = true;
-        const ultracode_msg = try applyUltracodeSteering(arena, prompt_text, root.ultracode_mode);
-        if (ultracode_msg.explicit) {
-            tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
-            if (telemetry.g_telem) |t| t.ultracode();
-        }
-        const goal_note = try goalSteeringNote(arena, root.goal, if (root.todos.items.len > 0) root.renderTodos() else "");
-        const eval_note = try evalSteeringNote(arena, root.eval_cmd, root.eval_target, root.eval_judge != null);
-        var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
-        if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
-        try root.messages.append(try textMessage(arena, "user", oneshot_user));
-        if (telemetry.g_telem) |t| t.countTurn();
-        const final_text = root.runTurn() catch |err| switch (err) {
-            error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
-            else => |e| std.process.fatal("turn failed: {t}", .{e}),
-        };
-        try out.print("{s}\n", .{final_text});
-        try out.flush();
-        // Usage summary → stderr, so stdout stays exactly the answer.
-        var ubuf: [256]u8 = undefined;
-        var uw: Io.Writer = .fixed(&ubuf);
-        if (CostTally.render(g_cost.snap(io), &uw)) {
-            std.debug.print("[usage] {s}\n", .{uw.buffered()});
-        } else |_| {}
-        saveSession(&root, arena, root.session_name) catch |err| {
-            std.debug.print("⚠ session save failed: {s}\n", .{@errorName(err)});
-        };
-
-        // --worktree: checkpoint the one-shot's edits to the scratch branch too.
-        // Headless swarm agents (graff -w name -p "task") are the main -w use
-        // case — they must not exit with their work left uncommitted.
-        worktreeAutoCommit(gpa, io, std.fmt.allocPrint(arena, "wip: {s}", .{titleFromPrompt(prompt_text)}) catch "wip: graff oneshot");
-        // One-shot returns here, before the REPL cleanup defer below is even
-        // registered, so free the root's gpa-backed buffers explicitly (else a
-        // tool-using one-shot leaks its tool log / render buffers on exit).
-        root.md_buf.deinit(gpa);
-        root.md_word.deinit(gpa);
-        for (root.md_table.items) |r| gpa.free(r);
-        root.md_table.deinit(gpa);
-        root.tools_used.deinit(gpa);
+        try session_run.runOneshotPrompt(gpa, io, arena, &root, &tracer, out, prompt_text);
         return;
     }
 
@@ -1117,35 +607,7 @@ pub fn main(init: std.process.Init) !void {
         root.tools_used.deinit(gpa);
     }
     const interactive = use_color and !json_mode; // stdout is a TTY → enable line editing
-    // Explicit resume only: bare `graff` starts fresh, while `--resume <name>`
-    // restores that autosave target. Best-effort: a missing/keyless/corrupt
-    // file silently starts fresh.
-    if (flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) {
-        if (loadSession(&root, keys, arena, root.session_name)) |_| {
-            if (root.messages.items.len > 0) {
-                // Estimate the restored context from the file size (~4 bytes/token).
-                const est_path = try sessionPath(arena, root.session_name);
-                const est: u64 = if (Io.Dir.cwd().statFile(io, est_path, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
-                if (!json_mode) {
-                    // Prefer the saved AI summary; fall back to the first user
-                    // message only for older sessions that have no saved title.
-                    const restored_title = root.session_title orelse firstUserTitle(arena, root.messages);
-                    setTerminalTitle(out, restored_title, g_cwd_display);
-                    try printSessionHeader(out, restored_title, g_cwd_display);
-                    root.tui_header_shown = true;
-                    try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ root.session_name, session_ext, root.messages.items.len, root.provider.model });
-                    try out.flush();
-                }
-                // Cold cache: if the restored context is as large as what would
-                // trigger live compaction, the first turn would re-bill the whole
-                // thing — summarize up front instead.
-                if (est >= root.provider.compactAt()) {
-                    root.last_context_tokens = est;
-                    root.compactOrRecover(true);
-                }
-            }
-        } else |_| {}
-    }
+    try session_run.restoreResumedSession(io, arena, out, &root, keys, flags, json_mode, g_cwd_display);
 
     // The interactive-REPL / --json-protocol turn loop lives in mainloop.zig
     // (600-line goal). main() keeps owning every piece of storage the loop
@@ -1168,25 +630,7 @@ pub fn main(init: std.process.Init) !void {
         .sys_strict = sys_strict,
     };
     try mainloop.run(&loop_ctx);
-    // Final save on exit also captures command-driven edits since the last turn
-    // (/clear, /rewind) so the next start resumes the true end state.
-    if (!json_mode and root.messages.items.len > 0) {
-        saveSession(&root, arena, root.session_name) catch |err| {
-            out.print("{s}⚠ session save failed: {t}{s}\n", .{ style.yellow, err, style.reset }) catch {};
-            out.flush() catch {};
-        };
-        out.print("{s}↩ session saved → {s}{s}{s}\n", .{ style.dim, root.session_name, style.reset, session_ext }) catch {};
-        out.flush() catch {};
-    } else {
-        saveSession(&root, arena, root.session_name) catch {};
-    }
-
-    // Capture edits from an interrupted/aborted final turn (those `continue`
-    // before the per-turn checkpoint) so a worktree never quits with work left
-    // uncommitted on its scratch branch.
-    worktreeAutoCommit(gpa, io, "wip: session end");
-    try out.writeAll("\n");
-    try out.flush();
+    try session_run.finalizeSession(gpa, io, arena, out, &root, json_mode);
 }
 
 /// Is this .mcp.json entry one the harness would auto-connect anyway? A
@@ -1198,33 +642,17 @@ pub fn main(init: std.process.Init) !void {
 // check + startup untrusted-server count live in mcp_cli.zig (600-line goal).
 // The 3 externally-called entry points are aliased back.
 const mcp_cli = @import("mcp_cli.zig");
-const countMcpServers = mcp_cli.countMcpServers;
-const persistMcpServer = mcp_cli.persistMcpServer;
-const mcpCommand = mcp_cli.mcpCommand;
 
-// extractText moved to providers.zig (600-line goal); re-exported since
-// title.zig and others already back-import it as main_mod.extractText.
-pub const extractText = providers.extractText;
+// extractText moved to providers.zig (600-line goal); repointed to a direct
+// providers.zig import at its one remaining consumer, title.zig.
 
 // Provider-switch core (translateHistory, applyProvider, resolveProvider*,
 // setModelRequestLabel, switchProvider) lives in providers.zig; the
 // interactive pickers, ultracode steering, and login/auth flow live in
 // pickers.zig — both split out of main.zig (600-line goal, #123).
 const providers = @import("providers.zig");
-const applyProvider = providers.applyProvider;
-const resolveProviderControlRequest = providers.resolveProviderControlRequest;
-const setModelRequestLabel = providers.setModelRequestLabel;
-const switchProvider = providers.switchProvider;
 
 const pickers = @import("pickers.zig");
-const modelPicker = pickers.modelPicker;
-const PickItem = pickers.PickItem;
-const listPicker = pickers.listPicker;
-const applyUltracodeSteering = pickers.applyUltracodeSteering;
-const pickUltracodeMode = pickers.pickUltracodeMode;
-const command_menu = pickers.command_menu;
-const reloadLoginKey = pickers.reloadLoginKey;
-const offerProviderAuth = pickers.offerProviderAuth;
 
 // The ~1,200-line body of handleCommand (one if-block per slash command) is
 // split into 3 sibling tryHandle() modules by theme (600-line goal, #123):
@@ -1247,43 +675,29 @@ pub fn handleCommand(root: *Agent, keys: *Keys, arena: Allocator, line: []const 
 
 // Session persistence (save/load/list/rename/age + the .graff/sessions path
 // helpers) lives in session.zig (600-line goal, #123). session_ext/
-// saveSession/loadSession/listSavedSessions/sessionAge stay pub —
-// commands_session.zig, commands_misc.zig, and readline.zig already
-// back-import them as `main_mod.saveSession` etc.
+// saveSession stay pub — commands_session.zig, commands_misc.zig, and
+// readline.zig already back-import them as `main_mod.saveSession` etc.
+// sessionAge/listSavedSessions/loadSession are repointed to a direct
+// session.zig import at their one remaining consumer, commands_misc.zig.
 const session = @import("session.zig");
 pub const session_ext = session.session_ext;
-const sessionPath = session.sessionPath;
-const SessionMeta = session.SessionMeta;
-const sessionMetaFromBytes = session.sessionMetaFromBytes;
-const sessionMeta = session.sessionMeta;
-pub const sessionAge = session.sessionAge;
-const SessionEntry = session.SessionEntry;
-pub const listSavedSessions = session.listSavedSessions;
-const slugifyTitle = session.slugifyTitle;
-const renameSession = session.renameSession;
-const sessionTitle = session.sessionTitle;
 pub const saveSession = session.saveSession;
-pub const loadSession = session.loadSession;
 
 // Provider login/credential flows (Codex PKCE, Kimi + Codegraff device-code)
 // live in oauth.zig (#123); it imports ansi + util and back-imports main for
 // unixMs/kimi_user_agent/the codegraff base.
 const oauth = @import("oauth.zig");
-const CodexAuth = oauth.CodexAuth;
 
 // API-key storage + the `graff key` CLI + OpenAI-compatible model listing
-// live in keys_cli.zig (600-line goal, #123). isLocalUrl/openAiModelsUrl/
-// fetchOpenAIModels/storeKey stay pub (commands_model.zig + pickers.zig
-// back-import them as `main_mod.X`); homeEnv/loadStoredKey/keyCommand are
-// used only from within main() here, so their aliases stay bare.
+// live in keys_cli.zig (600-line goal, #123). storeKey stays pub
+// (commands_model.zig + pickers.zig back-import it as `main_mod.storeKey`);
+// isLocalUrl/openAiModelsUrl/fetchOpenAIModels are repointed to a direct
+// keys_cli.zig import at their one remaining consumer, commands_model.zig.
+// homeEnv/loadStoredKey/keyCommand are used only from within main() here,
+// so their aliases stay bare.
 const keys_cli = @import("keys_cli.zig");
-pub const isLocalUrl = keys_cli.isLocalUrl;
-pub const openAiModelsUrl = keys_cli.openAiModelsUrl;
-pub const fetchOpenAIModels = keys_cli.fetchOpenAIModels;
 const homeEnv = keys_cli.homeEnv;
 pub const storeKey = keys_cli.storeKey;
-const loadStoredKey = keys_cli.loadStoredKey;
-const keyCommand = keys_cli.keyCommand;
 
 // ---------------------------------------------------------------------------
 // `harness serve` — the same --json session protocol, served over HTTP so
@@ -1322,17 +736,13 @@ pub const codegraff_device_base = "https://gateway.codegraff.com";
 
 // `graff cube` / `graff sandboxes` + the gateway REST helpers live in cube.zig
 // (#123); it back-imports main for strFieldObj/intFieldObj + the gateway base.
-const cube = @import("cube.zig");
 
-// ToolCall/ExecResult/AnswerRequest/answerParseError/parseAnswerRequest
-// moved to tools.zig (600-line goal); re-exported since agent_tools.zig,
-// agent_steps.zig, exec.zig, and others already back-import them as
-// main_mod.X.
+// ToolCall moved to tools.zig (600-line goal); re-exported since several
+// agent_*.zig files + commands_session.zig still back-import it as
+// main_mod.ToolCall. (ExecResult/AnswerRequest/answerParseError/
+// parseAnswerRequest also live there but are all repointed to a direct
+// tools.zig import at their remaining consumers.)
 pub const ToolCall = tools_mod.ToolCall;
-pub const ExecResult = tools_mod.ExecResult;
-pub const AnswerRequest = tools_mod.AnswerRequest;
-pub const answerParseError = tools_mod.answerParseError;
-pub const parseAnswerRequest = tools_mod.parseAnswerRequest;
 
 // The Agent struct itself (fields + smallest methods) + TodoItem live in
 // agent.zig (600-line goal). Re-exported so the ~everywhere
@@ -1348,26 +758,12 @@ pub const TodoItem = agent_mod.TodoItem;
 // messages.zig (600-line goal). Aliased back so call sites stay unqualified;
 // imported as messages_mod to avoid shadowing the `messages` params/fields.
 const messages_mod = @import("messages.zig");
-const textMessage = messages_mod.textMessage;
-const toolResultMessage = messages_mod.toolResultMessage;
-const sanitizeMessagesUtf8 = messages_mod.sanitizeMessagesUtf8;
-const normalizeResponsesHistory = messages_mod.normalizeResponsesHistory;
-const normalizeOpenAIHistory = messages_mod.normalizeOpenAIHistory;
 
 /// A base64-encoded image staged by `/image`, sent with the next user turn.
 // Image/vision support (staged-image type, per-provider vision check, image
 // message builder, /image·/paste stagers, macOS clipboard grab) lives in
 // vision.zig (600-line goal). Public surface aliased back.
 const vision = @import("vision.zig");
-const PendingImage = vision.PendingImage;
-const visionModel = vision.visionModel;
-const visionCapable = vision.visionCapable;
-const imageMediaType = vision.imageMediaType;
-const imageMessage = vision.imageMessage;
-const StageResult = vision.StageResult;
-const stageImagePath = vision.stageImagePath;
-const stageGuiImageAttachment = vision.stageGuiImageAttachment;
-const grabClipboardImage = vision.grabClipboardImage;
 /// Auth + provider-specific headers shared by post() and Agent.postStream().
 /// User-Agent for an outbound provider call. The Kimi for Coding plan gates
 /// access to recognized coding-agent clients by User-Agent (a graff/* or bare
@@ -1379,16 +775,6 @@ pub const kimi_user_agent = "claude-code/1.0.0";
 // lives in http.zig (600-line goal). Aliased back so Agent's model-call and
 // streaming select-arms stay unqualified.
 const http = @import("http.zig");
-const providerUserAgent = http.providerUserAgent;
-const providerHeaders = http.providerHeaders;
-const capture5xxBodyStream = http.capture5xxBodyStream;
-const WatchdogFired = http.WatchdogFired;
-const RetryPlan = http.RetryPlan;
-const sendHeadTask = http.sendHeadTask;
-const streamLineTask = http.streamLineTask;
-const streamStallTask = http.streamStallTask;
-const headStallTask = http.headStallTask;
-const postWatched = http.postWatched;
 
 // Subprocess execution: the capped runner (runCapped), git-worktree management,
 // and the background bash-job pool live in jobs.zig (600-line goal). runCapped
@@ -1396,13 +782,7 @@ const postWatched = http.postWatched;
 // are aliased back.
 const jobs = @import("jobs.zig");
 pub const runCapped = jobs.runCapped;
-const worktreeAutoCommit = jobs.worktreeAutoCommit;
-const worktreeCommand = jobs.worktreeCommand;
-const spawnJob = jobs.spawnJob;
-const jobOutput = jobs.jobOutput;
-const jobKill = jobs.jobKill;
 const jobsReap = jobs.jobsReap;
-const shellArgv = jobs.shellArgv;
 // Tool execution: the tool-call context (ToolCtx), file-edit snapshots for
 // /rewind, pre/post-tool lifecycle-hook dispatch, the codedb-guard (#626)
 // and metered-companion router, and small per-tool helpers live in tools.zig
@@ -1420,16 +800,12 @@ pub const ToolOutput = tools_mod.ToolOutput;
 pub const ToolCtx = tools_mod.ToolCtx;
 pub const Snapshots = tools_mod.Snapshots;
 pub const bash_stdout_cap = tools_mod.bash_stdout_cap; // input_util.zig back-imports this for its file-collection caps
-const apiErrorMessage = tools_mod.apiErrorMessage;
-const mentionsReasoningEffort = tools_mod.mentionsReasoningEffort;
 
 const subagent = @import("subagent.zig");
-const judgeTask = subagent.judgeTask;
 
 const workflow = @import("workflow.zig");
 
 const exec = @import("exec.zig");
-const execTool = exec.execTool;
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────
 
 test "incremental markdown streaming renders like renderMdLine" {

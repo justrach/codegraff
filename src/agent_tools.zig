@@ -13,10 +13,11 @@ const Value = std.json.Value;
 const main_mod = @import("main.zig");
 const Agent = main_mod.Agent;
 const ToolCall = main_mod.ToolCall;
-const ExecResult = main_mod.ExecResult;
-const AnswerRequest = main_mod.AnswerRequest;
-const answerParseError = main_mod.answerParseError;
-const parseAnswerRequest = main_mod.parseAnswerRequest;
+const ExecResult = tools_mod.ExecResult;
+
+const AnswerRequest = tools_mod.AnswerRequest;
+const answerParseError = tools_mod.answerParseError;
+const parseAnswerRequest = tools_mod.parseAnswerRequest;
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;

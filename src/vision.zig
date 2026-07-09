@@ -14,7 +14,8 @@ const Allocator = std.mem.Allocator;
 const main_mod = @import("main.zig");
 const Agent = main_mod.Agent;
 const Provider = main_mod.Provider;
-const isImagePath = main_mod.isImagePath;
+const input_util = @import("input_util.zig");
+const isImagePath = input_util.isImagePath;
 
 pub const PendingImage = struct { media_type: []const u8, b64: []const u8, label: []const u8 };
 

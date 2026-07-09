@@ -17,9 +17,10 @@ const harness_version = main_mod.harness_version;
 const mcp_config_path = main_mod.mcp_config_path;
 const session_ext = main_mod.session_ext;
 const saveSession = main_mod.saveSession;
-const loadSession = main_mod.loadSession;
-const listSavedSessions = main_mod.listSavedSessions;
-const sessionAge = main_mod.sessionAge;
+const session = @import("session.zig");
+const loadSession = session.loadSession;
+const listSavedSessions = session.listSavedSessions;
+const sessionAge = session.sessionAge;
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;

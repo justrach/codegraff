@@ -11,9 +11,10 @@ const Value = std.json.Value;
 const main_mod = @import("main.zig");
 const Agent = main_mod.Agent;
 const ToolCall = main_mod.ToolCall;
-const ExecResult = main_mod.ExecResult;
+const ExecResult = tools_mod.ExecResult;
 const parseEvalScore = main_mod.parseEvalScore;
-const compact_instruction = main_mod.compact_instruction;
+const prompts = @import("prompts.zig");
+const compact_instruction = prompts.compact_instruction;
 
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;

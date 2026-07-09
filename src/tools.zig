@@ -278,7 +278,7 @@ pub fn codedbGuard(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     // (e.g. a 13K-line main.zig) are silently skipped by codedb; blocking
     // bash grep on them traps the agent between a blocked grep and an empty
     // codedb result. Let bash through for un-indexed files (issue #54).
-    if (!main_mod.codedbFileIndexed(ctx.io, ctx.gpa, src_path)) return null;
+    if (!hooks.codedbFileIndexed(ctx.io, ctx.gpa, src_path)) return null;
 
     const msg = std.fmt.allocPrint(ctx.gpa, "blocked: this repo is codedb-indexed — don't shell out to `{s}` to read or search source. Use the codedb tool (indexed + structural): search <query> · symbol <name> [--body] · callers <name> · deps <path> · outline <path> · read <path> · context <task>. If you genuinely need raw bash here, set GRAFF_NO_CODEDB_GUARD=1.", .{tool}) catch return .{ .text = &.{}, .is_error = true };
     return .{ .text = msg, .is_error = true };

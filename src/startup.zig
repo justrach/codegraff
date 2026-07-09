@@ -25,6 +25,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 
 const mcp = @import("mcp.zig");
 const provider_mod = @import("provider.zig");
@@ -180,4 +181,127 @@ pub fn buildSystemPrompt(
     }
     const sys_strict: []const u8 = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.strict_note });
     return .{ .sys_normal = sys_normal, .sys_strict = sys_strict };
+}
+
+const args = @import("args.zig");
+const mcp_cli = @import("mcp_cli.zig");
+const cli = @import("cli.zig");
+const jobs = @import("jobs.zig");
+const cube = @import("cube.zig");
+const schema = @import("schema.zig");
+const serve = @import("serve.zig");
+const main_mod = @import("main.zig");
+
+/// The early subcommand/flag branches that exit before any credential
+/// resolution or Agent construction happens — `--help`/`--version`, `key`,
+/// `mcp add`, `login`, `serve`, `update`, `worktree` (list/merge), `sandboxes`,
+/// `cube`, and `--schema`. Moved verbatim out of main() (600-line goal,
+/// #123 follow-up). Returns true when a branch handled the run and main()
+/// should return immediately without going any further (credential
+/// resolution, Agent construction, the REPL/turn loop, ...).
+pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init, flags: args.Flags) !bool {
+    // `--help` / `--version`: handled before any subcommand dispatch, so
+    // `harness login --help` prints usage instead of starting an OAuth flow.
+    if (flags.help_flag or flags.version_flag) {
+        var hbuf: [4096]u8 = undefined;
+        var hw = Io.File.stdout().writer(io, &hbuf);
+        if (flags.help_flag) try hw.interface.writeAll(cli.usage_text) else try hw.interface.print("graff {s}\n\n{s}", .{ main_mod.harness_version, cli.changelog_text });
+        try hw.interface.flush();
+        return true;
+    }
+
+    // `harness key set <provider> <key>` / `harness key list`: safe key store
+    // (macOS Keychain, else a 0600 file). Exits after.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "key")) {
+        const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
+        try keys_cli.keyCommand(io, gpa, arena, home, flags.positionals.items[1..]);
+        return true;
+    }
+
+    // `harness mcp add <name> -- <command> [args...]`: write workspace MCP config.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
+        try mcp_cli.mcpCommand(io, arena, flags.positionals.items[1..]);
+        return true;
+    }
+
+    // `harness login [codex] [--refresh]`: OAuth login. Default target is
+    // codegraff (device-code flow, writes ~/.simple-harness-codegraff.json);
+    // `codex` (or --refresh) runs the ChatGPT PKCE/refresh flow → ~/.codex/auth.json.
+    if (flags.login_flag) {
+        const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
+        if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
+        return true;
+    }
+
+    // `harness serve`: HTTP/NDJSON bridge over the --json protocol — each
+    // session is a `harness --json` child of this same binary. Keys are
+    // loaded by the children, not here.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "serve")) {
+        const token = flags.token_flag orelse init.environ_map.get("HARNESS_SERVE_TOKEN") orelse init.environ_map.get("GRAFF_SERVE_TOKEN");
+        const exe = std.process.executablePathAlloc(io, arena) catch
+            std.process.fatal("serve: cannot resolve own executable path", .{});
+        try serve.serveMain(gpa, io, .{
+            .host = flags.host_flag,
+            .port = flags.port_flag,
+            .token = token,
+            .yolo = flags.yolo_flag,
+            .model = flags.model_flag,
+            .system_prompt = flags.system_prompt_flag,
+            .append_system_prompt = flags.append_system_flag,
+        }, exe);
+        return true;
+    }
+
+    // `harness update [--force|--check]`: self-update to the latest GitHub
+    // release. Version-checked (skips if already current), reuses install.sh
+    // for the actual download/codesign/atomic swap. Exits after.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "update")) {
+        // --check never installs, so --force has no effect on it — reject the
+        // contradictory combination up front rather than silently ignoring one.
+        if (flags.update_force and flags.update_check)
+            std.process.fatal("--force and --check are mutually exclusive — use `graff update` (without --check) to install", .{});
+        try cli.updateCommand(io, gpa, arena, init.environ_map, flags.update_force, flags.update_check);
+        return true;
+    }
+
+    // `graff worktree list` / `graff worktree merge <name>`: manage the per-tab
+    // scratch worktrees that -w creates. merge squash-lands a tab's work as one
+    // clean commit on the current branch, then removes the worktree + branch.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "worktree")) {
+        try jobs.worktreeCommand(gpa, io, arena, flags.positionals.items[1..]);
+        return true;
+    }
+
+    // `graff sandboxes [stop <id>]`: list the account's gateway sandboxes or
+    // spin one down. Key resolution mirrors a normal run: CODEGRAFF_API_KEY
+    // env first, else the `graff login` file via loadCodegraffKey.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "sandboxes")) {
+        const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
+            (if (keys_cli.homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
+            std.process.fatal("sandboxes: no codegraff key — run `graff login` first", .{});
+        try cube.sandboxesCommand(io, gpa, arena, cg_key, flags.positionals.items[1..]);
+        return true;
+    }
+
+    // `graff cube [new|status|stop]`: a personal cloud graff — a gateway
+    // sandbox running `graff serve` behind a Daytona preview URL. This is the
+    // broker the iOS app mirrors; any serve client can attach with the
+    // printed base + token.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "cube")) {
+        const cg_key = init.environ_map.get("CODEGRAFF_API_KEY") orelse
+            (if (keys_cli.homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
+            std.process.fatal("cube: no codegraff key — run `graff login` first", .{});
+        try cube.cubeCommand(io, gpa, arena, cg_key, flags.positionals.items[1..]);
+        return true;
+    }
+
+    // `--schema`: print the machine-readable interface and exit. No keys,
+    // network, or MCP — so it works anywhere (CI codegen calls this).
+    if (flags.schema_flag) {
+        var sbuf: [8 * 1024]u8 = undefined;
+        var sw = Io.File.stdout().writer(io, &sbuf);
+        try schema.emitSchema(&sw.interface);
+        return true;
+    }
+    return false;
 }

@@ -17,7 +17,8 @@ const style = &ansi.style;
 const main_mod = @import("main.zig");
 const Agent = main_mod.Agent;
 const Provider = main_mod.Provider;
-const extractText = main_mod.extractText;
+const providers = @import("providers.zig");
+const extractText = providers.extractText;
 
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;

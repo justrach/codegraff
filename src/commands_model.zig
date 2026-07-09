@@ -16,10 +16,12 @@ const Agent = main_mod.Agent;
 const Keys = main_mod.Keys;
 const provider_specs = main_mod.provider_specs;
 const storeKey = main_mod.storeKey;
-const saveThinkingSettings = main_mod.saveThinkingSettings;
-const isLocalUrl = main_mod.isLocalUrl;
-const openAiModelsUrl = main_mod.openAiModelsUrl;
-const fetchOpenAIModels = main_mod.fetchOpenAIModels;
+const repl_glue = @import("repl_glue.zig");
+const saveThinkingSettings = repl_glue.saveThinkingSettings;
+const keys_cli = @import("keys_cli.zig");
+const isLocalUrl = keys_cli.isLocalUrl;
+const openAiModelsUrl = keys_cli.openAiModelsUrl;
+const fetchOpenAIModels = keys_cli.fetchOpenAIModels;
 const harness_version = main_mod.harness_version;
 
 const pricing = @import("pricing.zig");
