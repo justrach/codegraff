@@ -206,6 +206,7 @@ const SteerEntry = repl_glue.SteerEntry; // struct { text: []const u8, force: bo
 pub var g_steer_queue: std.ArrayList(SteerEntry) = .empty; // completed lines
 pub var g_steer_echoed = false; // "↳ steer ›" prefix shown for the current line
 pub var g_steer_visible: std.atomic.Value(bool) = .init(false); // visible live steering row; pauses spinner redraws
+pub var g_steer_lock: std.atomic.Value(bool) = .init(false); // spin-guards g_steer_queue/g_steer_buf mutations across concurrent drainers (main reader + pool esc-watch/watchdog arms) so one submit never flushes as N entries (#129); acquire via repl_glue.steerLock
 pub var g_out: ?*Io.Writer = null; // stdout writer for steer echo (set in main)
 pub var g_gui_mu: Io.Mutex = .init; // serializes --json stdout across pool-thread subagent emits (guiEmit + printDelta)
 pub var g_force_interrupt = false; // Force-prompt path caused the last interrupt (Ctrl-F/double-enter).

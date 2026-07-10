@@ -117,9 +117,19 @@ pub fn escPressed(echo: bool) bool {
             if (main_mod.g_steer_buf.items.len > 0) {
                 // Flush the typed line to the queue as a regular
                 // follow-up (runs after the current turn finishes).
+                // Under steerLock so concurrent drainers serialize; skip an empty
+                // flush (another arm drained it first) or one byte-identical to the
+                // tail, so one submit can't enqueue as N copies each re-steered with
+                // its own harness note (#129).
+                repl_glue.steerLock();
                 if (main_mod.g_steer_buf.toOwnedSlice(std.heap.page_allocator)) |dup| {
-                    main_mod.g_steer_queue.append(std.heap.page_allocator, .{ .text = dup, .force = false }) catch std.heap.page_allocator.free(dup);
+                    if (repl_glue.steerFlushRedundant(main_mod.g_steer_queue.items, dup)) {
+                        std.heap.page_allocator.free(dup);
+                    } else {
+                        main_mod.g_steer_queue.append(std.heap.page_allocator, .{ .text = dup, .force = false }) catch std.heap.page_allocator.free(dup);
+                    }
                 } else |_| main_mod.g_steer_buf.clearRetainingCapacity();
+                repl_glue.steerUnlock();
                 if (echo and main_mod.g_steer_echoed) {
                     var qbuf: [64]u8 = undefined;
                     const qmsg = std.fmt.bufPrint(&qbuf, "  \x1b[2m[queued · {d} waiting]\x1b[0m\n", .{main_mod.g_steer_queue.items.len}) catch "\n";

@@ -284,8 +284,44 @@ pub fn replCancelCb(ctx_ptr: ?*anyopaque) void {
 
 pub const SteerEntry = struct { text: []const u8, force: bool };
 
+/// Spin-lock guarding g_steer_buf/g_steer_queue mutations. The concurrent steer
+/// drainers (the main reader + pool esc-watch/watchdog arms, #129) hold it only
+/// for the tiny queue/buffer critical sections — never across a stdin read/poll
+/// — so it stays uncontended and needs no Io handle (unlike the Io.Mutex used
+/// elsewhere, which the io-less escPressed cannot reach).
+pub fn steerLock() void {
+    while (main_mod.g_steer_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+}
+pub fn steerUnlock() void {
+    main_mod.g_steer_lock.store(false, .release);
+}
+
+/// #129: a completed steer line should be DROPPED (not queued) when it is empty
+/// (another drainer emptied the buffer first) or byte-identical to the entry
+/// already at the tail of the queue — exactly the shape a racing double-flush or
+/// a paste burst produces, which is what enqueued one submit as N re-steered
+/// copies. Pure so it can be unit-tested away from the io-bound escPressed.
+pub fn steerFlushRedundant(queue: []const SteerEntry, text: []const u8) bool {
+    return text.len == 0 or (queue.len > 0 and std.mem.eql(u8, queue[queue.len - 1].text, text));
+}
+
+test "steerFlushRedundant drops empty + consecutive-identical flushes (#129)" {
+    const E = SteerEntry;
+    const none: []const E = &.{};
+    try std.testing.expect(steerFlushRedundant(none, "")); // empty flush
+    try std.testing.expect(!steerFlushRedundant(none, "hello")); // first real line queues
+    const one = [_]E{.{ .text = "hello", .force = false }};
+    try std.testing.expect(steerFlushRedundant(&one, "hello")); // identical to tail -> drop
+    try std.testing.expect(!steerFlushRedundant(&one, "hello world")); // different -> queue
+    const two = [_]E{ .{ .text = "a", .force = false }, .{ .text = "b", .force = false } };
+    try std.testing.expect(steerFlushRedundant(&two, "b")); // identical to TAIL -> drop
+    try std.testing.expect(!steerFlushRedundant(&two, "a")); // matches head not tail -> queue
+}
+
 /// Pops the next queued steering prompt (FIFO), or null if none.
 pub fn popSteer() ?SteerEntry {
+    steerLock();
+    defer steerUnlock();
     if (main_mod.g_steer_queue.items.len == 0) return null;
     return main_mod.g_steer_queue.orderedRemove(0);
 }
@@ -294,6 +330,8 @@ pub fn popSteer() ?SteerEntry {
 /// of each REPL iteration so a partial mid-turn draft never leaks into the
 /// next prompt.
 pub fn resetSteerPartial() void {
+    steerLock();
+    defer steerUnlock();
     main_mod.g_steer_buf.clearRetainingCapacity();
     main_mod.g_steer_echoed = false;
     main_mod.g_steer_visible.store(false, .release);
