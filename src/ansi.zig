@@ -15,6 +15,7 @@ pub const Style = struct {
     red: []const u8 = "",
     green: []const u8 = "",
     yellow: []const u8 = "",
+    magenta: []const u8 = "",
     cyan: []const u8 = "",
 
     pub const ansi: Style = .{
@@ -24,6 +25,7 @@ pub const Style = struct {
         .red = "\x1b[31m",
         .green = "\x1b[32m",
         .yellow = "\x1b[33m",
+        .magenta = "\x1b[35m",
         .cyan = "\x1b[36m",
     };
 };
@@ -39,6 +41,7 @@ test "Style: blank by default, ansi has escape codes" {
     try std.testing.expectEqualStrings("", blank.bold);
     try std.testing.expectEqualStrings("\x1b[0m", Style.ansi.reset);
     try std.testing.expectEqualStrings("\x1b[1m", Style.ansi.bold);
+    try std.testing.expectEqualStrings("\x1b[35m", Style.ansi.magenta);
     try std.testing.expectEqualStrings("\x1b[36m", Style.ansi.cyan);
 }
 

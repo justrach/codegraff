@@ -15,7 +15,9 @@ by running there or by code review â€” this raises the bar as far as a test can.
 Usage:  python3 scripts/test-pty-spinner.py [path-to-graff]
 Exit 0 = clean, 1 = a forbidden glyph (or a broken render) was found.
 """
-import os, sys, pty, select
+import os, sys
+
+from pty_harness import run_to_exit
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 # absolute, so the child's chdir() to another cwd can't break the exec lookup
@@ -28,31 +30,14 @@ THRESHOLD = 0x10000  # supplementary plane: no legit spinner glyph lives here; ð
 
 
 def render_in_pty(cwd):
-    """Run `graff --selftest-spinner` in a PTY rooted at cwd; return captured bytes."""
-    pid, fd = pty.fork()
-    if pid == 0:  # child: real TTY on the slave end
-        try:
-            os.chdir(cwd)
-            os.execvp(GRAFF, [GRAFF, "--selftest-spinner"])
-        except Exception:
-            os._exit(127)
-    out = bytearray()
-    while True:
-        try:
-            r, _, _ = select.select([fd], [], [], 15.0)
-            if not r:
-                break
-            chunk = os.read(fd, 65536)
-            if not chunk:
-                break
-            out += chunk
-        except OSError:
-            break
-    try:
-        os.waitpid(pid, 0)
-    except OSError:
-        pass
-    return bytes(out)
+    """Run the spinner hook in the shared real-PTY harness."""
+    return run_to_exit(
+        GRAFF,
+        ["--selftest-spinner"],
+        cwd=cwd,
+        env={"LMSTUDIO_API_KEY": os.environ["LMSTUDIO_API_KEY"]},
+        timeout=15.0,
+    )
 
 
 def scan(raw):
@@ -72,9 +57,15 @@ def main():
             cwds.append(c)
     failures = 0
     for cwd in cwds:
-        raw = render_in_pty(cwd)
-        bad, lines, ok = scan(raw)
-        if bad:
+        result = render_in_pty(cwd)
+        bad, lines, ok = scan(result.raw)
+        if result.timed_out:
+            print(f"FAIL  cwd={cwd}: PTY render timed out")
+            failures += 1
+        elif result.exit_code != 0:
+            print(f"FAIL  cwd={cwd}: spinner exited {result.exit_code}")
+            failures += 1
+        elif bad:
             glyphs = ", ".join(f"U+{c:X}" for c in bad)
             print(f"FAIL  cwd={cwd}: {len(bad)} supplementary-plane glyph(s) rendered: {glyphs}")
             failures += 1
