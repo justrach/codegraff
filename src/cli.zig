@@ -21,10 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
-    \\0.0.190
-    \\  • Codex model discovery now uses Graff's supported Codex client version
-    \\  • Older installed Codex CLIs and incompatible caches can no longer hide Sol
-    \\  • `graff models refresh` reports whether the live account fetch succeeded
+    \\0.0.191
+    \\  • `/effort` now opens Codex's six-level reasoning picker in the REPL
+    \\  • Extra high, Max, and Ultra work through slash commands and JSON controls
+    \\  • Ultra combines maximum server reasoning with automatic task delegation
     \\
 ;
 

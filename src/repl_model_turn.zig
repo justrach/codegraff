@@ -47,7 +47,7 @@ pub fn startJob(self: *Model) void {
             .effort = self.effort,
             .fast = self.fast,
             .thinking = self.thinking_show,
-            .ultracode = self.ultracode,
+            .ultracode = self.ultracode or self.effort == .ultra,
             .goal = self.goal orelse "",
         },
         .stream = .{ .buf = self.alloc.alloc(u8, 256 * 1024) catch &.{} },

@@ -469,7 +469,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             // Responses `reasoning.effort` set in the branch below.
             if (self.effortApplies() and !self.effort_rejected) {
                 try s.objectField("reasoning_effort");
-                try s.write(@tagName(self.reasoning));
+                try s.write(if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
             }
             // Kimi K2.7's model card recommends temperature 1.0 + top_p 0.95
             // for its (always-on) Thinking mode; graff otherwise leaves
@@ -508,7 +508,9 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             try s.objectField("reasoning");
             try s.beginObject();
             try s.objectField("effort");
-            try s.write(@tagName(self.reasoning));
+            // Ultra is a Graff/Codex client preset: maximum server reasoning
+            // plus automatic delegation. The backend wire value is `max`.
+            try s.write(if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
             try s.endObject();
             try s.objectField("include");
             try s.beginArray();

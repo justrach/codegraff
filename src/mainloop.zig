@@ -209,16 +209,10 @@ pub fn run(ctx: *Ctx) !void {
             }
             if (std.mem.eql(u8, rtype, "set_effort")) {
                 const level = if (parsed.object.get("level")) |v| (if (v == .string) v.string else "") else "";
-                if (std.mem.eql(u8, level, "low")) {
-                    ctx.root.reasoning = .low;
-                } else if (std.mem.eql(u8, level, "medium")) {
-                    ctx.root.reasoning = .medium;
-                } else if (std.mem.eql(u8, level, "high")) {
-                    ctx.root.reasoning = .high;
-                } else {
-                    ctx.root.emit(.{ .type = "error", .message = "set_effort needs level 'low', 'medium', or 'high'" });
+                ctx.root.reasoning = std.meta.stringToEnum(main_mod.ReasoningEffort, level) orelse {
+                    ctx.root.emit(.{ .type = "error", .message = "set_effort needs level low|medium|high|xhigh|max|ultra" });
                     continue;
-                }
+                };
                 _ = repl_glue.saveThinkingSettings(ctx.root.io, ctx.root.gpa, ctx.root.reasoning, ctx.root.fast, ctx.root.ultracode_mode, ctx.root.show_thinking, ctx.root.ai_title);
                 ctx.root.emit(.{ .type = "effort", .ok = true, .level = level, .applies = ctx.root.effortApplies() });
                 continue;
@@ -408,7 +402,7 @@ pub fn run(ctx: *Ctx) !void {
         }
 
         // "ultracode" codeword or persistent /ultracode mode: opt turns into multi-agent workflow mode.
-        const ultracode_msg = try pickers.applyUltracodeSteering(ctx.arena, msg, ctx.root.ultracode_mode);
+        const ultracode_msg = try pickers.applyUltracodeSteering(ctx.arena, msg, ctx.root.ultracode_mode or ctx.root.reasoning == .ultra);
         if (ultracode_msg.explicit) {
             if (!main_mod.json_mode) {
                 if (ctx.interactive) {

@@ -11,7 +11,7 @@ pub const HELP_CHAT =
     \\  /help /clear /new /quit          conversation
     \\  /rewind /compact /cost           history
     \\  /model [name] /models            model (switch / list)
-    \\  /effort low|med|high  /reasoning reasoning depth
+    \\  /effort low|med|high|xhigh|max|ultra   reasoning depth
     \\  /fast /thinking /ultracode       thinking controls (toggles)
     \\  /goal <text>                     standing objective (tracked as a checklist)
     \\  /plan /strict /yolo /keepcontext /title   modes

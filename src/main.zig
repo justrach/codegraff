@@ -142,7 +142,7 @@ const telemetry = @import("telemetry.zig");
 pub var g_fleet: bool = true;
 const unixMs = util.unixMs;
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
-pub const ReasoningEffort = enum { low, medium, high };
+pub const ReasoningEffort = enum { low, medium, high, xhigh, max, ultra };
 pub const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/thinking", "/title", "/reasoning", "/strict", "/yolo", "/trace", "/fleet", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/theme", "/mcp", "/help" };
 // Lifecycle hooks (Hook/Hooks config types + settings loader + per-hook subprocess runner) live in hooks.zig; g_hooks below, dispatch, and the codedb-guard cache stay here.
 const hooks = @import("hooks.zig");

@@ -53,10 +53,11 @@ pub fn runCommand(self: *Model, line: []const u8) void {
     } else if (std.mem.eql(u8, cmd, "/models")) {
         if (repl.g_models.len > 0) self.pushFmt(.info, "available models:\n  {s}\nswitch with /model <name>", .{repl.g_models}) catch {} else self.push(.info, "no model table (offline mode)") catch {};
     } else if (eqlAny(cmd, &.{ "/effort", "/reasoning" })) {
-        if (std.mem.eql(u8, arg, "low")) self.effort = .low else if (std.mem.eql(u8, arg, "high")) self.effort = .high else if (std.mem.eql(u8, arg, "medium") or std.mem.eql(u8, arg, "med")) self.effort = .medium else {
-            self.push(.info, "usage: /effort low|medium|high") catch {};
+        const normalized = if (std.mem.eql(u8, arg, "med")) "medium" else if (std.mem.eql(u8, arg, "extra") or std.mem.eql(u8, arg, "extra-high") or std.mem.eql(u8, arg, "extra high")) "xhigh" else arg;
+        self.effort = std.meta.stringToEnum(repl.Effort, normalized) orelse {
+            self.push(.info, "usage: /effort low|medium|high|xhigh|max|ultra") catch {};
             return;
-        }
+        };
         self.pushFmt(.info, "reasoning effort: {s}", .{@tagName(self.effort)}) catch {};
     } else if (std.mem.eql(u8, cmd, "/fast")) {
         self.fast = parseToggle(arg, self.fast);
