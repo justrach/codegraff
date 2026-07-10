@@ -1,7 +1,8 @@
 //! Model pricing, catalog, and the session cost tally — the first module
 //! split out of main.zig (#123). Pure tables + functions over std only:
-//! provider wiring (ProviderSpec/Keys) stays in main.zig, so the one
-//! routine that needs key state (resolveModelName) takes it as `anytype`.
+//! provider wiring (Provider/Keys) lives in provider.zig, so the one
+//! routine that needs key state (resolveModelName) takes it as `anytype`
+//! (its own co-located test back-imports main for Keys/provider_specs).
 
 const std = @import("std");
 const Io = std.Io;
@@ -15,8 +16,15 @@ pub const ModelPrice = struct { name: []const u8, in: f64, out: f64, cache: f64 
 pub const price_table = [_]ModelPrice{
     .{ .name = "deepseek-v4-pro", .in = 1.1, .out = 2.2, .cache = 0.11 },
     .{ .name = "deepseek-v4-flash", .in = 0.14, .out = 0.28, .cache = 0.028 },
+    .{ .name = "gpt-5.6", .in = 5, .out = 30, .cache = 0.5 }, // Sol / flagship (models.dev 2026-07-09)
+    .{ .name = "gpt-5.6-terra", .in = 2.5, .out = 15, .cache = 0.25 },
+    .{ .name = "gpt-5.6-luna", .in = 1, .out = 6, .cache = 0.1 },
     .{ .name = "gpt-5.5", .in = 5, .out = 30, .cache = 0.5 },
     .{ .name = "gpt-5.5-codex", .in = 1.25, .out = 10, .cache = 0.125 },
+    .{ .name = "gpt-5.4", .in = 2.5, .out = 15, .cache = 0.25 },
+    .{ .name = "gpt-5.4-mini", .in = 0.75, .out = 4.5, .cache = 0.075 },
+    .{ .name = "gpt-5.3-codex", .in = 1.75, .out = 14, .cache = 0.175 },
+    .{ .name = "gpt-5.2", .in = 1.75, .out = 14, .cache = 0.175 },
     .{ .name = "gpt-5-codex", .in = 1.25, .out = 10, .cache = 0.125 },
     .{ .name = "claude-opus-4-8", .in = 15, .out = 75, .cache = 1.5 },
     .{ .name = "claude-opus-4.8", .in = 15, .out = 75, .cache = 1.5 },
@@ -39,7 +47,14 @@ pub const price_table = [_]ModelPrice{
     .{ .name = "glm-4.5", .in = 0.6, .out = 2.2, .cache = 0.06 },
 };
 
+/// Runtime price overlay populated by `graff models refresh` (models.dev
+/// cache, see models_cache.zig): consulted before the baked-in table so a
+/// refresh keeps prices current without a rebuild. Empty by default → the
+/// baked table is the sole source offline and on a fresh install.
+pub var price_overlay: []const ModelPrice = &.{};
+
 pub fn priceFor(model: []const u8) ?ModelPrice {
+    for (price_overlay) |p| if (std.mem.eql(u8, p.name, model)) return p;
     for (price_table) |p| if (std.mem.eql(u8, p.name, model)) return p;
     return null;
 }
@@ -124,9 +139,8 @@ pub const ModelInfo = struct {
     context: u64,
 };
 
-// Codex/ChatGPT backend: gpt-5.x window is 272k (codex-rs models.json); budget
-// 270k so compaction (80% -> 216k) fires just under the hard cap and absorbs our
-// token under-count (a turn displaying 270k still 400'd). Not the API's 1.05M.
+// Conservative fallback when Codex's live catalog is unavailable. Normal
+// sessions replace every baked Codex row from the authenticated /models cache.
 pub const codex_context_window: u64 = 270_000;
 
 pub const model_table = [_]ModelInfo{
@@ -147,9 +161,13 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "deepseek", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-chat", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-reasoner", .context = 1_000_000 },
+    .{ .provider = "openai", .name = "gpt-5.6", .context = 1_050_000 },
+    .{ .provider = "openai", .name = "gpt-5.6-terra", .context = 1_050_000 },
+    .{ .provider = "openai", .name = "gpt-5.6-luna", .context = 1_050_000 },
     .{ .provider = "openai", .name = "gpt-5.5", .context = 1_050_000 },
     .{ .provider = "openai", .name = "gpt-5.4", .context = 1_050_000 },
     .{ .provider = "openai", .name = "gpt-5.4-pro", .context = 1_050_000 },
+    .{ .provider = "openai", .name = "gpt-5.4-mini", .context = 400_000 },
     .{ .provider = "openai", .name = "gpt-5.2", .context = 400_000 },
     .{ .provider = "openai", .name = "gpt-5-codex", .context = 400_000 },
     .{ .provider = "minimax", .name = "MiniMax-M3", .context = 512_000 },
@@ -159,7 +177,13 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "xiaomi", .name = "mimo-v2.5", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2.5-pro-ultraspeed", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2-flash", .context = 262_144 },
+    // Offline fallback only. At startup models_cache.zig replaces the entire
+    // Codex slice from the account-scoped /models response (5-minute cache).
     .{ .provider = "codex", .name = "gpt-5.5", .context = codex_context_window },
+    .{ .provider = "codex", .name = "gpt-5.4", .context = codex_context_window },
+    .{ .provider = "codex", .name = "gpt-5.4-mini", .context = codex_context_window },
+    .{ .provider = "codex", .name = "gpt-5.3-codex", .context = codex_context_window },
+    .{ .provider = "codex", .name = "gpt-5.2", .context = codex_context_window },
     // Sakana AI — Fugu (OpenAI-compatible chat/completions). `fugu` is the fast
     // mini model, `fugu-ultra` the multi-agent reasoning conductor. Sakana does
     // not publish a context window; use the harness's conservative 200k default
@@ -205,19 +229,66 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "zai", .name = "glm-4.5", .context = 131_072 },
 };
 
+/// Active catalog for routing, pickers, completion, and runtime listings.
+/// It starts with the offline table above; authenticated Codex discovery swaps
+/// only the Codex rows while keeping every other provider unchanged.
+pub var active_model_table: []const ModelInfo = model_table[0..];
+
+pub fn models() []const ModelInfo {
+    return active_model_table;
+}
+
+/// Codex's first visible account model is its dynamic default, matching
+/// openai/codex's priority-sorted picker. Other providers retain their baked
+/// default; the supplied fallback also covers offline Codex startup.
+pub fn providerDefaultModel(provider_id: []const u8, fallback: []const u8) []const u8 {
+    if (!std.mem.eql(u8, provider_id, "codex")) return fallback;
+    for (models()) |model| if (std.mem.eql(u8, model.provider, "codex")) return model.name;
+    return fallback;
+}
+
+pub fn activateCodexModels(arena: std.mem.Allocator, discovered: []const ModelInfo) bool {
+    if (discovered.len == 0) return false;
+    var non_codex: usize = 0;
+    for (model_table) |m| if (!std.mem.eql(u8, m.provider, "codex")) {
+        non_codex += 1;
+    };
+    const combined = arena.alloc(ModelInfo, non_codex + discovered.len) catch return false;
+    var n: usize = 0;
+    for (model_table) |m| {
+        if (std.mem.eql(u8, m.provider, "codex")) continue;
+        combined[n] = m;
+        n += 1;
+    }
+    @memcpy(combined[n..], discovered);
+    active_model_table = combined;
+    return true;
+}
+
 pub const default_context = 200_000;
+
+/// Runtime context-window overlay from `graff models refresh` (name-keyed;
+/// models.dev has no per-graff-provider rows). Consulted after the baked-in
+/// provider-specific row (so gateway/codex windows stay authoritative) but
+/// before the baked name-only fallback, so a refresh can widen a model graff
+/// only knows by name. Empty by default.
+pub var context_overlay: []const ModelInfo = &.{};
 
 /// Context window for a model as served by a specific provider; falls back
 /// to any provider's row for the name, then to the conservative default.
 pub fn contextFor(provider_id: []const u8, model: []const u8) u64 {
     const is_codex = std.mem.eql(u8, provider_id, "codex");
-    for (model_table) |m| {
+    // Provider-specific baked row is authoritative (gateway gpt-5.5 = 400k, not
+    // the API's 1.05M), so it wins over the fresh name-only overlay below.
+    for (models()) |m| {
         if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model)) return m.context;
     }
-    // Name-only fallback: another provider's row may advertise a far larger
-    // window (e.g. the OpenAI API's gpt-5.5 = 1.05M) that the Codex backend
-    // can't honor — cap codex routes at codex_context_window.
-    for (model_table) |m| {
+    // Fresh overlay (models.dev refresh), then the baked name-only fallback. A
+    // name-only window may exceed what the Codex backend honors — cap codex.
+    for (context_overlay) |m| {
+        if (std.mem.eql(u8, m.name, model)) return if (is_codex) @min(m.context, codex_context_window) else m.context;
+    }
+    for (models()) |m| {
         if (std.mem.eql(u8, m.name, model)) return if (is_codex) @min(m.context, codex_context_window) else m.context;
     }
     return default_context;
@@ -248,12 +319,12 @@ pub fn modelAliasEquals(name: []const u8, query: []const u8) bool {
 /// `keys` is main.zig's Keys (anytype to keep provider wiring out of this
 /// module) — anything with `get(provider_id) ?[]const u8`.
 pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
-    for (model_table) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
-    for (model_table) |m| if (modelAliasEquals(m.name, query)) return m.name;
+    for (models()) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
+    for (models()) |m| if (modelAliasEquals(m.name, query)) return m.name;
     var qbuf: [128]u8 = undefined;
     const qnorm = normalizeModelAlias(&qbuf, query);
     var fallback: ?[]const u8 = null;
-    for (model_table) |m| {
+    for (models()) |m| {
         var nbuf: [128]u8 = undefined;
         const nnorm = normalizeModelAlias(&nbuf, m.name);
         if (std.ascii.indexOfIgnoreCase(m.name, query) == null and std.mem.indexOf(u8, nnorm, qnorm) == null) continue;
@@ -263,15 +334,15 @@ pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
     return fallback;
 }
 
-/// Exact membership test against the comptime model table — used to ignore a
+/// Exact membership test against the active model table — used to ignore a
 /// remembered startup model that no provider actually serves.
 pub fn modelInTable(name: []const u8) bool {
-    for (model_table) |m| if (std.mem.eql(u8, m.name, name)) return true;
+    for (models()) |m| if (std.mem.eql(u8, m.name, name)) return true;
     return false;
 }
 
 pub fn providerModelInTable(provider_id: []const u8, model: []const u8) bool {
-    for (model_table) |m| {
+    for (models()) |m| {
         if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model)) return true;
     }
     return false;
@@ -282,20 +353,56 @@ test "contextFor known model and default fallback" {
     try std.testing.expectEqual(@as(u64, default_context), contextFor("nope", "unknown-xyz"));
 }
 
-test "codex catalog excludes unsupported codex-suffixed models" {
-    var has_codex_gpt55 = false;
-    for (model_table) |model| {
-        if (!std.mem.eql(u8, model.provider, "codex")) continue;
-        try std.testing.expect(!std.mem.eql(u8, model.name, "gpt-5.5-codex"));
-        try std.testing.expect(!std.mem.eql(u8, model.name, "gpt-5-codex"));
-        if (std.mem.eql(u8, model.name, "gpt-5.5")) has_codex_gpt55 = true;
-    }
-    try std.testing.expect(has_codex_gpt55);
+test "Codex discovery replaces only the baked Codex fallback" {
+    const saved = active_model_table;
+    defer active_model_table = saved;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const discovered = [_]ModelInfo{
+        .{ .provider = "codex", .name = "future-sol", .context = 372_000 },
+        .{ .provider = "codex", .name = "future-luna", .context = 128_000 },
+    };
+    try std.testing.expect(activateCodexModels(arena_state.allocator(), &discovered));
+    try std.testing.expect(providerModelInTable("codex", "future-sol"));
+    try std.testing.expect(providerModelInTable("codex", "future-luna"));
+    try std.testing.expect(!providerModelInTable("codex", "gpt-5.5"));
+    try std.testing.expectEqual(@as(u64, 372_000), contextFor("codex", "future-sol"));
+    try std.testing.expectEqualStrings("future-sol", providerDefaultModel("codex", "fallback"));
+    try std.testing.expect(providerModelInTable("openai", "gpt-5.6"));
+}
+
+test "baked Codex catalog is an offline fallback, not rollout data" {
+    try std.testing.expect(providerModelInTable("codex", "gpt-5.5"));
+    try std.testing.expect(providerModelInTable("codex", "gpt-5.4"));
+    try std.testing.expect(providerModelInTable("codex", "gpt-5.3-codex"));
+    try std.testing.expect(providerModelInTable("codex", "gpt-5.2"));
     try std.testing.expect(!providerModelInTable("codex", "gpt-5.5-codex"));
     try std.testing.expect(!providerModelInTable("codex", "gpt-5-codex"));
     try std.testing.expect(providerModelInTable("openai", "gpt-5-codex"));
-    try std.testing.expect(!providerModelInTable("codex", "gpt-5.2"));
-    try std.testing.expect(providerModelInTable("openai", "gpt-5.2"));
+    try std.testing.expect(providerModelInTable("openai", "gpt-5.6"));
+}
+
+test "every provider default_model is catalog-present for that provider" {
+    // Guards the codex/openai gpt-5.6 default flip (and any future one): a
+    // provider whose default_model isn't in model_table would boot on a model
+    // contextFor()/routing can't resolve.
+    const specs = @import("provider.zig").provider_specs;
+    for (specs) |spec|
+        try std.testing.expect(providerModelInTable(spec.id, spec.default_model));
+}
+
+test "refresh overlay augments price/context lookups (codex cap still applies)" {
+    const saved_p = price_overlay;
+    const saved_c = context_overlay;
+    defer price_overlay = saved_p;
+    defer context_overlay = saved_c;
+    const po = [_]ModelPrice{.{ .name = "future-model-x", .in = 9, .out = 9, .cache = 1 }};
+    const co = [_]ModelInfo{.{ .provider = "", .name = "future-model-x", .context = 999_000 }};
+    price_overlay = &po;
+    context_overlay = &co;
+    try std.testing.expect(priceFor("future-model-x") != null);
+    try std.testing.expectEqual(@as(u64, 999_000), contextFor("openai", "future-model-x"));
+    try std.testing.expectEqual(codex_context_window, contextFor("codex", "future-model-x"));
 }
 
 test "billingFor: subscription, priced, unpriced classification" {
@@ -323,4 +430,14 @@ test "priceFor: known model priced, unknown is null" {
     try std.testing.expect(priceFor("gpt-5.5") != null);
     try std.testing.expect(priceFor("claude-opus-4-8") != null);
     try std.testing.expect(priceFor("no-such-model") == null);
+}
+
+test "resolveModelName exact aliases and miss" {
+    const provider_mod = @import("provider.zig");
+    const Keys = provider_mod.Keys;
+    const provider_specs = provider_mod.provider_specs;
+    const keys = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    try std.testing.expect(resolveModelName(keys, "gpt-5.5") != null); // exact name
+    try std.testing.expectEqualStrings("glm-5.2", resolveModelName(keys, "glm5.2").?); // natural alias
+    try std.testing.expect(resolveModelName(keys, "totally-unknown-zzz") == null);
 }

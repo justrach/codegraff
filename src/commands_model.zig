@@ -1,0 +1,483 @@
+//! Model/provider/thinking slash commands, split out of main.zig's
+//! handleCommand (600-line goal, issue #123): /model /compact /rewind /fast
+//! /thinking /title /ultracode /effort /keepcontext /key /login /image
+//! /paste /strict.
+
+const std = @import("std");
+const Io = std.Io;
+const Value = std.json.Value;
+const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
+
+const ansi = @import("ansi.zig");
+const style = &ansi.style;
+const main_mod = @import("main.zig");
+const agent_mod = @import("agent.zig");
+const provider_mod = @import("provider.zig");
+const Agent = agent_mod.Agent;
+const Keys = provider_mod.Keys;
+const provider_specs = provider_mod.provider_specs;
+const storeKey = keys_cli.storeKey;
+const repl_glue = @import("repl_glue.zig");
+const saveThinkingSettings = repl_glue.saveThinkingSettings;
+const keys_cli = @import("keys_cli.zig");
+const isLocalUrl = keys_cli.isLocalUrl;
+const openAiModelsUrl = keys_cli.openAiModelsUrl;
+const fetchOpenAIModels = keys_cli.fetchOpenAIModels;
+const harness_version = main_mod.harness_version;
+
+const pricing = @import("pricing.zig");
+const resolveModelName = pricing.resolveModelName;
+
+const pickers = @import("pickers.zig");
+const modelPicker = pickers.modelPicker;
+const PickItem = pickers.PickItem;
+const listPicker = pickers.listPicker;
+const pickUltracodeMode = pickers.pickUltracodeMode;
+const reloadLoginKey = pickers.reloadLoginKey;
+const offerProviderAuth = pickers.offerProviderAuth;
+
+const providers = @import("providers.zig");
+const switchProvider = providers.switchProvider;
+
+const oauth = @import("oauth.zig");
+
+const vision = @import("vision.zig");
+const stageImagePath = vision.stageImagePath;
+const visionCapable = vision.visionCapable;
+const grabClipboardImage = vision.grabClipboardImage;
+
+/// Try to handle a model/provider/thinking slash command. Returns false (line
+/// unhandled) if `line` doesn't match any command in this file.
+pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
+    if (std.mem.startsWith(u8, line, "/model") and !std.mem.startsWith(u8, line, "/models")) {
+        const arg = std.mem.trim(u8, line["/model".len..], " \t");
+        if (arg.len == 0) {
+            if (main_mod.use_color) { // interactive TTY → fuzzy picker
+                if (modelPicker(root, keys, arena, out)) |idx| {
+                    const m = pricing.models()[idx];
+                    const provider = keys.providerById(m.provider, m.name) catch {
+                        try offerProviderAuth(root, keys, arena, out, m.provider, m.name);
+                        return true;
+                    };
+                    try switchProvider(root, arena, provider, out);
+                }
+                return true;
+            }
+            try out.print("current model: {s}{s}{s} via {s}\n", .{ style.cyan, root.provider.model, style.reset, root.provider.id });
+            try out.writeAll("switch with /model <name> or /model <provider>:\n");
+            for (provider_specs) |spec| {
+                const keyed = keys.get(spec.id) != null;
+                const default_model = pricing.providerDefaultModel(spec.id, spec.default_model);
+                try out.print("  {s} {s:<10}{s}  default {s}\n", .{
+                    if (keyed) "✓" else "·",
+                    spec.id,
+                    if (keyed) "" else "  (no key)",
+                    default_model,
+                });
+            }
+            try out.print("{s}add a key now:  /key <provider> <key>   ·   full model list: /models{s}\n", .{ style.dim, style.reset });
+            try out.flush();
+            return true;
+        }
+        // `/model <provider> <model>` or `/model <provider>/<model>`: pin a
+        // model to a SPECIFIC provider (e.g. `/model codex gpt-5.5` to force
+        // codex when codegraff also serves gpt-5.5).
+        if (std.mem.indexOfAny(u8, arg, " /\t")) |i| {
+            const pid = arg[0..i];
+            const mdl = std.mem.trim(u8, arg[i + 1 ..], " \t");
+            for (provider_specs) |spec| {
+                if (!std.mem.eql(u8, spec.id, pid) or mdl.len == 0) continue;
+                const m = try arena.dupe(u8, mdl);
+                const provider = keys.providerById(pid, m) catch {
+                    try offerProviderAuth(root, keys, arena, out, pid, m);
+                    return true;
+                };
+                try switchProvider(root, arena, provider, out);
+                return true;
+            }
+        }
+        // If the query names a provider (e.g. "openai"), switch to THAT
+        // provider on its default model — not the priority router's pick.
+        for (provider_specs) |spec| {
+            if (!std.mem.eql(u8, spec.id, arg)) continue;
+            // Local OpenAI-compatible servers (LM Studio :1234, mlx-lm :8080) serve a
+            // live, user-loaded model set — list what's actually there instead of a
+            // baked default. One loaded → switch straight to it; many → list to pick.
+            if (isLocalUrl(spec.url)) {
+                const key = keys.get(spec.id) orelse {
+                    try offerProviderAuth(root, keys, arena, out, spec.id, pricing.providerDefaultModel(spec.id, spec.default_model));
+                    return true;
+                };
+                const murl = openAiModelsUrl(arena, spec.url);
+                const models = fetchOpenAIModels(root.io, root.gpa, arena, murl, key);
+                if (models.len == 0) {
+                    try out.print("{s}{s}: no models at {s} — start the server and load a model{s}\n", .{ style.yellow, spec.id, murl, style.reset });
+                    try out.flush();
+                    return true;
+                }
+                if (models.len == 1) {
+                    try switchProvider(root, arena, keys.build(spec, key, try arena.dupe(u8, models[0])), out);
+                    return true;
+                }
+                try out.print("{s}{s} models{s} — pick with {s}/model {s} <id>{s}:\n", .{ style.bold, spec.id, style.reset, style.cyan, spec.id, style.reset });
+                for (models) |id| try out.print("  {s}{s}{s}\n", .{ style.cyan, id, style.reset });
+                try out.flush();
+                return true;
+            }
+            const default_model = pricing.providerDefaultModel(spec.id, spec.default_model);
+            const provider = keys.providerById(spec.id, default_model) catch {
+                try offerProviderAuth(root, keys, arena, out, spec.id, default_model);
+                return true;
+            };
+            try switchProvider(root, arena, provider, out);
+            return true;
+        }
+        const resolved = resolveModelName(keys.*, arg);
+        const name = try arena.dupe(u8, resolved orelse arg);
+        const provider = keys.providerFor(name) catch {
+            for (pricing.models()) |mt| if (std.mem.eql(u8, mt.name, name)) {
+                try offerProviderAuth(root, keys, arena, out, mt.provider, name);
+                return true;
+            };
+            try out.writeAll("no API key for any provider serving that model — see /models, or add one with /key <provider> <key>\n");
+            try out.flush();
+            return true;
+        };
+        try switchProvider(root, arena, provider, out);
+        if (resolved == null) {
+            // Not in the model table: providerFor routed it to the claude*/
+            // gateway fallback. Say so — the API will reject a typo'd name.
+            try out.print("{s}⚠ '{s}' isn't in the model table — sent to {s} as-is; the first request will fail if it doesn't exist (/models lists known names){s}\n", .{ style.dim, name, provider.id, style.reset });
+            try out.flush();
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, line, "/compact")) {
+        _ = root.compact() catch |err| switch (err) {
+            error.ApiError => {},
+            else => |e| return e,
+        };
+        return true;
+    }
+    if (std.mem.startsWith(u8, line, "/rewind")) {
+        // Conversation rewind (à la Claude Code): drop a past prompt and
+        // everything after it, so you can branch from an earlier point.
+        // Human turns are user messages whose content is a plain string
+        // (tool-result user messages carry a content array).
+        const arg = std.mem.trim(u8, line["/rewind".len..], " \t");
+        var turns: std.ArrayList(usize) = .empty;
+        defer turns.deinit(root.gpa);
+        for (root.messages.items, 0..) |m, i| {
+            if (m != .object) continue;
+            const role = if (m.object.get("role")) |r| (if (r == .string) r.string else "") else "";
+            if (!std.mem.eql(u8, role, "user")) continue;
+            if (m.object.get("content")) |c| if (c == .string) try turns.append(root.gpa, i);
+        }
+        if (turns.items.len == 0) {
+            try out.writeAll("nothing to rewind — no prompts in this conversation yet\n");
+            try out.flush();
+            return true;
+        }
+        if (arg.len == 0) {
+            try out.writeAll("rewind to before which prompt?\n");
+            for (turns.items, 1..) |idx, n| {
+                var snip = if (root.messages.items[idx].object.get("content")) |c| (if (c == .string) c.string else "[image]") else "";
+                if (std.mem.indexOfScalar(u8, snip, '\n')) |nl| snip = snip[0..nl];
+                const shown = if (snip.len > 70) snip[0..70] else snip;
+                try out.print("  {s}{d}{s}: {s}{s}\n", .{ style.cyan, n, style.reset, shown, if (snip.len > 70) "…" else "" });
+            }
+            try out.print("{s}usage: /rewind <n> — drops prompt <n>+after and reverts its write_file/edit_file changes (bash edits aren't tracked){s}\n", .{ style.dim, style.reset });
+            try out.flush();
+            return true;
+        }
+        const n = std.fmt.parseInt(usize, arg, 10) catch 0;
+        if (n < 1 or n > turns.items.len) {
+            try out.print("invalid — pick 1..{d} (see /rewind)\n", .{turns.items.len});
+            try out.flush();
+            return true;
+        }
+        const cut = turns.items[n - 1];
+        const dropped = root.messages.items.len - cut;
+        root.messages.items.len = cut; // truncate (entries are arena-owned)
+        root.last_context_tokens = 0;
+        // Restore files written/edited during the rewound turns, and re-point the
+        // turn counter so the next prompt re-takes turn n.
+        var restored: usize = 0;
+        if (root.snapshots) |snaps| {
+            restored = snaps.restore(@intCast(n));
+            snaps.turn = @intCast(n - 1);
+        }
+        try out.print("⏪ rewound to before prompt {d} — dropped {d} message(s)", .{ n, dropped });
+        if (restored > 0) {
+            try out.print(", restored {d} file(s)", .{restored});
+        } else {
+            try out.print("{s} (no tracked file changes){s}", .{ style.dim, style.reset });
+        }
+        try out.writeAll("\n");
+        try out.flush();
+        return true;
+    }
+    if (std.mem.eql(u8, line, "/fast") or std.mem.eql(u8, line, "/fast on") or std.mem.eql(u8, line, "/fast off")) {
+        root.fast = if (std.mem.eql(u8, line, "/fast on")) true else if (std.mem.eql(u8, line, "/fast off")) false else !root.fast;
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        try out.print("fast mode: {s}{s}\n", .{
+            if (root.fast) "on" else "off",
+            if (root.provider.kind != .responses) " (codex only — current model ignores it)" else "",
+        });
+        try out.flush();
+        return true;
+    }
+    if (std.mem.eql(u8, line, "/thinking") or std.mem.eql(u8, line, "/thinking on") or std.mem.eql(u8, line, "/thinking off")) {
+        root.show_thinking = if (std.mem.eql(u8, line, "/thinking on")) true else if (std.mem.eql(u8, line, "/thinking off")) false else !root.show_thinking;
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        try out.print("thinking: {s} ({s}){s}\n", .{
+            if (root.show_thinking) "shown" else "collapsed",
+            if (root.show_thinking) "stream reasoning live" else "spinner only",
+            if (saved) "" else " (not persisted)",
+        });
+        try out.flush();
+        return true;
+    }
+    if (std.mem.eql(u8, line, "/title") or std.mem.eql(u8, line, "/title on") or std.mem.eql(u8, line, "/title off")) {
+        root.ai_title = if (std.mem.eql(u8, line, "/title on")) true else if (std.mem.eql(u8, line, "/title off")) false else !root.ai_title;
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        try out.print("AI session title: {s} ({s}){s}\n", .{
+            if (root.ai_title) "on" else "off",
+            if (root.ai_title) "name the tab from your first prompt" else "use the prompt text verbatim",
+            if (saved) "" else " (not persisted)",
+        });
+        try out.flush();
+        return true;
+    }
+    if (std.mem.eql(u8, line, "/ultracode") or std.mem.startsWith(u8, line, "/ultracode ")) {
+        const arg = std.mem.trim(u8, line["/ultracode".len..], " \t\r\n");
+        const next = if (arg.len == 0) blk: {
+            if (main_mod.use_color and root.in != null) {
+                break :blk pickUltracodeMode(root, arena, out) orelse return true;
+            }
+            try out.writeAll("usage: /ultracode on|off\n");
+            try out.flush();
+            return true;
+        } else if (std.mem.eql(u8, arg, "on"))
+            true
+        else if (std.mem.eql(u8, arg, "off"))
+            false
+        else {
+            try out.writeAll("usage: /ultracode on|off\n");
+            try out.flush();
+            return true;
+        };
+        root.ultracode_mode = next;
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        try out.print("ultracode mode: {s}{s}\n", .{ if (root.ultracode_mode) "on" else "off", if (saved) "" else " (not persisted)" });
+        try out.flush();
+        return true;
+    }
+    if (std.mem.startsWith(u8, line, "/effort") or std.mem.startsWith(u8, line, "/reasoning")) {
+        const prefix: []const u8 = if (std.mem.startsWith(u8, line, "/effort")) "/effort" else "/reasoning";
+        const arg = std.mem.trim(u8, line[prefix.len..], " \t");
+        if (std.mem.eql(u8, arg, "low")) {
+            root.reasoning = .low;
+        } else if (std.mem.eql(u8, arg, "medium") or std.mem.eql(u8, arg, "med")) {
+            root.reasoning = .medium;
+        } else if (std.mem.eql(u8, arg, "high")) {
+            root.reasoning = .high;
+        } else if (arg.len != 0) {
+            try out.writeAll("usage: /effort low|medium|high\n");
+            try out.flush();
+            return true;
+        }
+        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        try out.print("reasoning effort: {s}{s}\n", .{
+            @tagName(root.reasoning),
+            if (!root.effortApplies()) " (current model ignores it — applies to codex, deepseek, codegraff)" else "",
+        });
+        try out.flush();
+        return true;
+    }
+    if (std.mem.startsWith(u8, line, "/keepcontext")) {
+        const arg = std.mem.trim(u8, line["/keepcontext".len..], " \t");
+        if (std.mem.eql(u8, arg, "on")) {
+            root.keep_context = true;
+        } else if (std.mem.eql(u8, arg, "off")) {
+            root.keep_context = false;
+        } else root.keep_context = !root.keep_context; // bare: toggle
+        try out.print("keep-context across model switches: {s} — {s}\n", .{
+            if (root.keep_context) "ON" else "off",
+            if (root.keep_context) "a wire-format switch (e.g. → claude) translates & keeps the dialogue" else "a wire-format switch clears history",
+        });
+        try out.flush();
+        return true;
+    }
+    if (std.mem.startsWith(u8, line, "/key")) {
+        const rest = std.mem.trim(u8, line["/key".len..], " \t");
+        if (rest.len == 0) { // show key status + how to add
+            try out.writeAll("API keys (✓ = set via env / Keychain / login):\n");
+            for (provider_specs) |spec| {
+                try out.print("  {s} {s:<10}  {s}\n", .{ if (keys.get(spec.id) != null) "✓" else "·", spec.id, spec.env_key });
+            }
+            try out.print("{s}add one:  /key <provider> <key>   (used now + saved to the macOS Keychain){s}\n", .{ style.dim, style.reset });
+            try out.flush();
+            return true;
+        }
+        const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse {
+            try out.writeAll("usage: /key <provider> <key>\n");
+            try out.flush();
+            return true;
+        };
+        const pid = rest[0..sp];
+        const key = std.mem.trim(u8, rest[sp + 1 ..], " \t");
+        var idx: ?usize = null;
+        for (provider_specs, 0..) |spec, i| if (std.mem.eql(u8, spec.id, pid)) {
+            idx = i;
+        };
+        if (idx == null) {
+            try out.print("unknown provider '{s}' — see /model for the list\n", .{pid});
+            try out.flush();
+            return true;
+        }
+        if (key.len == 0) {
+            try out.writeAll("usage: /key <provider> <key>\n");
+            try out.flush();
+            return true;
+        }
+        keys.values[idx.?] = arena.dupe(u8, key) catch key; // live, usable immediately
+        const home = root.home;
+        const saved = storeKey(root.io, root.gpa, arena, home, pid, key); // persist
+        try out.print("✓ {s} key set (live{s}) — now: /model {s}\n", .{ pid, if (saved) " + Keychain" else "", pid });
+        try out.flush();
+        return true;
+    }
+    if (std.mem.startsWith(u8, line, "/login")) {
+        // Interactive OAuth sign-in for the providers that have a device/PKCE
+        // flow (codegraff, codex/ChatGPT, kimi). Mirrors the `graff login`
+        // subcommands but runs in-session and pulls the fresh key into the live
+        // Keys, so this conversation keeps going without a restart. Pure
+        // API-key providers don't log in — they point back at /key.
+        const rest = std.mem.trim(u8, line["/login".len..], " \t");
+        var lit = std.mem.tokenizeAny(u8, rest, " \t");
+        var target = lit.next() orelse "";
+        const refresh = while (lit.next()) |a| {
+            if (std.mem.eql(u8, a, "--refresh")) break true;
+        } else false;
+        const login_targets = [_]PickItem{
+            .{ .name = "codegraff", .desc = "free codegraff key (device-code OAuth)" },
+            .{ .name = "codex", .desc = "ChatGPT / OpenAI sign-in (alias: oai)" },
+            .{ .name = "kimi", .desc = "Kimi Code sign-in (device-code OAuth)" },
+        };
+        // Bare /login: pick a provider on a TTY, else just list the options.
+        if (target.len == 0) {
+            if (main_mod.use_color and root.in != null) {
+                const idx = listPicker(root, arena, out, "Log in to \xe2\x80\xba", &login_targets) orelse return true;
+                target = login_targets[idx].name;
+            } else {
+                try out.writeAll("interactive logins (OAuth \xe2\x80\x94 no key to paste):\n");
+                for (login_targets) |t| try out.print("  {s} /login {s:<10} {s}\n", .{ if (keys.get(t.name) != null) "\xe2\x9c\x93" else "\xc2\xb7", t.name, t.desc });
+                try out.print("{s}other providers use an API key:  /key <provider> <key>{s}\n", .{ style.dim, style.reset });
+                try out.flush();
+                return true;
+            }
+        }
+        // codex is the OpenAI/ChatGPT login; accept the natural aliases.
+        if (std.mem.eql(u8, target, "oai") or std.mem.eql(u8, target, "openai") or
+            std.mem.eql(u8, target, "chatgpt") or std.mem.eql(u8, target, "gpt"))
+            target = "codex";
+        if (std.mem.eql(u8, target, "graff")) target = "codegraff";
+
+        const home = root.home;
+        try out.flush(); // hand stdout to the login flow's own writer
+        if (std.mem.eql(u8, target, "codegraff")) {
+            oauth.codegraffLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 codegraff login failed: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
+        } else if (std.mem.eql(u8, target, "codex")) {
+            oauth.codexLogin(root.io, root.gpa, arena, home, refresh) catch |err| {
+                try out.print("\xe2\x9c\x97 codex login failed: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
+        } else if (std.mem.eql(u8, target, "kimi")) {
+            oauth.kimiLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 kimi login failed: {t}\n", .{err});
+                try out.flush();
+                return true;
+            };
+        } else {
+            // A pure API-key provider, or something unrecognized.
+            for (provider_specs) |spec| if (std.mem.eql(u8, spec.id, target)) {
+                try out.print("{s} uses an API key, not a login \xe2\x80\x94 /key {s} <key>\n", .{ target, target });
+                try out.flush();
+                return true;
+            };
+            try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | codex | kimi (others: /key <provider> <key>)\n", .{target});
+            try out.flush();
+            return true;
+        }
+        // Login wrote its credential file; pull the key into the live session.
+        reloadLoginKey(root, keys, arena, target);
+        try out.flush();
+        return true;
+    }
+    if (std.mem.startsWith(u8, line, "/image")) {
+        const path = std.mem.trim(u8, line["/image".len..], " \t");
+        if (path.len == 0) {
+            if (root.pending_image) |pi| {
+                try out.print("staged image: {s} — send a message to include it ('/image clear' to drop)\n", .{pi.label});
+            } else {
+                try out.writeAll("usage: /image <path.png|jpg|gif|webp>  (attaches to your next message)\n");
+            }
+            try out.flush();
+            return true;
+        }
+        if (std.mem.eql(u8, path, "clear")) {
+            root.pending_image = null;
+            try out.writeAll("cleared the staged image\n");
+            try out.flush();
+            return true;
+        }
+        switch (stageImagePath(root, path)) {
+            .no_vision => try out.print("⚠ {s} can't see images — switch to a vision model first, e.g. /model claude-opus-4-8 or /model gpt-5.5\n", .{root.provider.model}),
+            .read_fail => try out.print("can't read '{s}' (missing, or larger than 5MB)\n", .{path}),
+            .ok => try out.print("📎 attached {s} — sent with your next message\n", .{path}),
+        }
+        try out.flush();
+        return true;
+    }
+    if (std.mem.eql(u8, line, "/paste")) {
+        if (builtin.os.tag != .macos) {
+            try out.writeAll("clipboard image paste is macOS-only — use /image <path>\n");
+            try out.flush();
+            return true;
+        }
+        if (!visionCapable(root.provider)) {
+            try out.print("⚠ {s} can't see images — /model to a vision model (claude-*, gpt-5*) first\n", .{root.provider.model});
+            try out.flush();
+            return true;
+        }
+        const p = grabClipboardImage(root.io) orelse {
+            try out.writeAll("no image on the clipboard — copy an image first (text? just paste it normally)\n");
+            try out.flush();
+            return true;
+        };
+        switch (stageImagePath(root, p)) {
+            .ok => try out.writeAll("📎 clipboard image attached — sent with your next message\n"),
+            .no_vision => try out.print("⚠ {s} can't see images\n", .{root.provider.model}),
+            .read_fail => try out.writeAll("failed to read the clipboard image\n"),
+        }
+        try out.flush();
+        return true;
+    }
+    if (std.mem.eql(u8, line, "/strict")) {
+        root.strict = !root.strict;
+        try out.print("strict mode {s} — {s}\n", .{
+            if (root.strict) "ON" else "off",
+            if (root.strict) "every message must be a tool; finish with attempt_completion" else "free-text replies allowed",
+        });
+        try out.flush();
+        return true;
+    }
+    return false;
+}
