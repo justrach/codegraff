@@ -32,6 +32,7 @@ const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const oauth = @import("oauth.zig");
 const pricing = @import("pricing.zig");
+const models_cache = @import("models_cache.zig");
 const serde = @import("serde.zig");
 const skills = @import("skills.zig");
 const prompts = @import("prompts.zig");
@@ -93,6 +94,10 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
             if (value.* == null) value.* = keys_cli.loadStoredKey(io, arena, home, spec.id);
         }
     }
+    // Apply the models.dev refresh cache (if `graff models refresh` ever ran)
+    // before any Provider is built, so contextFor()/priceFor() use the fresh
+    // window/price. No cache → a no-op; the baked catalog stays authoritative.
+    if (keys_cli.homeEnv(environ_map)) |home| models_cache.loadOverlay(io, arena, home);
     var default_provider = keys.defaultProvider() catch {
         std.process.fatal(
             \\no API key found. quickest fixes:
@@ -292,6 +297,14 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             (if (keys_cli.homeEnv(init.environ_map)) |home| oauth.loadCodegraffKey(io, arena, home) else null) orelse
             std.process.fatal("cube: no codegraff key — run `graff login` first", .{});
         try cube.cubeCommand(io, gpa, arena, cg_key, flags.positionals.items[1..]);
+        return true;
+    }
+
+    // `graff models [refresh]`: print the effective model catalog, or pull
+    // fresh window/price metadata from models.dev into the local cache.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "models")) {
+        const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
+        try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]);
         return true;
     }
 

@@ -50,10 +50,12 @@ pub var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root
 pub var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes
 pub var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
 const pricing = @import("pricing.zig"); // model pricing/catalog + session cost tally
+const models_cache = @import("models_cache.zig"); // graff models [refresh]: models.dev metadata cache + runtime overlay
 const util = @import("util.zig"); // shared JSON ObjectMap getters (strFieldObj/intFieldObj)
 test {
     // build.zig's unit_tests root is main.zig only — reference every split-out module so their test blocks keep running.
     _ = pricing;
+    _ = models_cache;
     _ = ansi;
     _ = serve;
     _ = util;

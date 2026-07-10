@@ -342,7 +342,7 @@ pub const command_menu = [_]PickItem{
     .{ .name = "/keepcontext", .desc = "keep history across wire-format switches" },
     .{ .name = "/effort", .desc = "thinking depth: low|medium|high (codex, deepseek, codegraff)" },
     .{ .name = "/reasoning", .desc = "alias for /effort" },
-    .{ .name = "/fast", .desc = "codex priority service tier — lower latency (gpt-5.5)" },
+    .{ .name = "/fast", .desc = "codex priority service tier — lower latency (gpt-5.6)" },
     .{ .name = "/ultracode", .desc = "toggle persistent ultracode (multi-agent workflow) mode" },
     .{ .name = "/thinking", .desc = "show/collapse the model's live reasoning stream" },
     .{ .name = "/title", .desc = "AI-name the tab from your first prompt (on by default)" },
