@@ -35,6 +35,13 @@ const strFieldObj = util.strFieldObj;
 const models_dev_url = "https://models.dev/api.json";
 const codex_models_url = "https://chatgpt.com/backend-api/codex/models";
 const codex_cache_ttl_ms: i64 = 5 * 60 * 1000;
+// The Codex backend filters /models by client_version. Official openai/codex
+// sends its own compiled package version (client_version_to_whole), not the
+// version of some other Codex installation on PATH. This is the newest Codex
+// protocol Graff has been verified against; a newer installed/native version
+// may raise it, but an older one must never hide models Graff supports.
+// Reference: openai/codex rust-v0.144.1, codex-rs/models-manager.
+const codex_client_version_floor = "0.144.1";
 pub var codex_catalog_source: []const u8 = "baked offline fallback";
 
 /// models.dev provider ids to trust FIRST when a model id appears under
@@ -163,6 +170,37 @@ fn installedCodexVersion(io: Io, arena: Allocator) ?[]const u8 {
     return version;
 }
 
+fn codexVersionParts(version: []const u8) ?[3]u32 {
+    var it = std.mem.splitScalar(u8, version, '.');
+    const major = std.fmt.parseInt(u32, it.next() orelse return null, 10) catch return null;
+    const minor = std.fmt.parseInt(u32, it.next() orelse return null, 10) catch return null;
+    const patch_raw = it.next() orelse return null;
+    const patch_end = std.mem.indexOfAny(u8, patch_raw, "-+") orelse patch_raw.len;
+    const patch = std.fmt.parseInt(u32, patch_raw[0..patch_end], 10) catch return null;
+    return .{ major, minor, patch };
+}
+
+fn newerCodexVersion(candidate: []const u8, current: []const u8) []const u8 {
+    const a = codexVersionParts(candidate) orelse return current;
+    const b = codexVersionParts(current) orelse return candidate;
+    for (a, b) |av, bv| {
+        if (av > bv) return candidate;
+        if (av < bv) return current;
+    }
+    return current;
+}
+
+fn effectiveCodexVersion(installed: ?[]const u8, native: ?CodexSnapshot) []const u8 {
+    var version: []const u8 = codex_client_version_floor;
+    if (installed) |candidate| version = newerCodexVersion(candidate, version);
+    if (native) |snapshot| version = newerCodexVersion(snapshot.client_version, version);
+    return version;
+}
+
+fn snapshotMatchesVersion(snapshot: CodexSnapshot, version: []const u8) bool {
+    return std.mem.eql(u8, snapshot.client_version, version);
+}
+
 fn fetchCodexSnapshot(io: Io, gpa: Allocator, arena: Allocator, token: []const u8, account: []const u8, version: []const u8) ?CodexSnapshot {
     if (token.len == 0 or account.len == 0 or version.len == 0) return null;
     const url = std.fmt.allocPrint(arena, "{s}?client_version={s}", .{ codex_models_url, version }) catch return null;
@@ -216,19 +254,27 @@ fn writeCodexCache(io: Io, arena: Allocator, home: []const u8, version: []const 
 }
 
 /// Activate an account-scoped Codex catalog. Match openai/codex's policy:
-/// a client-version-keyed cache is fresh for five minutes, then remote refresh;
-/// remote failure falls back to stale graff cache, native Codex cache, and
-/// finally pricing.zig's minimal baked rows. Tokens are never persisted.
+/// a client-version-keyed cache is fresh for five minutes, then remote refresh.
+/// Graff identifies with its own supported Codex protocol version; compatible
+/// stale/native caches may cover a network failure, while older caches never
+/// replace the baked rows. Tokens are never persisted.
 pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, codex_home: []const u8, token: []const u8, account: []const u8, force_refresh: bool) void {
+    // Account catalogs are meaningful only with the account that produced
+    // them. Logged-out sessions use the current baked picker instead of an
+    // arbitrary prior account's stale catalog.
+    if (token.len == 0 or account.len == 0) {
+        codex_catalog_source = "baked fallback — no Codex login";
+        return;
+    }
     const native_data = readSmall(io, arena, nativeCodexPath(arena, codex_home));
     const native = if (native_data) |data| parseCodexSnapshot(arena, data) else null;
-    const version = installedCodexVersion(io, arena) orelse if (native) |snapshot| snapshot.client_version else "";
+    const version = effectiveCodexVersion(installedCodexVersion(io, arena), native);
     const cached_data = readSmall(io, arena, codexDirPath(arena, home)) orelse readSmall(io, arena, codexFlatPath(arena, home));
     const cached = if (cached_data) |data| parseCodexSnapshot(arena, data) else null;
     const now = util.unixMs(io);
     if (!force_refresh) if (cached) |snapshot| {
         const age = now - snapshot.fetched_at_ms;
-        if (std.mem.eql(u8, snapshot.client_version, version) and age >= 0 and age <= codex_cache_ttl_ms) {
+        if (snapshotMatchesVersion(snapshot, version) and age >= 0 and age <= codex_cache_ttl_ms) {
             if (pricing.activateCodexModels(arena, snapshot.models)) codex_catalog_source = "dynamic cache";
             return;
         }
@@ -240,14 +286,15 @@ pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const 
             return;
         }
     }
-    if (cached) |snapshot| if (pricing.activateCodexModels(arena, snapshot.models)) {
+    if (cached) |snapshot| if (snapshotMatchesVersion(snapshot, version) and pricing.activateCodexModels(arena, snapshot.models)) {
         codex_catalog_source = "stale dynamic cache (offline)";
         return;
     };
-    if (native) |snapshot| if (pricing.activateCodexModels(arena, snapshot.models)) {
+    if (native) |snapshot| if (snapshotMatchesVersion(snapshot, version) and pricing.activateCodexModels(arena, snapshot.models)) {
         codex_catalog_source = "Codex native cache (offline)";
         return;
     };
+    codex_catalog_source = "baked fallback — live refresh unavailable";
 }
 
 /// GET models.dev/api.json (~3 MB) and parse it into the arena, or null on any
@@ -482,6 +529,7 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, sub_a
     if (sub_args.len > 0 and (std.mem.eql(u8, sub_args[0], "refresh") or
         std.mem.eql(u8, sub_args[0], "--refresh") or std.mem.eql(u8, sub_args[0], "update")))
     {
+        try out.print("Codex catalog: {s}\n", .{codex_catalog_source});
         try refresh(io, gpa, arena, home, out);
         return;
     }
@@ -536,4 +584,14 @@ test "Codex snapshot uses visible remote slugs and their advertised contexts" {
     try std.testing.expectEqual(@as(u64, 372_000), snapshot.models[0].context);
     try std.testing.expectEqualStrings("future-luna", snapshot.models[1].name);
     try std.testing.expectEqual(@as(u64, 128_000), snapshot.models[1].context);
+}
+
+test "Codex discovery never regresses below Graff's supported client version" {
+    try std.testing.expectEqualStrings(codex_client_version_floor, effectiveCodexVersion("0.130.0", null));
+    try std.testing.expectEqualStrings("0.145.0", effectiveCodexVersion("0.145.0", null));
+    try std.testing.expectEqualStrings(codex_client_version_floor, effectiveCodexVersion("invalid", null));
+    try std.testing.expect(!snapshotMatchesVersion(.{
+        .models = &.{},
+        .client_version = "0.130.0",
+    }, codex_client_version_floor));
 }
