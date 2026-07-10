@@ -578,6 +578,9 @@ fn renderRecords(out: *std.array_list.Managed(u8), a: std.mem.Allocator, rows: [
 }
 
 
+/// Per-column alignment parsed from a table's `:---:` separator row (#143).
+const TableAlign = enum { left, center, right };
+
 /// Render `| a | b |` source rows (row 1 = alignment separator) as a
 /// box-drawing table: bold header, ├─┼─┤ rules between rows, cells
 /// word-wrapped so the whole table fits `width_hint` columns.
@@ -607,6 +610,27 @@ fn renderTable(out: *std.array_list.Managed(u8), a: std.mem.Allocator, raw_rows:
     }
     if (rows.items.len == 0 or rows.items[0].len == 0) return;
     const ncols = rows.items[0].len;
+
+    // Column alignment from the separator row (raw_rows[1]): ":--" left, "--:"
+    // right, ":-:" center, "---" defaults left. Applied to header + data like
+    // the GUI's ChatTable (#143). Skipped rows never reach here.
+    const aligns = try a.alloc(TableAlign, ncols);
+    @memset(aligns, .left);
+    if (raw_rows.len > 1) {
+        var sbody = std.mem.trim(u8, raw_rows[1], " \t");
+        if (sbody.len > 0 and sbody[0] == '|') sbody = sbody[1..];
+        if (sbody.len > 0 and sbody[sbody.len - 1] == '|') sbody = sbody[0 .. sbody.len - 1];
+        var ci: usize = 0;
+        var it = std.mem.splitScalar(u8, sbody, '|');
+        while (it.next()) |raw_spec| {
+            if (ci >= ncols) break;
+            const spec = std.mem.trim(u8, raw_spec, " \t");
+            const lc = spec.len > 0 and spec[0] == ':';
+            const rc = spec.len > 0 and spec[spec.len - 1] == ':';
+            aligns[ci] = if (lc and rc) .center else if (rc) .right else .left;
+            ci += 1;
+        }
+    }
 
     const widths = try a.alloc(usize, ncols);
     @memset(widths, 1);
@@ -656,6 +680,13 @@ fn renderTable(out: *std.array_list.Managed(u8), a: std.mem.Allocator, raw_rows:
                 try out.appendSlice(try (zz.Style{}).fg(.brightBlack).render(a, "│"));
                 try out.append(' ');
                 const seg = if (li < wrapped[i].len) wrapped[i][li] else "";
+                const pad = widths[i] -| dispWidth(seg);
+                const lead: usize = switch (aligns[i]) {
+                    .left => 0,
+                    .right => pad,
+                    .center => pad / 2,
+                };
+                for (0..lead) |_| try out.append(' ');
                 if (seg.len > 0) {
                     if (ri == 0) {
                         try out.appendSlice(try (zz.Style{}).bold(true).render(a, seg));
@@ -663,8 +694,7 @@ fn renderTable(out: *std.array_list.Managed(u8), a: std.mem.Allocator, raw_rows:
                         try out.appendSlice(seg);
                     }
                 }
-                var p = dispWidth(seg);
-                while (p < widths[i]) : (p += 1) try out.append(' ');
+                for (0..pad - lead) |_| try out.append(' ');
                 try out.append(' ');
             }
             try out.appendSlice(try (zz.Style{}).fg(.brightBlack).render(a, "│"));
@@ -911,4 +941,23 @@ test "renderMarkdown: escaped pipe stays inside a table cell" {
     const plain = util.stripControl(a, out); // arena-owned; freed with arena_state
     // the escaped \\| renders as a literal pipe inside the single cell.
     try std.testing.expect(std.mem.indexOf(u8, plain, "a | b") != null);
+}
+
+test "renderMarkdown: table honors column alignment" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // right-aligned: short "5" in the 5-wide "Count" column gets 4 leading spaces.
+    const rout = try renderMarkdown(gpa, "| Count |\n| ---: |\n| 5 |", 100);
+    defer gpa.free(rout);
+    try std.testing.expect(std.mem.indexOf(u8, util.stripControl(a, rout), "    5") != null);
+    // centered: "x" in the 8-wide "Wide col" column gets leading pad (not flush-left).
+    const cout = try renderMarkdown(gpa, "| Wide col |\n| :---: |\n| x |", 100);
+    defer gpa.free(cout);
+    try std.testing.expect(std.mem.indexOf(u8, util.stripControl(a, cout), "   x") != null);
+    // left default: "5" stays flush-left (no leading pad before it).
+    const lout = try renderMarkdown(gpa, "| Count |\n| --- |\n| 5 |", 100);
+    defer gpa.free(lout);
+    try std.testing.expect(std.mem.indexOf(u8, util.stripControl(a, lout), "    5") == null);
 }
