@@ -437,7 +437,7 @@ pub fn run(ctx: *Ctx) !void {
         // A failed turn must never kill the session: ApiError is already
         // reported inside request(); anything else is surfaced here. Either
         // way we drop back to the prompt (or emit a JSON error/turn event).
-        const turn_result = ctx.root.runTurn();
+        const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys.*, ctx.arena, ctx.out);
         if (trace.g_traj) |tj| {
             const fp = scoring.promptFingerprint(ctx.root.systemPrompt());
             const turn_ms: i64 = @intCast(@max(0, turn_started.untilNow(ctx.io, .awake).toMilliseconds()));

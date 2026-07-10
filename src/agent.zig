@@ -108,6 +108,9 @@ pub const Agent = struct {
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
+    fallback_allow: []const []const u8 = &.{}, // explicit cross-provider allowlist from .harness/settings.json
+    fallback_active: bool = false, // current provider/model is a temporary fallback, not the saved preference
+    fallback_blocked: bool = false, // startup found a cross-provider fallback that is not allowlisted yet
     ultracode_mode: bool = false, // persistent ultracode (multi-agent workflow) mode (/ultracode)
     show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
     ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
@@ -169,12 +172,16 @@ pub const Agent = struct {
         else
             "";
         try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.cyan, self.provider.model, style.reset });
-        if (self.effortApplies()) try writePromptBadge(w, reasoningPromptColor(self.reasoning), reasoningPromptLabel(self.reasoning));
+        // Fast is the most operationally important model setting, so keep it
+        // immediately beside the model instead of letting permission modes
+        // push it deeper into the status line.
         if (self.fast and self.provider.kind == .responses) try writePromptBadge(w, style.green, "Fast");
+        if (self.effortApplies()) try writePromptBadge(w, reasoningPromptColor(self.reasoning), reasoningPromptLabel(self.reasoning));
+        try writePromptBadge(w, style.cyan, self.provider.id);
+        if (self.fallback_active) try writePromptBadge(w, style.yellow, "Fallback");
         if (main_mod.plan_mode) try writePromptBadge(w, style.yellow, "Plan");
         if (self.strict) try writePromptBadge(w, style.red, "Strict");
         if (self.ultracode_mode) try writePromptBadge(w, style.magenta, "Ultracode");
-        if (self.approvals) |approvals| if (approvals.yoloEnabled(self.io)) try writePromptBadge(w, style.red, "YOLO");
         try w.print("{s} · cwd {s}{s}{s}", .{ style.dim, style.reset, main_mod.g_cwd_display, style.dim });
         if (self.last_context_tokens > 0) {
             const threshold = self.provider.compactAt();

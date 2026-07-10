@@ -32,12 +32,17 @@ def main() -> None:
         ) as session:
             session.wait_for_literal("] ›")
 
-            def command(line: str, output: str, prompt: str, color_bytes: bytes) -> None:
+            def command(
+                line: str,
+                output: str,
+                prompt: str,
+                color_bytes: bytes | None,
+            ) -> None:
                 cursor = len(session.raw)
                 session.send_line(line)
                 session.wait_for_literal(output, start=cursor)
                 session.wait_for_literal(prompt, start=cursor)
-                if color_bytes not in bytes(session.raw[cursor:]):
+                if color_bytes is not None and color_bytes not in bytes(session.raw[cursor:]):
                     raise AssertionError(f"missing colored badge {color_bytes!r} after {line}")
 
             base = "deepseek-v4-pro · Extra high"
@@ -68,15 +73,26 @@ def main() -> None:
             command(
                 "/yolo",
                 "yolo mode ON",
-                f"[{base} · Plan · Strict · Ultracode · YOLO · cwd {tmp}]",
-                b"\x1b[31mYOLO\x1b[0m",
+                f"[{base} · Plan · Strict · Ultracode · cwd {tmp}]",
+                None,
             )
+            if b"\x1b[31mYOLO\x1b[0m" in bytes(session.raw):
+                raise AssertionError("YOLO should be reported outside the compact prompt")
+            cursor = len(session.raw)
+            session.send_line("/key no-such-provider supersecret")
+            session.wait_for_literal("unknown provider 'no-such-provider'", start=cursor)
+            session.wait_for_literal(f"cwd {tmp}]", start=cursor)
+            if b"supersecret" in bytes(session.raw[cursor:]):
+                raise AssertionError("/key secret was echoed to the terminal")
             session.send_key("ctrl-d")
             result = session.read_until_exit(5.0)
             if result.timed_out or result.exit_code != 0:
                 raise SystemExit(
                     f"REPL did not exit cleanly: exit={result.exit_code} timed_out={result.timed_out}"
                 )
+        history = os.path.join(tmp, ".simple-harness-history")
+        if os.path.exists(history) and "supersecret" in open(history, encoding="utf-8").read():
+            raise AssertionError("/key secret was persisted in REPL history")
     print("ok    PTY REPL commands, colored mode badges, redraws, and clean exit")
 
 

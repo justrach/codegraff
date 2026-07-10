@@ -358,10 +358,10 @@ pub fn main(init: std.process.Init) !void {
 
     // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL agent loop — each prompt runs a full root turn (tools + MCP) via
     // replTurnCb, reusing the root agent's tool set + registry + system prompt. Self-contained — exits after.
-    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, &client, in, out, arena, flags)) return;
+    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, keys, &client, in, out, arena, flags)) return;
     // One-shot print mode: run the single prompt to completion, print the final text to stdout, exit.
     if (flags.oneshot_prompt) |prompt_text| {
-        try session_run.runOneshotPrompt(gpa, io, arena, &root, &tracer, out, prompt_text);
+        try session_run.runOneshotPrompt(gpa, io, arena, &root, keys, &tracer, out, prompt_text);
         return;
     }
 
@@ -494,9 +494,9 @@ test "incremental markdown streaming renders like renderMdLine" {
     try std.testing.expectEqualStrings("• has bold spans\n", aw.writer.buffered());
     aw.clearRetainingCapacity();
 
-    // Numbered items, headers, inline code.
-    a.streamMarkdown("12) point\n## Title\nuse `zig build` here\n");
-    try std.testing.expectEqualStrings("12. point\nTitle\nuse zig build here\n", aw.writer.buffered());
+    // Numbered/task/nested items, headings, quotes, and inline code.
+    a.streamMarkdown("12) **Immediately:** point\n## Title\nuse `zig build` here\n- [ ] ship it\n  - nested\n> warning\n");
+    try std.testing.expectEqualStrings("12) Immediately: point\n◆ Title\nuse zig build here\n☐ ship it\n  ◦ nested\n│ warning\n", aw.writer.buffered());
     aw.clearRetainingCapacity();
 
     // Fences: open/close render as labeled dim rules, body streams unprefixed.

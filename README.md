@@ -394,6 +394,12 @@ scrolling up to re-read earlier output works like any normal terminal (parity wi
 Claude Code). Folding the Thinking block is keyboard-only (`^T`). There is no
 click-to-fold.
 
+Streaming Markdown is rendered for terminal readability: heading levels get a
+clear colored hierarchy; bullets, numbered items, nested lists, task checkboxes,
+and blockquotes use terminal-native markers; bold and inline code drop their raw
+delimiters; tables align; and fenced code stays copyable without decorative
+prefixes on body lines.
+
 ```
 /model [name]   no arg → interactive fuzzy picker; or /model <name|provider|provider model>
 /models         list known models, context windows, compaction points
@@ -425,11 +431,18 @@ The line editor supports ↑/↓ history (persisted to `~/.simple-harness-histor
 Tab completion (commands, and model names after `/model `), and emacs-style
 editing (Ctrl-A/E/W/U/K, Option+Delete, word moves). The selected model is
 remembered in `~/.simple-harness-model` and resumed next launch
-(`--model <name>` overrides; a remembered model that's no longer in the table is
-ignored with a note). The prompt is a small statusline:
-`[model · Extra high · Fast · Plan · cwd /repo · 12345/800k tok (1%) · ⚡cached]`.
-Active modes are visible at a glance: Low is green, Medium cyan, High yellow,
-Extra high/Ultra/Ultracode magenta, Max/Strict/YOLO red, and Plan yellow.
+(`--model <name>` overrides). If the remembered provider/model is absent from
+the current catalog or its credentials are missing, graff falls back for that
+session with a note, without overwriting the preference. If the preferred
+provider later returns a clear authentication, access, removed-model, quota, or
+credit failure before producing text or running tools, graff tries the next
+configured provider and keeps the saved preference for a future launch. The
+prompt is a small statusline:
+`[model · Fast · Extra high · Plan · cwd /repo · 12345/800k tok (1%) · ⚡cached]`.
+Fast stays immediately beside the model. Active reasoning/workflow modes are
+visible at a glance: Low is green, Medium cyan, High yellow, Extra
+high/Ultra/Ultracode magenta, Max/Strict red, and Plan yellow. YOLO is reported
+as an explicit warning when enabled instead of occupying the compact prompt.
 Badges for unsupported settings are hidden instead of implying they apply. The
 tail shows context used vs the compaction budget, last cache hit, and (for
 metered providers) session spend.
@@ -566,7 +579,10 @@ heads-up that it grants arbitrary code execution.
 **Path confinement.** `read_file`/`write_file`/`edit_file` are confined to the
 working-directory subtree: no absolute paths, no `..`. This is structural (not
 bypassed by `/yolo`): `read_file /etc/shadow` and `write_file ../../x` are
-refused with an error.
+refused with an error. When the user explicitly names a sibling repository, the
+root agent can continue there through permission-gated bash without relaunching;
+it checks the target's git status first and quotes its path. Those external edits
+are deliberately not tracked by `/rewind`, and subagents remain confined.
 
 **bash is cwd-locked by default too.** A seed/approved command auto-runs only
 when all its path arguments stay in the cwd (`escapesCwd` rejects absolute, `~`,

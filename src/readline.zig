@@ -43,6 +43,7 @@ const delRange = input_util.delRange;
 const prevWord = input_util.prevWord;
 const nextWord = input_util.nextWord;
 const addMark = input_util.addMark;
+const util = @import("util.zig");
 
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
@@ -590,7 +591,7 @@ pub fn readLine(
     }
 
     const trimmed = std.mem.trim(u8, buf.items, " \t\r");
-    if (trimmed.len > 0 and (history.items.len == 0 or !std.mem.eql(u8, history.items[history.items.len - 1], buf.items))) {
+    if (trimmed.len > 0 and util.rememberInput(buf.items) and (history.items.len == 0 or !std.mem.eql(u8, history.items[history.items.len - 1], buf.items))) {
         const dup = gpa.dupe(u8, buf.items) catch return buf.items;
         history.append(gpa, dup) catch {};
     }
