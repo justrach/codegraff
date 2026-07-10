@@ -58,6 +58,8 @@ pub var show_timing = false;
 pub var show_cost = false;
 pub var json_mode = false; // --json: structured JSONL events on stdout instead of human text
 pub var g_codex_ws = true; // root Codex turns use the WebSocket transport (Responses API over wss) with SSE fallback; GRAFF_CODEX_WS=off|0 forces SSE
+pub var g_force_stall_once: bool = false; // #134 test seam (GRAFF_FORCE_STALL_ONCE=1): the next live turn returns error.StreamStalled — proves the stall path is never labeled a user Esc
+pub var g_force_drop_once: bool = false; // #132/#133 test seam (GRAFF_FORCE_DROP_ONCE=1): the next live turn returns error.StreamDropped
 pub var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
 pub var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
 pub var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes

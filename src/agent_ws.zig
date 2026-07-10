@@ -48,6 +48,25 @@ pub fn wsEligible(self: *Agent) bool {
 /// A ws transport/handshake failure disables ws for the session and falls back
 /// to SSE; a deliberate Esc/stall propagates unchanged.
 pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
+    // #134/#132 test seam: force a one-shot stall/drop on a live turn so the
+    // end-to-end "[response ended early: …]" path (never "[response interrupted
+    // by user]") can be exercised without a real provider. Consumed after one use.
+    if (main_mod.g_force_stall_once) {
+        main_mod.g_force_stall_once = false;
+        if (!main_mod.json_mode) if (self.out) |o| {
+            o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
+            o.flush() catch {};
+        };
+        return error.StreamStalled;
+    }
+    if (main_mod.g_force_drop_once) {
+        main_mod.g_force_drop_once = false;
+        if (!main_mod.json_mode) if (self.out) |o| {
+            o.writeAll("\n⚠ connection dropped — response ended early\n") catch {};
+            o.flush() catch {};
+        };
+        return error.StreamDropped;
+    }
     if (!wsEligible(self)) return if (self.ws_off) postStreamFresh(self, body) else self.postStream(body);
     return postResponsesWs(self, body) catch |e| {
         if (e == error.Interrupted or e == error.StreamStalled) return e;
