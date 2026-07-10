@@ -330,6 +330,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     errdefer full.deinit();
     var line: Io.Writer.Allocating = .init(gpa);
     var got_body = false; // #134: true once response bytes have been received (gates the post-completion read-error handling)
+    var saw_done = false; // #133: true only once the provider's terminal event landed — a close before this is a drop, not a clean end
     defer line.deinit();
 
     stream: while (true) {
@@ -342,7 +343,8 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
             rsel.concurrent(.line, streamLineTask, .{ reader, &line.writer }) catch {
                 _ = reader.streamDelimiterEnding(&line.writer, '\n') catch |e| {
-                    if (got_body and readErrIsClose(e)) break :stream; // #134: body already delivered — not a retryable flake
+                    if (saw_done and readErrIsClose(e)) break :stream; // #134/#135: terminal event already seen — a post-completion close/reset is clean
+                    if (got_body and readErrIsClose(e)) { noteDropped(self); return error.StreamDropped; } // #133: closed before [DONE]/finish_reason — a drop, not a clean end
                     return e;
                 }; // no spare concurrency
                 break :read;
@@ -354,7 +356,8 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 };
                 rsel.cancelDiscard();
                 _ = r.line catch |e| {
-                    if (got_body and readErrIsClose(e)) break :stream;
+                    if (saw_done and readErrIsClose(e)) break :stream;
+                    if (got_body and readErrIsClose(e)) { noteDropped(self); return error.StreamDropped; } // #133
                     return e;
                 };
                 break :read;
@@ -366,7 +369,8 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
             rsel.cancelDiscard();
             switch (first) {
                 .line => |r| _ = r catch |e| {
-                    if (got_body and readErrIsClose(e)) break :stream; // #134: post-completion close/reset is success, not a retryable flake
+                    if (saw_done and readErrIsClose(e)) break :stream; // #134/#135: post-completion close/reset is success, not a retryable flake
+                    if (got_body and readErrIsClose(e)) { noteDropped(self); return error.StreamDropped; } // #133: closed before the terminal event
                     return e;
                 },
                 .stall => |w| {
@@ -402,7 +406,12 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         // close. Some gateways hold the connection open (or reset it) after the
         // last event, which otherwise trips the 120s idle-stall watchdog or a
         // spurious retry on an already-complete response (#134/#135).
+        // #133: a finish_reason chunk means the response is complete even if the
+        // provider never sends [DONE] — record it so a subsequent close counts
+        // as a clean end, but keep reading so a trailing usage chunk still lands.
+        if (self.provider.kind == .openai and openaiComplete(line.writer.buffered())) saw_done = true;
         if (isStreamEnd(self.arena, self.provider.kind, line.writer.buffered())) {
+            saw_done = true; // #133: the provider's terminal event landed — a later close is clean
             if (req.connection) |conn| conn.closing = true;
             break :stream;
         }
@@ -433,6 +442,28 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
 /// `catch break`). Before any body arrives it is a real connection failure.
 fn readErrIsClose(e: anyerror) bool {
     return e == error.ReadFailed or e == error.EndOfStream;
+}
+
+/// #133: a non-null string finish_reason marks an OpenAI-compatible response
+/// semantically complete, even when the provider omits the [DONE] sentinel.
+/// Content deltas escape their quotes, so this raw substring can only match the
+/// real key, never text. Used to set saw_done WITHOUT stopping the read (so a
+/// trailing usage-only chunk and [DONE] are still consumed).
+fn openaiComplete(raw_line: []const u8) bool {
+    const payload = ssePayload(raw_line) orelse return false;
+    return std.mem.indexOf(u8, payload, "\"finish_reason\":\"") != null;
+}
+
+/// The provider closed/reset the stream before its terminal event landed — the
+/// harness is ending the turn, not the user (#133). Flush the partial and tell
+/// the user (TTY/plain), so a Moonshot-style mid-reasoning drop can never pass
+/// silently as a completed answer.
+fn noteDropped(self: *Agent) void {
+    self.flushStreamTail();
+    if (!main_mod.json_mode) if (self.out) |o| {
+        o.writeAll("\n⚠ connection dropped — response ended early\n") catch {};
+        o.flush() catch {};
+    };
 }
 
 /// True if this SSE line is the provider's terminal event — after it no more
@@ -489,6 +520,24 @@ test "isStreamEnd (#134): terminal events detected, content deltas never false-m
     try std.testing.expect(isStreamEnd(a, Kind.responses, "data: {\"type\":\"response.completed\"}"));
     try std.testing.expect(isStreamEnd(a, Kind.responses, "data: {\"type\":\"response.incomplete\"}"));
     try std.testing.expect(!isStreamEnd(a, Kind.responses, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"));
+    // #133 (openai/kimi): a non-null string finish_reason chunk is terminal (some
+    // gateways omit [DONE]); a null finish_reason or a bare reasoning/content
+    // delta is NOT — a connection drop after one of those is a StreamDropped, not
+    // a clean end.
+    try std.testing.expect(!isStreamEnd(a, Kind.openai, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}"));
+    try std.testing.expect(!isStreamEnd(a, Kind.openai, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}"));
+}
+
+test "openaiComplete (#133): finish_reason marks completion, deltas do not" {
+    // non-null finish_reason => complete (even without [DONE]).
+    try std.testing.expect(openaiComplete("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}"));
+    try std.testing.expect(openaiComplete("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}"));
+    // mid-stream: null finish_reason or a bare reasoning delta is NOT complete —
+    // a connection drop after one of these is the #133 StreamDropped case.
+    try std.testing.expect(!openaiComplete("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}"));
+    try std.testing.expect(!openaiComplete("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}"));
+    // the substring must not false-match a finish_reason that appears in escaped content.
+    try std.testing.expect(!openaiComplete("data: {\"choices\":[{\"delta\":{\"content\":\"\\\"finish_reason\\\":\\\"x\"}}]}"));
 }
 
 /// Print the user-visible text from one SSE line, if any. Best-effort:

@@ -242,6 +242,16 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
             else
                 gpa.dupe(u8, "[response ended early: stream stalled]") catch null;
         },
+        error.StreamDropped => {
+            // A mid-stream provider drop (#133), same handling as a stall: keep
+            // the streamed partial + an honest marker, never a null that the
+            // pane would render as "model call failed".
+            const partial = std.mem.trim(u8, agent.partial_text.items, " \t\r\n");
+            return if (partial.len > 0)
+                std.fmt.allocPrint(gpa, "{s}\n\n[response ended early: connection dropped]", .{partial}) catch null
+            else
+                gpa.dupe(u8, "[response ended early: connection dropped]") catch null;
+        },
         error.FallbackConsentRequired => return gpa.dupe(u8, "Saved model unavailable. Allow this provider with /fallback in the standard REPL, or choose another model.") catch null,
         else => return null,
     };
