@@ -480,12 +480,12 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
                 source.* = .login;
             }
         } else if (std.mem.eql(u8, provider_id, "kimi")) {
-            if (oauth.loadKimiOAuth(root.io, root.gpa, arena, home)) |k| {
+            if (oauth.loadKimiOAuth(root.io, root.gpa, arena, home, false)) |k| {
                 value.* = k;
                 source.* = .login;
             }
         } else if (std.mem.eql(u8, provider_id, "xai")) {
-            if (oauth.loadXaiOAuth(root.io, root.gpa, arena, home)) |k| {
+            if (oauth.loadXaiOAuth(root.io, root.gpa, arena, home, false)) |k| {
                 value.* = k;
                 source.* = .login;
             }

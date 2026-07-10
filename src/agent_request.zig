@@ -18,6 +18,7 @@ const Agent = agent_mod.Agent;
 const max_tokens = main_mod.max_tokens;
 
 const pricing = @import("pricing.zig");
+const oauth = @import("oauth.zig");
 const g_cost = &pricing.g_cost;
 
 const messages_mod = @import("messages.zig");
@@ -46,9 +47,44 @@ const telemetry = @import("telemetry.zig");
 /// and lean on the strict system prompt instead. Root requests stream:
 /// text deltas print live (postStream) and the buffered SSE events are
 /// reassembled into the non-streaming response shape afterwards.
+/// #148: does a provider error message look like an auth failure (a stale/
+/// revoked OAuth token), so we refresh + retry rather than give up? Matches the
+/// common 401 phrasings ("invalid api key", "expired", "unauthorized", …).
+fn isAuthError(msg: []const u8) bool {
+    return std.ascii.indexOfIgnoreCase(msg, "api key") != null or
+        std.ascii.indexOfIgnoreCase(msg, "unauthorized") != null or
+        std.ascii.indexOfIgnoreCase(msg, "expired") != null or
+        std.ascii.indexOfIgnoreCase(msg, "authentication") != null or
+        std.ascii.indexOfIgnoreCase(msg, "invalid_api_key") != null;
+}
+
+test "isAuthError (#148): auth failures only, not credits/rate/other" {
+    // real provider 401 phrasings → refresh + retry
+    try std.testing.expect(isAuthError("The API Key appears to be invalid or may have expired."));
+    try std.testing.expect(isAuthError("Unauthorized"));
+    try std.testing.expect(isAuthError("authentication_error"));
+    try std.testing.expect(isAuthError("invalid_api_key"));
+    // NOT auth — must never trigger a refresh loop
+    try std.testing.expect(!isAuthError("You have run out of credits or need a Grok subscription."));
+    try std.testing.expect(!isAuthError("rate limit exceeded"));
+    try std.testing.expect(!isAuthError("model not found"));
+    try std.testing.expect(!isAuthError("context length exceeded"));
+}
+
 pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     var force = self.strict and tools != null;
     var stream_usage = true; // openai stream_options; dropped if rejected
+    var auth_refreshed = false; // #148: at most one forced token refresh + retry
+    // #148: a login-sourced OAuth token (kimi/xai, ~1h) expires mid-session and
+    // is minted only at startup; refresh it in place before the call when near
+    // expiry so a long session — or a subagent that inherited the on-disk token —
+    // never 401s. Login-sourced keys only (env keys untouched); a cheap disk read
+    // unless actually near expiry.
+    if (self.provider.source == .login) {
+        if (oauth.refreshOAuthKey(self.io, self.gpa, self.arena, self.home, self.provider.id, false)) |fresh| {
+            self.provider.api_key = fresh;
+        }
+    }
     // #95: scrub any malformed function_call_output before it hits the wire.
     sanitizeMessagesUtf8(self.arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
     if (self.provider.kind == .responses) normalizeResponsesHistory(self.arena, &self.messages);
@@ -228,6 +264,17 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             if (!self.effort_rejected and mentionsReasoningEffort(msg)) {
                 self.effort_rejected = true; // model rejects the effort hint here; drop + retry
                 continue;
+            }
+            // #148: a stale login token 401s here with the provider's "API Key
+            // invalid/expired"; force a refresh and retry once (kimi-code's
+            // buildAuth(true)). Give up only if the fresh token also fails.
+            if (!auth_refreshed and self.provider.source == .login and isAuthError(msg)) {
+                if (oauth.refreshOAuthKey(self.io, self.gpa, self.arena, self.home, self.provider.id, true)) |fresh| {
+                    auth_refreshed = true;
+                    self.provider.api_key = fresh;
+                    if (self.tracer) |tr| tr.note("oauth_refresh", "auth error — refreshed login token, retrying");
+                    continue;
+                }
             }
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error: {s}", .{msg});

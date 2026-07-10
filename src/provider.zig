@@ -68,6 +68,7 @@ pub const Provider = struct {
     model: []const u8,
     context: u64,
     account: []const u8 = "", // ChatGPT account id, codex/responses only
+    source: Keys.CredentialSource = .none, // #148: how api_key was obtained — only .login tokens auto-refresh
 
     // Wire format. `responses` is the OpenAI Responses API as served by the
     // ChatGPT backend (Codex login) — input items, not chat messages.
@@ -128,6 +129,7 @@ pub const Keys = struct {
             .model = model,
             .context = contextFor(spec.id, model),
             .account = if (std.mem.eql(u8, spec.id, "codex")) keys.codex_account else "",
+            .source = keys.source(spec.id),
         };
     }
 
