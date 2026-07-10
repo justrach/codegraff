@@ -475,6 +475,7 @@ pub fn run(ctx: *Ctx) !void {
                 const fail_detail: []const u8 = if (turn_result) |_| "" else |e| switch (e) {
                     error.ApiError => ctx.root.last_api_error orelse "api error",
                     error.StreamStalled => ctx.root.last_api_error orelse "stream stalled — ended turn",
+                    error.StreamDropped => ctx.root.last_api_error orelse "stream dropped — ended turn",
                     else => @errorName(e),
                 };
                 tj.node(.{ .kind = "turn_error", .parent = turn_id, .t = tj.elapsedMs(), .detail = fail_detail });
@@ -513,6 +514,27 @@ pub fn run(ctx: *Ctx) !void {
                 try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", marker));
                 if (main_mod.json_mode) {
                     ctx.root.emit(.{ .type = "error", .message = ctx.root.last_api_error orelse "stream stalled — ending turn" });
+                    if (partial.len > 0) {
+                        ctx.root.emit(.{ .type = "finalizing" });
+                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = ctx.root.last_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = ctx.root.last_context_tokens > 0 });
+                    }
+                }
+                session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
+                continue;
+            },
+            error.StreamDropped => {
+                // The provider closed/reset the connection before its terminal
+                // event ([DONE]/finish_reason) — the harness ended the turn, NOT
+                // the user (#133). Keep the partial, tag it a drop (never
+                // "[response interrupted by user]"), and emit the --json error.
+                const partial = std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n");
+                const marker: []const u8 = if (partial.len > 0)
+                    try std.fmt.allocPrint(ctx.arena, "{s}\n\n[response ended early: connection dropped]", .{partial})
+                else
+                    "[response ended early: connection dropped]";
+                try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", marker));
+                if (main_mod.json_mode) {
+                    ctx.root.emit(.{ .type = "error", .message = ctx.root.last_api_error orelse "stream dropped — ending turn" });
                     if (partial.len > 0) {
                         ctx.root.emit(.{ .type = "finalizing" });
                         ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = ctx.root.last_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = ctx.root.last_context_tokens > 0 });

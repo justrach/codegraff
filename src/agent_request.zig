@@ -93,6 +93,17 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                         if (self.tracer) |tr| tr.note("stream_stall", self.last_api_error orelse "stream stalled");
                         return error.StreamStalled;
                     }
+                    // A mid-stream connection drop (#133): the provider closed or
+                    // reset before its terminal event, but bytes already streamed —
+                    // retrying would re-stream from scratch. End the turn as
+                    // error.StreamDropped so it is recorded as a provider drop and
+                    // never a user Esc.
+                    if (err == error.StreamDropped) {
+                        self.last_api_error = "stream dropped: the provider closed the connection before the response completed — ended the turn";
+                        if (telemetry.g_telem) |t| t.errorEvent("stream_dropped", self.last_api_error.?);
+                        if (self.tracer) |tr| tr.note("stream_dropped", self.last_api_error.?);
+                        return error.StreamDropped;
+                    }
                     // 429/5xx: the server asked us to back off — wait
                     // (1s·2ⁿ, capped at 8s; Esc cancels) and allow a few
                     // more attempts than a plain transport flake gets.
