@@ -13,10 +13,47 @@ path. Find it, move it off the path, apply the result somewhere free.
 ## 1. Measure the RIGHT path
 - **Interactive ≠ oneshot.** `graff -p` skips the TUI header/card, so it misses the
   session-title call, the card render, etc. For anything the user feels *interactively*,
-  drive a real PTY (`pty.fork`) — see `scripts/test-pty-spinner.py`. Oneshot benchmarks
-  hid the entire title-gen call in #117.
+  drive a real PTY. `scripts/pty-debug.py` provides ordered command/key/expect actions
+  over the shared `scripts/pty_harness.py`; `test-pty-spinner.py` and
+  `test-pty-repl.py` exercise the same driver in CI. Oneshot benchmarks hid the entire
+  title-gen call in #117.
 - **Split the phases.** `time-to-prompt` (startup) and `time-to-first-response` (the turn)
   have completely different culprits. Profile them separately or you'll fix the wrong one.
+
+### Agent-friendly PTY debugger
+
+Build once, then describe the terminal interaction in command-line order:
+
+```bash
+zig build
+scripts/pty-debug.py --bin zig-out/bin/graff --cwd /tmp \
+  --arg --model --arg gpt-5.6-sol \
+  --cmd '/effort xhigh' \
+  --expect 'reasoning effort: Extra high' \
+  --expect-prompt
+```
+
+Full-screen pickers can be driven with real key sequences:
+
+```bash
+scripts/pty-debug.py --bin zig-out/bin/graff \
+  --cmd /effort --expect 'Reasoning level for' \
+  --key down --key enter --expect 'reasoning effort:'
+```
+
+Useful debugging options:
+
+- `--raw-out /tmp/graff.pty` preserves exact ANSI, alternate-screen, and cursor bytes.
+- `--text-out /tmp/graff.txt` writes the cleaned transcript agents normally want to inspect.
+- `--rows 24 --cols 80` reproduces wrapping, clipping, and picker-layout bugs at an exact
+  terminal size (the deterministic default is 40×120).
+- `--env KEY=VALUE` / `--unset KEY` isolate feature flags, auth, and inherited shell state.
+- `--no-color` intentionally tests the promptless line-oriented fallback and implies
+  `--no-ready`; normal runs force a real `TERM` and unset `NO_COLOR` so a CI/agent shell
+  cannot silently disable the TUI.
+- Every expectation has a timeout and only matches output produced after the most recent
+  input action, so stale startup text cannot create a false pass while several assertions
+  can still inspect one terminal redraw.
 
 ## 2. Isolate with toggles
 Bisect by flipping one thing at a time and re-timing:

@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Deterministic real-PTY smoke test for interactive REPL state/redraws."""
+
+import os
+import sys
+import tempfile
+
+from pty_harness import PtySession, terminal_text
+
+
+_arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
+GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
+
+
+def main() -> None:
+    assert terminal_text(b"prompt\r\x1b[2Kdone") == "done"
+    assert terminal_text(b"abc\x1b[2DXY") == "aXY"
+    with tempfile.TemporaryDirectory(prefix="graff-pty-") as tmp:
+        env = {
+            "HOME": tmp,
+            "CODEGRAFF_API_KEY": "local-pty-test",
+            "GRAFF_FLEET": "off",
+            "GRAFF_NO_TELEMETRY": "1",
+        }
+        with PtySession(
+            GRAFF,
+            ["--model", "deepseek-v4-pro", "--no-telemetry"],
+            cwd=tmp,
+            env=env,
+            unset_env=("CODEX_HOME", "NO_COLOR"),
+            timeout=15.0,
+        ) as session:
+            session.wait_for_literal("] ›")
+
+            def command(line: str, output: str, prompt: str, color_bytes: bytes) -> None:
+                cursor = len(session.raw)
+                session.send_line(line)
+                session.wait_for_literal(output, start=cursor)
+                session.wait_for_literal(prompt, start=cursor)
+                if color_bytes not in bytes(session.raw[cursor:]):
+                    raise AssertionError(f"missing colored badge {color_bytes!r} after {line}")
+
+            base = "deepseek-v4-pro · Extra high"
+            command(
+                "/effort xhigh",
+                "reasoning effort: Extra high",
+                f"[{base} · cwd {tmp}]",
+                b"\x1b[35mExtra high\x1b[0m",
+            )
+            command(
+                "/plan",
+                "plan mode on",
+                f"[{base} · Plan · cwd {tmp}]",
+                b"\x1b[33mPlan\x1b[0m",
+            )
+            command(
+                "/strict",
+                "strict mode ON",
+                f"[{base} · Plan · Strict · cwd {tmp}]",
+                b"\x1b[31mStrict\x1b[0m",
+            )
+            command(
+                "/ultracode on",
+                "ultracode mode: on",
+                f"[{base} · Plan · Strict · Ultracode · cwd {tmp}]",
+                b"\x1b[35mUltracode\x1b[0m",
+            )
+            command(
+                "/yolo",
+                "yolo mode ON",
+                f"[{base} · Plan · Strict · Ultracode · YOLO · cwd {tmp}]",
+                b"\x1b[31mYOLO\x1b[0m",
+            )
+            session.send_key("ctrl-d")
+            result = session.read_until_exit(5.0)
+            if result.timed_out or result.exit_code != 0:
+                raise SystemExit(
+                    f"REPL did not exit cleanly: exit={result.exit_code} timed_out={result.timed_out}"
+                )
+    print("ok    PTY REPL commands, colored mode badges, redraws, and clean exit")
+
+
+if __name__ == "__main__":
+    main()

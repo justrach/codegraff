@@ -38,6 +38,32 @@ const pricing = @import("pricing.zig");
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
+fn reasoningPromptLabel(effort: ReasoningEffort) []const u8 {
+    return switch (effort) {
+        .low => "Low",
+        .medium => "Medium",
+        .high => "High",
+        .xhigh => "Extra high",
+        .max => "Max",
+        .ultra => "Ultra",
+    };
+}
+
+fn reasoningPromptColor(effort: ReasoningEffort) []const u8 {
+    return switch (effort) {
+        .low => style.green,
+        .medium => style.cyan,
+        .high => style.yellow,
+        .xhigh => style.magenta,
+        .max => style.red,
+        .ultra => style.magenta,
+    };
+}
+
+fn writePromptBadge(w: *Io.Writer, color: []const u8, label: []const u8) !void {
+    try w.print("{s} · {s}{s}{s}{s}", .{ style.dim, style.reset, color, label, style.reset });
+}
+
 pub const TodoItem = struct {
     content: []const u8,
     status: []const u8,
@@ -129,7 +155,6 @@ pub const Agent = struct {
     pub fn prompt(self: *Agent) !void {
         if (main_mod.json_mode) return; // SDK drives turns; no human prompt
         const w = self.out orelse return;
-        const flag: []const u8 = if (self.strict and main_mod.plan_mode) " strict·plan" else if (self.strict) " strict" else if (main_mod.plan_mode) " plan" else "";
         var cbuf: [40]u8 = undefined;
         const cost: []const u8 = if (!main_mod.show_cost) "" else blk: {
             if (std.mem.eql(u8, self.provider.id, "codex"))
@@ -143,21 +168,23 @@ pub const Agent = struct {
             (std.fmt.bufPrint(&kbuf, " · ⚡{d} cached", .{self.last_cache_read}) catch "")
         else
             "";
+        try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.cyan, self.provider.model, style.reset });
+        if (self.effortApplies()) try writePromptBadge(w, reasoningPromptColor(self.reasoning), reasoningPromptLabel(self.reasoning));
+        if (self.fast and self.provider.kind == .responses) try writePromptBadge(w, style.green, "Fast");
+        if (main_mod.plan_mode) try writePromptBadge(w, style.yellow, "Plan");
+        if (self.strict) try writePromptBadge(w, style.red, "Strict");
+        if (self.ultracode_mode) try writePromptBadge(w, style.magenta, "Ultracode");
+        if (self.approvals) |approvals| if (approvals.yoloEnabled(self.io)) try writePromptBadge(w, style.red, "YOLO");
+        try w.print("{s} · cwd {s}{s}{s}", .{ style.dim, style.reset, main_mod.g_cwd_display, style.dim });
         if (self.last_context_tokens > 0) {
             const threshold = self.provider.compactAt();
             // % of the compaction budget already used — glanceable headroom.
             const pct = if (threshold > 0) self.last_context_tokens * 100 / threshold else 0;
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · cwd {s}{s}{s} · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
-                style.dim,   style.reset,            style.cyan,  self.provider.model,      flag,             style.dim,
-                style.reset, main_mod.g_cwd_display, style.dim,   self.last_context_tokens, threshold / 1000, pct,
-                cached,      cost,                   style.reset, style.bold,               style.reset,
+            try w.print(" · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
+                self.last_context_tokens, threshold / 1000, pct, cached, cost, style.reset, style.bold, style.reset,
             });
         } else {
-            try w.print("\n{s}[{s}{s}{s}{s}{s} · cwd {s}{s}{s}{s}]{s} {s}›{s} ", .{
-                style.dim,   style.reset,            style.cyan, self.provider.model, flag,        style.dim,
-                style.reset, main_mod.g_cwd_display, style.dim,  cost,                style.reset, style.bold,
-                style.reset,
-            });
+            try w.print("{s}]{s} {s}›{s} ", .{ cost, style.reset, style.bold, style.reset });
         }
         try w.flush();
     }
@@ -407,3 +434,12 @@ pub const Agent = struct {
     pub const wrapCell = @import("agent_table.zig").wrapCell;
     pub const isTableSeparator = @import("agent_table.zig").isTableSeparator;
 };
+
+test "reasoning prompt label uses picker wording" {
+    try std.testing.expectEqualStrings("Low", reasoningPromptLabel(.low));
+    try std.testing.expectEqualStrings("Medium", reasoningPromptLabel(.medium));
+    try std.testing.expectEqualStrings("High", reasoningPromptLabel(.high));
+    try std.testing.expectEqualStrings("Extra high", reasoningPromptLabel(.xhigh));
+    try std.testing.expectEqualStrings("Max", reasoningPromptLabel(.max));
+    try std.testing.expectEqualStrings("Ultra", reasoningPromptLabel(.ultra));
+}

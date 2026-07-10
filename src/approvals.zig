@@ -137,6 +137,12 @@ pub const Approvals = struct {
         return self.yolo;
     }
 
+    pub fn yoloEnabled(self: *Approvals, io: Io) bool {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        return self.yolo;
+    }
+
     /// No chaining, piping, redirection, or substitution — those can smuggle
     /// a second command past a prefix match.
     fn isSimple(cmd: []const u8) bool {

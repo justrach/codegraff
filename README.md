@@ -401,7 +401,9 @@ click-to-fold.
 /plan           toggle plan mode: read-only explore + propose; writes/edits denied
 /key [p k]      show API-key status; /key <provider> <key> adds one live (+ Keychain)
 /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
-/reasoning      codex/gpt-5 reasoning depth: low|medium|high (default high)
+/reasoning      reasoning picker: low|medium|high|xhigh|max|ultra (persists)
+/fast           toggle Codex priority service tier for lower latency
+/ultracode      toggle persistent multi-agent workflow mode
 /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
 /image <path>   attach an image to your next message (vision models only)
 /paste          attach the clipboard image (macOS); also Ctrl-V (⌘V can't be captured)
@@ -425,10 +427,14 @@ editing (Ctrl-A/E/W/U/K, Option+Delete, word moves). The selected model is
 remembered in `~/.simple-harness-model` and resumed next launch
 (`--model <name>` overrides; a remembered model that's no longer in the table is
 ignored with a note). The prompt is a small statusline:
-`[model · 12345/800k tok (1%) · ⚡cached · $0.0042]`: context used vs the
-compaction budget, last cache hit, and session spend. Errors aim to be
-actionable: `/resume nope` says the session file wasn't found and points at
-`/sessions`; an unknown `/foo` points at `/help`.
+`[model · Extra high · Fast · Plan · cwd /repo · 12345/800k tok (1%) · ⚡cached]`.
+Active modes are visible at a glance: Low is green, Medium cyan, High yellow,
+Extra high/Ultra/Ultracode magenta, Max/Strict/YOLO red, and Plan yellow.
+Badges for unsupported settings are hidden instead of implying they apply. The
+tail shows context used vs the compaction budget, last cache hit, and (for
+metered providers) session spend.
+Errors aim to be actionable: `/resume nope` says the session file wasn't found
+and points at `/sessions`; an unknown `/foo` points at `/help`.
 
 ---
 
@@ -461,7 +467,7 @@ the REPL:
 | mode       | turn on              | what it does |
 | ---------- | -------------------- | ------------ |
 | **yolo**   | `--yolo` · `/yolo`   | Skip **every** prompt: bash, edits, and MCP all run without asking. For sandboxes, CI, and `-p`/`--json` runs where there's no human to answer. `--yolo` starts the session in it; `/yolo` toggles mid-session. |
-| **plan**   | `/plan`              | Read-only: the model explores and *proposes* a plan; the gate hard-denies writes, edits, MCP, and any bash beyond the read-only seed (even your saved allow-list) until you `/plan` again to execute. The prompt shows a ` plan` badge. |
+| **plan**   | `/plan`              | Read-only: the model explores and *proposes* a plan; the gate hard-denies writes, edits, MCP, and any bash beyond the read-only seed (even your saved allow-list) until you `/plan` again to execute. The prompt shows a yellow `Plan` badge. |
 | **strict** | `/strict`            | "Every message is a tool": the model must call exactly one tool per message and finish with `attempt_completion`. Useful for deterministic, scriptable agent loops. |
 
 **One-shot mode** (`graff -p "…"` or `--json`) has no human to answer the
