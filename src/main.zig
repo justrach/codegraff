@@ -51,6 +51,7 @@ pub var plan_mode = false; // /plan: read-only — mutating tools are denied, th
 pub var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
 const pricing = @import("pricing.zig"); // model pricing/catalog + session cost tally
 const models_cache = @import("models_cache.zig"); // graff models [refresh]: models.dev metadata cache + runtime overlay
+const command_catalog = @import("command_catalog.zig");
 const util = @import("util.zig"); // shared JSON ObjectMap getters (strFieldObj/intFieldObj)
 test {
     // build.zig's unit_tests root is main.zig only — reference every split-out module so their test blocks keep running.
@@ -143,7 +144,7 @@ pub var g_fleet: bool = true;
 const unixMs = util.unixMs;
 /// Reasoning depth for codex/responses (OpenAI Responses `reasoning.effort`).
 pub const ReasoningEffort = enum { low, medium, high, xhigh, max, ultra };
-pub const repl_commands = [_][]const u8{ "/model", "/models", "/clear", "/new", "/rename", "/goal", "/loop", "/bash", "/plan", "/key", "/keepcontext", "/effort", "/fast", "/ultracode", "/thinking", "/title", "/reasoning", "/strict", "/yolo", "/trace", "/fleet", "/trajectory", "/agents", "/skills", "/hooks", "/compact", "/rewind", "/image", "/paste", "/save", "/resume", "/sessions", "/todo", "/jobs", "/cost", "/animation", "/theme", "/mcp", "/help" };
+pub const repl_commands = command_catalog.names;
 // Lifecycle hooks (Hook/Hooks config types + settings loader + per-hook subprocess runner) live in hooks.zig; g_hooks below, dispatch, and the codedb-guard cache stay here.
 const hooks = @import("hooks.zig");
 pub var g_hooks: hooks.Hooks = .{};
@@ -172,6 +173,7 @@ const title_mod = @import("title.zig");
 // The `graff repl` bridge, steering-note assembly, steering queue drain, and /effort /fast /ultracode persistence live in repl_glue.zig. SteerEntry
 // is read from here; the mutable steer/thinking globals stay here, read/written live via `main_mod.g_x` (never aliased — they're `var`s).
 const repl_glue = @import("repl_glue.zig");
+const fallback_config = @import("fallback_config.zig");
 /// Per-skill user opt-out, persisted as {"skills": {"kuri": false}} in .harness/settings.json. A disabled skill is treated as not installed
 /// anywhere — no system-prompt note, /skills shows it disabled, and webfetch never shells out to it, even when its binaries are on PATH.
 pub var g_skill_disabled = [_]bool{false} ** skills_registry.len;
@@ -223,13 +225,10 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
-
     // Windows: let the console interpret ANSI/VT escapes so the harness's color and cursor sequences render instead of literal text.
     if (builtin.os.tag == .windows) tty.enableVtOutput();
-
     // CLI flags: the Flags struct + parsing loop live in args.zig; downstream code reads flags.<name> in place of ~27 locals this block used to declare.
     const flags = try args.parse(init);
-
     // --help / --version: handled before any subcommand dispatch, so `harness login --help` prints usage instead of starting an OAuth flow.
     if (try startup.runSubcommand(io, gpa, arena, init, flags)) return;
     // Credential/model resolution (env vars → on-disk logins → `harness key set` store, env always wins; then --model or the last-saved model) lives
@@ -238,11 +237,10 @@ pub fn main(init: std.process.Init) !void {
     var keys = resolved_keys.keys;
     const default_provider = resolved_keys.default_provider;
     const stale_saved_model = resolved_keys.stale_saved_model;
+    const preferred_provider = resolved_keys.preferred_provider;
     const codex_account = resolved_keys.codex_account;
-
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
-
     var stdin_buf: [64 * 1024]u8 = undefined;
     var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
     const in = &stdin_reader.interface;
@@ -253,7 +251,7 @@ pub fn main(init: std.process.Init) !void {
     g_out = out;
 
     if (try session_start.runTitleCommand(io, gpa, arena, &client, default_provider, out, flags)) return;
-    try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, trace_path, codex_account, stale_saved_model, default_provider);
+    try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, trace_path, codex_account, stale_saved_model, preferred_provider, default_provider);
 
     // Session trace (best-effort: a failed open just disables tracing).
     var trace_buf: [8 * 1024]u8 = undefined;
@@ -352,6 +350,8 @@ pub fn main(init: std.process.Init) !void {
     // backgrounded fleet-champion pull live in session_start.zig. `root`'s pointer fields (snapshots/client/tracer/approvals/registry) all reference
     // already-stable main()-owned storage passed in by address, so returning the constructed Agent by value here is safe.
     var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, sys_strict, mcp_tools, &snaps, flags, telem.endpoint);
+    root.fallback_active = stale_saved_model != null;
+    root.fallback_blocked = root.fallback_active and preferred_provider != null and !std.mem.eql(u8, preferred_provider.?, root.provider.id) and !fallback_config.contains(root.fallback_allow, root.provider.id);
     defer joinElites(io); // reap if the session quits before any turn joins it
 
     session_run.saveOrResumeSession(&root, keys, arena, flags);

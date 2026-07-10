@@ -46,6 +46,9 @@ pub const ReplCtx = struct {
     keys: Keys,
     home: []const u8,
     provider: Provider,
+    fallback_allow: []const []const u8,
+    fallback_active: bool,
+    fallback_blocked: bool,
     registry: ?*mcp.Registry,
     sys_normal: []const u8,
     tools_anthropic: []const u8,
@@ -207,6 +210,9 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
             .ultra => .ultra,
         },
         .fast = params.fast,
+        .fallback_allow = c.fallback_allow,
+        .fallback_active = c.fallback_active,
+        .fallback_blocked = c.fallback_blocked,
         .ultracode_mode = params.ultracode,
         .show_thinking = params.thinking,
     };
@@ -218,7 +224,11 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         };
         agent.messages.append(textMessage(arena, role, t.text) catch return null) catch return null;
     }
-    defer c.provider = agent.provider;
+    defer {
+        c.provider = agent.provider;
+        c.fallback_active = agent.fallback_active;
+        c.fallback_blocked = agent.fallback_blocked;
+    }
     const final = providers.runTurnWithFallback(&agent, c.keys, arena, &sink.writer) catch |err| switch (err) {
         // A mid-stream stall (#134): the repl turn IS live (stream_quiet=false),
         // so postStream can return error.StreamStalled. Don't collapse it to
@@ -232,6 +242,7 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
             else
                 gpa.dupe(u8, "[response ended early: stream stalled]") catch null;
         },
+        error.FallbackConsentRequired => return gpa.dupe(u8, "Saved model unavailable. Allow this provider with /fallback in the standard REPL, or choose another model.") catch null,
         else => return null,
     };
     const trimmed = std.mem.trim(u8, final, " \t\r\n");
@@ -245,8 +256,10 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
 /// `c.provider`, never this preference file.
 pub fn replModelCb(ctx_ptr: ?*anyopaque, gpa: Allocator, name: []const u8) ?[]const u8 {
     const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
-    const resolved = pricing.resolveModelName(c.keys, name) orelse name;
+    const resolved = pricing.resolveModelName(c.keys, name) orelse return null;
     c.provider = c.keys.providerFor(gpa.dupe(u8, resolved) catch return null) catch return null;
+    c.fallback_active = false;
+    c.fallback_blocked = false;
     serde.saveModel(c.io, c.home, c.provider.id, c.provider.model);
     return gpa.dupe(u8, c.provider.model) catch null;
 }

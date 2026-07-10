@@ -1,6 +1,6 @@
 //! Model/provider/thinking slash commands, split out of main.zig's
 //! handleCommand (600-line goal, issue #123): /model /compact /rewind /fast
-//! /thinking /title /ultracode /effort /keepcontext /key /login /image
+//! /thinking /title /ultracode /effort /keepcontext /fallback /key /login /image
 //! /paste /strict.
 
 const std = @import("std");
@@ -40,6 +40,8 @@ const offerProviderAuth = pickers.offerProviderAuth;
 
 const providers = @import("providers.zig");
 const switchProvider = providers.switchProvider;
+const fallback_config = @import("fallback_config.zig");
+const serde = @import("serde.zig");
 
 const oauth = @import("oauth.zig");
 
@@ -57,9 +59,70 @@ const stageImagePath = vision.stageImagePath;
 const visionCapable = vision.visionCapable;
 const grabClipboardImage = vision.grabClipboardImage;
 
+fn providerKnown(id: []const u8) bool {
+    for (provider_specs) |spec| if (std.mem.eql(u8, spec.id, id)) return true;
+    return false;
+}
+
+fn showFallback(root: *Agent, arena: Allocator, out: *Io.Writer) !void {
+    const saved = serde.loadModel(root.io, arena, root.home);
+    try out.print("current: {s} via {s}{s}\n", .{ root.provider.model, root.provider.id, if (root.fallback_active) " (temporary fallback)" else "" });
+    if (saved) |preferred| try out.print("saved default: {s} via {s}\n", .{ preferred.model, preferred.pid });
+    if (root.fallback_allow.len == 0) {
+        try out.writeAll("cross-provider fallback: off (same-provider rollout replacement remains allowed)\n");
+    } else {
+        try out.writeAll("cross-provider fallback allowed:");
+        for (root.fallback_allow) |id| try out.print(" {s}", .{id});
+        try out.writeByte('\n');
+    }
+    if (root.fallback_blocked) try out.print("{s}blocked: allow {s} with /fallback allow {s}, or choose /model{s}\n", .{ style.yellow, root.provider.id, root.provider.id, style.reset });
+    try out.writeAll("manage: /fallback allow <provider> · remove <provider> · off\n");
+    try out.flush();
+}
+
+fn handleFallback(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
+    if (!std.mem.eql(u8, line, "/fallback") and !std.mem.startsWith(u8, line, "/fallback ")) return false;
+    const rest = std.mem.trim(u8, line["/fallback".len..], " \t");
+    if (rest.len == 0) {
+        try showFallback(root, arena, out);
+        return true;
+    }
+    if (std.mem.eql(u8, rest, "off")) {
+        root.fallback_allow = &.{};
+        _ = fallback_config.save(root.io, root.gpa, root.fallback_allow);
+        try showFallback(root, arena, out);
+        return true;
+    }
+    var words = std.mem.tokenizeAny(u8, rest, " \t");
+    const action = words.next() orelse "";
+    const id = words.next() orelse {
+        try out.writeAll("usage: /fallback allow|remove <provider>  |  /fallback off\n");
+        try out.flush();
+        return true;
+    };
+    if ((!std.mem.eql(u8, action, "allow") and !std.mem.eql(u8, action, "remove")) or !providerKnown(id)) {
+        try out.print("unknown fallback action/provider — use /fallback allow|remove <provider>; provider '{s}' must appear in /models\n", .{id});
+        try out.flush();
+        return true;
+    }
+    var updated: std.ArrayList([]const u8) = .empty;
+    for (root.fallback_allow) |existing| {
+        if (std.mem.eql(u8, action, "remove") and std.mem.eql(u8, existing, id)) continue;
+        updated.append(arena, existing) catch {};
+    }
+    if (std.mem.eql(u8, action, "allow") and !fallback_config.contains(updated.items, id)) updated.append(arena, try arena.dupe(u8, id)) catch {};
+    root.fallback_allow = updated.toOwnedSlice(arena) catch updated.items;
+    const saved = fallback_config.save(root.io, root.gpa, root.fallback_allow);
+    if (std.mem.eql(u8, action, "allow") and std.mem.eql(u8, id, root.provider.id)) root.fallback_blocked = false;
+    if (!saved) try out.print("{s}warning: fallback setting is active now but was not persisted{s}\n", .{ style.yellow, style.reset });
+    try showFallback(root, arena, out);
+    return true;
+}
+
 /// Try to handle a model/provider/thinking slash command. Returns false (line
 /// unhandled) if `line` doesn't match any command in this file.
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
+    if (try handleFallback(root, arena, line, out)) return true;
     if (std.mem.startsWith(u8, line, "/model") and !std.mem.startsWith(u8, line, "/models")) {
         const arg = std.mem.trim(u8, line["/model".len..], " \t");
         if (arg.len == 0) {
@@ -98,6 +161,11 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             const mdl = std.mem.trim(u8, arg[i + 1 ..], " \t");
             for (provider_specs) |spec| {
                 if (!std.mem.eql(u8, spec.id, pid) or mdl.len == 0) continue;
+                if (!isLocalUrl(spec.url) and !pricing.providerModelInTable(pid, mdl)) {
+                    try out.print("unknown model '{s}' for {s} — choose /model, or run `graff models refresh` first\n", .{ mdl, pid });
+                    try out.flush();
+                    return true;
+                }
                 const m = try arena.dupe(u8, mdl);
                 const provider = keys.providerById(pid, m) catch {
                     try offerProviderAuth(root, keys, arena, out, pid, m);
@@ -143,8 +211,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try switchProvider(root, arena, provider, out);
             return true;
         }
-        const resolved = resolveModelName(keys.*, arg);
-        const name = try arena.dupe(u8, resolved orelse arg);
+        const resolved = resolveModelName(keys.*, arg) orelse {
+            try out.print("unknown model '{s}' — choose /model, or run `graff models refresh` first; preference unchanged\n", .{arg});
+            try out.flush();
+            return true;
+        };
+        const name = try arena.dupe(u8, resolved);
         const provider = keys.providerFor(name) catch {
             for (pricing.models()) |mt| if (std.mem.eql(u8, mt.name, name)) {
                 try offerProviderAuth(root, keys, arena, out, mt.provider, name);
@@ -155,12 +227,6 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return true;
         };
         try switchProvider(root, arena, provider, out);
-        if (resolved == null) {
-            // Not in the model table: providerFor routed it to the claude*/
-            // gateway fallback. Say so — the API will reject a typo'd name.
-            try out.print("{s}⚠ '{s}' isn't in the model table — sent to {s} as-is; the first request will fail if it doesn't exist (/models lists known names){s}\n", .{ style.dim, name, provider.id, style.reset });
-            try out.flush();
-        }
         return true;
     }
     if (std.mem.eql(u8, line, "/compact")) {
@@ -363,6 +429,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         keys.values[idx.?] = arena.dupe(u8, key) catch key; // live, usable immediately
         const home = root.home;
         const saved = storeKey(root.io, root.gpa, arena, home, pid, key); // persist
+        keys.sources[idx.?] = if (saved) .stored else .session;
         try out.print("✓ {s} key set (live{s}) — now: /model {s}\n", .{ pid, if (saved) " + Keychain" else "", pid });
         try out.flush();
         return true;

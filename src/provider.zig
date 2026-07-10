@@ -82,7 +82,26 @@ pub const Provider = struct {
 
 /// One optional API key per provider_specs entry, read from the environment.
 pub const Keys = struct {
+    pub const CredentialSource = enum {
+        none,
+        environment,
+        login,
+        stored,
+        session,
+
+        pub fn label(self: CredentialSource) []const u8 {
+            return switch (self) {
+                .none => "missing",
+                .environment => "environment",
+                .login => "OAuth/login",
+                .stored => "secure store",
+                .session => "this session",
+            };
+        }
+    };
+
     values: [provider_specs.len]?[]const u8,
+    sources: [provider_specs.len]CredentialSource = [_]CredentialSource{.none} ** provider_specs.len,
     codex_account: []const u8 = "", // ChatGPT account id for the codex provider
 
     pub fn get(keys: Keys, provider_id: []const u8) ?[]const u8 {
@@ -90,6 +109,13 @@ pub const Keys = struct {
             if (std.mem.eql(u8, spec.id, provider_id)) return value;
         }
         return null;
+    }
+
+    pub fn source(keys: Keys, provider_id: []const u8) CredentialSource {
+        for (provider_specs, keys.sources) |spec, source_value| {
+            if (std.mem.eql(u8, spec.id, provider_id)) return source_value;
+        }
+        return .none;
     }
 
     pub fn build(keys: Keys, spec: ProviderSpec, key: []const u8, model: []const u8) Provider {

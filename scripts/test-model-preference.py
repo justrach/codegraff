@@ -109,22 +109,34 @@ def main() -> None:
             cursor = len(session.raw)
             session.send_line("/model codex")
             session.wait_for_literal("switched to gpt-5.6-sol via codex", start=cursor)
-            session.wait_for_literal("[gpt-5.6-sol · Medium · cwd", start=cursor)
+            session.wait_for_literal("[gpt-5.6-sol · Medium · codex · cwd", start=cursor)
             clean_exit(session)
         preference = home / ".simple-harness-model"
         assert preference.read_text(encoding="utf-8") == "codex\ngpt-5.6-sol\n"
 
-        # Missing Codex credentials use a working configured provider for this
-        # session without replacing the saved preference.
+        # Missing Codex credentials select a fallback but do not send anything
+        # across providers until the workspace explicitly allowlists it.
         with launch(str(cwd), env, codex_home=None) as session:
-            session.wait_for_literal("saved preference kept")
-            session.wait_for_literal("[deepseek-v4-pro · Medium · cwd")
+            session.wait_for_literal("Cross-provider use is blocked")
+            session.wait_for_literal("[deepseek-v4-pro · Medium · codegraff · Fallback · cwd")
+            cursor = len(session.raw)
+            session.send_line("must not reach a provider")
+            session.wait_for_literal("requires explicit consent", start=cursor)
+            cursor = len(session.raw)
+            session.send_line("/fallback allow codegraff")
+            session.wait_for_literal("cross-provider fallback allowed: codegraff", start=cursor)
             clean_exit(session)
         assert preference.read_text(encoding="utf-8") == "codex\ngpt-5.6-sol\n"
 
+        # With explicit consent persisted, the same fallback is ready for use.
+        with launch(str(cwd), env, codex_home=None) as session:
+            session.wait_for_literal("saved preference kept")
+            session.wait_for_literal("[deepseek-v4-pro · Medium · codegraff · Fallback · cwd")
+            clean_exit(session)
+
         # Once credentials return, the preferred model is selected again.
         with launch(str(cwd), env, codex_home=str(codex_home)) as session:
-            session.wait_for_literal("[gpt-5.6-sol · Medium · cwd")
+            session.wait_for_literal("[gpt-5.6-sol · Medium · codex · cwd")
             clean_exit(session)
 
         # A removed rollout stays on the selected provider when that login is
@@ -141,7 +153,7 @@ def main() -> None:
         )
         with launch(str(cwd), env, codex_home=str(codex_home)) as session:
             session.wait_for_literal("saved preference kept")
-            session.wait_for_literal("[gpt-5.6-luna · Medium · cwd")
+            session.wait_for_literal("[gpt-5.6-luna · Medium · codex · Fallback · cwd")
             clean_exit(session)
         assert preference.read_text(encoding="utf-8") == "codex\ngpt-5.6-sol\n"
 

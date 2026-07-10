@@ -1,7 +1,8 @@
 # v0.0.193 handoff
 
-This release branch is intentionally unfinished. Do not tag or publish it until
-the remaining UX work and the full CI suite pass.
+The planned REPL UX hardening is implemented and the full local CI-equivalent
+suite passes. The newest changes are still local: review and commit them before
+updating the draft PR. Do not tag or publish without an explicit release request.
 
 ## Implemented
 
@@ -15,28 +16,37 @@ the remaining UX work and the full CI suite pass.
   and preference recovery coverage.
 - `/key <provider> <secret>` is masked while typed and excluded from both live
   and persisted input history; legacy leaked key commands are filtered on load.
-- Initial cross-provider fallback allowlist storage/filtering and persistent
-  provider/fallback prompt badges.
+- Cross-provider fallback is opt-in per workspace through `/fallback`; an
+  unallowlisted startup fallback is blocked before a prompt can reach it.
+- Unknown remote model names are rejected before switching or changing the
+  saved default. Explicit local LM Studio/MLX model IDs remain supported.
+- Model and settings pickers resize to the live terminal and initially select
+  the current value.
+- `/help`, the bare `/` menu, and tab completion share `command_catalog.zig`.
+- `/models health` reports active/saved model state, context/compaction limits,
+  credential source (never value), Codex catalog source/count, WebSocket→SSE
+  status, and fallback policy.
+- Prompt context is unambiguous (`used/full ctx (% · compact@limit)`) and token
+  counts are compacted to readable units.
+- API-key entry is hidden in both `/key` and the model picker's auth flow.
 
-## Finish in this order
+## Remaining release handoff
 
-1. Complete the fallback-consent UX: add `/fallback` show/allow/remove/off,
-   block an unallowlisted startup fallback before any prompt is sent, and carry
-   the allowlist/state through `graff repl`, JSON, and one-shot modes.
-2. Reject unknown model names before `switchProvider` saves them as the default.
-3. Make model/settings pickers responsive to terminal rows/columns and initially
-   highlight the current value.
-4. Generate `/help` from the same command registry as the bare `/` menu.
-5. Add `/models health` with unified env/Keychain/OAuth availability and recent
-   fallback/failure state.
-6. Normalize prompt context units and clarify full context versus compact-at.
+1. Review the local diff and commit only the tracked implementation files plus
+   `src/command_catalog.zig` and this handoff.
+2. Push `release/v0.0.193` to update draft PR #141.
+3. Run hosted checks. Tag/publish only after explicit approval.
 
 ## Validation state
 
-- `zig build test --summary all`: 147/147 passed before handoff.
-- The last combined PTY command was interrupted; rerun all PTY tests. Prompt
-  expectations likely need the new provider and `Fallback` badges added.
-- Rerun JSON controls, SDK generation drift, formatting, and `git diff --check`.
+- `zig build test --summary all`: 150/150 passed.
+- `scripts/test-json-controls.py`: 19/19 passed.
+- `scripts/test-pty-spinner.py`: passed in repo, home, and `/tmp` cwd variants.
+- `scripts/test-pty-repl.py`: passed, including 44×12 responsive pickers,
+  secret masking/history, generated help, and `/models health`.
+- `scripts/test-pty-markdown.py`: passed.
+- `scripts/test-model-preference.py`: passed.
+- `zig build` and `git diff --check`: passed.
 - No release tag, GitHub release, or deployment has been created.
 
 ## Scope warning

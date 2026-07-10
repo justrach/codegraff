@@ -23,6 +23,10 @@ const textMessage = messages_mod.textMessage;
 const ansi = @import("ansi.zig");
 const fallback_config = @import("fallback_config.zig");
 
+fn localProviderUrl(url: []const u8) bool {
+    return std.mem.startsWith(u8, url, "http://127.0.0.1") or std.mem.startsWith(u8, url, "http://localhost") or std.mem.startsWith(u8, url, "http://[::1]");
+}
+
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
@@ -229,14 +233,15 @@ pub fn resolveProviderControlRequest(
         for (provider_specs) |spec| {
             if (!std.mem.eql(u8, spec.id, provider_id)) continue;
             const selected_model = if (model.len == 0) pricing.providerDefaultModel(spec.id, spec.default_model) else try arena.dupe(u8, model);
+            if (model.len != 0 and !localProviderUrl(spec.url) and !pricing.providerModelInTable(spec.id, selected_model)) return error.InvalidModel;
             return keys.providerById(spec.id, selected_model);
         }
         return error.InvalidProvider;
     }
 
     if (model.len != 0) {
-        const resolved = resolveModelName(keys.*, model);
-        const name = try arena.dupe(u8, resolved orelse model);
+        const resolved = resolveModelName(keys.*, model) orelse return error.InvalidModel;
+        const name = try arena.dupe(u8, resolved);
         return keys.providerFor(name);
     }
 
@@ -252,6 +257,7 @@ fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Pro
         const mdl = std.mem.trim(u8, arg[i + 1 ..], " \t");
         for (provider_specs) |spec| {
             if (!std.mem.eql(u8, spec.id, pid) or mdl.len == 0) continue;
+            if (!localProviderUrl(spec.url) and !pricing.providerModelInTable(pid, mdl)) return error.InvalidModel;
             const m = try arena.dupe(u8, mdl);
             return keys.providerById(pid, m);
         }
@@ -262,8 +268,8 @@ fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Pro
         return keys.providerById(spec.id, pricing.providerDefaultModel(spec.id, spec.default_model));
     }
 
-    const resolved = resolveModelName(keys.*, arg);
-    const name = try arena.dupe(u8, resolved orelse arg);
+    const resolved = resolveModelName(keys.*, arg) orelse return error.InvalidModel;
+    const name = try arena.dupe(u8, resolved);
     return keys.providerFor(name);
 }
 
@@ -324,7 +330,7 @@ test "nextFallbackProvider: rotates after the failed provider and skips missing 
     const exhausted = [_][]const u8{ "codex", "codegraff", "openai" };
     try std.testing.expect(nextFallbackProvider(sparse, "openai", &exhausted, &allow_all) == null);
     const allow_codegraff = [_][]const u8{"codegraff"};
-    try std.testing.expect(nextFallbackProvider(sparse, "codex", &tried_codex, &allow_codegraff).?.id.ptr == "codegraff".ptr);
+    try std.testing.expectEqualStrings("codegraff", nextFallbackProvider(sparse, "codex", &tried_codex, &allow_codegraff).?.id);
 }
 
 test "translateHistory: flattens to {role,content:string}, keeps user/assistant, drops the rest" {
@@ -363,6 +369,11 @@ test "set_model control resolves explicit provider/model fields" {
     const legacy = try resolveProviderControlRequest(&all, arena, "", "", "codegraff gpt-5.5");
     try std.testing.expectEqualStrings("codegraff", legacy.id);
     try std.testing.expectEqualStrings("gpt-5.5", legacy.model);
+    try std.testing.expectError(error.InvalidModel, resolveProviderControlRequest(&all, arena, "", "definitely-not-a-model", ""));
+    try std.testing.expectError(error.InvalidModel, resolveProviderControlRequest(&all, arena, "openai", "definitely-not-a-model", ""));
+
+    const local = try resolveProviderControlRequest(&all, arena, "lmstudio", "user-loaded/model", "");
+    try std.testing.expectEqualStrings("user-loaded/model", local.model);
 }
 
 test "extractText: string content, joined text blocks, and empties" {

@@ -45,13 +45,38 @@ def main() -> None:
                 if color_bytes is not None and color_bytes not in bytes(session.raw[cursor:]):
                     raise AssertionError(f"missing colored badge {color_bytes!r} after {line}")
 
-            base = "deepseek-v4-pro · Extra high"
+            base = "deepseek-v4-pro · Extra high · codegraff"
             command(
                 "/effort xhigh",
                 "reasoning effort: Extra high",
                 f"[{base} · cwd {tmp}]",
                 b"\x1b[35mExtra high\x1b[0m",
             )
+            command(
+                "/model definitely-not-a-model",
+                "unknown model 'definitely-not-a-model'",
+                f"[{base} · cwd {tmp}]",
+                None,
+            )
+            cursor = len(session.raw)
+            session.send_line("/help")
+            session.wait_for_literal("/models [health]", start=cursor)
+            session.wait_for_literal("/fallback [allow|remove|off]", start=cursor)
+            session.wait_for_literal("/login [codegraff|codex|kimi]", start=cursor)
+            session.wait_for_literal(f"[{base} · cwd {tmp}]", start=cursor)
+            cursor = len(session.raw)
+            session.send_line("/models health")
+            session.wait_for_literal("active: deepseek-v4-pro via codegraff", start=cursor)
+            session.wait_for_literal("Codex catalog:", start=cursor)
+            session.wait_for_literal(
+                "Codex transport: WebSocket primary with automatic SSE fallback",
+                start=cursor,
+            )
+            session.wait_for(r"✓\s+codegraff\s+environment", start=cursor)
+            session.wait_for(r"·\s+codex\s+missing", start=cursor)
+            session.wait_for_literal(f"[{base} · cwd {tmp}]", start=cursor)
+            if b"local-pty-test" in bytes(session.raw[cursor:]):
+                raise AssertionError("/models health exposed a credential value")
             command(
                 "/plan",
                 "plan mode on",
@@ -93,6 +118,50 @@ def main() -> None:
         history = os.path.join(tmp, ".simple-harness-history")
         if os.path.exists(history) and "supersecret" in open(history, encoding="utf-8").read():
             raise AssertionError("/key secret was persisted in REPL history")
+
+        # A short/narrow PTY used to overflow because both pickers always drew
+        # 18 rows with fixed 26/11-column cells. The model picker should fit in
+        # 12 rows and initially highlight the active model; the settings picker
+        # should retain its persisted current value too.
+        with PtySession(
+            GRAFF,
+            ["--model", "deepseek-v4-pro", "--no-telemetry"],
+            cwd=tmp,
+            env=env,
+            unset_env=("CODEX_HOME", "NO_COLOR"),
+            timeout=15.0,
+            rows=12,
+            cols=44,
+        ) as session:
+            session.wait_for_literal("] ›")
+            cursor = len(session.raw)
+            session.send_line("/model")
+            session.wait_for_literal("CTX/KEY", start=cursor)
+            session.pump_for(0.1)
+            paint = bytes(session.raw[cursor:]).rsplit(b"\x1b[2J\x1b[H", 1)[-1]
+            if paint.count(b"\n") != 11:
+                raise AssertionError("model picker exceeded its 12-row terminal budget")
+            if b"\x1b[7m\xe2\x96\x8c deepseek-v4-pro" not in paint:
+                raise AssertionError("model picker did not initially select the active model")
+            session.send_key("ctrl-c")
+            session.wait_for_literal("] ›", start=cursor)
+
+            cursor = len(session.raw)
+            session.send_line("/effort")
+            session.wait_for_literal("Reasoning level for", start=cursor)
+            session.wait_for_literal("Ultra", start=cursor)
+            session.pump_for(0.1)
+            paint = bytes(session.raw[cursor:]).rsplit(b"\x1b[2J\x1b[H", 1)[-1]
+            if b"\x1b[7m Extra high" not in paint:
+                raise AssertionError("reasoning picker did not initially select the current level")
+            session.send_key("ctrl-c")
+            session.wait_for_literal("] ›", start=cursor)
+            session.send_key("ctrl-d")
+            result = session.read_until_exit(5.0)
+            if result.timed_out or result.exit_code != 0:
+                raise SystemExit(
+                    f"narrow REPL did not exit cleanly: exit={result.exit_code} timed_out={result.timed_out}"
+                )
     print("ok    PTY REPL commands, colored mode badges, redraws, and clean exit")
 
 

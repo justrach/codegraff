@@ -68,6 +68,9 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
         .keys = keys,
         .home = root.home,
         .provider = root.provider,
+        .fallback_allow = root.fallback_allow,
+        .fallback_active = root.fallback_active,
+        .fallback_blocked = root.fallback_blocked,
         .registry = root.registry,
         .sys_normal = root.sys_normal,
         .tools_anthropic = root.tools_anthropic,
@@ -110,6 +113,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
     if (telemetry.g_telem) |t| t.countTurn();
     const final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| switch (err) {
+        error.FallbackConsentRequired => std.process.fatal("saved model unavailable; provider '{s}' is not allowlisted — run graff interactively, then /fallback allow {s}", .{ root.provider.id, root.provider.id }),
         error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
         else => |e| std.process.fatal("turn failed: {t}", .{e}),
     };
