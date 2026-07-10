@@ -21,13 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
-    \\0.0.166
-    \\  • Trace/trajectory JSONL never corrupts on a failed write (#86)
-    \\  • Auto-compaction recovers instead of wedging on huge context (#88)
-    \\  • New providers: Sakana AI (fugu) + Fireworks AI (deepseek, kimi, glm…)
-    \\0.0.165
-    \\  • TUI: live /thinking reasoning stream, AI /title, session headers
-    \\  • GUI: /ultracode toggle, prompt-history image fix, segmented borders
+    \\0.0.188
+    \\  • Codex model names, defaults, and context windows now follow your live account catalog
+    \\  • Codex uses WebSockets first, with a fresh-client SSE fallback on connection failure
+    \\  • `graff models refresh` updates Codex plus models.dev metadata
+    \\  • main.zig is split into focused modules; every source file is ≤600 lines
     \\
 ;
 
