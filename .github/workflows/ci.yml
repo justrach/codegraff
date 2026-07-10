@@ -54,6 +54,12 @@ jobs:
       - name: PTY REPL interaction test
         run: python3 scripts/test-pty-repl.py zig-out/bin/graff
 
+      - name: PTY Markdown rendering test
+        run: python3 scripts/test-pty-markdown.py zig-out/bin/graff
+
+      - name: PTY model preference and fallback test
+        run: python3 scripts/test-model-preference.py zig-out/bin/graff
+
       - name: SDK generation drift
         run: |
           python3 sdk/generate.py --harness ./zig-out/bin/graff

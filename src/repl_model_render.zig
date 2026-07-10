@@ -43,6 +43,7 @@ pub fn statusLine(self: *const Model, a: std.mem.Allocator) ![]const u8 {
 /// Render at `term_width` x `term_height`; `now_ms` drives animations. Input
 /// box is pinned to the bottom; conversation fills from the top.
 pub fn render(self: *Model, gpa: std.mem.Allocator, term_width: usize, term_height: usize, now_ms: u64) ![]const u8 {
+    self.last_term_width = term_width;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const a = arena_state.allocator();

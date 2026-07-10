@@ -42,6 +42,7 @@ const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
 const ansi = @import("ansi.zig");
 const title_mod = @import("title.zig");
+const fallback_config = @import("fallback_config.zig");
 const repl = @import("repl.zig");
 const pickers = @import("pickers.zig");
 const repl_glue = @import("repl_glue.zig");
@@ -80,6 +81,7 @@ pub fn setupWorktreeAndBanner(
     trace_path: []const u8,
     codex_account: ?[]const u8,
     stale_saved_model: ?[]const u8,
+    preferred_provider: ?[]const u8,
     default_provider: provider_mod.Provider,
 ) !void {
     // Color only on an interactive terminal, and honor NO_COLOR.
@@ -133,11 +135,22 @@ pub fn setupWorktreeAndBanner(
             try out.flush();
         }
         if (flags.yolo_flag) {
-            try out.print("⚠ yolo mode (--yolo): all bash/tool/MCP permission prompts are skipped\n", .{});
+            try out.print("{s}⚠ YOLO{s} mode (--yolo): all bash/tool/MCP permission prompts are skipped\n", .{ style.red, style.reset });
             try out.flush();
         }
         if (stale_saved_model) |nm| {
-            try out.print("{s}note: remembered model '{s}' isn't in the model table — starting on {s} instead{s}\n", .{ style.dim, nm, default_provider.model, style.reset });
+            const allowed = fallback_config.load(io, arena);
+            const cross_provider = preferred_provider != null and !std.mem.eql(u8, preferred_provider.?, default_provider.id);
+            const blocked = cross_provider and !fallback_config.contains(allowed, default_provider.id);
+            try out.print("{s}note: saved model '{s}' is unavailable — selected {s} via {s} for this session; saved preference kept{s}{s}\n", .{
+                style.dim,
+                nm,
+                default_provider.model,
+                default_provider.id,
+                if (blocked) ". Cross-provider use is blocked until /fallback allow " else "",
+                if (blocked) default_provider.id else "",
+            });
+            try out.writeAll(style.reset);
             try out.flush();
         }
         if (main_mod.show_timing or main_mod.show_cost) {

@@ -26,6 +26,7 @@ const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
 const Agent = agent_mod.Agent;
 const Provider = provider_mod.Provider;
+const Keys = provider_mod.Keys;
 const ReasoningEffort = main_mod.ReasoningEffort;
 
 const mcp = @import("mcp.zig");
@@ -35,12 +36,19 @@ const Approvals = approvals_mod.Approvals;
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
 const pricing = @import("pricing.zig");
-const contextFor = pricing.contextFor;
+const providers = @import("providers.zig");
+const serde = @import("serde.zig");
+const fallback_config = @import("fallback_config.zig");
 
 pub const ReplCtx = struct {
     io: Io,
     client: *std.http.Client,
+    keys: Keys,
+    home: []const u8,
     provider: Provider,
+    fallback_allow: []const []const u8,
+    fallback_active: bool,
+    fallback_blocked: bool,
     registry: ?*mcp.Registry,
     sys_normal: []const u8,
     tools_anthropic: []const u8,
@@ -202,6 +210,9 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
             .ultra => .ultra,
         },
         .fast = params.fast,
+        .fallback_allow = c.fallback_allow,
+        .fallback_active = c.fallback_active,
+        .fallback_blocked = c.fallback_blocked,
         .ultracode_mode = params.ultracode,
         .show_thinking = params.thinking,
     };
@@ -213,7 +224,12 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         };
         agent.messages.append(textMessage(arena, role, t.text) catch return null) catch return null;
     }
-    const final = agent.runTurn() catch |err| switch (err) {
+    defer {
+        c.provider = agent.provider;
+        c.fallback_active = agent.fallback_active;
+        c.fallback_blocked = agent.fallback_blocked;
+    }
+    const final = providers.runTurnWithFallback(&agent, c.keys, arena, &sink.writer) catch |err| switch (err) {
         // A mid-stream stall (#134): the repl turn IS live (stream_quiet=false),
         // so postStream can return error.StreamStalled. Don't collapse it to
         // null — the pane renders that as "model call failed — check /model and
@@ -226,6 +242,7 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
             else
                 gpa.dupe(u8, "[response ended early: stream stalled]") catch null;
         },
+        error.FallbackConsentRequired => return gpa.dupe(u8, "Saved model unavailable. Allow this provider with /fallback in the standard REPL, or choose another model.") catch null,
         else => return null,
     };
     const trimmed = std.mem.trim(u8, final, " \t\r\n");
@@ -233,16 +250,18 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
     return gpa.dupe(u8, trimmed) catch null;
 }
 
-/// repl.ModelFn adapter — switch the active model by name. Keeps the working
-/// provider resolved at startup (its url/key/kind — e.g. the codegraff gateway
-/// login) and only swaps the model field; re-resolving via providerFor can pick
-/// a different, unauthenticated provider for the same model name. Returns the
-/// new model name, or null on failure.
+/// repl.ModelFn adapter — switch the active model by name. Resolve its provider
+/// using the same model-routing rules as /model, then persist that
+/// explicit choice for the next launch. Automatic turn fallback updates only
+/// `c.provider`, never this preference file.
 pub fn replModelCb(ctx_ptr: ?*anyopaque, gpa: Allocator, name: []const u8) ?[]const u8 {
     const c: *ReplCtx = @ptrCast(@alignCast(ctx_ptr orelse return null));
-    c.provider.model = gpa.dupe(u8, name) catch return null;
-    c.provider.context = contextFor(c.provider.id, c.provider.model);
-    return gpa.dupe(u8, name) catch null;
+    const resolved = pricing.resolveModelName(c.keys, name) orelse return null;
+    c.provider = c.keys.providerFor(gpa.dupe(u8, resolved) catch return null) catch return null;
+    c.fallback_active = false;
+    c.fallback_blocked = false;
+    serde.saveModel(c.io, c.home, c.provider.id, c.provider.model);
+    return gpa.dupe(u8, c.provider.model) catch null;
 }
 /// repl.CancelFn adapter — force-interrupt the running repl turn. Sets the
 /// Agent-wide esc_cancel flag the streaming loops + watchdog poll, so the
@@ -337,6 +356,7 @@ pub fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fas
 /// {"effort": "low|medium|high|xhigh|max|ultra"} and {"fast": true}. Best-effort — a missing
 /// or garbled file just leaves the defaults (medium, off).
 pub fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
+    root.fallback_allow = fallback_config.load(io, arena);
     const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
     if (v != .object) return;

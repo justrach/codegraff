@@ -38,7 +38,15 @@ Full-screen pickers can be driven with real key sequences:
 ```bash
 scripts/pty-debug.py --bin zig-out/bin/graff \
   --cmd /effort --expect 'Reasoning level for' \
-  --key down --key enter --expect 'reasoning effort:'
+    --key down --key enter --expect 'reasoning effort:'
+```
+
+The Markdown renderer has its own deterministic PTY fixture—no model call:
+
+```bash
+zig-out/bin/graff --selftest-markdown
+python3 scripts/test-pty-markdown.py zig-out/bin/graff
+python3 scripts/test-model-preference.py zig-out/bin/graff
 ```
 
 Useful debugging options:

@@ -2,7 +2,7 @@
 //! (600-line goal — session_start.zig itself crossed the line goal once
 //! this content grew). Covers everything from approvals/hooks/fleet-type
 //! loading through Agent construction, the `graff repl`/one-shot early-exit
-//! paths, session resume/finalize, and the skills/theme/`--selftest-spinner`
+//! paths, session resume/finalize, and the skills/theme/PTY self-tests
 //! setup.
 //!
 //! Same dangling-pointer discipline as session_start.zig: `buildRootAgent`
@@ -46,6 +46,7 @@ const title_mod = @import("title.zig");
 const repl = @import("repl.zig");
 const pickers = @import("pickers.zig");
 const repl_glue = @import("repl_glue.zig");
+const providers = @import("providers.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
 const fleet = @import("fleet.zig");
@@ -59,12 +60,17 @@ const schema = @import("schema.zig");
 /// `root` is already a stable, fully-constructed main()-owned Agent by the
 /// time this is called, so taking its address here is safe (this helper
 /// only reads through the pointer, it never owns or returns Agent storage).
-pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
+pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "repl"))) return false;
     var repl_ctx = repl_glue.ReplCtx{
         .io = io,
         .client = client,
+        .keys = keys,
+        .home = root.home,
         .provider = root.provider,
+        .fallback_allow = root.fallback_allow,
+        .fallback_active = root.fallback_active,
+        .fallback_blocked = root.fallback_blocked,
         .registry = root.registry,
         .sys_normal = root.sys_normal,
         .tools_anthropic = root.tools_anthropic,
@@ -90,7 +96,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
 /// denies anything not pre-approved instead of prompting (there's no one to
 /// ask). Moved out of main() verbatim (600-line goal); `root`/`tracer` are
 /// already stable main()-owned storage by the time this runs.
-pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_mod.Agent, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
+pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_mod.Agent, keys: provider_mod.Keys, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
     main_mod.unattended = true;
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
@@ -106,7 +112,8 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
     if (telemetry.g_telem) |t| t.countTurn();
-    const final_text = root.runTurn() catch |err| switch (err) {
+    const final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| switch (err) {
+        error.FallbackConsentRequired => std.process.fatal("saved model unavailable; provider '{s}' is not allowlisted — run graff interactively, then /fallback allow {s}", .{ root.provider.id, root.provider.id }),
         error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
         else => |e| std.process.fatal("turn failed: {t}", .{e}),
     };
@@ -310,15 +317,15 @@ pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer
 pub const ThemeSetup = struct {
     theme_on: bool,
     limyuxi_glam: bool,
-    /// True when `--selftest-spinner` already ran + printed the headless
-    /// spinner render — main() should return immediately without going any
+    /// True when a PTY self-test already ran + printed its render — main()
+    /// should return immediately without going any
     /// further (but AFTER registering the theme/limyuxi reset defers below,
     /// exactly like the original inline code did).
     should_exit: bool,
 };
 
 /// Per-skill/companion opt-outs, animation + terminal-theme settings, the
-/// `--selftest-spinner` headless render (PTY anti-stealth test), and the
+/// headless PTY render self-tests, and the
 /// yxlyx-birthday cosmetic theme. Moved out of main() verbatim (600-line
 /// goal). Returns which reset defers main() needs to register — the
 /// escape-code RESETS must fire when main() itself returns (not when this
@@ -385,6 +392,36 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
                 out.writeByte('\n') catch {};
             }
         }
+        out.flush() catch {};
+        return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = true };
+    }
+    if (flags.selftest_markdown_flag) {
+        var probe: agent_mod.Agent = .{
+            .gpa = arena,
+            .arena = arena,
+            .io = io,
+            .client = undefined,
+            .provider = undefined,
+            .messages = undefined,
+            .sub = false,
+            .label = "markdown-selftest",
+            .out = out,
+        };
+        probe.streamMarkdown(
+            \\## Gaps
+            \\- No bot-specific route tests exist.
+            \\- Pin `install.sh` and verify its checksum.
+            \\
+            \\## Recommended implementation order
+            \\1. **Immediately:** require collaborator permission.
+            \\2) **Next:** deduplicate `X-GitHub-Delivery`.
+            \\- [ ] Add a Daytona credential preflight.
+            \\- [x] Sanitize public errors.
+            \\  - Preserve private incident detail.
+            \\> Public errors must never expose secrets.
+        );
+        probe.flushStreamTail();
+        out.writeByte('\n') catch {};
         out.flush() catch {};
         return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = true };
     }

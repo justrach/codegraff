@@ -34,6 +34,8 @@ const pricing = @import("pricing.zig");
 const default_context = pricing.default_context;
 const g_cost = &pricing.g_cost;
 const models_cache = @import("models_cache.zig");
+const command_catalog = @import("command_catalog.zig");
+const serde = @import("serde.zig");
 
 const schema = @import("schema.zig");
 const renderRootTools = schema.renderRootTools;
@@ -54,6 +56,73 @@ const listPicker = pickers.listPicker;
 
 const trace = @import("trace.zig");
 const trace_path = trace.trace_path;
+
+fn providerModelCount(provider_id: []const u8) usize {
+    var count: usize = 0;
+    for (pricing.models()) |model| if (std.mem.eql(u8, model.provider, provider_id)) {
+        count += 1;
+    };
+    return count;
+}
+
+fn showModelsHealth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer) !void {
+    const saved = serde.loadModel(root.io, arena, root.home);
+    try out.print("{s}model health{s}\n", .{ style.bold, style.reset });
+    try out.print("active: {s} via {s} · {d}k ctx · compact@{d}k{s}{s}\n", .{
+        root.provider.model,
+        root.provider.id,
+        root.provider.context / 1000,
+        root.provider.compactAt() / 1000,
+        if (root.fallback_active) " · temporary fallback" else "",
+        if (root.fallback_blocked) " · BLOCKED pending consent" else "",
+    });
+    if (saved) |preferred|
+        try out.print("saved default: {s} via {s}\n", .{ preferred.model, preferred.pid })
+    else
+        try out.writeAll("saved default: none\n");
+
+    var codex_models: usize = 0;
+    for (pricing.models()) |model| if (std.mem.eql(u8, model.provider, "codex")) {
+        codex_models += 1;
+    };
+    try out.print("Codex catalog: {s} · {d} model(s)\n", .{ models_cache.codex_catalog_source, codex_models });
+    const transport = if (!main_mod.g_codex_ws)
+        "SSE forced (GRAFF_CODEX_WS is off)"
+    else if (root.ws_off)
+        "SSE fallback (WebSocket failed this session)"
+    else
+        "WebSocket primary with automatic SSE fallback";
+    try out.print("Codex transport: {s}\n", .{transport});
+
+    if (root.fallback_allow.len == 0) {
+        try out.writeAll("cross-provider fallback: off; same-provider rollout replacement allowed\n");
+    } else {
+        try out.writeAll("cross-provider fallback allowlist:");
+        for (root.fallback_allow) |provider_id| try out.print(" {s}", .{provider_id});
+        try out.writeByte('\n');
+    }
+
+    try out.writeAll("providers (credential values are never shown):\n");
+    for (provider_specs) |spec| {
+        const available = keys.get(spec.id) != null;
+        const source = keys.source(spec.id);
+        try out.print("  {s} {s:<11} {s:<12} {d:>2} model(s){s}\n", .{
+            if (available) "✓" else "·",
+            spec.id,
+            if (available and source == .none) "resolved" else source.label(),
+            providerModelCount(spec.id),
+            if (std.mem.eql(u8, spec.id, root.provider.id)) "  ← active" else "",
+        });
+        if (!available) {
+            if (std.mem.eql(u8, spec.id, "codex") or std.mem.eql(u8, spec.id, "codegraff") or std.mem.eql(u8, spec.id, "kimi"))
+                try out.print("      fix: /login {s}\n", .{spec.id})
+            else
+                try out.print("      fix: /key {s} <key> or set {s}\n", .{ spec.id, spec.env_key });
+        }
+    }
+    if (root.last_api_error != null) try out.writeAll("last request: provider/API failure recorded (details hidden; see trace for diagnostics)\n");
+    try out.flush();
+}
 
 /// Try to handle a misc slash command. Returns false (line unhandled) if
 /// `line` doesn't match any command in this file — the caller falls through
@@ -188,6 +257,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
+    if (std.mem.eql(u8, line, "/models health")) {
+        try showModelsHealth(root, keys, arena, out);
+        return true;
+    }
     if (std.mem.eql(u8, line, "/models")) {
         try out.writeAll("model                      ctx      compact@   provider    key  vision\n");
         for (pricing.models()) |m| {
@@ -267,8 +340,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/yolo")) {
         const on = root.approvals.?.toggleYolo(root.io);
-        try out.print("yolo mode {s} — {s}\n", .{
+        try out.print("yolo mode {s}{s}{s} — {s}\n", .{
+            if (on) style.red else style.green,
             if (on) "ON" else "off",
+            style.reset,
             if (on) "bash runs without asking" else "unapproved bash commands prompt y/a/n",
         });
         try out.flush();
@@ -386,51 +461,18 @@ pub fn handleRest(line: []const u8, out: *Io.Writer) !void {
         try out.flush();
         return;
     }
+    try out.writeAll("commands (bare / opens the filterable menu):\n");
+    for (command_catalog.commands) |command| {
+        const usage = if (command.usage.len > 0) command.usage else command.name;
+        try out.print("  {s:<32} {s}\n", .{ usage, command.desc });
+    }
     try out.writeAll(
-        \\commands:  (a bare "/" opens this list as a filterable menu)
-        \\  /model <name>   switch model/provider, fuzzy match (e.g. "sonnet", "opus")
-        \\  /models         list known models, context windows, compaction points
-        \\  /clear          wipe the conversation and start fresh
-        \\  /new            start a fresh autosaved session
-        \\  /rename <title> set the current session title
-        \\  /goal [text]    set/show a standing objective (tracked as a checklist); /goal clear clears
-        \\  /loop <prompt>  run an autonomous plan→act→verify pass
-        \\  /plan           toggle plan mode: read-only explore + propose; writes/edits denied
-        \\  /ultracode      toggle persistent workflow mode; bare opens on/off picker, or /ultracode on|off
-        \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
-        \\  /login [tgt]    OAuth sign-in (no key to paste): codegraff | codex (alias oai) | kimi; bare → picker
-        \\  /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
-        \\  /effort         reasoning picker: low|medium|high|xhigh|max|ultra (persists)
-        \\  /reasoning      alias for /effort
-        \\  /fast           codex only: priority service tier for lower latency (toggle, persists)
-        \\  /strict         toggle "every message is a tool" mode
-        \\  /yolo           toggle bash auto-approval (skip permission prompts)
-        \\  /trace          toggle the JSONL event trace (harness.trace.jsonl)
-        \\  /trajectory     show this session's agent tree — turns + spawned
-        \\                  subagents with system-prompt fingerprints
-        \\                  (harness.trajectory.jsonl, DGM-style)
-        \\  /agents         list agent types — builtin personas + .harness/agents/*.md
-        \\                  (spawn with subagent agent:"<name>")
-        \\  /compact        summarize history into a fresh context
-        \\  /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
-        \\  /image <path>   attach an image to your next message (vision models only)
-        \\  /paste          attach the clipboard image — macOS; also Ctrl-V (⌘V can't be captured)
-        \\  /save [name]    write the conversation to <name>.session.json (default: current)
-        \\  /resume [name]  restore a saved conversation (no arg → interactive picker)
-        \\  /sessions       list saved sessions in the cwd
-        \\  /todo           show the current task list
-        \\  /animation      pick the thinking animation (braille/pulse/orbit-dots/block-wave/
-        \\                  shimmer/matrix/pacman/starfield/random/off); persists to settings
-        \\  /mcp [add …]    list MCP servers/tools; /mcp add <name> <cmd> [args...] connects one live; /mcp trust connects skipped workspace servers
-        \\  exit / /exit    quit (also: ctrl-d, or ctrl-c on an empty line)
+        \\  exit | /exit | /quit             quit (also ctrl-d or ctrl-c on an empty line)
         \\
-        \\esc during a response interrupts the turn (what streamed stays in history).
+        \\esc during a response interrupts the turn; streamed output remains in history.
         \\"always allow" answers persist to .harness/settings.json in the cwd.
-        \\codeword: include "ultracode" in any message to force one multi-agent
-        \\workflow turn; /ultracode on persists that behavior for future prompts.
-        \\
-        \\launch flags: --model <name> · --yolo (skip prompts) · -p "prompt" (one-shot) · --system-prompt/--append-system-prompt · --timing · --cost · --json (SDK protocol) · --help · --version
-        \\subcommands: `graff login [codex]` (OAuth) · `graff key set <provider> <key>` (Keychain) · `graff --schema`
+        \\launch flags: --model <name> · --yolo · -p "prompt" · --json · --help · --version
+        \\subcommands: graff login [codex] · graff key set <provider> <key> · graff --schema
         \\
     );
     try out.flush();

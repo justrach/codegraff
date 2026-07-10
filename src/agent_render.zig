@@ -45,6 +45,40 @@ pub const MdKind = enum { classify, hold, prose, header, fenced };
 
 pub const MdSpan = enum { normal, star, bold, bold_star, code };
 
+const TaskItem = struct { checked: bool, text: []const u8 };
+
+fn taskItem(body: []const u8) ?TaskItem {
+    if (body.len < 6 or (body[0] != '-' and body[0] != '*' and body[0] != '+') or body[1] != ' ' or body[2] != '[' or body[4] != ']' or body[5] != ' ') return null;
+    if (body[3] != ' ' and body[3] != 'x' and body[3] != 'X') return null;
+    return .{ .checked = body[3] != ' ', .text = body[6..] };
+}
+
+fn headingColor(level: usize) []const u8 {
+    return if (level == 1) style.magenta else if (level == 2) style.cyan else style.yellow;
+}
+
+fn renderHeading(w: *Io.Writer, level: usize, text: []const u8) void {
+    const marker: []const u8 = if (level <= 2) "◆" else "▸";
+    w.print("{s}{s}{s} ", .{ style.bold, headingColor(level), marker }) catch {};
+    renderInline(w, text);
+    w.writeAll(style.reset) catch {};
+}
+
+fn mdStartItem(self: *Agent, w: *Io.Writer, held: []const u8, lead: usize, prefix_len: usize, marker: []const u8, color: []const u8) void {
+    self.md_kind = .prose;
+    self.md_span = .normal;
+    self.md_col = lead + 2;
+    self.md_indent = lead + 2;
+    w.writeAll(held[0..lead]) catch {};
+    w.print("{s}{s}{s} ", .{ color, marker, style.reset }) catch {};
+    const rest = held[lead + prefix_len ..];
+    var tmp: [8]u8 = undefined;
+    const n = @min(rest.len, tmp.len);
+    @memcpy(tmp[0..n], rest[0..n]);
+    self.md_buf.clearRetainingCapacity();
+    for (tmp[0..n]) |rb| self.mdSpanByte(w, rb);
+}
+
 pub fn mdByte(self: *Agent, w: *Io.Writer, b: u8) void {
     if (b == '\n') {
         // A swallowed line (table row joining the buffer) keeps its
@@ -106,33 +140,24 @@ pub fn mdTryClassify(self: *Agent, w: *Io.Writer) void {
                 self.mdStartProse(w);
                 return;
             }
-            // Header. Mirror renderMdLine's left-trim: wait for the first
-            // non-space byte of the title, then style and stream.
+            // Hold headings to line end so inline bold/code renders too.
             var ns = hn + 1;
             while (ns < body.len and body[ns] == ' ') ns += 1;
             if (ns == body.len) return;
-            self.md_kind = .header;
-            w.print("{s}{s}{s}", .{ style.bold, style.cyan, body[ns..] }) catch {};
-            self.md_buf.clearRetainingCapacity();
+            self.md_kind = .hold;
         },
         '|' => self.md_kind = .hold, // table row: cells need the whole line
         '-', '_', '*', '+' => {
             const run = countPrefix(body, body[0]);
             if (body[0] != '+' and run == body.len) return; // possible rule
             if ((body[0] == '-' or body[0] == '*' or body[0] == '+') and run == 1 and body.len >= 2 and body[1] == ' ') {
-                // Bullet: emit indent + styled marker, stream the rest.
-                self.md_kind = .prose;
-                self.md_span = .normal;
-                self.md_col = lead + 2; // "• " — wrapped lines align under the text
-                self.md_indent = lead + 2;
-                w.writeAll(held[0..lead]) catch {};
-                w.print("{s}•{s} ", .{ style.cyan, style.reset }) catch {};
-                const rest = body[2..];
-                self.md_buf.clearRetainingCapacity(); // before re-dispatch
-                var tmp: [8]u8 = undefined;
-                const n = @min(rest.len, tmp.len);
-                @memcpy(tmp[0..n], rest[0..n]);
-                for (tmp[0..n]) |rb| self.mdSpanByte(w, rb);
+                if (body.len == 2) return;
+                if (body[2] == '[' and body.len < 6) return;
+                if (taskItem(body)) |task| {
+                    mdStartItem(self, w, held, lead, 6, if (task.checked) "☑" else "☐", if (task.checked) style.green else style.yellow);
+                } else {
+                    mdStartItem(self, w, held, lead, 2, if (lead == 0) "•" else "◦", style.cyan);
+                }
                 return;
             }
             if (body[0] == '+' and body.len == 1) return; // "+ " bullet still possible
@@ -150,7 +175,7 @@ pub fn mdTryClassify(self: *Agent, w: *Io.Writer) void {
                     self.md_col = lead + d + 2; // "12. " — align under the text
                     self.md_indent = lead + d + 2;
                     w.writeAll(held[0..lead]) catch {};
-                    w.print("{s}{s}.{s} ", .{ style.cyan, body[0..d], style.reset }) catch {};
+                    w.print("{s}{s}{c}{s} ", .{ style.cyan, body[0..d], body[d], style.reset }) catch {};
                     const rest = body[d + 2 ..];
                     var tmp: [8]u8 = undefined;
                     const n = @min(rest.len, tmp.len);
@@ -159,6 +184,14 @@ pub fn mdTryClassify(self: *Agent, w: *Io.Writer) void {
                     for (tmp[0..n]) |rb| self.mdSpanByte(w, rb);
                     return;
                 }
+            }
+            self.mdStartProse(w);
+        },
+        '>' => {
+            if (body.len == 1) return;
+            if (body[1] == ' ') {
+                mdStartItem(self, w, held, lead, 2, "│", style.dim);
+                return;
             }
             self.mdStartProse(w);
         },
@@ -417,7 +450,7 @@ pub fn renderMdLine(self: *Agent, w: *Io.Writer, line: []const u8) void {
     while (h < body.len and body[h] == '#') h += 1;
     if (h >= 1 and h <= 6 and h < body.len and body[h] == ' ') {
         const head = std.mem.trim(u8, body[h + 1 ..], " ");
-        w.print("{s}{s}{s}{s}", .{ style.bold, style.cyan, head, style.reset }) catch {};
+        renderHeading(w, h, head);
         return;
     }
     // Horizontal rule: a line of only -, *, or _ (3+).
@@ -443,10 +476,22 @@ pub fn renderMdLine(self: *Agent, w: *Io.Writer, line: []const u8) void {
         }
         return;
     }
+    if (taskItem(body)) |task| {
+        w.writeAll(line[0..lead]) catch {};
+        w.print("{s}{s}{s} ", .{ if (task.checked) style.green else style.yellow, if (task.checked) "☑" else "☐", style.reset }) catch {};
+        renderInline(w, task.text);
+        return;
+    }
+    if (std.mem.startsWith(u8, body, "> ")) {
+        w.writeAll(line[0..lead]) catch {};
+        w.print("{s}│{s} ", .{ style.dim, style.reset }) catch {};
+        renderInline(w, body[2..]);
+        return;
+    }
     // Bullet list item.
     if (std.mem.startsWith(u8, body, "- ") or std.mem.startsWith(u8, body, "* ") or std.mem.startsWith(u8, body, "+ ")) {
         w.writeAll(line[0..lead]) catch {};
-        w.print("{s}•{s} ", .{ style.cyan, style.reset }) catch {};
+        w.print("{s}{s}{s} ", .{ style.cyan, if (lead == 0) "•" else "◦", style.reset }) catch {};
         renderInline(w, body[2..]);
         return;
     }
@@ -455,7 +500,7 @@ pub fn renderMdLine(self: *Agent, w: *Io.Writer, line: []const u8) void {
     while (d < body.len and body[d] >= '0' and body[d] <= '9') d += 1;
     if (d >= 1 and d + 1 < body.len and (body[d] == '.' or body[d] == ')') and body[d + 1] == ' ') {
         w.writeAll(line[0..lead]) catch {};
-        w.print("{s}{s}.{s} ", .{ style.cyan, body[0..d], style.reset }) catch {};
+        w.print("{s}{s}{c}{s} ", .{ style.cyan, body[0..d], body[d], style.reset }) catch {};
         renderInline(w, body[d + 2 ..]);
         return;
     }

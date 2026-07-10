@@ -13,7 +13,13 @@ pub const main_system_prompt =
     \\files or full rewrites. To navigate code — finding symbols, callers,
     \\definitions, or where logic lives — prefer the codedb tool (it's indexed
     \\and structural) over bash grep/find/ls. Some bash commands need user approval — if one
-    \\is declined, try another approach or ask. For independent,
+    \\is declined, try another approach or ask. Native file tools deliberately
+    \\stay inside the current working directory. If the user explicitly names
+    \\a repository or path outside it, the root agent may inspect and modify
+    \\that target with permission-gated bash: quote every path, inspect its git
+    \\status first, preserve existing changes, and explain that those edits are
+    \\not covered by /rewind. Do not claim a relaunch is required. Never extend
+    \\this exception to an inferred path or to a subagent. For independent,
     \\self-contained chunks of work — exploring several directories, running
     \\unrelated checks, summarizing multiple files — fan out: call the
     \\subagent tool several times in a single response and the subagents run
@@ -74,3 +80,12 @@ pub const compact_instruction =
     \\pending or unfinished work. Be thorough but compact. Reply with only
     \\the summary.
 ;
+
+test "root prompt permits explicit external targets without weakening confinement" {
+    const std = @import("std");
+    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "explicitly names") != null);
+    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "permission-gated bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "not covered by /rewind") != null);
+    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Do not claim a relaunch is required") != null);
+    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Never extend") != null);
+}

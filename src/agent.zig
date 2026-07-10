@@ -64,6 +64,13 @@ fn writePromptBadge(w: *Io.Writer, color: []const u8, label: []const u8) !void {
     try w.print("{s} · {s}{s}{s}{s}", .{ style.dim, style.reset, color, label, style.reset });
 }
 
+fn compactTokenCount(buf: []u8, tokens: u64) []const u8 {
+    return if (tokens >= 1000)
+        std.fmt.bufPrint(buf, "{d}k", .{tokens / 1000}) catch "?"
+    else
+        std.fmt.bufPrint(buf, "{d}", .{tokens}) catch "?";
+}
+
 pub const TodoItem = struct {
     content: []const u8,
     status: []const u8,
@@ -108,6 +115,9 @@ pub const Agent = struct {
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
+    fallback_allow: []const []const u8 = &.{}, // explicit cross-provider allowlist from .harness/settings.json
+    fallback_active: bool = false, // current provider/model is a temporary fallback, not the saved preference
+    fallback_blocked: bool = false, // startup found a cross-provider fallback that is not allowlisted yet
     ultracode_mode: bool = false, // persistent ultracode (multi-agent workflow) mode (/ultracode)
     show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
     ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
@@ -164,24 +174,37 @@ pub const Agent = struct {
         };
         // Prompt-cache hit from the last response — proof caching is working.
         var kbuf: [32]u8 = undefined;
+        var kval: [24]u8 = undefined;
         const cached: []const u8 = if (self.last_cache_read > 0)
-            (std.fmt.bufPrint(&kbuf, " · ⚡{d} cached", .{self.last_cache_read}) catch "")
+            (std.fmt.bufPrint(&kbuf, " · ⚡{s} cached", .{compactTokenCount(&kval, self.last_cache_read)}) catch "")
         else
             "";
         try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.cyan, self.provider.model, style.reset });
-        if (self.effortApplies()) try writePromptBadge(w, reasoningPromptColor(self.reasoning), reasoningPromptLabel(self.reasoning));
+        // Fast is the most operationally important model setting, so keep it
+        // immediately beside the model instead of letting permission modes
+        // push it deeper into the status line.
         if (self.fast and self.provider.kind == .responses) try writePromptBadge(w, style.green, "Fast");
+        if (self.effortApplies()) try writePromptBadge(w, reasoningPromptColor(self.reasoning), reasoningPromptLabel(self.reasoning));
+        try writePromptBadge(w, style.cyan, self.provider.id);
+        if (self.fallback_active) try writePromptBadge(w, style.yellow, "Fallback");
         if (main_mod.plan_mode) try writePromptBadge(w, style.yellow, "Plan");
         if (self.strict) try writePromptBadge(w, style.red, "Strict");
         if (self.ultracode_mode) try writePromptBadge(w, style.magenta, "Ultracode");
-        if (self.approvals) |approvals| if (approvals.yoloEnabled(self.io)) try writePromptBadge(w, style.red, "YOLO");
         try w.print("{s} · cwd {s}{s}{s}", .{ style.dim, style.reset, main_mod.g_cwd_display, style.dim });
         if (self.last_context_tokens > 0) {
             const threshold = self.provider.compactAt();
-            // % of the compaction budget already used — glanceable headroom.
-            const pct = if (threshold > 0) self.last_context_tokens * 100 / threshold else 0;
-            try w.print(" · {d}/{d}k tok ({d}%){s}{s}]{s} {s}›{s} ", .{
-                self.last_context_tokens, threshold / 1000, pct, cached, cost, style.reset, style.bold, style.reset,
+            const pct = if (self.provider.context > 0) self.last_context_tokens * 100 / self.provider.context else 0;
+            var used_buf: [24]u8 = undefined;
+            try w.print(" · {s}/{d}k ctx ({d}% · compact@{d}k){s}{s}]{s} {s}›{s} ", .{
+                compactTokenCount(&used_buf, self.last_context_tokens),
+                self.provider.context / 1000,
+                pct,
+                threshold / 1000,
+                cached,
+                cost,
+                style.reset,
+                style.bold,
+                style.reset,
             });
         } else {
             try w.print("{s}]{s} {s}›{s} ", .{ cost, style.reset, style.bold, style.reset });
@@ -442,4 +465,10 @@ test "reasoning prompt label uses picker wording" {
     try std.testing.expectEqualStrings("Extra high", reasoningPromptLabel(.xhigh));
     try std.testing.expectEqualStrings("Max", reasoningPromptLabel(.max));
     try std.testing.expectEqualStrings("Ultra", reasoningPromptLabel(.ultra));
+}
+
+test "compact token counts keep prompt usage readable" {
+    var buf: [24]u8 = undefined;
+    try std.testing.expectEqualStrings("999", compactTokenCount(&buf, 999));
+    try std.testing.expectEqualStrings("138k", compactTokenCount(&buf, 138_082));
 }

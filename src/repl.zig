@@ -175,6 +175,7 @@ pub const Model = struct {
     sel_cur_row: ?usize = null,
     view_start: usize = 0,
     view_rows: usize = 0,
+    last_term_width: usize = 0, // cached each frame for post-hoc markdown layout
     visible_text: std.array_list.Managed([]const u8) = undefined, // owned plaintext of visible rows
     dump_next: bool = false,
     quit_requested: bool = false,
@@ -383,17 +384,25 @@ pub const HELP_CALC =
 
 /// Render a markdown string to ANSI for display — approximates the harness's
 /// streamed renderer: fenced code blocks (left bar), inline `code`, **bold**,
-/// # headers, and - bullets. Temporaries live in a local arena; the result is
-/// owned by `gpa`.
-pub fn renderMarkdown(gpa: std.mem.Allocator, src: []const u8) ![]const u8 {
+/// # headers, - bullets, and | pipe tables (box-drawing, wrapped to fit
+/// `width_hint` columns; 0 = assume 100). Temporaries live in a local arena;
+/// the result is owned by `gpa`.
+pub fn renderMarkdown(gpa: std.mem.Allocator, src: []const u8, width_hint: usize) ![]const u8 {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var out = std.array_list.Managed(u8).init(a);
+
+    var line_list = std.array_list.Managed([]const u8).init(a);
+    var it = std.mem.splitScalar(u8, src, '\n');
+    while (it.next()) |l| try line_list.append(l);
+    const lines = line_list.items;
+
     var in_fence = false;
-    var lines = std.mem.splitScalar(u8, src, '\n');
     var first = true;
-    while (lines.next()) |line| {
+    var idx: usize = 0;
+    while (idx < lines.len) : (idx += 1) {
+        const line = lines[idx];
         if (!first) try out.append('\n');
         first = false;
         const t = std.mem.trimStart(u8, line, " ");
@@ -407,6 +416,13 @@ pub fn renderMarkdown(gpa: std.mem.Allocator, src: []const u8) ![]const u8 {
         if (in_fence) {
             try out.appendSlice(try (zz.Style{}).fg(.brightBlack).render(a, "▏ "));
             try out.appendSlice(try (zz.Style{}).fg(.cyan).render(a, line));
+            continue;
+        }
+        if (isTableRow(t) and idx + 1 < lines.len and isTableSep(std.mem.trim(u8, lines[idx + 1], " \t"))) {
+            var end = idx;
+            while (end < lines.len and isTableRow(std.mem.trimStart(u8, lines[end], " "))) end += 1;
+            try renderTable(&out, a, lines[idx..end], width_hint);
+            idx = end - 1;
             continue;
         }
         if (std.mem.startsWith(u8, t, "#")) {
@@ -423,6 +439,243 @@ pub fn renderMarkdown(gpa: std.mem.Allocator, src: []const u8) ![]const u8 {
         try util.renderInline(&out, a, rest);
     }
     return gpa.dupe(u8, out.items);
+}
+
+fn isTableRow(t: []const u8) bool {
+    return t.len >= 2 and t[0] == '|';
+}
+
+/// `|---|:--:|` style alignment row: pipes/colons/spaces only, dashes required.
+fn isTableSep(t: []const u8) bool {
+    if (t.len == 0 or t[0] != '|') return false;
+    var dash = false;
+    for (t) |c| switch (c) {
+        '|', ':', ' ', '\t' => {},
+        '-' => dash = true,
+        else => return false,
+    };
+    return dash;
+}
+
+/// Inline markdown with `code`/**bold** markers stripped — exactly what
+/// renderInline makes visible, unstyled. Cell layout is computed from this.
+fn plainInline(a: std.mem.Allocator, line: []const u8) ![]const u8 {
+    var out = std.array_list.Managed(u8).init(a);
+    var i: usize = 0;
+    while (i < line.len) {
+        const c = line[i];
+        if (c == '`') {
+            if (std.mem.indexOfScalarPos(u8, line, i + 1, '`')) |end| {
+                try out.appendSlice(line[i + 1 .. end]);
+                i = end + 1;
+                continue;
+            }
+        } else if (c == '*' and i + 1 < line.len and line[i + 1] == '*') {
+            if (std.mem.indexOfPos(u8, line, i + 2, "**")) |end| {
+                try out.appendSlice(line[i + 2 .. end]);
+                i = end + 2;
+                continue;
+            }
+        }
+        try out.append(c);
+        i += 1;
+    }
+    return out.items;
+}
+
+fn dispWidth(s: []const u8) usize {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        i += std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+        n += 1;
+    }
+    return n;
+}
+
+/// Word-wrap `s` to `w` display columns; words longer than `w` hard-split at
+/// codepoint boundaries. Never emits leading/trailing spaces on a line.
+fn wrapCell(a: std.mem.Allocator, s: []const u8, w: usize) ![]const []const u8 {
+    var lines = std.array_list.Managed([]const u8).init(a);
+    var cur = std.array_list.Managed(u8).init(a);
+    var cur_w: usize = 0;
+    var words = std.mem.tokenizeScalar(u8, s, ' ');
+    while (words.next()) |word| {
+        var rem = word;
+        while (dispWidth(rem) > w) {
+            if (cur_w > 0) {
+                try lines.append(try a.dupe(u8, cur.items));
+                cur.clearRetainingCapacity();
+                cur_w = 0;
+            }
+            var bytes: usize = 0;
+            var cnt: usize = 0;
+            while (cnt < w and bytes < rem.len) {
+                bytes += std.unicode.utf8ByteSequenceLength(rem[bytes]) catch 1;
+                cnt += 1;
+            }
+            try lines.append(try a.dupe(u8, rem[0..bytes]));
+            rem = rem[bytes..];
+        }
+        const ww = dispWidth(rem);
+        if (ww == 0) continue;
+        if (cur_w > 0 and cur_w + 1 + ww > w) {
+            try lines.append(try a.dupe(u8, cur.items));
+            cur.clearRetainingCapacity();
+            cur_w = 0;
+        }
+        if (cur_w > 0) {
+            try cur.append(' ');
+            cur_w += 1;
+        }
+        try cur.appendSlice(rem);
+        cur_w += ww;
+    }
+    if (cur_w > 0 or lines.items.len == 0) try lines.append(try a.dupe(u8, cur.items));
+    return lines.items;
+}
+
+fn tableRule(out: *std.array_list.Managed(u8), a: std.mem.Allocator, widths: []const usize, l: []const u8, m: []const u8, r: []const u8) !void {
+    var buf = std.array_list.Managed(u8).init(a);
+    try buf.appendSlice(l);
+    for (widths, 0..) |w, i| {
+        for (0..w + 2) |_| try buf.appendSlice("─");
+        try buf.appendSlice(if (i + 1 == widths.len) r else m);
+    }
+    try out.appendSlice(try (zz.Style{}).fg(.brightBlack).render(a, buf.items));
+}
+
+/// Narrow-table fallback: one record per data row — bold `Header: value`
+/// lines with wrapped continuations indented, a brightBlack rule between
+/// records. Used when the box form cannot fit `budget` columns.
+fn renderRecords(out: *std.array_list.Managed(u8), a: std.mem.Allocator, rows: []const []const []const u8, budget: usize) !void {
+    const header = rows[0];
+    var rule_buf = std.array_list.Managed(u8).init(a);
+    const rule_w = @max(@as(usize, 16), @min(budget, 40));
+    for (0..rule_w) |_| try rule_buf.appendSlice("─");
+    var first_line = true;
+    for (rows[1..], 0..) |cells, ri| {
+        if (ri > 0) {
+            try out.append('\n');
+            try out.appendSlice(try (zz.Style{}).fg(.brightBlack).render(a, rule_buf.items));
+        }
+        for (header, 0..) |label, i| {
+            const value = if (i < cells.len) cells[i] else "";
+            const lw = dispWidth(label);
+            const segs = try wrapCell(a, value, @max(@as(usize, 16), budget -| (lw + 2)));
+            if (!first_line) try out.append('\n');
+            first_line = false;
+            try out.appendSlice(try (zz.Style{}).bold(true).render(a, label));
+            try out.appendSlice(": ");
+            if (segs.len > 0) try out.appendSlice(segs[0]);
+            if (segs.len > 1) for (segs[1..]) |seg| {
+                try out.append('\n');
+                try out.appendSlice("  ");
+                try out.appendSlice(seg);
+            };
+        }
+    }
+}
+
+
+/// Render `| a | b |` source rows (row 1 = alignment separator) as a
+/// box-drawing table: bold header, ├─┼─┤ rules between rows, cells
+/// word-wrapped so the whole table fits `width_hint` columns.
+fn renderTable(out: *std.array_list.Managed(u8), a: std.mem.Allocator, raw_rows: []const []const u8, width_hint: usize) !void {
+    var rows = std.array_list.Managed([]const []const u8).init(a);
+    for (raw_rows, 0..) |raw, ri| {
+        if (ri == 1) continue; // alignment separator row
+        var body = std.mem.trim(u8, raw, " \t");
+        if (body.len > 0 and body[0] == '|') body = body[1..];
+        if (body.len > 0 and body[body.len - 1] == '|') body = body[0 .. body.len - 1];
+        var cells = std.array_list.Managed([]const u8).init(a);
+        var cell = std.array_list.Managed(u8).init(a);
+        var bi: usize = 0;
+        while (bi < body.len) : (bi += 1) {
+            if (body[bi] == '\\' and bi + 1 < body.len and body[bi + 1] == '|') {
+                try cell.append('|'); // escaped \| is a literal pipe, not a column delimiter
+                bi += 1;
+            } else if (body[bi] == '|') {
+                try cells.append(try plainInline(a, std.mem.trim(u8, cell.items, " \t")));
+                cell = std.array_list.Managed(u8).init(a);
+            } else {
+                try cell.append(body[bi]);
+            }
+        }
+        try cells.append(try plainInline(a, std.mem.trim(u8, cell.items, " \t")));
+        try rows.append(cells.items);
+    }
+    if (rows.items.len == 0 or rows.items[0].len == 0) return;
+    const ncols = rows.items[0].len;
+
+    const widths = try a.alloc(usize, ncols);
+    @memset(widths, 1);
+    for (rows.items) |cells| {
+        for (cells, 0..) |c, i| {
+            if (i < ncols) widths[i] = @max(widths[i], dispWidth(c));
+        }
+    }
+    const budget = (if (width_hint == 0) @as(usize, 100) else @max(width_hint, 40)) -| 8;
+    const overhead = ncols * 3 + 1;
+    while (true) {
+        var total: usize = overhead;
+        for (widths) |w| total += w;
+        if (total <= budget) break;
+        var wi: usize = 0;
+        var wmax: usize = 0;
+        for (widths, 0..) |w, i| {
+            if (w > wmax) {
+                wmax = w;
+                wi = i;
+            }
+        }
+        if (wmax <= 8) break; // column floor reached — record fallback below
+        widths[wi] = wmax - 1;
+    }
+
+    var total: usize = overhead;
+    for (widths) |w| total += w;
+    if (total > budget and rows.items.len >= 2) {
+        // Even at the column floor the box form overflows the pane — fall back
+        // to one record per row, mirroring the harness's narrow rendering.
+        try renderRecords(out, a, rows.items, budget);
+        return;
+    }
+
+    try tableRule(out, a, widths, "┌", "┬", "┐");
+    for (rows.items, 0..) |cells, ri| {
+        const wrapped = try a.alloc([]const []const u8, ncols);
+        var height: usize = 1;
+        for (0..ncols) |i| {
+            wrapped[i] = try wrapCell(a, if (i < cells.len) cells[i] else "", widths[i]);
+            height = @max(height, wrapped[i].len);
+        }
+        for (0..height) |li| {
+            try out.append('\n');
+            for (0..ncols) |i| {
+                try out.appendSlice(try (zz.Style{}).fg(.brightBlack).render(a, "│"));
+                try out.append(' ');
+                const seg = if (li < wrapped[i].len) wrapped[i][li] else "";
+                if (seg.len > 0) {
+                    if (ri == 0) {
+                        try out.appendSlice(try (zz.Style{}).bold(true).render(a, seg));
+                    } else {
+                        try out.appendSlice(seg);
+                    }
+                }
+                var p = dispWidth(seg);
+                while (p < widths[i]) : (p += 1) try out.append(' ');
+                try out.append(' ');
+            }
+            try out.appendSlice(try (zz.Style{}).fg(.brightBlack).render(a, "│"));
+        }
+        try out.append('\n');
+        if (ri + 1 == rows.items.len) {
+            try tableRule(out, a, widths, "└", "┴", "┘");
+        } else {
+            try tableRule(out, a, widths, "├", "┼", "┤");
+        }
+    }
 }
 
 // run/runScripted (the live TUI loop + the headless/scriptable twin) and
@@ -593,4 +846,69 @@ test "model: empty Enter force-interrupts when a steer line is queued" {
     _ = m.drainSteer();
     while (m.pending != null and !m.pending.?.done.load(.acquire)) {}
     if (m.pending != null) m.finishJob();
+}
+
+test "renderMarkdown: pipe table renders as box-drawing" {
+    const gpa = std.testing.allocator;
+    const md = "before\n| Impact | Site |\n|---|---|\n| high | `repl.zig:700` |\n| medium | **main.zig** |\nafter";
+    const out = try renderMarkdown(gpa, md, 80);
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "┌") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "┼") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "└") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "repl.zig:700") != null); // backticks stripped in cells
+    try std.testing.expect(std.mem.indexOf(u8, out, "|---") == null); // separator row consumed
+    try std.testing.expect(std.mem.indexOf(u8, out, "before") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "after") != null);
+}
+
+test "renderMarkdown: table cells wrap to the width budget" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const md = "| K | V |\n|---|---|\n| x | this is a very long cell that must wrap across multiple lines to stay inside a narrow table |";
+    const out = try renderMarkdown(gpa, md, 48);
+    defer gpa.free(out);
+    const plain = util.stripControl(a, out);
+    var it = std.mem.splitScalar(u8, plain, '\n');
+    var cell_rows: usize = 0;
+    while (it.next()) |line| {
+        try std.testing.expect(dispWidth(line) <= 48);
+        if (std.mem.indexOf(u8, line, "│") != null) cell_rows += 1;
+    }
+    try std.testing.expect(cell_rows >= 3); // long cell spans several visual lines
+}
+
+test "renderMarkdown: lone pipe line is not a table" {
+    const gpa = std.testing.allocator;
+    const out = try renderMarkdown(gpa, "| just text with pipes |\nno separator", 80);
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "┌") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "| just text with pipes |") != null);
+}
+
+test "renderMarkdown: too-wide table falls back to record layout" {
+    const gpa = std.testing.allocator;
+    const md = "| Impact | Site | Finding | Fix safe? |\n|---|---|---|---|\n| high | repl.zig:700 | full scrollback re-styled and re-allocated every single frame | needs care |\n| medium | main.zig:14048 | never-reset session arena grows RSS forever | no |";
+    const out = try renderMarkdown(gpa, md, 44);
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "┌") == null); // box form abandoned
+    try std.testing.expect(std.mem.indexOf(u8, out, "Impact") != null); // labels repeated per record
+    try std.testing.expect(std.mem.indexOf(u8, out, "────") != null); // rule between records
+    try std.testing.expect(std.mem.indexOf(u8, out, "repl.zig:700") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "main.zig:14048") != null);
+}
+
+test "renderMarkdown: escaped pipe stays inside a table cell" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const md = "| head |\n|---|\n| a \\| b |";
+    const out = try renderMarkdown(gpa, md, 100);
+    defer gpa.free(out);
+    const plain = util.stripControl(a, out); // arena-owned; freed with arena_state
+    // the escaped \\| renders as a literal pipe inside the single cell.
+    try std.testing.expect(std.mem.indexOf(u8, plain, "a | b") != null);
 }

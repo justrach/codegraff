@@ -154,6 +154,7 @@ pub fn run(ctx: *Ctx) !void {
                     const label = providers.setModelRequestLabel(ctx.arena, provider_field, model_field, legacy_name) catch "<requested model>";
                     const message = switch (err) {
                         error.MissingKey => try std.fmt.allocPrint(ctx.arena, "no key/login for requested model '{s}'", .{label}),
+                        error.InvalidModel => try std.fmt.allocPrint(ctx.arena, "unknown model '{s}'; refresh/list models before switching", .{label}),
                         error.InvalidModelRequest => "set_model needs a non-empty provider/model or legacy name",
                         else => try std.fmt.allocPrint(ctx.arena, "failed to switch model '{s}': {s}", .{ label, @errorName(err) }),
                     };
@@ -331,6 +332,15 @@ pub fn run(ctx: *Ctx) !void {
             break :blk text;
         } else line;
 
+        if (ctx.root.fallback_blocked) {
+            const message = try std.fmt.allocPrint(ctx.arena, "saved model unavailable; sending to {s} requires explicit consent — run /fallback allow {s} or choose /model", .{ ctx.root.provider.id, ctx.root.provider.id });
+            if (main_mod.json_mode) ctx.root.emit(.{ .type = "error", .message = message }) else {
+                try ctx.out.print("{s}⚠ {s}{s}\n", .{ style.yellow, message, style.reset });
+                try ctx.out.flush();
+            }
+            continue;
+        }
+
         // Persistent goal steering: the objective plus a nudge to track it as a
         // live todo_write checklist, with the current list appended so the model
         // resumes the plan instead of re-deriving it (assembled by goalSteeringNote).
@@ -437,7 +447,7 @@ pub fn run(ctx: *Ctx) !void {
         // A failed turn must never kill the session: ApiError is already
         // reported inside request(); anything else is surfaced here. Either
         // way we drop back to the prompt (or emit a JSON error/turn event).
-        const turn_result = ctx.root.runTurn();
+        const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys.*, ctx.arena, ctx.out);
         if (trace.g_traj) |tj| {
             const fp = scoring.promptFingerprint(ctx.root.systemPrompt());
             const turn_ms: i64 = @intCast(@max(0, turn_started.untilNow(ctx.io, .awake).toMilliseconds()));

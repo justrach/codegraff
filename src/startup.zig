@@ -41,6 +41,7 @@ pub const ResolvedKeys = struct {
     keys: provider_mod.Keys,
     default_provider: provider_mod.Provider,
     stale_saved_model: ?[]const u8,
+    preferred_provider: ?[]const u8,
     codex_account: ?[]const u8,
 };
 
@@ -53,16 +54,21 @@ pub const ResolvedKeys = struct {
 /// --model value).
 pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, model_flag: ?[]const u8) !ResolvedKeys {
     var keys: provider_mod.Keys = .{ .values = undefined };
-    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+    for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         value.* = environ_map.get(spec.env_key);
+        source.* = if (value.* != null) .environment else .none;
     }
     // Codegraff "login": if CODEGRAFF_API_KEY isn't set, pick up a key from
     // `harness login codegraff` (~/.simple-harness-codegraff.json) or graff's
     // own store (~/forge/.credentials.json) — read-only, env always wins.
     if (keys_cli.homeEnv(environ_map)) |home| {
-        for (provider_mod.provider_specs, &keys.values) |spec, *value| {
-            if (std.mem.eql(u8, spec.id, "codegraff") and value.* == null)
-                value.* = oauth.loadCodegraffKey(io, arena, home);
+        for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
+            if (std.mem.eql(u8, spec.id, "codegraff") and value.* == null) {
+                if (oauth.loadCodegraffKey(io, arena, home)) |key| {
+                    value.* = key;
+                    source.* = .login;
+                }
+            }
         }
     }
     // Codex "login": read the ChatGPT OAuth token from CODEX_HOME/auth.json
@@ -73,8 +79,11 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
         const codex_home = environ_map.get("CODEX_HOME") orelse
             (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
         if (oauth.loadCodexAuthFrom(io, arena, codex_home)) |auth| {
-            for (provider_mod.provider_specs, &keys.values) |spec, *value| {
-                if (std.mem.eql(u8, spec.id, "codex")) value.* = auth.token;
+            for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
+                if (std.mem.eql(u8, spec.id, "codex")) {
+                    value.* = auth.token;
+                    source.* = .login;
+                }
             }
             keys.codex_account = auth.account;
             codex_account = auth.account;
@@ -84,16 +93,25 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     // (~/.kimi/credentials/graff-oauth.json), refreshed in place when near
     // expiry. Same on-disk-credential pattern as codex/codegraff; env wins.
     if (keys_cli.homeEnv(environ_map)) |home| {
-        for (provider_mod.provider_specs, &keys.values) |spec, *value| {
-            if (std.mem.eql(u8, spec.id, "kimi") and value.* == null)
-                value.* = oauth.loadKimiOAuth(io, gpa, arena, home);
+        for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
+            if (std.mem.eql(u8, spec.id, "kimi") and value.* == null) {
+                if (oauth.loadKimiOAuth(io, gpa, arena, home)) |key| {
+                    value.* = key;
+                    source.* = .login;
+                }
+            }
         }
     }
     // Stored keys (macOS Keychain / 0600 file via `harness key set`): fill any
     // provider slot still empty after env + the login loaders. env always wins.
     if (keys_cli.homeEnv(environ_map)) |home| {
-        for (provider_mod.provider_specs, &keys.values) |spec, *value| {
-            if (value.* == null) value.* = keys_cli.loadStoredKey(io, arena, home, spec.id);
+        for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
+            if (value.* == null) {
+                if (keys_cli.loadStoredKey(io, arena, home, spec.id)) |key| {
+                    value.* = key;
+                    source.* = .stored;
+                }
+            }
         }
     }
     // Discover the account-scoped Codex catalog before model selection. This
@@ -128,6 +146,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
         , .{});
     };
     var stale_saved_model: ?[]const u8 = null;
+    var preferred_provider: ?[]const u8 = null;
     // `--model <name|provider>` pins the startup model (same resolution as /model).
     if (model_flag) |mname| pick: {
         for (provider_mod.provider_specs) |spec| if (std.mem.eql(u8, spec.id, mname)) {
@@ -137,17 +156,33 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
                 break :pick;
             } else |_| std.process.fatal("no key/login for provider '{s}' (--model)", .{mname});
         };
-        const nm = pricing.resolveModelName(keys, mname) orelse mname;
+        const nm = pricing.resolveModelName(keys, mname) orelse std.process.fatal("unknown --model '{s}' — run `graff models refresh` or see /models", .{mname});
         default_provider = keys.providerFor(nm) catch std.process.fatal("no key/login for --model '{s}' — see /models", .{mname});
     } else if (serde.loadModel(io, arena, keys_cli.homeEnv(environ_map) orelse "")) |saved| {
+        preferred_provider = saved.pid;
         // No --model flag: resume the model chosen last session only if that
         // exact provider/model pair is still in the catalog; model names can be
         // shared by providers with different support.
         if (pricing.providerModelInTable(saved.pid, saved.model)) {
-            if (keys.providerById(saved.pid, saved.model)) |p| default_provider = p else |_| {}
-        } else stale_saved_model = saved.model;
+            if (keys.providerById(saved.pid, saved.model)) |p| {
+                default_provider = p;
+            } else |_| {
+                stale_saved_model = std.fmt.allocPrint(arena, "{s}/{s}", .{ saved.pid, saved.model }) catch saved.model;
+            }
+        } else {
+            stale_saved_model = std.fmt.allocPrint(arena, "{s}/{s}", .{ saved.pid, saved.model }) catch saved.model;
+            // A rollout may remove only this model while the provider login is
+            // still healthy. Prefer that provider's current dynamic default
+            // before crossing provider/account boundaries.
+            for (provider_mod.provider_specs) |spec| {
+                if (!std.mem.eql(u8, spec.id, saved.pid)) continue;
+                const replacement = pricing.providerDefaultModel(spec.id, spec.default_model);
+                if (keys.providerById(spec.id, replacement)) |p| default_provider = p else |_| {}
+                break;
+            }
+        }
     }
-    return .{ .keys = keys, .default_provider = default_provider, .stale_saved_model = stale_saved_model, .codex_account = codex_account };
+    return .{ .keys = keys, .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account };
 }
 
 pub const SystemPrompt = struct {

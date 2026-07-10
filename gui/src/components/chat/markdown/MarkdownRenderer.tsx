@@ -10,10 +10,11 @@ import {
   sanitizeChatMarkdownHref,
 } from "../utils/chatLinks";
 import { openFilePathFromChat, openUrlFromChat } from "../utils/chatOpen";
+import { ChatTable } from "./ChatTable";
 import { CodeBlock } from "./CodeBlock";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { dropRedundantCodeHeadings, parseMarkdown } from "./parser";
-import type { MdBlock, MdInline, MdListItem, TableAlign } from "./types";
+import type { MdBlock, MdInline, MdListItem } from "./types";
 
 const headingClassName = cn("m-0 font-medium text-current", CHAT_BODY_TEXT_CLASS);
 
@@ -111,50 +112,17 @@ function renderTable(
   block: Extract<MdBlock, { type: "table" }>,
   workspacePath?: string | null,
 ): ReactNode {
-  const alignClass = (align: TableAlign) =>
-    align === "center" ? "text-center" : align === "right" ? "text-right" : undefined;
-
+  const cellNode = (cell: MdInline[]) => (
+    <ChatInlineChildren workspacePath={workspacePath}>
+      {renderInline(cell, workspacePath)}
+    </ChatInlineChildren>
+  );
   return (
-    <div className="max-w-full overflow-x-auto rounded-md border border-border/70">
-      <table className="w-full border-collapse text-left text-sm">
-        <thead>
-          <tr>
-            {block.header.map((cell, index) => (
-              <th
-                key={index}
-                className={cn(
-                  "bg-muted/55 px-3 py-2 text-xs font-medium uppercase tracking-normal text-muted-foreground",
-                  alignClass(block.align[index]),
-                )}
-              >
-                <ChatInlineChildren workspacePath={workspacePath}>
-                  {renderInline(cell, workspacePath)}
-                </ChatInlineChildren>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {block.rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              {row.map((cell, cellIndex) => (
-                <td
-                  key={cellIndex}
-                  className={cn(
-                    "border-t border-border/70 px-3 py-2 align-top",
-                    alignClass(block.align[cellIndex]),
-                  )}
-                >
-                  <ChatInlineChildren workspacePath={workspacePath}>
-                    {renderInline(cell, workspacePath)}
-                  </ChatInlineChildren>
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <ChatTable
+      header={block.header.map(cellNode)}
+      align={block.align}
+      rows={block.rows.map((row) => row.map(cellNode))}
+    />
   );
 }
 
