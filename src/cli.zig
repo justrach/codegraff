@@ -21,10 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
-    \\0.0.189
-    \\  • Fresh/offline installs now show gpt-5.6-sol and the current Codex fallback catalog
-    \\  • CODEX_HOME is now honored when loading Codex credentials and models
-    \\  • `graff update` reminds every running session to restart after installation
+    \\0.0.190
+    \\  • Codex model discovery now uses Graff's supported Codex client version
+    \\  • Older installed Codex CLIs and incompatible caches can no longer hide Sol
+    \\  • `graff models refresh` reports whether the live account fetch succeeded
     \\
 ;
 

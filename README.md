@@ -297,9 +297,10 @@ and one of its models (`graff key set openai sk-...` → `--model gpt-...`,
 A model is routed to the first provider (in the table order above) that both has
 a key set **and** lists the model in the active catalog. Codex names, rollout
 visibility, ordering, and context windows come from its account-scoped `/models`
-endpoint, cached for five minutes with the installed Codex client version; baked
-Codex rows are only the offline fallback (currently including `gpt-5.6-sol`,
-Terra, and Luna). Unknown `claude*` models
+endpoint, cached for five minutes with Graff's supported Codex protocol version
+(a separately installed older Codex CLI cannot hide newer models). Baked Codex
+rows are only the logged-out/offline fallback, currently including `gpt-5.6-sol`,
+Terra, and Luna. Unknown `claude*` models
 fall back to Anthropic; any other unknown model falls back to the codegraff
 gateway, and `/model` prints a warning when that fallback fires, since a typo'd
 name will be rejected by the API on the first request. The startup default is
