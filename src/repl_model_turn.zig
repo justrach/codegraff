@@ -82,7 +82,7 @@ pub fn finishJob(self: *Model) void {
     }
     if (job.result) |r| {
         self.chars_out += r.len;
-        if (renderMarkdown(self.alloc, r)) |rendered| {
+        if (renderMarkdown(self.alloc, r, self.last_term_width)) |rendered| {
             self.alloc.free(r);
             self.pushOwned(.assistant, rendered) catch self.alloc.free(rendered);
         } else |_| {
