@@ -110,7 +110,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         } else {
             root.goal = try arena.dupe(u8, text);
             saveSession(root, arena, root.session_name) catch {};
-            try out.print("Goal set: {s}\nI'll track it as a live checklist (todo_write) and work through it across turns.\n", .{text});
+            try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; it steers every turn until /goal clear).\n", .{text});
         }
         try out.flush();
         return true;
