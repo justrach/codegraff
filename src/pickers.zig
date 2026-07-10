@@ -182,6 +182,12 @@ pub const PickItem = struct { name: []const u8, desc: []const u8 = "" };
 /// filter on name or description, ↑/↓ to move, Enter picks, Ctrl-C cancels.
 /// Returns the index into `items`, or null.
 pub fn listPicker(root: *Agent, arena: Allocator, out: *Io.Writer, title: []const u8, items: []const PickItem) ?usize {
+    return listPickerAt(root, arena, out, title, items, 0);
+}
+
+/// listPicker with an initially selected row (used by settings pickers to
+/// highlight the current value while retaining the canonical list order).
+pub fn listPickerAt(root: *Agent, arena: Allocator, out: *Io.Writer, title: []const u8, items: []const PickItem, initial: usize) ?usize {
     const in = root.in orelse return null;
     if (items.len == 0) return null;
     const raw_state = tty.enterRaw(true) orelse return null;
@@ -198,7 +204,7 @@ pub fn listPicker(root: *Agent, arena: Allocator, out: *Io.Writer, title: []cons
     defer scored.deinit(arena);
     var filtered: std.ArrayList(usize) = .empty;
     defer filtered.deinit(arena);
-    var sel: usize = 0;
+    var sel: usize = @min(initial, items.len - 1);
     const visible = 18;
 
     while (true) {
@@ -341,7 +347,7 @@ pub const command_menu = [_]PickItem{
     .{ .name = "/yolo", .desc = "toggle permission prompts" },
     .{ .name = "/strict", .desc = "toggle every-message-is-a-tool mode" },
     .{ .name = "/keepcontext", .desc = "keep history across wire-format switches" },
-    .{ .name = "/effort", .desc = "thinking depth: low|medium|high (codex, deepseek, codegraff)" },
+    .{ .name = "/effort", .desc = "reasoning picker: low through ultra (Codex)" },
     .{ .name = "/reasoning", .desc = "alias for /effort" },
     .{ .name = "/fast", .desc = "codex priority service tier — lower latency on supported models" },
     .{ .name = "/ultracode", .desc = "toggle persistent ultracode (multi-agent workflow) mode" },

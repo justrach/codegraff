@@ -95,7 +95,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
     root.stream_quiet = true;
-    const ultracode_msg = try pickers.applyUltracodeSteering(arena, prompt_text, root.ultracode_mode);
+    const ultracode_msg = try pickers.applyUltracodeSteering(arena, prompt_text, root.ultracode_mode or root.reasoning == .ultra);
     if (ultracode_msg.explicit) {
         tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
         if (telemetry.g_telem) |t| t.ultracode();

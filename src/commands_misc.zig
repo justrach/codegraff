@@ -400,7 +400,7 @@ pub fn handleRest(line: []const u8, out: *Io.Writer) !void {
         \\  /key [prov key] show API-key status; /key <provider> <key> adds one live (+ Keychain)
         \\  /login [tgt]    OAuth sign-in (no key to paste): codegraff | codex (alias oai) | kimi; bare → picker
         \\  /keepcontext    toggle keeping the conversation when /model switches wire format (default on)
-        \\  /effort         thinking depth: low|medium|high (codex, deepseek, codegraff; default medium, persists)
+        \\  /effort         reasoning picker: low|medium|high|xhigh|max|ultra (persists)
         \\  /reasoning      alias for /effort
         \\  /fast           codex only: priority service tier for lower latency (toggle, persists)
         \\  /strict         toggle "every message is a tool" mode

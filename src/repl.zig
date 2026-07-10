@@ -51,7 +51,7 @@ test {
 // keeps repl.zig decoupled from the harness's Agent/Provider (no circular import).
 // ---------------------------------------------------------------------------
 
-pub const Effort = enum { low, medium, high };
+pub const Effort = enum { low, medium, high, xhigh, max, ultra };
 
 pub const Turn = struct {
     role: Role,
@@ -461,6 +461,8 @@ test "model: commands toggle settings" {
     defer m.deinit();
     _ = m.applyLine("/effort high");
     try std.testing.expectEqual(Effort.high, m.effort);
+    _ = m.applyLine("/effort ultra");
+    try std.testing.expectEqual(Effort.ultra, m.effort);
     _ = m.applyLine("/fast on");
     try std.testing.expect(m.fast);
     _ = m.applyLine("/ultracode");

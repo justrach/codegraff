@@ -197,6 +197,9 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
             .low => .low,
             .medium => .medium,
             .high => .high,
+            .xhigh => .xhigh,
+            .max => .max,
+            .ultra => .ultra,
         },
         .fast = params.fast,
         .ultracode_mode = params.ultracode,
@@ -331,20 +334,14 @@ pub fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fas
 }
 
 /// Load persisted thinking controls into the root agent at startup:
-/// {"effort": "low|medium|high"} and {"fast": true}. Best-effort — a missing
+/// {"effort": "low|medium|high|xhigh|max|ultra"} and {"fast": true}. Best-effort — a missing
 /// or garbled file just leaves the defaults (medium, off).
 pub fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
     const data = Io.Dir.cwd().readFileAlloc(io, Approvals.settings_path, arena, .limited(1 << 20)) catch return;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
     if (v != .object) return;
     if (v.object.get("effort")) |e| if (e == .string) {
-        if (std.mem.eql(u8, e.string, "low")) {
-            root.reasoning = .low;
-        } else if (std.mem.eql(u8, e.string, "medium")) {
-            root.reasoning = .medium;
-        } else if (std.mem.eql(u8, e.string, "high")) {
-            root.reasoning = .high;
-        }
+        root.reasoning = std.meta.stringToEnum(ReasoningEffort, e.string) orelse root.reasoning;
     };
     if (v.object.get("fast")) |fv| if (fv == .bool) {
         root.fast = fv.bool;
