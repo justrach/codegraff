@@ -416,6 +416,150 @@ fn fetchKimiModel(io: Io, gpa: Allocator, arena: Allocator, access: []const u8) 
     return null;
 }
 
+// xAI (Grok) OAuth — device-code flow against auth.x.ai. The OIDC discovery
+// doc (auth.x.ai/.well-known/openid-configuration) advertises the device_code
+// grant + a public ("none") client, so no secret/PKCE is needed. `graff login
+// xai` runs the flow and writes the token to ~/.xai/credentials/graff-oauth.json;
+// loadXaiOAuth reads it at startup and refreshes near expiry. The access token
+// is sent as a plain bearer to the existing xai provider row
+// (api.x.ai/v1/chat/completions, kind=.openai). client_id is xAI's shared Grok
+// CLI client — the consent screen shows "Grok Build" — same posture as the
+// Codex/Kimi logins. NOTE: xAI gates api.x.ai per account, so a valid login can
+// still 403 on inference until the account is allowlisted (env XAI_API_KEY wins
+// and always works). User-Agent is set on all requests (Cloudflare-fronted).
+const xai_oauth_host = "https://auth.x.ai";
+const xai_device_auth_url = xai_oauth_host ++ "/oauth2/device/code";
+const xai_token_url = xai_oauth_host ++ "/oauth2/token";
+const xai_client_id = "b1a00492-073a-47ea-816f-4c329264a828";
+const xai_scope = "openid profile email offline_access grok-cli:access api:access";
+const xai_user_agent = "grok-cli/1.0";
+
+/// POST a form body to an xAI OAuth endpoint (with a CLI User-Agent); return the
+/// parsed JSON object.
+fn xaiOAuthPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body: []const u8) !std.json.ObjectMap {
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
+    _ = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = .POST,
+        .payload = body,
+        .response_writer = &aw.writer,
+        .headers = .{
+            .content_type = .{ .override = "application/x-www-form-urlencoded" },
+            .user_agent = .{ .override = xai_user_agent },
+        },
+    });
+    const v = try std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always });
+    if (v != .object) return error.BadOAuthResponse;
+    return v.object;
+}
+
+fn xaiAuthPath(arena: Allocator, home: []const u8) []const u8 {
+    return std.fmt.allocPrint(arena, "{s}/.xai/credentials/graff-oauth.json", .{home}) catch "";
+}
+
+fn writeXaiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8, refresh: []const u8, expires_at: i64) !void {
+    Io.Dir.cwd().createDir(io, try std.fmt.allocPrint(arena, "{s}/.xai", .{home}), .default_dir) catch {};
+    Io.Dir.cwd().createDir(io, try std.fmt.allocPrint(arena, "{s}/.xai/credentials", .{home}), .default_dir) catch {};
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(arena, "access_token", .{ .string = access });
+    try obj.put(arena, "refresh_token", .{ .string = refresh });
+    try obj.put(arena, "expires_at", .{ .integer = expires_at });
+    var aw: Io.Writer.Allocating = .init(arena);
+    var st: std.json.Stringify = .{ .writer = &aw.writer };
+    try st.write(Value{ .object = obj });
+    const f = try Io.Dir.cwd().createFile(io, xaiAuthPath(arena, home), .{});
+    defer f.close(io);
+    var wbuf: [4096]u8 = undefined;
+    var fw = f.writer(io, &wbuf);
+    try fw.interface.writeAll(aw.writer.buffered());
+    try fw.interface.flush();
+}
+
+/// `graff login xai`: xAI/Grok device-code OAuth. Prints a verification URL +
+/// user code, opens the browser, polls until the user authorizes, then stores
+/// the access/refresh token. (The consent screen shows "Grok Build" — xAI's
+/// shared CLI client.)
+pub fn xaiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
+    var obuf: [4096]u8 = undefined;
+    var ow = Io.File.stdout().writer(io, &obuf);
+    const out = &ow.interface;
+
+    const da_body = try std.fmt.allocPrint(arena, "client_id={s}&scope={s}", .{ xai_client_id, xai_scope });
+    const da = xaiOAuthPost(io, gpa, arena, xai_device_auth_url, da_body) catch |err| {
+        try out.print("✗ xAI device authorization failed: {t}\n", .{err});
+        try out.flush();
+        return;
+    };
+    if (da.get("error")) |e| {
+        try out.print("✗ {s}\n", .{if (e == .string) e.string else "device authorization error"});
+        try out.flush();
+        return;
+    }
+    const device_code = strFieldObj(da, "device_code") orelse return error.BadOAuthResponse;
+    const user_code = strFieldObj(da, "user_code") orelse "";
+    const verify = strFieldObj(da, "verification_uri_complete") orelse strFieldObj(da, "verification_uri") orelse "";
+    const interval: i64 = if (da.get("interval")) |iv| (if (iv == .integer) @max(iv.integer, 1) else 5) else 5;
+
+    try out.print("\nTo log in to Grok (xAI), open this URL (browser should open automatically):\n\n  {s}\n\nand confirm the code:  {s}\n\nwaiting for authorization…\n", .{ verify, user_code });
+    try out.flush();
+    openBrowser(io, verify);
+
+    const poll_body = try std.fmt.allocPrint(arena, "client_id={s}&device_code={s}&grant_type=urn:ietf:params:oauth:grant-type:device_code", .{ xai_client_id, device_code });
+    var attempts: usize = 0;
+    while (attempts < 360) : (attempts += 1) {
+        io.sleep(Io.Duration.fromSeconds(interval), .awake) catch {};
+        const resp = xaiOAuthPost(io, gpa, arena, xai_token_url, poll_body) catch continue;
+        if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
+            const refresh = strFieldObj(resp, "refresh_token") orelse "";
+            const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 3600) else 3600;
+            try writeXaiAuth(io, arena, home, a.string, refresh, @divTrunc(unixMs(io), 1000) + expires_in);
+            try out.print("✓ logged into Grok (xAI) — wrote {s}. /model xai grok-4.3\n", .{xaiAuthPath(arena, home)});
+            try out.writeAll("  note: xAI gates its OpenAI-compatible API per account — if a Grok turn 403s, your account isn't allowlisted for api.x.ai yet.\n");
+            try out.flush();
+            return;
+        };
+        const msg = if (resp.get("error")) |e| (if (e == .string) e.string else "") else "";
+        if (std.mem.eql(u8, msg, "authorization_pending") or std.mem.eql(u8, msg, "slow_down")) continue;
+        if (std.mem.eql(u8, msg, "expired_token")) {
+            try out.writeAll("✗ the code expired — run `graff login xai` again\n");
+            try out.flush();
+            return;
+        }
+        if (msg.len > 0) {
+            try out.print("✗ {s}\n", .{msg});
+            try out.flush();
+            return;
+        }
+    }
+    try out.writeAll("✗ timed out waiting for authorization\n");
+    try out.flush();
+}
+
+/// Reads the stored xAI OAuth access token, refreshing in place near expiry.
+/// Returns null if not logged in. Mirrors loadKimiOAuth.
+pub fn loadXaiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) ?[]const u8 {
+    const data = Io.Dir.cwd().readFileAlloc(io, xaiAuthPath(arena, home), arena, .limited(64 * 1024)) catch return null;
+    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
+    if (v != .object) return null;
+    const access = strFieldObj(v.object, "access_token") orelse return null;
+    const expires_at: i64 = if (v.object.get("expires_at")) |e| (if (e == .integer) e.integer else 0) else 0;
+    if (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - 60) {
+        if (strFieldObj(v.object, "refresh_token")) |refresh| {
+            const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ xai_client_id, refresh }) catch return access;
+            const resp = xaiOAuthPost(io, gpa, arena, xai_token_url, body) catch return access;
+            if (resp.get("access_token")) |a| if (a == .string and a.string.len > 0) {
+                const new_refresh = strFieldObj(resp, "refresh_token") orelse refresh;
+                const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 3600) else 3600;
+                writeXaiAuth(io, arena, home, a.string, new_refresh, @divTrunc(unixMs(io), 1000) + expires_in) catch {};
+                return a.string;
+            };
+        }
+    }
+    return access;
+}
+
 // Codegraff device-code login — mirrors graff's CodegraffDeviceStrategy: POST
 // /v1/device/start → show verification_uri + user_code → poll /v1/device/poll
 // until status "ok" yields the cg_sk_ key, written to ~/<codegraff_key_file>.

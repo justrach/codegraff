@@ -35,6 +35,7 @@ pub const Flags = struct {
     refresh_flag: bool = false,
     codex_login: bool = false,
     kimi_login: bool = false,
+    xai_login: bool = false,
     help_flag: bool = false,
     version_flag: bool = false,
     print_flag: bool = false,
@@ -162,6 +163,7 @@ pub fn parse(init: std.process.Init) !Flags {
         if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "login")) flags.login_flag = true;
         if (flags.positionals.items.len > 1 and std.mem.eql(u8, flags.positionals.items[1], "codex")) flags.codex_login = true;
         if (flags.positionals.items.len > 1 and std.mem.eql(u8, flags.positionals.items[1], "kimi")) flags.kimi_login = true;
+        if (flags.positionals.items.len > 1 and std.mem.eql(u8, flags.positionals.items[1], "xai")) flags.xai_login = true;
     }
 
     // One-shot print mode: `harness -p "prompt"` or a bare positional prompt
