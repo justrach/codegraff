@@ -18,6 +18,19 @@
 //! as the conversation grows.
 const std = @import("std");
 const Io = std.Io;
+
+/// #131: pre-load the shared HTTP client's CA bundle single-threaded, so the
+/// parallel subagents that share this client (on pool threads) never race the
+/// lazy CA-bundle rescan on their first concurrent HTTPS connect. Zig std flags
+/// that race itself ("TODO data race here on ca_bundle"): when two threads both
+/// rescan+swap+deinit the bundle, a handshake reading it mid-swap fails instantly
+/// with error.TlsInitializationFailed (ms=0, resp_bytes=0 — see #131). Warming it
+/// here sets client.now, so every later connect skips the rescan entirely.
+fn prewarmCaBundle(client: *std.http.Client, gpa: std.mem.Allocator, io: Io) void {
+    const now = Io.Clock.real.now(io);
+    client.ca_bundle.rescan(gpa, io, now) catch return;
+    client.now = now;
+}
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
@@ -241,6 +254,7 @@ pub fn main(init: std.process.Init) !void {
     const codex_account = resolved_keys.codex_account;
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
+    prewarmCaBundle(&client, gpa, io);
     var stdin_buf: [64 * 1024]u8 = undefined;
     var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
     const in = &stdin_reader.interface;
@@ -569,6 +583,7 @@ test "/bash slash command runs the bash tool and frees its gpa-allocated result"
 
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
+    prewarmCaBundle(&client, gpa, io);
 
     var root: Agent = .{
         .gpa = gpa,
