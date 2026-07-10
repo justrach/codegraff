@@ -95,13 +95,13 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     if (keys_cli.homeEnv(environ_map)) |home| {
         for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
             if (std.mem.eql(u8, spec.id, "kimi") and value.* == null) {
-                if (oauth.loadKimiOAuth(io, gpa, arena, home)) |key| {
+                if (oauth.loadKimiOAuth(io, gpa, arena, home, false)) |key| {
                     value.* = key;
                     source.* = .login;
                 }
             }
             if (std.mem.eql(u8, spec.id, "xai") and value.* == null) {
-                if (oauth.loadXaiOAuth(io, gpa, arena, home)) |key| {
+                if (oauth.loadXaiOAuth(io, gpa, arena, home, false)) |key| {
                     value.* = key;
                     source.* = .login;
                 }

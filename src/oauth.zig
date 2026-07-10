@@ -52,6 +52,15 @@ pub fn loadCodexAuth(io: Io, arena: Allocator, home: []const u8) ?CodexAuth {
     return loadCodexAuthFrom(io, arena, codex_home);
 }
 
+// #148: how long before an OAuth access token's expiry to proactively refresh
+// it — wider than the old 60s so a mid-session refresh has headroom before a
+// turn's request would otherwise cross the expiry and 401. kimi-code uses the
+// same "ensureFresh near expiry + force-refresh on 401" shape.
+const oauth_refresh_margin_s: i64 = 300;
+// Serializes concurrent token refreshes (parallel subagents share the on-disk
+// token) so they don't race the single-use refresh_token.
+var oauth_refresh_mutex: Io.Mutex = .init;
+
 // Codex / ChatGPT OAuth (PKCE) — same client + endpoints the Codex CLI uses
 // (verified from the live id_token: aud/client_id app_EMoamEEZ…, iss
 // auth.openai.com). `harness login` runs the browser flow; `harness login
@@ -357,13 +366,13 @@ pub fn kimiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !vo
 
 /// Reads the stored Kimi OAuth access token, refreshing it in place when within
 /// 60s of expiry. Returns null if not logged in. Mirrors loadCodexAuth.
-pub fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) ?[]const u8 {
+pub fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: bool) ?[]const u8 {
     const data = Io.Dir.cwd().readFileAlloc(io, kimiAuthPath(arena, home), arena, .limited(64 * 1024)) catch return null;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
     if (v != .object) return null;
     const access = strFieldObj(v.object, "access_token") orelse return null;
     const expires_at: i64 = if (v.object.get("expires_at")) |e| (if (e == .integer) e.integer else 0) else 0;
-    if (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - 60) {
+    if (force or (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - oauth_refresh_margin_s)) {
         if (strFieldObj(v.object, "refresh_token")) |refresh| {
             const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ kimi_client_id, refresh }) catch return access;
             const resp = kimiOAuthPost(io, gpa, arena, kimi_token_url, body) catch return access;
@@ -376,6 +385,21 @@ pub fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8)
         }
     }
     return access;
+}
+
+/// #148: mid-session refresh for a login-sourced key. For the short-lived
+/// refreshable OAuth providers (kimi/xai) returns the current access token,
+/// refreshed in place if within oauth_refresh_margin_s of expiry (or `force`d,
+/// e.g. after a 401). Returns null for providers with no auto-refresh flow
+/// (env keys, and the long-lived codex/codegraff tokens), so the caller keeps
+/// the key it has. Mutex-guarded so concurrent subagents don't double-refresh.
+pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider_id: []const u8, force: bool) ?[]const u8 {
+    const is_kimi = std.mem.eql(u8, provider_id, "kimi");
+    const is_xai = std.mem.eql(u8, provider_id, "xai");
+    if (!is_kimi and !is_xai) return null;
+    oauth_refresh_mutex.lockUncancelable(io);
+    defer oauth_refresh_mutex.unlock(io);
+    return if (is_kimi) loadKimiOAuth(io, gpa, arena, home, force) else loadXaiOAuth(io, gpa, arena, home, force);
 }
 
 // The Kimi for Coding plan's model-listing endpoint (sibling of the
@@ -539,13 +563,13 @@ pub fn xaiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !voi
 
 /// Reads the stored xAI OAuth access token, refreshing in place near expiry.
 /// Returns null if not logged in. Mirrors loadKimiOAuth.
-pub fn loadXaiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) ?[]const u8 {
+pub fn loadXaiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: bool) ?[]const u8 {
     const data = Io.Dir.cwd().readFileAlloc(io, xaiAuthPath(arena, home), arena, .limited(64 * 1024)) catch return null;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
     if (v != .object) return null;
     const access = strFieldObj(v.object, "access_token") orelse return null;
     const expires_at: i64 = if (v.object.get("expires_at")) |e| (if (e == .integer) e.integer else 0) else 0;
-    if (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - 60) {
+    if (force or (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - oauth_refresh_margin_s)) {
         if (strFieldObj(v.object, "refresh_token")) |refresh| {
             const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ xai_client_id, refresh }) catch return access;
             const resp = xaiOAuthPost(io, gpa, arena, xai_token_url, body) catch return access;
