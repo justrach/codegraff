@@ -590,10 +590,8 @@ test "/bash slash command runs the bash tool and frees its gpa-allocated result"
         .out = null,
     };
     var keys: Keys = .{ .values = [_]?[]const u8{null} ** provider_specs.len };
-
     var aw: Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
-
     defer root.tools_used.deinit(gpa);
     try handleCommand(&root, &keys, arena, "/bash echo leak-guard-XYZ", &aw.writer);
 

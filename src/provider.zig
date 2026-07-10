@@ -53,10 +53,10 @@ pub const provider_specs = [_]ProviderSpec{
     // Load a model in LM Studio, then `LMSTUDIO_API_KEY=local graff --model lmstudio`.
     .{ .id = "lmstudio", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:1234/v1/chat/completions", .env_key = "LMSTUDIO_API_KEY", .default_model = "lmstudio" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
-    // — it's the OAuth access token read from ~/.codex/auth.json at startup
+    // — it's the OAuth access token read from CODEX_HOME/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
     // codegraff gateway key in ~/forge/.credentials.json.
-    .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.5" },
+    .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.6-sol" },
 };
 
 pub const Provider = struct {
