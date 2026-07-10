@@ -267,8 +267,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/yolo")) {
         const on = root.approvals.?.toggleYolo(root.io);
-        try out.print("yolo mode {s} — {s}\n", .{
+        try out.print("yolo mode {s}{s}{s} — {s}\n", .{
+            if (on) style.red else style.green,
             if (on) "ON" else "off",
+            style.reset,
             if (on) "bash runs without asking" else "unapproved bash commands prompt y/a/n",
         });
         try out.flush();

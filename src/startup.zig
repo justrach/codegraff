@@ -144,8 +144,23 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
         // exact provider/model pair is still in the catalog; model names can be
         // shared by providers with different support.
         if (pricing.providerModelInTable(saved.pid, saved.model)) {
-            if (keys.providerById(saved.pid, saved.model)) |p| default_provider = p else |_| {}
-        } else stale_saved_model = saved.model;
+            if (keys.providerById(saved.pid, saved.model)) |p| {
+                default_provider = p;
+            } else |_| {
+                stale_saved_model = std.fmt.allocPrint(arena, "{s}/{s}", .{ saved.pid, saved.model }) catch saved.model;
+            }
+        } else {
+            stale_saved_model = std.fmt.allocPrint(arena, "{s}/{s}", .{ saved.pid, saved.model }) catch saved.model;
+            // A rollout may remove only this model while the provider login is
+            // still healthy. Prefer that provider's current dynamic default
+            // before crossing provider/account boundaries.
+            for (provider_mod.provider_specs) |spec| {
+                if (!std.mem.eql(u8, spec.id, saved.pid)) continue;
+                const replacement = pricing.providerDefaultModel(spec.id, spec.default_model);
+                if (keys.providerById(spec.id, replacement)) |p| default_provider = p else |_| {}
+                break;
+            }
+        }
     }
     return .{ .keys = keys, .default_provider = default_provider, .stale_saved_model = stale_saved_model, .codex_account = codex_account };
 }

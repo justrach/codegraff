@@ -9,6 +9,7 @@ const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
+const util = @import("util.zig");
 
 const history_file = ".simple-harness-history";
 const model_file = ".simple-harness-model"; // remembers the last-selected provider+model
@@ -50,7 +51,7 @@ pub fn loadHistory(io: Io, gpa: Allocator, home: []const u8, history: *std.Array
     var it = std.mem.splitScalar(u8, data, '\n');
     while (it.next()) |ln| {
         const l = std.mem.trim(u8, ln, " \t\r");
-        if (l.len == 0) continue;
+        if (l.len == 0 or !util.rememberInput(l)) continue;
         const dup = gpa.dupe(u8, l) catch continue;
         history.append(gpa, dup) catch gpa.free(dup);
     }
@@ -71,6 +72,7 @@ pub fn saveHistory(io: Io, arena: Allocator, home: []const u8, history: []const 
     var fw = f.writer(io, &wbuf);
     const start = if (history.len > history_cap) history.len - history_cap else 0;
     for (history[start..]) |h| {
+        if (!util.rememberInput(h)) continue;
         fw.interface.writeAll(h) catch return;
         fw.interface.writeByte('\n') catch return;
     }

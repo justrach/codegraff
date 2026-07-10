@@ -398,7 +398,7 @@ pub fn missingArg(gpa: Allocator, name: []const u8) !ToolOutput {
 
 pub fn outsideCwd(gpa: Allocator, path: []const u8) !ToolOutput {
     return .{
-        .text = try std.fmt.allocPrint(gpa, "path '{s}' is outside the working directory — file tools are confined to the cwd subtree (no absolute paths, no '..'). Use bash for paths elsewhere.", .{path}),
+        .text = try std.fmt.allocPrint(gpa, "path '{s}' is outside the working directory — native file tools are confined to the cwd subtree (no absolute paths, no '..'). If the user explicitly requested that external target, the root agent may continue with permission-gated bash using quoted paths after checking git status; those edits are not covered by /rewind. A relaunch is not required. Subagents remain confined.", .{path}),
         .is_error = true,
     };
 }
@@ -515,6 +515,17 @@ test "missingArg: builds an is_error result naming the argument" {
     defer std.testing.allocator.free(o.text);
     try std.testing.expect(o.is_error);
     try std.testing.expect(std.mem.indexOf(u8, o.text, "path") != null);
+}
+
+test "outsideCwd: points an explicitly authorized root agent at the safe fallback" {
+    const o = try outsideCwd(std.testing.allocator, "../zigrepper");
+    defer std.testing.allocator.free(o.text);
+    try std.testing.expect(o.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, o.text, "permission-gated bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, o.text, "quoted paths") != null);
+    try std.testing.expect(std.mem.indexOf(u8, o.text, "not covered by /rewind") != null);
+    try std.testing.expect(std.mem.indexOf(u8, o.text, "relaunch is not required") != null);
+    try std.testing.expect(std.mem.indexOf(u8, o.text, "Subagents remain confined") != null);
 }
 
 test "apiErrorMessage: object-message, bare-string, and absent envelopes" {

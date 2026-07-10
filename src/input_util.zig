@@ -22,6 +22,7 @@ const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
 
 const pricing = @import("pricing.zig");
+const util = @import("util.zig");
 
 const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
@@ -306,6 +307,7 @@ pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const
     var vcol: usize = plen;
     var mark_end: usize = 0;
     var mark_open = false;
+    const secret_start = util.sensitiveInputStart(items);
     // `ultracode` shines the input itself: each letter of every
     // (case-insensitive) occurrence renders in a rotating rainbow hue.
     var shine_starts: [8]usize = undefined;
@@ -325,6 +327,7 @@ pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const
     }
     var shine_active = false;
     while (i < items.len) {
+        const masked = if (secret_start) |start| i >= start else false;
         if (vcol >= cols) { // row full → wrap to the next
             o.writeAll("\r\n") catch {};
             row += 1;
@@ -347,7 +350,7 @@ pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const
             }
         }
         // Rainbow shine for an `ultracode` span (skipped inside a chip).
-        if (!mark_open) {
+        if (!mark_open and !masked) {
             var in_shine = false;
             for (shine_starts[0..nshine], shine_ends[0..nshine]) |sstart, send| {
                 if (i >= sstart and i < send) {
@@ -366,7 +369,7 @@ pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const
                 shine_active = false;
             }
         }
-        o.writeByte(items[i]) catch {};
+        o.writeByte(if (masked) '*' else items[i]) catch {};
         vcol += 1;
         i += 1;
         if (mark_open and i == mark_end) {

@@ -133,11 +133,11 @@ pub fn setupWorktreeAndBanner(
             try out.flush();
         }
         if (flags.yolo_flag) {
-            try out.print("⚠ yolo mode (--yolo): all bash/tool/MCP permission prompts are skipped\n", .{});
+            try out.print("{s}⚠ YOLO{s} mode (--yolo): all bash/tool/MCP permission prompts are skipped\n", .{ style.red, style.reset });
             try out.flush();
         }
         if (stale_saved_model) |nm| {
-            try out.print("{s}note: remembered model '{s}' isn't in the model table — starting on {s} instead{s}\n", .{ style.dim, nm, default_provider.model, style.reset });
+            try out.print("{s}note: saved model '{s}' is unavailable with the current catalog/credentials — using {s} via {s} for this session; saved preference kept{s}\n", .{ style.dim, nm, default_provider.model, default_provider.id, style.reset });
             try out.flush();
         }
         if (main_mod.show_timing or main_mod.show_cost) {

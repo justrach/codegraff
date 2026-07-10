@@ -9,6 +9,25 @@ const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
 
+/// Byte offset where a secret begins in an interactive command, or null when
+/// the line is safe to render/store verbatim. `/key` with no value remains a
+/// useful history entry; `/key <provider> <secret>` is masked and forgotten.
+pub fn sensitiveInputStart(line: []const u8) ?usize {
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    if (!std.mem.startsWith(u8, line[i..], "/key")) return null;
+    i += "/key".len;
+    if (i >= line.len or (line[i] != ' ' and line[i] != '\t')) return null;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    while (i < line.len and line[i] != ' ' and line[i] != '\t') : (i += 1) {}
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    return if (i < line.len) i else null;
+}
+
+pub fn rememberInput(line: []const u8) bool {
+    return sensitiveInputStart(line) == null;
+}
+
 /// Read a string field from a JSON object, or null if absent/non-string.
 pub fn strFieldObj(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const v = obj.get(name) orelse return null;
@@ -31,6 +50,16 @@ test "strFieldObj/intFieldObj: object-map variants with defaults" {
     try std.testing.expectEqual(@as(i64, 42), intFieldObj(v.object, "n", -1));
     try std.testing.expectEqual(@as(i64, -1), intFieldObj(v.object, "s", -1)); // wrong type -> default
     try std.testing.expectEqual(@as(i64, -1), intFieldObj(v.object, "missing", -1));
+}
+
+test "sensitiveInputStart: masks key values but keeps status/partial commands" {
+    try std.testing.expect(sensitiveInputStart("/key") == null);
+    try std.testing.expect(sensitiveInputStart("/key openai") == null);
+    try std.testing.expectEqual(@as(usize, 12), sensitiveInputStart("/key openai sk-secret").?);
+    try std.testing.expectEqual(@as(usize, 15), sensitiveInputStart("  /key codex   token").?);
+    try std.testing.expect(!rememberInput("/key openai sk-secret"));
+    try std.testing.expect(rememberInput("/key"));
+    try std.testing.expect(rememberInput("explain /key openai sk-secret"));
 }
 
 /// Largest prefix of `s` up to `max` bytes that doesn't split a UTF-8
