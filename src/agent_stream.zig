@@ -168,6 +168,14 @@ pub fn toggleThinkingFold(self: *Agent) void {
 }
 
 pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
+    return postStreamWithClient(self, self.client, body);
+}
+
+/// SSE stream using an explicit HTTP client. Normal traffic uses the Agent's
+/// shared pool; a WebSocket failure supplies a fresh client so a stale pooled
+/// keep-alive cannot poison the WS→SSE handoff and every fallback retry dials
+/// from a clean pool.
+pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []const u8) ![]u8 {
     self.spinnerStart();
     defer self.spinnerStop();
     self.thinking_open = false; // fresh "Thinking" block state per request
@@ -223,7 +231,7 @@ pub fn postStream(self: *Agent, body: []const u8) ![]u8 {
         _ = drainSteerStdin(true);
         tty.restore(o);
     };
-    var req = try self.client.request(.POST, try std.Uri.parse(provider.url), .{
+    var req = try client.request(.POST, try std.Uri.parse(provider.url), .{
         .redirect_behavior = .unhandled,
         .headers = .{
             .content_type = .{ .override = "application/json" },

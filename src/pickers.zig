@@ -19,7 +19,6 @@ const term = @import("term.zig");
 const tty = term.tty;
 
 const pricing = @import("pricing.zig");
-const model_table = pricing.model_table;
 
 const oauth = @import("oauth.zig");
 
@@ -88,6 +87,7 @@ fn scoredLess(_: void, a: Scored, b: Scored) bool {
 /// a full-screen alternate buffer: type to filter, ↑/↓ to move, Enter to pick,
 /// Ctrl-C to cancel. Returns the chosen model_table index, or null.
 pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer) ?usize {
+    const model_table = pricing.models();
     const in = root.in orelse return null;
     const raw_state = tty.enterRaw(true) orelse return null;
     defer tty.restore(raw_state);
@@ -134,12 +134,13 @@ pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer)
             const m = model_table[filtered.items[row]];
             const cur = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id);
             const keyed = keys.get(m.provider) != null;
+            const context = pricing.contextFor(m.provider, m.name);
             if (row == sel) out.writeAll("\x1b[7m") catch {};
             out.print("{s} {s:<26} {s:<11} {d}k{s}{s}\n", .{
                 if (cur) "▌" else " ",
                 m.name,
                 m.provider,
-                m.context / 1000,
+                context / 1000,
                 if (keyed) "" else " ·no key",
                 if (row == sel) "\x1b[0m" else "",
             }) catch {};
@@ -342,7 +343,7 @@ pub const command_menu = [_]PickItem{
     .{ .name = "/keepcontext", .desc = "keep history across wire-format switches" },
     .{ .name = "/effort", .desc = "thinking depth: low|medium|high (codex, deepseek, codegraff)" },
     .{ .name = "/reasoning", .desc = "alias for /effort" },
-    .{ .name = "/fast", .desc = "codex priority service tier — lower latency (gpt-5.6)" },
+    .{ .name = "/fast", .desc = "codex priority service tier — lower latency on supported models" },
     .{ .name = "/ultracode", .desc = "toggle persistent ultracode (multi-agent workflow) mode" },
     .{ .name = "/thinking", .desc = "show/collapse the model's live reasoning stream" },
     .{ .name = "/title", .desc = "AI-name the tab from your first prompt (on by default)" },

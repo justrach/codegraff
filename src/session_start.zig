@@ -129,7 +129,7 @@ pub fn setupWorktreeAndBanner(
         try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.cyan, main_mod.g_cwd_display, style.reset, trace_path });
         try out.flush();
         if (codex_account) |acct| {
-            try out.print("logged into Codex (ChatGPT account {s}…) — /model gpt-5.5\n", .{acct[0..@min(acct.len, 8)]});
+            try out.print("logged into Codex (ChatGPT account {s}…) — /model codex\n", .{acct[0..@min(acct.len, 8)]});
             try out.flush();
         }
         if (flags.yolo_flag) {

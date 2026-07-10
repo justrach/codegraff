@@ -24,6 +24,9 @@ const tls = std.crypto.tls;
 
 /// GRAFF_WS_DEBUG=1 → dump the handshake + frame headers to stderr.
 pub var g_debug: bool = false;
+/// Deterministic integration-test seam: fail the next WS connect so the live
+/// binary can prove its SSE fallback against the real endpoint.
+pub var g_force_connect_failure_once: bool = false;
 
 fn dbg(comptime fmt: []const u8, args: anytype) void {
     if (g_debug) std.debug.print("[ws] " ++ fmt ++ "\n", args);
@@ -84,6 +87,11 @@ pub const WsClient = struct {
     /// Reader/Writer interfaces and the TLS client reference its inline buffers
     /// and each other).
     pub fn connect(gpa: Allocator, io: Io, url: []const u8, insecure: bool, headers: []const Header) Error!*WsClient {
+        if (g_force_connect_failure_once) {
+            g_force_connect_failure_once = false;
+            dbg("forced connect failure (GRAFF_WS_FORCE_FAIL_ONCE)", .{});
+            return error.HandshakeFailed;
+        }
         const u = parseUrl(url) orelse return error.BadUrl;
         dbg("connect {s} host={s} port={d} path={s} tls={}", .{ url, u.host, u.port, u.path, u.tls });
 
@@ -314,4 +322,16 @@ test "parseUrl: wss/ws, default ports, path" {
     try std.testing.expect(!b.tls);
     try std.testing.expectEqual(@as(u16, 8080), b.port);
     try std.testing.expect(parseUrl("https://nope") == null);
+}
+
+test "forced WS failure is one-shot for SSE fallback integration tests" {
+    g_force_connect_failure_once = true;
+    try std.testing.expectError(error.HandshakeFailed, WsClient.connect(
+        std.testing.allocator,
+        std.testing.io,
+        "wss://unused.invalid/x",
+        false,
+        &.{},
+    ));
+    try std.testing.expect(!g_force_connect_failure_once);
 }

@@ -424,6 +424,10 @@ pub fn emitSchema(w: *Io.Writer) !void {
         try s.endObject();
     }
     try s.endArray();
+    try s.objectField("dynamic_model_providers");
+    try s.beginArray();
+    try s.write("codex");
+    try s.endArray();
     try s.objectField("tools");
     try s.beginArray();
     for (root_specs) |t| {

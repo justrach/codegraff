@@ -27,7 +27,6 @@ const fetchOpenAIModels = keys_cli.fetchOpenAIModels;
 const harness_version = main_mod.harness_version;
 
 const pricing = @import("pricing.zig");
-const model_table = pricing.model_table;
 const resolveModelName = pricing.resolveModelName;
 
 const pickers = @import("pickers.zig");
@@ -56,7 +55,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (arg.len == 0) {
             if (main_mod.use_color) { // interactive TTY → fuzzy picker
                 if (modelPicker(root, keys, arena, out)) |idx| {
-                    const m = model_table[idx];
+                    const m = pricing.models()[idx];
                     const provider = keys.providerById(m.provider, m.name) catch {
                         try offerProviderAuth(root, keys, arena, out, m.provider, m.name);
                         return true;
@@ -69,11 +68,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.writeAll("switch with /model <name> or /model <provider>:\n");
             for (provider_specs) |spec| {
                 const keyed = keys.get(spec.id) != null;
+                const default_model = pricing.providerDefaultModel(spec.id, spec.default_model);
                 try out.print("  {s} {s:<10}{s}  default {s}\n", .{
                     if (keyed) "✓" else "·",
                     spec.id,
                     if (keyed) "" else "  (no key)",
-                    spec.default_model,
+                    default_model,
                 });
             }
             try out.print("{s}add a key now:  /key <provider> <key>   ·   full model list: /models{s}\n", .{ style.dim, style.reset });
@@ -106,7 +106,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             // baked default. One loaded → switch straight to it; many → list to pick.
             if (isLocalUrl(spec.url)) {
                 const key = keys.get(spec.id) orelse {
-                    try offerProviderAuth(root, keys, arena, out, spec.id, spec.default_model);
+                    try offerProviderAuth(root, keys, arena, out, spec.id, pricing.providerDefaultModel(spec.id, spec.default_model));
                     return true;
                 };
                 const murl = openAiModelsUrl(arena, spec.url);
@@ -125,8 +125,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             }
-            const provider = keys.providerById(spec.id, spec.default_model) catch {
-                try offerProviderAuth(root, keys, arena, out, spec.id, spec.default_model);
+            const default_model = pricing.providerDefaultModel(spec.id, spec.default_model);
+            const provider = keys.providerById(spec.id, default_model) catch {
+                try offerProviderAuth(root, keys, arena, out, spec.id, default_model);
                 return true;
             };
             try switchProvider(root, arena, provider, out);
@@ -135,7 +136,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const resolved = resolveModelName(keys.*, arg);
         const name = try arena.dupe(u8, resolved orelse arg);
         const provider = keys.providerFor(name) catch {
-            for (model_table) |mt| if (std.mem.eql(u8, mt.name, name)) {
+            for (pricing.models()) |mt| if (std.mem.eql(u8, mt.name, name)) {
                 try offerProviderAuth(root, keys, arena, out, mt.provider, name);
                 return true;
             };

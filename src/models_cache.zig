@@ -1,22 +1,23 @@
 //! `graff models` — the model-catalog CLI and the models.dev refresh cache.
 //!
-//! graff's catalog (pricing.model_table / price_table) is a hand-maintained
-//! snapshot: instant to read, works offline, and the source of truth for
-//! ROUTING (which provider serves a name). But snapshots drift as OpenAI/etc.
-//! ship models. This module keeps the METADATA (context window + per-token
-//! price) fresh without a rebuild and without slowing startup:
+//! Non-Codex routing starts from pricing.model_table. Codex model names and
+//! windows are account-scoped and discovered from the same authenticated
+//! `/models?client_version=…` endpoint and 5-minute cache design as openai/codex;
+//! the baked Codex rows are only an offline fallback. Separately, models.dev
+//! keeps context/price METADATA fresh for the non-Codex catalog:
 //!
 //!   * `graff models`          — print the effective catalog (baked + overlay)
-//!   * `graff models refresh`  — GET https://models.dev/api.json, extract the
-//!                               window/price for every model graff already
-//!                               knows by name, and cache it to disk
+//!   * `graff models refresh`  — force the Codex account catalog refresh, then
+//!                               refresh known window/price rows from models.dev
 //!
-//! At startup resolveKeys() calls loadOverlay(), which reads that small cache
+//! At startup resolveKeys() first calls loadCodexCatalog(), then loadOverlay().
+//! Codex discovery swaps only the Codex rows in pricing.active_model_table.
+//! loadOverlay() reads the small models.dev cache
 //! (NOT the 3 MB models.dev doc — startup stays instant) into two runtime
 //! overlays in pricing.zig that priceFor()/contextFor() consult before the
 //! baked table. No cache / offline / fresh install → the baked table is the
-//! sole source, so nothing here can break a run. Routing is untouched: the
-//! overlay only refreshes numbers for names the baked table already routes.
+//! sole source, so nothing here can break a run. The models.dev overlay only
+//! refreshes numbers for names the active table already routes.
 //!
 //! Cache path: ~/.codegraff/models.json, falling back to the flat dotfile
 //! ~/.codegraff-models.json when that directory doesn't exist (zig 0.16's
@@ -32,16 +33,19 @@ const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
 
 const models_dev_url = "https://models.dev/api.json";
+const codex_models_url = "https://chatgpt.com/backend-api/codex/models";
+const codex_cache_ttl_ms: i64 = 5 * 60 * 1000;
+pub var codex_catalog_source: []const u8 = "baked offline fallback";
 
 /// models.dev provider ids to trust FIRST when a model id appears under
 /// several providers — a vendor's own listing beats a reseller's markup
 /// (models.dev keys resellers like requesty/openrouter/vercel alongside the
 /// canonical labs). Names not found here fall back to an any-provider scan.
 const canonical_providers = [_][]const u8{
-    "openai",       "anthropic", "deepseek", "xai",   "zai",
-    "z-ai",         "zhipuai",   "google",   "minimax", "moonshotai",
-    "moonshot",     "mistral",   "meta",     "xiaomi", "fireworks-ai",
-    "fireworks",    "alibaba",
+    "openai",    "anthropic", "deepseek", "xai",     "zai",
+    "z-ai",      "zhipuai",   "google",   "minimax", "moonshotai",
+    "moonshot",  "mistral",   "meta",     "xiaomi",  "fireworks-ai",
+    "fireworks", "alibaba",
 };
 
 /// One refreshed metadata row — the subset of a models.dev model we cache.
@@ -73,6 +77,177 @@ fn dirPath(arena: Allocator, home: []const u8) []const u8 {
 }
 fn flatPath(arena: Allocator, home: []const u8) []const u8 {
     return std.fmt.allocPrint(arena, "{s}/.codegraff-models.json", .{home}) catch "";
+}
+
+fn codexDirPath(arena: Allocator, home: []const u8) []const u8 {
+    return std.fmt.allocPrint(arena, "{s}/.codegraff/codex-models.json", .{home}) catch "";
+}
+fn codexFlatPath(arena: Allocator, home: []const u8) []const u8 {
+    return std.fmt.allocPrint(arena, "{s}/.codegraff-codex-models.json", .{home}) catch "";
+}
+fn nativeCodexPath(arena: Allocator, codex_home: []const u8) []const u8 {
+    return std.fmt.allocPrint(arena, "{s}/models_cache.json", .{codex_home}) catch "";
+}
+
+const CodexSnapshot = struct {
+    models: []const pricing.ModelInfo,
+    client_version: []const u8 = "",
+    fetched_at_ms: i64 = 0,
+};
+
+fn validModelSlug(slug: []const u8) bool {
+    if (slug.len == 0 or slug.len > 256) return false;
+    for (slug) |c| if (!(std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '/')) return false;
+    return true;
+}
+
+/// Accepts both Codex's native cache/remote shape (`slug`, `context_window`)
+/// and graff's compact cache shape (`name`, `context`). Hidden models stay out
+/// of user-facing routing and pickers, matching Codex's ModelPreset behavior.
+fn parseCodexSnapshot(arena: Allocator, data: []const u8) ?CodexSnapshot {
+    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
+    if (v != .object) return null;
+    const arr = v.object.get("models") orelse return null;
+    if (arr != .array) return null;
+    var rows: std.ArrayList(pricing.ModelInfo) = .empty;
+    for (arr.array.items) |item| {
+        if (item != .object) continue;
+        if (strFieldObj(item.object, "visibility")) |visibility|
+            if (!std.mem.eql(u8, visibility, "list")) continue;
+        const slug = strFieldObj(item.object, "name") orelse strFieldObj(item.object, "slug") orelse continue;
+        if (!validModelSlug(slug)) continue;
+        var duplicate = false;
+        for (rows.items) |row| if (std.mem.eql(u8, row.name, slug)) {
+            duplicate = true;
+        };
+        if (duplicate) continue;
+        var context = u64Field(item.object, "context");
+        if (context == 0) context = u64Field(item.object, "context_window");
+        if (context == 0) context = pricing.codex_context_window;
+        rows.append(arena, .{
+            .provider = "codex",
+            .name = arena.dupe(u8, slug) catch continue,
+            .context = context,
+        }) catch continue;
+    }
+    const models = rows.toOwnedSlice(arena) catch return null;
+    if (models.len == 0) return null;
+    return .{
+        .models = models,
+        .client_version = strFieldObj(v.object, "client_version") orelse "",
+        .fetched_at_ms = util.intFieldObj(v.object, "fetched_at_ms", 0),
+    };
+}
+
+fn readSmall(io: Io, arena: Allocator, path: []const u8) ?[]const u8 {
+    if (path.len == 0) return null;
+    return Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(4 * 1024 * 1024)) catch null;
+}
+
+fn installedCodexVersion(io: Io, arena: Allocator) ?[]const u8 {
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "codex", "--version" },
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    }) catch return null;
+    defer _ = child.wait(io) catch {};
+    const f = child.stdout orelse return null;
+    var rbuf: [1024]u8 = undefined;
+    var fr = f.readerStreaming(io, &rbuf);
+    const output = fr.interface.allocRemaining(arena, .limited(8 * 1024)) catch return null;
+    const trimmed = std.mem.trim(u8, output, " \t\r\n");
+    const at = std.mem.lastIndexOfAny(u8, trimmed, " \t") orelse return null;
+    const version = std.mem.trim(u8, trimmed[at + 1 ..], " \t");
+    if (version.len == 0 or !std.ascii.isDigit(version[0]) or std.mem.indexOfScalar(u8, version, '.') == null) return null;
+    return version;
+}
+
+fn fetchCodexSnapshot(io: Io, gpa: Allocator, arena: Allocator, token: []const u8, account: []const u8, version: []const u8) ?CodexSnapshot {
+    if (token.len == 0 or account.len == 0 or version.len == 0) return null;
+    const url = std.fmt.allocPrint(arena, "{s}?client_version={s}", .{ codex_models_url, version }) catch return null;
+    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{token}) catch return null;
+    const user_agent = std.fmt.allocPrint(arena, "codex_cli_rs/{s} (graff)", .{version}) catch return null;
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var aw: Io.Writer.Allocating = .init(arena);
+    const headers = [_]std.http.Header{
+        .{ .name = "Accept", .value = "application/json" },
+        .{ .name = "Authorization", .value = bearer },
+        .{ .name = "chatgpt-account-id", .value = account },
+        .{ .name = "originator", .value = "codex_cli_rs" },
+        .{ .name = "User-Agent", .value = user_agent },
+    };
+    const res = client.fetch(.{
+        .location = .{ .url = url },
+        .method = .GET,
+        .response_writer = &aw.writer,
+        .extra_headers = &headers,
+    }) catch return null;
+    if (@intFromEnum(res.status) != 200) return null;
+    return parseCodexSnapshot(arena, aw.writer.buffered());
+}
+
+fn writeCodexCache(io: Io, arena: Allocator, home: []const u8, version: []const u8, models: []const pricing.ModelInfo) void {
+    var aw: Io.Writer.Allocating = .init(arena);
+    aw.writer.writeAll("{\"source\":\"chatgpt.com/backend-api/codex/models\",\"fetched_at_ms\":") catch return;
+    aw.writer.print("{d},\"client_version\":", .{util.unixMs(io)}) catch return;
+    var version_stringify: std.json.Stringify = .{ .writer = &aw.writer };
+    version_stringify.write(version) catch return;
+    aw.writer.writeAll(",\"models\":[") catch return;
+    for (models, 0..) |model, i| {
+        if (i > 0) aw.writer.writeByte(',') catch return;
+        aw.writer.writeAll("{\"name\":") catch return;
+        var name_stringify: std.json.Stringify = .{ .writer = &aw.writer };
+        name_stringify.write(model.name) catch return;
+        aw.writer.print(",\"context\":{d}}}", .{model.context}) catch return;
+    }
+    aw.writer.writeAll("]}\n") catch return;
+    for ([_][]const u8{ codexDirPath(arena, home), codexFlatPath(arena, home) }) |path| {
+        if (path.len == 0) continue;
+        const f = Io.Dir.cwd().createFile(io, path, .{}) catch continue;
+        defer f.close(io);
+        var wbuf: [4096]u8 = undefined;
+        var fw = f.writer(io, &wbuf);
+        fw.interface.writeAll(aw.writer.buffered()) catch continue;
+        fw.interface.flush() catch continue;
+        return;
+    }
+}
+
+/// Activate an account-scoped Codex catalog. Match openai/codex's policy:
+/// a client-version-keyed cache is fresh for five minutes, then remote refresh;
+/// remote failure falls back to stale graff cache, native Codex cache, and
+/// finally pricing.zig's minimal baked rows. Tokens are never persisted.
+pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, codex_home: []const u8, token: []const u8, account: []const u8, force_refresh: bool) void {
+    const native_data = readSmall(io, arena, nativeCodexPath(arena, codex_home));
+    const native = if (native_data) |data| parseCodexSnapshot(arena, data) else null;
+    const version = installedCodexVersion(io, arena) orelse if (native) |snapshot| snapshot.client_version else "";
+    const cached_data = readSmall(io, arena, codexDirPath(arena, home)) orelse readSmall(io, arena, codexFlatPath(arena, home));
+    const cached = if (cached_data) |data| parseCodexSnapshot(arena, data) else null;
+    const now = util.unixMs(io);
+    if (!force_refresh) if (cached) |snapshot| {
+        const age = now - snapshot.fetched_at_ms;
+        if (std.mem.eql(u8, snapshot.client_version, version) and age >= 0 and age <= codex_cache_ttl_ms) {
+            if (pricing.activateCodexModels(arena, snapshot.models)) codex_catalog_source = "dynamic cache";
+            return;
+        }
+    };
+    if (fetchCodexSnapshot(io, gpa, arena, token, account, version)) |snapshot| {
+        if (pricing.activateCodexModels(arena, snapshot.models)) {
+            codex_catalog_source = "live account catalog";
+            writeCodexCache(io, arena, home, version, snapshot.models);
+            return;
+        }
+    }
+    if (cached) |snapshot| if (pricing.activateCodexModels(arena, snapshot.models)) {
+        codex_catalog_source = "stale dynamic cache (offline)";
+        return;
+    };
+    if (native) |snapshot| if (pricing.activateCodexModels(arena, snapshot.models)) {
+        codex_catalog_source = "Codex native cache (offline)";
+        return;
+    };
 }
 
 /// GET models.dev/api.json (~3 MB) and parse it into the arena, or null on any
@@ -235,8 +410,9 @@ fn reportNew(doc: std.json.ObjectMap, out: *Io.Writer) void {
     if (shown > 12) out.print("  … and {d} more\n", .{shown - 12}) catch {};
 }
 
-/// `graff models refresh`: pull models.dev, cache window+price for every model
-/// graff knows by name, apply it live, and report what changed / what's new.
+/// `graff models refresh`: Codex was force-refreshed by startup.runSubcommand;
+/// now pull models.dev, cache window+price for every active model name, apply it
+/// live, and report what changed / what's new.
 pub fn refresh(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, out: *Io.Writer) !void {
     try out.print("fetching {s} …\n", .{models_dev_url});
     try out.flush();
@@ -247,9 +423,10 @@ pub fn refresh(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, out: 
     };
     var metas: std.ArrayList(Meta) = .empty;
     defer metas.deinit(gpa);
-    for (pricing.model_table, 0..) |mi, i| {
+    const catalog = pricing.models();
+    for (catalog, 0..) |mi, i| {
         var dup = false; // dedupe: the same name can appear under several providers
-        for (pricing.model_table[0..i]) |prev| {
+        for (catalog[0..i]) |prev| {
             if (std.mem.eql(u8, prev.name, mi.name)) {
                 dup = true;
                 break;
@@ -273,21 +450,27 @@ pub fn refresh(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, out: 
 /// overlay), grouped by provider, with the live window and per-1M price.
 pub fn list(out: *Io.Writer) !void {
     const fresh = pricing.price_overlay.len > 0 or pricing.context_overlay.len > 0;
-    try out.print("model catalog — {d} entries{s}\n", .{ pricing.model_table.len, if (fresh) " (refreshed from models.dev)" else "" });
+    const catalog = pricing.models();
+    try out.print("model catalog — {d} entries{s}\n", .{ catalog.len, if (fresh) " (refreshed from models.dev)" else "" });
     var last: []const u8 = "";
-    for (pricing.model_table) |m| {
+    for (catalog) |m| {
         if (!std.mem.eql(u8, m.provider, last)) {
-            try out.print("\n{s}:\n", .{m.provider});
+            if (std.mem.eql(u8, m.provider, "codex"))
+                try out.print("\n{s} ({s}):\n", .{ m.provider, codex_catalog_source })
+            else
+                try out.print("\n{s}:\n", .{m.provider});
             last = m.provider;
         }
         const ctx = pricing.contextFor(m.provider, m.name);
-        if (pricing.priceFor(m.name)) |p| {
+        if (std.mem.eql(u8, m.provider, "codex")) {
+            try out.print("  {s:<34}{d:>10} ctx   (subscription)\n", .{ m.name, ctx });
+        } else if (pricing.priceFor(m.name)) |p| {
             try out.print("  {s:<34}{d:>10} ctx   ${d}/{d} per 1M\n", .{ m.name, ctx, p.in, p.out });
         } else {
             try out.print("  {s:<34}{d:>10} ctx   (unpriced)\n", .{ m.name, ctx });
         }
     }
-    try out.writeAll("\nrefresh window/price from models.dev:  graff models refresh\n");
+    try out.writeAll("\nrefresh Codex catalog + models.dev metadata:  graff models refresh\n");
     try out.flush();
 }
 
@@ -335,4 +518,22 @@ test "findModel prefers the canonical vendor over a reseller markup" {
     // Alias match: "gpt5.6" normalizes to "gpt-5.6".
     try std.testing.expect(findModel(v.object, "gpt5.6") != null);
     try std.testing.expect(findModel(v.object, "no-such-model") == null);
+}
+
+test "Codex snapshot uses visible remote slugs and their advertised contexts" {
+    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer a.deinit();
+    const snapshot = parseCodexSnapshot(a.allocator(),
+        \\{"client_version":"9.9.9","models":[
+        \\ {"slug":"future-sol","visibility":"list","context_window":372000},
+        \\ {"slug":"future-hidden","visibility":"hide","context_window":999000},
+        \\ {"slug":"future-luna","visibility":"list","context_window":128000},
+        \\ {"slug":"future-luna","visibility":"list","context_window":1}]}
+    ).?;
+    try std.testing.expectEqualStrings("9.9.9", snapshot.client_version);
+    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len);
+    try std.testing.expectEqualStrings("future-sol", snapshot.models[0].name);
+    try std.testing.expectEqual(@as(u64, 372_000), snapshot.models[0].context);
+    try std.testing.expectEqualStrings("future-luna", snapshot.models[1].name);
+    try std.testing.expectEqual(@as(u64, 128_000), snapshot.models[1].context);
 }

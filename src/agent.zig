@@ -328,8 +328,9 @@ pub const Agent = struct {
     pub const closeThinkingBlock = @import("agent_stream.zig").closeThinkingBlock;
     pub const toggleThinkingFold = @import("agent_stream.zig").toggleThinkingFold;
     pub const postStream = @import("agent_stream.zig").postStream;
+    pub const postStreamWithClient = @import("agent_stream.zig").postStreamWithClient;
     pub const printDelta = @import("agent_stream.zig").printDelta;
-    // Codex/gpt-5.5 Responses-over-WebSocket transport (+ its SSE-fallback
+    // Codex Responses-over-WebSocket transport (+ its fresh-client SSE fallback
     // wrapper postLive) lives in agent_ws.zig (#codex-ws). Member-aliased.
     pub const postResponsesWs = @import("agent_ws.zig").postResponsesWs;
     pub const postLive = @import("agent_ws.zig").postLive;

@@ -22,7 +22,6 @@ const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
 
 const pricing = @import("pricing.zig");
-const model_table = pricing.model_table;
 
 const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
@@ -41,7 +40,7 @@ pub fn fillCompletions(gpa: Allocator, line: []const u8, out: *std.ArrayList([]c
     const mp = "/model ";
     if (std.mem.startsWith(u8, line, mp)) {
         const partial = line[mp.len..];
-        for (model_table) |m| {
+        for (pricing.models()) |m| {
             if (!std.mem.startsWith(u8, m.name, partial)) continue;
             var dup = false;
             for (out.items) |x| if (std.mem.eql(u8, x, m.name)) {

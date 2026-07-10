@@ -7,13 +7,12 @@
 //! (`pub const Provider = provider.Provider;` etc.) so the ~everywhere
 //! `main_mod.Provider`/`main_mod.Keys`/`main_mod.provider_specs`
 //! back-imports across the other split files keep resolving unchanged.
-//! Only needs pricing.zig (contextFor/model_table) for Keys.build/providerFor.
+//! Only needs pricing.zig (contextFor/models) for Keys.build/providerFor.
 
 const std = @import("std");
 
 const pricing = @import("pricing.zig");
 const contextFor = pricing.contextFor;
-const model_table = pricing.model_table;
 
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
 /// names from models.dev/api.json (snapshot 2026-06-10); the anthropic and
@@ -106,7 +105,7 @@ pub const Keys = struct {
         };
     }
 
-    /// Route a model to a provider: first model_table row whose provider has
+    /// Route a model to a provider: first active catalog row whose provider has
     /// a key wins (spec order breaks ties). Unknown claude* models go to
     /// Anthropic; any other unknown model goes to the codegraff gateway.
     pub fn providerFor(keys: Keys, model: []const u8) error{MissingKey}!Provider {
@@ -118,7 +117,7 @@ pub const Keys = struct {
             for (provider_specs, keys.values) |spec, value| {
                 const key = value orelse continue;
                 if (std.mem.eql(u8, spec.id, "codegraff") != allow_gateway) continue;
-                for (model_table) |m| {
+                for (pricing.models()) |m| {
                     if (std.mem.eql(u8, m.provider, spec.id) and std.mem.eql(u8, m.name, model))
                         return keys.build(spec, key, model);
                 }
@@ -138,7 +137,7 @@ pub const Keys = struct {
     pub fn defaultProvider(keys: Keys) error{MissingKey}!Provider {
         for (provider_specs, keys.values) |spec, value| {
             const key = value orelse continue;
-            return keys.build(spec, key, spec.default_model);
+            return keys.build(spec, key, pricing.providerDefaultModel(spec.id, spec.default_model));
         }
         return error.MissingKey;
     }

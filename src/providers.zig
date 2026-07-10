@@ -96,7 +96,7 @@ pub fn resolveProviderControlRequest(
     if (provider_id.len != 0) {
         for (provider_specs) |spec| {
             if (!std.mem.eql(u8, spec.id, provider_id)) continue;
-            const selected_model = if (model.len == 0) spec.default_model else try arena.dupe(u8, model);
+            const selected_model = if (model.len == 0) pricing.providerDefaultModel(spec.id, spec.default_model) else try arena.dupe(u8, model);
             return keys.providerById(spec.id, selected_model);
         }
         return error.InvalidProvider;
@@ -127,7 +127,7 @@ fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Pro
 
     for (provider_specs) |spec| {
         if (!std.mem.eql(u8, spec.id, arg)) continue;
-        return keys.providerById(spec.id, spec.default_model);
+        return keys.providerById(spec.id, pricing.providerDefaultModel(spec.id, spec.default_model));
     }
 
     const resolved = resolveModelName(keys.*, arg);

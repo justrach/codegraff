@@ -31,9 +31,9 @@ const style = &ansi.style;
 const jobs = @import("jobs.zig");
 
 const pricing = @import("pricing.zig");
-const model_table = pricing.model_table;
 const default_context = pricing.default_context;
 const g_cost = &pricing.g_cost;
+const models_cache = @import("models_cache.zig");
 
 const schema = @import("schema.zig");
 const renderRootTools = schema.renderRootTools;
@@ -190,19 +190,21 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/models")) {
         try out.writeAll("model                      ctx      compact@   provider    key  vision\n");
-        for (model_table) |m| {
+        for (pricing.models()) |m| {
             const has_key = keys.get(m.provider) != null;
             const current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id);
+            const context = pricing.contextFor(m.provider, m.name);
             try out.print("{s:<26} {d:>5}k   {d:>5}k    {s:<11} {s}    {s}{s}\n", .{
                 m.name,
-                m.context / 1000,
-                m.context / 10 * 8 / 1000,
+                context / 1000,
+                context / 10 * 8 / 1000,
                 m.provider,
                 if (has_key) "✓" else "—",
                 if (visionModel(m.name)) "✓" else "—",
                 if (current) "  ← current" else "",
             });
         }
+        try out.print("(codex catalog: {s})\n", .{models_cache.codex_catalog_source});
         try out.print("(unknown models: {d}k ctx; claude* → anthropic, else → codegraff)\n", .{default_context / 1000});
         // Live LM Studio models: query the local server so loaded models show up
         // in /models without hand-typing their ids. Best-effort and silent if the

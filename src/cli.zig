@@ -42,7 +42,7 @@ pub const usage_text =
     \\  graff login kimi                 Kimi Code OAuth login (device-code)
     \\  graff key set <provider> <key>   store a key (macOS Keychain, else 0600 file)
     \\  graff key list                   show which providers have keys
-    \\  graff models [refresh]           list the model catalog; refresh pulls window/price from models.dev
+    \\  graff models [refresh]           list the live catalog; refresh Codex + models.dev metadata
     \\  graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
     \\  graff mcp                         list configured MCP servers
     \\  graff worktree list              list the per-tab worktrees created by -w

@@ -94,10 +94,28 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
             if (value.* == null) value.* = keys_cli.loadStoredKey(io, arena, home, spec.id);
         }
     }
-    // Apply the models.dev refresh cache (if `graff models refresh` ever ran)
-    // before any Provider is built, so contextFor()/priceFor() use the fresh
-    // window/price. No cache → a no-op; the baked catalog stays authoritative.
-    if (keys_cli.homeEnv(environ_map)) |home| models_cache.loadOverlay(io, arena, home);
+    // Discover the account-scoped Codex catalog before model selection. This
+    // mirrors openai/codex: 5-minute cache keyed by installed Codex version,
+    // authenticated /models refresh, then stale/native/baked offline fallback.
+    // Model names, rollout visibility, and context windows therefore do not
+    // need a graff release. No Codex login/cache → the baked fallback remains.
+    if (keys_cli.homeEnv(environ_map)) |home| {
+        const codex_home = environ_map.get("CODEX_HOME") orelse
+            (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
+        models_cache.loadCodexCatalog(
+            io,
+            gpa,
+            arena,
+            home,
+            codex_home,
+            keys.get("codex") orelse "",
+            keys.codex_account,
+            false,
+        );
+        // Apply the independent models.dev price/context overlay after routing
+        // discovery. Provider-specific Codex windows remain authoritative.
+        models_cache.loadOverlay(io, arena, home);
+    }
     var default_provider = keys.defaultProvider() catch {
         std.process.fatal(
             \\no API key found. quickest fixes:
@@ -111,7 +129,8 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     // `--model <name|provider>` pins the startup model (same resolution as /model).
     if (model_flag) |mname| pick: {
         for (provider_mod.provider_specs) |spec| if (std.mem.eql(u8, spec.id, mname)) {
-            if (keys.providerById(spec.id, spec.default_model)) |p| {
+            const model = pricing.providerDefaultModel(spec.id, spec.default_model);
+            if (keys.providerById(spec.id, model)) |p| {
                 default_provider = p;
                 break :pick;
             } else |_| std.process.fatal("no key/login for provider '{s}' (--model)", .{mname});
@@ -304,6 +323,22 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // fresh window/price metadata from models.dev into the local cache.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "models")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
+        const codex_home = init.environ_map.get("CODEX_HOME") orelse
+            (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
+        const codex_auth = oauth.loadCodexAuth(io, arena, home);
+        models_cache.loadCodexCatalog(
+            io,
+            gpa,
+            arena,
+            home,
+            codex_home,
+            if (codex_auth) |auth| auth.token else "",
+            if (codex_auth) |auth| auth.account else "",
+            flags.positionals.items.len > 1 and
+                (std.mem.eql(u8, flags.positionals.items[1], "refresh") or
+                    std.mem.eql(u8, flags.positionals.items[1], "--refresh") or
+                    std.mem.eql(u8, flags.positionals.items[1], "update")),
+        );
         try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]);
         return true;
     }

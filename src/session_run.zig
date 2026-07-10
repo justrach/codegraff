@@ -72,7 +72,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
         .tools_responses = root.tools_responses,
     };
     var models_buf = std.array_list.Managed(u8).init(arena);
-    for (pricing.model_table) |mi| {
+    for (pricing.models()) |mi| {
         if (mi.name.len == 0) continue;
         if (models_buf.items.len != 0) models_buf.appendSlice(", ") catch {};
         models_buf.appendSlice(mi.name) catch {};
@@ -347,6 +347,7 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
         main_mod.g_codex_ws = !(std.mem.eql(u8, v, "off") or std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "false") or std.mem.eql(u8, v, "no"));
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
+    ws.g_force_connect_failure_once = environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE") != null;
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme

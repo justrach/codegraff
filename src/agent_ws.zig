@@ -1,4 +1,4 @@
-//! Codex/gpt-5.5 Responses turn over WebSocket. OpenAI's codex prefers ws and
+//! Codex Responses turns over WebSocket. OpenAI's codex prefers ws and
 //! falls back to SSE; graff mirrors that. The ws frames carry the SAME event
 //! `type`s as the Responses SSE stream (response.output_text.delta,
 //! response.completed, …), so each frame is wrapped as a `data: {json}` line
@@ -48,13 +48,20 @@ pub fn wsEligible(self: *Agent) bool {
 /// A ws transport/handshake failure disables ws for the session and falls back
 /// to SSE; a deliberate Esc/stall propagates unchanged.
 pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
-    if (!wsEligible(self)) return self.postStream(body);
+    if (!wsEligible(self)) return if (self.ws_off) postStreamFresh(self, body) else self.postStream(body);
     return postResponsesWs(self, body) catch |e| {
         if (e == error.Interrupted or e == error.StreamStalled) return e;
         self.ws_off = true;
-        if (self.tracer) |tr| tr.note("ws", "transport error — falling back to SSE for this session");
-        return self.postStream(body);
+        if (self.tracer) |tr| tr.note("ws", "transport error — falling back to fresh-client SSE for this session");
+        return postStreamFresh(self, body);
     };
+}
+
+fn postStreamFresh(self: *Agent, body: []const u8) ![]u8 {
+    var client: std.http.Client = .{ .allocator = self.gpa, .io = self.io };
+    defer client.deinit();
+    if (self.tracer) |tr| tr.note("sse_fallback", "fresh HTTP client");
+    return self.postStreamWithClient(&client, body);
 }
 
 fn wssUrl(arena: std.mem.Allocator, https_url: []const u8) ![]u8 {
@@ -174,7 +181,6 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     }
     return full.toOwnedSlice();
 }
-
 
 test "wssUrl: https->wss, http->ws" {
     var a = std.heap.ArenaAllocator.init(std.testing.allocator);

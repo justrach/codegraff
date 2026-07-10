@@ -139,9 +139,8 @@ pub const ModelInfo = struct {
     context: u64,
 };
 
-// Codex/ChatGPT backend: gpt-5.x window is 272k (codex-rs models.json); budget
-// 270k so compaction (80% -> 216k) fires just under the hard cap and absorbs our
-// token under-count (a turn displaying 270k still 400'd). Not the API's 1.05M.
+// Conservative fallback when Codex's live catalog is unavailable. Normal
+// sessions replace every baked Codex row from the authenticated /models cache.
 pub const codex_context_window: u64 = 270_000;
 
 pub const model_table = [_]ModelInfo{
@@ -178,17 +177,9 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "xiaomi", .name = "mimo-v2.5", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2.5-pro-ultraspeed", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2-flash", .context = 262_144 },
-    // Codex/ChatGPT backend lineup (codex-rs models.json): the slugs the
-    // chatgpt.com/backend-api/codex/responses endpoint accepts. Default is
-    // gpt-5.5 (available to every Codex account); gpt-5.6 is the newest but
-    // ENTITLEMENT-GATED — OpenAI rolls it out to Codex accounts gradually, and
-    // one without it 400s ("model not supported when using Codex with a ChatGPT
-    // account"), so it is a selectable opt-in here, NOT the default. Verified
-    // live 2026-07-10. The -codex-suffixed API-only names (gpt-5.5-codex,
-    // gpt-5-codex) are NOT codex-backend slugs and stay openai-only. All share
-    // the ~272k backend window (codex_context_window), not the API's 1.05M.
+    // Offline fallback only. At startup models_cache.zig replaces the entire
+    // Codex slice from the account-scoped /models response (5-minute cache).
     .{ .provider = "codex", .name = "gpt-5.5", .context = codex_context_window },
-    .{ .provider = "codex", .name = "gpt-5.6", .context = codex_context_window }, // newest; entitlement-gated opt-in
     .{ .provider = "codex", .name = "gpt-5.4", .context = codex_context_window },
     .{ .provider = "codex", .name = "gpt-5.4-mini", .context = codex_context_window },
     .{ .provider = "codex", .name = "gpt-5.3-codex", .context = codex_context_window },
@@ -238,6 +229,42 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "zai", .name = "glm-4.5", .context = 131_072 },
 };
 
+/// Active catalog for routing, pickers, completion, and runtime listings.
+/// It starts with the offline table above; authenticated Codex discovery swaps
+/// only the Codex rows while keeping every other provider unchanged.
+pub var active_model_table: []const ModelInfo = model_table[0..];
+
+pub fn models() []const ModelInfo {
+    return active_model_table;
+}
+
+/// Codex's first visible account model is its dynamic default, matching
+/// openai/codex's priority-sorted picker. Other providers retain their baked
+/// default; the supplied fallback also covers offline Codex startup.
+pub fn providerDefaultModel(provider_id: []const u8, fallback: []const u8) []const u8 {
+    if (!std.mem.eql(u8, provider_id, "codex")) return fallback;
+    for (models()) |model| if (std.mem.eql(u8, model.provider, "codex")) return model.name;
+    return fallback;
+}
+
+pub fn activateCodexModels(arena: std.mem.Allocator, discovered: []const ModelInfo) bool {
+    if (discovered.len == 0) return false;
+    var non_codex: usize = 0;
+    for (model_table) |m| if (!std.mem.eql(u8, m.provider, "codex")) {
+        non_codex += 1;
+    };
+    const combined = arena.alloc(ModelInfo, non_codex + discovered.len) catch return false;
+    var n: usize = 0;
+    for (model_table) |m| {
+        if (std.mem.eql(u8, m.provider, "codex")) continue;
+        combined[n] = m;
+        n += 1;
+    }
+    @memcpy(combined[n..], discovered);
+    active_model_table = combined;
+    return true;
+}
+
 pub const default_context = 200_000;
 
 /// Runtime context-window overlay from `graff models refresh` (name-keyed;
@@ -253,7 +280,7 @@ pub fn contextFor(provider_id: []const u8, model: []const u8) u64 {
     const is_codex = std.mem.eql(u8, provider_id, "codex");
     // Provider-specific baked row is authoritative (gateway gpt-5.5 = 400k, not
     // the API's 1.05M), so it wins over the fresh name-only overlay below.
-    for (model_table) |m| {
+    for (models()) |m| {
         if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model)) return m.context;
     }
     // Fresh overlay (models.dev refresh), then the baked name-only fallback. A
@@ -261,7 +288,7 @@ pub fn contextFor(provider_id: []const u8, model: []const u8) u64 {
     for (context_overlay) |m| {
         if (std.mem.eql(u8, m.name, model)) return if (is_codex) @min(m.context, codex_context_window) else m.context;
     }
-    for (model_table) |m| {
+    for (models()) |m| {
         if (std.mem.eql(u8, m.name, model)) return if (is_codex) @min(m.context, codex_context_window) else m.context;
     }
     return default_context;
@@ -292,12 +319,12 @@ pub fn modelAliasEquals(name: []const u8, query: []const u8) bool {
 /// `keys` is main.zig's Keys (anytype to keep provider wiring out of this
 /// module) — anything with `get(provider_id) ?[]const u8`.
 pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
-    for (model_table) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
-    for (model_table) |m| if (modelAliasEquals(m.name, query)) return m.name;
+    for (models()) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
+    for (models()) |m| if (modelAliasEquals(m.name, query)) return m.name;
     var qbuf: [128]u8 = undefined;
     const qnorm = normalizeModelAlias(&qbuf, query);
     var fallback: ?[]const u8 = null;
-    for (model_table) |m| {
+    for (models()) |m| {
         var nbuf: [128]u8 = undefined;
         const nnorm = normalizeModelAlias(&nbuf, m.name);
         if (std.ascii.indexOfIgnoreCase(m.name, query) == null and std.mem.indexOf(u8, nnorm, qnorm) == null) continue;
@@ -307,15 +334,15 @@ pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
     return fallback;
 }
 
-/// Exact membership test against the comptime model table — used to ignore a
+/// Exact membership test against the active model table — used to ignore a
 /// remembered startup model that no provider actually serves.
 pub fn modelInTable(name: []const u8) bool {
-    for (model_table) |m| if (std.mem.eql(u8, m.name, name)) return true;
+    for (models()) |m| if (std.mem.eql(u8, m.name, name)) return true;
     return false;
 }
 
 pub fn providerModelInTable(provider_id: []const u8, model: []const u8) bool {
-    for (model_table) |m| {
+    for (models()) |m| {
         if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model)) return true;
     }
     return false;
@@ -326,11 +353,25 @@ test "contextFor known model and default fallback" {
     try std.testing.expectEqual(@as(u64, default_context), contextFor("nope", "unknown-xyz"));
 }
 
-test "codex catalog matches the codex backend lineup" {
-    // The codex ChatGPT backend serves the codex-rs models.json slugs; the
-    // -codex-suffixed API-only names (gpt-5.5-codex, gpt-5-codex) are NOT
-    // backend slugs, so they stay openai-served and out of the codex catalog.
-    try std.testing.expect(providerModelInTable("codex", "gpt-5.6")); // newest, entitlement-gated opt-in
+test "Codex discovery replaces only the baked Codex fallback" {
+    const saved = active_model_table;
+    defer active_model_table = saved;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const discovered = [_]ModelInfo{
+        .{ .provider = "codex", .name = "future-sol", .context = 372_000 },
+        .{ .provider = "codex", .name = "future-luna", .context = 128_000 },
+    };
+    try std.testing.expect(activateCodexModels(arena_state.allocator(), &discovered));
+    try std.testing.expect(providerModelInTable("codex", "future-sol"));
+    try std.testing.expect(providerModelInTable("codex", "future-luna"));
+    try std.testing.expect(!providerModelInTable("codex", "gpt-5.5"));
+    try std.testing.expectEqual(@as(u64, 372_000), contextFor("codex", "future-sol"));
+    try std.testing.expectEqualStrings("future-sol", providerDefaultModel("codex", "fallback"));
+    try std.testing.expect(providerModelInTable("openai", "gpt-5.6"));
+}
+
+test "baked Codex catalog is an offline fallback, not rollout data" {
     try std.testing.expect(providerModelInTable("codex", "gpt-5.5"));
     try std.testing.expect(providerModelInTable("codex", "gpt-5.4"));
     try std.testing.expect(providerModelInTable("codex", "gpt-5.3-codex"));

@@ -294,14 +294,18 @@ and one of its models (`graff key set openai sk-...` → `--model gpt-...`,
 `graff key set anthropic sk-ant-...` → `--model sonnet`, and so on).
 
 A model is routed to the first provider (in the table order above) that both has
-a key set **and** lists the model in `model_table`. Unknown `claude*` models
+a key set **and** lists the model in the active catalog. Codex names, rollout
+visibility, ordering, and context windows come from its account-scoped `/models`
+endpoint, cached for five minutes with the installed Codex client version; baked
+Codex rows are only the offline fallback. Unknown `claude*` models
 fall back to Anthropic; any other unknown model falls back to the codegraff
 gateway, and `/model` prints a warning when that fallback fires, since a typo'd
 name will be rejected by the API on the first request. The startup default is
 the first provider with a key, on its default model. `/models` prints the full
 table: context window, compaction point, provider, and which providers you have
 keys for; `/model <name>` switches (a bare `/model` opens an interactive fuzzy
-picker).
+picker). `graff models refresh` forces a fresh Codex catalog request and refreshes
+the independent models.dev price/context metadata cache.
 
 <details>
 <summary><strong>Codex login (ChatGPT subscription)</strong> · <strong>why no Claude login</strong></summary>
@@ -311,7 +315,8 @@ picker).
 If you're logged into the Codex CLI, the harness reads the ChatGPT OAuth token
 from `~/.codex/auth.json` at startup (the same on-disk-credential trick used for
 the codegraff key) and prints `logged into Codex (ChatGPT account …)`. Switch to
-it with `/model gpt-5.5` (or `gpt-5-codex`). This is a third wire format: the
+it with `/model codex`; Graff selects the first visible model in your live,
+account-scoped Codex catalog. This is a third wire format: the
 **Responses API** against the ChatGPT backend
 (`chatgpt.com/backend-api/codex/responses`), not `api.openai.com`, so it uses
 your ChatGPT Pro/Plus subscription rather than a paid API key. Text, tool

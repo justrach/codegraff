@@ -212,7 +212,7 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
     const refresh = strFieldObj(resp, "refresh_token") orelse "";
     const account = accountFromIdToken(arena, id_token);
     try writeCodexAuth(io, arena, home, id_token, access, refresh, account);
-    try out.print("✓ logged into Codex (account {s}…) — wrote ~/.codex/auth.json. /model gpt-5.5\n", .{account[0..@min(account.len, 8)]});
+    try out.print("✓ logged into Codex (account {s}…) — wrote ~/.codex/auth.json. /model codex\n", .{account[0..@min(account.len, 8)]});
     try out.flush();
 }
 
