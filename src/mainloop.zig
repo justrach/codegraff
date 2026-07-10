@@ -112,12 +112,20 @@ pub fn run(ctx: *Ctx) !void {
             std.mem.trim(u8, line["/loop".len..], " \t")
         else
             null;
+        // /goal <objective>: set the standing goal AND run it as the first turn
+        // right away — codex/opencode both start the loop on a goal instead of
+        // just recording it. Bare /goal (show) and /goal clear/off stay commands.
+        const goal_prompt: ?[]const u8 = if (!main_mod.json_mode and std.mem.startsWith(u8, line, "/goal ")) gblk: {
+            const g = std.mem.trim(u8, line["/goal".len..], " \t");
+            if (g.len == 0 or std.ascii.eqlIgnoreCase(g, "clear") or std.ascii.eqlIgnoreCase(g, "off")) break :gblk null;
+            break :gblk g;
+        } else null;
         if (!main_mod.json_mode) {
             const l = if (line.len > 0 and line[0] == '/') line[1..] else line;
             if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
         }
 
-        if (!main_mod.json_mode and repl_glue.isSlashCommandLine(line) and loop_prompt == null) {
+        if (!main_mod.json_mode and repl_glue.isSlashCommandLine(line) and loop_prompt == null and goal_prompt == null) {
             // Bare "/" on a TTY: open the filterable command menu.
             if (ctx.interactive and line.len == 1) {
                 if (pickers.listPicker(ctx.root, ctx.arena, ctx.out, "Command ›", &pickers.command_menu)) |idx| {
@@ -129,6 +137,10 @@ pub fn run(ctx: *Ctx) !void {
             continue;
         }
 
+        // /goal <objective>: apply the goal (handleCommand sets root.goal, saves,
+        // and prints), then fall through to run a turn on it immediately.
+        if (goal_prompt != null) try main_mod.handleCommand(ctx.root, ctx.keys, ctx.arena, line, ctx.out);
+
         // The user message for this turn. In --json mode each input line is a
         // {"type":"user","text":"..."} request; {"type":"set_system_prompt",
         // "text":"...","append":bool} mutates the root system prompt between
@@ -137,7 +149,7 @@ pub fn run(ctx: *Ctx) !void {
         // {"type":"score","prompt_sha":"...","score":0.7,"notes":"..."}
         // appends an evaluation record for an agent variant to the
         // trajectory archive (the DGM evaluation phase writing back).
-        const base_msg: []const u8 = if (loop_prompt) |lp| lp else if (main_mod.json_mode) blk: {
+        const base_msg: []const u8 = if (loop_prompt) |lp| lp else if (goal_prompt) |gp| gp else if (main_mod.json_mode) blk: {
             const parsed = std.json.parseFromSliceLeaky(Value, ctx.arena, line, .{ .allocate = .alloc_always }) catch {
                 ctx.root.emit(.{ .type = "error", .message = "invalid JSON (expect {\"type\":\"user\",\"text\":\"...\"})" });
                 continue;
