@@ -28,11 +28,11 @@ const codegraff_device_base = root.codegraff_device_base;
 
 pub const CodexAuth = struct { token: []const u8, account: []const u8 };
 
-/// Read the Codex CLI's ChatGPT OAuth credentials from ~/.codex/auth.json.
+/// Read the Codex CLI's ChatGPT OAuth credentials from <codex_home>/auth.json.
 /// Returns the access token + account id (for the chatgpt-account-id header),
 /// or null if the file is missing/unparseable (i.e. not logged in).
-pub fn loadCodexAuth(io: Io, arena: Allocator, home: []const u8) ?CodexAuth {
-    const path = std.fmt.allocPrint(arena, "{s}/.codex/auth.json", .{home}) catch return null;
+pub fn loadCodexAuthFrom(io: Io, arena: Allocator, codex_home: []const u8) ?CodexAuth {
+    const path = std.fmt.allocPrint(arena, "{s}/auth.json", .{codex_home}) catch return null;
     const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(256 * 1024)) catch return null;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
     if (v != .object) return null;
@@ -42,6 +42,14 @@ pub fn loadCodexAuth(io: Io, arena: Allocator, home: []const u8) ?CodexAuth {
     if (token.len == 0) return null;
     const account = if (tokens.object.get("account_id")) |a| (if (a == .string) a.string else "") else "";
     return .{ .token = token, .account = account };
+}
+
+/// Default-home compatibility wrapper used by login flows that always write
+/// ~/.codex/auth.json. Startup and `graff models` use loadCodexAuthFrom so a
+/// user-supplied CODEX_HOME controls both credentials and the native catalog.
+pub fn loadCodexAuth(io: Io, arena: Allocator, home: []const u8) ?CodexAuth {
+    const codex_home = std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch return null;
+    return loadCodexAuthFrom(io, arena, codex_home);
 }
 
 // Codex / ChatGPT OAuth (PKCE) — same client + endpoints the Codex CLI uses

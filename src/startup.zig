@@ -65,12 +65,14 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
                 value.* = oauth.loadCodegraffKey(io, arena, home);
         }
     }
-    // Codex "login": read the ChatGPT OAuth token from ~/.codex/auth.json
-    // (written by the Codex CLI) instead of an env var — same on-disk
-    // credential pattern as the codegraff key in ~/forge/.credentials.json.
+    // Codex "login": read the ChatGPT OAuth token from CODEX_HOME/auth.json
+    // (default ~/.codex/auth.json, written by the Codex CLI) instead of an env
+    // var. The same directory is used for native model-catalog discovery.
     var codex_account: ?[]const u8 = null;
     if (keys_cli.homeEnv(environ_map)) |home| {
-        if (oauth.loadCodexAuth(io, arena, home)) |auth| {
+        const codex_home = environ_map.get("CODEX_HOME") orelse
+            (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
+        if (oauth.loadCodexAuthFrom(io, arena, codex_home)) |auth| {
             for (provider_mod.provider_specs, &keys.values) |spec, *value| {
                 if (std.mem.eql(u8, spec.id, "codex")) value.* = auth.token;
             }
@@ -325,7 +327,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
         const codex_home = init.environ_map.get("CODEX_HOME") orelse
             (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
-        const codex_auth = oauth.loadCodexAuth(io, arena, home);
+        const codex_auth = oauth.loadCodexAuthFrom(io, arena, codex_home);
         models_cache.loadCodexCatalog(
             io,
             gpa,

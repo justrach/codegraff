@@ -177,13 +177,17 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "xiaomi", .name = "mimo-v2.5", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2.5-pro-ultraspeed", .context = 1_048_576 },
     .{ .provider = "xiaomi", .name = "mimo-v2-flash", .context = 262_144 },
-    // Offline fallback only. At startup models_cache.zig replaces the entire
+    // Offline snapshot only. At startup models_cache.zig replaces the entire
     // Codex slice from the account-scoped /models response (5-minute cache).
-    .{ .provider = "codex", .name = "gpt-5.5", .context = codex_context_window },
-    .{ .provider = "codex", .name = "gpt-5.4", .context = codex_context_window },
-    .{ .provider = "codex", .name = "gpt-5.4-mini", .context = codex_context_window },
-    .{ .provider = "codex", .name = "gpt-5.3-codex", .context = codex_context_window },
-    .{ .provider = "codex", .name = "gpt-5.2", .context = codex_context_window },
+    // Keep this usable when auth/discovery is unavailable: these are the
+    // visible rows and advertised windows from the 2026-07-10 Codex catalog.
+    .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 372_000 },
+    .{ .provider = "codex", .name = "gpt-5.6-terra", .context = 372_000 },
+    .{ .provider = "codex", .name = "gpt-5.6-luna", .context = 372_000 },
+    .{ .provider = "codex", .name = "gpt-5.5", .context = 272_000 },
+    .{ .provider = "codex", .name = "gpt-5.4", .context = 272_000 },
+    .{ .provider = "codex", .name = "gpt-5.4-mini", .context = 272_000 },
+    .{ .provider = "codex", .name = "gpt-5.3-codex-spark", .context = 128_000 },
     // Sakana AI — Fugu (OpenAI-compatible chat/completions). `fugu` is the fast
     // mini model, `fugu-ultra` the multi-agent reasoning conductor. Sakana does
     // not publish a context window; use the harness's conservative 200k default
@@ -372,10 +376,14 @@ test "Codex discovery replaces only the baked Codex fallback" {
 }
 
 test "baked Codex catalog is an offline fallback, not rollout data" {
+    try std.testing.expect(providerModelInTable("codex", "gpt-5.6-sol"));
+    try std.testing.expect(providerModelInTable("codex", "gpt-5.6-terra"));
+    try std.testing.expect(providerModelInTable("codex", "gpt-5.6-luna"));
     try std.testing.expect(providerModelInTable("codex", "gpt-5.5"));
     try std.testing.expect(providerModelInTable("codex", "gpt-5.4"));
-    try std.testing.expect(providerModelInTable("codex", "gpt-5.3-codex"));
-    try std.testing.expect(providerModelInTable("codex", "gpt-5.2"));
+    try std.testing.expect(providerModelInTable("codex", "gpt-5.3-codex-spark"));
+    try std.testing.expectEqual(@as(u64, 372_000), contextFor("codex", "gpt-5.6-sol"));
+    try std.testing.expectEqualStrings("gpt-5.6-sol", providerDefaultModel("codex", "fallback"));
     try std.testing.expect(!providerModelInTable("codex", "gpt-5.5-codex"));
     try std.testing.expect(!providerModelInTable("codex", "gpt-5-codex"));
     try std.testing.expect(providerModelInTable("openai", "gpt-5-codex"));

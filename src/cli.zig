@@ -21,11 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
-    \\0.0.188
-    \\  • Codex model names, defaults, and context windows now follow your live account catalog
-    \\  • Codex uses WebSockets first, with a fresh-client SSE fallback on connection failure
-    \\  • `graff models refresh` updates Codex plus models.dev metadata
-    \\  • main.zig is split into focused modules; every source file is ≤600 lines
+    \\0.0.189
+    \\  • Fresh/offline installs now show gpt-5.6-sol and the current Codex fallback catalog
+    \\  • CODEX_HOME is now honored when loading Codex credentials and models
+    \\  • `graff update` reminds every running session to restart after installation
     \\
 ;
 
@@ -279,4 +278,6 @@ pub fn updateCommand(
     const term = child.wait(io) catch std.process.fatal("update: installer did not exit cleanly", .{});
     if (term != .exited or term.exited != 0)
         std.process.fatal("update: installer failed — try again or download manually from https://github.com/justrach/codegraff/releases/latest", .{});
+    try out.writeAll("✓ update installed — restart every running graff session to load the new binary\n");
+    try out.flush();
 }

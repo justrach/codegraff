@@ -136,7 +136,8 @@ export DEEPSEEK_API_KEY=sk-...  # or just an env var (env always wins)
 ```
 
 Already logged into the Codex CLI? Skip this step. Your ChatGPT subscription is
-picked up automatically from `~/.codex/auth.json`. Or run `graff login codex`.
+picked up automatically from `${CODEX_HOME:-~/.codex}/auth.json`. Or run
+`graff login codex`.
 
 > **Note on `login`:** there is no per-provider `login` command. `graff login`
 > is *specifically* the free codegraff key, and `graff login codex` is the
@@ -279,7 +280,7 @@ from [models.dev](https://models.dev)'s `api.json` (snapshot 2026-06-10).
 | `minimax`   | Anthropic Messages, bearer  | `MINIMAX_API_KEY`    |
 | `xiaomi` (MiMo) | OpenAI chat, bearer     | `XIAOMI_API_KEY`     |
 | `kimi` / `xai` (grok) / `zai` (GLM) | OpenAI chat, bearer | `KIMI_API_KEY` / `XAI_API_KEY` / `ZAI_API_KEY` (via `graff key set`) |
-| `codex`     | Responses API, ChatGPT login | `~/.codex/auth.json` (no env var) |
+| `codex`     | Responses API, ChatGPT login | `${CODEX_HOME:-~/.codex}/auth.json` (no API key) |
 
 **Using a specific provider directly** is always the same two steps: give it
 the key, then name a model. For example, DeepSeek straight to `api.deepseek.com`:
@@ -297,7 +298,8 @@ A model is routed to the first provider (in the table order above) that both has
 a key set **and** lists the model in the active catalog. Codex names, rollout
 visibility, ordering, and context windows come from its account-scoped `/models`
 endpoint, cached for five minutes with the installed Codex client version; baked
-Codex rows are only the offline fallback. Unknown `claude*` models
+Codex rows are only the offline fallback (currently including `gpt-5.6-sol`,
+Terra, and Luna). Unknown `claude*` models
 fall back to Anthropic; any other unknown model falls back to the codegraff
 gateway, and `/model` prints a warning when that fallback fires, since a typo'd
 name will be rejected by the API on the first request. The startup default is
@@ -313,8 +315,8 @@ the independent models.dev price/context metadata cache.
 <br/>
 
 If you're logged into the Codex CLI, the harness reads the ChatGPT OAuth token
-from `~/.codex/auth.json` at startup (the same on-disk-credential trick used for
-the codegraff key) and prints `logged into Codex (ChatGPT account …)`. Switch to
+from `${CODEX_HOME:-~/.codex}/auth.json` at startup (the same on-disk-credential
+trick used for the codegraff key) and prints `logged into Codex (ChatGPT account …)`. Switch to
 it with `/model codex`; Graff selects the first visible model in your live,
 account-scoped Codex catalog. This is a third wire format: the
 **Responses API** against the ChatGPT backend
@@ -803,8 +805,9 @@ codegraff.com/cli/auth → poll → key, saved to `~/.simple-harness-codegraff.j
 the codegraff key is also auto-picked-up from graff's own
 `~/forge/.credentials.json` if present, so no env var is needed. `graff login
 codex` runs the Codex/ChatGPT OAuth browser flow (PKCE → localhost callback →
-token) and `graff login codex --refresh` refreshes it, both writing
-`~/.codex/auth.json`.
+token) and `graff login codex --refresh` refreshes it. Those built-in login
+flows write `~/.codex/auth.json`; set `CODEX_HOME` when reusing credentials from
+a custom Codex CLI home.
 
 **SDKs.** `graff --json` exposes a structured stdio protocol (JSON requests in,
 JSONL events out) and `graff --schema` prints the machine-readable interface.
