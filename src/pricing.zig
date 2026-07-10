@@ -139,8 +139,12 @@ pub const ModelInfo = struct {
     context: u64,
 };
 
-// Conservative fallback when Codex's live catalog is unavailable. Normal
-// sessions replace every baked Codex row from the authenticated /models cache.
+// Hard cap on the usable input for ANY codex (ChatGPT-account) model. The
+// backend enforces ~272k input for every gpt-5.x regardless of what the /models
+// catalog advertises (e.g. 372k for sol/terra/luna, which is NOT honored for
+// input). contextFor() clamps every codex resolution path to this so
+// auto-compaction (80%) fires before the backend's "input exceeds the context
+// window" rejection. 270k -> compaction at 216k, ~56k below the ~272k wall.
 pub const codex_context_window: u64 = 270_000;
 
 pub const model_table = [_]ModelInfo{
@@ -181,9 +185,9 @@ pub const model_table = [_]ModelInfo{
     // Codex slice from the account-scoped /models response (5-minute cache).
     // Keep this usable when auth/discovery is unavailable: these are the
     // visible rows and advertised windows from the 2026-07-10 Codex catalog.
-    .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 372_000 },
-    .{ .provider = "codex", .name = "gpt-5.6-terra", .context = 372_000 },
-    .{ .provider = "codex", .name = "gpt-5.6-luna", .context = 372_000 },
+    .{ .provider = "codex", .name = "gpt-5.6-sol", .context = 272_000 },
+    .{ .provider = "codex", .name = "gpt-5.6-terra", .context = 272_000 },
+    .{ .provider = "codex", .name = "gpt-5.6-luna", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.5", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.4", .context = 272_000 },
     .{ .provider = "codex", .name = "gpt-5.4-mini", .context = 272_000 },
@@ -285,7 +289,8 @@ pub fn contextFor(provider_id: []const u8, model: []const u8) u64 {
     // Provider-specific baked row is authoritative (gateway gpt-5.5 = 400k, not
     // the API's 1.05M), so it wins over the fresh name-only overlay below.
     for (models()) |m| {
-        if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model)) return m.context;
+        if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model))
+            return if (is_codex) @min(m.context, codex_context_window) else m.context;
     }
     // Fresh overlay (models.dev refresh), then the baked name-only fallback. A
     // name-only window may exceed what the Codex backend honors — cap codex.
@@ -370,7 +375,7 @@ test "Codex discovery replaces only the baked Codex fallback" {
     try std.testing.expect(providerModelInTable("codex", "future-sol"));
     try std.testing.expect(providerModelInTable("codex", "future-luna"));
     try std.testing.expect(!providerModelInTable("codex", "gpt-5.5"));
-    try std.testing.expectEqual(@as(u64, 372_000), contextFor("codex", "future-sol"));
+    try std.testing.expectEqual(codex_context_window, contextFor("codex", "future-sol")); // live 372k row clamps to the codex cap
     try std.testing.expectEqualStrings("future-sol", providerDefaultModel("codex", "fallback"));
     try std.testing.expect(providerModelInTable("openai", "gpt-5.6"));
 }
@@ -382,7 +387,7 @@ test "baked Codex catalog is an offline fallback, not rollout data" {
     try std.testing.expect(providerModelInTable("codex", "gpt-5.5"));
     try std.testing.expect(providerModelInTable("codex", "gpt-5.4"));
     try std.testing.expect(providerModelInTable("codex", "gpt-5.3-codex-spark"));
-    try std.testing.expectEqual(@as(u64, 372_000), contextFor("codex", "gpt-5.6-sol"));
+    try std.testing.expectEqual(codex_context_window, contextFor("codex", "gpt-5.6-sol")); // baked 272k row clamps to the codex cap
     try std.testing.expectEqualStrings("gpt-5.6-sol", providerDefaultModel("codex", "fallback"));
     try std.testing.expect(!providerModelInTable("codex", "gpt-5.5-codex"));
     try std.testing.expect(!providerModelInTable("codex", "gpt-5-codex"));
