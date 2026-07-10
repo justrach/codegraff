@@ -100,6 +100,12 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
                     source.* = .login;
                 }
             }
+            if (std.mem.eql(u8, spec.id, "xai") and value.* == null) {
+                if (oauth.loadXaiOAuth(io, gpa, arena, home)) |key| {
+                    value.* = key;
+                    source.* = .login;
+                }
+            }
         }
     }
     // Stored keys (macOS Keychain / 0600 file via `harness key set`): fill any
@@ -290,7 +296,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // `codex` (or --refresh) runs the ChatGPT PKCE/refresh flow → ~/.codex/auth.json.
     if (flags.login_flag) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
-        if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
+        if (flags.xai_login) try oauth.xaiLogin(io, gpa, arena, home) else if (flags.kimi_login) try oauth.kimiLogin(io, gpa, arena, home) else if (flags.codex_login or flags.refresh_flag) try oauth.codexLogin(io, gpa, arena, home, flags.refresh_flag) else try oauth.codegraffLogin(io, gpa, arena, home);
         return true;
     }
 

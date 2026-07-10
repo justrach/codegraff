@@ -484,6 +484,11 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
                 value.* = k;
                 source.* = .login;
             }
+        } else if (std.mem.eql(u8, provider_id, "xai")) {
+            if (oauth.loadXaiOAuth(root.io, root.gpa, arena, home)) |k| {
+                value.* = k;
+                source.* = .login;
+            }
         } else if (std.mem.eql(u8, provider_id, "codex")) {
             if (oauth.loadCodexAuth(root.io, arena, home)) |auth| {
                 value.* = auth.token;
@@ -543,7 +548,7 @@ pub fn offerProviderAuth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.W
         try out.flush();
         return;
     };
-    const can_login = std.mem.eql(u8, pid, "codegraff") or std.mem.eql(u8, pid, "codex") or std.mem.eql(u8, pid, "kimi");
+    const can_login = std.mem.eql(u8, pid, "codegraff") or std.mem.eql(u8, pid, "codex") or std.mem.eql(u8, pid, "kimi") or std.mem.eql(u8, pid, "xai");
 
     // Non-interactive (one-shot / no TTY): no picker — print the hint and bail.
     if (!main_mod.use_color or root.in == null) {
@@ -599,6 +604,12 @@ pub fn offerProviderAuth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.W
         } else if (std.mem.eql(u8, pid, "kimi")) {
             oauth.kimiLogin(root.io, root.gpa, arena, home) catch |err| {
                 try out.print("\xe2\x9c\x97 kimi login failed: {t}\n", .{err});
+                try out.flush();
+                return;
+            };
+        } else if (std.mem.eql(u8, pid, "xai")) {
+            oauth.xaiLogin(root.io, root.gpa, arena, home) catch |err| {
+                try out.print("\xe2\x9c\x97 xai login failed: {t}\n", .{err});
                 try out.flush();
                 return;
             };
