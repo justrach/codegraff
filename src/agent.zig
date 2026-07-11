@@ -99,6 +99,7 @@ pub const Agent = struct {
     codex_ws: ?*ws.WsClient = null,
     codex_prev_id: ?[]const u8 = null, // last response.id (gpa-owned); null = re-anchor with full input
     codex_sent_upto: usize = 0, // messages the server already holds; delta = messages[codex_sent_upto..]
+    codex_ws_used_ms: i64 = 0, // .awake-clock ms of the WS's last successful use; gates the idle preemptive re-anchor (#codex-ws)
     sub: bool,
     label: []const u8,
     out: ?*Io.Writer,

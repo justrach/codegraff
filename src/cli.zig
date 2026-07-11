@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.200
+    \\  • Codex WS delta bodies are never replayed over SSE — fixes "Unsupported parameter: previous_response_id" after a long idle
+    \\  • The held codex WS now re-anchors preemptively after 4 min idle (GRAFF_CODEX_WS_IDLE_SECS to tune) instead of eating a dead-socket round trip
+    \\  • A server-side previous_response_id rejection now self-heals with one full-input retry
+    \\
     \\0.0.192
     \\  • The REPL prompt now shows color-coded reasoning and active mode badges
     \\  • PTY debugging can script commands, keys, assertions, and terminal dimensions
