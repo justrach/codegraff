@@ -54,6 +54,7 @@ const shellArgv = jobs.shellArgv;
 const skills = @import("skills.zig");
 const input_util = @import("input_util.zig");
 const binaryFileExt = input_util.binaryFileExt;
+const hooks = @import("hooks.zig");
 const telemetry = @import("telemetry.zig");
 
 /// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
@@ -203,12 +204,35 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     if (std.mem.eql(u8, call.name, "read_file")) {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
         if (!confinedPath(path) or !noSymlinkEscape(io, path)) return outsideCwd(gpa, path);
+        const start_line = intField(input, "start_line");
+        const end_line = intField(input, "end_line");
+        const want_compact = if (input == .object) (if (input.object.get("compact")) |v| v == .bool and v.bool else false) else false;
+        // #66: opt-in compact view routes to `codedb read <path> [-L a-b] --compact`
+        // when codedb is present and this file is indexed. Lossy (strips comments/
+        // blanks, shows line numbers) so it is NEVER the default and is labeled
+        // not-for-editing; any failure falls through to the native byte-exact read.
+        if (want_compact) {
+            if (main_mod.g_codedb_present == null) main_mod.g_codedb_present = skills.binOnPath(io, "codedb");
+            if (main_mod.g_codedb_present == true and hooks.codedbFileIndexed(io, gpa, path)) {
+                if (try codedbCompactRead(gpa, io, path, start_line, end_line)) |out| return out;
+            }
+        }
         const data = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(256 * 1024));
         // Binary guard: PDFs/images/archives would only poison the context
         // with mojibake — point the model at bash converters instead.
         if (binaryFileExt(path) or std.mem.indexOfScalar(u8, data[0..@min(data.len, 4096)], 0) != null) {
             defer gpa.free(data);
             return .{ .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ path, data.len }), .is_error = true };
+        }
+        // #66: byte-exact 1-based inclusive line window — still a literal substring
+        // of the file, so it stays safe to paste into an edit_file old_string.
+        if (start_line != null or end_line != null) {
+            defer gpa.free(data);
+            const win = sliceLines(data, start_line, end_line) orelse return .{
+                .text = try std.fmt.allocPrint(gpa, "start_line {?d} is past the end of {s}", .{ start_line, path }),
+                .is_error = true,
+            };
+            return .{ .text = try gpa.dupe(u8, win) };
         }
         return .{ .text = data };
     }
@@ -310,4 +334,68 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
     return .{ .text = try std.fmt.allocPrint(gpa, "unknown tool: {s}", .{call.name}), .is_error = true };
+}
+
+/// Byte-exact 1-based inclusive line window into `data`: the sub-slice spanning
+/// the start of line `start` through the end of line `end` (incl. that line's
+/// trailing newline when present). null if `start` is past EOF. A literal
+/// substring of the file, so it stays safe to paste into edit_file (#66).
+fn sliceLines(data: []const u8, start_opt: ?i64, end_opt: ?i64) ?[]const u8 {
+    if (data.len == 0) return null;
+    const start_1: usize = if (start_opt) |s| (if (s < 1) 1 else @intCast(s)) else 1;
+    const end_1: usize = if (end_opt) |e| (if (e < 1) 1 else @intCast(e)) else std.math.maxInt(usize);
+    if (end_1 < start_1) return null;
+    var line: usize = 1;
+    var begin: ?usize = if (start_1 == 1) 0 else null;
+    var stop: usize = data.len;
+    var i: usize = 0;
+    while (i < data.len) : (i += 1) {
+        if (data[i] == '\n') {
+            line += 1;
+            if (line == start_1) begin = i + 1;
+            if (line == end_1 +| 1) { // saturating: maxInt (no end_line) never matches `line`
+                stop = i + 1;
+                break;
+            }
+        }
+    }
+    const b = begin orelse return null; // start_1 is beyond EOF
+    return data[b..stop];
+}
+
+/// Opt-in exploratory read via `codedb read <path> [-L a-b] --compact`. Lossy view
+/// for reasoning only; returns null on any codedb failure so the caller falls back
+/// to the native byte-exact read (#66).
+fn codedbCompactRead(gpa: Allocator, io: Io, path: []const u8, start: ?i64, end: ?i64) !?ToolOutput {
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    var lbuf: [48]u8 = undefined;
+    try argv.append(gpa, "codedb");
+    try argv.append(gpa, "read");
+    try argv.append(gpa, path);
+    if (start != null and end != null and start.? >= 1 and end.? >= start.?) {
+        try argv.append(gpa, "-L");
+        try argv.append(gpa, std.fmt.bufPrint(&lbuf, "{d}-{d}", .{ start.?, end.? }) catch return null);
+    }
+    try argv.append(gpa, "--compact");
+    const run = runCapped(gpa, io, argv.items, codedb_result_cap, 4096, 0) catch return null;
+    defer gpa.free(run.stdout);
+    defer gpa.free(run.stderr);
+    const ok = switch (run.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
+    if (!ok or run.stdout.len == 0) return null;
+    return ToolOutput{ .text = try std.fmt.allocPrint(gpa, "{s}\n[compact view — comments/blank lines stripped, line numbers shown; re-read WITHOUT compact before building an edit_file old_string]", .{run.stdout}) };
+}
+
+test "sliceLines: byte-exact 1-based inclusive window (#66)" {
+    const data = "a\nb\nc\nd\n";
+    try std.testing.expectEqualStrings("b\nc\n", sliceLines(data, 2, 3).?);
+    try std.testing.expectEqualStrings("a\n", sliceLines(data, 1, 1).?);
+    try std.testing.expectEqualStrings("a\nb\nc\nd\n", sliceLines(data, null, null).?);
+    try std.testing.expectEqualStrings("c\nd\n", sliceLines(data, 3, 99).?); // end clamps to EOF
+    try std.testing.expect(sliceLines(data, 99, 100) == null); // start past EOF
+    try std.testing.expectEqualStrings("y", sliceLines("x\ny", 2, 2).?); // no trailing newline
+    try std.testing.expect(std.mem.indexOf(u8, data, sliceLines(data, 2, 3).?) != null); // literal substring
 }
