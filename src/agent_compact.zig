@@ -252,6 +252,11 @@ pub fn compact(self: *Agent) anyerror!usize {
     // (WriteFailed) rather than returning a clean overflow, so compaction could
     // never run once near the cap. Old tool outputs are superseded by the summary
     // anyway; truncating them keeps the request sendable + all pairing intact.
+    // #174: on the Responses path, prior-turn reasoning items go first — they
+    // dominate the resend bloat on long high-effort sessions, and the backend
+    // itself discards them from chained context, so dropping them can't lose
+    // anything the server would have kept.
+    _ = dropPriorTurnReasoning(self);
     _ = trimOldestToolOutputs(self);
     try self.messages.append(try textMessage(self.arena, "user", compact_instruction));
     errdefer _ = self.messages.pop();
@@ -303,6 +308,66 @@ pub fn cleanUserTurn(m: Value) bool {
         },
         else => return true,
     }
+}
+
+/// #174: drop Responses `reasoning` items older than the last user message,
+/// in place (no allocation). These are exactly the items the backend discards
+/// from chained context (previous_response_id), so removing them can't lose
+/// anything the server would have kept — and on a long high-effort session
+/// their encrypted blobs dominate the full-resend size. Reasoning at or after
+/// the last user message stays: the API requires the current turn's reasoning
+/// between a function_call and its output. Returns how many were dropped.
+pub fn dropPriorTurnReasoning(self: *Agent) usize {
+    if (self.provider.kind != .responses) return 0;
+    var last_user: usize = 0;
+    for (self.messages.items, 0..) |m, i| {
+        if (m != .object) continue;
+        const role = m.object.get("role") orelse continue;
+        if (role == .string and std.mem.eql(u8, role.string, "user")) last_user = i;
+    }
+    var w: usize = 0;
+    for (self.messages.items, 0..) |m, i| {
+        const old_reasoning = i < last_user and m == .object and blk: {
+            const t = m.object.get("type") orelse break :blk false;
+            break :blk t == .string and std.mem.eql(u8, t.string, "reasoning");
+        };
+        if (old_reasoning) continue;
+        self.messages.items[w] = m;
+        w += 1;
+    }
+    const dropped = self.messages.items.len - w;
+    self.messages.shrinkRetainingCapacity(w);
+    return dropped;
+}
+
+test "dropPriorTurnReasoning (#174): prior-turn reasoning goes, current turn + non-responses stay" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try textMessage(a, "user", "turn one"));
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"reasoning\",\"encrypted_content\":\"OLD1\"}", .{}));
+    try msgs.append(try textMessage(a, "assistant", "reply one"));
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"reasoning\",\"encrypted_content\":\"OLD2\"}", .{}));
+    try msgs.append(try textMessage(a, "user", "turn two"));
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"reasoning\",\"encrypted_content\":\"CURRENT\"}", .{}));
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"function_call\",\"name\":\"bash\",\"call_id\":\"c1\",\"arguments\":\"{}\"}", .{}));
+
+    var agent: Agent = undefined;
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100_000 };
+    agent.messages = msgs;
+
+    try std.testing.expectEqual(@as(usize, 2), dropPriorTurnReasoning(&agent));
+    try std.testing.expectEqual(@as(usize, 5), agent.messages.items.len);
+    // current-turn reasoning (after the last user message) survives, in order
+    const kept = agent.messages.items[3].object.get("encrypted_content").?.string;
+    try std.testing.expectEqualStrings("CURRENT", kept);
+
+    // non-responses providers are untouched
+    agent.provider.kind = .openai;
+    try std.testing.expectEqual(@as(usize, 0), dropPriorTurnReasoning(&agent));
+    try std.testing.expectEqual(@as(usize, 5), agent.messages.items.len);
 }
 
 /// Index to cut history at for an emergency trim: the first clean user turn
