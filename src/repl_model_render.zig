@@ -109,7 +109,15 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, term_width: usize, term_heig
     var bottom = std.array_list.Managed(u8).init(a);
     try bottom.appendSlice(try box.render(a, try self.input.view(a)));
     try bottom.append('\n');
-    try bottom.appendSlice(try (zz.Style{}).dim(true).render(a, try self.statusLine(a)));
+    // A live copy toast takes over the status row (same height — the conversation
+    // viewport doesn't jump); otherwise the normal status line (#85).
+    if (now_ms < self.toast_until_ms and self.toast != .none) {
+        const msg = if (self.toast == .failed) "⚠ Clipboard copy failed" else "✓ Copied to clipboard";
+        const color: zz.Color = if (self.toast == .failed) .red else .green;
+        try bottom.appendSlice(try (zz.Style{}).fg(color).bold(true).render(a, msg));
+    } else {
+        try bottom.appendSlice(try (zz.Style{}).dim(true).render(a, try self.statusLine(a)));
+    }
 
     // The conversation is a scrollable viewport above the pinned input box.
     // scroll = lines scrolled up from the bottom (0 = latest). Clamped here.
@@ -157,28 +165,41 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, term_width: usize, term_heig
     return gpa.dupe(u8, out.items);
 }
 
-/// Copy the conversation lines spanned by a drag-selection (screen rows
-/// r0..r1 inclusive, 0-based) to the clipboard via OSC52. Line-granular —
-/// restores copy after mouse mode disabled native terminal selection (#91).
-pub fn copySelection(self: *Model, ctx: *zz.Context, r0: usize, r1: usize) void {
-    if (self.view_rows == 0 or self.visible_text.items.len == 0) return;
+/// Extract the trimmed text spanned by visible screen rows r0..r1 (inclusive,
+/// 0-based) from the current per-frame snapshot. Returns null for an empty,
+/// out-of-range, or whitespace-only selection. Pure — no ctx/clipboard, so it is
+/// unit-testable without a terminal (#85).
+pub fn selectionText(self: *Model, a: std.mem.Allocator, r0: usize, r1: usize) ?[]const u8 {
+    if (self.view_rows == 0 or self.visible_text.items.len == 0) return null;
     const lo = @min(r0, r1);
     var hi = @max(r0, r1);
-    if (lo >= self.view_rows) return; // selection started below the conversation
+    if (lo >= self.view_rows) return null; // selection started below the conversation
     if (hi >= self.view_rows) hi = self.view_rows - 1;
     if (hi >= self.visible_text.items.len) hi = self.visible_text.items.len - 1;
 
-    var buf = std.array_list.Managed(u8).init(self.alloc);
+    var buf = std.array_list.Managed(u8).init(a);
     defer buf.deinit();
     var r = lo;
     while (r <= hi) : (r += 1) {
         const ln = std.mem.trimEnd(u8, self.visible_text.items[r], " \t");
-        buf.appendSlice(ln) catch return;
-        if (r != hi) buf.append('\n') catch return;
+        buf.appendSlice(ln) catch return null;
+        if (r != hi) buf.append('\n') catch return null;
     }
-    const text = std.mem.trim(u8, buf.items, " \t\r\n");
-    if (text.len == 0) return;
-    _ = ctx.setClipboard(text) catch false;
+    const trimmed = std.mem.trim(u8, buf.items, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return a.dupe(u8, trimmed) catch null;
+}
+
+/// Copy the drag-selected lines (screen rows r0..r1 inclusive, 0-based) to the
+/// clipboard via OSC52 and raise a confirmation toast. Empty selections write
+/// nothing and raise no toast. Restores copy after mouse mode disabled native
+/// terminal selection (#91, #85).
+pub fn copySelection(self: *Model, ctx: *zz.Context, r0: usize, r1: usize) void {
+    const text = self.selectionText(self.alloc, r0, r1) orelse return;
+    defer self.alloc.free(text);
+    const ok = ctx.setClipboard(text) catch false;
     // render() is hash-gated and may skip its flush; push the OSC52 out now.
     if (ctx._terminal) |term| term.flush() catch {};
+    self.toast = if (ok) .copied else .failed;
+    self.toast_until_ms = (ctx.elapsed / std.time.ns_per_ms) + repl.TOAST_MS;
 }
