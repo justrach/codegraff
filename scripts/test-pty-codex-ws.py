@@ -6,19 +6,22 @@ actually served the turn, so a silent fallback cannot fake a pass."""
 
 import json
 import os
+import re
 import sys
 import tempfile
 
 from codex_ws_mock import REPLY_TEXT, CodexMock
-from pty_harness import PtySession
+from pty_harness import PtySession, terminal_text
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
 
 # Mock usage total is 1500; compactTokenCount (src/agent.zig) renders that as
-# "1k" (integer division). contextFor("codex","gpt-5.6-sol") = 372_000, so the
-# prompt meter is 1500*100/372000 = 0% with compact@ 372000/10*8/1000 = 297k.
-METER = "1k/372k ctx (0% · compact@297k)"
+# "1k" (integer division), and 1500 tokens is 0% of any realistic window. The
+# window itself tracks the baked codex catalog (pricing.zig), which moves
+# between releases — so assert the meter SHAPE plus the compactAt invariant
+# (compact = context/10*8, src/provider.zig) instead of a frozen window size.
+METER_RE = re.compile(r"1k/(\d+)k ctx \(0% · compact@(\d+)k\)")
 
 
 def run_scenario(
@@ -65,7 +68,13 @@ def run_scenario(
         cursor = len(session.raw)
         session.send_line("ping")
         session.wait_for_literal(REPLY_TEXT, start=cursor)
-        session.wait_for_literal(METER, start=cursor)
+        session.wait_for(METER_RE, start=cursor)
+        meter = METER_RE.search(terminal_text(bytes(session.raw[cursor:])))
+        ctx_k, compact_k = int(meter.group(1)), int(meter.group(2))
+        if compact_k != ctx_k * 8 // 10:
+            raise AssertionError(
+                f"{label}: meter compact@{compact_k}k is not 80% of {ctx_k}k ctx"
+            )
         if mock.ws_turns != expect_ws or mock.sse_turns != expect_sse:
             raise AssertionError(
                 f"{label}: transport mismatch — ws_turns={mock.ws_turns} "
