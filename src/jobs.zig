@@ -246,7 +246,50 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         return;
     }
 
-    try out.print("unknown worktree command '{s}' — use: graff worktree list | graff worktree merge <name>\n", .{action});
+    if (std.mem.eql(u8, action, "remove") or std.mem.eql(u8, action, "rm")) {
+        if (args.len < 2) {
+            try out.writeAll("usage: graff worktree remove <name>\n");
+            return;
+        }
+        const name = args[1];
+        const wt_path = try std.fmt.allocPrint(arena, ".graff/worktrees/{s}", .{name});
+        const wt_branch = try std.fmt.allocPrint(arena, "worktree-{s}", .{name});
+        // --force: discard any uncommitted scratch work — the whole point of
+        // `remove` is to throw away an abandoned tab (#112).
+        const rm = runCapped(gpa, io, &.{ "git", "worktree", "remove", "--force", wt_path }, 8192, 8192, 30_000) catch {
+            try out.print("✗ could not remove {s} (not a git repository, or no such worktree)\n", .{wt_path});
+            return;
+        };
+        defer {
+            gpa.free(rm.stdout);
+            gpa.free(rm.stderr);
+        }
+        if (!ranOk(rm)) {
+            try out.print("✗ couldn't remove {s}: {s}", .{ wt_path, rm.stderr });
+            return;
+        }
+        // -D (force) so an unmerged scratch branch is still deleted.
+        if (runCapped(gpa, io, &.{ "git", "branch", "-D", wt_branch }, 8192, 8192, 30_000)) |r| {
+            gpa.free(r.stdout);
+            gpa.free(r.stderr);
+        } else |_| {}
+        try out.print("✓ removed {s} and branch {s}\n", .{ wt_path, wt_branch });
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "prune")) {
+        // Drop git's registrations for worktrees whose dirs were deleted out of band.
+        const r = runCapped(gpa, io, &.{ "git", "worktree", "prune" }, 8192, 8192, 30_000) catch {
+            try out.writeAll("not a git repository (nothing to prune)\n");
+            return;
+        };
+        gpa.free(r.stdout);
+        gpa.free(r.stderr);
+        try out.writeAll("✓ pruned stale worktree registrations\n");
+        return;
+    }
+
+    try out.print("unknown worktree command '{s}' — use: graff worktree list | merge <name> | remove <name> | prune\n", .{action});
 }
 
 /// One background bash job (`bash` with run_in_background:true). A pump task
