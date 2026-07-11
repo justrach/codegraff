@@ -156,8 +156,16 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
             var rd_buf: [2]ReadDone = undefined;
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
             rsel.concurrent(.msg, wsReadTask, .{ client, gpa, &fbuf }) catch {
-                _ = client.readMessage(gpa, &fbuf) catch |e| return e; // no spare concurrency
-                break :read;
+                // #56 Fix-B: pool exhausted — mirror the SSE line-read fail-safe. A bare
+                // blocking readMessage can hang forever on a half-open ws with no
+                // watchdog; end the turn as StreamStalled (never a hang, never a user
+                // Esc), exactly as the .deadline arm below does.
+                if (!main_mod.json_mode) if (self.out) |o| {
+                    o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
+                    o.flush() catch {};
+                };
+                if (self.tracer) |tr| tr.note("ws", "stall");
+                return error.StreamStalled;
             };
             rsel.concurrent(.stall, streamStallTask, .{ self.io, orig_tio != null }) catch {
                 const r = rsel.await() catch |e| {

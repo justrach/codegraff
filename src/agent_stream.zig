@@ -261,14 +261,14 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         var hd_buf: [2]HeadDone = undefined;
         var hsel: Io.Select(HeadDone) = .init(self.io, &hd_buf);
         hsel.concurrent(.sent, sendHeadTask, .{ &req, body, &response }) catch {
-            // No spare concurrency: accept the hang risk (existing behavior).
-            req.transfer_encoding = .{ .content_length = body.len };
-            var bw = try req.sendBodyUnflushed(&.{});
-            try bw.writer.writeAll(body);
-            try bw.end();
-            try req.connection.?.flush();
-            response = try req.receiveHead(&.{});
-            break :head;
+            // #56 Fix-B: Io pool exhausted (deep subagent fan-out saturated the
+            // thread pool) — we can't spawn the head-stall watchdog. A bare
+            // send+receiveHead here could hang forever on a half-open socket with
+            // nothing to trip it. Nothing has streamed yet, so fail safe: poison the
+            // connection and return a retryable HungRequest so request() backs off
+            // and redials once a pool slot frees, instead of blocking the turn.
+            if (req.connection) |conn| conn.closing = true;
+            return error.HungRequest;
         };
         hsel.concurrent(.stall, headStallTask, .{ self.io, orig_tio != null }) catch {
             const r = hsel.await() catch |e| {
@@ -342,12 +342,21 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
             var rd_buf: [2]ReadDone = undefined;
             var rsel: Io.Select(ReadDone) = .init(self.io, &rd_buf);
             rsel.concurrent(.line, streamLineTask, .{ reader, &line.writer }) catch {
-                _ = reader.streamDelimiterEnding(&line.writer, '\n') catch |e| {
-                    if (saw_done and readErrIsClose(e)) break :stream; // #134/#135: terminal event already seen — a post-completion close/reset is clean
-                    if (got_body and readErrIsClose(e)) { noteDropped(self); return error.StreamDropped; } // #133: closed before [DONE]/finish_reason — a drop, not a clean end
-                    return e;
-                }; // no spare concurrency
-                break :read;
+                // #56 Fix-B: pool exhausted — no idle-stall watchdog for this read.
+                // A bare blocking streamDelimiterEnding here is the last forever-hang:
+                // on a half-open socket it never returns and nothing can trip it. Fail
+                // safe with the SAME outcome as a watchdog deadline — if the terminal
+                // event already landed the response is complete (clean end); otherwise
+                // flush the partial, poison, and end the turn as StreamStalled (never a
+                // hang, never a mislabeled StreamDropped or user Esc).
+                if (saw_done) break :stream;
+                self.flushStreamTail();
+                if (!main_mod.json_mode) if (self.out) |o| {
+                    o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
+                    o.flush() catch {};
+                };
+                if (req.connection) |conn| conn.closing = true;
+                return error.StreamStalled;
             };
             rsel.concurrent(.stall, streamStallTask, .{ self.io, orig_tio != null }) catch {
                 const r = rsel.await() catch |e| {
