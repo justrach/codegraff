@@ -26,6 +26,7 @@ const provider_mod = @import("provider.zig");
 const Provider = provider_mod.Provider;
 const ReasoningEffort = main_mod.ReasoningEffort;
 
+const ws = @import("ws.zig"); // codex Responses WS transport (delta continuation held across a turn)
 const mcp = @import("mcp.zig");
 const approvals_mod = @import("approvals.zig");
 const trace = @import("trace.zig");
@@ -92,6 +93,12 @@ pub const Agent = struct {
     client: *std.http.Client,
     provider: Provider,
     messages: std.json.Array,
+    // Codex Responses WS delta transport: one WS held across a turn's tool loop,
+    // sending previous_response_id + only the new items instead of the full
+    // history each step. Reset per turn by runTurn via closeCodexWs.
+    codex_ws: ?*ws.WsClient = null,
+    codex_prev_id: ?[]const u8 = null, // last response.id (gpa-owned); null = re-anchor with full input
+    codex_sent_upto: usize = 0, // messages the server already holds; delta = messages[codex_sent_upto..]
     sub: bool,
     label: []const u8,
     out: ?*Io.Writer,
@@ -272,7 +279,24 @@ pub const Agent = struct {
 
     /// Run until the model stops (or, in strict mode, calls
     /// attempt_completion). Returns the final assistant text (arena-owned).
+    /// Close the held codex Responses WS session and reset the delta state. Called
+    /// at both ends of runTurn so each turn gets a fresh connection and re-anchors
+    /// with full input (the server only holds state within one live connection).
+    pub fn closeCodexWs(self: *Agent) void {
+        if (self.codex_ws) |c| {
+            c.deinit(self.gpa);
+            self.codex_ws = null;
+        }
+        if (self.codex_prev_id) |p| {
+            self.gpa.free(p);
+            self.codex_prev_id = null;
+        }
+        self.codex_sent_upto = 0;
+    }
+
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
+        self.closeCodexWs(); // fresh codex WS session per turn
+        defer self.closeCodexWs();
         self.completed = null;
         if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
         while (true) {

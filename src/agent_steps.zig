@@ -66,6 +66,17 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
         }
     }
 
+    // Codex WS delta: the server now holds up to here (the output items appended
+    // above). The NEXT request sends previous_response_id + only what is appended
+    // after this point (the tool results below). Only while the WS session lives.
+    if (self.codex_ws != null) {
+        self.codex_sent_upto = self.messages.items.len;
+        if (response.get("id")) |idv| if (idv == .string and idv.string.len > 0) {
+            if (self.codex_prev_id) |old| self.gpa.free(old);
+            self.codex_prev_id = self.gpa.dupe(u8, idv.string) catch null;
+        };
+    }
+
     if (calls.items.len > 0) {
         const results = try self.runTools(calls.items);
         for (calls.items, results) |call, r| {

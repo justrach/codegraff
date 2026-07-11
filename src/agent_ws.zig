@@ -134,12 +134,20 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     defer self.spinnerStop();
 
     if (self.tracer) |tr| tr.note("ws", "connecting");
-    var client = ws.WsClient.connect(gpa, self.io, url, false, &headers) catch |e| {
-        if (self.tracer) |tr| tr.note("ws", @errorName(e));
-        return e;
-    };
-    defer client.deinit(gpa);
-    if (self.tracer) |tr| tr.note("ws", "connected");
+    // Hold ONE WS across the turn's tool loop (codex-style): the first request
+    // dials; subsequent requests reuse it and send previous_response_id + delta.
+    // The open connection IS the sticky context (no x-codex-turn-state to echo).
+    if (self.codex_ws == null) {
+        self.codex_ws = ws.WsClient.connect(gpa, self.io, url, false, &headers) catch |e| {
+            if (self.tracer) |tr| tr.note("ws", @errorName(e));
+            return e;
+        };
+        if (self.tracer) |tr| tr.note("ws", "connected");
+    } else if (self.tracer) |tr| tr.note("ws", "reuse (delta)");
+    const client = self.codex_ws.?;
+    // Any error → close + reset the session so the next request re-anchors (fresh
+    // WS full history, or SSE fallback via postLive's ws_off path). Never leaks.
+    errdefer self.closeCodexWs();
     try client.sendText(frame);
 
     var full: Io.Writer.Allocating = .init(gpa);
@@ -194,6 +202,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
             }
         }
         if (fbuf.items.len == 0) continue :stream;
+
         // Wrap the ws frame as an SSE data: line so parseResponses/isStreamEnd
         // (shared with the SSE path) handle reassembly + completion.
         try full.writer.writeAll("data: ");
