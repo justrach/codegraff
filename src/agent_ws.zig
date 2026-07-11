@@ -44,6 +44,27 @@ pub fn wsEligible(self: *Agent) bool {
         self.provider.kind == .responses and self.out != null and !self.stream_quiet;
 }
 
+/// (#codex-ws) Client-side idle limit on the held codex WS, opencode's
+/// OpenAIWebSocketPool design: never reuse a socket the server may already
+/// have killed. A real trace showed the backend closing ours somewhere
+/// within 8.5 min idle (user parked on an ask_user prompt) — 4 min stays
+/// comfortably under (opencode uses 5). Overridable via
+/// GRAFF_CODEX_WS_IDLE_SECS (parsed in session_run.zig beside the other
+/// codex transport knobs).
+pub var codex_ws_idle_ms: i64 = 4 * std.time.ms_per_min;
+
+/// (#codex-ws) The idle-reanchor decision, pure so the regression test can
+/// exercise it without a socket: has the held WS sat unused past the limit?
+pub fn codexWsIdleExpired(now_ms: i64, used_ms: i64) bool {
+    return now_ms - used_ms > codex_ws_idle_ms;
+}
+
+/// The .awake monotonic clock in ms — same time source as request()'s
+/// latency measurement, so codex_ws_used_ms compares consistently.
+fn nowAwakeMs(io: Io) i64 {
+    return @intCast(@divTrunc(Io.Timestamp.now(io, .awake).nanoseconds, std.time.ns_per_ms));
+}
+
 /// Transport selector: try ws for eligible codex turns, else SSE (postStream).
 /// A ws transport/handshake failure disables ws for the session and falls back
 /// to SSE; a deliberate Esc/stall propagates unchanged.
@@ -70,6 +91,21 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
     if (!wsEligible(self)) return if (self.ws_off) postStreamFresh(self, body) else self.postStream(body);
     return postResponsesWs(self, body) catch |e| {
         if (e == error.Interrupted or e == error.StreamStalled) return e;
+        // (#codex-ws) A delta body carries previous_response_id + only the new
+        // messages, anchored to the WS session that just died — the codex HTTP
+        // endpoint rejects previous_response_id outright ("Unsupported
+        // parameter"), and even if it didn't, the referenced response died with
+        // the socket. Never replay it over SSE. closeCodexWs's errdefer inside
+        // postResponsesWs already reset codex_ws/codex_prev_id/codex_sent_upto by
+        // the time we get here; call it again defensively (idempotent) so a
+        // rebuilt body definitely carries full input with no prior-id, and ask
+        // request() to rebuild + retry (a fresh WS re-anchors with full history)
+        // instead of falling back to a stale SSE replay.
+        if (std.mem.indexOf(u8, body, "\"previous_response_id\"") != null) {
+            self.closeCodexWs();
+            if (self.tracer) |tr| tr.note("ws", "reuse failed — re-anchoring with full input");
+            return error.CodexWsReanchor;
+        }
         self.ws_off = true;
         if (self.tracer) |tr| tr.note("ws", "transport error — falling back to fresh-client SSE for this session");
         return postStreamFresh(self, body);
@@ -134,6 +170,22 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     defer self.spinnerStop();
 
     if (self.tracer) |tr| tr.note("ws", "connecting");
+    // (#codex-ws) Preemptive idle re-anchor: don't reuse a WS the server has
+    // likely already killed (it closes idle sockets well before our reuse in a
+    // real trace) — that costs a failed round trip before the reactive
+    // CodexWsReanchor path kicks in. Close it up front instead. Subtlety: the
+    // body was already built while codex_ws was non-null, so a DELTA body
+    // (previous_response_id + partial input) is useless on a fresh connection —
+    // return error.CodexWsReanchor so request()'s rebuild: loop rebuilds full
+    // input. A non-delta body is self-contained: just fall through and dial.
+    if (self.codex_ws != null and codexWsIdleExpired(nowAwakeMs(self.io), self.codex_ws_used_ms)) {
+        self.closeCodexWs();
+        if (self.tracer) |tr| {
+            var nbuf: [64]u8 = undefined;
+            tr.note("ws", std.fmt.bufPrint(&nbuf, "idle > {d}s — re-anchoring with fresh connection", .{@divTrunc(codex_ws_idle_ms, std.time.ms_per_s)}) catch "idle — re-anchoring with fresh connection");
+        }
+        if (std.mem.indexOf(u8, body, "\"previous_response_id\"") != null) return error.CodexWsReanchor;
+    }
     // Hold ONE WS across the turn's tool loop (codex-style): the first request
     // dials; subsequent requests reuse it and send previous_response_id + delta.
     // The open connection IS the sticky context (no x-codex-turn-state to echo).
@@ -142,6 +194,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
             if (self.tracer) |tr| tr.note("ws", @errorName(e));
             return e;
         };
+        self.codex_ws_used_ms = nowAwakeMs(self.io); // fresh socket = fresh idle window (#codex-ws)
         if (self.tracer) |tr| tr.note("ws", "connected");
     } else if (self.tracer) |tr| tr.note("ws", "reuse (delta)");
     const client = self.codex_ws.?;
@@ -215,6 +268,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         }
         if (orig_tio != null and escPressed(true)) return error.Interrupted;
     }
+    self.codex_ws_used_ms = nowAwakeMs(self.io); // completed turn — restart the idle window (#codex-ws)
     return full.toOwnedSlice();
 }
 

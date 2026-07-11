@@ -92,7 +92,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     // #124: reclaim last request's transient parse garbage. Safe: all scratch data
     // is consumed within a request(); messages/todos/prompts live on the session arena.
     if (self.scratch_arena) |sa| _ = sa.reset(.retain_capacity);
-    while (true) {
+    rebuild: while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
         self.streamed_text = false;
         self.streamed_args = .none;
@@ -143,6 +143,11 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                         if (self.tracer) |tr| tr.note("stream_dropped", self.last_api_error.?);
                         return error.StreamDropped;
                     }
+                    // (#codex-ws) postLive already closed the dead WS session —
+                    // rebuild (full input, no previous_response_id) + retry via
+                    // a fresh WS instead of replaying the stale delta over SSE.
+                    // codex_prev_id is now null, so this can't recur this request.
+                    if (err == error.CodexWsReanchor) continue :rebuild;
                     // 429/5xx: the server asked us to back off — wait
                     // (1s·2ⁿ, capped at 8s; Esc cancels) and allow a few
                     // more attempts than a plain transport flake gets.
@@ -207,6 +212,17 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     return obj;
                 },
                 .err => |msg| {
+                    // (#codex-ws) Belt-and-braces mirror of openai/codex: server
+                    // rejected previous_response_id (stale WS session it no
+                    // longer recognizes) — close it and retry once with full
+                    // input. Gated on codex_prev_id != null (a delta was
+                    // actually sent); it's null after the retry, so this can't
+                    // loop for this request.
+                    if (self.codex_prev_id != null and std.mem.indexOf(u8, msg, "previous_response_id") != null) {
+                        self.closeCodexWs();
+                        if (self.tracer) |tr| tr.note("ws", "server rejected previous_response_id — re-anchoring with full input");
+                        continue :rebuild;
+                    }
                     if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("codex api error: {s}", .{msg});
                     return error.ApiError;

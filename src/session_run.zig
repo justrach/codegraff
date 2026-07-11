@@ -30,6 +30,7 @@ const approvals_mod = @import("approvals.zig");
 const tools_mod = @import("tools.zig");
 const http = @import("http.zig");
 const ws = @import("ws.zig");
+const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
 const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const pricing = @import("pricing.zig");
@@ -357,6 +358,15 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     // be silently overwritten here, since setupSkillsAndTheme runs later.
     if (environ_map.get("GRAFF_CODEX_WS")) |v| {
         main_mod.g_codex_ws = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
+    }
+    // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
+    // (default 4 min — the backend killed ours within 8.5 min idle; opencode
+    // pools at 5). Mirrors GRAFF_STREAM_STALL_SECS above: seconds, ignored if
+    // unparseable or 0, clamped to <=1 day.
+    if (environ_map.get("GRAFF_CODEX_WS_IDLE_SECS")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
+            if (secs > 0) agent_ws.codex_ws_idle_ms = @intCast(@min(secs, 86_400) * 1000);
+        } else |_| {}
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
     // GRAFF_WS_FORCE_FAIL_ONCE=1|true|on|yes arms the one-shot forced WS
