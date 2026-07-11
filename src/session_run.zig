@@ -350,13 +350,21 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
             if (secs > 0) http.stream_stall_ms = @min(secs, 86_400) * 1000; // clamp: <=1 day, no u64 overflow
         } else |_| {}
     }
-    // #codex-ws: GRAFF_CODEX_WS=off|0|false|no forces the SSE transport for
-    // codex; GRAFF_WS_DEBUG=1 dumps the ws handshake + frames to stderr.
+    // #codex-ws: GRAFF_CODEX_WS=off|0|false|no (case-insensitive, the
+    // GRAFF_FLEET predicate) forces the SSE transport for codex;
+    // GRAFF_WS_DEBUG=1 dumps the ws handshake + frames to stderr. This is the
+    // SOLE parse site for the codex transport knobs — a copy in main() would
+    // be silently overwritten here, since setupSkillsAndTheme runs later.
     if (environ_map.get("GRAFF_CODEX_WS")) |v| {
-        main_mod.g_codex_ws = !(std.mem.eql(u8, v, "off") or std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "false") or std.mem.eql(u8, v, "no"));
+        main_mod.g_codex_ws = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
-    ws.g_force_connect_failure_once = environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE") != null;
+    // GRAFF_WS_FORCE_FAIL_ONCE=1|true|on|yes arms the one-shot forced WS
+    // connect failure (integration-test seam for the SSE fallback + ws_off
+    // latch). Only affirmative values arm it — =0 must leave it disarmed.
+    if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {
+        ws.g_force_connect_failure_once = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+    }
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
