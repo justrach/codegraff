@@ -172,6 +172,10 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                             // (#86). 250ms·2ⁿ, capped at 4s over 6 tries; Esc cancels.
                             const delay_ms = RetryPlan.delayMs(throttled, attempt);
                             try self.say("[network error: {t} — retrying in {d}ms ({d}/{d})]\n", .{ err, delay_ms, attempt + 1, max_attempts });
+                            // Same trace breadcrumb the 429/5xx branch leaves: a
+                            // transport-flake retry is otherwise invisible in the
+                            // session trace, hiding how flaky a provider really is.
+                            if (self.tracer) |tr| tr.note("retry", @errorName(err));
                             self.sleepInterruptible(delay_ms) catch return error.Interrupted;
                         }
                         continue;
