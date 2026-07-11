@@ -483,14 +483,61 @@ fn plainInline(a: std.mem.Allocator, line: []const u8) ![]const u8 {
     return out.items;
 }
 
+/// Display columns for one codepoint (wcwidth-style, #142): 0 for combining /
+/// zero-width marks, 2 for East-Asian wide + emoji, 1 otherwise. Approximate —
+/// covers the ranges that misalign TUI table borders (CJK, Hangul, kana,
+/// fullwidth forms, common emoji planes). Emoji-presentation via a VS16 (U+FE0F)
+/// on a text-default base is not width-promoted. ASCII/Latin-1 skip the table.
+fn codepointWidth(cp: u21) usize {
+    if (cp < 0x300) return 1; // ASCII + Latin-1 (control bytes stay 1, as before)
+    if ((cp >= 0x300 and cp <= 0x36F) or // combining diacritical marks
+        (cp >= 0x200B and cp <= 0x200F) or // ZWSP..RLM
+        (cp >= 0xFE00 and cp <= 0xFE0F) or // variation selectors
+        cp == 0xFEFF) return 0; // BOM / ZWNBSP
+    if ((cp >= 0x1100 and cp <= 0x115F) or // Hangul Jamo
+        (cp >= 0x2E80 and cp <= 0x303E) or // CJK radicals .. symbols
+        (cp >= 0x3041 and cp <= 0x33FF) or // kana .. CJK compat
+        (cp >= 0x3400 and cp <= 0x4DBF) or // CJK ext A
+        (cp >= 0x4E00 and cp <= 0x9FFF) or // CJK unified
+        (cp >= 0xA000 and cp <= 0xA4CF) or // Yi
+        (cp >= 0xAC00 and cp <= 0xD7A3) or // Hangul syllables
+        (cp >= 0xF900 and cp <= 0xFAFF) or // CJK compat ideographs
+        (cp >= 0xFE30 and cp <= 0xFE4F) or // CJK compat forms
+        (cp >= 0xFF00 and cp <= 0xFF60) or // fullwidth forms
+        (cp >= 0xFFE0 and cp <= 0xFFE6) or // fullwidth signs
+        (cp >= 0x1F000 and cp <= 0x1F02F) or // mahjong tiles
+        (cp >= 0x1F0A0 and cp <= 0x1F0FF) or // playing cards
+        (cp >= 0x1F100 and cp <= 0x1F1FF) or // enclosed alphanumeric / regional
+        (cp >= 0x1F300 and cp <= 0x1FAFF) or // emoji & pictographs
+        (cp >= 0x20000 and cp <= 0x3FFFD)) return 2; // CJK ext B+
+    return 1;
+}
+
 fn dispWidth(s: []const u8) usize {
     var n: usize = 0;
     var i: usize = 0;
     while (i < s.len) {
-        i += std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-        n += 1;
+        const len = std.unicode.utf8ByteSequenceLength(s[i]) catch {
+            i += 1;
+            n += 1;
+            continue;
+        };
+        const end = @min(i + len, s.len);
+        n += if (std.unicode.utf8Decode(s[i..end])) |cp| codepointWidth(cp) else |_| 1;
+        i = end;
     }
     return n;
+}
+
+test "dispWidth: East-Asian wide, combining, emoji (#142)" {
+    try std.testing.expectEqual(@as(usize, 5), dispWidth("hello"));
+    try std.testing.expectEqual(@as(usize, 4), dispWidth("\u{4F60}\u{597D}")); // CJK x2 -> 4 cols
+    try std.testing.expectEqual(@as(usize, 2), dispWidth("\u{3042}")); // hiragana wide
+    try std.testing.expectEqual(@as(usize, 1), dispWidth("\u{00E9}")); // precomposed e-acute -> 1
+    try std.testing.expectEqual(@as(usize, 1), dispWidth("e\u{0301}")); // e + combining acute -> 1
+    try std.testing.expectEqual(@as(usize, 2), dispWidth("\u{1F600}")); // emoji -> 2
+    try std.testing.expectEqual(@as(usize, 0), dispWidth("\u{200B}")); // ZWSP -> 0
+    try std.testing.expectEqual(@as(usize, 2), dispWidth("\u{FF21}")); // fullwidth A -> 2
 }
 
 /// Word-wrap `s` to `w` display columns; words longer than `w` hard-split at
@@ -509,10 +556,13 @@ fn wrapCell(a: std.mem.Allocator, s: []const u8, w: usize) ![]const []const u8 {
                 cur_w = 0;
             }
             var bytes: usize = 0;
-            var cnt: usize = 0;
-            while (cnt < w and bytes < rem.len) {
-                bytes += std.unicode.utf8ByteSequenceLength(rem[bytes]) catch 1;
-                cnt += 1;
+            var cw: usize = 0;
+            while (bytes < rem.len) {
+                const clen = @min(std.unicode.utf8ByteSequenceLength(rem[bytes]) catch 1, rem.len - bytes);
+                const cpw = if (std.unicode.utf8Decode(rem[bytes .. bytes + clen])) |cp| codepointWidth(cp) else |_| 1;
+                if (cw + cpw > w and bytes > 0) break; // stop before overflowing the column (>=1 char guaranteed)
+                bytes += clen;
+                cw += cpw;
             }
             try lines.append(try a.dupe(u8, rem[0..bytes]));
             rem = rem[bytes..];
