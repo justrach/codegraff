@@ -475,6 +475,13 @@ pub fn run(ctx: *Ctx) !void {
         ctx.root.tool_calls_this_turn = 0;
         ctx.root.seen_tool_keys.clearRetainingCapacity();
         if (main_mod.json_mode) ctx.root.emit(.{ .type = "started", .provider = ctx.root.provider.id, .model = ctx.root.provider.model });
+        // Breathing room between the submitted input and the turn's first
+        // output — without it the reply starts on the very next line and
+        // reads as a continuation of what the user typed.
+        if (ctx.interactive and !main_mod.json_mode) {
+            try ctx.out.writeAll("\n");
+            try ctx.out.flush();
+        }
         const turn_started = Io.Timestamp.now(ctx.io, .awake);
         // A failed turn must never kill the session: ApiError is already
         // reported inside request(); anything else is surfaced here. Either
