@@ -207,8 +207,10 @@ export class RemoteHarness {
   appendSystemPrompt(text: string): Promise<void> { return this.setSystemPrompt(text, true); }
 
   /** Record an evaluation score in the server-side trajectory archive —
-   *  same semantics as the stdio SDK's `score()`. */
-  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string): Promise<void> {
+   *  same semantics as the stdio SDK's `score()`, including the optional
+   *  `scale` ("unit" | "percent") override of the harness's
+   *  value-normalization heuristic. */
+  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string, scale?: "unit" | "percent"): Promise<void> {
     const sha = HEX16.test(promptOrSha) ? promptOrSha : await promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : HEX16.test(parent) ? parent : await promptFingerprint(parent);
@@ -216,7 +218,7 @@ export class RemoteHarness {
     // champion for the role; the remote harness reads it from the request and
     // tags its own score/submit. (Genome capture rides the harness process,
     // which holds the persona text the remote bridge only references by sha.)
-    for await (const ev of this.send({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche })) {
+    for await (const ev of this.send({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale })) {
       if (ev.type === "error") throw new Error(ev.message);
       if (ev.type === "score") return;
     }

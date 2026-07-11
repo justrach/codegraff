@@ -91,7 +91,15 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
     // real eval-driven work — only darwincode/JSON-proto runs ever submitted.
     if (combined) |s| {
         if (improved and s > 0) { // s>0: skip the initial-state / total-failure 0 (don't pollute the cell mean)
-            if (telemetry.g_telem) |t| {
+            if (s > 100) {
+                // Review F8: parseEvalScore does NOT bound its result (a stray
+                // "score: 9000" line parses as 9000) — an out-of-[0,100] score
+                // must never be signed or submitted. Skip the score AND its
+                // paired propose/submit, mirroring mainloop /score's explicit
+                // rejection, so the submit counter stays in sync with stored
+                // scores. The local eval verdict below still shows the number.
+                if (self.tracer) |tr| tr.note("fleet", "score skipped: eval score outside [0,100]");
+            } else if (telemetry.g_telem) |t| {
                 const sys = self.systemPrompt();
                 const genome_fp = promptFingerprint(sys);
                 const esh_fp = promptFingerprint(cmd);
@@ -102,19 +110,36 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
                 // --niche tags this score's cell. Without it the score lands in the
                 // anonymous "" niche, which pullElites can never match to a builtin —
                 // so an eval session that wants to grow a champion must name its role.
-                const niche = self.eval_niche;
+                // Truncated to 64 chars and sanitized (tab/newline/CR → ' ', review
+                // F7) BEFORE signing (fleetEvent's own niche cap, same as mainloop
+                // /score) so signed bytes equal ingested bytes.
+                var niche_buf: [64]u8 = undefined;
+                const niche = scoring.sanitizeMetaField(&niche_buf, utf8Prefix(self.eval_niche, 64));
                 // Genome-send (graff-dgm.md §B): the eval genome is this agent's own
                 // persona, never spawned via runSub, so its prompt_text never reached
                 // the worker. A cell only promotes when harness_scores joins to a
                 // harness_genomes row, so ride the genome text over on a `propose`
                 // (deduped by prompt_sha) before the score — else a winning eval cell
                 // has nothing to serve. Gated on a niche: a "" cell is unpromotable.
-                if (niche.len > 0) t.fleetEvent("propose", niche, genome, "", pclass, "", 0, sys);
-                const sig = signScore(genome, "", s, run_id, "", "", esh);
+                // Oversized genomes skip the propose (review F6): the server verifies
+                // the fingerprint over the carried text, so a truncated genome would
+                // be dropped there anyway.
+                if (niche.len > 0) {
+                    if (sys.len <= telemetry.Telemetry.max_propose_text)
+                        t.fleetEvent("propose", niche, genome, "", pclass, "", 0, sys)
+                    else if (self.tracer) |tr| tr.note("fleet", "propose skipped: genome > 64KB");
+                }
+                // SCORE SCALE CONTRACT (issue #168 Gap 4): local UX stays
+                // 0-100 (the /100 verdicts below, eval_best, eval_target),
+                // but every score that leaves the client is [0,1] — divide at
+                // the emission boundary; s01 is what gets signed (v2: niche +
+                // provider_class in the envelope) and sent.
+                const s01 = s / 100.0;
+                const sig = signScore(genome, "", s01, run_id, "", "", esh, niche, pclass);
                 const sig_s: []const u8 = if (scoring.g_score_key != null) &sig else "";
                 var provbuf: [512]u8 = undefined;
                 const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche }) catch "";
-                t.scoreEvent(genome, "", s, run_id, sig_s, prov);
+                t.scoreEvent(genome, "", s01, run_id, sig_s, prov);
                 t.fleetEvent("submit", niche, genome, "", pclass, esh, 0, "");
             }
         }

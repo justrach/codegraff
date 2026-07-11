@@ -21,6 +21,10 @@ const util = @import("util.zig");
 const utf8Prefix = util.utf8Prefix;
 const unixMs = util.unixMs;
 
+// For the session run id (score/run join key) and the propose-site
+// fingerprint check. No cycle: scoring imports only std + pricing.
+const scoring = @import("scoring.zig");
+
 const root = @import("main.zig");
 const harness_version = root.harness_version;
 
@@ -180,11 +184,23 @@ pub const Telemetry = struct {
             const pdup = if (parent.len > 0) self.gpa.dupe(u8, parent[0..@min(parent.len, 32)]) catch "" else "";
             const rdup = if (run_id.len > 0) self.gpa.dupe(u8, run_id[0..@min(run_id.len, 64)]) catch "" else "";
             const sdup = if (sig.len > 0) self.gpa.dupe(u8, sig[0..@min(sig.len, 64)]) catch "" else "";
-            const vdup = if (prov.len > 0) self.gpa.dupe(u8, utf8Prefix(prov, 256)) catch "" else "";
+            // 320, not 256: a max-length prov (64+64+64 signed Step-0 fields +
+            // pclass + a 64-char niche + 4 tabs = 268) must never truncate —
+            // niche/provider_class are folded into the v2 HMAC (issue #168
+            // Gap 2), so a clipped niche would break signature verification.
+            const vdup = if (prov.len > 0) self.gpa.dupe(u8, utf8Prefix(prov, 320)) catch "" else "";
             self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "score", .detail = dup, .extra = pdup, .run_id = rdup, .sig = sdup, .prov = vdup, .score = value });
         }
         self.maybeFlushEvents();
     }
+
+    /// Full-genome cap for a fleet:propose (issue #168 review F6): 64 KiB.
+    /// The backend validates a propose by recomputing the fingerprint over
+    /// the carried prompt_text, so a truncated genome never matches its
+    /// claimed prompt_sha and is dropped server-side — never send one.
+    /// Personas over the cap skip the propose entirely; call sites holding a
+    /// tracer note the skip ("propose skipped: genome > 64KB").
+    pub const max_propose_text = 64 * 1024;
 
     /// Record a federated-fleet signal (docs/hyperagents.md §9): propose /
     /// submit / elite_pull. body="fleet" with a kind attr, mirroring the SDK
@@ -192,6 +208,20 @@ pub const Telemetry = struct {
     /// static literal; the rest are duped/truncated like scoreEvent.
     pub fn fleetEvent(self: *Telemetry, signal: []const u8, niche: []const u8, prompt_sha: []const u8, parent_sha: []const u8, provider_class: []const u8, eval_set_hash: []const u8, n_elites: i64, prompt_text: []const u8) void {
         if (!self.on() or !root.g_fleet) return;
+        // Review F6: never ship a truncated genome — skip the propose instead
+        // (the fingerprint the scores reference stays computed over the full
+        // text; only the genome-send is dropped).
+        if (std.mem.eql(u8, signal, "propose") and prompt_text.len > max_propose_text) return;
+        // Propose-site integrity (issue #168 Gap 3, debug builds only): the
+        // genome text must hash to the fingerprint it claims — a promoted
+        // cell would otherwise serve text that never earned its scores. This
+        // asserts on exactly what will be sent: oversized proposes returned
+        // above, so the utf8Prefix cap below can no longer truncate a genome.
+        // The backend independently recomputes and rejects mismatches.
+        if (builtin.mode == .Debug and std.mem.eql(u8, signal, "propose") and prompt_text.len > 0 and prompt_sha.len > 0) {
+            const fp = scoring.promptFingerprint(prompt_text);
+            std.debug.assert(std.mem.eql(u8, &fp, prompt_sha));
+        }
         {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
@@ -203,7 +233,7 @@ pub const Telemetry = struct {
                 self.gpa.dupe(u8, std.fmt.bufPrint(&pbuf, "{s}\t{s}", .{ provider_class, eval_set_hash }) catch "") catch ""
             else
                 "";
-            const dtext = if (prompt_text.len > 0) self.gpa.dupe(u8, utf8Prefix(prompt_text, 8192)) catch "" else "";
+            const dtext = if (prompt_text.len > 0) self.gpa.dupe(u8, utf8Prefix(prompt_text, max_propose_text)) catch "" else "";
             self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "fleet", .kind = signal, .detail = ddet, .extra = dnic, .run_id = dpar, .prov = provdup, .tasks = n_elites, .text = dtext });
         }
         self.maybeFlushEvents();
@@ -219,12 +249,17 @@ pub const Telemetry = struct {
             defer self.mutex.unlock(self.io);
             const dsha = self.gpa.dupe(u8, sha[0..@min(sha.len, 32)]) catch "";
             const dtools = if (tools.len > 0) self.gpa.dupe(u8, utf8Prefix(tools, 600)) catch "" else "";
+            // Session run id (issue #168 Gap 6): stamp the same run_id score
+            // records carry so operational outcome (duration/tools/success)
+            // and evaluation fitness share a stable join key per execution.
+            const drun = self.gpa.dupe(u8, &scoring.g_run_id) catch "";
             self.push(.{
                 .t_ms = self.elapsedMsLocked(),
                 .body = "run",
                 .kind = if (variant) "variant" else "default",
                 .detail = dsha,
                 .extra = dtools,
+                .run_id = drun,
                 .ms = ms,
                 .flag = ok,
             });
@@ -449,6 +484,9 @@ pub const Telemetry = struct {
                 try attr(&s, "variant", .{ .int = @intFromBool(std.mem.eql(u8, e.kind, "variant")) });
                 try attr(&s, "ok", .{ .int = @intFromBool(e.flag) });
                 try attr(&s, "duration_ms", .{ .int = e.ms });
+                // Session run id (issue #168 Gap 6): the same run_id score
+                // records carry, so outcome and fitness rows join per execution.
+                if (e.run_id.len > 0) try attr(&s, "run_id", .{ .str = e.run_id });
                 if (e.extra.len > 0) try attr(&s, "tools", .{ .str = e.extra });
             } else if (std.mem.eql(u8, e.body, "fleet")) {
                 try attr(&s, "kind", .{ .str = e.kind });
@@ -579,4 +617,34 @@ test "telemetry writeOtlp emits a fleet record with kind + split prov attrs" {
     try std.testing.expect(std.mem.indexOf(u8, out, "parent_sha") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"frontier\"") != null); // provider_class (split from prov)
     try std.testing.expect(std.mem.indexOf(u8, out, "\"a9134381\"") != null); // eval_set_hash (split from prov)
+}
+test "telemetry writeOtlp stamps run records with run_id (issue #168 Gap 6)" {
+    var t: Telemetry = .{
+        .io = undefined, // writeOtlp(.., include_summary=false) never touches io
+        .gpa = std.testing.allocator,
+        .endpoint = "x",
+        .install_id = @splat('0'),
+        .client_name = "harness",
+        .sdk_install_id = "",
+        .start = undefined,
+        .start_unix_ms = 0,
+    };
+    const events = [_]Telemetry.Event{.{
+        .t_ms = 0,
+        .body = "run",
+        .kind = "default",
+        .detail = "abcd1234", // prompt_sha
+        .extra = "read,edit", // tools
+        .run_id = "cafef00dcafef00d",
+        .ms = 42,
+        .flag = true,
+    }};
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try t.writeOtlp(&aw.writer, &events, false);
+    const out = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"stringValue\":\"run\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "run_id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"cafef00dcafef00d\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"read,edit\"") != null); // tools
 }

@@ -218,12 +218,15 @@ through it. So Step 0 authenticates the channel; it's the precondition for
 
 **What's signed.** Each score record carries `sig = HMAC-SHA256(key, msg)`
 where `msg` is the canonical, version-tagged, newline-joined tuple
-`v1\n{prompt_sha}\n{parent_sha}\n{score:.6f}\n{run_id}\n{judge_id}\n{artifact_sha}\n{eval_set_hash}`
+`v2\n{prompt_sha}\n{parent_sha}\n{score:.6f}\n{run_id}\n{judge_id}\n{artifact_sha}\n{eval_set_hash}\n{niche}\n{provider_class}`
 (score fixed to 6 decimals so Zig/Python/JS agree byte-for-byte —
-`src/main.zig scoreSigMessage`, `harness_sdk.score_signature`, the worker's
+`src/scoring.zig scoreSigMessage`, `harness_sdk.score_signature`, the worker's
 `scoreSignature`). Records gain `run_id` (per-session), `judge_id`,
 `artifact_sha`, `eval_set_hash` so the evaluator, the artifact it judged,
-and the held-out eval are all bound into the signature.
+and the held-out eval are all bound into the signature; v2 (issue #168 Gap 2)
+additionally binds `niche` and `provider_class` so a score can't be replayed
+into another MAP-Elites cell. Verifiers still accept the legacy `v1` envelope
+(the same tuple without the last two fields) during the transition window.
 
 **Key custody.** `GRAFF_SCORE_KEY_FILE` names a key file *outside* cwd. The
 env var holds only the path; the file is unreadable by the evolving
