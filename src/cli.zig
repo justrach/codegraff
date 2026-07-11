@@ -45,6 +45,8 @@ pub const usage_text =
     \\  graff mcp                         list configured MCP servers
     \\  graff worktree list              list the per-tab worktrees created by -w
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
+    \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
+    \\  graff worktree prune             drop git registrations for worktrees whose dirs were deleted
     \\  graff sandboxes                  list your gateway sandboxes (what's burning credits)
     \\  graff sandboxes stop <id>        spin a sandbox down (stops it + settles the meter)
     \\  graff cube new                   spin up a cloud graff (sandbox + serve + preview URL)
