@@ -301,7 +301,7 @@ pub fn postWatched(gpa: Allocator, io: Io, client: *std.http.Client, provider: P
     var done_buf: [2]Done = undefined;
     var sel: Io.Select(Done) = .init(io, &done_buf);
     sel.concurrent(.posted, postTask, .{ gpa, client, provider, body }) catch
-        return post(gpa, client, provider, body); // no concurrency: accept the hang risk
+        return error.HungRequest; // #56 Fix-B: pool exhausted — don't fall back to a bare blocking post() that can hang a subagent turn with no Esc path; return retryable so request() retries + backs off
     sel.concurrent(.watchdog, postWatchdog, .{io}) catch {
         const r = sel.await() catch |e| { // posted is the only arm
             sel.cancelDiscard();
