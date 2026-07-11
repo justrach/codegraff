@@ -298,7 +298,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     auth_refreshed = true;
                     // #124: dupe off the scratch refresh internals — the key must
                     // survive every later request of the session.
-                    self.provider.api_key = self.arena.dupe(u8, fresh) catch fresh;
+                    self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
                     if (self.tracer) |tr| tr.note("oauth_refresh", "auth error — refreshed login token, retrying");
                     continue;
                 }
