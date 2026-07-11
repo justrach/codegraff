@@ -18,6 +18,7 @@ const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
 
 const messages_mod = @import("messages.zig");
+const util = @import("util.zig");
 const toolResultMessage = messages_mod.toolResultMessage;
 
 // ssePayload/sseIndex live in agent_stream.zig; reached through the Agent
@@ -61,7 +62,7 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
             const input: Value = if (args.len == 0)
                 .{ .object = .empty }
             else
-                std.json.parseFromSliceLeaky(Value, self.arena, args, .{ .allocate = .alloc_always }) catch .{ .object = .empty };
+                std.json.parseFromSliceLeaky(Value, self.scratchAlloc(), args, .{ .allocate = .alloc_always }) catch .{ .object = .empty }; // #124: execution-only, same contract as the openai site below
             try calls.append(self.gpa, .{ .id = call_id, .name = name, .input = input });
         }
     }
@@ -176,7 +177,7 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
             const input: Value = if (args_str.len == 0)
                 .{ .object = .empty }
             else
-                (std.json.parseFromSliceLeaky(Value, self.arena, args_str, .{ .allocate = .alloc_always }) catch .{ .object = .empty });
+                (std.json.parseFromSliceLeaky(Value, self.scratchAlloc(), args_str, .{ .allocate = .alloc_always }) catch .{ .object = .empty }); // #124: execution-only — every consumer (runTools, gate prompts, emits) finishes before the next request()'s scratch reset; the history message carries the arguments STRING, not this tree
             const name = if (function.object.get("name")) |n| (if (n == .string) n.string else "") else "";
             if (name.len == 0) continue; // can't dispatch a nameless call
             const id = if (tc.object.get("id")) |x| (if (x == .string) x.string else "") else "";
@@ -231,6 +232,13 @@ const BlockAcc = struct {
 /// via content_block_delta (text / partial_json / thinking / signature);
 /// message_delta carries stop_reason and output-token usage.
 pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
+    // #124 slice 2b: the whole assembly — per-event parse trees, delta
+    // accumulators, the stitched message — lives on the per-request scratch
+    // arena; the finished message is deep-copied onto the session arena once
+    // at return (it becomes the assistant history message, so it must survive
+    // the next request's scratch reset). Previously every event's parse tree
+    // landed on the session arena for the life of the process.
+    const scratch = self.scratchAlloc();
     var root: ?std.json.ObjectMap = null;
     var blocks: std.ArrayList(BlockAcc) = .empty;
     var stop_reason: ?Value = null;
@@ -238,7 +246,7 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     var it = std.mem.tokenizeScalar(u8, body, '\n');
     while (it.next()) |raw_line| {
         const payload = ssePayload(raw_line) orelse continue;
-        const v = std.json.parseFromSliceLeaky(Value, self.arena, payload, .{ .allocate = .alloc_always }) catch continue; // #124: MUST stay on the session arena — the Anthropic path reuses the parsed message/content_block objects (root=m.object, blocks[i].obj=cb.object) AS the assistant message, so scratch would UAF on the next request's reset
+        const v = std.json.parseFromSliceLeaky(Value, scratch, payload, .{ .allocate = .alloc_always }) catch continue;
         if (v != .object) continue;
         const t = v.object.get("type") orelse continue;
         if (t != .string) continue;
@@ -248,7 +256,7 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
             };
         } else if (std.mem.eql(u8, t.string, "content_block_start")) {
             const idx = sseIndex(v.object) orelse continue;
-            while (blocks.items.len <= idx) try blocks.append(self.arena, .{});
+            while (blocks.items.len <= idx) try blocks.append(scratch, .{});
             if (v.object.get("content_block")) |cb| if (cb == .object) {
                 blocks.items[idx].obj = cb.object;
             };
@@ -258,10 +266,10 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
             const d = v.object.get("delta") orelse continue;
             if (d != .object) continue;
             const b = &blocks.items[idx];
-            if (d.object.get("text")) |x| if (x == .string) try b.text.appendSlice(self.arena, x.string);
-            if (d.object.get("partial_json")) |x| if (x == .string) try b.json.appendSlice(self.arena, x.string);
-            if (d.object.get("thinking")) |x| if (x == .string) try b.thinking.appendSlice(self.arena, x.string);
-            if (d.object.get("signature")) |x| if (x == .string) try b.signature.appendSlice(self.arena, x.string);
+            if (d.object.get("text")) |x| if (x == .string) try b.text.appendSlice(scratch, x.string);
+            if (d.object.get("partial_json")) |x| if (x == .string) try b.json.appendSlice(scratch, x.string);
+            if (d.object.get("thinking")) |x| if (x == .string) try b.thinking.appendSlice(scratch, x.string);
+            if (d.object.get("signature")) |x| if (x == .string) try b.signature.appendSlice(scratch, x.string);
         } else if (std.mem.eql(u8, t.string, "message_delta")) {
             if (v.object.get("delta")) |d| if (d == .object) {
                 if (d.object.get("stop_reason")) |sr| if (sr == .string) {
@@ -273,36 +281,38 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
             };
         } else if (std.mem.eql(u8, t.string, "error")) {
             // Hand the envelope back as the root: request()'s existing
-            // type=="error" check reports it.
-            return v.object;
+            // type=="error" check reports it. Detached from scratch — the
+            // rebuild loop can reset the scratch arena before the message
+            // is done being read.
+            return (try util.dupeJsonValue(self.arena, v)).object;
         }
     }
     var r = root orelse return null;
-    var content = std.json.Array.init(self.arena);
+    var content = std.json.Array.init(scratch);
     for (blocks.items) |*b| {
         if (b.obj.get("type") == null) continue; // never started
-        if (b.text.items.len > 0) try b.obj.put(self.arena, "text", .{ .string = b.text.items });
-        if (b.thinking.items.len > 0) try b.obj.put(self.arena, "thinking", .{ .string = b.thinking.items });
-        if (b.signature.items.len > 0) try b.obj.put(self.arena, "signature", .{ .string = b.signature.items });
+        if (b.text.items.len > 0) try b.obj.put(scratch, "text", .{ .string = b.text.items });
+        if (b.thinking.items.len > 0) try b.obj.put(scratch, "thinking", .{ .string = b.thinking.items });
+        if (b.signature.items.len > 0) try b.obj.put(scratch, "signature", .{ .string = b.signature.items });
         if (b.json.items.len > 0) {
-            const input = std.json.parseFromSliceLeaky(Value, self.arena, b.json.items, .{ .allocate = .alloc_always }) catch Value{ .object = .empty };
-            try b.obj.put(self.arena, "input", input);
+            const input = std.json.parseFromSliceLeaky(Value, scratch, b.json.items, .{ .allocate = .alloc_always }) catch Value{ .object = .empty };
+            try b.obj.put(scratch, "input", input);
         }
         try content.append(.{ .object = b.obj });
     }
-    try r.put(self.arena, "content", .{ .array = content });
-    try r.put(self.arena, "stop_reason", stop_reason orelse Value{ .string = "end_turn" });
+    try r.put(scratch, "content", .{ .array = content });
+    try r.put(scratch, "stop_reason", stop_reason orelse Value{ .string = "end_turn" });
     if (usage_delta) |ud| {
         var usage: std.json.ObjectMap = .empty;
         if (r.get("usage")) |base| if (base == .object) {
             var e = base.object.iterator();
-            while (e.next()) |kv| try usage.put(self.arena, kv.key_ptr.*, kv.value_ptr.*);
+            while (e.next()) |kv| try usage.put(scratch, kv.key_ptr.*, kv.value_ptr.*);
         };
         var e = ud.object.iterator();
-        while (e.next()) |kv| try usage.put(self.arena, kv.key_ptr.*, kv.value_ptr.*);
-        try r.put(self.arena, "usage", .{ .object = usage });
+        while (e.next()) |kv| try usage.put(scratch, kv.key_ptr.*, kv.value_ptr.*);
+        try r.put(scratch, "usage", .{ .object = usage });
     }
-    return r;
+    return (try util.dupeJsonValue(self.arena, .{ .object = r })).object;
 }
 
 /// One in-flight tool call while reassembling an OpenAI chat stream;

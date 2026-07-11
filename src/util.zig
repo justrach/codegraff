@@ -86,3 +86,50 @@ test "utf8Prefix truncates without splitting codepoints" {
     try std.testing.expectEqualStrings("ab", utf8Prefix(&s, 3)); // é would split
     try std.testing.expectEqualStrings("ab\xC3\xA9", utf8Prefix(&s, 4));
 }
+
+/// Deep-copy a std.json.Value (keys and strings included) onto `arena` (#124).
+/// Detaches a subtree that must outlive a per-request scratch parse — e.g. a
+/// Responses output item or an assembled Anthropic message that gets appended
+/// to history — from the parse tree it aliases, so the scratch arena can be
+/// reset at the next request() without a use-after-free.
+pub fn dupeJsonValue(arena: std.mem.Allocator, v: Value) std.mem.Allocator.Error!Value {
+    switch (v) {
+        .null, .bool, .integer, .float => return v,
+        .number_string => |s| return .{ .number_string = try arena.dupe(u8, s) },
+        .string => |s| return .{ .string = try arena.dupe(u8, s) },
+        .array => |arr| {
+            var out = std.json.Array.init(arena);
+            try out.ensureTotalCapacityPrecise(arr.items.len);
+            for (arr.items) |item| out.appendAssumeCapacity(try dupeJsonValue(arena, item));
+            return .{ .array = out };
+        },
+        .object => |obj| {
+            var out: std.json.ObjectMap = .empty;
+            try out.ensureTotalCapacity(arena, obj.count());
+            var it = obj.iterator();
+            while (it.next()) |e|
+                out.putAssumeCapacity(try arena.dupe(u8, e.key_ptr.*), try dupeJsonValue(arena, e.value_ptr.*));
+            return .{ .object = out };
+        },
+    }
+}
+
+test "dupeJsonValue: copy survives the source arena being reset and clobbered" {
+    var src_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer src_state.deinit();
+    var dst_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer dst_state.deinit();
+    const src = std.json.parseFromSliceLeaky(Value, src_state.allocator(),
+        \\{"type":"message","content":[{"type":"output_text","text":"hello"}],"n":42,"big":123456789012345678901234567890}
+    , .{ .allocate = .alloc_always }) catch unreachable;
+    const copy = try dupeJsonValue(dst_state.allocator(), src);
+    // Simulate the per-request scratch reset + the next request overwriting it.
+    _ = src_state.reset(.retain_capacity);
+    const junk = try src_state.allocator().alloc(u8, 64 * 1024);
+    @memset(junk, 0xAA);
+    try std.testing.expectEqualStrings("message", copy.object.get("type").?.string);
+    const blocks = copy.object.get("content").?.array;
+    try std.testing.expectEqualStrings("hello", blocks.items[0].object.get("text").?.string);
+    try std.testing.expectEqual(@as(i64, 42), copy.object.get("n").?.integer);
+    try std.testing.expectEqualStrings("123456789012345678901234567890", copy.object.get("big").?.number_string);
+}
