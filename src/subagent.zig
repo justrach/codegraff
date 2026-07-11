@@ -105,7 +105,13 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             parent_buf = promptFingerprint(ep);
             parent_sha = &parent_buf;
         };
-        t.fleetEvent("propose", niche, &child_fp, parent_sha, providerClass(ctx.provider.model), "", 0, so);
+        // Oversized genomes skip the propose (review F6): the server verifies
+        // the fingerprint over the carried text, so a truncated genome would
+        // be dropped there anyway — and the fingerprint the scores reference
+        // stays computed over the full text.
+        if (so.len <= telemetry.Telemetry.max_propose_text)
+            t.fleetEvent("propose", niche, &child_fp, parent_sha, providerClass(ctx.provider.model), "", 0, so)
+        else if (ctx.tracer) |tr| tr.note("fleet", "propose skipped: genome > 64KB");
     };
     // Stable id + sprite for this child's card and its inspectable detail file.
     const ordinal = cards.g_subagent_seq.fetchAdd(1, .monotonic);
@@ -251,16 +257,44 @@ pub fn scoreVariants(
         if (jout.is_error) continue;
         const s = repl_glue.parseEvalScore(jout.text) orelse continue;
         if (s <= 0) continue; // skip the total-failure 0 (don't pollute the cell mean), mirroring runEval
+        if (s > 100) {
+            // Review F8: parseEvalScore does NOT return 0-100 by construction
+            // (a stray "score: 9000" line parses as 9000) — guard to [0,100]
+            // here, mirroring mainloop /score's explicit rejection. Skip the
+            // score AND its paired propose/submit so no s01 > 1 row is ever
+            // signed and the submit counter stays in sync with stored scores.
+            if (ctx.tracer) |tr| tr.note("fleet", "score skipped: eval score outside [0,100]");
+            continue;
+        }
+        // SCORE SCALE CONTRACT (issue #168 Gap 4): s is guarded to (0,100]
+        // above; every score that leaves the client is [0,1], so divide at
+        // the emission boundary — s01 is what gets signed and sent.
+        const s01 = s / 100.0;
         const genome_fp = promptFingerprint(overrides[i].?);
         const esh_fp = promptFingerprint(raws[i]);
         const genome: []const u8 = &genome_fp;
         const esh: []const u8 = &esh_fp;
-        const sig = signScore(genome, "", s, run_id, "", "", esh);
+        // Truncated to 64 chars and sanitized (tab/newline/CR → ' ', review
+        // F7) BEFORE signing (fleetEvent's own niche cap, same as mainloop
+        // /score and runEval) so signed bytes equal ingested bytes.
+        var niche_buf: [64]u8 = undefined;
+        const niche = scoring.sanitizeMetaField(&niche_buf, util.utf8Prefix(niches[i], 64));
+        const sig = signScore(genome, "", s01, run_id, "", "", esh, niche, pclass);
         const sig_s: []const u8 = if (scoring.g_score_key != null) &sig else "";
         var provbuf: [512]u8 = undefined;
-        const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, "" }) catch "";
-        t.scoreEvent(genome, "", s, run_id, sig_s, prov);
-        t.fleetEvent("submit", niches[i], genome, "", pclass, esh, 0, "");
+        const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche }) catch "";
+        // Genome-send (issue #168 Gap 5), mirroring runEval: ride the variant's
+        // text over on a propose (deduped by fingerprint server-side) so the
+        // scored cell has a servable genome even when runSub never proposed it.
+        // Oversized genomes skip the propose (review F6): a truncated genome
+        // would fail the server's fingerprint check and be dropped anyway.
+        if (niche.len > 0) {
+            if (overrides[i].?.len <= telemetry.Telemetry.max_propose_text)
+                t.fleetEvent("propose", niche, genome, "", pclass, "", 0, overrides[i].?)
+            else if (ctx.tracer) |tr| tr.note("fleet", "propose skipped: genome > 64KB");
+        }
+        t.scoreEvent(genome, "", s01, run_id, sig_s, prov);
+        t.fleetEvent("submit", niche, genome, "", pclass, esh, 0, "");
     }
 }
 

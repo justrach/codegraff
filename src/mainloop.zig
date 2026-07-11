@@ -263,39 +263,81 @@ pub fn run(ctx: *Ctx) !void {
                 continue;
             }
             if (std.mem.eql(u8, rtype, "score")) {
+                // Fingerprint fields must be exactly 16 hex chars — a
+                // length-only check would let an embedded newline through into
+                // the signed v2 envelope (field-shift ambiguity).
+                const hex16 = struct {
+                    fn ok(s: []const u8) bool {
+                        if (s.len != 16) return false;
+                        for (s) |c| if (!std.ascii.isHex(c)) return false;
+                        return true;
+                    }
+                };
                 const sha = if (parsed.object.get("prompt_sha")) |v| (if (v == .string) v.string else "") else "";
                 const sc: f64 = if (parsed.object.get("score")) |v| switch (v) {
                     .float => |x| x,
                     .integer => |x| @floatFromInt(x),
                     else => std.math.nan(f64),
                 } else std.math.nan(f64);
-                if (sha.len != 16 or std.math.isNan(sc)) {
+                if (!hex16.ok(sha) or std.math.isNan(sc)) {
                     ctx.root.emit(.{ .type = "error", .message = "score needs prompt_sha (16 hex chars) and a numeric score" });
                     continue;
                 }
-                const notes = if (parsed.object.get("notes")) |v| (if (v == .string) v.string else "") else "";
-                // Optional genome lineage: which prompt this variant was
-                // mutated from — the children-count input for DGM parent
-                // selection.
-                const parent = if (parsed.object.get("parent_sha")) |v| (if (v == .string and v.string.len == 16) v.string else "") else "";
-                // Provenance (Step 0): the driver names which judge produced
-                // the score, the artifact it judged, and the eval-set hash;
-                // run_id defaults to this session's. All are HMAC-signed so a
-                // forged trajectory row is detectable.
                 const reqStr = struct {
                     fn s(o: std.json.ObjectMap, k: []const u8) []const u8 {
                         return if (o.get(k)) |v| (if (v == .string) v.string else "") else "";
                     }
                 };
-                const judge_id = util.utf8Prefix(reqStr.s(parsed.object, "judge_id"), 64);
-                const artifact_sha = util.utf8Prefix(reqStr.s(parsed.object, "artifact_sha"), 64);
+                // SCORE SCALE CONTRACT (issue #168 Gap 4): the canonical wire
+                // scale is [0,1]. An explicit "scale" field overrides the
+                // heuristic (review F9): "percent" always divides by 100 and
+                // accepts values up to 100 (so a percent-scale 0.5 means
+                // 0.005, not 0.5); "unit" requires [0,1] as-is. Absent, the
+                // heuristic applies: [0,1] passes, (1,100] is read as a
+                // percentage and divides by 100, and anything else is rejected
+                // here so the backend never has to clamp a 43 into a fake 1.0.
+                const scale = reqStr.s(parsed.object, "scale");
+                // An unrecognized scale must fail loudly, not fall through to
+                // the heuristic — a typo like "Percent" silently reinterpreting
+                // 0.7-of-100 as unit-scale 0.7 is a 100x corruption.
+                if (scale.len > 0 and !std.mem.eql(u8, scale, "percent") and !std.mem.eql(u8, scale, "unit")) {
+                    ctx.root.emit(.{ .type = "error", .message = "unknown scale: use \"unit\" or \"percent\" (or omit it for the [0,1]/(1,100] heuristic)" });
+                    continue;
+                }
+                const normalized: ?f64 = if (std.mem.eql(u8, scale, "percent"))
+                    (if (sc < 0 or sc > 100) null else sc / 100.0)
+                else if (std.mem.eql(u8, scale, "unit"))
+                    (if (sc < 0 or sc > 1) null else sc)
+                else
+                    scoring.normalizeOutboundScore(sc);
+                const sc01 = normalized orelse {
+                    ctx.root.emit(.{ .type = "error", .message = "score out of range: scale=\"unit\" requires [0,1], scale=\"percent\" requires [0,100] (sent as value/100); without scale, [0,1] passes, (1,100] is normalized to /100, and values outside [0,100] are rejected" });
+                    continue;
+                };
+                const notes = if (parsed.object.get("notes")) |v| (if (v == .string) v.string else "") else "";
+                // Optional genome lineage: which prompt this variant was
+                // mutated from — the children-count input for DGM parent
+                // selection.
+                const parent = if (parsed.object.get("parent_sha")) |v| (if (v == .string and hex16.ok(v.string)) v.string else "") else "";
+                // Provenance (Step 0): the driver names which judge produced
+                // the score, the artifact it judged, and the eval-set hash;
+                // run_id defaults to this session's. All are HMAC-signed so a
+                // forged trajectory row is detectable. User-controlled fields
+                // are sanitized (tab/newline/CR → ' ', review F7) BEFORE
+                // signing so the signed bytes equal the transported bytes —
+                // an embedded tab would otherwise split the prov transport.
+                var jid_buf: [64]u8 = undefined;
+                var art_buf: [64]u8 = undefined;
+                const judge_id = scoring.sanitizeMetaField(&jid_buf, util.utf8Prefix(reqStr.s(parsed.object, "judge_id"), 64));
+                const artifact_sha = scoring.sanitizeMetaField(&art_buf, util.utf8Prefix(reqStr.s(parsed.object, "artifact_sha"), 64));
                 // DGM lever: when the score omits eval_set_hash but an --eval suite is
                 // configured, stamp the suite's stable fingerprint so scores group into a
                 // promotable (niche × tier × suite) cell. Same --eval cmd → same hash
                 // across installs → the fleet can rank + promote a champion.
                 var esh_buf: [16]u8 = undefined;
+                var eshp_buf: [64]u8 = undefined;
                 const eval_set_hash = eshblk: {
-                    const provided = util.utf8Prefix(reqStr.s(parsed.object, "eval_set_hash"), 64);
+                    const provided = scoring.sanitizeMetaField(&eshp_buf, util.utf8Prefix(reqStr.s(parsed.object, "eval_set_hash"), 64));
                     if (provided.len > 0) break :eshblk provided;
                     if (ctx.root.eval_cmd) |c| {
                         esh_buf = scoring.promptFingerprint(c);
@@ -303,31 +345,45 @@ pub fn run(ctx: *Ctx) !void {
                     }
                     break :eshblk "";
                 };
-                const req_run = reqStr.s(parsed.object, "run_id");
-                const run_id: []const u8 = if (req_run.len > 0) util.utf8Prefix(req_run, 64) else &scoring.g_run_id;
-                const sig = scoring.signScore(sha, parent, sc, run_id, judge_id, artifact_sha, eval_set_hash);
+                // run_id is signed too — sanitize it like the other meta
+                // fields so an embedded newline can't shift the v2 envelope
+                // (one signature verifying two different field bindings).
+                var run_buf: [64]u8 = undefined;
+                const req_run = scoring.sanitizeMetaField(&run_buf, util.utf8Prefix(reqStr.s(parsed.object, "run_id"), 64));
+                const run_id: []const u8 = if (req_run.len > 0) req_run else &scoring.g_run_id;
+                // v2 envelope (issue #168 Gap 2): niche + provider_class are
+                // signed, so a score for one cell can't be replayed into
+                // another by mutating transport fields. The niche is truncated
+                // to 64 (fleetEvent's own cap) and sanitized BEFORE signing so
+                // the signed bytes match what the backend ingests.
+                var niche_buf: [64]u8 = undefined;
+                const req_niche = scoring.sanitizeMetaField(&niche_buf, util.utf8Prefix(reqStr.s(parsed.object, "niche"), 64));
+                const pclass = scoring.providerClass(ctx.root.provider.model);
+                const sig = scoring.signScore(sha, parent, sc01, run_id, judge_id, artifact_sha, eval_set_hash, req_niche, pclass);
                 const signed = scoring.g_score_key != null;
                 if (trace.g_traj) |tj| tj.node(.{
                     .kind = "score",
                     .prompt_sha = sha,
                     .parent_sha = parent,
-                    .score = sc,
+                    .score = sc01,
                     .notes = util.utf8Prefix(notes, 200),
                     .run_id = run_id,
                     .judge_id = judge_id,
                     .artifact_sha = artifact_sha,
                     .eval_set_hash = eval_set_hash,
+                    .niche = req_niche,
+                    .provider_class = pclass,
                     .sig = if (signed) @as([]const u8, &sig) else "",
                     .t = tj.elapsedMs(),
                 });
                 var provbuf: [512]u8 = undefined;
-                // prov = judge_id, artifact_sha, eval_set_hash (the signed Step-0 fields)
-                // + provider_class, niche (unsigned transport) so harness_scores can form
+                // prov = judge_id, artifact_sha, eval_set_hash + provider_class, niche —
+                // all five folded into the v2 HMAC — so harness_scores can form
                 // (niche x provider_class x eval_set_hash) cells the fleet ranks over.
-                const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ judge_id, artifact_sha, eval_set_hash, scoring.providerClass(ctx.root.provider.model), reqStr.s(parsed.object, "niche") }) catch "";
-                if (telemetry.g_telem) |t| t.scoreEvent(sha, parent, sc, run_id, if (signed) @as([]const u8, &sig) else "", prov);
+                const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ judge_id, artifact_sha, eval_set_hash, pclass, req_niche }) catch "";
+                if (telemetry.g_telem) |t| t.scoreEvent(sha, parent, sc01, run_id, if (signed) @as([]const u8, &sig) else "", prov);
                 // fleet:submit (docs §9.B) — a scored, pinned-eval variant entered the fleet grid.
-                if (eval_set_hash.len > 0) if (telemetry.g_telem) |t| t.fleetEvent("submit", reqStr.s(parsed.object, "niche"), sha, "", scoring.providerClass(ctx.root.provider.model), eval_set_hash, 0, "");
+                if (eval_set_hash.len > 0) if (telemetry.g_telem) |t| t.fleetEvent("submit", req_niche, sha, "", pclass, eval_set_hash, 0, "");
                 ctx.root.emit(.{ .type = "score", .ok = true, .prompt_sha = sha, .signed = signed });
                 continue;
             }

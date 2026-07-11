@@ -324,9 +324,15 @@ export class Harness {
    *  children with. Pass `niche` (reviewer/researcher/implementer/skeptic, or
    *  a custom agent) to file the score into that MAP-Elites cell so the fleet
    *  can promote a champion for the role; with the full persona text the genome
-   *  also rides over on a `fleet:propose`. Call between turns; resolves on the
+   *  also rides over on a `fleet:propose`. Scale: the canonical wire scale is
+   *  [0, 1]. Pass scale "unit" to assert `value` is already in [0, 1]
+   *  (anything else is rejected), or "percent" to always send value/100
+   *  (accepts [0, 100] — a percent-scale 0.5 means 0.005, not 0.5). Without
+   *  `scale` the harness heuristic applies: [0, 1] passes as-is, values in
+   *  (1, 100] are treated as percentages and normalized to /100, and values
+   *  outside [0, 100] are rejected. Call between turns; resolves on the
    *  harness's ack. */
-  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string): Promise<void> {
+  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string, scale?: "unit" | "percent"): Promise<void> {
     const sha = /^[0-9a-f]{16}$/.test(promptOrSha) ? promptOrSha : promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : /^[0-9a-f]{16}$/.test(parent) ? parent : promptFingerprint(parent);
@@ -335,7 +341,7 @@ export class Harness {
     // register it first on a `fleet:propose` (deduped by prompt_sha on the
     // collector). This is the SDK analog of the harness eval loop's propose.
     if (niche && !/^[0-9a-f]{16}$/.test(promptOrSha)) fleetSignal("propose", { niche, prompt_sha: sha, parent_sha: parent_sha ?? "", prompt_text: promptOrSha });
-    this.proc.stdin.write(JSON.stringify({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche }) + "\n");
+    this.proc.stdin.write(JSON.stringify({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }) + "\n");
     // Same edge-version tolerance as setSystemPrompt: skip unknown events
     // while waiting for the ack.
     while (true) {

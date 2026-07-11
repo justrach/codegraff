@@ -375,9 +375,15 @@ export class Harness {{
    *  children with. Pass `niche` (reviewer/researcher/implementer/skeptic, or
    *  a custom agent) to file the score into that MAP-Elites cell so the fleet
    *  can promote a champion for the role; with the full persona text the genome
-   *  also rides over on a `fleet:propose`. Call between turns; resolves on the
+   *  also rides over on a `fleet:propose`. Scale: the canonical wire scale is
+   *  [0, 1]. Pass scale "unit" to assert `value` is already in [0, 1]
+   *  (anything else is rejected), or "percent" to always send value/100
+   *  (accepts [0, 100] — a percent-scale 0.5 means 0.005, not 0.5). Without
+   *  `scale` the harness heuristic applies: [0, 1] passes as-is, values in
+   *  (1, 100] are treated as percentages and normalized to /100, and values
+   *  outside [0, 100] are rejected. Call between turns; resolves on the
    *  harness's ack. */
-  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string): Promise<void> {{
+  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string, scale?: "unit" | "percent"): Promise<void> {{
     const sha = /^[0-9a-f]{{16}}$/.test(promptOrSha) ? promptOrSha : promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : /^[0-9a-f]{{16}}$/.test(parent) ? parent : promptFingerprint(parent);
@@ -386,7 +392,7 @@ export class Harness {{
     // register it first on a `fleet:propose` (deduped by prompt_sha on the
     // collector). This is the SDK analog of the harness eval loop's propose.
     if (niche && !/^[0-9a-f]{{16}}$/.test(promptOrSha)) fleetSignal("propose", {{ niche, prompt_sha: sha, parent_sha: parent_sha ?? "", prompt_text: promptOrSha }});
-    this.proc.stdin.write(JSON.stringify({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche }}) + "\\n");
+    this.proc.stdin.write(JSON.stringify({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }}) + "\\n");
     // Same edge-version tolerance as setSystemPrompt: skip unknown events
     // while waiting for the ack.
     while (true) {{
@@ -690,8 +696,10 @@ export class RemoteHarness {{
   appendSystemPrompt(text: string): Promise<void> {{ return this.setSystemPrompt(text, true); }}
 
   /** Record an evaluation score in the server-side trajectory archive —
-   *  same semantics as the stdio SDK's `score()`. */
-  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string): Promise<void> {{
+   *  same semantics as the stdio SDK's `score()`, including the optional
+   *  `scale` ("unit" | "percent") override of the harness's
+   *  value-normalization heuristic. */
+  async score(promptOrSha: string, value: number, notes = "", parent?: string, niche?: string, scale?: "unit" | "percent"): Promise<void> {{
     const sha = HEX16.test(promptOrSha) ? promptOrSha : await promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : HEX16.test(parent) ? parent : await promptFingerprint(parent);
@@ -699,7 +707,7 @@ export class RemoteHarness {{
     // champion for the role; the remote harness reads it from the request and
     // tags its own score/submit. (Genome capture rides the harness process,
     // which holds the persona text the remote bridge only references by sha.)
-    for await (const ev of this.send({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche }})) {{
+    for await (const ev of this.send({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }})) {{
       if (ev.type === "error") throw new Error(ev.message);
       if (ev.type === "score") return;
     }}
@@ -884,14 +892,18 @@ def prompt_fingerprint(text: str) -> str:
 
 def score_signature(key: bytes, prompt_sha: str, parent_sha: str, score: float,
                     run_id: str, judge_id: str = "", artifact_sha: str = "",
-                    eval_set_hash: str = "") -> str:
+                    eval_set_hash: str = "", niche: str = "",
+                    provider_class: str = "") -> str:
     """Recompute a score record's HMAC the way the harness signs it (Step 0,
-    fitness-channel integrity). The canonical message is version-tagged and
+    fitness-channel integrity). The canonical v2 message is version-tagged and
     newline-joined with the score fixed to 6 decimals — byte-identical to the
-    Zig signer (src/main.zig scoreSigMessage). `key` is the raw bytes of the
-    GRAFF_SCORE_KEY_FILE file."""
-    msg = "v1\\n{{}}\\n{{}}\\n{{:.6f}}\\n{{}}\\n{{}}\\n{{}}\\n{{}}".format(
-        prompt_sha, parent_sha, score, run_id, judge_id, artifact_sha, eval_set_hash)
+    Zig signer (src/scoring.zig scoreSigMessage). v2 folds `niche` and
+    `provider_class` into the signed envelope so a score for one MAP-Elites
+    cell cannot be replayed into another. `score` is on the canonical [0, 1]
+    scale. `key` is the raw bytes of the GRAFF_SCORE_KEY_FILE file."""
+    msg = "v2\\n{{}}\\n{{}}\\n{{:.6f}}\\n{{}}\\n{{}}\\n{{}}\\n{{}}\\n{{}}\\n{{}}".format(
+        prompt_sha, parent_sha, score, run_id, judge_id, artifact_sha,
+        eval_set_hash, niche, provider_class)
     return hmac.new(key, msg.encode(), hashlib.sha256).hexdigest()
 
 
@@ -899,7 +911,9 @@ def verify_score(key: bytes, rec: dict) -> bool:
     """True iff a kind:"score" trajectory/D1 record carries a valid signature
     for `key`. Use this in an evolution driver's archive loader to reject
     forged fitness rows (an attacker without the key cannot produce a matching
-    sig). Records with no sig fail closed when a key is set."""
+    sig). Verifies the v2 envelope first, then falls back to legacy v1 rows
+    (signed before niche/provider_class entered the envelope — transition
+    window only). Records with no sig fail closed when a key is set."""
     sig = rec.get("sig") or ""
     if not sig:
         return False
@@ -907,8 +921,20 @@ def verify_score(key: bytes, rec: dict) -> bool:
         key, rec.get("prompt_sha", ""), rec.get("parent_sha", "") or "",
         float(rec.get("score", "nan")), rec.get("run_id", ""),
         rec.get("judge_id", ""), rec.get("artifact_sha", ""),
+        rec.get("eval_set_hash", ""),
+        # D1 returns NULL (None) for an empty niche/provider_class — "{{}}"
+        # would format it as the literal "None" and poison the message.
+        rec.get("niche", "") or "",
+        rec.get("provider_class", "") or "")
+    if hmac.compare_digest(sig, want):
+        return True
+    legacy = "v1\\n{{}}\\n{{}}\\n{{:.6f}}\\n{{}}\\n{{}}\\n{{}}\\n{{}}".format(
+        rec.get("prompt_sha", ""), rec.get("parent_sha", "") or "",
+        float(rec.get("score", "nan")), rec.get("run_id", ""),
+        rec.get("judge_id", ""), rec.get("artifact_sha", ""),
         rec.get("eval_set_hash", ""))
-    return hmac.compare_digest(sig, want)
+    return hmac.compare_digest(
+        sig, hmac.new(key, legacy.encode(), hashlib.sha256).hexdigest())
 
 class Harness:
     """Drives a `harness --json` subprocess. One turn = send text, stream events.
@@ -1041,7 +1067,7 @@ class Harness:
     def score(self, prompt_or_sha: str, value: float, notes: str = "",
               parent: Optional[str] = None, judge_id: str = "",
               artifact_sha: str = "", eval_set_hash: str = "",
-              niche: str = "") -> None:
+              niche: str = "", scale: str = "") -> None:
         """Record an evaluation score for an agent/prompt variant in the
         trajectory archive (harness.trajectory.jsonl) — the DGM evaluation
         phase writing back. `prompt_or_sha` is either the full system-prompt
@@ -1057,7 +1083,15 @@ class Harness:
         `niche` (reviewer/researcher/implementer/skeptic, or a custom agent)
         files the score into that MAP-Elites cell so the fleet can promote a
         champion for the role; with the full persona text the genome also rides
-        over on a `fleet:propose`. Call between turns; blocks until the harness
+        over on a `fleet:propose`.
+
+        Scale: the canonical wire scale is [0, 1]. Pass scale="unit" to
+        assert `value` is already in [0, 1] (anything else is rejected), or
+        scale="percent" to always send value/100 (accepts [0, 100] — note a
+        percent-scale 0.5 means 0.005, not 0.5). Without `scale` the harness
+        heuristic applies: [0, 1] passes as-is, values in (1, 100] are
+        treated as percentages and normalized to /100, and values outside
+        [0, 100] are rejected. Call between turns; blocks until the harness
         acks."""
         assert self.proc.stdin and self.proc.stdout
         sha = prompt_or_sha if re.fullmatch(r"[0-9a-f]{{16}}", prompt_or_sha) \\
@@ -1074,6 +1108,8 @@ class Harness:
             req["eval_set_hash"] = eval_set_hash
         if niche:
             req["niche"] = niche
+        if scale:
+            req["scale"] = scale
         # Genome-send (docs §9.B): a cell only promotes when a score's prompt_sha
         # joins a stored genome, so when we hold the full persona text + a niche,
         # register it first (deduped by prompt_sha on the collector).
@@ -1258,10 +1294,12 @@ class RemoteHarness:
     def score(self, prompt_or_sha: str, value: float, notes: str = "",
               parent: Optional[str] = None, judge_id: str = "",
               artifact_sha: str = "", eval_set_hash: str = "",
-              niche: str = "") -> None:
+              niche: str = "", scale: str = "") -> None:
         """Record an evaluation score in the server-side trajectory archive —
         same semantics (and provenance fields) as `Harness.score`, including
-        the `niche` MAP-Elites tag and genome-send."""
+        the `niche` MAP-Elites tag, genome-send, and the optional `scale`
+        ("unit" | "percent") override of the harness's value-normalization
+        heuristic."""
         sha = prompt_or_sha if re.fullmatch(r"[0-9a-f]{{16}}", prompt_or_sha) \\
             else prompt_fingerprint(prompt_or_sha)
         req = {{"type": "score", "prompt_sha": sha, "score": value, "notes": notes}}
@@ -1276,6 +1314,8 @@ class RemoteHarness:
             req["eval_set_hash"] = eval_set_hash
         if niche:
             req["niche"] = niche
+        if scale:
+            req["scale"] = scale
         # Genome-send (docs §9.B): register the persona when we hold the full
         # text + a niche so a promoted cell has a genome to serve.
         if niche and not re.fullmatch(r"[0-9a-f]{{16}}", prompt_or_sha):
