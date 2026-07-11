@@ -249,6 +249,12 @@ pub fn main(init: std.process.Init) !void {
     if (builtin.os.tag == .windows) tty.enableVtOutput();
     // CLI flags: the Flags struct + parsing loop live in args.zig; downstream code reads flags.<name> in place of ~27 locals this block used to declare.
     const flags = try args.parse(init);
+    // GRAFF_CODEX_URL: override the codex responses endpoint (localhost mocks / integration tests). Parsed BEFORE subcommand dispatch and
+    // resolveKeys — `graff models [refresh]` fetches the catalog inside runSubcommand and the initial Keys.build runs inside resolveKeys.
+    // environ_map slices are process-lifetime (resolveKeys stores them into Keys the same way), so the value is kept as-is without duping.
+    if (init.environ_map.get("GRAFF_CODEX_URL")) |cu| {
+        if (cu.len > 0) provider_mod.g_codex_url_override = cu;
+    }
     // --help / --version: handled before any subcommand dispatch, so `harness login --help` prints usage instead of starting an OAuth flow.
     if (try startup.runSubcommand(io, gpa, arena, init, flags)) return;
     // Credential/model resolution (env vars → on-disk logins → `harness key set` store, env always wins; then --model or the last-saved model) lives

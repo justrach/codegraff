@@ -31,6 +31,7 @@ const Allocator = std.mem.Allocator;
 const pricing = @import("pricing.zig");
 const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
+const provider = @import("provider.zig"); // g_codex_url_override: keep /models discovery on the same origin as the overridden responses endpoint
 
 const models_dev_url = "https://models.dev/api.json";
 const codex_models_url = "https://chatgpt.com/backend-api/codex/models";
@@ -201,9 +202,21 @@ fn snapshotMatchesVersion(snapshot: CodexSnapshot, version: []const u8) bool {
     return std.mem.eql(u8, snapshot.client_version, version);
 }
 
+/// The /models discovery endpoint: chatgpt.com by default; when GRAFF_CODEX_URL
+/// overrides the responses endpoint, discovery follows that origin
+/// (scheme://host[:port] + /backend-api/codex/models) so a localhost mock is
+/// never bypassed for a live chatgpt.com fetch — a mock without /models just
+/// falls back to cache/baked rows via the non-200 path.
+fn codexModelsUrl(arena: Allocator) []const u8 {
+    const override = provider.g_codex_url_override orelse return codex_models_url;
+    const scheme_end = std.mem.indexOf(u8, override, "://") orelse return codex_models_url;
+    const path_start = std.mem.indexOfScalarPos(u8, override, scheme_end + 3, '/') orelse override.len;
+    return std.fmt.allocPrint(arena, "{s}/backend-api/codex/models", .{override[0..path_start]}) catch codex_models_url;
+}
+
 fn fetchCodexSnapshot(io: Io, gpa: Allocator, arena: Allocator, token: []const u8, account: []const u8, version: []const u8) ?CodexSnapshot {
     if (token.len == 0 or account.len == 0 or version.len == 0) return null;
-    const url = std.fmt.allocPrint(arena, "{s}?client_version={s}", .{ codex_models_url, version }) catch return null;
+    const url = std.fmt.allocPrint(arena, "{s}?client_version={s}", .{ codexModelsUrl(arena), version }) catch return null;
     const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{token}) catch return null;
     const user_agent = std.fmt.allocPrint(arena, "codex_cli_rs/{s} (graff)", .{version}) catch return null;
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
@@ -269,7 +282,12 @@ pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const 
     const native_data = readSmall(io, arena, nativeCodexPath(arena, codex_home));
     const native = if (native_data) |data| parseCodexSnapshot(arena, data) else null;
     const version = effectiveCodexVersion(installedCodexVersion(io, arena), native);
-    const cached_data = readSmall(io, arena, codexDirPath(arena, home)) orelse readSmall(io, arena, codexFlatPath(arena, home));
+    // GRAFF_CODEX_URL runs are hermetic w.r.t. the shared per-HOME cache in
+    // BOTH directions: a fresh real-origin cache must not shadow the override
+    // (read skip here), and an override-origin snapshot is never written back
+    // (see below). The CODEX_HOME-scoped native cache stays available — the
+    // caller controls that path explicitly.
+    const cached_data = if (provider.g_codex_url_override != null) null else readSmall(io, arena, codexDirPath(arena, home)) orelse readSmall(io, arena, codexFlatPath(arena, home));
     const cached = if (cached_data) |data| parseCodexSnapshot(arena, data) else null;
     const now = util.unixMs(io);
     if (!force_refresh) if (cached) |snapshot| {
@@ -282,7 +300,10 @@ pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const 
     if (fetchCodexSnapshot(io, gpa, arena, token, account, version)) |snapshot| {
         if (pricing.activateCodexModels(arena, snapshot.models)) {
             codex_catalog_source = "live account catalog";
-            writeCodexCache(io, arena, home, version, snapshot.models);
+            // Never persist an override-origin snapshot: a later default run
+            // would activate a mock's rows as a genuine chatgpt.com catalog
+            // (the cache is unkeyed by origin and stamped with the real URL).
+            if (provider.g_codex_url_override == null) writeCodexCache(io, arena, home, version, snapshot.models);
             return;
         }
     }

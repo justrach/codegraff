@@ -59,6 +59,12 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.6-sol" },
 };
 
+/// Codex responses-endpoint override (GRAFF_CODEX_URL, parsed in main.zig at
+/// startup — localhost mocks / integration tests). Lives here because every
+/// provider (re)build path (startup, /model switches, session restore) goes
+/// through Keys.build; both the WS and SSE transports read provider.url.
+pub var g_codex_url_override: ?[]const u8 = null;
+
 pub const Provider = struct {
     id: []const u8,
     kind: Kind,
@@ -120,15 +126,16 @@ pub const Keys = struct {
     }
 
     pub fn build(keys: Keys, spec: ProviderSpec, key: []const u8, model: []const u8) Provider {
+        const is_codex = std.mem.eql(u8, spec.id, "codex");
         return .{
             .id = spec.id,
             .kind = spec.kind,
             .auth = spec.auth,
-            .url = spec.url,
+            .url = if (is_codex) g_codex_url_override orelse spec.url else spec.url,
             .api_key = key,
             .model = model,
             .context = contextFor(spec.id, model),
-            .account = if (std.mem.eql(u8, spec.id, "codex")) keys.codex_account else "",
+            .account = if (is_codex) keys.codex_account else "",
             .source = keys.source(spec.id),
         };
     }
@@ -216,4 +223,14 @@ test "Keys.defaultProvider: first keyed provider on its default model" {
     try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
     const none = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
     try std.testing.expectError(error.MissingKey, none.defaultProvider());
+}
+
+test "Keys.build: g_codex_url_override rewires only the codex endpoint" {
+    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    g_codex_url_override = "http://127.0.0.1:8765/responses";
+    defer g_codex_url_override = null;
+    const codex = try all.providerById("codex", "gpt-5.6-sol");
+    try std.testing.expectEqualStrings("http://127.0.0.1:8765/responses", codex.url);
+    const anthropic = try all.providerById("anthropic", "claude-opus-4-8");
+    try std.testing.expectEqualStrings("https://api.anthropic.com/v1/messages", anthropic.url);
 }

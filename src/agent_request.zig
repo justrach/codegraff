@@ -201,7 +201,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             };
             switch (r) {
                 .ok => |obj| {
-                    self.recordUsageResponses(obj);
+                    self.recordUsageResponses(obj, body.len);
                     if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
                     if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                     return obj;
@@ -409,10 +409,20 @@ pub fn errorMessage(obj: std.json.ObjectMap) ?[]const u8 {
     return null;
 }
 
-pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap) void {
+pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body_len: usize) void {
     self.last_cache_read = 0;
-    const usage = response.get("usage") orelse return;
-    if (usage != .object) return;
+    // Fallback estimate (~4 bytes/token) from the serialized request body,
+    // which holds the full conversation — keeps the ctx meter and the
+    // compact@ trigger live when codex omits usage counts entirely.
+    const est: u64 = req_body_len / 4;
+    const usage = response.get("usage") orelse {
+        if (est > 0) self.last_context_tokens = est;
+        return;
+    };
+    if (usage != .object) {
+        if (est > 0) self.last_context_tokens = est;
+        return;
+    }
     const u = usage.object;
     const in_tokens = usageInt(u, "input_tokens");
     const out_tokens = usageInt(u, "output_tokens");
@@ -424,7 +434,11 @@ pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap) void {
         // Still surface the prompt token counter instead of leaving the
         // prompt stuck at "model · sub" with no context usage.
         const computed_total = in_tokens + out_tokens;
-        if (computed_total > 0) self.last_context_tokens = @intCast(computed_total);
+        if (computed_total > 0) {
+            self.last_context_tokens = @intCast(computed_total);
+        } else if (est > 0) {
+            self.last_context_tokens = est;
+        }
     }
     var cached: i64 = 0;
     if (u.get("input_tokens_details")) |d| if (d == .object) {
