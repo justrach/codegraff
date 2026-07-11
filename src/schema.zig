@@ -118,9 +118,9 @@ const base_specs = [_]ToolSpec{
     },
     .{
         .name = "read_file",
-        .desc = "Read a UTF-8 text file. Call this before editing any file.",
+        .desc = "Read a UTF-8 text file. Call this before editing any file. For a big file you only need part of, pass start_line/end_line (1-based, inclusive) to read just that span.",
         .schema =
-        \\{"type": "object", "properties": {"path": {"type": "string", "description": "File path, relative to the working directory"}}, "required": ["path"]}
+        \\{"type": "object", "properties": {"path": {"type": "string", "description": "File path, relative to the working directory"}, "start_line": {"type": "integer", "description": "Optional 1-based first line to return (byte-exact slice; omit for whole file)"}, "end_line": {"type": "integer", "description": "Optional 1-based last line to return, inclusive"}, "compact": {"type": "boolean", "description": "Exploratory only: return a comment/blank-stripped view via codedb (line numbers shown). NEVER use before an edit — re-read without compact to copy exact text."}}, "required": ["path"]}
         ,
     },
     .{
