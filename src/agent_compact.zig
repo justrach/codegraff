@@ -7,6 +7,8 @@
 const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
+const Allocator = std.mem.Allocator;
+const utf8Prefix = @import("util.zig").utf8Prefix;
 
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
@@ -215,6 +217,12 @@ pub fn compact(self: *Agent) anyerror!usize {
         return 0;
     }
     if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens…]\n", .{self.last_context_tokens});
+    // #163: reclaim room BEFORE the summarization request so it fits under the
+    // model's input cap. On codex/gpt-5.x an over-cap request fails to WRITE
+    // (WriteFailed) rather than returning a clean overflow, so compaction could
+    // never run once near the cap. Old tool outputs are superseded by the summary
+    // anyway; truncating them keeps the request sendable + all pairing intact.
+    _ = trimOldestToolOutputs(self);
     try self.messages.append(try textMessage(self.arena, "user", compact_instruction));
     errdefer _ = self.messages.pop();
 
@@ -280,18 +288,97 @@ pub fn emergencyCutIndex(items: []const Value) ?usize {
     return null;
 }
 
+/// True if `m` is a tool-output message whose payload can be truncated to
+/// reclaim context: responses `function_call_output`, openai `role:"tool"`, or an
+/// anthropic user message carrying `tool_result` blocks (#163).
+fn isToolOutputMsg(m: Value) bool {
+    if (m != .object) return false;
+    if (m.object.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "function_call_output")) return true;
+    if (m.object.get("role")) |r| if (r == .string) {
+        if (std.mem.eql(u8, r.string, "tool")) return true;
+        if (std.mem.eql(u8, r.string, "user")) if (m.object.get("content")) |c| if (c == .array)
+            for (c.array.items) |blk| {
+                if (blk == .object) if (blk.object.get("type")) |bt|
+                    if (bt == .string and std.mem.eql(u8, bt.string, "tool_result")) return true;
+            };
+    };
+    return false;
+}
+
+fn truncateStrField(arena: Allocator, o: *std.json.ObjectMap, key: []const u8, cap: usize) usize {
+    const v = o.get(key) orelse return 0;
+    if (v != .string or v.string.len <= cap) return 0;
+    const orig = v.string.len;
+    const stub = std.fmt.allocPrint(arena, "{s}\n[old tool output truncated to recover context (#163)]", .{utf8Prefix(v.string, cap)}) catch return 0;
+    o.put(arena, key, .{ .string = stub }) catch return 0;
+    return orig -| stub.len;
+}
+
+/// Truncate an over-large tool-output payload in `m` in place to ~`cap` bytes,
+/// preserving the message and its call/output pairing. Returns bytes reclaimed.
+fn truncateToolOutput(arena: Allocator, m: *Value, cap: usize) usize {
+    if (m.* != .object) return 0;
+    if (m.object.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "function_call_output"))
+        return truncateStrField(arena, &m.object, "output", cap);
+    if (m.object.get("role")) |r| if (r == .string) {
+        if (std.mem.eql(u8, r.string, "tool")) return truncateStrField(arena, &m.object, "content", cap);
+        if (std.mem.eql(u8, r.string, "user")) if (m.object.get("content")) |c| if (c == .array) {
+            var saved: usize = 0;
+            for (m.object.get("content").?.array.items) |*blk| {
+                if (blk.* != .object) continue;
+                const bt = blk.object.get("type") orelse continue;
+                if (bt == .string and std.mem.eql(u8, bt.string, "tool_result"))
+                    saved += truncateStrField(arena, &blk.object, "content", cap);
+            }
+            return saved;
+        };
+    };
+    return 0;
+}
+
+/// #163: reclaim context when it has overflowed and there is no clean user turn
+/// to cut at (a runaway tool loop is all tool_call/tool_result after the last
+/// user turn). Truncate the OLDEST tool outputs in place, keeping the most recent
+/// `keep_recent` verbatim (opencode-style) and every call/output pair intact
+/// (codex's trim_function_call_history). Never drops a message, so no orphaned
+/// tool_result can reach the API. Returns bytes reclaimed.
+pub fn trimOldestToolOutputs(self: *Agent) usize {
+    const keep_recent: usize = 4;
+    const stub_cap: usize = 400;
+    var total: usize = 0;
+    for (self.messages.items) |m| {
+        if (isToolOutputMsg(m)) total += 1;
+    }
+    if (total <= keep_recent) return 0;
+    var seen: usize = 0;
+    var reclaimed: usize = 0;
+    for (self.messages.items) |*m| {
+        if (!isToolOutputMsg(m.*)) continue;
+        seen += 1;
+        if (seen > total - keep_recent) break; // keep the most recent verbatim
+        reclaimed += truncateToolOutput(self.arena, m, stub_cap);
+    }
+    if (reclaimed > 0) self.last_context_tokens = 0; // force a re-measure next turn
+    return reclaimed;
+}
+
 /// Last-resort context recovery when compact() itself can't run — typically
 /// because the history already overflows the window, so the summarization
 /// request overflows too and fails. Drops the oldest messages at a safe
 /// boundary; returns the count dropped (0 if none). The next turn re-measures
 /// context from the provider usage.
 pub fn emergencyTrim(self: *Agent) usize {
-    const cut = emergencyCutIndex(self.messages.items) orelse return 0;
-    var fresh = std.json.Array.init(self.arena);
-    for (self.messages.items[cut..]) |m| fresh.append(m) catch return 0;
-    self.messages = fresh;
-    self.last_context_tokens = 0;
-    return cut;
+    if (emergencyCutIndex(self.messages.items)) |cut| {
+        var fresh = std.json.Array.init(self.arena);
+        for (self.messages.items[cut..]) |m| fresh.append(m) catch return 0;
+        self.messages = fresh;
+        self.last_context_tokens = 0;
+        return cut;
+    }
+    // #163: no clean user turn to cut at (a runaway tool loop). Don't wedge the
+    // session — reclaim context by truncating the oldest tool outputs in place,
+    // keeping every call/output pair valid. Nonzero = recovered.
+    return if (trimOldestToolOutputs(self) > 0) 1 else 0;
 }
 
 /// Auto-compaction with recovery. compact() summarizes the whole history in
@@ -323,6 +410,43 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
             self.say("[warning: context too large to compact and could not be trimmed safely]\n", .{}) catch {};
         }
     }
+}
+
+test "trimOldestToolOutputs recovers a runaway tool-loop history (#163)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try textMessage(a, "user", "babysit the CI")); // the only clean user turn
+    const big = try a.alloc(u8, 5000);
+    @memset(big, 'x');
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        var o: std.json.ObjectMap = .empty;
+        try o.put(a, "type", .{ .string = "function_call_output" });
+        try o.put(a, "call_id", .{ .string = "c" });
+        try o.put(a, "output", .{ .string = big });
+        try msgs.append(.{ .object = o });
+    }
+    var agent: Agent = undefined;
+    agent.messages = msgs;
+    agent.arena = a;
+    agent.last_context_tokens = 100000;
+    // no clean user turn after the midpoint -> the old emergencyTrim would give up
+    try std.testing.expect(emergencyCutIndex(agent.messages.items) == null);
+    const reclaimed = trimOldestToolOutputs(&agent);
+    try std.testing.expect(reclaimed > 0); // recovered instead of wedging
+    try std.testing.expectEqual(@as(usize, 0), agent.last_context_tokens); // forces a re-measure
+    var truncated: usize = 0;
+    var full: usize = 0;
+    for (agent.messages.items) |m| {
+        if (m == .object) if (m.object.get("output")) |out| if (out == .string) {
+            if (out.string.len < 1000) truncated += 1 else full += 1;
+        };
+    }
+    try std.testing.expectEqual(@as(usize, 6), truncated); // 10 outputs, oldest 6 truncated
+    try std.testing.expectEqual(@as(usize, 4), full); // 4 most-recent kept verbatim
+    try std.testing.expectEqual(@as(usize, 11), agent.messages.items.len); // no message dropped
 }
 
 test "cleanUserTurn: plain user text yes; assistant/tool_result no" {
