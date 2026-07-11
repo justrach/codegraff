@@ -207,11 +207,32 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             const cmd_val = call.input.object.get("command") orelse return null;
             if (cmd_val != .string) return null;
             const cmd = std.mem.trim(u8, cmd_val.string, " \t");
-            if (!Approvals.readOnlyAllowed(cmd)) return .{
+            // Safe, cwd-confined read-only commands auto-run (unchanged).
+            if (Approvals.readOnlyAllowed(cmd)) return null;
+            // A read-only verb reading OUTSIDE cwd is the sibling-repo case (#64):
+            // allow once the user approves those paths this session, else prompt.
+            // Mutating verbs / metacharacter smuggling fall through to the deny.
+            if (Approvals.readOnlyExternal(cmd)) {
+                if (approvals.planReadAllowed(self.io, cmd)) return null;
+                if (self.in) |in| if (self.out) |w| {
+                    try w.print("  ⚠ plan mode — read outside the project: {s}\n  [a]llow read-only access to these paths this session · [n]o › ", .{cmd});
+                    try w.flush();
+                    const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
+                    const answer = std.mem.trim(u8, raw, " \t\r");
+                    if (answer.len > 0 and (answer[0] == 'a' or answer[0] == 'A' or answer[0] == 'y' or answer[0] == 'Y')) {
+                        try approvals.approvePlanRead(self.io, self.gpa, cmd);
+                        return null;
+                    }
+                };
+                return .{
+                    .text = try self.arena.dupe(u8, "plan mode — read-only access outside the project was declined; describe what you need read in the plan instead"),
+                    .is_error = true,
+                };
+            }
+            return .{
                 .text = try self.arena.dupe(u8, "plan mode is on — only read-only commands run (ls/cat/grep/git status…). Put this command in the plan instead."),
                 .is_error = true,
             };
-            return null;
         }
     }
 

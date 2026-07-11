@@ -342,6 +342,8 @@ pub fn main(init: std.process.Init) !void {
     defer {
         for (approvals.prefixes.items) |p| gpa.free(p);
         approvals.prefixes.deinit(gpa);
+        for (approvals.plan_read_roots.items) |p| gpa.free(p);
+        approvals.plan_read_roots.deinit(gpa);
     }
 
     // Root system-prompt layering (base + AGENTS.md/HARNESS.md/CLAUDE.md + --append-system-prompt + active-skill lines + connected-MCP notes) lives

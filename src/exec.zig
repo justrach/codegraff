@@ -102,9 +102,14 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .is_error = true,
         };
         if (std.mem.eql(u8, call.name, "bash")) {
-            if (strField(call.input, "command")) |cmd| if (!Approvals.readOnlyAllowed(cmd)) return .{
-                .text = try gpa.dupe(u8, "plan mode is on — only read-only commands run; describe this command in the plan instead"),
-                .is_error = true,
+            if (strField(call.input, "command")) |cmd| if (!Approvals.readOnlyAllowed(cmd)) {
+                // The root may have approved this external read-only path this
+                // session (#64); subagents (from_sub) never get the external hatch.
+                const ext_ok = !ctx.from_sub and if (ctx.approvals) |ap| ap.planReadAllowed(ctx.io, cmd) else false;
+                if (!ext_ok) return .{
+                    .text = try gpa.dupe(u8, "plan mode is on — only read-only commands run; describe this command in the plan instead"),
+                    .is_error = true,
+                };
             };
         }
     }

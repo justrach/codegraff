@@ -18,6 +18,9 @@ const Allocator = std.mem.Allocator;
 pub const Approvals = struct {
     mutex: Io.Mutex = .init,
     prefixes: std.ArrayList([]const u8) = .empty,
+    /// Session-only (never persisted) path roots the user OK'd for read-only
+    /// plan-mode exploration outside cwd (#64); freed alongside prefixes.
+    plan_read_roots: std.ArrayList([]const u8) = .empty,
     yolo: bool = false,
 
     /// Read-only basics plus the build, so subagents are useful out of the
@@ -31,6 +34,15 @@ pub const Approvals = struct {
         "wc",      "grep",     "rg",         "pwd",
         "which",   "file",     "git status", "git diff",
         "git log", "git show", "zig build",  "zig fmt",
+    };
+
+    /// Verbs that only ever read — a strict subset of `seed`, used to decide what
+    /// plan mode may run OUTSIDE cwd. `zig build`/`zig fmt` are omitted (they run
+    /// build.zig / rewrite files) so the external-read hatch can never mutate a
+    /// sibling repo (#64).
+    const read_only_seed = [_][]const u8{
+        "ls",  "cat",   "head", "tail",       "wc",       "grep",    "rg",
+        "pwd", "which", "file", "git status", "git diff", "git log", "git show",
     };
 
     pub fn allowed(self: *Approvals, io: Io, cmd: []const u8) bool {
@@ -128,6 +140,81 @@ pub const Approvals = struct {
         if (!isSimple(c) or escapesCwd(c)) return false;
         for (seed) |p| if (matchesPrefix(c, p)) return true;
         return false;
+    }
+
+    fn isReadOnlyVerb(cmd: []const u8) bool {
+        for (read_only_seed) |p| if (matchesPrefix(cmd, p)) return true;
+        return false;
+    }
+
+    /// A simple read-only-verb command that reads OUTSIDE cwd — the sibling-repo
+    /// exploration case. readOnlyAllowed handles the in-cwd case; plan mode
+    /// prompts on this instead of hard-denying. Mutating verbs and metacharacter
+    /// smuggling are NOT read-only-external (#64).
+    pub fn readOnlyExternal(cmd: []const u8) bool {
+        const c = std.mem.trim(u8, cmd, " \t");
+        return isSimple(c) and escapesCwd(c) and isReadOnlyVerb(c);
+    }
+
+    /// The escaping path a token carries, or null if it stays in cwd. Mirrors
+    /// escapesCwd's token classification exactly so cwd tokens are skipped.
+    fn flaggedPath(tok: []const u8) ?[]const u8 {
+        if (tok.len == 0) return null;
+        if (tok[0] == '/' or tok[0] == '~') return tok;
+        if (std.mem.indexOf(u8, tok, "=/")) |i| return tok[i + 1 ..];
+        if (std.mem.indexOf(u8, tok, "=~")) |i| return tok[i + 1 ..];
+        var pit = std.mem.tokenizeScalar(u8, tok, '/');
+        while (pit.next()) |comp| if (std.mem.eql(u8, comp, "..")) return tok;
+        return null;
+    }
+
+    /// True if `path` sits at or under one approved root (with a '/' boundary).
+    /// Any `..` component fails outright — blocks `<root>/../../etc` smuggling.
+    fn pathUnderRoots(path: []const u8, roots: []const []const u8) bool {
+        var pit = std.mem.tokenizeScalar(u8, path, '/');
+        while (pit.next()) |comp| if (std.mem.eql(u8, comp, "..")) return false;
+        for (roots) |root| {
+            if (root.len == 0 or !std.mem.startsWith(u8, path, root)) continue;
+            if (path.len == root.len or path[root.len] == '/') return true;
+        }
+        return false;
+    }
+
+    /// Pure core of planReadAllowed: a simple read-only-verb command whose every
+    /// escaping token sits under an approved root.
+    fn planReadMatch(cmd: []const u8, roots: []const []const u8) bool {
+        const c = std.mem.trim(u8, cmd, " \t");
+        if (!isSimple(c) or !isReadOnlyVerb(c)) return false;
+        var it = std.mem.tokenizeAny(u8, c, " \t");
+        while (it.next()) |tok| {
+            const p = flaggedPath(tok) orelse continue;
+            if (!pathUnderRoots(p, roots)) return false;
+        }
+        return true;
+    }
+
+    /// Plan mode: whether `cmd` is a read-only command cleared to run outside cwd
+    /// by a session approval. Thread-safe (called from the tool-exec pool).
+    pub fn planReadAllowed(self: *Approvals, io: Io, cmd: []const u8) bool {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (self.yolo) return true;
+        return planReadMatch(cmd, self.plan_read_roots.items);
+    }
+
+    /// Record every escaping path in `cmd` as an approved read root for the rest
+    /// of the session. Skips `..` tokens (never approvable) and duplicates.
+    pub fn approvePlanRead(self: *Approvals, io: Io, gpa: Allocator, cmd: []const u8) !void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        var it = std.mem.tokenizeAny(u8, cmd, " \t");
+        outer: while (it.next()) |tok| {
+            const p = flaggedPath(tok) orelse continue;
+            var pit = std.mem.tokenizeScalar(u8, p, '/');
+            while (pit.next()) |comp| if (std.mem.eql(u8, comp, "..")) continue :outer;
+            for (self.plan_read_roots.items) |r| if (std.mem.eql(u8, r, p)) continue :outer;
+            try self.plan_read_roots.append(gpa, try gpa.dupe(u8, p));
+        }
     }
 
     pub fn toggleYolo(self: *Approvals, io: Io) bool {
@@ -308,6 +395,31 @@ test "Approvals.readOnlyAllowed: only simple, in-cwd, seed-listed commands pass 
     try std.testing.expect(!Approvals.readOnlyAllowed("cat /etc/passwd")); // escapes cwd
     try std.testing.expect(!Approvals.readOnlyAllowed("ls; rm x")); // not simple
     try std.testing.expect(!Approvals.readOnlyAllowed("git push")); // mutating git verb, not seeded
+}
+
+test "Approvals.readOnlyExternal: read-only verb reading outside cwd, simple only (#64)" {
+    try std.testing.expect(Approvals.readOnlyExternal("ls ~/projects/merjs"));
+    try std.testing.expect(Approvals.readOnlyExternal("cat /abs/file"));
+    try std.testing.expect(!Approvals.readOnlyExternal("cat src/main.zig")); // in cwd
+    try std.testing.expect(!Approvals.readOnlyExternal("rm -rf /x")); // mutating verb
+    try std.testing.expect(!Approvals.readOnlyExternal("zig fmt /x.zig")); // not read-only-seeded
+    try std.testing.expect(!Approvals.readOnlyExternal("ls /x; rm y")); // not simple
+}
+
+test "Approvals.planReadMatch: reads under an approved root pass; escapes/mutations/smuggling do not (#64)" {
+    const roots = [_][]const u8{ "~/projects/merjs", "/opt/data" };
+    const r: []const []const u8 = &roots;
+    try std.testing.expect(Approvals.planReadMatch("ls ~/projects/merjs", r));
+    try std.testing.expect(Approvals.planReadMatch("ls ~/projects/merjs/src", r));
+    try std.testing.expect(Approvals.planReadMatch("cat ~/projects/merjs/README.md", r));
+    try std.testing.expect(Approvals.planReadMatch("grep foo /opt/data/x.txt", r));
+    try std.testing.expect(Approvals.planReadMatch("grep foo ~/projects/merjs/a src/b.zig", r)); // cwd token ok alongside
+    try std.testing.expect(!Approvals.planReadMatch("cat /etc/passwd", r)); // outside every root
+    try std.testing.expect(!Approvals.planReadMatch("ls ~/secrets", r));
+    try std.testing.expect(!Approvals.planReadMatch("cat ~/projects/merjs/../../etc/passwd", r)); // .. smuggling
+    try std.testing.expect(!Approvals.planReadMatch("rm -rf ~/projects/merjs", r)); // mutating verb
+    try std.testing.expect(!Approvals.planReadMatch("ls ~/projects/merjs; rm x", r)); // metachar
+    try std.testing.expect(!Approvals.planReadMatch("ls ~/projects/merjs", &.{})); // nothing approved
 }
 
 test "Approvals.isInterpreter: flags first words that grant arbitrary code execution" {
