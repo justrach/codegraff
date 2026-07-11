@@ -410,7 +410,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         // provider never sends [DONE] — record it so a subsequent close counts
         // as a clean end, but keep reading so a trailing usage chunk still lands.
         if (self.provider.kind == .openai and openaiComplete(line.writer.buffered())) saw_done = true;
-        if (isStreamEnd(self.arena, self.provider.kind, line.writer.buffered())) {
+        if (isStreamEnd(self.scratchAlloc(), self.provider.kind, line.writer.buffered())) { // #124: parse tree is a transient bool check
             saw_done = true; // #133: the provider's terminal event landed — a later close is clean
             if (req.connection) |conn| conn.closing = true;
             break :stream;
