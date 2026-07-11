@@ -89,6 +89,9 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     sanitizeMessagesUtf8(self.arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
     if (self.provider.kind == .responses) normalizeResponsesHistory(self.arena, &self.messages);
     if (self.provider.kind == .openai) normalizeOpenAIHistory(self.arena, &self.messages); // #99: chat-completions sibling of the above
+    // #124: reclaim last request's transient parse garbage. Safe: all scratch data
+    // is consumed within a request(); messages/todos/prompts live on the session arena.
+    if (self.scratch_arena) |sa| _ = sa.reset(.retain_capacity);
     while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
         self.streamed_text = false;

@@ -227,7 +227,7 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     var it = std.mem.tokenizeScalar(u8, body, '\n');
     while (it.next()) |raw_line| {
         const payload = ssePayload(raw_line) orelse continue;
-        const v = std.json.parseFromSliceLeaky(Value, self.arena, payload, .{ .allocate = .alloc_always }) catch continue;
+        const v = std.json.parseFromSliceLeaky(Value, self.arena, payload, .{ .allocate = .alloc_always }) catch continue; // #124: MUST stay on the session arena — the Anthropic path reuses the parsed message/content_block objects (root=m.object, blocks[i].obj=cb.object) AS the assistant message, so scratch would UAF on the next request's reset
         if (v != .object) continue;
         const t = v.object.get("type") orelse continue;
         if (t != .string) continue;
@@ -315,7 +315,7 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     var it = std.mem.tokenizeScalar(u8, body, '\n');
     while (it.next()) |raw_line| {
         const payload = ssePayload(raw_line) orelse continue;
-        const v = std.json.parseFromSliceLeaky(Value, self.arena, payload, .{ .allocate = .alloc_always }) catch continue;
+        const v = std.json.parseFromSliceLeaky(Value, self.scratchAlloc(), payload, .{ .allocate = .alloc_always }) catch continue; // #124: per-event parse tree is transient (deltas are appendSlice'd into session accumulators)
         if (v != .object) continue;
         // The final usage chunk (stream_options.include_usage) may have
         // an empty choices array.
@@ -365,7 +365,7 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     if (!saw_chunk) return null;
 
     var message: std.json.ObjectMap = .empty;
-    try message.put(self.arena, "role", .{ .string = role });
+    try message.put(self.arena, "role", .{ .string = try self.arena.dupe(u8, role) }); // #124: role slices the scratch parse tree; dupe so it survives the per-request scratch reset
     try message.put(self.arena, "content", if (content.items.len > 0) Value{ .string = content.items } else .null);
     if (reasoning_content.items.len > 0) try message.put(self.arena, "reasoning_content", .{ .string = reasoning_content.items });
     if (reasoning.items.len > 0) try message.put(self.arena, "reasoning", .{ .string = reasoning.items });
@@ -374,10 +374,10 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
         for (calls.items) |c| {
             if (c.id.len == 0 and c.name.len == 0) continue;
             var function: std.json.ObjectMap = .empty;
-            try function.put(self.arena, "name", .{ .string = c.name });
+            try function.put(self.arena, "name", .{ .string = try self.arena.dupe(u8, c.name) }); // #124: dupe off the scratch parse tree
             try function.put(self.arena, "arguments", .{ .string = c.args.items });
             var tc: std.json.ObjectMap = .empty;
-            try tc.put(self.arena, "id", .{ .string = c.id });
+            try tc.put(self.arena, "id", .{ .string = try self.arena.dupe(u8, c.id) }); // #124: dupe off the scratch parse tree
             try tc.put(self.arena, "type", .{ .string = "function" });
             try tc.put(self.arena, "function", .{ .object = function });
             try tcs.append(.{ .object = tc });

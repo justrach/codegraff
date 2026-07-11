@@ -82,6 +82,12 @@ pub const TodoItem = struct {
 pub const Agent = struct {
     gpa: Allocator,
     arena: Allocator,
+    /// #124: per-turn transient parse garbage (per-SSE-event envelope parses,
+    /// isStreamEnd) allocates here and is reset each request(), so the long-lived
+    /// ROOT agent's session arena stops growing unboundedly. Optional — null on
+    /// subagents/one-shots (they free their own arena per task); scratchAlloc()
+    /// then falls back to arena, so their behavior is unchanged.
+    scratch_arena: ?*std.heap.ArenaAllocator = null,
     io: Io,
     client: *std.http.Client,
     provider: Provider,
@@ -401,6 +407,12 @@ pub const Agent = struct {
     // unchanged. esc_cancel/esc_watch_done above stay here (never alias a
     // `var`); ssePayload/sseIndex live there too since they're only
     // consumed alongside the interrupt-watch plumbing in postStream.
+    /// Allocator for per-turn transient scratch (#124): the reset-per-request
+    /// scratch arena when set (root), else the session arena (subagents/one-shot).
+    pub fn scratchAlloc(self: *Agent) Allocator {
+        return if (self.scratch_arena) |sa| sa.allocator() else self.arena;
+    }
+
     pub const escWatchTask = @import("agent_interrupt.zig").escWatchTask;
     pub const escPressed = @import("agent_interrupt.zig").escPressed;
     pub const drainSteerStdin = @import("agent_interrupt.zig").drainSteerStdin;
