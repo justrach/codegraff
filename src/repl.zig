@@ -119,6 +119,8 @@ pub const braille_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "�
 pub const dragon_frames = [_][]const u8{ "🐉  ", "🐉 ✦", "🐉 ✧", "🐉 ✦" };
 
 const Anim = enum { braille, dragon };
+pub const Toast = enum { none, copied, failed };
+pub const TOAST_MS: u64 = 1500; // copy-confirmation toast window (wall-clock ms), #85
 
 const POLL_NS: u64 = 50 * std.time.ns_per_ms;
 
@@ -175,6 +177,9 @@ pub const Model = struct {
     sel_cur_row: ?usize = null,
     view_start: usize = 0,
     view_rows: usize = 0,
+    // Copy-confirmation toast (time-based; auto-dismisses, no tick plumbing), #85.
+    toast: Toast = .none,
+    toast_until_ms: u64 = 0,
     last_term_width: usize = 0, // cached each frame for post-hoc markdown layout
     visible_text: std.array_list.Managed([]const u8) = undefined, // owned plaintext of visible rows
     dump_next: bool = false,
@@ -370,6 +375,7 @@ pub const Model = struct {
     }
 
     pub const copySelection = model_render.copySelection;
+    pub const selectionText = model_render.selectionText;
 };
 
 pub const HELP_CALC =
@@ -735,6 +741,37 @@ test "model: offline arithmetic path (no turn_fn)" {
     _ = m.applyLine("/clear");
     try std.testing.expectEqual(@as(usize, 1), m.history.items.len);
     try std.testing.expectEqual(Effect.quit, m.applyLine("/quit"));
+}
+
+test "model: copy toast shows within window then auto-dismisses (#85)" {
+    g_turn_fn = null;
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    m.toast = .copied;
+    m.toast_until_ms = 1000;
+    const shown = try m.render(std.testing.allocator, 60, 24, 500);
+    defer std.testing.allocator.free(shown);
+    try std.testing.expect(std.mem.indexOf(u8, shown, "Copied to clipboard") != null);
+    const gone = try m.render(std.testing.allocator, 60, 24, 2000);
+    defer std.testing.allocator.free(gone);
+    try std.testing.expect(std.mem.indexOf(u8, gone, "Copied to clipboard") == null);
+}
+
+test "model: selectionText joins non-empty rows and ignores whitespace-only (#85)" {
+    g_turn_fn = null;
+    var m: Model = undefined;
+    m.setup(std.testing.allocator);
+    defer m.deinit();
+    try m.visible_text.append(try std.testing.allocator.dupe(u8, "hello"));
+    try m.visible_text.append(try std.testing.allocator.dupe(u8, "world"));
+    try m.visible_text.append(try std.testing.allocator.dupe(u8, "   "));
+    m.view_rows = 3;
+    const joined = m.selectionText(std.testing.allocator, 0, 1).?;
+    defer std.testing.allocator.free(joined);
+    try std.testing.expectEqualStrings("hello\nworld", joined);
+    try std.testing.expect(m.selectionText(std.testing.allocator, 2, 2) == null); // whitespace-only
+    try std.testing.expect(m.toast == .none and m.toast_until_ms == 0); // no toast raised
 }
 
 test "model: commands toggle settings" {
