@@ -14,6 +14,12 @@ const root = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const tools_mod = @import("tools.zig");
 const ToolOutput = tools_mod.ToolOutput;
+
+/// Commit-message trailer that credits the harness assist. The commit AUTHOR
+/// stays the user's own git identity (their GitHub account) — graff never
+/// overrides GIT_AUTHOR_*; codegraff is recorded as a co-author instead,
+/// mirroring how Claude Code attributes commits.
+const codegraff_coauthor = "Co-Authored-By: Codegraff <blackfloofie@codegraff.com>";
 const Agent = agent_mod.Agent;
 
 const CappedRun = struct {
@@ -146,7 +152,10 @@ pub fn worktreeAutoCommit(gpa: Allocator, io: Io, msg: []const u8) void {
     }, 4096, 4096, 30_000) catch return;
     gpa.free(add.stdout);
     gpa.free(add.stderr);
-    const c = runCapped(gpa, io, &.{ "git", "commit", "--no-verify", "-m", msg }, 8192, 8192, 30_000) catch return;
+    // Author stays the user's git identity; codegraff rides as a co-author trailer.
+    const full = std.fmt.allocPrint(gpa, "{s}\n\n{s}", .{ msg, codegraff_coauthor }) catch msg;
+    defer if (full.ptr != msg.ptr) gpa.free(full);
+    const c = runCapped(gpa, io, &.{ "git", "commit", "--no-verify", "-m", full }, 8192, 8192, 30_000) catch return;
     gpa.free(c.stdout);
     gpa.free(c.stderr);
 }
@@ -219,7 +228,7 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
         }
 
         // 2) commit the squashed result as one clean commit on the current branch.
-        const cmsg = std.fmt.allocPrint(arena, "{s}: land worktree", .{name}) catch "land worktree";
+        const cmsg = std.fmt.allocPrint(arena, "{s}: land worktree\n\n{s}", .{ name, codegraff_coauthor }) catch "land worktree";
         const c = runCapped(gpa, io, &.{ "git", "commit", "--no-verify", "-m", cmsg }, 8192, 8192, 30_000) catch {
             try out.writeAll("✗ git commit failed — worktree left intact\n");
             return;

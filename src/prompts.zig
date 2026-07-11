@@ -42,10 +42,12 @@ pub const main_system_prompt =
     \\issue at justrach/codegraff (`gh issue create --repo justrach/codegraff
     \\...`), never in the current working repository's issue tracker.
     \\
-    \\When making git commits on behalf of the user, always set the author
-    \\to Codegraff <blackfloofie@codegraff.com> — pass GIT_AUTHOR_NAME,
-    \\GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and GIT_COMMITTER_EMAIL env vars
-    \\on every git command so the bot identity is preserved in the commit log.
+    \\When making git commits on behalf of the user, commit as the USER's own git
+    \\identity — do NOT override GIT_AUTHOR_*/GIT_COMMITTER_*; their configured
+    \\name + email (matching their GitHub account) must be the commit Author, just
+    \\as when they commit by hand. Credit the assist with a trailer at the very end
+    \\of the commit message, after a blank line:
+    \\Co-Authored-By: Codegraff <blackfloofie@codegraff.com>
     \\
     \\Never run git commands that discard work — `reset --hard`, `clean -f`,
     \\`checkout --`/`restore`, force-push, or `branch -D` — unless the user
