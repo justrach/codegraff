@@ -336,6 +336,18 @@ test "cleanUserTurn: plain user text yes; assistant/tool_result no" {
     try std.testing.expect(!cleanUserTurn(tr));
 }
 
+test "closeCodexWs resets the delta session state + frees the response id (codex-ws)" {
+    var agent: Agent = undefined;
+    agent.gpa = std.testing.allocator;
+    agent.codex_ws = null; // no live WsClient to deinit in a unit test
+    agent.codex_prev_id = try std.testing.allocator.dupe(u8, "resp_abc123"); // must be freed (leak-checked)
+    agent.codex_sent_upto = 5;
+    agent.closeCodexWs();
+    try std.testing.expect(agent.codex_prev_id == null); // freed + nulled
+    try std.testing.expectEqual(@as(usize, 0), agent.codex_sent_upto); // delta boundary reset
+    try std.testing.expect(agent.codex_ws == null);
+}
+
 test "emergencyCutIndex: cuts at a clean user turn at/after the midpoint" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

@@ -349,6 +349,7 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
     // Collect the done-items and synthesize a {output, usage} object.
     var items = std.json.Array.init(self.arena);
     var usage: ?Value = null;
+    var resp_id: ?[]const u8 = null; // response.id, for previous_response_id delta continuation (#codex-ws)
     var saw_completed = false;
     var err_msg: ?[]const u8 = null;
     var it = std.mem.tokenizeScalar(u8, body, '\n');
@@ -367,6 +368,9 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
             saw_completed = true;
             if (v.object.get("response")) |r| if (r == .object) {
                 if (r.object.get("usage")) |u| usage = u;
+                if (r.object.get("id")) |idv| if (idv == .string) {
+                    resp_id = idv.string;
+                };
             };
         } else if (std.mem.eql(u8, t.string, "response.failed") or std.mem.eql(u8, t.string, "error")) {
             err_msg = errorMessage(v.object) orelse "codex stream reported a failure";
@@ -376,6 +380,7 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
         var resp: std.json.ObjectMap = .empty;
         try resp.put(self.arena, "output", .{ .array = items });
         if (usage) |u| try resp.put(self.arena, "usage", u);
+        if (resp_id) |rid| try resp.put(self.arena, "id", .{ .string = rid });
         return .{ .ok = resp };
     }
     if (err_msg) |m| return .{ .err = m };
@@ -546,8 +551,22 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             // returned encrypted and passed back for cross-turn continuity.
             try s.objectField("instructions");
             try s.write(self.systemPrompt());
+            // Codex WS delta: once a response.id is held on a live WS session,
+            // send previous_response_id + only the items the server does not yet
+            // hold, instead of the full history (avoids the huge frame that the
+            // backend rejects → WriteFailed). Full input otherwise (first turn/SSE).
+            if (self.codex_ws != null) if (self.codex_prev_id) |pid| {
+                try s.objectField("previous_response_id");
+                try s.write(pid);
+            };
             try s.objectField("input");
-            try s.write(Value{ .array = self.messages });
+            if (self.codex_ws != null and self.codex_prev_id != null and self.codex_sent_upto <= self.messages.items.len) {
+                var delta = std.json.Array.init(self.arena);
+                for (self.messages.items[self.codex_sent_upto..]) |m| try delta.append(m);
+                try s.write(Value{ .array = delta });
+            } else {
+                try s.write(Value{ .array = self.messages });
+            }
             if (tools) |t| {
                 try s.objectField("tools");
                 try s.print("{s}", .{t});
