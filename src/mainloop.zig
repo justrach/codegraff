@@ -76,6 +76,24 @@ pub const Ctx = struct {
     sys_strict: []const u8,
 };
 
+/// Apply the backgrounded AI session title (titleTask) to the redrawable
+/// window title + saved session filename. Called from BOTH the happy-path
+/// post-turn step and the end-of-iteration `defer`, so an interrupted /
+/// stalled / dropped / errored turn — which `continue`s before the post-turn
+/// step — still lands the title instead of generating it then throwing it away
+/// (ai_title_done is already set, so it would otherwise never regenerate and
+/// the window title stays stuck on the prompt-derived fallback). Awaits once.
+fn applyAiTitle(ctx: *Ctx, f: *Io.Future(?[]const u8)) void {
+    if (f.await(ctx.io)) |t| {
+        ctx.root.session_title = ctx.arena.dupe(u8, t) catch null;
+        ctx.gpa.free(t);
+        if (ctx.root.session_title) |st| {
+            title_mod.setTerminalTitle(ctx.out, st, main_mod.g_cwd_display);
+            session.renameSession(ctx.root, ctx.arena, session.slugifyTitle(ctx.arena, st));
+        }
+    }
+}
+
 /// The interactive-REPL / --json-protocol turn loop itself. Runs until EOF,
 /// `exit`/`quit`/`q`, or a plain `break` out of the raw-line read. main()
 /// resumes right after this returns and does its own final-save/worktree
@@ -387,15 +405,17 @@ pub fn run(ctx: *Ctx) !void {
         vision.stageGuiImageAttachment(ctx.root, msg);
 
         // Generate the AI tab-title concurrently (io.async), spawned BEFORE the
-        // header so the first-turn header can wait for the summary title; reaped
-        // after the turn (below) or by this defer on an early bail-out.
+        // header so the first-turn header can wait for the summary title. Applied
+        // after the turn on the happy path (below); the defer is the fallback for
+        // an interrupted/stalled/dropped/errored turn (those `continue` before the
+        // apply step) so the generated title is never silently discarded.
         var title_fut: ?Io.Future(?[]const u8) = null;
         if (!main_mod.json_mode and ctx.root.ai_title and !ctx.root.ai_title_done) {
             ctx.root.ai_title_done = true;
             title_fut = ctx.io.async(title_mod.titleTask, .{ ctx.gpa, ctx.io, ctx.root.client, ctx.root.provider, base_msg });
         }
         defer if (title_fut) |*f| {
-            _ = f.await(ctx.io);
+            applyAiTitle(ctx, f);
         };
 
         // TUI/session header: once the first real prompt materializes the chat,
@@ -597,14 +617,7 @@ pub fn run(ctx: *Ctx) !void {
         // the fast prompt title; the summary now lands on the redrawable window title
         // and the saved session filename. Usually already resolved by here.
         if (title_fut) |*f| {
-            if (f.await(ctx.io)) |t| {
-                ctx.root.session_title = ctx.arena.dupe(u8, t) catch null;
-                ctx.gpa.free(t);
-                if (ctx.root.session_title) |st| {
-                    title_mod.setTerminalTitle(ctx.out, st, main_mod.g_cwd_display);
-                    session.renameSession(ctx.root, ctx.arena, session.slugifyTitle(ctx.arena, st));
-                }
-            }
+            applyAiTitle(ctx, f);
             title_fut = null;
         }
         fleet.joinElites(ctx.io); // publish backgrounded fleet champions for the next turn (no-op once joined)
