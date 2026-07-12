@@ -424,19 +424,19 @@ test "post (#177): a send-failed connection is not re-pooled — the next reques
     const big = try gpa.alloc(u8, 8 * 1024 * 1024);
     defer gpa.free(big);
     @memset(big, 'x');
-    // Assert the send fails with WriteFailed (the #177 signature). If it ever
-    // doesn't (a platform where the 8MB write buffers and the failure only
-    // surfaces later at head-read), release the server task's still-pending
-    // second accept() with a throwaway dial before failing — otherwise the
-    // deferred fut.await would hang the test binary, same as the second post.
+    // The send to a closed peer MUST fail — a success is the only wrong outcome.
+    // The specific error is platform-dependent: on POSIX the 8 MB body overruns
+    // the socket buffers so the reset fails the WRITE (error.WriteFailed, the
+    // #177 signature); on Windows the body buffers and the reset instead
+    // surfaces as a read-side error at receiveHead. Either way post()'s errdefer
+    // poisoned the connection, and the real assertion is that the NEXT request
+    // recovers (below). Only an unexpected success needs the throwaway dial, to
+    // release the server's still-pending second accept() so await can't hang.
     if (post(gpa, &client, provider, big)) |resp| {
         gpa.free(resp);
         if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
-        return error.TestExpectedError; // the send to a closed peer must fail
-    } else |err| if (err != error.WriteFailed) {
-        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
-        return err;
-    }
+        return error.TestExpectedError;
+    } else |_| {}
 
     // The regression: without the poison this pulls dead conn 1 back out of
     // the pool (no fresh dial) and fails with WriteFailed instead of
