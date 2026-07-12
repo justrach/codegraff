@@ -29,6 +29,7 @@ const normalizeOpenAIHistory = messages_mod.normalizeOpenAIHistory;
 const serde = @import("serde.zig");
 const writeAnthropicMessages = serde.writeAnthropicMessages;
 const writeOpenAIMessageNormalized = serde.writeOpenAIMessageNormalized;
+const util = @import("util.zig");
 
 const http = @import("http.zig");
 const postWatched = http.postWatched;
@@ -91,23 +92,28 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     var force = self.strict and tools != null;
     var stream_usage = true; // openai stream_options; dropped if rejected
     var auth_refreshed = false; // #148: at most one forced token refresh + retry
+    // #124: reclaim last request's transient parse garbage FIRST, so everything
+    // below (oauth refresh internals, per-event parse trees, tool-arg parses)
+    // can use the scratch arena for this request. Safe: all scratch data is
+    // consumed before the next request(); messages/todos/prompts live on the
+    // session arena.
+    if (self.scratch_arena) |sa| _ = sa.reset(.retain_capacity);
     // #148: a login-sourced OAuth token (kimi/xai, ~1h) expires mid-session and
     // is minted only at startup; refresh it in place before the call when near
     // expiry so a long session — or a subagent that inherited the on-disk token —
     // never 401s. Login-sourced keys only (env keys untouched); a cheap disk read
-    // unless actually near expiry.
+    // unless actually near expiry. The refresh internals (file read + JSON parse,
+    // ~1-2KB) are scratch (#124); only the token itself is duped to survive
+    // future requests.
     if (self.provider.source == .login) {
-        if (oauth.refreshOAuthKey(self.io, self.gpa, self.arena, self.home, self.provider.id, false)) |fresh| {
-            self.provider.api_key = fresh;
+        if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, false)) |fresh| {
+            self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
         }
     }
     // #95: scrub any malformed function_call_output before it hits the wire.
     sanitizeMessagesUtf8(self.arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
     if (self.provider.kind == .responses) normalizeResponsesHistory(self.arena, &self.messages);
     if (self.provider.kind == .openai) normalizeOpenAIHistory(self.arena, &self.messages); // #99: chat-completions sibling of the above
-    // #124: reclaim last request's transient parse garbage. Safe: all scratch data
-    // is consumed within a request(); messages/todos/prompts live on the session arena.
-    if (self.scratch_arena) |sa| _ = sa.reset(.retain_capacity);
     rebuild: while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
         self.streamed_text = false;
@@ -317,9 +323,11 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             // invalid/expired"; force a refresh and retry once (kimi-code's
             // buildAuth(true)). Give up only if the fresh token also fails.
             if (!auth_refreshed and self.provider.source == .login and isAuthError(msg)) {
-                if (oauth.refreshOAuthKey(self.io, self.gpa, self.arena, self.home, self.provider.id, true)) |fresh| {
+                if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, true)) |fresh| {
                     auth_refreshed = true;
-                    self.provider.api_key = fresh;
+                    // #124: dupe off the scratch refresh internals — the key must
+                    // survive every later request of the session.
+                    self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
                     if (self.tracer) |tr| tr.note("oauth_refresh", "auth error — refreshed login token, retrying");
                     continue;
                 }
@@ -395,6 +403,14 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
     // The final output items arrive as individual `response.output_item.done`
     // events; `response.completed` carries usage but an empty output array.
     // Collect the done-items and synthesize a {output, usage} object.
+    //
+    // #124 slice 2b: every SSE event of the stream parses on the per-request
+    // scratch arena — the text deltas are the bulk of the body and their parse
+    // trees used to pile up on the session arena forever (~30-45 KB/turn
+    // measured). Only what escapes this request is detached onto the session
+    // arena: the output items (stepResponses appends them to history verbatim)
+    // via dupeJsonValue, and the usage/id/error scalars.
+    const scratch = self.scratchAlloc();
     var items = std.json.Array.init(self.arena);
     var usage: ?Value = null;
     var resp_id: ?[]const u8 = null; // response.id, for previous_response_id delta continuation (#codex-ws)
@@ -406,22 +422,25 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
         if (!std.mem.startsWith(u8, line, "data:")) continue;
         const payload = std.mem.trim(u8, line["data:".len..], " ");
         if (payload.len == 0 or std.mem.eql(u8, payload, "[DONE]")) continue;
-        const v = std.json.parseFromSliceLeaky(Value, self.arena, payload, .{ .allocate = .alloc_always }) catch continue;
+        const v = std.json.parseFromSliceLeaky(Value, scratch, payload, .{ .allocate = .alloc_always }) catch continue;
         if (v != .object) continue;
         const t = v.object.get("type") orelse continue;
         if (t != .string) continue;
         if (std.mem.eql(u8, t.string, "response.output_item.done")) {
-            if (v.object.get("item")) |item| try items.append(item);
+            if (v.object.get("item")) |item| try items.append(try util.dupeJsonValue(self.arena, item));
         } else if (std.mem.eql(u8, t.string, "response.completed") or std.mem.eql(u8, t.string, "response.incomplete")) {
             saw_completed = true;
             if (v.object.get("response")) |r| if (r == .object) {
-                if (r.object.get("usage")) |u| usage = u;
+                if (r.object.get("usage")) |u| usage = try util.dupeJsonValue(self.arena, u);
                 if (r.object.get("id")) |idv| if (idv == .string) {
-                    resp_id = idv.string;
+                    resp_id = try self.arena.dupe(u8, idv.string);
                 };
             };
         } else if (std.mem.eql(u8, t.string, "response.failed") or std.mem.eql(u8, t.string, "error")) {
-            err_msg = errorMessage(v.object) orelse "codex stream reported a failure";
+            err_msg = if (errorMessage(v.object)) |m|
+                self.arena.dupe(u8, m) catch "codex stream reported a failure"
+            else
+                "codex stream reported a failure";
         }
     }
     if (saw_completed or items.items.len > 0) {
@@ -432,9 +451,13 @@ pub fn parseResponses(self: *Agent, body: []const u8) !ResponsesResult {
         return .{ .ok = resp };
     }
     if (err_msg) |m| return .{ .err = m };
-    // Not an SSE stream — maybe a JSON error body (401, rate limit, …).
-    const v = std.json.parseFromSliceLeaky(Value, self.arena, body, .{ .allocate = .alloc_always }) catch return error.Unparseable;
-    if (v == .object) if (errorMessage(v.object)) |m| return .{ .err = m };
+    // Not an SSE stream — maybe a JSON error body (401, rate limit, …). The
+    // message is duped off the scratch parse: sayApiError re-formats it onto
+    // the session arena, but the retry loop may also inspect it after another
+    // rebuild iteration reset the scratch arena.
+    const v = std.json.parseFromSliceLeaky(Value, scratch, body, .{ .allocate = .alloc_always }) catch return error.Unparseable;
+    if (v == .object) if (errorMessage(v.object)) |m|
+        return .{ .err = self.arena.dupe(u8, m) catch "unparseable provider error" };
     return error.Unparseable;
 }
 

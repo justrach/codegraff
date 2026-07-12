@@ -180,6 +180,11 @@ pub var g_path_env: []const u8 = "";
 pub var g_cwd_display: []const u8 = ".";
 pub var g_worktree_branch: ?[]const u8 = null; // -w: the worktree's scratch branch; non-null = auto-commit each turn's edits to it
 pub var g_worktree_autocommit: bool = true; // --no-autocommit turns off the per-turn checkpoint commits
+/// #124: allocator-level leak telemetry (GRAFF_MEM_DEBUG=1): the process-lifetime
+/// session arena, queryable at turn boundaries so a per-turn `mem` event can
+/// report its capacity next to the scratch arena's.
+pub var g_session_arena: ?*std.heap.ArenaAllocator = null;
+pub var g_mem_debug: bool = false;
 /// Short task label for terminal/TUI headers (mirrors the GUI's first-prompt fallback: the user's first message as a compact tab/session title).
 // Session-title + header rendering + provider-response text parsers live in title.zig.
 const title_mod = @import("title.zig");
@@ -250,6 +255,8 @@ pub fn main(init: std.process.Init) !void {
     // reset each request() so a long REPL/--json/serve session's RSS stays flat.
     var scratch_state = std.heap.ArenaAllocator.init(gpa);
     defer scratch_state.deinit();
+    g_session_arena = init.arena;
+    g_mem_debug = init.environ_map.get("GRAFF_MEM_DEBUG") != null;
     // Windows: let the console interpret ANSI/VT escapes so the harness's color and cursor sequences render instead of literal text.
     if (builtin.os.tag == .windows) tty.enableVtOutput();
     // CLI flags: the Flags struct + parsing loop live in args.zig; downstream code reads flags.<name> in place of ~27 locals this block used to declare.

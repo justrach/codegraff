@@ -673,6 +673,14 @@ pub fn run(ctx: *Ctx) !void {
                 final_text;
             ctx.root.emit(.{ .type = "finalizing" });
             ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = ctx.root.last_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = true, .metadata_complete = ctx.root.last_context_tokens > 0 });
+            // #124: allocator-level leak telemetry (GRAFF_MEM_DEBUG=1) — arena
+            // capacity per turn separates a session-arena leak from gpa-side
+            // growth, which OS-level RSS sampling can't tell apart.
+            if (main_mod.g_mem_debug) ctx.root.emit(.{
+                .type = "mem",
+                .session_arena_kb = if (main_mod.g_session_arena) |a| a.queryCapacity() / 1024 else 0,
+                .scratch_arena_kb = if (ctx.root.scratch_arena) |a| a.queryCapacity() / 1024 else 0,
+            });
         }
 
         // Apply the AI summary title + fleet champions that ran in the background
