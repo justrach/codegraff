@@ -23,12 +23,15 @@ interface CommandResultDialogProps {
   result: CommandRunResult | null;
   onClose: () => void;
   onApproveWorkflow?: (prompt: string) => Promise<void> | void;
+  /** When set, renders the stray-command warning actions and sends the draft as-is. */
+  onSendAsText?: () => void;
 }
 
 export function CommandResultDialog({
   result,
   onClose,
   onApproveWorkflow,
+  onSendAsText,
 }: CommandResultDialogProps) {
   const workflowPrompt =
     result?.payload?.kind === "workflowDraft"
@@ -71,6 +74,21 @@ export function CommandResultDialog({
               <CheckIcon data-icon="inline-start" />
               Approve
             </Button>
+          ) : null}
+          {onSendAsText != null ? (
+            <>
+              <Button type="button" variant="outline" onClick={onClose}>
+                Return to editing
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  onSendAsText();
+                }}
+              >
+                Send as text
+              </Button>
+            </>
           ) : null}
         </DialogFooter>
       </DialogContent>

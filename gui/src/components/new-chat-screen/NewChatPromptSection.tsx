@@ -58,6 +58,7 @@ export function NewChatPromptSection({
     trySubmitAsCommand,
     commandResult,
     dismissCommandResult,
+    sendDraftAsText,
   } = useCommandRouter(binding, { onCommandResult });
   const interrupt = getActiveInterrupt(messages);
   const lastAssistant = getPlanDecisionAssistant({
@@ -153,6 +154,7 @@ export function NewChatPromptSection({
       <CommandResultDialog
         result={commandResult}
         onClose={dismissCommandResult}
+        onSendAsText={sendDraftAsText ?? undefined}
       />
     </>
   );
