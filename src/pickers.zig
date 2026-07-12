@@ -433,8 +433,15 @@ const ultracode_persistent_note =
     \\structural.]
 ;
 
-pub fn applyUltracodeSteering(arena: Allocator, msg: []const u8, persistent_enabled: bool) !UltracodeMessage {
-    const explicit = std.ascii.indexOfIgnoreCase(msg, "ultracode") != null;
+/// `raw` is what the user actually typed this turn; `msg` is the assembled
+/// turn message (goal/eval/loop/plan notes may already be appended). The
+/// explicit-codeword scan runs ONLY on `raw`: harness-assembled notes replay
+/// prior context — a /goal set during an ultracode task, a todo echoed
+/// through the goal note — and scanning them made the codeword sticky, so
+/// every turn after /clear bannered as explicit even though the user never
+/// typed the word (#178).
+pub fn applyUltracodeSteering(arena: Allocator, msg: []const u8, raw: []const u8, persistent_enabled: bool) !UltracodeMessage {
+    const explicit = std.ascii.indexOfIgnoreCase(raw, "ultracode") != null;
     if (explicit) {
         return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_explicit_note }), .explicit = true };
     }
@@ -442,6 +449,27 @@ pub fn applyUltracodeSteering(arena: Allocator, msg: []const u8, persistent_enab
         return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_persistent_note }), .explicit = false };
     }
     return .{ .text = msg, .explicit = false };
+}
+
+test "applyUltracodeSteering (#178): the codeword scan runs on the raw typed text, not the assembled msg" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // The word arriving via an appended harness note (e.g. a standing goal)
+    // must NOT count as an invocation — and with persistent mode off, the
+    // message passes through untouched.
+    const assembled = "write the report\n\n[harness note: goal — ultracode the pipeline]";
+    const via_note = try applyUltracodeSteering(a, assembled, "write the report", false);
+    try std.testing.expect(!via_note.explicit);
+    try std.testing.expectEqualStrings(assembled, via_note.text);
+    // The user actually typing it does (case-insensitive) and appends the note.
+    const typed = try applyUltracodeSteering(a, "ULTRACODE fix the bug", "ULTRACODE fix the bug", false);
+    try std.testing.expect(typed.explicit);
+    try std.testing.expect(std.mem.indexOf(u8, typed.text, "codeword") != null);
+    // Persistent mode still applies its note without ever claiming explicit.
+    const persistent = try applyUltracodeSteering(a, assembled, "write the report", true);
+    try std.testing.expect(!persistent.explicit);
+    try std.testing.expect(std.mem.indexOf(u8, persistent.text, "ultracode mode is enabled") != null);
 }
 
 const ultracode_on_first = [_]PickItem{
@@ -711,15 +739,15 @@ test "applyUltracodeSteering handles explicit and persistent modes" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    const plain = try applyUltracodeSteering(a, "fix this", false);
+    const plain = try applyUltracodeSteering(a, "fix this", "fix this", false);
     try std.testing.expect(!plain.explicit);
     try std.testing.expectEqualStrings("fix this", plain.text);
 
-    const persistent = try applyUltracodeSteering(a, "fix this", true);
+    const persistent = try applyUltracodeSteering(a, "fix this", "fix this", true);
     try std.testing.expect(!persistent.explicit);
     try std.testing.expect(std.mem.indexOf(u8, persistent.text, "ultracode mode is enabled") != null);
 
-    const explicit = try applyUltracodeSteering(a, "ultracode fix this", true);
+    const explicit = try applyUltracodeSteering(a, "ultracode fix this", "ultracode fix this", true);
     try std.testing.expect(explicit.explicit);
     try std.testing.expect(std.mem.indexOf(u8, explicit.text, "user invoked the \"ultracode\" codeword") != null);
     try std.testing.expect(std.mem.indexOf(u8, explicit.text, "ultracode mode is enabled") == null);
