@@ -453,3 +453,110 @@ test "post (#177): a send-failed connection is not re-pooled — the next reques
         return err;
     }
 }
+
+// post's 429/5xx branch: an oversized error body is partial-drained
+// (capture5xxBodyStream stops at the 600-byte g_5xx_body_buf), the request
+// surfaces as error.ServerError, and the session recovers on the next request.
+// This is the dominant real-world failure (gateway throttles / 500s), and
+// before this test the whole 5xx branch was uncovered. NOTE: unlike the
+// send-failed case above, std will NOT re-pool a partially-read response
+// connection on its own, so post's explicit 5xx poison is defensive; this test
+// exercises the path end-to-end rather than isolating that poison. The
+// load-bearing poison regression — a failed SEND that leaves the reader
+// deceptively .ready so std DOES re-pool the corpse — is the test above.
+test "post (#177 5xx path): an oversized 5xx surfaces as ServerError and the session recovers" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    // A 5xx body well over the 600-byte capture buffer, with newlines so
+    // capture5xxBodyStream grabs a snippet and stops, leaving the rest unread.
+    var body500: [4096]u8 = undefined;
+    {
+        const line = "upstream gateway error (simulated 5xx)\n";
+        for (&body500, 0..) |*b, i| b.* = line[i % line.len];
+    }
+
+    const Srv = struct {
+        fn readReq(sr: *std.Io.net.Stream.Reader) void {
+            while (true) {
+                const l = (sr.interface.takeDelimiter('\n') catch return) orelse return;
+                if (l.len == 0 or (l.len == 1 and l[0] == '\r')) break; // end of headers
+            }
+            _ = sr.interface.take(2) catch {}; // the 2-byte "{}" body
+        }
+        fn run(io_: Io, server: *std.Io.net.Server, body: []const u8) void {
+            // conn 1: keep-alive 500 (no `connection: close`) with an oversized
+            // body — without the poison std would re-pool this half-read corpse.
+            const c1 = server.accept(io_) catch return;
+            {
+                defer c1.close(io_);
+                var rbuf: [4096]u8 = undefined;
+                var sr = std.Io.net.Stream.Reader.init(c1, io_, &rbuf);
+                readReq(&sr);
+                var hbuf: [96]u8 = undefined;
+                const head = std.fmt.bufPrint(&hbuf, "HTTP/1.1 500 Internal Server Error\r\ncontent-length: {d}\r\n\r\n", .{body.len}) catch return;
+                var wbuf: [1024]u8 = undefined;
+                var sw = std.Io.net.Stream.Writer.init(c1, io_, &wbuf);
+                sw.interface.writeAll(head) catch {};
+                sw.interface.writeAll(body) catch {};
+                sw.interface.flush() catch {};
+            }
+            // conn 2 only ever arrives on a fresh dial (the poison worked).
+            const c2 = server.accept(io_) catch return;
+            defer c2.close(io_);
+            var rbuf: [4096]u8 = undefined;
+            var sr = std.Io.net.Stream.Reader.init(c2, io_, &rbuf);
+            readReq(&sr);
+            var wbuf: [256]u8 = undefined;
+            var sw = std.Io.net.Stream.Writer.init(c2, io_, &wbuf);
+            sw.interface.writeAll("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok") catch {};
+            sw.interface.flush() catch {};
+        }
+    };
+
+    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+    var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
+    var fut = io.async(Srv.run, .{ io, &server, @as([]const u8, &body500) });
+    defer fut.await(io);
+    defer server.deinit(io);
+
+    var bound = server.socket.address;
+    var url_buf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1/x", .{bound.getPort()});
+    const provider: Provider = .{
+        .id = "test",
+        .kind = .openai,
+        .auth = .x_api_key,
+        .url = url,
+        .api_key = "k",
+        .model = "m",
+        .context = 0,
+    };
+
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+
+    // The 5xx surfaces as error.ServerError and poisons conn 1. Guard the
+    // assertion the same way as the send-failed test: on any other outcome,
+    // release the server's still-pending second accept() before failing.
+    if (post(gpa, &client, provider, "{}")) |resp| {
+        gpa.free(resp);
+        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        return error.TestExpectedError; // a 500 must surface as ServerError
+    } else |err| if (err != error.ServerError) {
+        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        return err;
+    }
+
+    // Recovery: the next request reaches conn 2's 200. (Unlike the send-failed
+    // case above, std does not re-pool a partially-read connection on its own,
+    // so this asserts end-to-end recovery, not that the 5xx poison is required.)
+    const second = post(gpa, &client, provider, "{}");
+    if (second) |resp| {
+        defer gpa.free(resp);
+        try std.testing.expectEqualStrings("ok", resp);
+    } else |err| {
+        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        return err;
+    }
+}
