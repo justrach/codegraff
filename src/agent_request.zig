@@ -71,6 +71,22 @@ test "isAuthError (#148): auth failures only, not credits/rate/other" {
     try std.testing.expect(!isAuthError("context length exceeded"));
 }
 
+test "fullInputEstimateTokens (#174): counts retained reasoning the chained usage never reports" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    var agent: Agent = undefined;
+    agent.messages = msgs;
+    try std.testing.expectEqual(@as(u64, 0), fullInputEstimateTokens(&agent) / 100); // empty history ≈ nothing
+    // a fat encrypted-reasoning item — exactly what a WS-chained total_tokens excludes
+    const blob = "{\"type\":\"reasoning\",\"encrypted_content\":\"" ++ ("A" ** 8192) ++ "\"}";
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, blob, .{}));
+    agent.messages = msgs;
+    const est = fullInputEstimateTokens(&agent);
+    try std.testing.expect(est > 2000); // ~8KB serialized / 4 bytes-per-token
+}
+
 pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     var force = self.strict and tools != null;
     var stream_usage = true; // openai stream_options; dropped if rejected
@@ -227,6 +243,15 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                         if (self.tracer) |tr| tr.note("ws", "server rejected previous_response_id — re-anchoring with full input");
                         continue :rebuild;
                     }
+                    // #174: a context-window rejection means the true input
+                    // size blew past the wall while the chained meter lagged —
+                    // and the rejected request never returns usage to correct
+                    // it, so the meter would stay stuck under compact@ and the
+                    // session would wedge (every retry resends the same
+                    // oversized history). Pin the meter to the window so the
+                    // ApiError compact-and-recover path engages.
+                    if (std.mem.indexOf(u8, msg, "exceeds the context window") != null)
+                        self.last_context_tokens = self.provider.context;
                     if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("codex api error: {s}", .{msg});
                     return error.ApiError;
@@ -429,6 +454,21 @@ pub fn errorMessage(obj: std.json.ObjectMap) ?[]const u8 {
     return null;
 }
 
+/// #174: ~4-bytes/token estimate of the FULL history serialized as Responses
+/// `input` items — the cost of the next full-history resend (runTurn closes
+/// the WS per turn, so every turn's first request replays everything). The
+/// chained WS usage can sit far below this: with previous_response_id the
+/// server discards prior-turn reasoning from context, while a resend pays for
+/// every retained encrypted reasoning item again. Counting discard writer —
+/// no allocation.
+pub fn fullInputEstimateTokens(self: *Agent) u64 {
+    var buf: [512]u8 = undefined;
+    var d: Io.Writer.Discarding = .init(&buf);
+    var s: std.json.Stringify = .{ .writer = &d.writer };
+    s.write(Value{ .array = self.messages }) catch return 0;
+    return d.fullCount() / 4;
+}
+
 pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body_len: usize) void {
     self.last_cache_read = 0;
     // Fallback estimate (~4 bytes/token) from the serialized request body,
@@ -460,6 +500,15 @@ pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body
             self.last_context_tokens = est;
         }
     }
+    // #174: the server's chained number undercounts what the next full-history
+    // resend will cost, and the resend is the request that gets rejected — so
+    // the meter must never sit below the local full-input estimate. Same
+    // correction codex CLI applies (get_non_last_reasoning_items_tokens).
+    // Without it a long Extra-high session reads "95k/270k" right up until the
+    // backend rejects the resend for exceeding the window, and auto-compaction
+    // (gated on this meter) never rescues it.
+    const full_est = fullInputEstimateTokens(self);
+    if (full_est > self.last_context_tokens) self.last_context_tokens = full_est;
     var cached: i64 = 0;
     if (u.get("input_tokens_details")) |d| if (d == .object) {
         cached = usageInt(d.object, "cached_tokens");
