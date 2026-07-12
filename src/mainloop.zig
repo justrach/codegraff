@@ -500,7 +500,7 @@ pub fn run(ctx: *Ctx) !void {
         }
 
         // "ultracode" codeword or persistent /ultracode mode: opt turns into multi-agent workflow mode.
-        const ultracode_msg = try pickers.applyUltracodeSteering(ctx.arena, msg, ctx.root.ultracode_mode or ctx.root.reasoning == .ultra);
+        const ultracode_msg = try pickers.applyUltracodeSteering(ctx.arena, msg, base_msg, ctx.root.ultracode_mode or ctx.root.reasoning == .ultra);
         if (ultracode_msg.explicit) {
             if (!main_mod.json_mode) {
                 if (ctx.interactive) {
