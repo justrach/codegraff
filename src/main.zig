@@ -241,6 +241,11 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
+    // #122: raise the open-file soft limit to the OS hard cap (Darwin defaults
+    // to 256) so parallel tool/subagent/MCP fan-out in one turn doesn't blow up
+    // shell tools with ProcessFdQuotaExceeded. Best-effort, no-op where rlimits
+    // don't exist.
+    std.process.raiseFileDescriptorLimit();
     // #124: a per-turn scratch arena for the root agent's transient parse garbage,
     // reset each request() so a long REPL/--json/serve session's RSS stays flat.
     var scratch_state = std.heap.ArenaAllocator.init(gpa);

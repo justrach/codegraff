@@ -350,6 +350,12 @@ fn companionNativeFallback(bare: []const u8) []const u8 {
 }
 
 pub fn failure(gpa: Allocator, err: anyerror) ToolOutput {
+    // #122: the bare error name is useless advice for an open-file-limit hit —
+    // say what it means and what actually helps.
+    if (err == error.ProcessFdQuotaExceeded) {
+        const text = gpa.dupe(u8, "error: ProcessFdQuotaExceeded — graff hit its open-file limit, usually from many parallel tools/subagents/MCP servers in one turn. Retry the failed calls sequentially (less parallel fan-out); if it recurs, raise the limit (`ulimit -n 4096`) before starting graff.") catch return .{ .is_error = true };
+        return .{ .text = text, .is_error = true };
+    }
     const text = std.fmt.allocPrint(gpa, "error: {t}", .{err}) catch return .{ .is_error = true };
     return .{ .text = text, .is_error = true };
 }

@@ -135,7 +135,13 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         const bg = if (input == .object) (if (input.object.get("run_in_background")) |v| v == .bool and v.bool else false) else false;
         if (bg) {
             const job = spawnJob(gpa, io, cmd) catch |err| return .{
-                .text = try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err}),
+                // #122: backgrounding costs MORE fds (pipes + pump task), so the
+                // generic "run it in the foreground" advice is right for every
+                // error except the fd-quota one — special-case that.
+                .text = if (err == error.ProcessFdQuotaExceeded)
+                    try gpa.dupe(u8, "could not start background job (ProcessFdQuotaExceeded) — graff hit its open-file limit. Wait for running jobs/tools to finish, then retry with less parallel fan-out; if it recurs, raise the limit (`ulimit -n 4096`) before starting graff.")
+                else
+                    try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err}),
                 .is_error = true,
             };
             return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.", .{ job.id, job.cmd, job.id }) };
