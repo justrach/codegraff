@@ -186,10 +186,36 @@ pub fn sessionTitle(root: *Agent) []const u8 {
     return "Untitled session";
 }
 
+/// A conversation is "meaningful" — worth persisting to disk — once it holds any
+/// durable state a resume would want back. Concretely, at least one of:
+///   - a user message (>= 1 message with role "user"),
+///   - a non-null standing goal (/goal steering),
+///   - a non-empty todo list, or
+///   - recorded tool activity this session.
+/// A truly blank draft (no user turn, no goal, no todos, no tools) is NOT
+/// meaningful, so saveSession skips it rather than leaving an "Untitled
+/// session" file on disk (#184). Callers that only want to avoid the blank-draft
+/// write get this for free by going through saveSession.
+pub fn hasMeaningfulState(root: *Agent) bool {
+    if (root.goal != null) return true;
+    if (root.todos.items.len > 0) return true;
+    if (root.tools_used.entries.items.len > 0) return true;
+    for (root.messages.items) |m| {
+        if (m != .object) continue;
+        const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";
+        if (std.mem.eql(u8, role, "user")) return true;
+    }
+    return false;
+}
+
 /// Save the conversation (messages + provider id/model + strict flag) to
 /// <name>.session.json in the cwd. The JSON message array is already the
 /// provider-native wire shape, so resume is a verbatim restore.
 pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
+    // #184: delay durable session creation until the conversation has meaningful
+    // state — never leave a blank draft as an "Untitled session" on disk. Existing
+    // files are untouched (we skip the write, we do not delete).
+    if (!hasMeaningfulState(root)) return;
     var aw: Io.Writer.Allocating = .init(root.gpa);
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };
@@ -279,4 +305,32 @@ test "slugifyTitle makes a filesystem-safe slug from an AI title" {
     try std.testing.expectEqualStrings("add-dark-mode", slugifyTitle(a, "Add dark mode!!"));
     try std.testing.expectEqualStrings("planning-v2", slugifyTitle(a, "  Planning — v2  ")); // trim + collapse
     try std.testing.expectEqualStrings("", slugifyTitle(a, "🎉 ✨")); // symbol-only → "" (keeps the session-<ts> name)
+}
+
+test "hasMeaningfulState gates the blank-draft write (#184)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Only the fields hasMeaningfulState reads are set; the rest stay untouched.
+    var root: Agent = undefined;
+    root.goal = null;
+    root.todos = .empty;
+    root.tools_used = .{};
+    root.messages = std.json.Array.init(arena);
+
+    // Truly blank: no user turn, no goal, no todos, no tools → not persisted.
+    try std.testing.expect(!hasMeaningfulState(&root));
+
+    // A standing /goal alone is meaningful (goal-only sessions are still saved).
+    root.goal = "ship the release";
+    try std.testing.expect(hasMeaningfulState(&root));
+
+    // One user message alone is meaningful.
+    root.goal = null;
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(arena, "role", .{ .string = "user" });
+    try obj.put(arena, "content", .{ .string = "hi" });
+    try root.messages.append(.{ .object = obj });
+    try std.testing.expect(hasMeaningfulState(&root));
 }
