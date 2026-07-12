@@ -68,6 +68,86 @@ fn guiEmit(io: Io, ev: anytype) void {
     w.flush() catch return;
 }
 
+/// Coarse classification of a subagent's underlying API/transport failure, so
+/// the tool result can tell the orchestrator what actually broke and whether a
+/// retry is worth it — the bare `error.ApiError` propagation carried none of it.
+const FailKind = enum {
+    quota, // rate limit / out of credits / overloaded
+    transport, // network drop / stream stall — usually transient
+    model, // model missing / decommissioned / unavailable
+    invalid, // bad arguments / unsupported param / context too long
+    auth, // key invalid / expired / unauthorized
+    unknown, // no detail to classify against
+
+    fn label(self: FailKind) []const u8 {
+        return switch (self) {
+            .quota => "quota/rate-limit",
+            .transport => "transport",
+            .model => "model-availability",
+            .invalid => "invalid-arguments",
+            .auth => "auth",
+            .unknown => "unknown",
+        };
+    }
+
+    /// Is re-running the identical task likely to succeed? Transient failures
+    /// (quota backoff, transport flake) yes; a bad model / argument / credential
+    /// just fails again until the cause is fixed.
+    fn retrySafe(self: FailKind) bool {
+        return switch (self) {
+            .quota, .transport, .unknown => true,
+            .model, .invalid, .auth => false,
+        };
+    }
+};
+
+fn containsAnyCI(hay: []const u8, needles: []const []const u8) bool {
+    for (needles) |n| if (std.ascii.indexOfIgnoreCase(hay, n) != null) return true;
+    return false;
+}
+
+/// Classify a child turn's failure from its error kind and the child agent's
+/// captured `last_api_error` detail (the provider's error type + message, or a
+/// transport reason). The detail is the authoritative signal; the error kind
+/// only distinguishes a stream stall/drop, whose stale envelope would mislead.
+/// Order matters: quota/auth/model phrases are checked before the broad
+/// `invalid_request_error` type so a rate-limit or missing-model envelope isn't
+/// swallowed as a generic "invalid" just because that type string contains it.
+fn classifyFailure(err: anyerror, detail: ?[]const u8) FailKind {
+    switch (err) {
+        error.StreamStalled, error.StreamDropped => return .transport,
+        else => {},
+    }
+    const msg = detail orelse return .unknown;
+    if (containsAnyCI(msg, &.{ "network error", "stream stalled", "stream dropped", "timed out", "connection reset", "connection closed" })) return .transport;
+    if (containsAnyCI(msg, &.{ "rate limit", "rate_limit", "quota", "429", "overloaded", "out of credits", "credits", "billing", "too many requests" })) return .quota;
+    if (containsAnyCI(msg, &.{ "api key", "unauthorized", "expired", "authentication", "invalid_api_key", "401" })) return .auth;
+    if (containsAnyCI(msg, &.{ "does not exist", "not found", "no such model", "decommission", "no longer", "model_not_found", "unavailable", "404" })) return .model;
+    if (containsAnyCI(msg, &.{ "context length", "context window", "invalid", "unsupported", "not supported", "must be", "too long", "400", "parameter", "max_tokens", "bad request" })) return .invalid;
+    return .unknown;
+}
+
+/// Build the is_error tool result for a subagent whose child turn failed at the
+/// API/transport layer. Threads the child's own diagnostic — provider status /
+/// message, a coarse category, and whether a retry is worth it — up to the
+/// orchestrator instead of collapsing to an opaque bare `error: ApiError`.
+/// `detail` is the child agent's `last_api_error`; formatted into `gpa` before
+/// the child arena that owns it is freed on return.
+fn subagentFailure(gpa: Allocator, sub_id: []const u8, err: anyerror, detail: ?[]const u8) ToolOutput {
+    const kind = classifyFailure(err, detail);
+    const cause = detail orelse @errorName(err);
+    const retry = if (kind.retrySafe())
+        "retry is likely safe — re-run the same task (after a short backoff for quota/transport)"
+    else
+        "retry is NOT safe as-is — fix the cause first (switch model, correct arguments, or re-auth)";
+    const text = std.fmt.allocPrint(
+        gpa,
+        "subagent {s} failed before producing a report: {s} [{s} failure]. {s}",
+        .{ sub_id, cause, kind.label(), retry },
+    ) catch return .{ .is_error = true };
+    return .{ .text = text, .is_error = true };
+}
+
 /// Run one isolated subagent to completion: fresh arena, fresh history,
 /// same shared http client and provider. Runs entirely on this pool thread;
 /// its own tool calls fan out further via io.async. `sys_override` swaps the
@@ -149,7 +229,13 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         });
     }
     if (telemetry.g_telem) |t| t.runEvent(&fp, sys_override != null, run_ok, run_ms, used_tools);
-    const text = try report;
+    // A child API/transport failure used to collapse to a bare "error: ApiError"
+    // once execTool's catch ran failure() on the propagated error. Instead
+    // surface the child's own diagnostic (provider status/message + a coarse
+    // category + retry guidance) as an is_error result, duped into gpa before
+    // the child arena that owns last_api_error is freed on return.
+    const text = report catch |err|
+        return subagentFailure(gpa, sub_id, err, agent.last_api_error);
     const empty = text.len == 0;
     const report_body = if (empty) "subagent finished without a report" else text;
     // Persist the full report + metadata so it can be inspected from the
@@ -316,4 +402,29 @@ test "variantJudgePrompt: bounded, names the phase, keeps the score contract" {
     try std.testing.expect(std.mem.indexOf(u8, p, "score: <N>") != null);
     // …and it round-trips: a judge tail like this parses back to the score.
     try std.testing.expectEqual(@as(?f64, 87), repl_glue.parseEvalScore("ok\nscore: 87"));
+}
+
+test "classifyFailure: maps the child's api-error detail to a category + retry-safety" {
+    // A stream stall/drop names itself via the error kind — its stale envelope
+    // (if any) must not override the transport verdict.
+    try std.testing.expectEqual(FailKind.transport, classifyFailure(error.StreamStalled, null));
+    try std.testing.expectEqual(FailKind.transport, classifyFailure(error.StreamDropped, "api error (some_error): stale"));
+    // No detail to go on → unknown (and a retry is still allowed to be tried).
+    try std.testing.expectEqual(FailKind.unknown, classifyFailure(error.ApiError, null));
+    // Real provider envelopes (the shapes sayApiError formats into last_api_error).
+    try std.testing.expectEqual(FailKind.quota, classifyFailure(error.ApiError, "api error (rate_limit_error): Number of requests exceeded"));
+    try std.testing.expectEqual(FailKind.quota, classifyFailure(error.ApiError, "api error: You have run out of credits or need a Grok subscription."));
+    try std.testing.expectEqual(FailKind.auth, classifyFailure(error.ApiError, "api error: The API Key appears to be invalid or may have expired."));
+    // invalid_request_error carries "invalid", but a missing-model message is
+    // classified as model-availability because that phrase is checked first.
+    try std.testing.expectEqual(FailKind.model, classifyFailure(error.ApiError, "api error (invalid_request_error): The model `gpt-foo` does not exist or you do not have access to it."));
+    try std.testing.expectEqual(FailKind.invalid, classifyFailure(error.ApiError, "api error (invalid_request_error): This model's maximum context length is 8192 tokens."));
+    try std.testing.expectEqual(FailKind.transport, classifyFailure(error.ApiError, "network error: HttpConnectionClosing (gave up after 6 attempts)"));
+
+    // Retry-safety contract: transient failures may retry, structural ones must not.
+    try std.testing.expect(FailKind.quota.retrySafe());
+    try std.testing.expect(FailKind.transport.retrySafe());
+    try std.testing.expect(!FailKind.model.retrySafe());
+    try std.testing.expect(!FailKind.invalid.retrySafe());
+    try std.testing.expect(!FailKind.auth.retrySafe());
 }

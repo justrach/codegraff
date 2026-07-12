@@ -63,6 +63,9 @@ jobs:
       - name: Stream stall/drop is not a user Esc (#134/#132)
         run: python3 scripts/test-stall-drop.py zig-out/bin/graff
 
+      - name: Newer-issue E2E — blank sessions not persisted (#184)
+        run: python3 scripts/test-e2e-newer-issues.py zig-out/bin/graff
+
       - name: SDK generation drift
         run: |
           python3 sdk/generate.py --harness ./zig-out/bin/graff
