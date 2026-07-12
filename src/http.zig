@@ -95,8 +95,15 @@ pub fn capture5xxBodyStream(gpa: Allocator, response: *std.http.Client.Response)
 }
 
 /// POST the request body; returns the raw response body (caller frees).
-/// std.http.Client.fetch is thread-safe, so subagents on pool threads share
-/// this client (and its connection pool).
+/// Built on client.request, NOT client.fetch: fetch never exposes the
+/// Request, so a failed body send could not be poisoned — std re-pooled the
+/// dead connection (a failed SEND leaves reader.state == .ready, which
+/// Request.deinit reads as "still clean") and findConnection handed the same
+/// corpse to every retry and every later same-host request, so one
+/// WriteFailed became a whole-session storm across compaction, [title], and
+/// subagents (#177). Mirrors postStream's errdefer poison (agent_stream.zig).
+/// The client and its connection pool stay shared across pool threads —
+/// client.request is what fetch wraps and is equally thread-safe.
 fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []const u8) ![]u8 {
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
@@ -110,22 +117,47 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
     var headers_buf: [6]std.http.Header = undefined;
     const extra = providerHeaders(provider, bearer, &headers_buf);
 
-    const res = try client.fetch(.{
-        .location = .{ .url = provider.url },
-        .method = .POST,
-        .payload = body,
-        .response_writer = &aw.writer,
+    var req = try client.request(.POST, try std.Uri.parse(provider.url), .{
+        .redirect_behavior = .unhandled,
         .headers = .{
             .content_type = .{ .override = "application/json" },
             .user_agent = providerUserAgent(provider),
         },
         .extra_headers = extra,
     });
-    const code = @intFromEnum(res.status);
+    defer req.deinit();
+    // The #177 poison: on ANY error make deinit discard this connection
+    // instead of returning it to the keep-alive pool, so the retry (and
+    // every later request to this host) dials fresh.
+    errdefer if (req.connection) |conn| {
+        conn.closing = true;
+    };
+
+    var response: std.http.Client.Response = undefined;
+    try sendHeadTask(&req, body, &response);
+
+    const code = @intFromEnum(response.head.status);
     if (code == 429 or code >= 500) {
-        capture5xxBody(aw.writer.buffered());
+        // Drain a snippet of the error body for the retry message, then
+        // poison: the connection still holds unread body bytes.
+        capture5xxBodyStream(gpa, &response);
+        if (req.connection) |conn| conn.closing = true;
         return if (code == 429) error.RateLimited else error.ServerError;
     }
+
+    // Any other status (200 or a 4xx API error envelope): return the body —
+    // request() parses error envelopes out of non-2xx JSON itself.
+    const dbuf: []u8 = switch (response.head.content_encoding) {
+        .identity => &.{},
+        .zstd => try gpa.alloc(u8, std.compress.zstd.default_window_len),
+        .deflate, .gzip => try gpa.alloc(u8, std.compress.flate.max_window_len),
+        .compress => return error.UnsupportedCompressionMethod,
+    };
+    defer if (dbuf.len > 0) gpa.free(dbuf);
+    var tbuf: [64]u8 = undefined;
+    var dec: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&tbuf, &dec, dbuf);
+    _ = try reader.streamRemaining(&aw.writer);
     return aw.toOwnedSlice();
 }
 
@@ -194,8 +226,10 @@ const head_stall_ms: u64 = 30 * 1000;
 /// (HttpConnectionClosing / WriteFailed / reset / truncated TLS) are now far
 /// more patient: a real network blip (wifi hiccup, gateway redeploy) outlasts
 /// the old 3-try / ~1.75s window and was wrongly giving up the whole turn. The
-/// connection is poisoned + re-dialed fresh on each retry (postStream/postWatched
-/// errdefer), so these tries hit new sockets. 429/5xx throttles keep their longer
+/// connection is poisoned + re-dialed fresh on each retry (postStream's and
+/// post()'s errdefer — the latter since #177; this comment used to claim a
+/// postWatched poison that was never implemented, which is exactly how one
+/// dead pooled connection could fail all 6 tries). 429/5xx throttles keep their longer
 /// server-directed waits.
 pub const RetryPlan = struct {
     /// Total attempts before the turn gives up.
@@ -319,4 +353,210 @@ pub fn postWatched(gpa: Allocator, io: Io, client: *std.http.Client, provider: P
         .posted => |p| p,
         .watchdog => |w| watchdogError(w, error.HungRequest),
     };
+}
+
+// #177 regression: a POST whose body SEND fails must NOT return its dead
+// connection to the keep-alive pool. Before the fix (post() built on
+// client.fetch), std re-pooled it — a failed send leaves reader.state ==
+// .ready, which Request.deinit reads as "still clean" — and findConnection
+// handed the same corpse to every retry and every later same-host request
+// (compaction, [title], subagents): WriteFailed forever after. Real loopback
+// server: connection 1 is accepted and closed unread, so the large body send
+// hits a reset mid-flight; only a poisoned pool makes request 2 dial a fresh
+// connection 2 and reach the 200.
+test "post (#177): a send-failed connection is not re-pooled — the next request dials fresh" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    const Srv = struct {
+        fn run(io_: Io, server: *std.Io.net.Server) void {
+            // conn 1: close before reading anything. The client's
+            // multi-megabyte body overruns the socket buffers, the kernel
+            // resets data arriving on the closed socket, and the send fails
+            // mid-write — the same shape as the codex backend killing an
+            // over-cap request at write time (#163).
+            const c1 = server.accept(io_) catch return;
+            c1.close(io_);
+
+            // conn 2 only ever arrives on a fresh dial: drain the (tiny)
+            // request, then serve a minimal 200.
+            const c2 = server.accept(io_) catch return;
+            defer c2.close(io_);
+            var rbuf: [4096]u8 = undefined;
+            var sr = std.Io.net.Stream.Reader.init(c2, io_, &rbuf);
+            while (true) {
+                const line = (sr.interface.takeDelimiter('\n') catch break) orelse break;
+                if (line.len == 0 or (line.len == 1 and line[0] == '\r')) break; // end of headers
+            }
+            _ = sr.interface.take(2) catch {}; // the 2-byte "{}" body
+            var wbuf: [256]u8 = undefined;
+            var sw = std.Io.net.Stream.Writer.init(c2, io_, &wbuf);
+            sw.interface.writeAll("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok") catch {};
+            sw.interface.flush() catch {};
+        }
+    };
+
+    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+    var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
+    var fut = io.async(Srv.run, .{ io, &server });
+    defer fut.await(io);
+    defer server.deinit(io);
+
+    var bound = server.socket.address;
+    var url_buf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1/x", .{bound.getPort()});
+    const provider: Provider = .{
+        .id = "test",
+        .kind = .openai,
+        .auth = .x_api_key,
+        .url = url,
+        .api_key = "k",
+        .model = "m",
+        .context = 0,
+    };
+
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+
+    // Large enough that the send cannot complete inside socket buffers, so
+    // the closed conn 1 fails the WRITE (the #177 signature) rather than
+    // buffering silently and failing later at the head read.
+    const big = try gpa.alloc(u8, 8 * 1024 * 1024);
+    defer gpa.free(big);
+    @memset(big, 'x');
+    // Assert the send fails with WriteFailed (the #177 signature). If it ever
+    // doesn't (a platform where the 8MB write buffers and the failure only
+    // surfaces later at head-read), release the server task's still-pending
+    // second accept() with a throwaway dial before failing — otherwise the
+    // deferred fut.await would hang the test binary, same as the second post.
+    if (post(gpa, &client, provider, big)) |resp| {
+        gpa.free(resp);
+        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        return error.TestExpectedError; // the send to a closed peer must fail
+    } else |err| if (err != error.WriteFailed) {
+        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        return err;
+    }
+
+    // The regression: without the poison this pulls dead conn 1 back out of
+    // the pool (no fresh dial) and fails with WriteFailed instead of
+    // reaching conn 2's 200.
+    const second = post(gpa, &client, provider, "{}");
+    if (second) |resp| {
+        defer gpa.free(resp);
+        try std.testing.expectEqualStrings("ok", resp);
+    } else |err| {
+        // Regression path: conn 2 never arrived, so the server task is still
+        // blocked in accept — release it with a throwaway dial before
+        // failing, or the deferred await would hang the test binary.
+        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        return err;
+    }
+}
+
+// post's 429/5xx branch: an oversized error body is partial-drained
+// (capture5xxBodyStream stops at the 600-byte g_5xx_body_buf), the request
+// surfaces as error.ServerError, and the session recovers on the next request.
+// This is the dominant real-world failure (gateway throttles / 500s), and
+// before this test the whole 5xx branch was uncovered. NOTE: unlike the
+// send-failed case above, std will NOT re-pool a partially-read response
+// connection on its own, so post's explicit 5xx poison is defensive; this test
+// exercises the path end-to-end rather than isolating that poison. The
+// load-bearing poison regression — a failed SEND that leaves the reader
+// deceptively .ready so std DOES re-pool the corpse — is the test above.
+test "post (#177 5xx path): an oversized 5xx surfaces as ServerError and the session recovers" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    // A 5xx body well over the 600-byte capture buffer, with newlines so
+    // capture5xxBodyStream grabs a snippet and stops, leaving the rest unread.
+    var body500: [4096]u8 = undefined;
+    {
+        const line = "upstream gateway error (simulated 5xx)\n";
+        for (&body500, 0..) |*b, i| b.* = line[i % line.len];
+    }
+
+    const Srv = struct {
+        fn readReq(sr: *std.Io.net.Stream.Reader) void {
+            while (true) {
+                const l = (sr.interface.takeDelimiter('\n') catch return) orelse return;
+                if (l.len == 0 or (l.len == 1 and l[0] == '\r')) break; // end of headers
+            }
+            _ = sr.interface.take(2) catch {}; // the 2-byte "{}" body
+        }
+        fn run(io_: Io, server: *std.Io.net.Server, body: []const u8) void {
+            // conn 1: keep-alive 500 (no `connection: close`) with an oversized
+            // body — without the poison std would re-pool this half-read corpse.
+            const c1 = server.accept(io_) catch return;
+            {
+                defer c1.close(io_);
+                var rbuf: [4096]u8 = undefined;
+                var sr = std.Io.net.Stream.Reader.init(c1, io_, &rbuf);
+                readReq(&sr);
+                var hbuf: [96]u8 = undefined;
+                const head = std.fmt.bufPrint(&hbuf, "HTTP/1.1 500 Internal Server Error\r\ncontent-length: {d}\r\n\r\n", .{body.len}) catch return;
+                var wbuf: [1024]u8 = undefined;
+                var sw = std.Io.net.Stream.Writer.init(c1, io_, &wbuf);
+                sw.interface.writeAll(head) catch {};
+                sw.interface.writeAll(body) catch {};
+                sw.interface.flush() catch {};
+            }
+            // conn 2 only ever arrives on a fresh dial (the poison worked).
+            const c2 = server.accept(io_) catch return;
+            defer c2.close(io_);
+            var rbuf: [4096]u8 = undefined;
+            var sr = std.Io.net.Stream.Reader.init(c2, io_, &rbuf);
+            readReq(&sr);
+            var wbuf: [256]u8 = undefined;
+            var sw = std.Io.net.Stream.Writer.init(c2, io_, &wbuf);
+            sw.interface.writeAll("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok") catch {};
+            sw.interface.flush() catch {};
+        }
+    };
+
+    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+    var server = try std.Io.net.IpAddress.listen(&addr, io, .{});
+    var fut = io.async(Srv.run, .{ io, &server, @as([]const u8, &body500) });
+    defer fut.await(io);
+    defer server.deinit(io);
+
+    var bound = server.socket.address;
+    var url_buf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1/x", .{bound.getPort()});
+    const provider: Provider = .{
+        .id = "test",
+        .kind = .openai,
+        .auth = .x_api_key,
+        .url = url,
+        .api_key = "k",
+        .model = "m",
+        .context = 0,
+    };
+
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+
+    // The 5xx surfaces as error.ServerError and poisons conn 1. Guard the
+    // assertion the same way as the send-failed test: on any other outcome,
+    // release the server's still-pending second accept() before failing.
+    if (post(gpa, &client, provider, "{}")) |resp| {
+        gpa.free(resp);
+        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        return error.TestExpectedError; // a 500 must surface as ServerError
+    } else |err| if (err != error.ServerError) {
+        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        return err;
+    }
+
+    // Recovery: the next request reaches conn 2's 200. (Unlike the send-failed
+    // case above, std does not re-pool a partially-read connection on its own,
+    // so this asserts end-to-end recovery, not that the 5xx poison is required.)
+    const second = post(gpa, &client, provider, "{}");
+    if (second) |resp| {
+        defer gpa.free(resp);
+        try std.testing.expectEqualStrings("ok", resp);
+    } else |err| {
+        if (std.Io.net.IpAddress.connect(&bound, io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        return err;
+    }
 }

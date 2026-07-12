@@ -51,6 +51,25 @@ const skills_registry = skills.skills_registry;
 const title_mod = @import("title.zig");
 const setTerminalTitle = title_mod.setTerminalTitle;
 
+/// Steering state that must not outlive the conversation it was set in.
+/// /clear used to keep goal + ultracode_mode (only /new reset them), so a
+/// standing goal containing the word "ultracode" was re-appended to every
+/// assembled prompt and kept re-triggering the explicit-codeword banner
+/// after "context cleared" (#178).
+fn resetConversationSteering(root: *Agent) void {
+    root.goal = null;
+    root.ultracode_mode = false;
+}
+
+test "/clear + /new reset conversation steering — goal and ultracode_mode don't survive (#178)" {
+    var root: Agent = undefined;
+    root.goal = "ultracode: index the statutes";
+    root.ultracode_mode = true;
+    resetConversationSteering(&root);
+    try std.testing.expect(root.goal == null);
+    try std.testing.expect(!root.ultracode_mode);
+}
+
 /// Try to handle a session/environment slash command. Returns false (line
 /// unhandled) if `line` doesn't match any command in this file — the caller
 /// (handleCommand in main.zig) then tries the next peer module.
@@ -64,9 +83,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.session_title = null; // re-summarize the now-empty conversation
         root.ai_title_done = false;
         root.todos.clearRetainingCapacity();
+        const had_goal = root.goal != null;
+        resetConversationSteering(root);
         saveSession(root, arena, root.session_name) catch {};
         setTerminalTitle(out, "Chat", main_mod.g_cwd_display);
         try out.writeAll("context cleared — fresh conversation\n");
+        if (had_goal) try out.writeAll("(standing goal dropped — /goal to set a new one)\n");
         try out.flush();
         return true;
     }
@@ -75,8 +97,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.last_context_tokens = 0;
         root.last_cache_read = 0;
         root.todos.clearRetainingCapacity();
-        root.goal = null;
-        root.ultracode_mode = false;
+        resetConversationSteering(root);
         root.session_title = null;
         root.ai_title_done = false; // let the new session earn its own AI title
         root.tui_header_shown = false;

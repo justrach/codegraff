@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.201
+    \\  • A send-failed request no longer re-pools its dead connection, so one network blip can't storm every later compaction, title, and subagent call
+    \\  • The "ultracode" codeword is matched only on what you actually typed (not on appended goal/todo notes), and /clear now clears the standing goal and ultracode mode
+    \\  • `graff login codex` lands on a branded, dark-mode-aware confirmation page instead of a bare line of text
+    \\
     \\0.0.200
     \\  • Codex WS delta bodies are never replayed over SSE — fixes "Unsupported parameter: previous_response_id" after a long idle
     \\  • The held codex WS now re-anchors preemptively after 4 min idle (GRAFF_CODEX_WS_IDLE_SECS to tune) instead of eating a dead-socket round trip
