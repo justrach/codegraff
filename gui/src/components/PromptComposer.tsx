@@ -70,6 +70,7 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
     trySubmitAsCommand,
     commandResult,
     dismissCommandResult,
+    sendDraftAsText,
   } = useCommandRouter(binding, { onCommandResult });
   const requiresProviderSetup =
     promptSettings != null && promptSettings.availableModels.length === 0;
@@ -244,6 +245,7 @@ export function PromptComposer({ binding, onCommandResult }: PromptComposerProps
         result={commandResult}
         onClose={dismissCommandResult}
         onApproveWorkflow={handleApproveWorkflow}
+        onSendAsText={sendDraftAsText ?? undefined}
       />
     </div>
   );
