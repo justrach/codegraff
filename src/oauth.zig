@@ -134,6 +134,38 @@ fn writeCodexAuth(io: Io, arena: Allocator, home: []const u8, id_token: []const 
     try fw.interface.flush();
 }
 
+/// The page the Codex OAuth callback tab lands on after a successful login.
+/// A branded, dark-mode-aware confirmation card; the local server writes this
+/// back, then reads the ?code out of the same request for the token exchange.
+const codex_login_page_html =
+    \\<!doctype html>
+    \\<html lang="en"><head><meta charset="utf-8">
+    \\<meta name="viewport" content="width=device-width, initial-scale=1">
+    \\<title>graff — logged in</title>
+    \\<style>
+    \\:root{color-scheme:light dark}
+    \\html,body{height:100%;margin:0}
+    \\body{display:flex;align-items:center;justify-content:center;
+    \\font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    \\background:#fafafa;color:#18181b}
+    \\.card{text-align:center;padding:2.5rem 3rem;border-radius:16px;background:#fff;
+    \\border:1px solid #e4e4e7;box-shadow:0 8px 30px rgba(0,0,0,.06);max-width:22rem}
+    \\.mark{font-size:1.25rem;font-weight:700;letter-spacing:-.02em}
+    \\.mark b{color:#6d28d9}
+    \\h1{font-size:1.35rem;margin:1rem 0 .5rem;font-weight:650}
+    \\.check{color:#16a34a}
+    \\p{margin:0;color:#52525b;line-height:1.55}
+    \\@media(prefers-color-scheme:dark){
+    \\body{background:#09090b;color:#fafafa}
+    \\.card{background:#18181b;border-color:#27272a;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+    \\p{color:#a1a1aa}.mark b{color:#a78bfa}}
+    \\</style></head>
+    \\<body><div class="card">
+    \\<div class="mark">graff <b>◆</b></div>
+    \\<h1>You're all set <span class="check">✓</span></h1>
+    \\<p>Codex is connected. You can close this tab and return to graff.</p>
+    \\</div></body></html>
+;
 /// `harness login [--refresh]`: the ChatGPT/Codex OAuth flow. Fresh login runs
 /// PKCE (open browser → localhost:1455 callback → code→token exchange); refresh
 /// uses the stored refresh_token. Either way writes ~/.codex/auth.json.
@@ -191,9 +223,11 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
         var sr = std.Io.net.Stream.Reader.init(stream, io, &rbuf);
         const req_line = (sr.interface.takeDelimiter('\n') catch null) orelse return error.BadOAuthResponse;
 
-        // Send a friendly page back so the browser tab isn't left hanging.
-        const page = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><body style=\"font-family:sans-serif\"><h2>Logged in ✓</h2><p>You can close this tab and return to the harness.</p></body></html>";
-        var wbuf: [1024]u8 = undefined;
+        // Branded, dark-mode-aware confirmation card (charset utf-8 so the ✓/◆
+        // render) so the callback tab shows a real "you're all set" page, not a
+        // bare line — then we read the code out of the same request below.
+        const page = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n" ++ codex_login_page_html;
+        var wbuf: [4096]u8 = undefined;
         var sw = std.Io.net.Stream.Writer.init(stream, io, &wbuf);
         sw.interface.writeAll(page) catch {};
         sw.interface.flush() catch {};
