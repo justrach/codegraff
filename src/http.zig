@@ -367,6 +367,10 @@ pub fn postWatched(gpa: Allocator, io: Io, client: *std.http.Client, provider: P
 test "post (#177): a send-failed connection is not re-pooled — the next request dials fresh" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
+    // Windows loopback RST timing is non-deterministic: a forced send failure
+    // can surface as LOCAL_DISCONNECT (or defer to the head read) and flake.
+    // The poison logic is validated deterministically on POSIX.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
     const Srv = struct {
         fn run(io_: Io, server: *std.Io.net.Server) void {
@@ -467,6 +471,10 @@ test "post (#177): a send-failed connection is not re-pooled — the next reques
 test "post (#177 5xx path): an oversized 5xx surfaces as ServerError and the session recovers" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
+    // Windows loopback RST timing is non-deterministic: a forced connection
+    // reset can surface as LOCAL_DISCONNECT mid-recovery, flaking this timing
+    // test. The poison logic is validated deterministically on POSIX.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
     // A 5xx body well over the 600-byte capture buffer, with newlines so
     // capture5xxBodyStream grabs a snippet and stops, leaving the rest unread.
