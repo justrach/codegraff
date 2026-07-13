@@ -97,21 +97,28 @@ const empty_schema =
 const base_specs = [_]ToolSpec{
     .{
         .name = "bash",
-        .desc = "Run a shell command via /bin/sh -c in the current working directory. Returns stdout, stderr, and the exit code. For long-running commands (dev servers, watchers) set run_in_background true: it returns a job id immediately; poll output with bash_output and stop it with bash_kill.",
+        .desc = "Run a shell command via /bin/sh -c in the current working directory. Returns stdout, stderr, and the exit code. Long-running commands use background jobs; recognized localhost dev servers are managed automatically and pause/stop after inactivity unless keep_alive is true.",
         .schema =
-        \\{"type": "object", "properties": {"command": {"type": "string", "description": "Shell command to execute"}, "run_in_background": {"type": "boolean", "description": "Start as a background job and return its id immediately instead of waiting (default false)"}}, "required": ["command"]}
+        \\{"type": "object", "properties": {"command": {"type": "string", "description": "Shell command to execute"}, "run_in_background": {"type": "boolean", "description": "Start as a background job and return its id immediately instead of waiting (default false)"}, "keep_alive": {"type": "boolean", "description": "For a managed localhost server, disable automatic idle pause/stop (default false)"}}, "required": ["command"]}
         ,
     },
     .{
         .name = "bash_output",
-        .desc = "Read new output from a background bash job (everything since the last bash_output call) plus its status: running, exited with code, or killed. Set wait_ms to block until new output or exit.",
+        .desc = "Read new output from a background bash job (everything since the last bash_output call) plus its status: running, paused, exited, or killed. Polling counts as activity for managed localhost servers.",
         .schema =
         \\{"type": "object", "properties": {"id": {"type": "integer", "description": "Job id returned by bash with run_in_background"}, "wait_ms": {"type": "integer", "description": "Max milliseconds to wait for new output or exit (0-30000, default 0)"}}, "required": ["id"]}
         ,
     },
     .{
+        .name = "bash_resume",
+        .desc = "Resume a managed localhost server paused by the idle policy.",
+        .schema =
+        \\{"type": "object", "properties": {"id": {"type": "integer", "description": "Paused job id to resume"}}, "required": ["id"]}
+        ,
+    },
+    .{
         .name = "bash_kill",
-        .desc = "Terminate a background bash job. Unread output stays readable via bash_output afterwards.",
+        .desc = "Terminate a background bash job and its process tree. Unread output stays readable via bash_output afterwards.",
         .schema =
         \\{"type": "object", "properties": {"id": {"type": "integer", "description": "Job id to terminate"}}, "required": ["id"]}
         ,

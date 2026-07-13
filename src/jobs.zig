@@ -10,6 +10,67 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
+const supports_process_groups = builtin.os.tag != .windows and builtin.os.tag != .wasi;
+const default_server_pause_ms: u64 = 30 * std.time.ms_per_min;
+const default_server_stop_ms: u64 = 2 * std.time.ms_per_hour;
+
+/// Managed localhost jobs use these process-wide defaults. Minutes are used in
+/// the environment so the values stay friendly to shell users; zero disables
+/// that transition. `GRAFF_SERVER_IDLE=off` disables the policy entirely.
+pub var g_server_idle_enabled = true;
+pub var g_server_pause_ms = default_server_pause_ms;
+pub var g_server_stop_ms = default_server_stop_ms;
+
+pub fn configureIdlePolicy(environ: anytype) void {
+    g_server_idle_enabled = true;
+    if (environ.get("GRAFF_SERVER_IDLE")) |v| {
+        if (std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"))
+            g_server_idle_enabled = false;
+    }
+    g_server_pause_ms = envMinutes(environ, "GRAFF_SERVER_PAUSE_MINUTES", default_server_pause_ms);
+    g_server_stop_ms = envMinutes(environ, "GRAFF_SERVER_STOP_MINUTES", default_server_stop_ms);
+    // A pause at/after stop has no useful observable state; go straight to stop.
+    if (g_server_stop_ms > 0 and g_server_pause_ms >= g_server_stop_ms) g_server_pause_ms = 0;
+}
+
+fn envMinutes(environ: anytype, key: []const u8, fallback_ms: u64) u64 {
+    const raw = environ.get(key) orelse return fallback_ms;
+    const minutes = std.fmt.parseInt(u64, raw, 10) catch return fallback_ms;
+    return std.math.mul(u64, minutes, std.time.ms_per_min) catch fallback_ms;
+}
+
+fn processGroupId() ?std.posix.pid_t {
+    return if (supports_process_groups) 0 else null;
+}
+
+/// Every shell gets its own POSIX process group. Signalling the group is what
+/// reaches npm -> node, xcodebuild -> XCTest, and similar grandchildren; killing
+/// only `/bin/sh` is how stale localhost/test trees escaped in #198.
+fn signalProcessGroup(child: *const std.process.Child, sig: std.posix.SIG) void {
+    if (comptime supports_process_groups) {
+        const pid = child.id orelse return;
+        std.posix.kill(-pid, sig) catch {};
+    }
+}
+
+fn pauseProcessGroup(child: *const std.process.Child) void {
+    if (comptime supports_process_groups) signalProcessGroup(child, .STOP);
+}
+
+fn resumeProcessGroup(child: *const std.process.Child) void {
+    if (comptime supports_process_groups) signalProcessGroup(child, .CONT);
+}
+
+fn terminateProcessTree(child: *std.process.Child, io: Io) void {
+    if (child.id == null) return;
+    if (comptime supports_process_groups) {
+        signalProcessGroup(child, .TERM);
+        io.sleep(.fromMilliseconds(200), .awake) catch {};
+        signalProcessGroup(child, .KILL);
+    }
+    child.kill(io); // reaps the direct child and closes its pipes
+}
+
 const root = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const tools_mod = @import("tools.zig");
@@ -48,8 +109,9 @@ pub fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: u
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
+        .pgid = processGroupId(),
     });
-    defer child.kill(io);
+    defer terminateProcessTree(&child, io);
 
     var multi_reader_buffer: Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: Io.File.MultiReader = undefined;
@@ -82,12 +144,12 @@ pub fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: u
         }
         if (Agent.esc_cancel.load(.acquire)) {
             esc_killed = true;
-            child.kill(io);
+            terminateProcessTree(&child, io);
             break :loop;
         }
         if (deadline_ms > 0 and t0.untilNow(io, .awake).toMilliseconds() >= deadline_ms) {
             timed_out = true;
-            child.kill(io);
+            terminateProcessTree(&child, io);
             break :loop;
         }
     }
@@ -306,7 +368,7 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
 /// a full pipe; bash_output returns the bytes past `cursor`; bash_kill stops
 /// it. Jobs are session-global — they deliberately survive the turn (and the
 /// Esc cancel) that started them — and are reaped at exit.
-const Job = struct {
+pub const Job = struct {
     id: u32,
     cmd: []u8, // gpa-owned, for /jobs display
     child: std.process.Child,
@@ -317,8 +379,63 @@ const Job = struct {
     killed: bool = false, // ended via bash_kill rather than naturally
     kill_requested: bool = false, // pump notices within one 200ms tick
     dropped: bool = false, // unread output overflowed job_unread_cap
+    managed_server: bool = false,
+    keep_alive: bool = false,
+    paused: bool = false,
+    resume_requested: bool = false,
+    idle_stopped: bool = false,
+    last_activity: Io.Timestamp,
     future: Io.Future(void) = undefined, // the pump; awaited only by jobsReap
 };
+
+pub const JobOptions = struct {
+    managed_server: bool = false,
+    keep_alive: bool = false,
+};
+
+const IdleAction = enum { none, pause, stop };
+
+fn idleAction(paused: bool, idle_ms: u64, pause_ms: u64, stop_ms: u64) IdleAction {
+    if (stop_ms > 0 and idle_ms >= stop_ms) return .stop;
+    if (!paused and pause_ms > 0 and idle_ms >= pause_ms) return .pause;
+    return .none;
+}
+
+/// Conservative recognizer for commands that are expected to bind localhost
+/// and run forever. Compound shell programs are excluded: auto-managing an
+/// entire `build && test` pipeline because one token says `dev` is surprising.
+pub fn looksLikeLocalServer(command: []const u8) bool {
+    const cmd = std.mem.trim(u8, command, " \t\r\n");
+    if (cmd.len == 0 or std.mem.indexOfAny(u8, cmd, ";|&\n<>`$") != null) return false;
+
+    var words = std.mem.tokenizeAny(u8, cmd, " \t");
+    const first_raw = words.next() orelse return false;
+    const first = std.fs.path.basename(first_raw);
+    const second = words.next();
+    const third = words.next();
+
+    if (std.mem.eql(u8, first, "npm") or std.mem.eql(u8, first, "pnpm") or std.mem.eql(u8, first, "yarn") or std.mem.eql(u8, first, "bun"))
+        return packageServerScript(second, third);
+    if (std.mem.eql(u8, first, "next")) return second != null and (std.mem.eql(u8, second.?, "dev") or std.mem.eql(u8, second.?, "start"));
+    if (std.mem.eql(u8, first, "vite")) return second == null or std.mem.eql(u8, second.?, "dev") or std.mem.eql(u8, second.?, "preview");
+    if (std.mem.eql(u8, first, "astro") or std.mem.eql(u8, first, "nuxt") or std.mem.eql(u8, first, "wrangler"))
+        return second != null and (std.mem.eql(u8, second.?, "dev") or std.mem.eql(u8, second.?, "preview"));
+    if (std.mem.eql(u8, first, "webpack")) return second != null and std.mem.eql(u8, second.?, "serve");
+    if (std.mem.eql(u8, first, "python") or std.mem.eql(u8, first, "python3"))
+        return second != null and std.mem.eql(u8, second.?, "-m") and third != null and std.mem.eql(u8, third.?, "http.server");
+    if (std.mem.eql(u8, first, "php")) return second != null and std.mem.eql(u8, second.?, "-S");
+    return false;
+}
+
+fn packageServerScript(second: ?[]const u8, third: ?[]const u8) bool {
+    const script = second orelse return false;
+    if (std.mem.eql(u8, script, "run")) return third != null and serverScript(third.?);
+    return serverScript(script);
+}
+
+fn serverScript(word: []const u8) bool {
+    return std.mem.eql(u8, word, "dev") or std.mem.eql(u8, word, "serve") or std.mem.eql(u8, word, "preview") or std.mem.eql(u8, word, "start");
+}
 
 const job_unread_cap = 256 * 1024;
 const job_wait_cap_ms: u64 = 30_000;
@@ -340,13 +457,16 @@ pub var g_jobs: Jobs = .{};
 /// Drain whatever the MultiReader has buffered into the job's output buffer,
 /// dropping the oldest *unread* bytes past the cap (a chatty server must not
 /// grow memory unboundedly between bash_output polls). Caller holds the mutex.
-fn jobDrain(job: *Job, gpa: Allocator, readers: []const *Io.Reader) void {
+fn jobDrain(job: *Job, gpa: Allocator, io: Io, readers: []const *Io.Reader) void {
+    var received = false;
     for (readers) |r| {
         const b = r.buffered();
         if (b.len == 0) continue;
         job.buf.appendSlice(gpa, b) catch {};
         r.toss(b.len);
+        received = true;
     }
+    if (received) job.last_activity = .now(io, .awake);
     if (job.buf.items.len - job.cursor > job_unread_cap) {
         const drop = job.buf.items.len - job.cursor - job_unread_cap;
         job.buf.replaceRange(gpa, job.cursor, drop, &.{}) catch return;
@@ -370,19 +490,54 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
             error.Timeout => {}, // poll tick: check for a kill request
             else => break :loop,
         };
+        var pause = false;
+        var idle_stop = false;
+        var should_resume = false;
         g_jobs.mutex.lockUncancelable(io);
-        jobDrain(job, gpa, &readers);
+        jobDrain(job, gpa, io, &readers);
+        if (job.resume_requested) {
+            job.resume_requested = false;
+            if (job.paused) {
+                job.paused = false;
+                should_resume = true;
+                job.buf.appendSlice(gpa, "\n[resumed by bash_resume]\n") catch {};
+            }
+        }
+        if (job.managed_server and !job.keep_alive and g_server_idle_enabled and !job.kill_requested) {
+            const idle_ms: u64 = @intCast(@max(job.last_activity.untilNow(io, .awake).toMilliseconds(), 0));
+            switch (idleAction(job.paused, idle_ms, g_server_pause_ms, g_server_stop_ms)) {
+                .none => {},
+                .pause => if (supports_process_groups) {
+                    job.paused = true;
+                    pause = true;
+                    job.buf.appendSlice(gpa, "\n[managed localhost server paused after idle timeout; use bash_resume to continue]\n") catch {};
+                },
+                .stop => {
+                    job.idle_stopped = true;
+                    job.kill_requested = true;
+                    idle_stop = true;
+                    job.buf.appendSlice(gpa, "\n[managed localhost server stopped after idle timeout]\n") catch {};
+                },
+            }
+        }
         killed = job.kill_requested;
         g_jobs.mutex.unlock(io);
+        if (should_resume) resumeProcessGroup(&job.child);
+        if (pause) {
+            pauseProcessGroup(&job.child);
+            std.debug.print("\n[job {d}] managed localhost server paused after inactivity; use bash_resume to continue\n", .{job.id});
+        }
+        if (idle_stop) std.debug.print("\n[job {d}] managed localhost server stopped after inactivity\n", .{job.id});
         if (killed) break :loop;
     }
     g_jobs.mutex.lockUncancelable(io);
-    jobDrain(job, gpa, &readers); // final drain of anything left at EOF/kill
+    jobDrain(job, gpa, io, &readers); // final drain of anything left at EOF/kill
     killed = killed or job.kill_requested;
     g_jobs.mutex.unlock(io);
     var code: ?u8 = null;
     if (killed) {
-        job.child.kill(io); // also reaps (wait would assert afterwards)
+        if (job.paused) resumeProcessGroup(&job.child);
+        terminateProcessTree(&job.child, io); // also reaps (wait would assert afterwards)
     } else if (job.child.wait(io)) |term| {
         code = switch (term) {
             .exited => |c| c,
@@ -409,24 +564,32 @@ pub fn shellArgv(cmd: []const u8) [3][]const u8 {
 /// Spawn a background job and its pump. Uses io.concurrent (NOT io.async,
 /// which may run inline and block this tool forever on a long-lived child);
 /// no spare concurrency cleans up and surfaces the error to the model.
-pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
+pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8, options: JobOptions) !*Job {
     const argv = shellArgv(cmd);
     var child = try std.process.spawn(io, .{
         .argv = &argv,
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
+        .pgid = processGroupId(),
     });
     const cmd_copy = gpa.dupe(u8, cmd) catch |e| {
-        child.kill(io);
+        terminateProcessTree(&child, io);
         return e;
     };
     const job = gpa.create(Job) catch |e| {
         gpa.free(cmd_copy);
-        child.kill(io);
+        terminateProcessTree(&child, io);
         return e;
     };
-    job.* = .{ .id = 0, .cmd = cmd_copy, .child = child };
+    job.* = .{
+        .id = 0,
+        .cmd = cmd_copy,
+        .child = child,
+        .managed_server = options.managed_server,
+        .keep_alive = options.keep_alive,
+        .last_activity = .now(io, .awake),
+    };
     g_jobs.mutex.lockUncancelable(io);
     job.id = g_jobs.next_id;
     g_jobs.next_id += 1;
@@ -436,7 +599,7 @@ pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
     };
     g_jobs.mutex.unlock(io);
     if (!appended) {
-        job.child.kill(io);
+        terminateProcessTree(&job.child, io);
         gpa.free(job.cmd);
         gpa.destroy(job);
         return error.OutOfMemory;
@@ -450,7 +613,7 @@ pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
             }
         }
         g_jobs.mutex.unlock(io);
-        job.child.kill(io);
+        terminateProcessTree(&job.child, io);
         gpa.free(job.cmd);
         gpa.destroy(job);
         return e;
@@ -470,12 +633,17 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — it may never have started; /jobs lists them", .{id}), .is_error = true };
         };
         const fresh = job.buf.items[job.cursor..];
+        if (!job.done) job.last_activity = .now(io, .awake);
         if (fresh.len > 0 or job.done or waited >= deadline) {
             var aw: Io.Writer.Allocating = .init(gpa);
             errdefer aw.deinit();
             const w = &aw.writer;
-            if (!job.done) {
+            if (!job.done and job.paused) {
+                try w.print("[job {d}: paused]", .{id});
+            } else if (!job.done) {
                 try w.print("[job {d}: running]", .{id});
+            } else if (job.idle_stopped) {
+                try w.print("[job {d}: stopped after idle timeout]", .{id});
             } else if (job.killed) {
                 try w.print("[job {d}: killed]", .{id});
             } else if (job.exit_code) |c| {
@@ -508,6 +676,18 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
         };
         waited += 100;
     }
+}
+
+/// bash_resume: continue a managed server paused by the idle policy.
+pub fn jobResume(gpa: Allocator, io: Io, id: u32) !ToolOutput {
+    g_jobs.mutex.lockUncancelable(io);
+    defer g_jobs.mutex.unlock(io);
+    const job = g_jobs.find(id) orelse return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — /jobs lists them", .{id}), .is_error = true };
+    if (job.done) return .{ .text = try std.fmt.allocPrint(gpa, "job {d} already finished", .{id}), .is_error = true };
+    job.last_activity = .now(io, .awake);
+    if (!job.paused) return .{ .text = try std.fmt.allocPrint(gpa, "job {d} is already running", .{id}) };
+    job.resume_requested = true;
+    return .{ .text = try std.fmt.allocPrint(gpa, "job {d}: resume requested", .{id}) };
 }
 
 /// bash_kill: flag the job and wait (bounded) for the pump to kill + reap it.
@@ -560,4 +740,46 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
     }
     gpa.free(jobs);
     g_jobs.list.deinit(gpa);
+}
+
+test "localhost server recognizer is conservative" {
+    try std.testing.expect(looksLikeLocalServer("npm run dev -- --port 3002"));
+    try std.testing.expect(looksLikeLocalServer("pnpm preview"));
+    try std.testing.expect(looksLikeLocalServer("bun run dev"));
+    try std.testing.expect(looksLikeLocalServer("npm start"));
+    try std.testing.expect(looksLikeLocalServer("next start -p 3000"));
+    try std.testing.expect(looksLikeLocalServer("python3 -m http.server 8000"));
+    try std.testing.expect(looksLikeLocalServer("php -S localhost:8080"));
+    try std.testing.expect(!looksLikeLocalServer("npm test"));
+    try std.testing.expect(!looksLikeLocalServer("npm run develop"));
+    try std.testing.expect(!looksLikeLocalServer("npm run build && npm run dev"));
+    try std.testing.expect(!looksLikeLocalServer("echo next dev"));
+}
+
+test "idle lifecycle pauses once then stops" {
+    try std.testing.expectEqual(IdleAction.none, idleAction(false, 99, 100, 200));
+    try std.testing.expectEqual(IdleAction.pause, idleAction(false, 100, 100, 200));
+    try std.testing.expectEqual(IdleAction.none, idleAction(true, 150, 100, 200));
+    try std.testing.expectEqual(IdleAction.stop, idleAction(true, 200, 100, 200));
+    try std.testing.expectEqual(IdleAction.stop, idleAction(false, 200, 0, 200));
+}
+
+test "runCapped timeout terminates the child process group" {
+    if (comptime !supports_process_groups) return error.SkipZigTest;
+
+    const r = try runCapped(
+        std.testing.allocator,
+        std.testing.io,
+        &.{ "/bin/sh", "-c", "sleep 30 & echo $!; wait" },
+        4096,
+        4096,
+        200,
+    );
+    defer {
+        std.testing.allocator.free(r.stdout);
+        std.testing.allocator.free(r.stderr);
+    }
+    try std.testing.expect(r.timed_out);
+    const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, r.stdout, " \t\r\n"), 10);
+    try std.testing.expectError(error.ProcessNotFound, std.posix.kill(pid, .CONT));
 }

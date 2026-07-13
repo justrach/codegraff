@@ -144,8 +144,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.print("{s}background jobs{s}\n", .{ style.bold, style.reset });
         for (jobs.g_jobs.list.items) |job| {
             var sbuf: [32]u8 = undefined;
-            const status: []const u8 = if (!job.done)
+            const status: []const u8 = if (!job.done and job.paused)
+                "paused"
+            else if (!job.done)
                 "running"
+            else if (job.idle_stopped)
+                "idle-stop"
             else if (job.killed)
                 "killed"
             else if (job.exit_code) |c|
@@ -157,6 +161,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 if (job.done) style.dim else style.green, status,                  style.reset,
                 job.buf.items.len - job.cursor,           utf8Prefix(job.cmd, 60),
             });
+            if (job.managed_server) try out.print("        managed localhost{s}\n", .{if (job.keep_alive) " · keep alive" else ""});
         }
         try out.flush();
         return true;

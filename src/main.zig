@@ -385,6 +385,7 @@ pub fn main(init: std.process.Init) !void {
 
     var snaps: Snapshots = .{ .gpa = gpa, .io = io };
     defer snaps.deinit();
+    jobs.configureIdlePolicy(init.environ_map);
     // Background bash jobs die with the session: kill, await pumps, free.
     defer jobsReap(gpa, io);
     // Root Agent construction + post-construction config (session name, persisted thinking/goal/eval settings, session-start trace note) + the

@@ -419,6 +419,7 @@ prefixes on body lines.
 /compact        summarize history into a fresh context
 /save | /resume | /sessions   session persistence; bare /resume → interactive picker
 /todo           show the current task list
+/jobs           list background jobs and managed localhost server state
 /mcp [add …]    list MCP servers/tools; /mcp add <name> <cmd> connects one live
 /help           list commands
 exit | /exit | ctrl-d | ctrl-c(empty)   quit
@@ -543,7 +544,8 @@ See [`sdk/README.md`](sdk/README.md).
 
 | Tool                 | Kind     | Implementation                                            |
 |----------------------|----------|-----------------------------------------------------------|
-| `bash`               | built-in | `std.process.run` → `/bin/sh -c`, stdout+stderr+exit code |
+| `bash`               | built-in | `/bin/sh -c`, capped output, managed background jobs      |
+| `bash_output`/`bash_resume`/`bash_kill` | built-in | inspect, resume, or stop background jobs and their process trees |
 | `read_file`          | built-in | `Io.Dir.cwd().readFileAlloc` (256 KB cap)                 |
 | `edit_file`          | built-in | exact string replace; unique match required unless `replace_all` |
 | `write_file`         | built-in | `Io.Dir.cwd().writeFile`                                  |
@@ -554,6 +556,27 @@ See [`sdk/README.md`](sdk/README.md).
 | `ask_user`           | meta     | ask the human a question; their reply returns as the result |
 | `attempt_completion` | meta     | carry the final answer out; ends the turn                 |
 | `mcp__<server>__*`   | MCP      | tools discovered from `.mcp.json` servers (see below)     |
+
+**Managed localhost servers.** Simple dev-server commands such as `npm run dev`,
+`pnpm preview`, `next start`, `vite`, and `python -m http.server` are moved into
+a background job automatically, even if the model forgets
+`run_in_background`. On POSIX, each shell owns a process group so stopping the
+job reaches npm/node/test descendants instead of leaving them orphaned.
+
+By default a managed server pauses after **30 minutes** without process output
+or a `bash_output`/`bash_resume` call, then stops and releases its process tree
+after **2 hours**. `/jobs` shows running, paused, pinned, and idle-stopped jobs;
+`bash_resume` wakes a paused server. Pass `keep_alive: true` on the `bash` tool
+to pin a server intentionally. Configure the defaults before starting graff:
+
+```sh
+GRAFF_SERVER_PAUSE_MINUTES=15 GRAFF_SERVER_STOP_MINUTES=60 graff
+GRAFF_SERVER_IDLE=off graff  # disable the policy
+```
+
+A zero pause or stop value disables that transition. The policy only applies
+to server commands launched by graff; it never scans for or stops unrelated
+localhost services.
 
 **Meta tools** act on the agent or the conversation, not the outside world, so
 the orchestrator handles them inline rather than on a pool thread. `ask_user` +

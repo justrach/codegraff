@@ -1,6 +1,6 @@
 //! Tool dispatch: `execTool` (the timed/traced/hooked outer wrapper) and
 //! `execToolInner` (the big per-tool-name switch — bash, bash_output,
-//! bash_kill, webfetch, read_file, codedb, edit_file, write_file, subagent,
+//! bash_resume, bash_kill, webfetch, read_file, codedb, edit_file, write_file, subagent,
 //! workflow). Split out of main.zig (600-line goal); LAST in the tool-exec
 //! region since it's the glue that imports tools.zig/subagent.zig/
 //! workflow.zig as siblings, plus approvals.zig/mcp.zig/jobs.zig/skills.zig/
@@ -49,6 +49,7 @@ const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
 const spawnJob = jobs.spawnJob;
 const jobOutput = jobs.jobOutput;
+const jobResume = jobs.jobResume;
 const jobKill = jobs.jobKill;
 const shellArgv = jobs.shellArgv;
 const skills = @import("skills.zig");
@@ -132,9 +133,13 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text = try gpa.dupe(u8, "command not pre-approved — subagents may only run user-approved or read-only commands, with no chaining/pipes/redirection. Use read_file/edit_file/write_file, or report back what you need run."),
             .is_error = true,
         };
-        const bg = if (input == .object) (if (input.object.get("run_in_background")) |v| v == .bool and v.bool else false) else false;
-        if (bg) {
-            const job = spawnJob(gpa, io, cmd) catch |err| return .{
+        const requested_bg = if (input == .object) (if (input.object.get("run_in_background")) |v| v == .bool and v.bool else false) else false;
+        const managed_server = jobs.looksLikeLocalServer(cmd);
+        const keep_alive = if (input == .object) (if (input.object.get("keep_alive")) |v| v == .bool and v.bool else false) else false;
+        // A simple, recognized dev-server command is always backgrounded so it
+        // enters the managed lifecycle even if the model forgot the flag.
+        if (requested_bg or managed_server) {
+            const job = spawnJob(gpa, io, cmd, .{ .managed_server = managed_server, .keep_alive = keep_alive }) catch |err| return .{
                 // #122: backgrounding costs MORE fds (pipes + pump task), so the
                 // generic "run it in the foreground" advice is right for every
                 // error except the fd-quota one — special-case that.
@@ -144,6 +149,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                     try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err}),
                 .is_error = true,
             };
+            if (managed_server and !keep_alive and jobs.g_server_idle_enabled) return .{ .text = try std.fmt.allocPrint(
+                gpa,
+                "[job {d} started: {s}]\nRecognized as a managed localhost server: pause after {d}m idle, stop after {d}m idle. Poll with bash_output, resume with bash_resume, stop with bash_kill; pass keep_alive=true to pin it.",
+                .{ job.id, job.cmd, jobs.g_server_pause_ms / std.time.ms_per_min, jobs.g_server_stop_ms / std.time.ms_per_min },
+            ) };
             return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.", .{ job.id, job.cmd, job.id }) };
         }
         const sh = shellArgv(cmd);
@@ -175,6 +185,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         const wait_ms = intField(input, "wait_ms") orelse 0;
         if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid job id"), .is_error = true };
         return jobOutput(gpa, io, @intCast(id), @intCast(@max(wait_ms, 0)));
+    }
+    if (std.mem.eql(u8, call.name, "bash_resume")) {
+        const id = intField(input, "id") orelse return missingArg(gpa, "id");
+        if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid job id"), .is_error = true };
+        return jobResume(gpa, io, @intCast(id));
     }
     if (std.mem.eql(u8, call.name, "bash_kill")) {
         const id = intField(input, "id") orelse return missingArg(gpa, "id");
