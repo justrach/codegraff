@@ -407,6 +407,7 @@ pub const Agent = struct {
     pub const emergencyCutIndex = @import("agent_compact.zig").emergencyCutIndex;
     pub const emergencyTrim = @import("agent_compact.zig").emergencyTrim;
     pub const compactOrRecover = @import("agent_compact.zig").compactOrRecover;
+    pub const capOversizedToolOutputs = @import("agent_compact.zig").capOversizedToolOutputs;
 
     // The live streaming path (thinking spinner, live "Thinking" reasoning
     // block, and postStream itself — the root agent's streaming POST) lives

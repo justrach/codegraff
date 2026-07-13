@@ -85,6 +85,19 @@ pub const Provider = struct {
     pub fn compactAt(p: Provider) u64 {
         return p.context / 10 * 8;
     }
+
+    /// #193 follow-up: the largest a SINGLE tool output may be, in serialized
+    /// bytes, before it is truncated at send time (capOversizedToolOutputs).
+    /// Window-proportional — ~50% of the window in estimated tokens (~4 bytes /
+    /// token) — so large-context models keep full tool results untouched and only
+    /// a result big enough to threaten the window on its own is bounded. This
+    /// guarantees no single output can alone overflow past what the in-turn
+    /// emergency-trim recovery can reclaim (it keeps the most-recent outputs
+    /// verbatim). 0 (unknown window) disables the cap.
+    pub fn perOutputCap(p: Provider) usize {
+        if (p.context == 0) return 0;
+        return @intCast(p.context * 2);
+    }
 };
 
 /// One optional API key per provider_specs entry, read from the environment.

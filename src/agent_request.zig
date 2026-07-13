@@ -72,6 +72,102 @@ test "isAuthError (#148): auth failures only, not credits/rate/other" {
     try std.testing.expect(!isAuthError("context length exceeded"));
 }
 
+/// True if `msg` is a provider's "input is over the context window" rejection,
+/// across wire formats: codex/responses ("exceeds the context window"), openai
+/// ("maximum context length", "context_length_exceeded"), anthropic ("prompt is
+/// too long", "exceed context limit"). Drives the in-turn emergency-trim + retry
+/// recovery symmetrically for every provider (#193) — before it, only the codex
+/// path recovered and anthropic/openai died on an over-window turn.
+fn isContextOverflow(msg: []const u8) bool {
+    const needles = [_][]const u8{
+        "context window", // codex/responses: "exceeds the context window"
+        "context length", // openai: "maximum context length is N tokens"
+        "context_length_exceeded", // openai error code echoed into the message
+        "context limit", // anthropic: "input length and max_tokens exceed context limit"
+        "prompt is too long", // anthropic: "prompt is too long: N tokens > M maximum"
+        "maximum context", // defensive: "maximum context ... exceeded"
+    };
+    for (needles) |n| if (std.mem.indexOf(u8, msg, n) != null) return true;
+    return false;
+}
+
+/// #193 follow-up: shared in-turn context-overflow recovery for the three
+/// anthropic/openai error branches (streamed error event, non-streamed
+/// `{"type":"error"}` envelope, and the generic apiErrorMessage path). Before
+/// this, only the codex/.responses branch recovered — anthropic/openai died on an
+/// over-window turn. Returns true if the caller should `continue` the rebuild loop
+/// (emergency-trimmed, retry the same request once); false to fall through to the
+/// normal error. Pins the meter to the window FIRST so the between-turns
+/// compaction engages even when we can't recover here (the rejected request
+/// returns no usage to correct the lagging meter). Guarded by `retried` (one
+/// `context_retried` shared across every branch of a request) so a second overflow
+/// falls through and never loops. These wire formats send the full input each
+/// rebuild, so — unlike the codex branch — no closeCodexWs re-anchor is needed.
+fn recoverContextOverflow(self: *Agent, msg: []const u8, retried: *bool) bool {
+    if (!isContextOverflow(msg)) return false;
+    self.last_context_tokens = self.provider.context;
+    if (retried.* or self.emergencyTrim() == 0) return false;
+    retried.* = true;
+    if (self.tracer) |tr| tr.note("context", "input over the window — emergency-trimmed and retrying the turn");
+    return true;
+}
+
+test "isContextOverflow (#193): matches every provider's overflow phrasing, not unrelated errors" {
+    // codex/responses, openai, anthropic wire-format rejections all recover in-turn
+    try std.testing.expect(isContextOverflow("Your input exceeds the context window of 272000 tokens"));
+    try std.testing.expect(isContextOverflow("This model's maximum context length is 128000 tokens. However, you requested 130000"));
+    try std.testing.expect(isContextOverflow("context_length_exceeded"));
+    try std.testing.expect(isContextOverflow("prompt is too long: 219373 tokens > 200000 maximum"));
+    try std.testing.expect(isContextOverflow("input length and max_tokens exceed context limit"));
+    // unrelated API errors must NOT trigger a trim + retry
+    try std.testing.expect(!isContextOverflow("The API Key appears to be invalid or may have expired."));
+    try std.testing.expect(!isContextOverflow("tool_choice is not supported"));
+    try std.testing.expect(!isContextOverflow("rate limit exceeded"));
+    try std.testing.expect(!isContextOverflow("model not found"));
+}
+
+test "recoverContextOverflow (#193): overflow trims + retries once; guard and non-overflow fall through" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // a runaway tool-loop history emergencyTrim can reclaim (mirrors the #163 shape:
+    // one clean user turn then only tool outputs, so trimOldestToolOutputs recovers)
+    var msgs = std.json.Array.init(a);
+    var um: std.json.ObjectMap = .empty;
+    try um.put(a, "role", .{ .string = "user" });
+    try um.put(a, "content", .{ .string = "do a thing" });
+    try msgs.append(.{ .object = um });
+    const big = try a.alloc(u8, 5000);
+    @memset(big, 'x');
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        var o: std.json.ObjectMap = .empty;
+        try o.put(a, "type", .{ .string = "function_call_output" });
+        try o.put(a, "call_id", .{ .string = "c" });
+        try o.put(a, "output", .{ .string = big });
+        try msgs.append(.{ .object = o });
+    }
+    var agent: Agent = undefined;
+    agent.arena = a;
+    agent.messages = msgs;
+    agent.tracer = null;
+    agent.provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "", .model = "claude", .context = 100000 };
+    agent.last_context_tokens = 0;
+
+    // overflow + trimmable history -> recovers (retry the turn), guard flips
+    var retried = false;
+    try std.testing.expect(recoverContextOverflow(&agent, "prompt is too long: 999 tokens > 100 maximum", &retried));
+    try std.testing.expect(retried);
+    // a second overflow this request -> guard blocks a re-trim (no loop), but the
+    // meter stays pinned to the window so the between-turns compaction still engages
+    try std.testing.expect(!recoverContextOverflow(&agent, "prompt is too long", &retried));
+    try std.testing.expectEqual(agent.provider.context, agent.last_context_tokens);
+    // an unrelated error never recovers, regardless of the guard
+    var retried2 = false;
+    try std.testing.expect(!recoverContextOverflow(&agent, "invalid api key", &retried2));
+    try std.testing.expect(!retried2);
+}
+
 test "fullInputEstimateTokens (#174): counts retained reasoning the chained usage never reports" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -114,6 +210,14 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     sanitizeMessagesUtf8(self.arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
     if (self.provider.kind == .responses) normalizeResponsesHistory(self.arena, &self.messages);
     if (self.provider.kind == .openai) normalizeOpenAIHistory(self.arena, &self.messages); // #99: chat-completions sibling of the above
+    // #193 follow-up: bound any single oversized tool output (an uncapped MCP
+    // result, a huge fetch on a small-window model) before send. The responses
+    // path already hard-caps output above (normalizeResponsesHistory); this is the
+    // provider-agnostic sibling so one pathological result can't alone overflow the
+    // window past what the in-turn recovery below can reclaim (it keeps the most
+    // recent outputs verbatim). Window-proportional, so large-context models keep
+    // full tool results untouched.
+    _ = self.capOversizedToolOutputs(self.provider.perOutputCap());
     var context_retried = false; // #193: at most one in-turn overflow recovery per request
     rebuild: while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
@@ -257,7 +361,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     // session would wedge (every retry resends the same
                     // oversized history). Pin the meter to the window so the
                     // ApiError compact-and-recover path engages.
-                    if (std.mem.indexOf(u8, msg, "exceeds the context window") != null) {
+                    if (isContextOverflow(msg)) {
                         self.last_context_tokens = self.provider.context;
                         // #193: the local pre-send gate uses a byte/4 LOWER bound, so
                         // the backend can still reject an input it let through. A good
@@ -292,6 +396,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
                     const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
                     const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
+                    if (recoverContextOverflow(self, emsg, &context_retried)) continue; // #193: streamed error event that is an overflow → trim + retry
                     if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                     return error.ApiError;
@@ -315,6 +420,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
             const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
             const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
+            if (recoverContextOverflow(self, emsg, &context_retried)) continue; // #193: anthropic {"type":"error"} overflow → trim + retry
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
             return error.ApiError;
@@ -349,6 +455,10 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     continue;
                 }
             }
+            // #193 follow-up: recover an anthropic/openai context-window rejection
+            // in-turn instead of failing the turn (before this only codex recovered;
+            // anthropic and openai died). Shared with the two error branches above.
+            if (recoverContextOverflow(self, msg, &context_retried)) continue;
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error: {s}", .{msg});
             return error.ApiError;

@@ -400,30 +400,32 @@ fn isToolOutputMsg(m: Value) bool {
     return false;
 }
 
-fn truncateStrField(arena: Allocator, o: *std.json.ObjectMap, key: []const u8, cap: usize) usize {
+fn truncateStrField(arena: Allocator, o: *std.json.ObjectMap, key: []const u8, cap: usize, note: []const u8) usize {
     const v = o.get(key) orelse return 0;
     if (v != .string or v.string.len <= cap) return 0;
     const orig = v.string.len;
-    const stub = std.fmt.allocPrint(arena, "{s}\n[old tool output truncated to recover context (#163)]", .{utf8Prefix(v.string, cap)}) catch return 0;
+    // Keep the prefix short enough that prefix + '\n' + note <= cap, so the marker
+    // never grows an output that was only barely over the cap.
+    const stub = std.fmt.allocPrint(arena, "{s}\n{s}", .{ utf8Prefix(v.string, cap -| (note.len + 1)), note }) catch return 0;
     o.put(arena, key, .{ .string = stub }) catch return 0;
     return orig -| stub.len;
 }
 
 /// Truncate an over-large tool-output payload in `m` in place to ~`cap` bytes,
 /// preserving the message and its call/output pairing. Returns bytes reclaimed.
-fn truncateToolOutput(arena: Allocator, m: *Value, cap: usize) usize {
+fn truncateToolOutput(arena: Allocator, m: *Value, cap: usize, note: []const u8) usize {
     if (m.* != .object) return 0;
     if (m.object.get("type")) |t| if (t == .string and std.mem.eql(u8, t.string, "function_call_output"))
-        return truncateStrField(arena, &m.object, "output", cap);
+        return truncateStrField(arena, &m.object, "output", cap, note);
     if (m.object.get("role")) |r| if (r == .string) {
-        if (std.mem.eql(u8, r.string, "tool")) return truncateStrField(arena, &m.object, "content", cap);
+        if (std.mem.eql(u8, r.string, "tool")) return truncateStrField(arena, &m.object, "content", cap, note);
         if (std.mem.eql(u8, r.string, "user")) if (m.object.get("content")) |c| if (c == .array) {
             var saved: usize = 0;
             for (m.object.get("content").?.array.items) |*blk| {
                 if (blk.* != .object) continue;
                 const bt = blk.object.get("type") orelse continue;
                 if (bt == .string and std.mem.eql(u8, bt.string, "tool_result"))
-                    saved += truncateStrField(arena, &blk.object, "content", cap);
+                    saved += truncateStrField(arena, &blk.object, "content", cap, note);
             }
             return saved;
         };
@@ -451,7 +453,28 @@ pub fn trimOldestToolOutputs(self: *Agent) usize {
         if (!isToolOutputMsg(m.*)) continue;
         seen += 1;
         if (seen > total - keep_recent) break; // keep the most recent verbatim
-        reclaimed += truncateToolOutput(self.arena, m, stub_cap);
+        reclaimed += truncateToolOutput(self.arena, m, stub_cap, "[old tool output truncated to recover context (#163)]");
+    }
+    if (reclaimed > 0) self.last_context_tokens = 0; // force a re-measure next turn
+    return reclaimed;
+}
+
+/// #193 follow-up: bound ANY single tool output to `cap` serialized bytes before
+/// send, in place, across every wire format (responses `function_call_output`,
+/// openai `role:"tool"`, anthropic `tool_result` blocks). normalizeResponsesHistory
+/// already hard-caps the responses output at the Responses API limit, but
+/// anthropic/openai tool results had no per-output bound: one uncapped result (a
+/// runaway MCP tool, a big fetch on a small-window model) could alone push the
+/// input past the window — and past what emergencyTrim can reclaim, since it keeps
+/// the most-recent outputs verbatim. Cap is window-proportional (Provider.perOutputCap)
+/// so large-context models keep full results untouched. Preserves every call/output
+/// pairing (shrinks strings, never drops a message). Returns bytes reclaimed.
+pub fn capOversizedToolOutputs(self: *Agent, cap: usize) usize {
+    if (cap == 0) return 0;
+    var reclaimed: usize = 0;
+    for (self.messages.items) |*m| {
+        if (isToolOutputMsg(m.*))
+            reclaimed += truncateToolOutput(self.arena, m, cap, "[tool output truncated: over this model's per-result cap — read/fetch a smaller range (#193)]");
     }
     if (reclaimed > 0) self.last_context_tokens = 0; // force a re-measure next turn
     return reclaimed;
@@ -542,6 +565,70 @@ test "trimOldestToolOutputs recovers a runaway tool-loop history (#163)" {
     try std.testing.expectEqual(@as(usize, 6), truncated); // 10 outputs, oldest 6 truncated
     try std.testing.expectEqual(@as(usize, 4), full); // 4 most-recent kept verbatim
     try std.testing.expectEqual(@as(usize, 11), agent.messages.items.len); // no message dropped
+}
+
+test "capOversizedToolOutputs (#193): bounds an oversized output in every wire format, leaves small ones + non-tool msgs" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const cap: usize = 1024;
+    const big = try a.alloc(u8, 8192);
+    @memset(big, 'x');
+
+    var msgs = std.json.Array.init(a);
+    // responses function_call_output (oversized)
+    var fco: std.json.ObjectMap = .empty;
+    try fco.put(a, "type", .{ .string = "function_call_output" });
+    try fco.put(a, "call_id", .{ .string = "c1" });
+    try fco.put(a, "output", .{ .string = big });
+    try msgs.append(.{ .object = fco });
+    // openai role:"tool" (oversized)
+    var tool: std.json.ObjectMap = .empty;
+    try tool.put(a, "role", .{ .string = "tool" });
+    try tool.put(a, "tool_call_id", .{ .string = "c2" });
+    try tool.put(a, "content", .{ .string = big });
+    try msgs.append(.{ .object = tool });
+    // anthropic user turn carrying a tool_result block (oversized)
+    var user: std.json.ObjectMap = .empty;
+    try user.put(a, "role", .{ .string = "user" });
+    var blocks = std.json.Array.init(a);
+    var tr: std.json.ObjectMap = .empty;
+    try tr.put(a, "type", .{ .string = "tool_result" });
+    try tr.put(a, "tool_use_id", .{ .string = "c3" });
+    try tr.put(a, "content", .{ .string = big });
+    try blocks.append(.{ .object = tr });
+    try user.put(a, "content", .{ .array = blocks });
+    try msgs.append(.{ .object = user });
+    // a small tool output (within cap) — must be left untouched
+    var small: std.json.ObjectMap = .empty;
+    try small.put(a, "type", .{ .string = "function_call_output" });
+    try small.put(a, "output", .{ .string = "ok" });
+    try msgs.append(.{ .object = small });
+    // a plain assistant text message — never a tool output, left untouched
+    try msgs.append(try textMessage(a, "assistant", "hello"));
+
+    var agent: Agent = undefined;
+    agent.arena = a;
+    agent.messages = msgs;
+    agent.last_context_tokens = 42;
+
+    const reclaimed = capOversizedToolOutputs(&agent, cap);
+    try std.testing.expect(reclaimed > 0);
+    try std.testing.expectEqual(@as(usize, 0), agent.last_context_tokens); // forces a re-measure
+
+    // every oversized tool output is now within the cap, with a marker
+    const out0 = agent.messages.items[0].object.get("output").?.string;
+    try std.testing.expect(out0.len <= cap);
+    try std.testing.expect(std.mem.indexOf(u8, out0, "truncated") != null);
+    const out1 = agent.messages.items[1].object.get("content").?.string;
+    try std.testing.expect(out1.len <= cap);
+    const block = agent.messages.items[2].object.get("content").?.array.items[0];
+    try std.testing.expect(block.object.get("content").?.string.len <= cap);
+    // within-cap output and the non-tool message are untouched
+    try std.testing.expectEqualStrings("ok", agent.messages.items[3].object.get("output").?.string);
+    try std.testing.expectEqualStrings("hello", agent.messages.items[4].object.get("content").?.string);
+    // cap == 0 disables the cap entirely (unknown window)
+    try std.testing.expectEqual(@as(usize, 0), capOversizedToolOutputs(&agent, 0));
 }
 
 test "cleanUserTurn: plain user text yes; assistant/tool_result no" {
