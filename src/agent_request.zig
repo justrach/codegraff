@@ -114,6 +114,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     sanitizeMessagesUtf8(self.arena, &self.messages); // invalid UTF-8 (any source/format) -> '?' so content never serializes as a byte-int array the API rejects
     if (self.provider.kind == .responses) normalizeResponsesHistory(self.arena, &self.messages);
     if (self.provider.kind == .openai) normalizeOpenAIHistory(self.arena, &self.messages); // #99: chat-completions sibling of the above
+    var context_retried = false; // #193: at most one in-turn overflow recovery per request
     rebuild: while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
         self.streamed_text = false;
@@ -256,8 +257,24 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     // session would wedge (every retry resends the same
                     // oversized history). Pin the meter to the window so the
                     // ApiError compact-and-recover path engages.
-                    if (std.mem.indexOf(u8, msg, "exceeds the context window") != null)
+                    if (std.mem.indexOf(u8, msg, "exceeds the context window") != null) {
                         self.last_context_tokens = self.provider.context;
+                        // #193: the local pre-send gate uses a byte/4 LOWER bound, so
+                        // the backend can still reject an input it let through. A good
+                        // harness recovers the turn invisibly instead of failing it:
+                        // reclaim room in place and retry the SAME request once
+                        // (opencode compactAfterOverflow + rebuild). emergencyTrim does
+                        // no summary request, so this can't reenter request(); the guard
+                        // means a second overflow falls through to the error below, so we
+                        // never loop. closeCodexWs re-anchors so the retry sends the
+                        // trimmed full input, not a stale WS delta.
+                        if (!context_retried and self.emergencyTrim() > 0) {
+                            context_retried = true;
+                            self.closeCodexWs();
+                            if (self.tracer) |tr| tr.note("context", "input over the window — emergency-trimmed and retrying the turn");
+                            continue :rebuild;
+                        }
+                    }
                     if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("codex api error: {s}", .{msg});
                     return error.ApiError;
@@ -490,6 +507,39 @@ pub fn fullInputEstimateTokens(self: *Agent) u64 {
     var s: std.json.Stringify = .{ .writer = &d.writer };
     s.write(Value{ .array = self.messages }) catch return 0;
     return d.fullCount() / 4;
+}
+
+/// Pre-send overflow gate (#193). `last_context_tokens` only updates from the
+/// server's returned usage, so it lags tool output appended *within* a turn: a
+/// burst of large tool results can push this turn's input past the model's wall
+/// before the between-turns 80% meter ever sees it (the "input exceeds the
+/// context window" rejection on codex/gpt-5.x). Estimating the full input
+/// locally before each request lets the turn loop compact first — the analogue
+/// of codex's run_pre_sampling_compact / opencode's isOverflow-before-each-turn.
+/// Guarded on a known window (compactAt()==0 → don't compact blindly).
+pub fn inputOverCompactThreshold(self: *Agent) bool {
+    const threshold = self.provider.compactAt();
+    return threshold > 0 and fullInputEstimateTokens(self) >= threshold;
+}
+
+test "inputOverCompactThreshold (#193): local estimate gates a pre-send compact" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    var agent: Agent = undefined;
+    agent.messages = msgs;
+    // small window: compactAt() = 10_000/10*8 = 8_000 tokens ≈ 32_000 serialized bytes
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 10_000 };
+    try std.testing.expect(!inputOverCompactThreshold(&agent)); // empty history → under
+    // one fat tool output (~40KB serialized ≈ 10k est tokens) crosses 8k in a single append
+    const big = "{\"type\":\"function_call_output\",\"output\":\"" ++ ("x" ** 40000) ++ "\"}";
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, big, .{}));
+    agent.messages = msgs;
+    try std.testing.expect(inputOverCompactThreshold(&agent)); // burst → over → compact before send
+    // unknown window (context 0) never gates
+    agent.provider.context = 0;
+    try std.testing.expect(!inputOverCompactThreshold(&agent));
 }
 
 pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body_len: usize) void {

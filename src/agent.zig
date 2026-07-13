@@ -308,6 +308,28 @@ pub const Agent = struct {
                 if (!self.sub) esc_cancel.store(false, .release);
                 return error.Interrupted;
             }
+            // #193: pre-send overflow gate. A single turn's tool-output burst can
+            // push the input past the model's wall before the between-turns 80%
+            // meter (last_context_tokens, server-reported) catches up. Estimate the
+            // full input locally and compact BEFORE sending so we never ship an
+            // over-cap request (codex run_pre_sampling_compact / opencode isOverflow).
+            if (self.inputOverCompactThreshold()) {
+                // Bracket the compaction with codex-WS resets, mirroring how every
+                // other compactOrRecover call site is bookended by runTurn's
+                // closeCodexWs (299 + defer 300). Mid-turn the WS can be live with a
+                // prev_id / codex_sent_upto watermark keyed to the pre-trim history:
+                // (1) the first reset lets compact()'s own summary request (it calls
+                // request() at agent_compact.zig:267, after shrinking history at
+                // 259-260) run against a clean session — a stale prev_id makes the
+                // server re-prepend the full pre-trim context, defeating or
+                // overflowing the summary itself; (2) the second re-anchors so the
+                // next in-turn request() re-sends the trimmed full input, not a delta
+                // keyed to dropped messages (same closeCodexWs-after-trim reason as
+                // the in-turn recovery at agent_request.zig:273).
+                self.closeCodexWs();
+                self.compactOrRecover(true);
+                self.closeCodexWs();
+            }
             const root = try self.request(self.toolsJson());
             const done = switch (self.provider.kind) {
                 .anthropic => try self.stepAnthropic(root),
@@ -323,6 +345,7 @@ pub const Agent = struct {
     // 600-line goal). Member-aliased so self.request(...)/etc. resolve
     // unchanged.
     pub const request = @import("agent_request.zig").request;
+    pub const inputOverCompactThreshold = @import("agent_request.zig").inputOverCompactThreshold;
     pub const recordUsage = @import("agent_request.zig").recordUsage;
     pub const usageInt = @import("agent_request.zig").usageInt;
     pub const recordCost = @import("agent_request.zig").recordCost;
