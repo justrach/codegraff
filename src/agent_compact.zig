@@ -745,6 +745,72 @@ test "buildBody (.responses): delta while WS live; full input after closeCodexWs
     try std.testing.expect(std.mem.indexOf(u8, rebuilt_body, "third — not yet sent") != null);
 }
 
+// (#194) stepResponses must move the Codex WS delta boundary (codex_sent_upto)
+// and previous_response_id together. parseResponses accepts a response whose
+// output items carry no terminal response.id; advancing the boundary while
+// keeping the previous id would pair a stale id with a slice that id never held.
+// With a fresh id both advance in lockstep; with no id both reset so the next
+// request re-anchors with the full input.
+test "stepResponses (codex-ws): delta boundary only advances with a fresh response id (#194)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var dummy_ws: ws.WsClient = undefined; // stepResponses only checks codex_ws != null
+
+    // A response WITHOUT an id must reset the continuation state to a full re-anchor.
+    {
+        var msgs = std.json.Array.init(a);
+        try msgs.append(try textMessage(a, "user", "first"));
+        try msgs.append(try textMessage(a, "assistant", "second"));
+        var agent: Agent = .{
+            .gpa = std.testing.allocator,
+            .arena = a,
+            .io = undefined,
+            .client = undefined,
+            .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://x/responses", .api_key = "k", .model = "gpt-5", .context = 100_000 },
+            .messages = msgs,
+            .sub = true, // skip say()
+            .label = "",
+            .out = null,
+            .codex_ws = &dummy_ws,
+            .codex_prev_id = try std.testing.allocator.dupe(u8, "resp_stale"),
+            .codex_sent_upto = 2,
+        };
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"output\":[{\"type\":\"reasoning\"}]}", .{});
+        _ = try agent.stepResponses(parsed.object);
+        try std.testing.expect(agent.codex_prev_id == null); // stale id freed + dropped
+        try std.testing.expectEqual(@as(usize, 0), agent.codex_sent_upto); // boundary reset
+    }
+
+    // A response WITH an id installs it and advances the boundary in lockstep.
+    {
+        var msgs = std.json.Array.init(a);
+        try msgs.append(try textMessage(a, "user", "first"));
+        try msgs.append(try textMessage(a, "assistant", "second"));
+        var agent: Agent = .{
+            .gpa = std.testing.allocator,
+            .arena = a,
+            .io = undefined,
+            .client = undefined,
+            .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://x/responses", .api_key = "k", .model = "gpt-5", .context = 100_000 },
+            .messages = msgs,
+            .sub = true,
+            .label = "",
+            .out = null,
+            .codex_ws = &dummy_ws,
+            .codex_prev_id = null,
+            .codex_sent_upto = 0,
+        };
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"id\":\"resp_new\",\"output\":[{\"type\":\"reasoning\"}]}", .{});
+        _ = try agent.stepResponses(parsed.object);
+        try std.testing.expect(agent.codex_prev_id != null);
+        try std.testing.expectEqualStrings("resp_new", agent.codex_prev_id.?);
+        try std.testing.expectEqual(@as(usize, 3), agent.codex_sent_upto); // 2 initial + 1 appended output item
+        std.testing.allocator.free(agent.codex_prev_id.?); // gpa-owned dupe (leak-checked)
+    }
+}
+
 test "emergencyCutIndex: cuts at a clean user turn at/after the midpoint" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
