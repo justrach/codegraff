@@ -98,6 +98,22 @@ fn isContextOverflow(msg: []const u8, code: ?[]const u8) bool {
     return false;
 }
 
+/// The structured error code from a parsed error envelope, if any: openai / lmstudio /
+/// deepseek put it at root.error.code; some providers use a top-level root.code (#203).
+fn errorCode(root: std.json.ObjectMap) ?[]const u8 {
+    if (root.get("error")) |ev| {
+        if (ev == .object) {
+            if (ev.object.get("code")) |cv| {
+                if (cv == .string) return cv.string;
+            }
+        }
+    }
+    if (root.get("code")) |cv| {
+        if (cv == .string) return cv.string;
+    }
+    return null;
+}
+
 /// #193 follow-up: shared in-turn context-overflow recovery for the three
 /// anthropic/openai error branches (streamed error event, non-streamed
 /// `{"type":"error"}` envelope, and the generic apiErrorMessage path). Before
@@ -136,6 +152,26 @@ test "isContextOverflow (#193/#203): matches structured code + every provider's 
     try std.testing.expect(!isContextOverflow("rate limit exceeded", null));
     try std.testing.expect(!isContextOverflow("model not found", null));
     try std.testing.expect(!isContextOverflow("some unrelated failure", "rate_limit_exceeded"));
+}
+
+test "errorCode (#203): pulls root.error.code (openai/lmstudio), falls back to root.code, else null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // openai/lmstudio/deepseek shape: {"error":{"code":"context_length_exceeded",...}}
+    var err: std.json.ObjectMap = .empty;
+    try err.put(a, "code", .{ .string = "context_length_exceeded" });
+    var root1: std.json.ObjectMap = .empty;
+    try root1.put(a, "error", .{ .object = err });
+    try std.testing.expectEqualStrings("context_length_exceeded", errorCode(root1).?);
+    // top-level code fallback
+    var root2: std.json.ObjectMap = .empty;
+    try root2.put(a, "code", .{ .string = "context_window_exceeded" });
+    try std.testing.expectEqualStrings("context_window_exceeded", errorCode(root2).?);
+    // neither present → null (falls back to substring detection)
+    var root3: std.json.ObjectMap = .empty;
+    try root3.put(a, "message", .{ .string = "hi" });
+    try std.testing.expect(errorCode(root3) == null);
 }
 
 test "recordUsage (#202): floors the meter from the local estimate when usage is absent" {
@@ -506,7 +542,10 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             // #193 follow-up: recover an anthropic/openai context-window rejection
             // in-turn instead of failing the turn (before this only codex recovered;
             // anthropic and openai died). Shared with the two error branches above.
-            if (recoverContextOverflow(self, msg, null, &context_retried)) continue;
+            // #203: openai-compatible errors arrive here (no top-level "type":"error"),
+            // so pull the structured code from root.error.code for isContextOverflow — a
+            // local provider whose message text we don't match on still recovers.
+            if (recoverContextOverflow(self, msg, errorCode(root), &context_retried)) continue;
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error: {s}", .{msg});
             return error.ApiError;
