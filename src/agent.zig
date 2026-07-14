@@ -38,6 +38,7 @@ const pricing = @import("pricing.zig");
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
+const terminal = @import("term.zig");
 
 fn reasoningPromptLabel(effort: ReasoningEffort) []const u8 {
     return switch (effort) {
@@ -63,6 +64,18 @@ fn reasoningPromptColor(effort: ReasoningEffort) []const u8 {
 
 fn writePromptBadge(w: *Io.Writer, color: []const u8, label: []const u8) !void {
     try w.print("{s} · {s}{s}{s}{s}", .{ style.dim, style.reset, color, label, style.reset });
+}
+
+/// Include a status-line segment only if its display width still fits the
+/// remaining budget, charging it against `used` when it does. Lets prompt()
+/// drop low-priority metadata instead of soft-wrapping mid-badge in a narrow
+/// pane (#209).
+fn fitsSegment(used: *usize, avail: usize, seg_width: usize) bool {
+    if (used.* + seg_width <= avail) {
+        used.* += seg_width;
+        return true;
+    }
+    return false;
 }
 
 fn compactTokenCount(buf: []u8, tokens: u64) []const u8 {
@@ -189,40 +202,71 @@ pub const Agent = struct {
         // Prompt-cache hit from the last response — proof caching is working.
         var kbuf: [32]u8 = undefined;
         var kval: [24]u8 = undefined;
-        const cached: []const u8 = if (self.last_cache_read > 0)
+        const cached: []const u8 = if (self.last_context_tokens > 0 and self.last_cache_read > 0)
             (std.fmt.bufPrint(&kbuf, " · ⚡{s} cached", .{compactTokenCount(&kval, self.last_cache_read)}) catch "")
         else
             "";
-        try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.cyan, self.provider.model, style.reset });
-        // Fast is the most operationally important model setting, so keep it
-        // immediately beside the model instead of letting permission modes
-        // push it deeper into the status line.
-        if (self.fast and self.provider.kind == .responses) try writePromptBadge(w, style.green, "Fast");
-        if (self.effortApplies()) try writePromptBadge(w, reasoningPromptColor(self.reasoning), reasoningPromptLabel(self.reasoning));
-        try writePromptBadge(w, style.cyan, self.provider.id);
-        if (self.fallback_active) try writePromptBadge(w, style.yellow, "Fallback");
-        if (main_mod.plan_mode) try writePromptBadge(w, style.yellow, "Plan");
-        if (self.strict) try writePromptBadge(w, style.red, "Strict");
-        if (self.ultracode_mode) try writePromptBadge(w, style.magenta, "Ultracode");
-        try w.print("{s} · cwd {s}{s}{s}", .{ style.dim, style.reset, main_mod.g_cwd_display, style.dim });
-        if (self.last_context_tokens > 0) {
+        var ctxbuf: [80]u8 = undefined;
+        var used_buf: [24]u8 = undefined;
+        const ctx: []const u8 = if (self.last_context_tokens > 0) blk: {
             const threshold = self.provider.compactAt();
             const pct = if (self.provider.context > 0) self.last_context_tokens * 100 / self.provider.context else 0;
-            var used_buf: [24]u8 = undefined;
-            try w.print(" · {s}/{d}k ctx ({d}% · compact@{d}k){s}{s}]{s} {s}›{s} ", .{
+            break :blk std.fmt.bufPrint(&ctxbuf, " · {s}/{d}k ctx ({d}% · compact@{d}k)", .{
                 compactTokenCount(&used_buf, self.last_context_tokens),
                 self.provider.context / 1000,
                 pct,
                 threshold / 1000,
-                cached,
-                cost,
-                style.reset,
-                style.bold,
-                style.reset,
-            });
-        } else {
-            try w.print("{s}]{s} {s}›{s} ", .{ cost, style.reset, style.bold, style.reset });
-        }
+            }) catch "";
+        } else "";
+
+        // Budget the status line against terminal width so a narrow pane never
+        // soft-wraps mid-badge (splitting e.g. `codex`) or strands the cursor.
+        // The model plus the settings that disambiguate the cursor (effort,
+        // provider, mode badges) are offered first; cwd/context/cache/cost are
+        // the first to be dropped when they no longer fit. readline.zig then
+        // gives the input its own row if what remains is still cramped. #209
+        //
+        // Reserve the fixed frame ('[' + '] › ' = 5 cols) plus 1 column of slack
+        // so a width miscount on an exotic glyph can't tip the line into a wrap.
+        const cols = terminal.termCols();
+        const avail = if (cols > 6) cols - 6 else 0;
+        var used: usize = terminal.dispWidth(self.provider.model);
+        // A leading " · " separator is 3 columns; cwd's " · cwd " label is 7.
+        const show_fast = self.fast and self.provider.kind == .responses and
+            fitsSegment(&used, avail, 3 + terminal.dispWidth("Fast"));
+        const show_effort = self.effortApplies() and
+            fitsSegment(&used, avail, 3 + terminal.dispWidth(reasoningPromptLabel(self.reasoning)));
+        const show_provider = fitsSegment(&used, avail, 3 + terminal.dispWidth(self.provider.id));
+        const show_fallback = self.fallback_active and
+            fitsSegment(&used, avail, 3 + terminal.dispWidth("Fallback"));
+        const show_plan = main_mod.plan_mode and fitsSegment(&used, avail, 3 + terminal.dispWidth("Plan"));
+        const show_strict = self.strict and fitsSegment(&used, avail, 3 + terminal.dispWidth("Strict"));
+        const show_ultra = self.ultracode_mode and fitsSegment(&used, avail, 3 + terminal.dispWidth("Ultracode"));
+        // The context meter outranks cwd for the budget (it is the urgent,
+        // changing signal near the compaction threshold) but still renders after
+        // cwd below, preserving the familiar left-to-right order when both fit.
+        const show_ctx = ctx.len > 0 and fitsSegment(&used, avail, terminal.dispWidth(ctx));
+        const show_cwd = fitsSegment(&used, avail, 7 + terminal.dispWidth(main_mod.g_cwd_display));
+        const show_cached = cached.len > 0 and fitsSegment(&used, avail, terminal.dispWidth(cached));
+        const show_cost = cost.len > 0 and fitsSegment(&used, avail, terminal.dispWidth(cost));
+
+        try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.cyan, self.provider.model, style.reset });
+        // Fast is the most operationally important model setting, so keep it
+        // immediately beside the model instead of letting permission modes
+        // push it deeper into the status line.
+        if (show_fast) try writePromptBadge(w, style.green, "Fast");
+        if (show_effort) try writePromptBadge(w, reasoningPromptColor(self.reasoning), reasoningPromptLabel(self.reasoning));
+        if (show_provider) try writePromptBadge(w, style.cyan, self.provider.id);
+        if (show_fallback) try writePromptBadge(w, style.yellow, "Fallback");
+        if (show_plan) try writePromptBadge(w, style.yellow, "Plan");
+        if (show_strict) try writePromptBadge(w, style.red, "Strict");
+        if (show_ultra) try writePromptBadge(w, style.magenta, "Ultracode");
+        try w.print("{s}", .{style.dim});
+        if (show_cwd) try w.print(" · cwd {s}{s}{s}", .{ style.reset, main_mod.g_cwd_display, style.dim });
+        if (show_ctx) try w.print("{s}", .{ctx});
+        if (show_cached) try w.print("{s}", .{cached});
+        if (show_cost) try w.print("{s}", .{cost});
+        try w.print("{s}]{s} {s}›{s} ", .{ style.reset, style.reset, style.bold, style.reset });
         try w.flush();
     }
 
