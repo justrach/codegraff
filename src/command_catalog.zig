@@ -49,6 +49,7 @@ pub const commands = [_]Item{
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
     .{ .name = "/rewind", .usage = "/rewind [n]", .desc = "list past prompts; /rewind <n> drops prompt n+after & reverts its file edits" },
     .{ .name = "/image", .usage = "/image <path>", .desc = "attach an image to your next message (vision models only)" },
+    .{ .name = "/images", .desc = "open image URLs from the last response (e.g. issue attachments) in your browser" },
     .{ .name = "/paste", .desc = "attach the clipboard image — macOS; also Ctrl-V (⌘V can't be captured)" },
     .{ .name = "/bash", .usage = "/bash <command>", .desc = "run a shell command directly" },
     .{ .name = "/save", .usage = "/save [name]", .desc = "write the conversation to <name>.session.json (default: current)" },

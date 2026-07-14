@@ -279,7 +279,7 @@ fn queryParam(req_line: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
-fn openBrowser(io: Io, url: []const u8) void {
+pub fn openBrowser(io: Io, url: []const u8) void {
     const argv: []const []const u8 = if (builtin.os.tag == .macos)
         &.{ "open", url }
     else
