@@ -22,6 +22,10 @@ def main() -> None:
             "GRAFF_FLEET": "off",
             "GRAFF_NO_TELEMETRY": "1",
         }
+        # A wide pane so the full status line (all mode badges + the deep temp
+        # cwd) fits without the width budgeting (#209) dropping cwd; this session
+        # exercises command/badge state, while the cols=44 session below and
+        # test-pty-narrow-prompt.py cover the narrow-width layout.
         with PtySession(
             GRAFF,
             ["--model", "deepseek-v4-pro", "--no-telemetry"],
@@ -29,6 +33,7 @@ def main() -> None:
             env=env,
             unset_env=("CODEX_HOME", "NO_COLOR"),
             timeout=15.0,
+            cols=200,
         ) as session:
             session.wait_for_literal("] ›")
 

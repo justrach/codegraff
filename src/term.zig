@@ -211,6 +211,56 @@ pub fn termRows() usize {
     return tty.rows();
 }
 
+/// Display columns of a UTF-8 string: sums per-codepoint widths (wcwidth-style)
+/// so East-Asian wide forms and emoji count as 2, combining / zero-width marks
+/// as 0, everything else as 1. The shared width primitive for budgeting status
+/// and prompt lines and TUI table cells against termCols(). (#142, #209)
+pub fn dispWidth(s: []const u8) usize {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        const len = std.unicode.utf8ByteSequenceLength(s[i]) catch {
+            i += 1;
+            n += 1;
+            continue;
+        };
+        const end = @min(i + len, s.len);
+        n += if (std.unicode.utf8Decode(s[i..end])) |cp| codepointWidth(cp) else |_| 1;
+        i = end;
+    }
+    return n;
+}
+
+/// Display columns for one codepoint (wcwidth-style, #142): 0 for combining /
+/// zero-width marks, 2 for East-Asian wide + emoji, 1 otherwise. Approximate —
+/// covers the ranges that misalign TUI table borders (CJK, Hangul, kana,
+/// fullwidth forms, common emoji planes). Emoji-presentation via a VS16 (U+FE0F)
+/// on a text-default base is not width-promoted. ASCII/Latin-1 skip the table.
+pub fn codepointWidth(cp: u21) usize {
+    if (cp < 0x300) return 1; // ASCII + Latin-1 (control bytes stay 1, as before)
+    if ((cp >= 0x300 and cp <= 0x36F) or // combining diacritical marks
+        (cp >= 0x200B and cp <= 0x200F) or // ZWSP..RLM
+        (cp >= 0xFE00 and cp <= 0xFE0F) or // variation selectors
+        cp == 0xFEFF) return 0; // BOM / ZWNBSP
+    if ((cp >= 0x1100 and cp <= 0x115F) or // Hangul Jamo
+        (cp >= 0x2E80 and cp <= 0x303E) or // CJK radicals .. symbols
+        (cp >= 0x3041 and cp <= 0x33FF) or // kana .. CJK compat
+        (cp >= 0x3400 and cp <= 0x4DBF) or // CJK ext A
+        (cp >= 0x4E00 and cp <= 0x9FFF) or // CJK unified
+        (cp >= 0xA000 and cp <= 0xA4CF) or // Yi
+        (cp >= 0xAC00 and cp <= 0xD7A3) or // Hangul syllables
+        (cp >= 0xF900 and cp <= 0xFAFF) or // CJK compat ideographs
+        (cp >= 0xFE30 and cp <= 0xFE4F) or // CJK compat forms
+        (cp >= 0xFF00 and cp <= 0xFF60) or // fullwidth forms
+        (cp >= 0xFFE0 and cp <= 0xFFE6) or // fullwidth signs
+        (cp >= 0x1F000 and cp <= 0x1F02F) or // mahjong tiles
+        (cp >= 0x1F0A0 and cp <= 0x1F0FF) or // playing cards
+        (cp >= 0x1F100 and cp <= 0x1F1FF) or // enclosed alphanumeric / regional
+        (cp >= 0x1F300 and cp <= 0x1FAFF) or // emoji & pictographs
+        (cp >= 0x20000 and cp <= 0x3FFFD)) return 2; // CJK ext B+
+    return 1;
+}
+
 /// Advance (rows, col) as `chunk` of plain text is printed in a `cols`-wide
 /// terminal: hard newlines and soft wraps each start a new row, and UTF-8
 /// continuation bytes share a glyph cell so they do not advance the column.
