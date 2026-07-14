@@ -303,6 +303,23 @@ pub fn contextFor(provider_id: []const u8, model: []const u8) u64 {
     return default_context;
 }
 
+/// Whether a model has a catalogued context window (baked row or fresh overlay),
+/// as opposed to falling through to default_context. Mirrors contextFor's lookup so
+/// a caller can tell an unknown/local model from a known 200k one (#203) — needed
+/// because contextFor returns default_context for both.
+pub fn isKnownModel(provider_id: []const u8, model: []const u8) bool {
+    for (models()) |m| {
+        if (std.mem.eql(u8, m.provider, provider_id) and std.mem.eql(u8, m.name, model)) return true;
+    }
+    for (context_overlay) |m| {
+        if (std.mem.eql(u8, m.name, model)) return true;
+    }
+    for (models()) |m| {
+        if (std.mem.eql(u8, m.name, model)) return true;
+    }
+    return false;
+}
+
 /// Fuzzy model selection for `/model <query>` (graff-style). Exact name wins;
 /// otherwise case-insensitive substring, preferring a model whose provider has
 /// a key/login available so `/model sonnet` lands on a usable provider. Returns

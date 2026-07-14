@@ -368,6 +368,23 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
             if (secs > 0) agent_ws.codex_ws_idle_ms = @intCast(@min(secs, 86_400) * 1000);
         } else |_| {}
     }
+    // #203: GRAFF_CONTEXT / GRAFF_CONTEXT_WINDOW declares the context window (in
+    // tokens) for an unknown/local model whose real window graff can't look up,
+    // replacing the conservative 200k fallback so the compaction gate + per-output
+    // cap are sized correctly. Only affects models that fall back to the default
+    // (see provider.contextWindowFor). Ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_CONTEXT") orelse environ_map.get("GRAFF_CONTEXT_WINDOW")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |n| {
+            if (n > 0) provider_mod.g_context_override = n;
+        } else |_| {}
+    }
+    // #204: GRAFF_COMPACT_PCT overrides the auto-compaction threshold as a percent
+    // of the window (default 80). Clamped to 1..100; ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_COMPACT_PCT")) |v| {
+        if (std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10)) |pct| {
+            if (pct > 0) provider_mod.g_compact_pct_override = @min(pct, 100);
+        } else |_| {}
+    }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
     // GRAFF_WS_FORCE_FAIL_ONCE=1|true|on|yes arms the one-shot forced WS
     // connect failure (integration-test seam for the SSE fallback + ws_off
