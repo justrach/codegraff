@@ -398,9 +398,6 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 },
             }
         }
-        // End of stream leaves the reader empty; otherwise the '\n' is
-        // still buffered (and consumed below, after the line is handled).
-        const more = if (reader.peekByte()) |_| true else |_| false;
         try full.writer.writeAll(line.writer.buffered());
         try full.writer.writeByte('\n');
         got_body = true; // #134: response bytes are in `full`; a later read error is a clean close
@@ -434,6 +431,13 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
             if (req.connection) |conn| conn.closing = true;
             return error.Interrupted;
         }
+        // "Is there more?" — peek the next byte, then consume the buffered '\n'.
+        // Deliberately AFTER the terminal-event break above (#56): once
+        // [DONE]/response.completed has landed the turn is complete and we break
+        // there, so this peek never runs on a finished response. Peeking then would
+        // fill-block forever on a half-open socket (server gone, no FIN) and hang
+        // the completed turn — the exact wedge the idle-stall watchdog can't see.
+        const more = if (reader.peekByte()) |_| true else |_| false;
         if (!more) break;
         reader.toss(1);
     }
