@@ -759,6 +759,39 @@ test "inputOverCompactThreshold (#193): local estimate gates a pre-send compact"
     try std.testing.expect(!inputOverCompactThreshold(&agent));
 }
 
+// (#192) A parallel tool batch must be gated as an AGGREGATE. runTurn's #193
+// pre-send gate sits at the top of the loop — after stepResponses appends the
+// whole batch and before the continuation request (agent.zig) — so
+// inputOverCompactThreshold re-estimates over every freshly appended output.
+// Six parallel read_file outputs, each individually well under the window (and
+// the 16 KB per-output cap), still trip the gate together, so compaction runs
+// before the continuation instead of overflowing the model.
+test "inputOverCompactThreshold (#192): a parallel tool batch is gated as an aggregate" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    var agent: Agent = undefined;
+    // compactAt() = 10_000/10*8 = 8_000 tokens ≈ 32_000 serialized bytes.
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 10_000 };
+
+    // One ~6 KB output — individually far under the window — must not trip it.
+    const one = "{\"type\":\"function_call_output\",\"call_id\":\"c0\",\"output\":\"" ++ ("x" ** 6000) ++ "\"}";
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, one, .{}));
+    agent.messages = msgs;
+    try std.testing.expect(!inputOverCompactThreshold(&agent)); // one output: under
+
+    // Five more (six total — the reported six parallel read_file calls) push the
+    // aggregate serialized input past compactAt() (~36 KB ≈ 9k est tokens).
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        const item = "{\"type\":\"function_call_output\",\"call_id\":\"c\",\"output\":\"" ++ ("x" ** 6000) ++ "\"}";
+        try msgs.append(try std.json.parseFromSliceLeaky(Value, a, item, .{}));
+    }
+    agent.messages = msgs;
+    try std.testing.expect(inputOverCompactThreshold(&agent)); // full batch: over → compact before continuation
+}
+
 pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body_len: usize) void {
     self.last_cache_read = 0;
     // Fallback estimate (~4 bytes/token) from the serialized request body,
