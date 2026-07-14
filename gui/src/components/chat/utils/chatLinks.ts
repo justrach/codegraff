@@ -4,6 +4,7 @@ const FILE_PATH_PATTERN =
 const PATH_BOUNDARY_PATTERN = /[\s([{"'`]/u;
 const TRAILING_PUNCTUATION_PATTERN = /[.,;!?]+$/u;
 const TRAILING_CLOSERS = new Set([")", "]", "}", ">", "'", '"', "`"]);
+const TRAILING_MARKDOWN_DELIMITERS = new Set(["*", "~"]);
 const FILE_BASENAME_EXTENSION_PATTERN = /\.[A-Za-z0-9_-]+$/u;
 const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/u;
 const WINDOWS_UNC_PATH_PATTERN = /^\\\\/u;
@@ -58,24 +59,46 @@ export function isMailtoUrl(href: string): boolean {
 }
 
 function trimLinkCandidate(candidate: string): string {
-  let value = candidate.replace(TRAILING_PUNCTUATION_PATTERN, "");
+  let value = candidate;
 
-  while (value.length > 0) {
+  let trimmed = true;
+  while (trimmed && value.length > 0) {
+    trimmed = false;
+
+    const withoutPunctuation = value.replace(TRAILING_PUNCTUATION_PATTERN, "");
+    if (withoutPunctuation.length !== value.length) {
+      value = withoutPunctuation;
+      trimmed = true;
+      continue;
+    }
+
     const lastChar = value.at(-1);
-    if (lastChar == null || !TRAILING_CLOSERS.has(lastChar)) {
+    if (lastChar == null) {
       break;
     }
 
-    const opener = lastChar === ")" ? "(" : lastChar === "]" ? "[" : lastChar === "}" ? "{" : null;
-    if (opener != null) {
-      const openerCount = value.split(opener).length - 1;
-      const closerCount = value.split(lastChar).length - 1;
-      if (closerCount <= openerCount) {
-        break;
-      }
+    // Bare URLs/paths wrapped in Markdown emphasis (**url**, *url*, ~~url~~) capture the
+    // closing delimiters; strip trailing markers so the clickable target excludes them.
+    if (TRAILING_MARKDOWN_DELIMITERS.has(lastChar)) {
+      value = value.slice(0, -1);
+      trimmed = true;
+      continue;
     }
 
-    value = value.slice(0, -1);
+    if (TRAILING_CLOSERS.has(lastChar)) {
+      const opener =
+        lastChar === ")" ? "(" : lastChar === "]" ? "[" : lastChar === "}" ? "{" : null;
+      if (opener != null) {
+        const openerCount = value.split(opener).length - 1;
+        const closerCount = value.split(lastChar).length - 1;
+        if (closerCount <= openerCount) {
+          break;
+        }
+      }
+
+      value = value.slice(0, -1);
+      trimmed = true;
+    }
   }
 
   return value;
