@@ -177,6 +177,17 @@ describe("parseMarkdown math (#208)", () => {
   test("does not treat an escaped \\$ or prose currency as math", () => {
     expect(parseInline("costs \\$5 today")).toEqual([{ type: "text", value: "costs \\$5 today" }]);
     expect(parseInline("$5 and $10 total")).toEqual([{ type: "text", value: "$5 and $10 total" }]);
+    // A price followed by a later `$word` must not span into inline math: the
+    // closing `$` sits against a space, so it never closes a formula.
+    expect(parseInline("I have $5 and $funds now")).toEqual([
+      { type: "text", value: "I have $5 and $funds now" },
+    ]);
+    // Real inline math still parses (the closer hugs the content).
+    expect(parseInline("math $x = 5$ here")).toEqual([
+      { type: "text", value: "math " },
+      { type: "math", value: "x = 5" },
+      { type: "text", value: " here" },
+    ]);
   });
 
   test("keeps a $ inside inline code and $$ inside a fence as code", () => {

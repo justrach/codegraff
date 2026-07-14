@@ -433,10 +433,12 @@ const EM_STAR_RE = /\*([\s\S]+?)\*/g;
 const EM_UNDER_RE = /(?<![A-Za-z0-9])_([\s\S]+?)_(?![A-Za-z0-9])/g;
 const LINK_RE = /\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
 // Inline math: \( ... \) and $ ... $. The dollar form is deliberately narrow —
-// the opener/closer hug the content and must not sit against a digit — so prose
-// currency like "$5 and $10" stays text; an escaped \$ never opens either form.
+// Inline math: \( ... \) and $ ... $. The dollar form is deliberately narrow —
+// the opener/closer hug the content and must not sit against a digit or (for the
+// closer) a space — so prose currency like "$5 and $10" or "$5 and $funds" stays
+// text; an escaped \$ never opens either form.
 const MATH_PAREN_RE = /\\\(([\s\S]+?)\\\)/g;
-const MATH_DOLLAR_RE = /(?<![\\$0-9])\$(?![\s$])([^\n$]+?)\$(?![\d$])/g;
+const MATH_DOLLAR_RE = /(?<![\\$0-9])\$(?![\s$])([^\n$]+?)(?<!\s)\$(?![\d$])/g;
 
 export function parseInline(text: string): MdInline[] {
   if (text === "") {
