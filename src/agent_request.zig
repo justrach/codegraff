@@ -78,7 +78,14 @@ test "isAuthError (#148): auth failures only, not credits/rate/other" {
 /// too long", "exceed context limit"). Drives the in-turn emergency-trim + retry
 /// recovery symmetrically for every provider (#193) — before it, only the codex
 /// path recovered and anthropic/openai died on an over-window turn.
-fn isContextOverflow(msg: []const u8) bool {
+fn isContextOverflow(msg: []const u8, code: ?[]const u8) bool {
+    // #203: match the structured error code first (openai/codex parity — a local or
+    // non-English provider whose message text differs still recovers), then fall back
+    // to the human-readable phrasing.
+    if (code) |c| {
+        const codes = [_][]const u8{ "context_length_exceeded", "context_window_exceeded" };
+        for (codes) |k| if (std.mem.eql(u8, c, k)) return true;
+    }
     const needles = [_][]const u8{
         "context window", // codex/responses: "exceeds the context window"
         "context length", // openai: "maximum context length is N tokens"
@@ -103,8 +110,8 @@ fn isContextOverflow(msg: []const u8) bool {
 /// `context_retried` shared across every branch of a request) so a second overflow
 /// falls through and never loops. These wire formats send the full input each
 /// rebuild, so — unlike the codex branch — no closeCodexWs re-anchor is needed.
-fn recoverContextOverflow(self: *Agent, msg: []const u8, retried: *bool) bool {
-    if (!isContextOverflow(msg)) return false;
+fn recoverContextOverflow(self: *Agent, msg: []const u8, code: ?[]const u8, retried: *bool) bool {
+    if (!isContextOverflow(msg, code)) return false;
     self.last_context_tokens = self.provider.context;
     if (retried.* or self.emergencyTrim() == 0) return false;
     retried.* = true;
@@ -112,18 +119,23 @@ fn recoverContextOverflow(self: *Agent, msg: []const u8, retried: *bool) bool {
     return true;
 }
 
-test "isContextOverflow (#193): matches every provider's overflow phrasing, not unrelated errors" {
+test "isContextOverflow (#193/#203): matches structured code + every provider's phrasing, not unrelated errors" {
     // codex/responses, openai, anthropic wire-format rejections all recover in-turn
-    try std.testing.expect(isContextOverflow("Your input exceeds the context window of 272000 tokens"));
-    try std.testing.expect(isContextOverflow("This model's maximum context length is 128000 tokens. However, you requested 130000"));
-    try std.testing.expect(isContextOverflow("context_length_exceeded"));
-    try std.testing.expect(isContextOverflow("prompt is too long: 219373 tokens > 200000 maximum"));
-    try std.testing.expect(isContextOverflow("input length and max_tokens exceed context limit"));
-    // unrelated API errors must NOT trigger a trim + retry
-    try std.testing.expect(!isContextOverflow("The API Key appears to be invalid or may have expired."));
-    try std.testing.expect(!isContextOverflow("tool_choice is not supported"));
-    try std.testing.expect(!isContextOverflow("rate limit exceeded"));
-    try std.testing.expect(!isContextOverflow("model not found"));
+    try std.testing.expect(isContextOverflow("Your input exceeds the context window of 272000 tokens", null));
+    try std.testing.expect(isContextOverflow("This model's maximum context length is 128000 tokens. However, you requested 130000", null));
+    try std.testing.expect(isContextOverflow("context_length_exceeded", null));
+    try std.testing.expect(isContextOverflow("prompt is too long: 219373 tokens > 200000 maximum", null));
+    try std.testing.expect(isContextOverflow("input length and max_tokens exceed context limit", null));
+    // #203: a structured error code recovers even when the message text is unfamiliar
+    // (a local / non-English provider whose phrasing we don't match on)
+    try std.testing.expect(isContextOverflow("de invoerlengte overschrijdt het venster", "context_length_exceeded"));
+    try std.testing.expect(isContextOverflow("", "context_window_exceeded"));
+    // unrelated API errors must NOT trigger a trim + retry, by message or by code
+    try std.testing.expect(!isContextOverflow("The API Key appears to be invalid or may have expired.", null));
+    try std.testing.expect(!isContextOverflow("tool_choice is not supported", null));
+    try std.testing.expect(!isContextOverflow("rate limit exceeded", null));
+    try std.testing.expect(!isContextOverflow("model not found", null));
+    try std.testing.expect(!isContextOverflow("some unrelated failure", "rate_limit_exceeded"));
 }
 
 test "recordUsage (#202): floors the meter from the local estimate when usage is absent" {
@@ -183,15 +195,15 @@ test "recoverContextOverflow (#193): overflow trims + retries once; guard and no
 
     // overflow + trimmable history -> recovers (retry the turn), guard flips
     var retried = false;
-    try std.testing.expect(recoverContextOverflow(&agent, "prompt is too long: 999 tokens > 100 maximum", &retried));
+    try std.testing.expect(recoverContextOverflow(&agent, "prompt is too long: 999 tokens > 100 maximum", null, &retried));
     try std.testing.expect(retried);
     // a second overflow this request -> guard blocks a re-trim (no loop), but the
     // meter stays pinned to the window so the between-turns compaction still engages
-    try std.testing.expect(!recoverContextOverflow(&agent, "prompt is too long", &retried));
+    try std.testing.expect(!recoverContextOverflow(&agent, "prompt is too long", null, &retried));
     try std.testing.expectEqual(agent.provider.context, agent.last_context_tokens);
     // an unrelated error never recovers, regardless of the guard
     var retried2 = false;
-    try std.testing.expect(!recoverContextOverflow(&agent, "invalid api key", &retried2));
+    try std.testing.expect(!recoverContextOverflow(&agent, "invalid api key", null, &retried2));
     try std.testing.expect(!retried2);
 }
 
@@ -395,7 +407,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     // session would wedge (every retry resends the same
                     // oversized history). Pin the meter to the window so the
                     // ApiError compact-and-recover path engages.
-                    if (isContextOverflow(msg)) {
+                    if (isContextOverflow(msg, null)) {
                         self.last_context_tokens = self.provider.context;
                         // #193: the local pre-send gate uses a byte/4 LOWER bound, so
                         // the backend can still reject an input it let through. A good
@@ -430,7 +442,8 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
                     const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
                     const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
-                    if (recoverContextOverflow(self, emsg, &context_retried)) continue; // #193: streamed error event that is an overflow → trim + retry
+                    const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
+                    if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: streamed error event overflow (by code or phrasing) → trim + retry
                     if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                     return error.ApiError;
@@ -454,7 +467,8 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             const eo = if (root.get("error")) |ev| (if (ev == .object) ev.object else null) else null;
             const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
             const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
-            if (recoverContextOverflow(self, emsg, &context_retried)) continue; // #193: anthropic {"type":"error"} overflow → trim + retry
+            const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
+            if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: {"type":"error"} overflow (by code or phrasing) → trim + retry
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
             return error.ApiError;
@@ -492,7 +506,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             // #193 follow-up: recover an anthropic/openai context-window rejection
             // in-turn instead of failing the turn (before this only codex recovered;
             // anthropic and openai died). Shared with the two error branches above.
-            if (recoverContextOverflow(self, msg, &context_retried)) continue;
+            if (recoverContextOverflow(self, msg, null, &context_retried)) continue;
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error: {s}", .{msg});
             return error.ApiError;
@@ -675,7 +689,15 @@ pub fn fullInputEstimateTokens(self: *Agent) u64 {
 /// Guarded on a known window (compactAt()==0 → don't compact blindly).
 pub fn inputOverCompactThreshold(self: *Agent) bool {
     const threshold = self.provider.compactAt();
-    return threshold > 0 and fullInputEstimateTokens(self) >= threshold;
+    if (threshold == 0) return false;
+    // #203: fullInputEstimateTokens omits the ever-present system prompt + tool
+    // schemas, so it undercounts the real input and this gate under-fires. Add a
+    // baseline for that fixed prefill, clamped to 1/8 of the window so it can never
+    // dominate a small (local) window. (Kept out of fullInputEstimateTokens itself,
+    // which must stay pure over self.messages for the unit tests.)
+    const prefill_baseline_tokens: u64 = 8000;
+    const prefill = @min(prefill_baseline_tokens, self.provider.context / 8);
+    return fullInputEstimateTokens(self) + prefill >= threshold;
 }
 
 test "inputOverCompactThreshold (#193): local estimate gates a pre-send compact" {
