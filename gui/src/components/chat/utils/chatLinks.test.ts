@@ -53,4 +53,17 @@ describe("getChatLinkMatches URL vs Markdown delimiters", () => {
       value: "http://localhost:3003",
     });
   });
+
+  test("strips stacked and mixed trailing emphasis delimiters", () => {
+    expect(firstUrl("***https://example.com***")).toBe("https://example.com");
+    expect(firstUrl("~~*https://example.com*~~")).toBe("https://example.com");
+  });
+
+  test("never splits a multi-byte trailing character (surrogate-safe)", () => {
+    // Trimming only removes ASCII markers, so a URL that legitimately ends in a
+    // multi-byte glyph (accents, emoji) is preserved byte-for-byte, never cut
+    // mid-codepoint.
+    expect(firstUrl("**https://example.com/éé**")).toBe("https://example.com/éé");
+    expect(firstUrl("see https://example.com/p\u{1F600}")).toBe("https://example.com/p\u{1F600}");
+  });
 });
