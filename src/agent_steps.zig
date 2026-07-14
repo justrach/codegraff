@@ -70,12 +70,22 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
     // Codex WS delta: the server now holds up to here (the output items appended
     // above). The NEXT request sends previous_response_id + only what is appended
     // after this point (the tool results below). Only while the WS session lives.
+    //
+    // The delta boundary (codex_sent_upto) and previous_response_id must move in
+    // lockstep: buildBody pairs previous_response_id with messages[codex_sent_upto..].
+    // parseResponses accepts output items without a terminal response.id (#194), so
+    // a response can lack one — advancing the boundary while keeping the OLD id
+    // would slice off history that id never held. Install the new id and boundary
+    // together; with no usable id (or a failed dup) reset both to null/0 so the
+    // next request re-anchors with the full input instead.
     if (self.codex_ws != null) {
-        self.codex_sent_upto = self.messages.items.len;
-        if (response.get("id")) |idv| if (idv == .string and idv.string.len > 0) {
-            if (self.codex_prev_id) |old| self.gpa.free(old);
-            self.codex_prev_id = self.gpa.dupe(u8, idv.string) catch null;
-        };
+        const new_id: ?[]const u8 = if (response.get("id")) |idv|
+            (if (idv == .string and idv.string.len > 0) idv.string else null)
+        else
+            null;
+        if (self.codex_prev_id) |old| self.gpa.free(old);
+        self.codex_prev_id = if (new_id) |idv| (self.gpa.dupe(u8, idv) catch null) else null;
+        self.codex_sent_upto = if (self.codex_prev_id != null) self.messages.items.len else 0;
     }
 
     if (calls.items.len > 0) {
