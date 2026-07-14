@@ -12,6 +12,7 @@ import {
 import { openFilePathFromChat, openUrlFromChat } from "../utils/chatOpen";
 import { ChatTable } from "./ChatTable";
 import { CodeBlock } from "./CodeBlock";
+import { KatexMath } from "./KatexMath";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { dropRedundantCodeHeadings, parseMarkdown } from "./parser";
 import type { MdBlock, MdInline, MdListItem } from "./types";
@@ -60,6 +61,8 @@ function renderBlock(block: MdBlock, workspacePath?: string | null): ReactNode {
         return <MermaidDiagram code={block.value} />;
       }
       return <CodeBlock value={block.value} lang={block.lang} />;
+    case "math":
+      return <KatexMath latex={block.value} display />;
     case "thematicBreak":
       return <hr className="border-border/70" />;
     case "blockquote":
@@ -149,6 +152,8 @@ function renderInline(nodes: MdInline[], workspacePath?: string | null): ReactNo
         return <del key={index}>{renderInline(node.children, workspacePath)}</del>;
       case "code":
         return <code key={index}>{node.value}</code>;
+      case "math":
+        return <KatexMath key={index} latex={node.value} />;
       case "break":
         return <br key={index} />;
       case "link":

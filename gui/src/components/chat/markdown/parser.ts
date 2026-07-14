@@ -13,6 +13,8 @@ const BLOCKQUOTE_RE = /^ {0,3}> ?(.*)$/;
 const UNORDERED_RE = /^(\s*)([-*+])\s+(.*)$/;
 const ORDERED_RE = /^(\s*)(\d{1,9})([.)])\s+(.*)$/;
 const TABLE_DELIM_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+// Display-math openers: \[ ... \] and $$ ... $$ (recognized at block level).
+const MATH_BLOCK_OPEN_RE = /^\s*(\$\$|\\\[)/;
 
 export function parseMarkdown(input: string): MdBlock[] {
   const text = input.replace(/\r\n?/g, "\n");
@@ -35,6 +37,13 @@ function parseBlocks(lines: string[]): MdBlock[] {
     const fence = line.match(FENCE_RE);
     if (fence) {
       [i] = pushFence(blocks, lines, i, fence);
+      continue;
+    }
+
+    // Display math (\[...\] / $$...$$) is checked before other blocks so its
+    // delimiters are never mistaken for a paragraph or thematic break.
+    if (MATH_BLOCK_OPEN_RE.test(line)) {
+      i = pushMathBlock(blocks, lines, i);
       continue;
     }
 
@@ -117,6 +126,46 @@ function pushFence(
 
   blocks.push({ type: "code", lang, value: body.join("\n"), closed });
   return [i];
+}
+
+function pushMathBlock(blocks: MdBlock[], lines: string[], start: number): number {
+  const opener = lines[start].match(MATH_BLOCK_OPEN_RE)![1];
+  const closer = opener === "$$" ? "$$" : "\\]";
+  const afterOpener = lines[start].slice(lines[start].indexOf(opener) + opener.length);
+
+  // Opener and closer on the same line, e.g. `\[ x^2 \]`.
+  const sameLine = afterOpener.indexOf(closer);
+  if (sameLine >= 0) {
+    blocks.push({ type: "math", value: afterOpener.slice(0, sameLine).trim(), closed: true });
+    return start + 1;
+  }
+
+  // Otherwise collect until a line containing the closer. An unclosed run (still
+  // streaming) degrades to an open math block rather than swallowing the rest of
+  // the message as a paragraph.
+  const body: string[] = [];
+  if (afterOpener.trim() !== "") {
+    body.push(afterOpener);
+  }
+  let i = start + 1;
+  let closed = false;
+  while (i < lines.length) {
+    const closeIndex = lines[i].indexOf(closer);
+    if (closeIndex >= 0) {
+      const before = lines[i].slice(0, closeIndex);
+      if (before.trim() !== "") {
+        body.push(before);
+      }
+      closed = true;
+      i += 1;
+      break;
+    }
+    body.push(lines[i]);
+    i += 1;
+  }
+
+  blocks.push({ type: "math", value: body.join("\n").trim(), closed });
+  return i;
 }
 
 function pushBlockquote(blocks: MdBlock[], lines: string[], start: number): number {
@@ -321,6 +370,7 @@ function startsNewBlock(lines: string[], i: number): boolean {
   const line = lines[i];
   return (
     FENCE_RE.test(line) ||
+    MATH_BLOCK_OPEN_RE.test(line) ||
     THEMATIC_BREAK_RE.test(line) ||
     HEADING_RE.test(line) ||
     BLOCKQUOTE_RE.test(line) ||
@@ -352,6 +402,7 @@ function inlineToPlainText(nodes: MdInline[]): string {
       switch (node.type) {
         case "text":
         case "code":
+        case "math":
           return node.value;
         case "strong":
         case "em":
@@ -381,6 +432,13 @@ const DEL_RE = /~~([\s\S]+?)~~/g;
 const EM_STAR_RE = /\*([\s\S]+?)\*/g;
 const EM_UNDER_RE = /(?<![A-Za-z0-9])_([\s\S]+?)_(?![A-Za-z0-9])/g;
 const LINK_RE = /\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
+// Inline math: \( ... \) and $ ... $. The dollar form is deliberately narrow —
+// Inline math: \( ... \) and $ ... $. The dollar form is deliberately narrow —
+// the opener/closer hug the content and must not sit against a digit or (for the
+// closer) a space — so prose currency like "$5 and $10" or "$5 and $funds" stays
+// text; an escaped \$ never opens either form.
+const MATH_PAREN_RE = /\\\(([\s\S]+?)\\\)/g;
+const MATH_DOLLAR_RE = /(?<![\\$0-9])\$(?![\s$])([^\n$]+?)(?<!\s)\$(?![\d$])/g;
 
 export function parseInline(text: string): MdInline[] {
   if (text === "") {
@@ -412,6 +470,17 @@ function nextInlineMatch(text: string, from: number): InlineMatch | null {
   pushCandidate(candidates, CODE_RE, text, from, (m) => ({
     type: "code",
     value: trimCodeSpan(m[2]),
+  }));
+  // Inline math after code so a `$` inside a code span stays code (code wins the
+  // earlier index). The captured LaTeX is passed to KaTeX verbatim, never
+  // re-parsed as Markdown.
+  pushCandidate(candidates, MATH_PAREN_RE, text, from, (m) => ({
+    type: "math",
+    value: m[1].trim(),
+  }));
+  pushCandidate(candidates, MATH_DOLLAR_RE, text, from, (m) => ({
+    type: "math",
+    value: m[1].trim(),
   }));
   pushCandidate(candidates, HARD_BREAK_RE, text, from, () => ({ type: "break" }));
   pushCandidate(candidates, LINK_RE, text, from, (m) => ({
@@ -445,7 +514,7 @@ function nextInlineMatch(text: string, from: number): InlineMatch | null {
   }
 
   // Earliest position wins; on ties the earlier-pushed (higher precedence:
-  // code, break, link, strong, del, em) candidate is kept.
+  // code, math, break, link, strong, del, em) candidate is kept.
   candidates.sort((a, b) => a.index - b.index);
   return candidates[0];
 }
