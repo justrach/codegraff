@@ -202,4 +202,20 @@ describe("parseMarkdown math (#208)", () => {
   test("degrades an unclosed inline $ to literal text", () => {
     expect(parseInline("open $x math")).toEqual([{ type: "text", value: "open $x math" }]);
   });
+
+  test("degrades empty/malformed delimiters to text instead of throwing", () => {
+    // Empty content matches no math (the capture requires ≥1 char), so these stay
+    // literal rather than producing an empty formula or crashing a stream.
+    expect(parseInline("a $$ b")).toEqual([{ type: "text", value: "a $$ b" }]);
+    expect(parseInline("a \\(\\) b")).toEqual([{ type: "text", value: "a \\(\\) b" }]);
+    expect(parseInline("price is $")).toEqual([{ type: "text", value: "price is $" }]);
+  });
+
+  test("passes a literal $ inside \\( ... \\) to KaTeX verbatim, not as a nested delimiter", () => {
+    expect(parseInline("\\(a $ b\\)")).toEqual([{ type: "math", value: "a $ b" }]);
+  });
+
+  test("preserves multi-byte characters inside math content", () => {
+    expect(parseInline("$\\alpha é$")).toEqual([{ type: "math", value: "\\alpha é" }]);
+  });
 });
