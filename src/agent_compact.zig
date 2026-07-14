@@ -455,7 +455,8 @@ pub fn trimOldestToolOutputs(self: *Agent) usize {
         if (seen > total - keep_recent) break; // keep the most recent verbatim
         reclaimed += truncateToolOutput(self.arena, m, stub_cap, "[old tool output truncated to recover context (#163)]");
     }
-    if (reclaimed > 0) self.last_context_tokens = 0; // force a re-measure next turn
+    // #202: reflect the trimmed size instead of blinding the meter to 0.
+    if (reclaimed > 0) self.last_context_tokens = self.fullInputEstimateTokens();
     return reclaimed;
 }
 
@@ -476,7 +477,9 @@ pub fn capOversizedToolOutputs(self: *Agent, cap: usize) usize {
         if (isToolOutputMsg(m.*))
             reclaimed += truncateToolOutput(self.arena, m, cap, "[tool output truncated: over this model's per-result cap — read/fetch a smaller range (#193)]");
     }
-    if (reclaimed > 0) self.last_context_tokens = 0; // force a re-measure next turn
+    // #202: reflect the trimmed size instead of blinding the meter to 0, so the
+    // between-turns gate keeps working and an overflow recover-pin isn't clobbered.
+    if (reclaimed > 0) self.last_context_tokens = self.fullInputEstimateTokens();
     return reclaimed;
 }
 
@@ -554,7 +557,9 @@ test "trimOldestToolOutputs recovers a runaway tool-loop history (#163)" {
     try std.testing.expect(emergencyCutIndex(agent.messages.items) == null);
     const reclaimed = trimOldestToolOutputs(&agent);
     try std.testing.expect(reclaimed > 0); // recovered instead of wedging
-    try std.testing.expectEqual(@as(usize, 0), agent.last_context_tokens); // forces a re-measure
+    // #202: re-measured to the trimmed size instead of blinding the meter to 0
+    try std.testing.expect(agent.last_context_tokens > 0);
+    try std.testing.expectEqual(agent.fullInputEstimateTokens(), agent.last_context_tokens);
     var truncated: usize = 0;
     var full: usize = 0;
     for (agent.messages.items) |m| {
@@ -614,7 +619,9 @@ test "capOversizedToolOutputs (#193): bounds an oversized output in every wire f
 
     const reclaimed = capOversizedToolOutputs(&agent, cap);
     try std.testing.expect(reclaimed > 0);
-    try std.testing.expectEqual(@as(usize, 0), agent.last_context_tokens); // forces a re-measure
+    // #202: re-measured to the trimmed size instead of blinding the meter to 0
+    try std.testing.expect(agent.last_context_tokens > 0);
+    try std.testing.expectEqual(agent.fullInputEstimateTokens(), agent.last_context_tokens);
 
     // every oversized tool output is now within the cap, with a marker
     const out0 = agent.messages.items[0].object.get("output").?.string;

@@ -86,17 +86,26 @@ pub const Provider = struct {
         return p.context / 10 * 8;
     }
 
-    /// #193 follow-up: the largest a SINGLE tool output may be, in serialized
-    /// bytes, before it is truncated at send time (capOversizedToolOutputs).
-    /// Window-proportional — ~50% of the window in estimated tokens (~4 bytes /
-    /// token) — so large-context models keep full tool results untouched and only
-    /// a result big enough to threaten the window on its own is bounded. This
-    /// guarantees no single output can alone overflow past what the in-turn
-    /// emergency-trim recovery can reclaim (it keeps the most-recent outputs
-    /// verbatim). 0 (unknown window) disables the cap.
+    /// #201: absolute ceiling for a single tool output regardless of window size,
+    /// so a huge-context model still bounds one pathological result.
+    const abs_output_cap_bytes: usize = 256 * 1024;
+
+    /// #193 follow-up / #201: the largest a SINGLE tool output may be, in serialized
+    /// bytes, before it is truncated at send time (capOversizedToolOutputs). It must
+    /// stay small enough that `keep_recent` (=4) such outputs — which
+    /// trimOldestToolOutputs keeps VERBATIM during in-turn recovery — still leave
+    /// room for the trimmed remainder + system prompt to fit on retry. At the old
+    /// `context * 2` (~50% of the window each) four recent outputs pinned ~2x the
+    /// window, past what recovery could reclaim → wedge (#201). Now window-proportional
+    /// at ~1/8 of the window in estimated tokens (context/2 bytes at ~4 bytes/token),
+    /// so 4 recent outputs occupy ~50% of the window, plus an absolute ceiling for
+    /// very large windows. Large-context models still keep normal tool results
+    /// untouched; only a result big enough to threaten the window is bounded.
+    /// 0 (unknown window) disables the cap.
     pub fn perOutputCap(p: Provider) usize {
         if (p.context == 0) return 0;
-        return @intCast(p.context * 2);
+        const proportional: usize = @intCast(p.context / 2);
+        return @min(proportional, abs_output_cap_bytes);
     }
 };
 
@@ -246,4 +255,20 @@ test "Keys.build: g_codex_url_override rewires only the codex endpoint" {
     try std.testing.expectEqualStrings("http://127.0.0.1:8765/responses", codex.url);
     const anthropic = try all.providerById("anthropic", "claude-opus-4-8");
     try std.testing.expectEqualStrings("https://api.anthropic.com/v1/messages", anthropic.url);
+}
+
+test "perOutputCap (#201): window-proportional with an absolute ceiling, keep_recent-safe" {
+    var p: Provider = undefined;
+    // ~1/8 of the window in tokens (context/2 bytes at ~4 bytes/token)
+    p.context = 270_000;
+    try std.testing.expectEqual(@as(usize, 135_000), p.perOutputCap());
+    // #201 invariant: keep_recent (=4) verbatim outputs must stay reclaimable —
+    // 4 * cap (in estimated tokens) < the window.
+    try std.testing.expect(4 * (p.perOutputCap() / 4) < p.context);
+    // absolute ceiling bounds a huge window so one result can't dominate
+    p.context = 4_000_000;
+    try std.testing.expectEqual(@as(usize, 256 * 1024), p.perOutputCap());
+    // unknown window disables the cap
+    p.context = 0;
+    try std.testing.expectEqual(@as(usize, 0), p.perOutputCap());
 }

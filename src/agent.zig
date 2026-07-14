@@ -346,6 +346,7 @@ pub const Agent = struct {
     // unchanged.
     pub const request = @import("agent_request.zig").request;
     pub const inputOverCompactThreshold = @import("agent_request.zig").inputOverCompactThreshold;
+    pub const fullInputEstimateTokens = @import("agent_request.zig").fullInputEstimateTokens;
     pub const recordUsage = @import("agent_request.zig").recordUsage;
     pub const usageInt = @import("agent_request.zig").usageInt;
     pub const recordCost = @import("agent_request.zig").recordCost;

@@ -126,6 +126,33 @@ test "isContextOverflow (#193): matches every provider's overflow phrasing, not 
     try std.testing.expect(!isContextOverflow("model not found"));
 }
 
+test "recordUsage (#202): floors the meter from the local estimate when usage is absent" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var msgs = std.json.Array.init(a);
+    var m: std.json.ObjectMap = .empty;
+    try m.put(a, "role", .{ .string = "user" });
+    try m.put(a, "content", .{ .string = "the quick brown fox jumps over the lazy dog" });
+    try msgs.append(.{ .object = m });
+
+    var agent: Agent = undefined;
+    agent.arena = a;
+    agent.messages = msgs;
+    agent.last_context_tokens = 0;
+
+    // a response body with NO usage object previously froze the meter at its stale
+    // value; now it floors to max(full-input estimate, req_body_len/4) so the
+    // between-turns compaction gate can still fire.
+    const root: std.json.ObjectMap = .empty;
+    recordUsage(&agent, root, 4000);
+
+    try std.testing.expect(agent.last_context_tokens > 0);
+    const expected = @max(fullInputEstimateTokens(&agent), @as(u64, 1000)); // 4000/4
+    try std.testing.expectEqual(expected, agent.last_context_tokens);
+}
+
 test "recoverContextOverflow (#193): overflow trims + retries once; guard and non-overflow fall through" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -217,7 +244,14 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     // window past what the in-turn recovery below can reclaim (it keeps the most
     // recent outputs verbatim). Window-proportional, so large-context models keep
     // full tool results untouched.
-    _ = self.capOversizedToolOutputs(self.provider.perOutputCap());
+    const capped = self.capOversizedToolOutputs(self.provider.perOutputCap());
+    if (capped > 0) {
+        // #202: don't truncate silently. The model already sees an inline marker;
+        // surface it to the trace and (interactively) to the user too.
+        if (self.tracer) |tr| tr.note("context", "capped an oversized tool output before send");
+        if (!main_mod.json_mode and !self.sub)
+            self.say("[tool output over this model's per-result cap — truncated {d} bytes before send (#193)]\n", .{capped}) catch {};
+    }
     var context_retried = false; // #193: at most one in-turn overflow recovery per request
     rebuild: while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
@@ -401,7 +435,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                     return error.ApiError;
                 };
-                self.recordUsage(root);
+                self.recordUsage(root, body.len);
                 if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
                 if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                 return root;
@@ -464,18 +498,22 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             return error.ApiError;
         }
 
-        self.recordUsage(root);
+        self.recordUsage(root, body.len);
         if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
         return root;
     }
 }
 
-pub fn recordUsage(self: *Agent, root: std.json.ObjectMap) void {
-    const usage = root.get("usage") orelse return;
-    if (usage != .object) return;
-    const u = usage.object;
+pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) void {
     self.last_cache_read = 0;
+    // #202: keep the context meter live when the provider omits usage — otherwise
+    // the between-turns compaction gate freezes at a stale value and a long session
+    // can wedge. Mirror the codex/.responses fallback (req_body_len/4, floored at the
+    // full-input estimate) that recordUsageResponses already applies (#174).
+    const usage = root.get("usage") orelse return floorContextTokens(self, req_body_len / 4);
+    if (usage != .object) return floorContextTokens(self, req_body_len / 4);
+    const u = usage.object;
     switch (self.provider.kind) {
         .anthropic => {
             var total: i64 = 0;
@@ -504,6 +542,14 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap) void {
         // codex uses recordUsageResponses on its own path.
         .responses => {},
     }
+}
+
+/// #202: floor the context meter at the local estimate (full-input byte/4, or the
+/// request-body byte/4 when the history isn't serialized yet) when the API omits
+/// usage, so auto-compaction still triggers. Never lowers an existing higher count.
+fn floorContextTokens(self: *Agent, est: u64) void {
+    const floor = @max(self.fullInputEstimateTokens(), est);
+    if (floor > self.last_context_tokens) self.last_context_tokens = floor;
 }
 
 /// An integer usage field, or 0 if absent / wrong type.
