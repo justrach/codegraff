@@ -142,3 +142,53 @@ describe("dropRedundantCodeHeadings", () => {
     expect(blocks.map((b) => b.type)).toEqual(["heading", "paragraph"]);
   });
 });
+
+describe("parseMarkdown math (#208)", () => {
+  test("parses a multi-line display block \\[ ... \\]", () => {
+    const [block] = parseMarkdown("\\[\nG \\approx 1+\\alpha\n\\]");
+    expect(block).toMatchObject({ type: "math", value: "G \\approx 1+\\alpha", closed: true });
+  });
+
+  test("parses single-line $$...$$ and \\[...\\] display blocks", () => {
+    expect(parseMarkdown("$$x^2$$")[0]).toMatchObject({ type: "math", value: "x^2", closed: true });
+    expect(parseMarkdown("\\[x^2\\]")[0]).toMatchObject({ type: "math", value: "x^2", closed: true });
+  });
+
+  test("renders an unclosed (streaming) display block as open math without throwing", () => {
+    // Why: chat streams tokens; a half-arrived formula must degrade to open math
+    // rather than swallow the rest of the message as a paragraph of backslashes.
+    const [block] = parseMarkdown("\\[\nx^2");
+    expect(block).toMatchObject({ type: "math", value: "x^2", closed: false });
+  });
+
+  test("parses inline \\( ... \\) and $ ... $ between text", () => {
+    expect(parseInline("before \\(x^2\\) after")).toEqual([
+      { type: "text", value: "before " },
+      { type: "math", value: "x^2" },
+      { type: "text", value: " after" },
+    ]);
+    expect(parseInline("before $x^2$ after")).toEqual([
+      { type: "text", value: "before " },
+      { type: "math", value: "x^2" },
+      { type: "text", value: " after" },
+    ]);
+  });
+
+  test("does not treat an escaped \\$ or prose currency as math", () => {
+    expect(parseInline("costs \\$5 today")).toEqual([{ type: "text", value: "costs \\$5 today" }]);
+    expect(parseInline("$5 and $10 total")).toEqual([{ type: "text", value: "$5 and $10 total" }]);
+  });
+
+  test("keeps a $ inside inline code and $$ inside a fence as code", () => {
+    expect(parseInline("use `$x$` here")).toEqual([
+      { type: "text", value: "use " },
+      { type: "code", value: "$x$" },
+      { type: "text", value: " here" },
+    ]);
+    expect(parseMarkdown("```\n$$x$$\n```")[0]).toMatchObject({ type: "code", value: "$$x$$" });
+  });
+
+  test("degrades an unclosed inline $ to literal text", () => {
+    expect(parseInline("open $x math")).toEqual([{ type: "text", value: "open $x math" }]);
+  });
+});
