@@ -301,6 +301,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     // off and retries (surfaced in the trace as a "retry" note).
     const status_code = @intFromEnum(response.head.status);
     if (status_code == 429 or status_code >= 500) {
+        http.captureRetryAfter(&response); // #retry-after: honor the provider's requested backoff
         // Drain a snippet of the error body so the retry message can
         // surface the gateway's diagnostic (e.g. "upstream timeout")
         // instead of a bare "server error (5xx)".

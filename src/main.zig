@@ -222,6 +222,7 @@ pub var g_thinking_fold_request: bool = false; // Ctrl-T in escPressed → fold/
 pub var g_thinking_open: bool = false; // a live Thinking block is on screen (gates the mouse-click fold, #92)
 pub var g_5xx_body_buf: [600]u8 = undefined; // snippet of the last 5xx/429 error body
 pub var g_5xx_body_len: usize = 0; // 0 = no body captured
+pub var g_retry_after_ms: u64 = 0; // #retry-after: provider Retry-After (429/503) in ms, honored by request()'s throttle backoff; 0 = use our computed backoff
 // fillCompletions/wrapAt/LineRender/parseDsrCol live in input_util.zig.
 // Terminal primitives (Windows console shim + cross-platform raw-mode tty layer + size/poll/row-count helpers) live in term.zig; tty is aliased back so call sites stay unqualified.
 const terminal = @import("term.zig");

@@ -385,12 +385,17 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     const max_attempts: usize = RetryPlan.maxAttempts(throttled);
                     if (attempt < max_attempts) {
                         if (throttled) {
-                            const delay_ms = RetryPlan.delayMs(throttled, attempt);
+                            // #retry-after: prefer the provider's Retry-After
+                            // (429/503) over our computed backoff, capped — like
+                            // opencode, so we wait exactly as long as the server asked.
+                            const server_ra = main_mod.g_retry_after_ms;
+                            const delay_ms = if (server_ra > 0) server_ra else RetryPlan.delayMs(throttled, attempt);
+                            const ra_note: []const u8 = if (server_ra > 0) " (server retry-after)" else "";
                             const what: []const u8 = if (err == error.RateLimited) "rate limited (429)" else "server error (5xx)";
                             if (main_mod.g_5xx_body_len > 0) {
-                                try self.say("[{s} — retrying in {d}s ({d}/{d})] {s}\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] });
+                                try self.say("[{s}{s} — retrying in {d}s ({d}/{d})] {s}\n", .{ what, ra_note, delay_ms / 1000, attempt + 1, max_attempts, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] });
                             } else {
-                                try self.say("[{s} — retrying in {d}s ({d}/{d})]\n", .{ what, delay_ms / 1000, attempt + 1, max_attempts });
+                                try self.say("[{s}{s} — retrying in {d}s ({d}/{d})]\n", .{ what, ra_note, delay_ms / 1000, attempt + 1, max_attempts });
                             }
                             if (self.tracer) |tr| tr.note("retry", if (main_mod.g_5xx_body_len > 0) main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] else what);
                             self.sleepInterruptible(delay_ms) catch return error.Interrupted;
