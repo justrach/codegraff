@@ -190,6 +190,15 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
         return if (code == 429) error.RateLimited else error.ServerError;
     }
 
+    // #opencode-parity: OpenAI proper spuriously 404s models that are actually
+    // available — treat a 404 from an openai-* provider as a retryable server blip
+    // (poison the connection so the retry dials fresh), like a 5xx.
+    if (code == 404 and std.mem.startsWith(u8, provider.id, "openai")) {
+        capture5xxBodyStream(gpa, &response);
+        if (req.connection) |conn| conn.closing = true;
+        return error.OpenAiFlaky404;
+    }
+
     // Any other status (200 or a 4xx API error envelope): return the body —
     // request() parses error envelopes out of non-2xx JSON itself.
     const dbuf: []u8 = switch (response.head.content_encoding) {

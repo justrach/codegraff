@@ -180,6 +180,25 @@ test "isTransientServerError (#opencode-parity): overload/server_error retry; qu
     try std.testing.expect(!isTransientServerError("authentication_error", null, "invalid api key"));
 }
 
+/// #opencode-parity: a 429 body naming a billing/quota cap (OpenAI insufficient_quota,
+/// "exceeded your current quota", "quota exceeded") — a usage limit a retry can't
+/// clear, unlike transient rate-limit throttling — so we fail fast + fail over rather
+/// than burning retry attempts.
+fn isQuotaExceeded(body: []const u8) bool {
+    return std.ascii.indexOfIgnoreCase(body, "insufficient_quota") != null or
+        std.ascii.indexOfIgnoreCase(body, "insufficient quota") != null or
+        std.ascii.indexOfIgnoreCase(body, "exceeded your current quota") != null or
+        std.ascii.indexOfIgnoreCase(body, "quota exceeded") != null;
+}
+
+test "isQuotaExceeded (#opencode-parity): billing cap detected, transient throttle not" {
+    try std.testing.expect(isQuotaExceeded("{\"error\":{\"code\":\"insufficient_quota\",\"message\":\"You exceeded your current quota\"}}"));
+    try std.testing.expect(isQuotaExceeded("Quota Exceeded for this key"));
+    // transient rate-limit -> NOT a quota cap; must still retry
+    try std.testing.expect(!isQuotaExceeded("Rate limit reached. Please try again in 20s."));
+    try std.testing.expect(!isQuotaExceeded("429 too many requests"));
+}
+
 test "isContextOverflow (#193/#203): matches structured code + every provider's phrasing, not unrelated errors" {
     // codex/responses, openai, anthropic wire-format rejections all recover in-turn
     try std.testing.expect(isContextOverflow("Your input exceeds the context window of 272000 tokens", null));
@@ -352,6 +371,8 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     const max_stall_retries: usize = 2;
     const stall_reconnect_backoff_ms = 750; // brief pause before reconnecting on a fresh stream
     var server_retries: usize = 0; // #opencode-parity: bounded retries for a transient in-stream server overload
+    var openai404_retries: usize = 0; // #opencode-parity: bounded retries for OpenAI's spurious model 404s
+    const max_openai404_retries: usize = 2;
     rebuild: while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
         self.streamed_text = false;
@@ -424,11 +445,39 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     // a fresh WS instead of replaying the stale delta over SSE.
                     // codex_prev_id is now null, so this can't recur this request.
                     if (err == error.CodexWsReanchor) continue :rebuild;
+                    // #opencode-parity: OpenAI proper spuriously 404s available models.
+                    // Retry a bounded number of times; a PERSISTENT 404 is a real
+                    // model-not-found, so surface it (with the body) as an ApiError whose
+                    // message drives cross-provider failover, not a generic flake give-up.
+                    if (err == error.OpenAiFlaky404) {
+                        if (openai404_retries < max_openai404_retries) {
+                            openai404_retries += 1;
+                            try self.say("[openai 404 (often spurious) — retrying ({d}/{d})]\n", .{ openai404_retries, max_openai404_retries });
+                            if (self.tracer) |tr| tr.note("retry", "openai 404");
+                            self.sleepInterruptible(RetryPlan.delayMs(false, openai404_retries - 1)) catch return error.Interrupted;
+                            continue;
+                        }
+                        self.last_api_error = std.fmt.allocPrint(self.arena, "openai 404 (model not found?): {s}", .{if (main_mod.g_5xx_body_len > 0) main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len] else "not found"}) catch "openai 404: model not found";
+                        if (telemetry.g_telem) |t| t.errorEvent("openai_404", self.last_api_error orelse "openai 404");
+                        return error.ApiError;
+                    }
                     // 429/5xx: the server asked us to back off — wait
                     // (1s·2ⁿ, capped at 8s; Esc cancels) and allow a few
                     // more attempts than a plain transport flake gets.
                     const throttled = err == error.RateLimited or err == error.ServerError;
                     const max_attempts: usize = RetryPlan.maxAttempts(throttled);
+                    // #opencode-parity: a 429 that's a billing/quota cap (not
+                    // transient throttling) won't clear by retrying — fail fast so
+                    // cross-provider /fallback can take over, instead of burning all
+                    // 5 attempts (~23s). Detected from the captured 429 body.
+                    if (err == error.RateLimited and main_mod.g_5xx_body_len > 0 and
+                        isQuotaExceeded(main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len]))
+                    {
+                        self.last_api_error = std.fmt.allocPrint(self.arena, "rate limited (429): quota/billing cap — {s}", .{main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len]}) catch "rate limited (429): quota exceeded";
+                        if (telemetry.g_telem) |t| t.errorEvent("quota", self.last_api_error orelse "quota exceeded");
+                        if (self.tracer) |tr| tr.api(self.label, self.provider.model, 0, body.len, 0, 0, 0, true);
+                        return error.ApiError;
+                    }
                     if (attempt < max_attempts) {
                         if (throttled) {
                             // #retry-after: prefer the provider's Retry-After
