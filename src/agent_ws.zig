@@ -72,6 +72,23 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
     // #134/#132 test seam: force a one-shot stall/drop on a live turn so the
     // end-to-end "[response ended early: …]" path (never "[response interrupted
     // by user]") can be exercised without a real provider. Consumed after one use.
+    // #56 test seam: a stall/drop on EVERY live attempt (not consumed), so the
+    // reconnect budget in agent_request exhausts and the turn ends — exercises the
+    // give-up path offline, no network/key needed.
+    if (main_mod.g_force_stall_always) {
+        if (!main_mod.json_mode) if (self.out) |o| {
+            o.writeAll("\n⚠ stream stalled\n") catch {};
+            o.flush() catch {};
+        };
+        return error.StreamStalled;
+    }
+    if (main_mod.g_force_drop_always) {
+        if (!main_mod.json_mode) if (self.out) |o| {
+            o.writeAll("\n⚠ connection dropped\n") catch {};
+            o.flush() catch {};
+        };
+        return error.StreamDropped;
+    }
     if (main_mod.g_force_stall_once) {
         main_mod.g_force_stall_once = false;
         if (!main_mod.json_mode) if (self.out) |o| {

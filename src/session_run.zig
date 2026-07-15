@@ -346,6 +346,8 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     main_mod.g_codedb_guard = environ_map.get("GRAFF_NO_CODEDB_GUARD") == null; // issue #626 guard, opt-out via env
     main_mod.g_force_stall_once = environ_map.get("GRAFF_FORCE_STALL_ONCE") != null; // #134 test seam
     main_mod.g_force_drop_once = environ_map.get("GRAFF_FORCE_DROP_ONCE") != null; // #132/#133 test seam
+    main_mod.g_force_stall_always = environ_map.get("GRAFF_FORCE_STALL_ALWAYS") != null; // #56 test seam (exhaust the reconnect budget)
+    main_mod.g_force_drop_always = environ_map.get("GRAFF_FORCE_DROP_ALWAYS") != null; // #56 test seam
     // #134: let a provider that buffers a long reasoning phase in total silence
     // raise the mid-stream idle-stall cutoff (default 120s). Seconds; ignored if
     // unparseable or 0. A stall is never a user interrupt regardless of the value.

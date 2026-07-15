@@ -301,6 +301,11 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             self.say("[tool output over this model's per-result cap — truncated {d} bytes before send (#193)]\n", .{capped}) catch {};
     }
     var context_retried = false; // #193: at most one in-turn overflow recovery per request
+    // #56: bounded stream-stall / drop reconnect budget (codex's stream_max_retries
+    // analog). Declared outside the rebuild loop so a WS reanchor can't reset it.
+    var stall_retries: usize = 0;
+    const max_stall_retries: usize = 2;
+    const stall_reconnect_backoff_ms = 750; // brief pause before reconnecting on a fresh stream
     rebuild: while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
         self.streamed_text = false;
@@ -329,25 +334,37 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     self.streamed_args = .none;
                     // Esc is a deliberate stop, not a flaky network — no retry.
                     if (err == error.Interrupted) return error.Interrupted;
-                    // A mid-stream idle stall already streamed its partial text
-                    // and printed the "stream stalled" notice; retrying would
-                    // re-stream the whole answer from scratch. End the turn — but
-                    // as error.StreamStalled, recorded with the timeout + reason,
-                    // so it is classified as a harness stall and never as a user
-                    // Esc interruption (#134).
-                    if (err == error.StreamStalled) {
-                        self.last_api_error = std.fmt.allocPrint(self.arena, "stream stalled: no data from the model for {d}s — ended the turn (raise GRAFF_STREAM_STALL_SECS if your model needs longer)", .{http.stream_stall_ms / 1000}) catch null;
-                        if (telemetry.g_telem) |t| t.errorEvent("stream_stall", self.last_api_error orelse "stream stalled");
-                        if (self.tracer) |tr| tr.note("stream_stall", self.last_api_error orelse "stream stalled");
-                        return error.StreamStalled;
-                    }
-                    // A mid-stream connection drop (#133): the provider closed or
-                    // reset before its terminal event, but bytes already streamed —
-                    // retrying would re-stream from scratch. End the turn as
-                    // error.StreamDropped so it is recorded as a provider drop and
-                    // never a user Esc.
-                    if (err == error.StreamDropped) {
-                        self.last_api_error = "stream dropped: the provider closed the connection before the response completed — ended the turn";
+                    // #56: a mid-stream idle stall or a connection drop (the
+                    // provider closed/reset before its terminal event) — NOT a
+                    // user Esc, which is handled above. Usually transient, so
+                    // reconnect on a fresh stream and re-send the full request,
+                    // like codex's stream_max_retries (restart the request; the
+                    // partial was never committed to history). Bounded; on
+                    // exhaustion end the turn recorded as a stall/drop, never a
+                    // user Esc (#134). The budget lives outside the rebuild loop
+                    // so a WS reanchor can't reset it.
+                    if (err == error.StreamStalled or err == error.StreamDropped) {
+                        const stalled = err == error.StreamStalled;
+                        const what: []const u8 = if (stalled) "stream stalled" else "stream dropped";
+                        if (stall_retries < max_stall_retries) {
+                            stall_retries += 1;
+                            try self.say("[{s} — reconnecting ({d}/{d})]\n", .{ what, stall_retries, max_stall_retries });
+                            if (self.tracer) |tr| tr.note("stream_retry", what);
+                            if (telemetry.g_telem) |t| t.errorEvent("stream_retry", what);
+                            self.partial_text.clearRetainingCapacity(); // fresh stream re-streams cleanly, no concat
+                            self.closeCodexWs(); // fresh transport session for the retry (no-op off codex WS)
+                            if (self.codex_prev_id) |old| self.gpa.free(old);
+                            self.codex_prev_id = null; // full re-send on a fresh stream, like a WS reanchor
+                            self.sleepInterruptible(stall_reconnect_backoff_ms) catch return error.Interrupted;
+                            continue :rebuild;
+                        }
+                        if (stalled) {
+                            self.last_api_error = std.fmt.allocPrint(self.arena, "stream stalled: no data from the model for {d}s — ended the turn after {d} reconnect attempts (raise GRAFF_STREAM_STALL_SECS if your model needs longer)", .{ http.stream_stall_ms / 1000, max_stall_retries }) catch null;
+                            if (telemetry.g_telem) |t| t.errorEvent("stream_stall", self.last_api_error orelse "stream stalled");
+                            if (self.tracer) |tr| tr.note("stream_stall", self.last_api_error orelse "stream stalled");
+                            return error.StreamStalled;
+                        }
+                        self.last_api_error = "stream dropped: the provider closed the connection before the response completed — ended the turn after reconnect attempts";
                         if (telemetry.g_telem) |t| t.errorEvent("stream_dropped", self.last_api_error.?);
                         if (self.tracer) |tr| tr.note("stream_dropped", self.last_api_error.?);
                         return error.StreamDropped;

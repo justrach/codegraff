@@ -58,7 +58,7 @@ def main():
     # and must be saved.
     meaningful = run(
         "/model codegraff deepseek-v4-pro\nhello there\n/save meaningful\n/exit\n",
-        {"GRAFF_FORCE_STALL_ONCE": "1"},
+        {"GRAFF_FORCE_STALL_ALWAYS": "1"},
     )
     if not any(p.endswith("meaningful.session.json") for p in meaningful):
         failures.append("#184: a conversation with a user message was NOT saved (got %s)" % (meaningful,))

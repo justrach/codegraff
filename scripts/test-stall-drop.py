@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""#134/#132 end-to-end: a forced stream stall/drop is saved as
-"[response ended early: ...]" and shown as a stream notice — NEVER a user Esc
-interrupt. Drives the GRAFF_FORCE_STALL_ONCE / GRAFF_FORCE_DROP_ONCE test seams,
-which make the next live turn return error.StreamStalled / error.StreamDropped
-before any network call, so no provider/key is needed."""
+"""#134/#132/#56 end-to-end: a forced stream stall/drop first RECONNECTS on a
+fresh stream (#56); only after the reconnect budget is exhausted is the turn saved
+as "[response ended early: ...]" and shown as a stream notice — NEVER a user Esc
+interrupt. Drives the GRAFF_FORCE_STALL_ALWAYS / GRAFF_FORCE_DROP_ALWAYS seams,
+which make EVERY live attempt return error.StreamStalled / error.StreamDropped
+before any network call, so the give-up path runs with no provider/key."""
 import json, os, shutil, subprocess, sys, tempfile
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
@@ -42,13 +43,14 @@ def check(name, env_flag, marker, notice):
     # the whole point of #134/#132: it must NOT be a user interruption
     assert "interrupted by user" not in assistant, f"{name}: mislabeled [response interrupted by user]!"
     assert "interrupted (esc)" not in out, f"{name}: terminal showed 'interrupted (esc)'!"
+    assert "reconnect" in out, f"{name}: no reconnect attempt shown before giving up (#56)"
     print(f"ok    {name}: saved {marker!r}, notice shown, never a user Esc")
 
 
 def main():
-    check("stall (#134)", "GRAFF_FORCE_STALL_ONCE",
+    check("stall (#134)", "GRAFF_FORCE_STALL_ALWAYS",
           "[response ended early: stream stalled]", "stream stalled")
-    check("drop (#132/#133)", "GRAFF_FORCE_DROP_ONCE",
+    check("drop (#132/#133)", "GRAFF_FORCE_DROP_ALWAYS",
           "[response ended early: connection dropped]", "connection dropped")
     print("all clear: a forced stall/drop is [response ended early: ...], never a user Esc interrupt")
 
