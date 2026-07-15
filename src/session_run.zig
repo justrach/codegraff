@@ -200,6 +200,9 @@ pub fn buildRootAgent(
     flags: args.Flags,
     telem_endpoint: []const u8,
 ) !agent_mod.Agent {
+    // #225: clock_sleep only appears in the model's tool catalog when the
+    // root-only feature flag is on (--clock-sleep / GRAFF_CLOCK_SLEEP=1).
+    const root_tool_specs = try schema.effectiveRootSpecs(arena);
     var root: agent_mod.Agent = .{
         .snapshots = snaps,
         .gpa = gpa,
@@ -218,14 +221,14 @@ pub fn buildRootAgent(
         .tracer = tracer,
         .sys_normal = sys_normal,
         .sys_strict = sys_strict,
-        .tools_anthropic = try schema.renderRootTools(arena, .anthropic, &schema.root_specs, mcp_tools),
-        .tools_openai = try schema.renderRootTools(arena, .openai, &schema.root_specs, mcp_tools),
-        .tools_responses = try schema.renderRootTools(arena, .responses, &schema.root_specs, mcp_tools),
+        .tools_anthropic = try schema.renderRootTools(arena, .anthropic, root_tool_specs, mcp_tools),
+        .tools_openai = try schema.renderRootTools(arena, .openai, root_tool_specs, mcp_tools),
+        .tools_responses = try schema.renderRootTools(arena, .responses, root_tool_specs, mcp_tools),
     };
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{util.unixMs(io)});
     root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     repl_glue.loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
-    if (flags.goal_flag) |g| root.goal = try arena.dupe(u8, g); // --goal applies to every turn (incl. --json/-p/SDK)
+    if (flags.goal_flag) |g| root.goal = .{ .objective = try arena.dupe(u8, g), .status = .active, .created_ms = util.unixMs(io), .updated_ms = util.unixMs(io) }; // --goal applies to every turn (incl. --json/-p/SDK)
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     if (flags.eval_target_flag) |t| root.eval_target = t;
     if (flags.eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);
@@ -359,6 +362,14 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     if (environ_map.get("GRAFF_CODEX_WS")) |v| {
         main_mod.g_codex_ws = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
     }
+    // #225: GRAFF_CLOCK_SLEEP=1|true|on|yes arms the root-only clock_sleep
+    // meta tool (in addition to --clock-sleep). Affirmative-only, like
+    // GRAFF_WS_FORCE_FAIL_ONCE below — OR'd onto the CLI flag so a
+    // conflicting/absent env value never silently turns --clock-sleep back
+    // off; default stays off.
+    if (environ_map.get("GRAFF_CLOCK_SLEEP")) |v| {
+        main_mod.g_clock_sleep = main_mod.g_clock_sleep or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+    }
     // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
     // (default 4 min — the backend killed ours within 8.5 min idle; opencode
     // pools at 5). Mirrors GRAFF_STREAM_STALL_SECS above: seconds, ignored if
@@ -366,6 +377,23 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     if (environ_map.get("GRAFF_CODEX_WS_IDLE_SECS")) |v| {
         if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| {
             if (secs > 0) agent_ws.codex_ws_idle_ms = @intCast(@min(secs, 86_400) * 1000);
+        } else |_| {}
+    }
+    // #203: GRAFF_CONTEXT / GRAFF_CONTEXT_WINDOW declares the context window (in
+    // tokens) for an unknown/local model whose real window graff can't look up,
+    // replacing the conservative 200k fallback so the compaction gate + per-output
+    // cap are sized correctly. Only affects models that fall back to the default
+    // (see provider.contextWindowFor). Ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_CONTEXT") orelse environ_map.get("GRAFF_CONTEXT_WINDOW")) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |n| {
+            if (n > 0) provider_mod.g_context_override = n;
+        } else |_| {}
+    }
+    // #204: GRAFF_COMPACT_PCT overrides the auto-compaction threshold as a percent
+    // of the window (default 80). Clamped to 1..100; ignored if unparseable or 0.
+    if (environ_map.get("GRAFF_COMPACT_PCT")) |v| {
+        if (std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10)) |pct| {
+            if (pct > 0) provider_mod.g_compact_pct_override = @min(pct, 100);
         } else |_| {}
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;

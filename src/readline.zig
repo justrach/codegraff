@@ -274,8 +274,11 @@ pub fn readLine(
             '\r', '\n' => {
                 // The cursor may be mid-block; step past the last input row so
                 // the submitted line and whatever prints next start cleanly.
+                // The second newline leaves a blank-line gutter between the
+                // submitted prompt and the model output, so it is easy to see
+                // where the response starts.
                 if (rstate.rows - 1 > rstate.crow) out.print("\x1b[{d}B", .{rstate.rows - 1 - rstate.crow}) catch {};
-                out.writeAll("\r\n") catch {};
+                out.writeAll("\r\n\r\n") catch {};
                 out.flush() catch {};
                 // Expand any pasted placeholders back to their full text.
                 for (pastes.items) |p| {

@@ -94,6 +94,15 @@ fn applyAiTitle(ctx: *Ctx, f: *Io.Future(?[]const u8)) void {
     }
 }
 
+/// #226: true only when the model has a live checklist and every item is marked
+/// completed — a "work asserted done" signal for the /loop continuation gate
+/// (alongside attempt_completion / root.completed). An empty checklist is NOT done.
+fn allTodosDone(root: *agent_mod.Agent) bool {
+    if (root.todos.items.len == 0) return false;
+    for (root.todos.items) |t| if (!std.mem.eql(u8, t.status, "completed")) return false;
+    return true;
+}
+
 /// The interactive-REPL / --json-protocol turn loop itself. Runs until EOF,
 /// `exit`/`quit`/`q`, or a plain `break` out of the raw-line read. main()
 /// resumes right after this returns and does its own final-save/worktree
@@ -104,6 +113,14 @@ pub fn run(ctx: *Ctx) !void {
     var prev_turn_id: u64 = 0;
     var prev_prompt_fp: [16]u8 = scoring.promptFingerprint(ctx.root.systemPrompt());
 
+    // #226: /loop controller-authorized continuation state. `loop_continue_armed`
+    // is set only after a CLEANLY-COMPLETED autonomous /loop turn and consumed at
+    // the next readline — so any interrupt/error (which `continue`s past the arming
+    // site) auto-stops the loop with no per-error-branch handling.
+    const loop_iter_cap: u32 = 25; // hard per-/loop iteration bound (never-completing-model guard)
+    var loop_iters_left: u32 = 0; // continuation turns still authorized this /loop run
+    var loop_continue_armed = false; // a continuation turn is queued for the next readline
+
     while (true) {
         // Steering drain: prompts typed while the previous turn streamed
         // were captured into g_steer_queue. Run them now, one after
@@ -112,7 +129,10 @@ pub fn run(ctx: *Ctx) !void {
         repl_glue.resetSteerPartial();
         const steer_entry: ?repl_glue.SteerEntry = repl_glue.popSteer();
         defer if (steer_entry) |e| std.heap.page_allocator.free(e.text);
+        var is_loop_continuation = false; // #226: this iteration is an autonomous /loop continuation turn
         const raw_line: []const u8 = if (steer_entry) |e| blk: {
+            loop_iters_left = 0; // #226: a user steer/force cancels the autonomous /loop run
+            loop_continue_armed = false;
             if (e.force) {
                 try ctx.out.print("{s}↳ force ›{s} {s}\n", .{ style.yellow, style.reset, e.text });
             } else {
@@ -120,6 +140,15 @@ pub fn run(ctx: *Ctx) !void {
             }
             try ctx.out.flush();
             break :blk e.text;
+        } else if (loop_continue_armed) blk: {
+            // #226: autonomous /loop continuation — synthesize the next turn from the
+            // continuation steering note instead of reading a new user line. Consumed
+            // here, so an interrupted/errored turn does not resume the loop.
+            loop_continue_armed = false;
+            is_loop_continuation = true;
+            const todos_render = if (ctx.root.todos.items.len > 0) ctx.root.renderTodos() else "";
+            const note = try repl_glue.continuationSteeringNote(ctx.arena, todos_render);
+            break :blk try std.fmt.allocPrint(ctx.arena, "/loop {s}", .{note});
         } else if (ctx.interactive) blk: {
             try ctx.root.prompt();
             break :blk (try readline.readLine(ctx.root, ctx.in, ctx.out, ctx.gpa, ctx.history, ctx.linebuf)) orelse break;
@@ -135,7 +164,7 @@ pub fn run(ctx: *Ctx) !void {
         // just recording it. Bare /goal (show) and /goal clear/off stay commands.
         const goal_prompt: ?[]const u8 = if (!main_mod.json_mode and std.mem.startsWith(u8, line, "/goal ")) gblk: {
             const g = std.mem.trim(u8, line["/goal".len..], " \t");
-            if (g.len == 0 or std.ascii.eqlIgnoreCase(g, "clear") or std.ascii.eqlIgnoreCase(g, "off")) break :gblk null;
+            if (g.len == 0 or std.ascii.eqlIgnoreCase(g, "clear") or std.ascii.eqlIgnoreCase(g, "off") or std.ascii.eqlIgnoreCase(g, "pause") or std.ascii.eqlIgnoreCase(g, "resume") or std.ascii.eqlIgnoreCase(g, "status")) break :gblk null;
             break :gblk g;
         } else null;
         if (!main_mod.json_mode) {
@@ -707,6 +736,35 @@ pub fn run(ctx: *Ctx) !void {
             // 80–95% a transient compaction failure can recover next turn.
             const near_cap = ctx.root.provider.context > 0 and ctx.root.last_context_tokens * 100 >= ctx.root.provider.context * 95;
             ctx.root.compactOrRecover(near_cap);
+        }
+
+        // #226: /loop controller-authorized continuation. After a cleanly-
+        // completed autonomous /loop turn the CONTROLLER decides whether to run
+        // another turn — not the model merely stopping. Keep going while the goal
+        // is active and the work isn't asserted done (attempt_completion set
+        // root.completed, or the checklist is finished); otherwise stop with a
+        // NAMED terminal outcome. `loop_continue_armed` is consumed at the next
+        // readline, so an interrupted/errored turn (which `continue`s past here)
+        // never resumes the loop.
+        if (loop_prompt != null and !main_mod.json_mode) {
+            if (!is_loop_continuation) loop_iters_left = loop_iter_cap; // fresh /loop run: arm the bound
+            const model_done = ctx.root.completed != null or allTodosDone(ctx.root);
+            const gstatus: agent_mod.GoalStatus = if (ctx.root.goal) |g| g.status else .active;
+            switch (repl_glue.continuationDecision(gstatus, model_done, loop_iters_left)) {
+                .continue_turn => {
+                    loop_iters_left -= 1; // consume one credit for the queued continuation
+                    loop_continue_armed = true;
+                },
+                .stop => |outcome| {
+                    loop_iters_left = 0;
+                    loop_continue_armed = false;
+                    if (outcome == .accepted) if (ctx.root.goal) |*g| {
+                        if (g.status == .active) g.status = .complete; // the loop drove the goal to done
+                    };
+                    try ctx.out.print("{s}↩ /loop stopped — {s}{s}\n", .{ style.dim, @tagName(outcome), style.reset });
+                    try ctx.out.flush();
+                },
+            }
         }
         // opencode-style continuous autosave: persist after every turn so a
         // crash or quit never loses the thread — last.session.json, the same

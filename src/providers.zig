@@ -86,6 +86,12 @@ fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool
     root.effort_rejected = false; // new model may accept reasoning_effort; relearn
     root.ws_off = false; // a previous Codex WS fallback must not leak across switches
     root.provider = p;
+    // #204: a provider switch changes the window; don't carry the previous model's
+    // absolute token count against it. Re-estimate from the (kept or translated)
+    // history so the meter + compaction gate stay consistent until the next response
+    // returns real usage. (The cross-format history-clear above already set 0;
+    // fullInputEstimateTokens over an empty history is 0.)
+    root.last_context_tokens = root.fullInputEstimateTokens();
     root.fallback_active = !persist;
     root.fallback_blocked = false;
     if (persist) saveModel(root.io, root.home, p.id, p.model);

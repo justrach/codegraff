@@ -108,6 +108,8 @@ pub fn parse(init: std.process.Init) !Flags {
                     main_mod.max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-tool-calls needs a non-negative integer, got '{s}'", .{mv});
                 } else if (std.mem.eql(u8, arg, "--dedupe-tool-calls")) {
                     main_mod.dedupe_tool_calls = true;
+                } else if (std.mem.eql(u8, arg, "--clock-sleep")) {
+                    main_mod.g_clock_sleep = true; // #225: opt in to the root-only clock_sleep meta tool (also GRAFF_CLOCK_SLEEP=1)
                 } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
                     main_mod.g_worktree_autocommit = false;
                 } else if (std.mem.eql(u8, arg, "--schema")) {

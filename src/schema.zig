@@ -189,6 +189,13 @@ const meta_specs = [_]ToolSpec{
         \\{"type": "object", "properties": {"result": {"type": "string", "description": "Final answer to present to the user"}}, "required": ["result"]}
         ,
     },
+    .{
+        .name = "clock_sleep",
+        .desc = "Pause the current turn for up to 12 hours of wall-clock time; interruptible by user input, and reported as a normal (non-error) result either way. For autonomous /loop runs that need to wait before re-checking something (e.g. a long external job). Root-only; off unless --clock-sleep/GRAFF_CLOCK_SLEEP=1 is set.",
+        .schema =
+        \\{"type": "object", "properties": {"ms": {"type": "integer", "description": "Milliseconds to sleep (0 returns immediately; clamped to the 12h/43200000ms cap)"}, "reason": {"type": "string", "description": "Optional: why you're sleeping, for the trace/UX"}}, "required": ["ms"]}
+        ,
+    },
 };
 
 const subagent_spec = ToolSpec{
@@ -214,7 +221,8 @@ pub fn isMetaName(name: []const u8) bool {
         std.mem.eql(u8, name, "todo_read") or
         std.mem.eql(u8, name, "ask_user") or
         std.mem.eql(u8, name, "eval") or
-        std.mem.eql(u8, name, "attempt_completion");
+        std.mem.eql(u8, name, "attempt_completion") or
+        std.mem.eql(u8, name, "clock_sleep");
 }
 
 // Comptime-rendered tool lists for subagents (base only, both formats).
@@ -275,6 +283,21 @@ pub fn renderRootTools(
     for (mcp_tools) |m| try writeToolEntry(&s, kind, m.qualified_name, m.description, .{ .value = m.input_schema });
     try s.endArray();
     return aw.toOwnedSlice();
+}
+
+/// Root tool catalog for the current session: drops clock_sleep unless the
+/// root-only feature flag is on (--clock-sleep / GRAFF_CLOCK_SLEEP=1, see
+/// main.zig g_clock_sleep) so the model never even sees a tool it can't
+/// call while the flag is off (#225). Subagents are unaffected — they
+/// build their tool lists from base_specs only (tools_*_sub above), which
+/// never included meta_specs/clock_sleep in the first place.
+pub fn effectiveRootSpecs(arena: Allocator) ![]const ToolSpec {
+    if (root.g_clock_sleep) return &root_specs;
+    var out: std.ArrayList(ToolSpec) = .empty;
+    for (root_specs) |t| {
+        if (!std.mem.eql(u8, t.name, "clock_sleep")) try out.append(arena, t);
+    }
+    return out.items;
 }
 
 const Schema = union(enum) { raw: []const u8, value: Value };
@@ -459,14 +482,37 @@ test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
     try std.testing.expectEqualStrings("codex_device", providerLoginKind("codex"));
     try std.testing.expectEqualStrings("api_key", providerLoginKind("openai"));
 }
-test "isMetaName: the four orchestrator-handled meta tools" {
+test "isMetaName: the five orchestrator-handled meta tools" {
     try std.testing.expect(isMetaName("todo_write"));
     try std.testing.expect(isMetaName("todo_read"));
     try std.testing.expect(isMetaName("ask_user"));
     try std.testing.expect(isMetaName("attempt_completion"));
+    try std.testing.expect(isMetaName("clock_sleep"));
     try std.testing.expect(!isMetaName("bash"));
     try std.testing.expect(!isMetaName("subagent"));
     try std.testing.expect(!isMetaName("codedb"));
+}
+
+test "effectiveRootSpecs: drops clock_sleep from the root tool catalog unless the flag is on (#225)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const saved = root.g_clock_sleep;
+    defer root.g_clock_sleep = saved;
+
+    root.g_clock_sleep = false;
+    const off_specs = try effectiveRootSpecs(a);
+    try std.testing.expectEqual(root_specs.len - 1, off_specs.len);
+    for (off_specs) |t| try std.testing.expect(!std.mem.eql(u8, t.name, "clock_sleep"));
+
+    root.g_clock_sleep = true;
+    const on_specs = try effectiveRootSpecs(a);
+    try std.testing.expectEqual(root_specs.len, on_specs.len);
+    var found = false;
+    for (on_specs) |t| {
+        if (std.mem.eql(u8, t.name, "clock_sleep")) found = true;
+    }
+    try std.testing.expect(found);
 }
 test "providerTakesEffort: effort-honoring providers, but never for grok models" {
     try std.testing.expect(providerTakesEffort(.responses, "codex", "gpt-5.5"));

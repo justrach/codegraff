@@ -14,6 +14,26 @@ const std = @import("std");
 const pricing = @import("pricing.zig");
 const contextFor = pricing.contextFor;
 
+/// #203: declare the context window (tokens) for an unknown/local model whose real
+/// window graff cannot look up, replacing the conservative default. Applied only
+/// when contextFor falls back to default_context (see contextWindowFor) so it can
+/// never shrink a known/catalogued window. Set from GRAFF_CONTEXT / GRAFF_CONTEXT_WINDOW.
+pub var g_context_override: ?u64 = null;
+
+/// #204: override the auto-compaction threshold as a percent of the window
+/// (default 80). null → 80. Unlike codex we allow lowering AND raising (1..100).
+pub var g_compact_pct_override: ?u8 = null;
+
+/// The context window for a provider+model, honoring g_context_override for an
+/// unknown/local model — i.e. only when contextFor returns the conservative default,
+/// never overriding a known window (#203).
+fn contextWindowFor(provider_id: []const u8, model: []const u8) u64 {
+    // Only an unknown/local model (no catalogued window) takes the override, so a
+    // global GRAFF_CONTEXT can never shrink a known model that happens to be 200k.
+    if (g_context_override) |ov| if (!pricing.isKnownModel(provider_id, model)) return ov;
+    return contextFor(provider_id, model);
+}
+
 /// Wire format + auth style + endpoint per provider. Base URLs and env-var
 /// names from models.dev/api.json (snapshot 2026-06-10); the anthropic and
 /// openai bases are the canonical ones (models.dev lists them as null).
@@ -81,9 +101,34 @@ pub const Provider = struct {
     pub const Kind = enum { anthropic, openai, responses };
     pub const Auth = enum { x_api_key, bearer };
 
-    /// Auto-compact past 80% of the model's context window.
+    /// Auto-compact past a percentage (default 80%) of the model's context window.
+    /// GRAFF_COMPACT_PCT overrides the percentage, clamped to 1..100 (#204). Unlike
+    /// codex's one-directional clamp, the override may lower OR raise the threshold.
     pub fn compactAt(p: Provider) u64 {
-        return p.context / 10 * 8;
+        const pct: u64 = if (g_compact_pct_override) |o| @min(o, 100) else 80;
+        return p.context / 100 * pct;
+    }
+
+    /// #201: absolute ceiling for a single tool output regardless of window size,
+    /// so a huge-context model still bounds one pathological result.
+    const abs_output_cap_bytes: usize = 256 * 1024;
+
+    /// #193 follow-up / #201: the largest a SINGLE tool output may be, in serialized
+    /// bytes, before it is truncated at send time (capOversizedToolOutputs). It must
+    /// stay small enough that `keep_recent` (=4) such outputs — which
+    /// trimOldestToolOutputs keeps VERBATIM during in-turn recovery — still leave
+    /// room for the trimmed remainder + system prompt to fit on retry. At the old
+    /// `context * 2` (~50% of the window each) four recent outputs pinned ~2x the
+    /// window, past what recovery could reclaim → wedge (#201). Now window-proportional
+    /// at ~1/8 of the window in estimated tokens (context/2 bytes at ~4 bytes/token),
+    /// so 4 recent outputs occupy ~50% of the window, plus an absolute ceiling for
+    /// very large windows. Large-context models still keep normal tool results
+    /// untouched; only a result big enough to threaten the window is bounded.
+    /// 0 (unknown window) disables the cap.
+    pub fn perOutputCap(p: Provider) usize {
+        if (p.context == 0) return 0;
+        const proportional: usize = @intCast(p.context / 2);
+        return @min(proportional, abs_output_cap_bytes);
     }
 };
 
@@ -134,7 +179,7 @@ pub const Keys = struct {
             .url = if (is_codex) g_codex_url_override orelse spec.url else spec.url,
             .api_key = key,
             .model = model,
-            .context = contextFor(spec.id, model),
+            .context = contextWindowFor(spec.id, model),
             .account = if (is_codex) keys.codex_account else "",
             .source = keys.source(spec.id),
         };
@@ -233,4 +278,41 @@ test "Keys.build: g_codex_url_override rewires only the codex endpoint" {
     try std.testing.expectEqualStrings("http://127.0.0.1:8765/responses", codex.url);
     const anthropic = try all.providerById("anthropic", "claude-opus-4-8");
     try std.testing.expectEqualStrings("https://api.anthropic.com/v1/messages", anthropic.url);
+}
+
+test "perOutputCap (#201): window-proportional with an absolute ceiling, keep_recent-safe" {
+    var p: Provider = undefined;
+    // ~1/8 of the window in tokens (context/2 bytes at ~4 bytes/token)
+    p.context = 270_000;
+    try std.testing.expectEqual(@as(usize, 135_000), p.perOutputCap());
+    // #201 invariant: keep_recent (=4) verbatim outputs must stay reclaimable —
+    // 4 * cap (in estimated tokens) < the window.
+    try std.testing.expect(4 * (p.perOutputCap() / 4) < p.context);
+    // absolute ceiling bounds a huge window so one result can't dominate
+    p.context = 4_000_000;
+    try std.testing.expectEqual(@as(usize, 256 * 1024), p.perOutputCap());
+    // unknown window disables the cap
+    p.context = 0;
+    try std.testing.expectEqual(@as(usize, 0), p.perOutputCap());
+}
+
+test "contextWindowFor (#203): GRAFF_CONTEXT overrides only an unknown/local model" {
+    g_context_override = 8192;
+    defer g_context_override = null;
+    // unknown/local model (no catalogued window) → the override applies
+    try std.testing.expectEqual(@as(u64, 8192), contextWindowFor("lmstudio", "some-local-gguf"));
+    // a known, catalogued model keeps its real window even with the override set
+    try std.testing.expect(pricing.isKnownModel("anthropic", "claude-opus-4-8"));
+    try std.testing.expect(contextWindowFor("anthropic", "claude-opus-4-8") != 8192);
+}
+
+test "compactAt (#204): GRAFF_COMPACT_PCT overrides the 80% default, both directions" {
+    var p: Provider = undefined;
+    p.context = 100_000;
+    try std.testing.expectEqual(@as(u64, 80_000), p.compactAt()); // default 80%
+    g_compact_pct_override = 70;
+    defer g_compact_pct_override = null;
+    try std.testing.expectEqual(@as(u64, 70_000), p.compactAt()); // lowered
+    g_compact_pct_override = 95;
+    try std.testing.expectEqual(@as(u64, 95_000), p.compactAt()); // raised — no codex-style clamp to 90
 }

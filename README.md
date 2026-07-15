@@ -410,6 +410,8 @@ prefixes on body lines.
 /reasoning      reasoning picker: low|medium|high|xhigh|max|ultra (persists)
 /fast           toggle Codex priority service tier for lower latency
 /ultracode      toggle persistent multi-agent workflow mode
+/goal [text]    set/show a standing objective; /goal pause|resume|status|clear
+/loop <prompt>  work autonomously toward the prompt, stopping with a named outcome when done or blocked
 /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
 /image <path>   attach an image to your next message (vision models only)
 /paste          attach the clipboard image (macOS); also Ctrl-V (⌘V can't be captured)
@@ -426,6 +428,14 @@ exit | /exit | ctrl-d | ctrl-c(empty)   quit
 
 `/plan`, `/yolo`, and `/strict` change how the permission gate behaves for the
 session. See [Permission modes](#permission-modes).
+
+`/goal` sets a standing objective that steers every turn as a live checklist.
+`/goal pause` stops the steering without losing the objective, `/goal resume`
+turns it back on, and `/goal status` shows the objective and its current state.
+`/loop <prompt>` works autonomously toward the prompt, running turn after turn
+(plan, act, verify) and stopping on its own with a named outcome (accepted,
+blocked, cancelled, or exhausted) once the work is done, you step in, or a safety
+limit is hit, instead of pausing for confirmation between routine steps.
 
 The line editor supports ↑/↓ history (persisted to `~/.simple-harness-history`),
 Tab completion (commands, and model names after `/model `), and emacs-style

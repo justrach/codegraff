@@ -77,6 +77,21 @@ pub const TodoItem = struct {
     status: []const u8,
 };
 
+/// Governed-run status for a standing /goal (#223). Only `.active` steers turns;
+/// pause/resume and the /loop continuation gate (#226) key off the others.
+pub const GoalStatus = enum { active, paused, blocked, complete };
+
+/// A structured standing objective: the /goal text plus its lifecycle status and
+/// created/updated timestamps. Replaces the bare `?[]const u8` so /goal can
+/// pause/resume/report and persist a real state machine across resumes. The
+/// `objective` string is owned by the session arena (like the old goal string).
+pub const Goal = struct {
+    objective: []const u8,
+    status: GoalStatus = .active,
+    created_ms: i64 = 0,
+    updated_ms: i64 = 0,
+};
+
 /// One agent: a message history plus the POST/tool-dispatch loop. The root
 /// agent prints to stdout; subagents (sub = true) run on pool threads and
 /// log through std.debug.print, which locks stderr and is thread-safe.
@@ -135,7 +150,7 @@ pub const Agent = struct {
     ultracode_mode: bool = false, // persistent ultracode (multi-agent workflow) mode (/ultracode)
     show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
     ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
-    goal: ?[]const u8 = null, // persistent objective steering (/goal)
+    goal: ?Goal = null, // structured objective + status lifecycle (/goal, #223)
     session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
     session_title: ?[]const u8 = null, // human-readable title/rename metadata
     sys_strict: []const u8 = prompts.main_system_prompt_strict,
@@ -346,6 +361,7 @@ pub const Agent = struct {
     // unchanged.
     pub const request = @import("agent_request.zig").request;
     pub const inputOverCompactThreshold = @import("agent_request.zig").inputOverCompactThreshold;
+    pub const fullInputEstimateTokens = @import("agent_request.zig").fullInputEstimateTokens;
     pub const recordUsage = @import("agent_request.zig").recordUsage;
     pub const usageInt = @import("agent_request.zig").usageInt;
     pub const recordCost = @import("agent_request.zig").recordCost;
@@ -407,6 +423,7 @@ pub const Agent = struct {
     pub const emergencyCutIndex = @import("agent_compact.zig").emergencyCutIndex;
     pub const emergencyTrim = @import("agent_compact.zig").emergencyTrim;
     pub const compactOrRecover = @import("agent_compact.zig").compactOrRecover;
+    pub const capOversizedToolOutputs = @import("agent_compact.zig").capOversizedToolOutputs;
 
     // The live streaming path (thinking spinner, live "Thinking" reasoning
     // block, and postStream itself — the root agent's streaming POST) lives
