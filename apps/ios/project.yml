@@ -1,0 +1,24 @@
+# xcodegen spec — `brew install xcodegen && xcodegen generate` then open Graff.xcodeproj.
+# The CLI build (build-sim.sh) does not need this; it's here for ongoing Xcode work.
+name: Graff
+options:
+  bundleIdPrefix: com.codegraff
+  deploymentTarget:
+    iOS: "26.0"
+targets:
+  Graff:
+    type: application
+    platform: iOS
+    sources:
+      - Graff/Sources
+    info:
+      path: Graff/Info.plist
+      properties:
+        CFBundleDisplayName: Graff
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.codegraff.graff
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1"
