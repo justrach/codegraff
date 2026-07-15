@@ -348,13 +348,17 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                         const what: []const u8 = if (stalled) "stream stalled" else "stream dropped";
                         if (stall_retries < max_stall_retries) {
                             stall_retries += 1;
-                            try self.say("[{s} — reconnecting ({d}/{d})]\n", .{ what, stall_retries, max_stall_retries });
+                            // #56: give a fresh WS one reconnect; if it stalls again,
+                            // fall back to the reliable SSE transport for the rest of
+                            // the session — codex's WS→SSE fallback, and consistent
+                            // with how a WS transport error is already handled (ws_off).
+                            if (stall_retries > 1) self.ws_off = true;
+                            const via: []const u8 = if (self.ws_off) " (SSE)" else "";
+                            try self.say("[{s} — reconnecting{s} ({d}/{d})]\n", .{ what, via, stall_retries, max_stall_retries });
                             if (self.tracer) |tr| tr.note("stream_retry", what);
                             if (telemetry.g_telem) |t| t.errorEvent("stream_retry", what);
                             self.partial_text.clearRetainingCapacity(); // fresh stream re-streams cleanly, no concat
-                            self.closeCodexWs(); // fresh transport session for the retry (no-op off codex WS)
-                            if (self.codex_prev_id) |old| self.gpa.free(old);
-                            self.codex_prev_id = null; // full re-send on a fresh stream, like a WS reanchor
+                            self.closeCodexWs(); // tear down the dead WS + null codex_prev_id for a full re-send (no-op off codex WS)
                             self.sleepInterruptible(stall_reconnect_backoff_ms) catch return error.Interrupted;
                             continue :rebuild;
                         }
