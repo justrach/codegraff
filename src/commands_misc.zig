@@ -40,6 +40,7 @@ const serde = @import("serde.zig");
 const schema = @import("schema.zig");
 const renderRootTools = schema.renderRootTools;
 const root_specs = schema.root_specs;
+const effectiveRootSpecs = schema.effectiveRootSpecs; // #225: gate clock_sleep on the flag when re-rendering the tool lists
 
 const mcp_cli = @import("mcp_cli.zig");
 const persistMcpServer = mcp_cli.persistMcpServer;
@@ -205,9 +206,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 return true;
             };
             // Re-render the tool lists so the new tools reach the model.
-            root.tools_anthropic = try renderRootTools(arena, .anthropic, &root_specs, reg.tools);
-            root.tools_openai = try renderRootTools(arena, .openai, &root_specs, reg.tools);
-            root.tools_responses = try renderRootTools(arena, .responses, &root_specs, reg.tools);
+            const root_tool_specs = try effectiveRootSpecs(arena); // #225: gate clock_sleep on the flag
+            root.tools_anthropic = try renderRootTools(arena, .anthropic, root_tool_specs, reg.tools);
+            root.tools_openai = try renderRootTools(arena, .openai, root_tool_specs, reg.tools);
+            root.tools_responses = try renderRootTools(arena, .responses, root_tool_specs, reg.tools);
             const persisted = persistMcpServer(root.io, arena, name, command, args.items);
             var has_note = false;
             for (mcp_notes) |mn| if (std.mem.eql(u8, mn.server, name)) {
@@ -233,9 +235,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.writeAll("no untrusted workspace MCP server(s) to connect.\n");
             } else {
                 // Re-render the tool lists so the new tools reach the model.
-                root.tools_anthropic = try renderRootTools(arena, .anthropic, &root_specs, reg.tools);
-                root.tools_openai = try renderRootTools(arena, .openai, &root_specs, reg.tools);
-                root.tools_responses = try renderRootTools(arena, .responses, &root_specs, reg.tools);
+                const root_tool_specs = try effectiveRootSpecs(arena); // #225: gate clock_sleep on the flag
+                root.tools_anthropic = try renderRootTools(arena, .anthropic, root_tool_specs, reg.tools);
+                root.tools_openai = try renderRootTools(arena, .openai, root_tool_specs, reg.tools);
+                root.tools_responses = try renderRootTools(arena, .responses, root_tool_specs, reg.tools);
                 try out.print("{s}✓{s} trusted workspace — connected {d} MCP server(s); {d} tool(s) total\n", .{ style.green, style.reset, n, reg.tools.len });
             }
             try out.flush();

@@ -45,6 +45,8 @@ const ToolOutput = tools_mod.ToolOutput;
 const exec = @import("exec.zig");
 const execTool = exec.execTool;
 
+const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
+
 // escWatchTask/drainStdin/rawNonblockStdin live in agent_interrupt.zig;
 // Agent.esc_watch_done is a struct-level pub var that STAYS declared inside the
 // Agent struct in main.zig (never alias a var — see esc_cancel/
@@ -314,6 +316,38 @@ pub fn firstWord(cmd: []const u8) []const u8 {
     return cmd[0..end];
 }
 
+/// #225: clock_sleep meta tool — root-only, feature-flagged (main.zig
+/// g_clock_sleep / --clock-sleep / GRAFF_CLOCK_SLEEP=1). Mirrors codex's
+/// clock.sleep: capped at 12h, cancelled by user input like any other
+/// backoff (sleepInterruptible), and an interruption is reported as a
+/// normal (non-error) outcome, not a tool failure.
+pub const clock_sleep_max_ms: i64 = 43_200_000; // 12h, mirrors codex MAX_SLEEP_DURATION_MS
+
+const ClockSleepMs = struct { ms: i64, clamped: bool };
+
+/// Pure `ms`-field validation/clamping, split out of the handleMeta arm so
+/// the reject/clamp paths are unit-testable without a live Agent/Io.
+/// `input` must be `{"ms": <non-negative integer>}` — anything else
+/// (missing, negative, non-integer, wrong shape) is a normal rejection,
+/// never a crash. A value over the 12h cap clamps instead of rejecting.
+fn parseClockSleepMs(input: Value) error{InvalidMs}!ClockSleepMs {
+    if (input != .object) return error.InvalidMs;
+    const raw = input.object.get("ms") orelse return error.InvalidMs;
+    if (raw != .integer or raw.integer < 0) return error.InvalidMs;
+    if (raw.integer > clock_sleep_max_ms) return .{ .ms = clock_sleep_max_ms, .clamped = true };
+    return .{ .ms = raw.integer, .clamped = false };
+}
+
+fn clockSleepSuccessText(arena: std.mem.Allocator, ms: i64, clamped: bool) ![]const u8 {
+    if (clamped) return std.fmt.allocPrint(arena, "clock_sleep: requested ms exceeded the 12h cap, clamped to {d} ms; slept {d} ms", .{ clock_sleep_max_ms, ms });
+    return std.fmt.allocPrint(arena, "slept {d} ms", .{ms});
+}
+
+fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const u8 {
+    return std.fmt.allocPrint(arena, "sleep interrupted after {d} ms by user input", .{elapsed_ms});
+}
+
+
 /// Handle a meta tool inline on the agent's own thread.
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
@@ -344,6 +378,26 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         const rendered = self.renderTodos();
         if (!self.sub) try self.say("{s}\n", .{rendered});
         return .{ .text = rendered, .is_error = false };
+    }
+    if (std.mem.eql(u8, call.name, "clock_sleep")) {
+        const parsed = parseClockSleepMs(call.input) catch return .{
+            .text = "clock_sleep: ms must be a non-negative integer",
+            .is_error = true,
+        };
+        if (parsed.ms == 0) {
+            // Nothing to wait out — skip the sleep call (and the Io clock
+            // reads below) entirely rather than round-tripping a zero-length
+            // sleep through sleepInterruptible.
+            return .{ .text = try clockSleepSuccessText(self.arena, 0, parsed.clamped), .is_error = false };
+        }
+        const start_ms = util.unixMs(self.io);
+        self.sleepInterruptible(@intCast(parsed.ms)) catch |err| switch (err) {
+            error.Interrupted => {
+                const elapsed_ms = util.unixMs(self.io) - start_ms;
+                return .{ .text = try clockSleepInterruptedText(self.arena, elapsed_ms), .is_error = false };
+            },
+        };
+        return .{ .text = try clockSleepSuccessText(self.arena, parsed.ms, parsed.clamped), .is_error = false };
     }
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
@@ -478,4 +532,122 @@ test "firstWord: splits the command on the first whitespace" {
     try std.testing.expectEqualStrings("cat", firstWord("cat\tfile")); // tab delimiter
     try std.testing.expectEqualStrings("", firstWord(""));
     try std.testing.expectEqualStrings("", firstWord(" leading"));
+}
+
+test "parseClockSleepMs: valid ms passes through, missing/negative/non-integer reject, over-cap clamps (#225)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const valid = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":200}", .{}) catch unreachable;
+    const parsed = try parseClockSleepMs(valid);
+    try std.testing.expectEqual(@as(i64, 200), parsed.ms);
+    try std.testing.expect(!parsed.clamped);
+
+    const zero = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":0}", .{}) catch unreachable;
+    try std.testing.expectEqual(@as(i64, 0), (try parseClockSleepMs(zero)).ms);
+
+    const missing = std.json.parseFromSliceLeaky(Value, a, "{}", .{}) catch unreachable;
+    try std.testing.expectError(error.InvalidMs, parseClockSleepMs(missing));
+
+    const negative = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":-1}", .{}) catch unreachable;
+    try std.testing.expectError(error.InvalidMs, parseClockSleepMs(negative));
+
+    const string_ms = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":\"soon\"}", .{}) catch unreachable;
+    try std.testing.expectError(error.InvalidMs, parseClockSleepMs(string_ms));
+
+    const float_ms = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":200.5}", .{}) catch unreachable;
+    try std.testing.expectError(error.InvalidMs, parseClockSleepMs(float_ms));
+
+    const over_cap = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":99999999999}", .{}) catch unreachable;
+    const clamped = try parseClockSleepMs(over_cap);
+    try std.testing.expectEqual(clock_sleep_max_ms, clamped.ms);
+    try std.testing.expect(clamped.clamped);
+}
+
+test "clockSleepSuccessText/clockSleepInterruptedText: exact result strings (#225 acceptance)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expectEqualStrings("slept 200 ms", try clockSleepSuccessText(a, 200, false));
+    try std.testing.expectEqualStrings(
+        "clock_sleep: requested ms exceeded the 12h cap, clamped to 43200000 ms; slept 43200000 ms",
+        try clockSleepSuccessText(a, clock_sleep_max_ms, true),
+    );
+    try std.testing.expectEqualStrings("sleep interrupted after 150 ms by user input", try clockSleepInterruptedText(a, 150));
+}
+
+test "handleMeta clock_sleep: ms=0 completes for real end-to-end, bad ms rejects without touching Io" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = a,
+        .arena = a,
+        // ms=0 never reaches sleepInterruptible's self.io.sleep() call (its
+        // while loop is skipped at left=0), and the ms-error paths below
+        // return before sleepInterruptible is even called — undefined Io is
+        // safe for exactly these cases (a real Io backend has no unit-test
+        // seam in this codebase; see agent_argstream.zig's own `.io =
+        // undefined` test for the established precedent).
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+    const zero_call: ToolCall = .{ .id = "1", .name = "clock_sleep", .input = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":0}", .{}) catch unreachable };
+    const zero_result = try handleMeta(&agent, zero_call);
+    try std.testing.expectEqualStrings("slept 0 ms", zero_result.text);
+    try std.testing.expect(!zero_result.is_error);
+
+    inline for (.{ "{}", "{\"ms\":-1}", "{\"ms\":\"soon\"}", "{\"ms\":200.5}" }) |bad_json| {
+        const bad_call: ToolCall = .{ .id = "1", .name = "clock_sleep", .input = std.json.parseFromSliceLeaky(Value, a, bad_json, .{}) catch unreachable };
+        const bad_result = try handleMeta(&agent, bad_call);
+        try std.testing.expect(bad_result.is_error);
+        try std.testing.expectEqualStrings("clock_sleep: ms must be a non-negative integer", bad_result.text);
+    }
+}
+
+test "clock_sleep counts against --max-tool-calls and --dedupe-tool-calls like any other call (#225 rails, no bypass)" {
+    const saved_max = main_mod.max_tool_calls;
+    const saved_dedupe = main_mod.dedupe_tool_calls;
+    defer {
+        main_mod.max_tool_calls = saved_max;
+        main_mod.dedupe_tool_calls = saved_dedupe;
+    }
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent: Agent = .{
+        .gpa = a,
+        .arena = a,
+        .io = undefined, // rejectToolCall never touches self.io
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = false,
+        .label = "test",
+        .out = null,
+    };
+    const call: ToolCall = .{ .id = "1", .name = "clock_sleep", .input = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":0}", .{}) catch unreachable };
+
+    main_mod.max_tool_calls = 1;
+    main_mod.dedupe_tool_calls = false;
+    try std.testing.expect((try rejectToolCall(&agent, call)) == null); // 1st call clears the budget gate
+    const budget_denied = try rejectToolCall(&agent, call);
+    try std.testing.expect(budget_denied != null);
+    try std.testing.expect(budget_denied.?.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, budget_denied.?.text, "budget") != null);
+
+    agent.tool_calls_this_turn = 0;
+    main_mod.max_tool_calls = null;
+    main_mod.dedupe_tool_calls = true;
+    try std.testing.expect((try rejectToolCall(&agent, call)) == null); // 1st identical call clears the dedupe gate
+    const dupe_denied = try rejectToolCall(&agent, call);
+    try std.testing.expect(dupe_denied != null);
+    try std.testing.expect(dupe_denied.?.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, dupe_denied.?.text, "duplicate") != null);
 }

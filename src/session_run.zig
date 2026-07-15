@@ -200,6 +200,9 @@ pub fn buildRootAgent(
     flags: args.Flags,
     telem_endpoint: []const u8,
 ) !agent_mod.Agent {
+    // #225: clock_sleep only appears in the model's tool catalog when the
+    // root-only feature flag is on (--clock-sleep / GRAFF_CLOCK_SLEEP=1).
+    const root_tool_specs = try schema.effectiveRootSpecs(arena);
     var root: agent_mod.Agent = .{
         .snapshots = snaps,
         .gpa = gpa,
@@ -218,9 +221,9 @@ pub fn buildRootAgent(
         .tracer = tracer,
         .sys_normal = sys_normal,
         .sys_strict = sys_strict,
-        .tools_anthropic = try schema.renderRootTools(arena, .anthropic, &schema.root_specs, mcp_tools),
-        .tools_openai = try schema.renderRootTools(arena, .openai, &schema.root_specs, mcp_tools),
-        .tools_responses = try schema.renderRootTools(arena, .responses, &schema.root_specs, mcp_tools),
+        .tools_anthropic = try schema.renderRootTools(arena, .anthropic, root_tool_specs, mcp_tools),
+        .tools_openai = try schema.renderRootTools(arena, .openai, root_tool_specs, mcp_tools),
+        .tools_responses = try schema.renderRootTools(arena, .responses, root_tool_specs, mcp_tools),
     };
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{util.unixMs(io)});
     root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
@@ -358,6 +361,14 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     // be silently overwritten here, since setupSkillsAndTheme runs later.
     if (environ_map.get("GRAFF_CODEX_WS")) |v| {
         main_mod.g_codex_ws = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
+    }
+    // #225: GRAFF_CLOCK_SLEEP=1|true|on|yes arms the root-only clock_sleep
+    // meta tool (in addition to --clock-sleep). Affirmative-only, like
+    // GRAFF_WS_FORCE_FAIL_ONCE below — OR'd onto the CLI flag so a
+    // conflicting/absent env value never silently turns --clock-sleep back
+    // off; default stays off.
+    if (environ_map.get("GRAFF_CLOCK_SLEEP")) |v| {
+        main_mod.g_clock_sleep = main_mod.g_clock_sleep or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
     }
     // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
     // (default 4 min — the backend killed ours within 8.5 min idle; opencode
