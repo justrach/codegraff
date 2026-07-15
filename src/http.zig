@@ -94,6 +94,50 @@ pub fn capture5xxBodyStream(gpa: Allocator, response: *std.http.Client.Response)
     }
 }
 
+/// Max backoff we honor from a provider's Retry-After (429/503), mirroring
+/// opencode's default cap. A larger server value is clamped to this.
+pub const retry_after_cap_ms: u64 = 30_000;
+
+/// Pure: resolve Retry-After headers to a backoff in ms (0 = none/unparseable).
+/// Prefers the millisecond form (`retry-after-ms`, which Anthropic/OpenAI send on
+/// 429s); `retry-after` is integer seconds — the HTTP-date form is ignored (0),
+/// falling back to our own exponential backoff. Capped at retry_after_cap_ms.
+pub fn retryAfterMs(retry_after: ?[]const u8, retry_after_ms: ?[]const u8) u64 {
+    if (retry_after_ms) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |ms| return @min(ms, retry_after_cap_ms) else |_| {}
+    }
+    if (retry_after) |v| {
+        if (std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10)) |secs| return @min(secs *| 1000, retry_after_cap_ms) else |_| {}
+    }
+    return 0;
+}
+
+/// Capture a 429/503 response's Retry-After into g_retry_after_ms so request()'s
+/// throttle backoff waits exactly as long as the server asked (#retry-after).
+pub fn captureRetryAfter(response: *std.http.Client.Response) void {
+    var ra: ?[]const u8 = null;
+    var ra_ms: ?[]const u8 = null;
+    var it = response.head.iterateHeaders();
+    while (it.next()) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "retry-after")) {
+            ra = h.value;
+        } else if (std.ascii.eqlIgnoreCase(h.name, "retry-after-ms")) {
+            ra_ms = h.value;
+        }
+    }
+    root.g_retry_after_ms = retryAfterMs(ra, ra_ms);
+}
+
+test "retryAfterMs: seconds, ms preferred, cap, HTTP-date/none -> 0 (#retry-after)" {
+    try std.testing.expectEqual(@as(u64, 5000), retryAfterMs("5", null)); // integer seconds
+    try std.testing.expectEqual(@as(u64, 1500), retryAfterMs(null, "1500")); // millisecond form
+    try std.testing.expectEqual(@as(u64, 1500), retryAfterMs("60", "1500")); // ms preferred over seconds
+    try std.testing.expectEqual(@as(u64, retry_after_cap_ms), retryAfterMs("120", null)); // 120s clamped to 30s
+    try std.testing.expectEqual(@as(u64, 3000), retryAfterMs(" 3 ", null)); // whitespace-trimmed
+    try std.testing.expectEqual(@as(u64, 0), retryAfterMs(null, null)); // no header -> our backoff
+    try std.testing.expectEqual(@as(u64, 0), retryAfterMs("Wed, 21 Oct 2025 07:28:00 GMT", null)); // HTTP-date form ignored
+}
+
 /// POST the request body; returns the raw response body (caller frees).
 /// Built on client.request, NOT client.fetch: fetch never exposes the
 /// Request, so a failed body send could not be poisoned — std re-pooled the
@@ -140,6 +184,7 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
     if (code == 429 or code >= 500) {
         // Drain a snippet of the error body for the retry message, then
         // poison: the connection still holds unread body bytes.
+        captureRetryAfter(&response); // #retry-after: honor the provider's requested backoff
         capture5xxBodyStream(gpa, &response);
         if (req.connection) |conn| conn.closing = true;
         return if (code == 429) error.RateLimited else error.ServerError;
