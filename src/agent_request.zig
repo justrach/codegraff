@@ -135,6 +135,51 @@ fn recoverContextOverflow(self: *Agent, msg: []const u8, code: ?[]const u8, retr
     return true;
 }
 
+const max_server_retries: usize = 3; // #opencode-parity: bounded retries for a transient in-stream server overload
+
+/// #opencode-parity: an in-band error event (an SSE {"type":"error"} or a JSON
+/// error envelope) naming a TRANSIENT server condition — Anthropic overloaded_error,
+/// OpenAI server_error / server_is_overloaded, or plain "overloaded" — is a 5xx that
+/// surfaced mid-stream and should be retried, not hard-failed. Billing / quota /
+/// invalid-input errors are NOT transient and fall through to a hard fail.
+fn isTransientServerError(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
+    const needles = [_][]const u8{ "overloaded", "server_error", "server_is_overloaded" };
+    for (needles) |n| {
+        if (std.ascii.indexOfIgnoreCase(etype, n) != null) return true;
+        if (std.ascii.indexOfIgnoreCase(msg, n) != null) return true;
+        if (code) |c| if (std.ascii.indexOfIgnoreCase(c, n) != null) return true;
+    }
+    return false;
+}
+
+/// If an in-stream error names a transient server overload, back off and retry the
+/// request (bounded), like a 5xx — returns true to signal the caller to `continue`.
+/// Esc during the backoff propagates as error.Interrupted. #opencode-parity.
+fn retryTransientServerError(self: *Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, retries: *usize) !bool {
+    if (!isTransientServerError(etype, code, msg)) return false;
+    if (retries.* >= max_server_retries) return false;
+    retries.* += 1;
+    self.partial_text.clearRetainingCapacity(); // fresh re-stream after the retry, no concat
+    const delay_ms = RetryPlan.delayMs(true, retries.* - 1); // 1·2·4s
+    try self.say("[server overloaded — retrying in {d}s ({d}/{d})]\n", .{ delay_ms / 1000, retries.*, max_server_retries });
+    if (self.tracer) |tr| tr.note("retry", "server overloaded (in-stream)");
+    if (telemetry.g_telem) |t| t.errorEvent("server_overloaded", if (msg.len > 0) msg else etype);
+    self.sleepInterruptible(delay_ms) catch return error.Interrupted;
+    return true;
+}
+
+test "isTransientServerError (#opencode-parity): overload/server_error retry; quota/invalid/auth do not" {
+    // transient server conditions → retry like a 5xx
+    try std.testing.expect(isTransientServerError("overloaded_error", null, ""));
+    try std.testing.expect(isTransientServerError("api_error", "server_error", ""));
+    try std.testing.expect(isTransientServerError("", "server_is_overloaded", ""));
+    try std.testing.expect(isTransientServerError("", null, "The server is Overloaded, please try again")); // case-insensitive, in message
+    // billing / input / auth → NOT transient, must hard-fail
+    try std.testing.expect(!isTransientServerError("insufficient_quota", "insufficient_quota", "You exceeded your current quota"));
+    try std.testing.expect(!isTransientServerError("invalid_request_error", null, "invalid prompt"));
+    try std.testing.expect(!isTransientServerError("authentication_error", null, "invalid api key"));
+}
+
 test "isContextOverflow (#193/#203): matches structured code + every provider's phrasing, not unrelated errors" {
     // codex/responses, openai, anthropic wire-format rejections all recover in-turn
     try std.testing.expect(isContextOverflow("Your input exceeds the context window of 272000 tokens", null));
@@ -306,6 +351,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     var stall_retries: usize = 0;
     const max_stall_retries: usize = 2;
     const stall_reconnect_backoff_ms = 750; // brief pause before reconnecting on a fresh stream
+    var server_retries: usize = 0; // #opencode-parity: bounded retries for a transient in-stream server overload
     rebuild: while (true) {
         const live = !self.sub and self.out != null and !self.stream_quiet;
         self.streamed_text = false;
@@ -506,6 +552,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
                     const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
                     if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: streamed error event overflow (by code or phrasing) → trim + retry
+                    if (try retryTransientServerError(self, etype, ecode, emsg, &server_retries)) continue; // #opencode-parity: transient server overload → retry
                     if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                     return error.ApiError;
@@ -531,6 +578,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
             const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
             if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: {"type":"error"} overflow (by code or phrasing) → trim + retry
+            if (try retryTransientServerError(self, etype, ecode, emsg, &server_retries)) continue; // #opencode-parity: transient server overload → retry
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
             return error.ApiError;
@@ -572,6 +620,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             // so pull the structured code from root.error.code for isContextOverflow — a
             // local provider whose message text we don't match on still recovers.
             if (recoverContextOverflow(self, msg, errorCode(root), &context_retried)) continue;
+            if (try retryTransientServerError(self, "", errorCode(root), msg, &server_retries)) continue; // #opencode-parity: transient server overload → retry, not hard-fail
             if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error: {s}", .{msg});
             return error.ApiError;
