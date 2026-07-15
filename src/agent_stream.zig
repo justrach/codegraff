@@ -309,6 +309,13 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         if (req.connection) |conn| conn.closing = true;
         return if (status_code == 429) error.RateLimited else error.ServerError;
     }
+    // #opencode-parity: OpenAI proper spuriously 404s available models — retry a
+    // 404 from an openai-* provider like a 5xx instead of hard-failing the turn.
+    if (status_code == 404 and std.mem.startsWith(u8, self.provider.id, "openai")) {
+        capture5xxBodyStream(self.gpa, &response);
+        if (req.connection) |conn| conn.closing = true;
+        return error.OpenAiFlaky404;
+    }
     // Esc pressed while connecting / waiting for headers? Stop before
     // reading any of the body.
     if (orig_tio != null and escPressed(true)) {
