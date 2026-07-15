@@ -229,7 +229,18 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     try s.objectField("ultracode_mode");
     try s.write(root.ultracode_mode);
     try s.objectField("goal");
-    if (root.goal) |goal| try s.write(goal) else try s.write(null);
+    if (root.goal) |g| {
+        try s.beginObject();
+        try s.objectField("objective");
+        try s.write(g.objective);
+        try s.objectField("status");
+        try s.write(@tagName(g.status));
+        try s.objectField("created_ms");
+        try s.write(g.created_ms);
+        try s.objectField("updated_ms");
+        try s.write(g.updated_ms);
+        try s.endObject();
+    } else try s.write(null);
     try s.objectField("title");
     if (root.session_title) |title| try s.write(title) else try s.write(sessionTitle(root));
     try s.objectField("updated_ms");
@@ -244,6 +255,56 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     try Io.Dir.cwd().writeFile(root.io, .{ .sub_path = path, .data = aw.writer.buffered() });
 }
 
+/// Parse the persisted `goal` field into a structured Goal (#223). A bare string
+/// is a legacy session -> load as .active stamped with `now_ms`; an object carries
+/// objective + status + created/updated timestamps (an unknown/missing status
+/// falls back to .active). Pure (no Io) so it round-trips in unit tests. Returns
+/// null for an empty/absent objective.
+fn goalFromValue(v: Value, now_ms: i64) ?agent_mod.Goal {
+    if (v == .string) {
+        if (v.string.len == 0) return null;
+        return .{ .objective = v.string, .status = .active, .created_ms = now_ms, .updated_ms = now_ms };
+    }
+    if (v == .object) {
+        const go = v.object;
+        const txt = if (go.get("objective")) |o| (if (o == .string and o.string.len > 0) o.string else null) else null;
+        const objective = txt orelse return null;
+        const st: agent_mod.GoalStatus = if (go.get("status")) |s| (if (s == .string) (std.meta.stringToEnum(agent_mod.GoalStatus, s.string) orelse .active) else .active) else .active;
+        const cms: i64 = if (go.get("created_ms")) |c| (if (c == .integer) c.integer else 0) else 0;
+        const ums: i64 = if (go.get("updated_ms")) |u| (if (u == .integer) u.integer else 0) else 0;
+        return .{ .objective = objective, .status = st, .created_ms = cms, .updated_ms = ums };
+    }
+    return null;
+}
+
+test "goalFromValue: legacy string -> active; object round-trips; paused stays paused (#223)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // Legacy bare string -> active, stamped with now_ms (backward compat).
+    const legacy = try std.json.parseFromSliceLeaky(Value, a, "\"ship 0.0.202\"", .{ .allocate = .alloc_always });
+    const g1 = goalFromValue(legacy, 4242).?;
+    try std.testing.expectEqualStrings("ship 0.0.202", g1.objective);
+    try std.testing.expectEqual(agent_mod.GoalStatus.active, g1.status);
+    try std.testing.expectEqual(@as(i64, 4242), g1.created_ms);
+
+    // New object with a paused status round-trips as paused (survives resume).
+    const paused = try std.json.parseFromSliceLeaky(Value, a, "{\"objective\":\"land #223\",\"status\":\"paused\",\"created_ms\":10,\"updated_ms\":20}", .{ .allocate = .alloc_always });
+    const g2 = goalFromValue(paused, 999).?;
+    try std.testing.expectEqualStrings("land #223", g2.objective);
+    try std.testing.expectEqual(agent_mod.GoalStatus.paused, g2.status);
+    try std.testing.expectEqual(@as(i64, 10), g2.created_ms);
+    try std.testing.expectEqual(@as(i64, 20), g2.updated_ms);
+
+    // Empty string -> null (no goal).
+    const empty = try std.json.parseFromSliceLeaky(Value, a, "\"\"", .{ .allocate = .alloc_always });
+    try std.testing.expect(goalFromValue(empty, 1) == null);
+
+    // An unknown status string falls back to active (forward-compat with future variants).
+    const unknown = try std.json.parseFromSliceLeaky(Value, a, "{\"objective\":\"x\",\"status\":\"zzz\"}", .{ .allocate = .alloc_always });
+    try std.testing.expectEqual(agent_mod.GoalStatus.active, goalFromValue(unknown, 1).?.status);
+}
 /// Restore a saved session: parse the file (arena-owned), rebuild the
 /// provider, and replace the live history. The wire format must still match
 /// the restored provider's kind — same provider id guarantees it.
@@ -262,7 +323,7 @@ pub fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8)
     const msgs = if (obj.get("messages")) |v| (if (v == .array) v.array else return error.BadSession) else return error.BadSession;
     const strict = if (obj.get("strict")) |v| (v == .bool and v.bool) else false;
     const ultracode_mode = if (obj.get("ultracode_mode")) |v| (v == .bool and v.bool) else false;
-    const goal = if (obj.get("goal")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
+    const goal: ?agent_mod.Goal = if (obj.get("goal")) |v| goalFromValue(v, unixMs(root.io)) else null;
     const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
 
     root.provider = try keys.providerById(pid, model);
@@ -323,7 +384,7 @@ test "hasMeaningfulState gates the blank-draft write (#184)" {
     try std.testing.expect(!hasMeaningfulState(&root));
 
     // A standing /goal alone is meaningful (goal-only sessions are still saved).
-    root.goal = "ship the release";
+    root.goal = .{ .objective = "ship the release" };
     try std.testing.expect(hasMeaningfulState(&root));
 
     // One user message alone is meaningful.

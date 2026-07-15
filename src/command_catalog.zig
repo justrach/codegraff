@@ -26,7 +26,7 @@ pub const commands = [_]Item{
     .{ .name = "/clear", .desc = "wipe the conversation and start fresh" },
     .{ .name = "/new", .desc = "start a fresh autosaved session" },
     .{ .name = "/rename", .usage = "/rename <title>", .desc = "set the current session title" },
-    .{ .name = "/goal", .usage = "/goal [text]", .desc = "set/show a standing objective (tracked as a checklist); /goal clear clears" },
+    .{ .name = "/goal", .usage = "/goal [text|pause|resume|status|clear]", .desc = "set/show a standing objective (tracked as a checklist); pause/resume steering, status shows state, clear removes it" },
     .{ .name = "/loop", .usage = "/loop <prompt>", .desc = "run an autonomous plan->act->verify pass" },
     .{ .name = "/plan", .desc = "toggle plan mode: read-only explore + propose; writes/edits denied" },
     .{ .name = "/ultracode", .desc = "toggle persistent workflow mode; bare opens an on/off picker, or /ultracode on|off" },

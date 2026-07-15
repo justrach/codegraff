@@ -225,7 +225,7 @@ pub fn buildRootAgent(
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{util.unixMs(io)});
     root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     repl_glue.loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
-    if (flags.goal_flag) |g| root.goal = try arena.dupe(u8, g); // --goal applies to every turn (incl. --json/-p/SDK)
+    if (flags.goal_flag) |g| root.goal = .{ .objective = try arena.dupe(u8, g), .status = .active, .created_ms = util.unixMs(io), .updated_ms = util.unixMs(io) }; // --goal applies to every turn (incl. --json/-p/SDK)
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     if (flags.eval_target_flag) |t| root.eval_target = t;
     if (flags.eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);

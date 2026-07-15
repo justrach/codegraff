@@ -94,13 +94,14 @@ pub const ReplStreamSink = struct {
 /// current checklist render when one exists. Returns "" when goal is null so the
 /// caller can skip the append. Pass todos_render="" when there are no todos — do
 /// NOT pass renderTodos()'s "(no todos)" placeholder, which would leak into the prompt.
-pub fn goalSteeringNote(arena: Allocator, goal: ?[]const u8, todos_render: []const u8) ![]const u8 {
+pub fn goalSteeringNote(arena: Allocator, goal: ?agent_mod.Goal, todos_render: []const u8) ![]const u8 {
     const g = goal orelse return "";
+    if (g.status != .active) return ""; // paused/blocked/complete/budget_limited never steer (#223)
     const progress: []const u8 = if (todos_render.len > 0)
         try std.fmt.allocPrint(arena, "\n\nChecklist so far:\n{s}", .{todos_render})
     else
         "";
-    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a todo_write checklist and work through it, marking each item in_progress when you start and completed when done.]{s}", .{ g, progress });
+    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a todo_write checklist and work through it, marking each item in_progress when you start and completed when done.]{s}", .{ g.objective, progress });
 }
 
 /// Extract a 0-100 score from an eval command's output: a `score` key (JSON or
@@ -146,7 +147,7 @@ pub fn evalSteeringNote(arena: Allocator, eval_cmd: ?[]const u8, target: u8, has
     return std.fmt.allocPrint(arena, "[eval-driven loop active. A scoring command is configured. Work it as a scored improvement loop: (1) call the `eval` tool to score the current state - the harness runs the command and logs to .graff/eval-log.tsv, so do NOT run it yourself via bash; (2) read the score, best-so-far, and output; (3) find the SINGLE biggest failure (inspect any artifacts or images directly); (4) make ONE focused change targeting it; (5) call `eval` again. Continue until `eval` reports the target ({d}/100) is met.{s} Do not stop at the first passing result, and do not revert unless `eval` shows a clear regression. After each `eval`, briefly note what you changed.]", .{ target, gate });
 }
 
-test "goalSteeringNote: goal + checklist assembly, no (no todos) leak" {
+test "goalSteeringNote: active-only gate + checklist assembly, no (no todos) leak" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const ar = arena.allocator();
@@ -154,14 +155,17 @@ test "goalSteeringNote: goal + checklist assembly, no (no todos) leak" {
     // No goal -> empty note, caller skips the append.
     try std.testing.expectEqualStrings("", try goalSteeringNote(ar, null, ""));
 
-    // Goal, no todos -> bracket note, no checklist, and never the "(no todos)" placeholder.
-    const n1 = try goalSteeringNote(ar, "close all issues", "");
+    // A paused (non-active) goal never steers (#223): empty note.
+    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, .{ .objective = "close all issues", .status = .paused }, ""));
+
+    // Active goal, no todos -> bracket note, no checklist, and never the "(no todos)" placeholder.
+    const n1 = try goalSteeringNote(ar, .{ .objective = "close all issues" }, "");
     try std.testing.expect(std.mem.startsWith(u8, n1, "[standing goal: close all issues - track this as a todo_write checklist"));
     try std.testing.expect(std.mem.indexOf(u8, n1, "Checklist so far") == null);
     try std.testing.expect(std.mem.indexOf(u8, n1, "(no todos)") == null);
 
-    // Goal + live todos -> the rendered checklist is appended verbatim.
-    const n2 = try goalSteeringNote(ar, "ship 0.0.177", "[x] wire steering\n[ ] add test");
+    // Active goal + live todos -> the rendered checklist is appended verbatim.
+    const n2 = try goalSteeringNote(ar, .{ .objective = "ship 0.0.177" }, "[x] wire steering\n[ ] add test");
     try std.testing.expect(std.mem.indexOf(u8, n2, "Checklist so far:\n[x] wire steering\n[ ] add test") != null);
 }
 

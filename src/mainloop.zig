@@ -135,7 +135,7 @@ pub fn run(ctx: *Ctx) !void {
         // just recording it. Bare /goal (show) and /goal clear/off stay commands.
         const goal_prompt: ?[]const u8 = if (!main_mod.json_mode and std.mem.startsWith(u8, line, "/goal ")) gblk: {
             const g = std.mem.trim(u8, line["/goal".len..], " \t");
-            if (g.len == 0 or std.ascii.eqlIgnoreCase(g, "clear") or std.ascii.eqlIgnoreCase(g, "off")) break :gblk null;
+            if (g.len == 0 or std.ascii.eqlIgnoreCase(g, "clear") or std.ascii.eqlIgnoreCase(g, "off") or std.ascii.eqlIgnoreCase(g, "pause") or std.ascii.eqlIgnoreCase(g, "resume") or std.ascii.eqlIgnoreCase(g, "status")) break :gblk null;
             break :gblk g;
         } else null;
         if (!main_mod.json_mode) {

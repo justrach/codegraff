@@ -63,7 +63,7 @@ fn resetConversationSteering(root: *Agent) void {
 
 test "/clear + /new reset conversation steering — goal and ultracode_mode don't survive (#178)" {
     var root: Agent = undefined;
-    root.goal = "ultracode: index the statutes";
+    root.goal = .{ .objective = "ultracode: index the statutes" };
     root.ultracode_mode = true;
     resetConversationSteering(&root);
     try std.testing.expect(root.goal == null);
@@ -122,16 +122,34 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.startsWith(u8, line, "/goal")) {
         const text = std.mem.trim(u8, line["/goal".len..], " \t");
-        if (text.len == 0) {
-            if (root.goal) |goal| try out.print("Current goal: {s}\nClear it with /goal clear.\n", .{goal}) else try out.writeAll("No active goal. Set one with /goal <objective>.\n");
+        if (text.len == 0 or std.ascii.eqlIgnoreCase(text, "status")) {
+            // bare /goal or /goal status: report the objective + lifecycle state.
+            if (root.goal) |g| {
+                try out.print("\xf0\x9f\x8e\xaf Goal: {s}\nStatus: {s}. Commands: /goal pause | resume | clear.\n", .{ g.objective, @tagName(g.status) });
+            } else try out.writeAll("No active goal. Set one with /goal <objective>.\n");
         } else if (std.ascii.eqlIgnoreCase(text, "clear") or std.ascii.eqlIgnoreCase(text, "off")) {
             root.goal = null;
             saveSession(root, arena, root.session_name) catch {};
             try out.writeAll("Goal cleared. Future turns will not get goal steering.\n");
+        } else if (std.ascii.eqlIgnoreCase(text, "pause")) {
+            if (root.goal) |*g| {
+                g.status = .paused;
+                g.updated_ms = unixMs(root.io);
+                saveSession(root, arena, root.session_name) catch {};
+                try out.print("Goal paused: {s} - turns no longer get goal steering. /goal resume to continue.\n", .{g.objective});
+            } else try out.writeAll("No active goal to pause. Set one with /goal <objective>.\n");
+        } else if (std.ascii.eqlIgnoreCase(text, "resume")) {
+            if (root.goal) |*g| {
+                g.status = .active;
+                g.updated_ms = unixMs(root.io);
+                saveSession(root, arena, root.session_name) catch {};
+                try out.print("\xf0\x9f\x8e\xaf Goal resumed: {s} - steering every turn again.\n", .{g.objective});
+            } else try out.writeAll("No goal to resume. Set one with /goal <objective>.\n");
         } else {
-            root.goal = try arena.dupe(u8, text);
+            const now = unixMs(root.io);
+            root.goal = .{ .objective = try arena.dupe(u8, text), .status = .active, .created_ms = now, .updated_ms = now };
             saveSession(root, arena, root.session_name) catch {};
-            try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; it steers every turn until /goal clear).\n", .{text});
+            try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; it steers every turn until /goal pause or /goal clear).\n", .{text});
         }
         try out.flush();
         return true;
