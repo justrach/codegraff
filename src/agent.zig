@@ -77,9 +77,9 @@ pub const TodoItem = struct {
     status: []const u8,
 };
 
-/// Governed-run status for a standing /goal (#223). Frozen enum — `budget_limited`
-/// is reserved for #224's per-goal budget accounting. Only `.active` steers turns.
-pub const GoalStatus = enum { active, paused, blocked, complete, budget_limited };
+/// Governed-run status for a standing /goal (#223). Only `.active` steers turns;
+/// pause/resume and the /loop continuation gate (#226) key off the others.
+pub const GoalStatus = enum { active, paused, blocked, complete };
 
 /// A structured standing objective: the /goal text plus its lifecycle status and
 /// created/updated timestamps. Replaces the bare `?[]const u8` so /goal can

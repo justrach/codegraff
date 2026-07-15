@@ -169,6 +169,77 @@ test "goalSteeringNote: active-only gate + checklist assembly, no (no todos) lea
     try std.testing.expect(std.mem.indexOf(u8, n2, "Checklist so far:\n[x] wire steering\n[ ] add test") != null);
 }
 
+/// #226 continuation gate — the outcome when a /loop turn finishes: the loop
+/// either runs another turn or stops with a NAMED terminal state (surfaced in
+/// the transcript so #219's ledger can later record it verbatim). Budget-free.
+pub const ContinuationOutcome = enum {
+    accepted, // the goal's checklist is complete (or the goal itself is complete)
+    exhausted, // hit the hard per-/loop iteration bound with work still open
+    blocked, // the goal is blocked and needs the user
+    cancelled, // the goal was paused — the user stepped in
+};
+
+pub const ContinuationDecision = union(enum) {
+    continue_turn, // run another /loop turn without reading a new user line
+    stop: ContinuationOutcome, // return control to the prompt with this named outcome
+};
+
+/// Pure controller decision for /loop continuation (#226): continuation is
+/// authorized by CONTROLLER STATE, never by the model merely stopping. An active
+/// goal with the checklist still open and iterations left keeps going; a
+/// completed checklist, a paused/blocked/complete goal, or a spent iteration
+/// bound each yield the matching named terminal outcome. No budgets.
+pub fn continuationDecision(
+    goal_status: agent_mod.GoalStatus,
+    todos_all_completed: bool,
+    iters_left: u32,
+) ContinuationDecision {
+    if (todos_all_completed) return .{ .stop = .accepted };
+    switch (goal_status) {
+        .paused => return .{ .stop = .cancelled },
+        .blocked => return .{ .stop = .blocked },
+        .complete => return .{ .stop = .accepted },
+        .active => {},
+    }
+    if (iters_left == 0) return .{ .stop = .exhausted };
+    return .continue_turn;
+}
+
+/// The steering appended to each autonomous /loop continuation turn (the
+/// continuation_steering_item analog): keep working the checklist, verify, and
+/// stop only when done or blocked — not a per-turn user note.
+pub fn continuationSteeringNote(arena: Allocator, todos_render: []const u8) ![]const u8 {
+    if (todos_render.len == 0)
+        return "[continuing autonomously (/loop): make the next concrete step toward the goal, then verify it. Do not ask for confirmation between routine steps. Stop only when the work is complete or you hit a blocker that needs the user.]";
+    return std.fmt.allocPrint(arena, "[continuing autonomously (/loop): keep working the checklist below — do the next incomplete item, mark it in_progress then completed, and verify. Do not ask for confirmation between routine steps. Stop only when every item is done or you are blocked.\n\nChecklist so far:\n{s}]", .{todos_render});
+}
+
+test "continuationDecision: one assertion per branch (#226)" {
+    // todos all complete -> accepted, regardless of status/iters.
+    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.active, true, 5).stop);
+    // active + open todos + iterations left -> continue.
+    try std.testing.expect(std.meta.activeTag(continuationDecision(.active, false, 5)) == .continue_turn);
+    // active + open todos + iteration bound spent -> exhausted.
+    try std.testing.expectEqual(ContinuationOutcome.exhausted, continuationDecision(.active, false, 0).stop);
+    // paused -> cancelled (the user stepped in).
+    try std.testing.expectEqual(ContinuationOutcome.cancelled, continuationDecision(.paused, false, 5).stop);
+    // blocked -> blocked.
+    try std.testing.expectEqual(ContinuationOutcome.blocked, continuationDecision(.blocked, false, 5).stop);
+    // complete -> accepted.
+    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.complete, false, 5).stop);
+}
+
+test "continuationSteeringNote: renders checklist when present, generic otherwise (#226)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const ar = arena.allocator();
+    const empty = try continuationSteeringNote(ar, "");
+    try std.testing.expect(std.mem.indexOf(u8, empty, "Checklist so far") == null);
+    try std.testing.expect(std.mem.indexOf(u8, empty, "continuing autonomously") != null);
+    const withlist = try continuationSteeringNote(ar, "[ ] add test");
+    try std.testing.expect(std.mem.indexOf(u8, withlist, "Checklist so far:\n[ ] add test") != null);
+}
+
 /// repl.TurnFn — run a full ROOT agent turn (tools + MCP) for `graff repl`, so
 /// the model can read files, run bash, search the codebase, etc. — not a bare
 /// completion. Auto-approves tools (yolo: the chat repl has no permission UI),
