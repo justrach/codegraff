@@ -42,7 +42,7 @@ pub fn renderMarkdown(gpa: std.mem.Allocator, src: []const u8, width_hint: usize
         }
         if (in_fence) {
             try out.appendSlice(try (zz.Style{}).fg(.brightBlack).render(a, "▏ "));
-            try out.appendSlice(try (zz.Style{}).fg(.cyan).render(a, line));
+            try out.appendSlice(line);
             continue;
         }
         if (isTableRow(t) and idx + 1 < lines.len and isTableSep(std.mem.trim(u8, lines[idx + 1], " \t"))) {

@@ -241,7 +241,7 @@ pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8,
         var fw = f.writer(io, &wbuf);
         fw.interface.writeAll(content) catch continue;
         fw.interface.flush() catch {};
-        out.print("  {s}✓{s} {s}{s}{s} → {s} {s}(mean {d:.2}, n={d}){s}\n", .{ style.green, style.reset, style.cyan, champ.niche, style.reset, path, style.dim, champ_mean, champ.n, style.reset }) catch {};
+        out.print("  {s}✓{s} {s}{s}{s} → {s} {s}(mean {d:.2}, n={d}){s}\n", .{ style.green, style.reset, style.accent, champ.niche, style.reset, path, style.dim, champ_mean, champ.n, style.reset }) catch {};
         done.append(arena, champ.niche) catch {};
         promoted += 1;
     }

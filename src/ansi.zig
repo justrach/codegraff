@@ -12,6 +12,10 @@ pub const Style = struct {
     reset: []const u8 = "",
     dim: []const u8 = "",
     bold: []const u8 = "",
+    /// Codegraff's identity color: the vermilion/coral brush stroke from the
+    /// app artwork. Keep this separate from status colors so coral always
+    /// means "active/selected/Codegraff", never implicitly success or error.
+    accent: []const u8 = "",
     red: []const u8 = "",
     green: []const u8 = "",
     yellow: []const u8 = "",
@@ -22,6 +26,9 @@ pub const Style = struct {
         .reset = "\x1b[0m",
         .dim = "\x1b[2m",
         .bold = "\x1b[1m",
+        // #C4513D keeps the coral identity while clearing WCAG AA contrast
+        // against both pure-black and pure-white terminal backgrounds.
+        .accent = "\x1b[38;2;196;81;61m",
         .red = "\x1b[31m",
         .green = "\x1b[32m",
         .yellow = "\x1b[33m",
@@ -39,8 +46,10 @@ test "Style: blank by default, ansi has escape codes" {
     const blank = Style{};
     try std.testing.expectEqualStrings("", blank.reset);
     try std.testing.expectEqualStrings("", blank.bold);
+    try std.testing.expectEqualStrings("", blank.accent);
     try std.testing.expectEqualStrings("\x1b[0m", Style.ansi.reset);
     try std.testing.expectEqualStrings("\x1b[1m", Style.ansi.bold);
+    try std.testing.expectEqualStrings("\x1b[38;2;196;81;61m", Style.ansi.accent);
     try std.testing.expectEqualStrings("\x1b[35m", Style.ansi.magenta);
     try std.testing.expectEqualStrings("\x1b[36m", Style.ansi.cyan);
 }

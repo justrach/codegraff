@@ -90,8 +90,8 @@ pub fn runCommand(self: *Model, line: []const u8) void {
         self.setSession(arg);
         self.pushFmt(.info, "session renamed: {s}", .{self.session_name orelse "repl"}) catch {};
     } else if (std.mem.eql(u8, cmd, "/animation")) {
-        if (std.mem.eql(u8, arg, "dragon")) self.anim = .dragon else if (std.mem.eql(u8, arg, "braille")) self.anim = .braille else {
-            self.push(.info, "usage: /animation braille|dragon") catch {};
+        if (std.mem.eql(u8, arg, "enso")) self.anim = .enso else if (std.mem.eql(u8, arg, "dragon")) self.anim = .dragon else if (std.mem.eql(u8, arg, "braille")) self.anim = .braille else {
+            self.push(.info, "usage: /animation enso|braille|dragon") catch {};
             return;
         }
         self.pushFmt(.info, "spinner: {s}", .{@tagName(self.anim)}) catch {};
