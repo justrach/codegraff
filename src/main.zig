@@ -224,7 +224,7 @@ pub var g_companion_disabled = [_]bool{false} ** companion_servers.len;
 var g_codedbpro_licensed: bool = false;
 // Thinking animations: spinner animations + color themes (+ settings persistence) live in anim.zig; spinner consumers (Agent.spinnerTask, /animation, /theme) stay here.
 const anim = @import("anim.zig");
-// Steering (Codex-style): bytes typed while a turn streams are captured (not discarded), echoed live in dim cyan, and queued to run next on Enter —
+// Steering (Codex-style): bytes typed while a turn streams are captured (not discarded), echoed live in dim coral, and queued to run next on Enter —
 // follow-ups queue without waiting for the turn to finish. TTY-only (raw-stdin esc-watch is off in --json/GUI mode); watchdog/select arms may
 // drain/echo stdin while the stream reader is blocked, so g_steer_visible pauses spinner redraws to keep the live row intact.
 pub var g_steer_buf: std.ArrayList(u8) = .empty; // in-progress line (page-alloc)

@@ -17,6 +17,7 @@ const tailPreview = util.tailPreview;
 
 pub fn spinnerFrame(self: *const Model, now_ms: u64) []const u8 {
     return switch (self.anim) {
+        .enso => repl.enso_frames[(now_ms / 160) % repl.enso_frames.len],
         .braille => repl.braille_frames[(now_ms / 80) % repl.braille_frames.len],
         .dragon => repl.dragon_frames[(now_ms / 220) % repl.dragon_frames.len],
     };
@@ -49,7 +50,7 @@ pub fn render(self: *Model, gpa: std.mem.Allocator, term_width: usize, term_heig
     const a = arena_state.allocator();
 
     const inner: u16 = @intCast(@max(@as(usize, 8), term_width) - 4);
-    const border_color = if (self.ultracode) repl.rainbow[(now_ms / 90) % repl.rainbow.len] else zz.Color.brightBlack;
+    const border_color = if (self.ultracode) repl.ultracode_palette[(now_ms / 180) % repl.ultracode_palette.len] else zz.Color.brightBlack;
     const box = (zz.Style{}).borderAll(zz.Border.rounded)
         .borderForeground(border_color).paddingLeft(1).paddingRight(1).width(inner);
 

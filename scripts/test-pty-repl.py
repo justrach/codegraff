@@ -10,6 +10,8 @@ from pty_harness import PtySession, terminal_text
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
+CORAL = b"\x1b[38;2;196;81;61m"
+RESET = b"\x1b[0m"
 
 
 def main() -> None:
@@ -52,7 +54,7 @@ def main() -> None:
                 "/effort xhigh",
                 "reasoning effort: Extra high",
                 f"[{base} · cwd {tmp}",
-                b"\x1b[35mExtra high\x1b[0m",
+                CORAL + b"Extra high" + RESET,
             )
             command(
                 "/model definitely-not-a-model",
@@ -95,7 +97,7 @@ def main() -> None:
                 "/ultracode on",
                 "ultracode mode: on",
                 f"[{base} · Plan · Strict · Ultracode · cwd {tmp}",
-                b"\x1b[35mUltracode\x1b[0m",
+                CORAL + b"Ultracode" + RESET,
             )
             command(
                 "/yolo",
@@ -143,7 +145,7 @@ def main() -> None:
             paint = bytes(session.raw[cursor:]).rsplit(b"\x1b[2J\x1b[H", 1)[-1]
             if paint.count(b"\n") != 11:
                 raise AssertionError("model picker exceeded its 12-row terminal budget")
-            if b"\x1b[7m\xe2\x96\x8c deepseek-v4-pro" not in paint:
+            if CORAL + b"\xe2\x80\xba deepseek-v4-pro" not in paint:
                 raise AssertionError("model picker did not initially select the active model")
             session.send_key("ctrl-c")
             session.wait_for_literal("] ›", start=cursor)
@@ -154,7 +156,7 @@ def main() -> None:
             session.wait_for_literal("Ultra", start=cursor)
             session.pump_for(0.1)
             paint = bytes(session.raw[cursor:]).rsplit(b"\x1b[2J\x1b[H", 1)[-1]
-            if b"\x1b[7m Extra high" not in paint:
+            if CORAL + b"\xe2\x80\xba Extra high" not in paint:
                 raise AssertionError("reasoning picker did not initially select the current level")
             session.send_key("ctrl-c")
             session.wait_for_literal("] ›", start=cursor)

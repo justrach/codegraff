@@ -239,13 +239,12 @@ pub fn readLine(
             pend_i += 1;
             break :blk b;
         } else blk: {
-            // While the input contains `ultracode`, wave the rainbow shine
-            // across the letters: poll for input with a slower 110ms timeout,
+            // While the input contains `ultracode`, drift the ember shine
+            // across the letters: poll for input with a slower 140ms timeout,
             // and on each idle tick advance the phase + redraw so the hue
-            // glides and breathes (~9fps, calm + rhythmic rather than a fast
-            // flicker).
-            while (std.ascii.indexOfIgnoreCase(buf.items, "ultracode") != null) {
-                if (inputPendingTimed(110)) break; // keystroke ready — read it below
+            // glides at ~7fps rather than flickering.
+            while (main_mod.use_color and std.ascii.indexOfIgnoreCase(buf.items, "ultracode") != null) {
+                if (inputPendingTimed(140)) break; // keystroke ready — read it below
                 input_util.g_shine_phase +%= 1;
                 redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
             }

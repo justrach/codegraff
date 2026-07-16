@@ -151,7 +151,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             else
                 "abnormal";
             try out.print("  {s}{d:>3}{s}  {s}{s:<8}{s} {d:>7} unread B  {s}\n", .{
-                style.cyan,                               job.id,                  style.reset,
+                style.accent,                             job.id,                  style.reset,
                 if (job.done) style.dim else style.green, status,                  style.reset,
                 job.buf.items.len - job.cursor,           utf8Prefix(job.cmd, 60),
             });
@@ -213,7 +213,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 has_note = true;
             };
             try out.print("{s}✓{s} connected MCP server {s}{s}{s} — {d} tool(s){s}{s}\n", .{
-                style.green, style.reset, style.cyan, name, style.reset, added,
+                style.green, style.reset, style.accent, name, style.reset, added,
                 if (persisted) " · saved to .mcp.json" else " · (not persisted)",
                 if (has_note) " · restart the harness to add its context note" else "",
             });
@@ -247,7 +247,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         } else {
             try out.print("{d} MCP server(s), {d} tool(s):\n", .{ reg.servers.len, reg.tools.len });
             for (reg.servers, 0..) |srv, i| {
-                try out.print("  {s}{s}{s}  (mcp {s}, {d} tool(s))\n", .{ style.cyan, srv.name, style.reset, srv.protocol_version, reg.toolCount(i) });
+                try out.print("  {s}{s}{s}  (mcp {s}, {d} tool(s))\n", .{ style.accent, srv.name, style.reset, srv.protocol_version, reg.toolCount(i) });
             }
             for (reg.tools) |t| try out.print("    {s}{s}{s}\n", .{ style.dim, t.qualified_name, style.reset });
             try out.writeAll("  add more: /mcp add <name> <command> [args...]\n");

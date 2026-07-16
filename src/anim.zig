@@ -27,23 +27,25 @@ const Approvals = approvals_mod.Approvals;
 pub const Anim = struct {
     name: []const u8,
     desc: []const u8,
+    frame_ms: u16,
     frame: *const fn (w: *Io.Writer, i: usize) Io.Writer.Error!void,
 };
 
 pub const anims = [_]Anim{
-    .{ .name = "braille", .desc = "classic braille spinner (default)", .frame = animBraille },
-    .{ .name = "pulse", .desc = "pulsing star", .frame = animPulse },
-    .{ .name = "orbit-dots", .desc = "dot orbiting a ring", .frame = animOrbit },
-    .{ .name = "block-wave", .desc = "unicode block wave", .frame = animBlockWave },
-    .{ .name = "shimmer", .desc = "highlight sweeping the word", .frame = animShimmer },
-    .{ .name = "matrix", .desc = "matrix rain strip", .frame = animMatrix },
-    .{ .name = "pacman", .desc = "pac-man eating dots", .frame = animPacman },
-    .{ .name = "starfield", .desc = "parallax stars", .frame = animStarfield },
-    .{ .name = "comet-tail", .desc = "streaking comet indicator", .frame = animCometTail },
+    .{ .name = "enso", .desc = "quiet brush-circle turn (default)", .frame_ms = 160, .frame = animEnso },
+    .{ .name = "braille", .desc = "classic braille spinner", .frame_ms = 80, .frame = animBraille },
+    .{ .name = "pulse", .desc = "pulsing star", .frame_ms = 100, .frame = animPulse },
+    .{ .name = "orbit-dots", .desc = "dot orbiting a ring", .frame_ms = 100, .frame = animOrbit },
+    .{ .name = "block-wave", .desc = "unicode block wave", .frame_ms = 80, .frame = animBlockWave },
+    .{ .name = "shimmer", .desc = "highlight sweeping the word", .frame_ms = 100, .frame = animShimmer },
+    .{ .name = "matrix", .desc = "matrix rain strip", .frame_ms = 80, .frame = animMatrix },
+    .{ .name = "pacman", .desc = "pac-man eating dots", .frame_ms = 100, .frame = animPacman },
+    .{ .name = "starfield", .desc = "parallax stars", .frame_ms = 100, .frame = animStarfield },
+    .{ .name = "comet-tail", .desc = "streaking comet indicator", .frame_ms = 80, .frame = animCometTail },
 };
 
 pub var g_anim_index: usize = 0; // /animation selection (index into anims)
-pub var g_anim_random = true; // default: pick a fresh spinner per request (/animation <name> to pin one)
+pub var g_anim_random = false; // the calm enso is stable by default; /animation random opts into variety
 pub var g_anim_off = false; // /animation off
 pub var g_anim_current: usize = 0; // what spinnerTask draws right now
 // 🎂 Birthday easter egg (flagged, temporary) — when graff runs from
@@ -129,32 +131,32 @@ pub fn saveThemeSetting(io: Io, gpa: Allocator, value: []const u8) bool {
     return true;
 }
 
-/// 9-stop truecolor rainbow for the `ultracode` shine (banner + live input).
-pub const ultracode_rainbow = [_][]const u8{
-    "\x1b[38;2;255;87;51m",  "\x1b[38;2;255;159;28m", "\x1b[38;2;255;222;51m",
-    "\x1b[38;2;120;255;51m", "\x1b[38;2;51;255;170m", "\x1b[38;2;51;170;255m",
-    "\x1b[38;2;120;51;255m", "\x1b[38;2;210;51;255m", "\x1b[38;2;255;51;159m",
+/// Restrained ember sweep for `ultracode`: sumi-adjacent rust through the
+/// Codegraff coral accent to warm gold, without the old full-spectrum flash.
+pub const ultracode_ember = [_][]const u8{
+    "\x1b[38;2;168;99;67m", "\x1b[38;2;179;92;73m", "\x1b[38;2;196;81;61m",
+    "\x1b[38;2;179;92;73m", "\x1b[38;2;155;106;53m", "\x1b[38;2;165;101;59m",
 };
 
-/// `ultracode` codeword banner: a rainbow shine sweeps across the word in
+/// `ultracode` codeword banner: a slow ember shine sweeps across the word in
 /// interactive (color) mode when the codeword engages multi-agent workflow
 /// mode. Truecolor ANSI; best-effort (any write failure aborts silently).
 pub fn ultracodeShine(w: *Io.Writer, io: Io) void {
     const word = "ULTRACODE";
-    const gold = "\x1b[38;2;255;215;0m";
-    const frames = 14;
+    const ember = "\x1b[38;2;155;106;53m";
+    const frames = 9;
     var f: usize = 0;
     while (f < frames) : (f += 1) {
         w.writeAll("\r\x1b[2K") catch return;
         w.writeAll(style.bold) catch return;
-        w.print("{s}✦ ", .{gold}) catch return;
+        w.print("{s}◇ ", .{ember}) catch return;
         for (word, 0..) |c, i| {
-            w.writeAll(ultracode_rainbow[(i + f) % ultracode_rainbow.len]) catch return;
+            w.writeAll(ultracode_ember[(i + f) % ultracode_ember.len]) catch return;
             w.print("{c}", .{c}) catch return;
         }
-        w.print("{s} ✦{s}", .{ gold, style.reset }) catch return;
+        w.print("{s} ◇{s}", .{ ember, style.reset }) catch return;
         w.flush() catch return;
-        io.sleep(.fromMilliseconds(70), .awake) catch {};
+        io.sleep(.fromMilliseconds(110), .awake) catch {};
     }
     w.writeAll("\n") catch {};
     w.flush() catch {};
@@ -167,6 +169,14 @@ pub fn animIndex(name: []const u8) ?usize {
 
 fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
     try w.print(" {s}thinking…{s}", .{ style.dim, style.reset });
+}
+
+fn animEnso(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    // A deliberately small, unhurried brush-circle. Each pose holds for two
+    // frames so it reads as breathing rather than a busy loading indicator.
+    const frames = [_][]const u8{ "◜", "◜", "◝", "◝", "◞", "◞", "◟", "◟" };
+    try w.print("{s}{s}{s}", .{ style.accent, frames[i % frames.len], style.reset });
+    try animThinking(w);
 }
 
 fn animGlitter(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -206,9 +216,9 @@ fn animDragon(w: *Io.Writer, i: usize) Io.Writer.Error!void {
 }
 
 fn animCometTail(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // A streaking comet: a bright cyan head trailing a fading dash tail.
+    // A streaking comet: a coral head trailing a fading dash tail.
     const tail = [_][]const u8{ "    ", "·   ", "-·  ", "=-· ", "≈=-·" };
-    try w.print("{s}{s}☄{s}", .{ style.cyan, tail[i % tail.len], style.reset });
+    try w.print("{s}{s}☄{s}", .{ style.accent, tail[i % tail.len], style.reset });
     try animThinking(w);
 }
 
@@ -221,7 +231,7 @@ fn animPulse(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     const glyphs = [_][]const u8{ "·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢" };
     const g = glyphs[i % glyphs.len];
     const bright = (i % glyphs.len) >= 3 and (i % glyphs.len) <= 6;
-    try w.print("{s}{s}{s}", .{ if (bright) style.cyan else style.dim, g, style.reset });
+    try w.print("{s}{s}{s}", .{ if (bright) style.accent else style.dim, g, style.reset });
     try animThinking(w);
 }
 
@@ -231,7 +241,7 @@ fn animOrbit(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     var j: usize = 0;
     while (j < slots) : (j += 1) {
         if (j == pos) {
-            try w.print("{s}●{s}", .{ style.cyan, style.reset });
+            try w.print("{s}●{s}", .{ style.accent, style.reset });
         } else {
             try w.print("{s}·{s}", .{ style.dim, style.reset });
         }
@@ -242,7 +252,7 @@ fn animOrbit(w: *Io.Writer, i: usize) Io.Writer.Error!void {
 
 fn animBlockWave(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     const lvls = [_][]const u8{ "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" };
-    try w.writeAll(style.cyan);
+    try w.writeAll(style.accent);
     var j: usize = 0;
     while (j < 10) : (j += 1) {
         const tri = @abs(@as(i64, @intCast((i + j) % 14)) - 7); // 0..7 triangle wave
@@ -257,7 +267,7 @@ fn animShimmer(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     const pos = i % (chs.len + 4); // a little off-screen pause each sweep
     for (chs, 0..) |c, j| {
         if (j == pos) {
-            try w.print("{s}{s}{s}{s}", .{ style.bold, style.cyan, c, style.reset });
+            try w.print("{s}{s}{s}{s}", .{ style.bold, style.accent, c, style.reset });
         } else {
             try w.print("{s}{s}{s}", .{ style.dim, c, style.reset });
         }
@@ -295,7 +305,7 @@ fn animStarfield(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     var j: usize = 0;
     while (j < 14) : (j += 1) {
         if ((j + i) % 7 == 0) {
-            try w.print("{s}✦{s}", .{ style.cyan, style.reset });
+            try w.print("{s}✦{s}", .{ style.accent, style.reset });
         } else if ((j + i * 2) % 11 == 0) {
             try w.print("{s}·{s}", .{ style.dim, style.reset });
         } else {
@@ -342,15 +352,17 @@ test "no spinner frame ever emits a supplementary-plane glyph (anti-stealth, #10
     }
 }
 
-test "spinner pool is exactly the expected 9 animations (no silent additions)" {
+test "spinner pool is exactly the expected 10 animations (no silent additions)" {
     // Lock the user-facing spinner set: adding or renaming one must be a deliberate,
     // reviewed change, not something that slips in unnoticed.
     const expected = [_][]const u8{
-        "braille", "pulse",  "orbit-dots", "block-wave", "shimmer",
-        "matrix",  "pacman", "starfield",  "comet-tail",
+        "enso",    "braille", "pulse",  "orbit-dots", "block-wave",
+        "shimmer", "matrix",  "pacman", "starfield",  "comet-tail",
     };
     try std.testing.expectEqual(expected.len, anims.len);
     for (anims, 0..) |a, k| try std.testing.expectEqualStrings(expected[k], a.name);
+    try std.testing.expectEqualStrings("enso", anims[0].name);
+    try std.testing.expectEqual(@as(u16, 160), anims[0].frame_ms);
 }
 
 /// Check .harness/settings.json for "dev_spinner": if truthy, the
@@ -410,7 +422,7 @@ pub fn selectSpinner(io: Io) void {
 }
 
 /// Persist the /animation choice, preserving every other settings key.
-/// The default ("random") removes the key. Best-effort.
+/// The default ("enso") removes the key. Best-effort.
 pub fn saveAnimationSetting(io: Io, gpa: Allocator, value: []const u8) bool {
     Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {};
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -422,7 +434,7 @@ pub fn saveAnimationSetting(io: Io, gpa: Allocator, value: []const u8) bool {
             if (v == .object) root_obj = v.object;
         } else |_| {}
     } else |_| {}
-    if (std.mem.eql(u8, value, "random")) { // random is the default → no stored key needed
+    if (std.mem.eql(u8, value, "enso")) { // enso is the default → no stored key needed
         _ = root_obj.orderedRemove("animation");
     } else {
         root_obj.put(a, "animation", .{ .string = value }) catch return false;

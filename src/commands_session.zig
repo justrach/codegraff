@@ -209,7 +209,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         for (fleet.g_agent_types) |t| {
             const fp = promptFingerprint(t.prompt);
             try out.print("  {s}{s:<14}{s} {s} {s}{s}{s}", .{
-                style.cyan,
+                style.accent,
                 t.name,
                 style.reset,
                 if (t.builtin) "builtin" else "file   ",
@@ -227,13 +227,13 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const arg = std.mem.trim(u8, line["/animation".len..], " ");
         if (arg.len == 0) {
             const current: []const u8 = if (anim.g_anim_off) "off" else if (anim.g_anim_random) "random" else anim.anims[anim.g_anim_index].name;
-            try out.print("{s}thinking animations{s} (current: {s}{s}{s}) — /animation <name> picks one, persists to {s}\n", .{ style.bold, style.reset, style.cyan, current, style.reset, Approvals.settings_path });
+            try out.print("{s}thinking animations{s} (current: {s}{s}{s}) — /animation <name> picks one, persists to {s}\n", .{ style.bold, style.reset, style.accent, current, style.reset, Approvals.settings_path });
             for (anim.anims) |a| {
-                try out.print("  {s}{s:<12}{s} {s}  preview: ", .{ style.cyan, a.name, style.reset, a.desc });
+                try out.print("  {s}{s:<12}{s} {s}  preview: ", .{ style.accent, a.name, style.reset, a.desc });
                 try a.frame(out, 3);
                 try out.writeAll("\n");
             }
-            try out.print("  {s}{s:<12}{s} a different one each request\n  {s}{s:<12}{s} no animation\n", .{ style.cyan, "random", style.reset, style.cyan, "off", style.reset });
+            try out.print("  {s}{s:<12}{s} a different one each request\n  {s}{s:<12}{s} no animation\n", .{ style.accent, "random", style.reset, style.accent, "off", style.reset });
             try out.flush();
             return true;
         }
@@ -267,9 +267,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const arg = std.mem.trim(u8, line["/theme".len..], " ");
         if (arg.len == 0) {
             const current: []const u8 = if (anim.g_theme) |i| anim.themes[i].name else "off";
-            try out.print("{s}color themes{s} (current: {s}{s}{s}) — /theme <name> applies + persists, /theme off resets to your terminal default\n", .{ style.bold, style.reset, style.cyan, current, style.reset });
-            for (anim.themes) |t| try out.print("  {s}{s:<12}{s} {s}\n", .{ style.cyan, t.name, style.reset, t.desc });
-            try out.print("  {s}{s:<12}{s} terminal default (no theme)\n", .{ style.cyan, "off", style.reset });
+            try out.print("{s}color themes{s} (current: {s}{s}{s}) — /theme <name> applies + persists, /theme off resets to your terminal default\n", .{ style.bold, style.reset, style.accent, current, style.reset });
+            for (anim.themes) |t| try out.print("  {s}{s:<12}{s} {s}\n", .{ style.accent, t.name, style.reset, t.desc });
+            try out.print("  {s}{s:<12}{s} terminal default (no theme)\n", .{ style.accent, "off", style.reset });
             try out.flush();
             return true;
         }
@@ -302,7 +302,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.print("{s}lifecycle hooks{s} (from {s}; event JSON on stdin, pre_tool exit 2 blocks):\n", .{ style.bold, style.reset, Approvals.settings_path });
         inline for (.{ "pre_tool", "post_tool", "turn_end" }) |ev| {
             for (@field(main_mod.g_hooks, ev)) |h| {
-                try out.print("  {s}{s:<9}{s} match {s}{s:<16}{s} {d}ms  {s}\n", .{ style.cyan, ev, style.reset, style.dim, h.match, style.reset, h.timeout_ms, h.command });
+                try out.print("  {s}{s:<9}{s} match {s}{s:<16}{s} {d}ms  {s}\n", .{ style.accent, ev, style.reset, style.dim, h.match, style.reset, h.timeout_ms, h.command });
             }
         }
         try out.flush();
@@ -348,7 +348,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                     try out.flush();
                     return true;
                 }
-                try out.print("installing {s}{s}{s}: {s}{s}{s}\n", .{ style.cyan, sk.name, style.reset, style.dim, sk.install, style.reset });
+                try out.print("installing {s}{s}{s}: {s}{s}{s}\n", .{ style.accent, sk.name, style.reset, style.dim, sk.install, style.reset });
                 try out.flush();
                 // The user typed the install command themselves — that's the
                 // consent; the installer runs with our stdio so its progress
@@ -382,7 +382,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             const disabled = skillDisabled(sk.name);
             const state: []const u8 = if (disabled) "disabled     " else if (inst) "installed    " else "not installed";
             try out.print("  {s}{s:<8}{s} {s}{s}{s}  {s}\n", .{
-                style.cyan,                                                           sk.name, style.reset,
+                style.accent,                                                         sk.name, style.reset,
                 if (disabled) style.yellow else if (inst) style.green else style.dim, state,   style.reset,
                 sk.desc,
             });
@@ -450,7 +450,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             if (!std.mem.eql(u8, S.str(o, "kind"), "turn")) continue;
             const turn_id = S.int(o, "id");
             out.print("{s}●{s} turn {d} {s} {d}ms · prompt {s}{s}{s}{s} · {s}", .{
-                style.cyan,
+                style.accent,
                 style.reset,
                 turn_id,
                 if (S.flag(o, "ok")) "✓" else "✗",
@@ -494,7 +494,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/plan")) {
         main_mod.plan_mode = !main_mod.plan_mode;
         if (main_mod.plan_mode) {
-            try out.print("plan mode {s}on{s} — read-only: the agent explores and proposes; writes/edits/mutating bash are denied. /plan again to execute.\n", .{ style.cyan, style.reset });
+            try out.print("plan mode {s}on{s} — read-only: the agent explores and proposes; writes/edits/mutating bash are denied. /plan again to execute.\n", .{ style.accent, style.reset });
         } else {
             try out.writeAll("plan mode off — tools may modify things again (normal gating applies)\n");
         }

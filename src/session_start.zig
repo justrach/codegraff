@@ -113,7 +113,7 @@ pub fn setupWorktreeAndBanner(
             main_mod.g_worktree_branch = wt_branch; // non-null = auto-commit each turn to this scratch branch
             if (!main_mod.json_mode) {
                 const ac: []const u8 = if (main_mod.g_worktree_autocommit) " · auto-committing each turn (`graff worktree merge` to land it)" else "";
-                out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{ style.dim, style.reset, style.cyan, wt_path, style.reset, wt_branch, ac }) catch {};
+                out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{ style.dim, style.reset, style.accent, wt_path, style.reset, wt_branch, ac }) catch {};
                 out.flush() catch {};
             }
         }
@@ -128,7 +128,7 @@ pub fn setupWorktreeAndBanner(
         try arena.dupe(u8, environ_map.get("PWD") orelse ".");
 
     if (!main_mod.json_mode and flags.oneshot_prompt == null) {
-        try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.cyan, main_mod.g_cwd_display, style.reset, trace_path });
+        try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.accent, main_mod.g_cwd_display, style.reset, trace_path });
         try out.flush();
         if (codex_account) |acct| {
             try out.print("logged into Codex (ChatGPT account {s}…) — /model codex\n", .{acct[0..@min(acct.len, 8)]});

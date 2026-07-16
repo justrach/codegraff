@@ -55,11 +55,11 @@ fn reasoningPromptLabel(effort: ReasoningEffort) []const u8 {
 fn reasoningPromptColor(effort: ReasoningEffort) []const u8 {
     return switch (effort) {
         .low => style.green,
-        .medium => style.cyan,
+        .medium => style.accent,
         .high => style.yellow,
-        .xhigh => style.magenta,
+        .xhigh => style.accent,
         .max => style.red,
-        .ultra => style.magenta,
+        .ultra => style.accent,
     };
 }
 
@@ -227,24 +227,24 @@ pub const Agent = struct {
             (std.fmt.bufPrint(&kbuf, " · ⚡{s} cached", .{compactTokenCount(&kval, self.last_cache_read)}) catch "")
         else
             "";
-        try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.cyan, self.provider.model, style.reset });
+        try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.accent, self.provider.model, style.reset });
         // Fast is the most operationally important model setting, so keep it
         // immediately beside the model instead of letting permission modes
         // push it deeper into the status line.
         if (self.fast and self.provider.kind == .responses) try writePromptBadge(w, style.green, "Fast");
         if (self.effortApplies()) try writePromptBadge(w, reasoningPromptColor(self.reasoning), reasoningPromptLabel(self.reasoning));
-        try writePromptBadge(w, style.cyan, self.provider.id);
+        try writePromptBadge(w, style.accent, self.provider.id);
         if (self.fallback_active) try writePromptBadge(w, style.yellow, "Fallback");
         if (main_mod.plan_mode) try writePromptBadge(w, style.yellow, "Plan");
         if (self.strict) try writePromptBadge(w, style.red, "Strict");
-        if (self.ultracode_mode) try writePromptBadge(w, style.magenta, "Ultracode");
+        if (self.ultracode_mode) try writePromptBadge(w, style.accent, "Ultracode");
         try w.print("{s} · cwd {s}{s}{s}", .{ style.dim, style.reset, main_mod.g_cwd_display, style.dim });
         const context_tokens = self.effectiveContextTokens();
         if (self.last_context_tokens > 0) {
             const threshold = self.provider.compactAt();
             const pct = contextPercent(context_tokens, self.provider.context);
             var used_buf: [24]u8 = undefined;
-            try w.print(" · {s}/{d}k ctx ({d}% · compact@{d}k){s}{s}]{s} {s}›{s} ", .{
+            try w.print(" · {s}/{d}k ctx ({d}% · compact@{d}k){s}{s}]{s} {s}{s}›{s} ", .{
                 compactTokenCount(&used_buf, context_tokens),
                 self.provider.context / 1000,
                 pct,
@@ -253,10 +253,11 @@ pub const Agent = struct {
                 cost,
                 style.reset,
                 style.bold,
+                style.accent,
                 style.reset,
             });
         } else {
-            try w.print("{s}]{s} {s}›{s} ", .{ cost, style.reset, style.bold, style.reset });
+            try w.print("{s}]{s} {s}{s}›{s} ", .{ cost, style.reset, style.bold, style.accent, style.reset });
         }
         try w.flush();
     }

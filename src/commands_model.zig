@@ -139,7 +139,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 }
                 return true;
             }
-            try out.print("current model: {s}{s}{s} via {s}\n", .{ style.cyan, root.provider.model, style.reset, root.provider.id });
+            try out.print("current model: {s}{s}{s} via {s}\n", .{ style.accent, root.provider.model, style.reset, root.provider.id });
             try out.writeAll("switch with /model <name> or /model <provider>:\n");
             for (provider_specs) |spec| {
                 const keyed = keys.get(spec.id) != null;
@@ -200,8 +200,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                     try switchProvider(root, arena, keys.build(spec, key, try arena.dupe(u8, models[0])), out);
                     return true;
                 }
-                try out.print("{s}{s} models{s} — pick with {s}/model {s} <id>{s}:\n", .{ style.bold, spec.id, style.reset, style.cyan, spec.id, style.reset });
-                for (models) |id| try out.print("  {s}{s}{s}\n", .{ style.cyan, id, style.reset });
+                try out.print("{s}{s} models{s} — pick with {s}/model {s} <id>{s}:\n", .{ style.bold, spec.id, style.reset, style.accent, spec.id, style.reset });
+                for (models) |id| try out.print("  {s}{s}{s}\n", .{ style.accent, id, style.reset });
                 try out.flush();
                 return true;
             }
@@ -263,7 +263,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 var snip = if (root.messages.items[idx].object.get("content")) |c| (if (c == .string) c.string else "[image]") else "";
                 if (std.mem.indexOfScalar(u8, snip, '\n')) |nl| snip = snip[0..nl];
                 const shown = if (snip.len > 70) snip[0..70] else snip;
-                try out.print("  {s}{d}{s}: {s}{s}\n", .{ style.cyan, n, style.reset, shown, if (snip.len > 70) "…" else "" });
+                try out.print("  {s}{d}{s}: {s}{s}\n", .{ style.accent, n, style.reset, shown, if (snip.len > 70) "…" else "" });
             }
             try out.print("{s}usage: /rewind <n> — drops prompt <n>+after and reverts its write_file/edit_file changes (bash edits aren't tracked){s}\n", .{ style.dim, style.reset });
             try out.flush();
