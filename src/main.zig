@@ -1,21 +1,7 @@
-//! simple-harness — a minimal agentic loop, no SDK, no dependencies.
-//!
-//! Providers: Anthropic Messages API ("claude" models), else OpenAI chat
-//! completions via the codegraff gateway.
-//!
-//! Tools (one uniform dispatch loop): built-in (bash, read_file, edit_file,
-//! write_file, subagent, workflow — sequential phases of parallel
-//! subagents, {{prev}} threading results forward); meta (todo_write,
-//! todo_read, ask_user, attempt_completion — acts on agent state, inline);
-//! MCP (servers listed in .mcp.json, see mcp.zig). Bash sits behind a
-//! permission gate (yes/always/no at root; subagents read-only/approved
-//! only; /yolo disables it); strict mode (/strict) forces a tool call every
-//! turn, ending via attempt_completion instead of plain text.
-//!
-//! Every round trip and tool call is traced to the run's unique JSONL under
-//! .graff/traces (/trace toggles it). std.http.Client for HTTPS, std.json for both wire formats,
-//! std.Io's thread pool for parallel execution, and client-side compaction
-//! as the conversation grows.
+//! simple-harness — a minimal, dependency-free agentic loop supporting
+//! Anthropic and OpenAI-compatible providers, built-in/meta/MCP tools,
+//! parallel agents, strict tool-call mode, client-side compaction, and
+//! run-exclusive JSONL tracing under `.graff/traces`.
 const std = @import("std");
 const Io = std.Io;
 

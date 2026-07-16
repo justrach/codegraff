@@ -1,28 +1,6 @@
-//! The root agent's interactive-REPL / --json-protocol event loop, split out
-//! of main() (600-line goal). main() does all setup (arg parsing, key/model
-//! resolution, trace/telemetry/MCP/hooks init, Agent construction, session
-//! resume, the `repl`/oneshot-prompt early-exits) and OWNS every piece of
-//! that setup's storage (`root: Agent`, `keys: Keys`, `tracer`, `traj`,
-//! `telem`, `history`, `linebuf`, the stdin/stdout writers, ...) on its own
-//! stack. This file only holds the loop body itself.
-//!
-//! Ctx bundles POINTERS into main()'s stack locals — main() builds one
-//! `Ctx` value on ITS OWN stack and passes `&ctx` to `run`. Nothing here
-//! ever owns or returns the address of `root`/`tracer`/`traj`/`telem`; they
-//! keep living in main()'s frame for as long as `run` is on the stack, so
-//! there is no dangling-pointer risk once `run` returns and main() resumes
-//! its own post-loop cleanup (final session save, worktree autocommit).
-//!
-//! Back-imports main (as main_mod, since several helpers take a `root`
-//! param) for Agent/Keys/the json_mode/plan_mode/max_tool_calls/
-//! dedupe_tool_calls/g_force_interrupt/g_cwd_display/g_hooks live globals,
-//! isSlashCommandLine, handleCommand, titleTask, and utf8Prefix — all pub
-//! (isSlashCommandLine/handleCommand/titleTask newly flipped for this
-//! split). Sibling-imports every already-extracted helper module directly
-//! (ansi, pricing, prompts, providers, pickers, fleet, jobs, session,
-//! repl_glue, scoring, trace, telemetry, vision, messages, anim, hooks,
-//! readline, title.zig as title_mod) instead of going back through main's
-//! private aliases for them.
+//! Root interactive/JSON event loop. `main` owns setup and storage; `Ctx`
+//! contains borrowed pointers that stay valid until `run` returns for final
+//! session cleanup. Helpers are imported from their extracted sibling modules.
 
 const std = @import("std");
 const Io = std.Io;
@@ -56,12 +34,7 @@ const hooks = @import("hooks.zig");
 const readline = @import("readline.zig");
 const title_mod = @import("title.zig");
 
-/// Pointers into main()'s stack locals — main() owns every field's storage
-/// and builds this on its own stack right before calling `run`. `sys_normal`/
-/// `sys_strict` are plain (arena-owned) slices, not pointers: they're the
-/// frozen base system-prompt strings computed once in main() before the
-/// loop, read (never mutated) here to reset/derive `root.sys_normal`/
-/// `root.sys_strict`.
+/// Borrowed pointers into main()'s stack plus immutable arena-owned prompt slices.
 pub const Ctx = struct {
     gpa: Allocator,
     io: Io,
@@ -98,9 +71,7 @@ fn detachedTitleTask(job: *TitleJob, gpa: Allocator, io: Io, client: *std.http.C
     job.done.store(true, .release);
 }
 
-/// Owns title tasks for the whole interactive session. Completed jobs are
-/// polled without waiting; outstanding work is canceled only when mainloop
-/// closes. Multiple generations allow `/new` while an old title is still live.
+/// Session title tasks are polled without waiting and canceled only at close.
 const TitleJobs = struct {
     items: std.ArrayList(*TitleJob) = .empty,
 
@@ -161,19 +132,14 @@ const TitleJobs = struct {
     }
 };
 
-/// #226: true only when the model has a live checklist and every item is marked
-/// completed — a "work asserted done" signal for the /loop continuation gate
-/// (alongside attempt_completion / root.completed). An empty checklist is NOT done.
+/// True only when a nonempty live checklist is entirely completed (#226).
 fn allTodosDone(root: *agent_mod.Agent) bool {
     if (root.todos.items.len == 0) return false;
     for (root.todos.items) |t| if (!std.mem.eql(u8, t.status, "completed")) return false;
     return true;
 }
 
-/// The interactive-REPL / --json-protocol turn loop itself. Runs until EOF,
-/// `exit`/`quit`/`q`, or a plain `break` out of the raw-line read. main()
-/// resumes right after this returns and does its own final-save/worktree
-/// cleanup (unchanged, still in main.zig).
+/// Run turns until EOF/quit; main then performs final save/worktree cleanup.
 pub fn run(ctx: *Ctx) !void {
     var title_jobs: TitleJobs = .{};
     defer title_jobs.deinit(ctx);
@@ -182,22 +148,15 @@ pub fn run(ctx: *Ctx) !void {
     var prev_turn_id: u64 = 0;
     var prev_prompt_fp: [16]u8 = scoring.promptFingerprint(ctx.root.systemPrompt());
 
-    // #226: /loop controller-authorized continuation state. `loop_continue_armed`
-    // is set only after a CLEANLY-COMPLETED autonomous /loop turn and consumed at
-    // the next readline — so any interrupt/error (which `continue`s past the arming
-    // site) auto-stops the loop with no per-error-branch handling.
+    // Armed only after a clean /loop turn and consumed by the next read (#226).
     const loop_iter_cap: u32 = 25; // hard per-/loop iteration bound (never-completing-model guard)
     var loop_iters_left: u32 = 0; // continuation turns still authorized this /loop run
     var loop_continue_armed = false; // a continuation turn is queued for the next readline
 
     while (true) {
-        // Nonblocking completion pump: a title can land between any two user
-        // interactions, but it is never joined on the turn-response path.
+        // Titles can land between interactions but never join the response path.
         title_jobs.poll(ctx);
-        // Steering drain: prompts typed while the previous turn streamed
-        // were captured into g_steer_queue. Run them now, one after
-        // another, in place of reading a fresh line — Codex-style
-        // follow-up queueing. (Empty in --json/GUI mode: no capture.)
+        // Drain streamed follow-ups before reading fresh input (empty in JSON/GUI).
         repl_glue.resetSteerPartial();
         const steer_entry: ?repl_glue.SteerEntry = repl_glue.popSteer();
         defer if (steer_entry) |e| std.heap.page_allocator.free(e.text);
@@ -263,14 +222,7 @@ pub fn run(ctx: *Ctx) !void {
         // and prints), then fall through to run a turn on it immediately.
         if (goal_prompt != null) try main_mod.handleCommand(ctx.root, ctx.keys, ctx.arena, line, ctx.out);
 
-        // The user message for this turn. In --json mode each input line is a
-        // {"type":"user","text":"..."} request; {"type":"set_system_prompt",
-        // "text":"...","append":bool} mutates the root system prompt between
-        // turns (append=true tacks onto the current prompt instead of
-        // replacing it) and acks with a system_prompt event — no turn runs;
-        // {"type":"score","prompt_sha":"...","score":0.7,"notes":"..."}
-        // appends an evaluation record for an agent variant to the
-        // trajectory archive (the DGM evaluation phase writing back).
+        // JSON lines may run a user turn, mutate the system prompt, or append a score.
         var json_request: ?std.json.Parsed(Value) = null;
         defer if (json_request) |*request| request.deinit();
         const base_msg: []const u8 = if (loop_prompt) |lp| lp else if (goal_prompt) |gp| gp else if (main_mod.json_mode) blk: {
@@ -459,20 +411,11 @@ pub fn run(ctx: *Ctx) !void {
             title_jobs.start(ctx, base_msg);
         }
 
-        // TUI/session header: once the first real prompt materializes the chat,
-        // show what this terminal tab is working on and the exact folder, and
-        // keep the window title in sync each turn.
+        // Materialize the session header and keep the window title in sync.
         if (!main_mod.json_mode) {
             if (!ctx.root.tui_header_shown) {
-                // Print the header IMMEDIATELY with the fast prompt-derived title so
-                // the AI summary call (titleTask, spawned just above with io.async)
-                // never blocks the response. The printed header scrolls into
-                // scrollback and can't be redrawn, so it keeps the prompt title; the
-                // AI summary runs in the background overlapping the turn and lands on
-                // the redrawable window title + the session filename in the post-turn
-                // handler below. (#91 made the reverse trade — blocking the turn so the
-                // *printed* card read as a summary — but an extra round-trip in front
-                // of every first response isn't worth it.)
+                // Print the fast title immediately; the detached AI title later updates
+                // the redrawable window title and session filename without blocking.
                 const turn_title = title_mod.titleFromPrompt(base_msg);
                 title_mod.setTerminalTitle(ctx.out, turn_title, main_mod.g_cwd_display);
                 try title_mod.printSessionHeader(ctx.out, turn_title, main_mod.g_cwd_display);
