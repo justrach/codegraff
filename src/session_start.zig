@@ -3,7 +3,7 @@
 //! so it lives in its own sibling file). Covers everything that happens
 //! AFTER credentials/model are resolved and the http.Client exists: the
 //! `graff title` subcommand, terminal-color/`-w`-worktree/banner setup,
-//! opening the trace/trajectory files + telemetry + score-signing, the MCP
+//! opening the run-scoped trace/trajectory files + telemetry + score-signing, the MCP
 //! registry connect (consent prompt + companion auto-activation), and the
 //! `graff repl`/one-shot-prompt early-exit paths.
 //!
@@ -53,11 +53,11 @@ const session = @import("session.zig");
 /// that prompt (one title call, no session). For A/B-ing title prompts/styles.
 /// Moved out of main() (600-line goal). Returns true when handled (main()
 /// should return immediately without going any further).
-pub fn runTitleCommand(io: Io, gpa: Allocator, arena: Allocator, client: *std.http.Client, default_provider: provider_mod.Provider, out: *Io.Writer, flags: args.Flags) !bool {
+pub fn runTitleCommand(io: Io, gpa: Allocator, arena: Allocator, client: *std.http.Client, default_provider: provider_mod.Provider, out: *Io.Writer, flags: args.Flags, run_budget: ?*@import("run_budget.zig").RunBudget) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "title"))) return false;
     if (flags.positionals.items.len < 2) std.process.fatal("usage: graff title <prompt>", .{});
     const tprompt = try std.mem.join(arena, " ", flags.positionals.items[1..]);
-    if (title_mod.titleTask(gpa, io, client, default_provider, tprompt)) |t| {
+    if (title_mod.titleTask(gpa, io, client, default_provider, tprompt, run_budget, null)) |t| {
         defer gpa.free(t);
         try out.print("{s}\n", .{t});
     } else try out.writeAll("(title generation failed — check your model/key)\n");
@@ -113,7 +113,7 @@ pub fn setupWorktreeAndBanner(
             main_mod.g_worktree_branch = wt_branch; // non-null = auto-commit each turn to this scratch branch
             if (!main_mod.json_mode) {
                 const ac: []const u8 = if (main_mod.g_worktree_autocommit) " · auto-committing each turn (`graff worktree merge` to land it)" else "";
-                out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{ style.dim, style.reset, style.cyan, wt_path, style.reset, wt_branch, ac }) catch {};
+                out.print("{s}worktree:{s} {s}{s}{s} (branch {s}) — edits isolated from the main checkout{s}\n", .{ style.dim, style.reset, style.accent, wt_path, style.reset, wt_branch, ac }) catch {};
                 out.flush() catch {};
             }
         }
@@ -128,7 +128,7 @@ pub fn setupWorktreeAndBanner(
         try arena.dupe(u8, environ_map.get("PWD") orelse ".");
 
     if (!main_mod.json_mode and flags.oneshot_prompt == null) {
-        try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.cyan, main_mod.g_cwd_display, style.reset, trace_path });
+        try out.print("{s}codegraff{s} · folder: {s}{s}{s} · / for commands · @ picks a file · esc interrupts · ↑/↓ history · tab completes · ctrl-d quits · trace → {s}\n", .{ style.bold, style.reset, style.accent, main_mod.g_cwd_display, style.reset, trace_path });
         try out.flush();
         if (codex_account) |acct| {
             try out.print("logged into Codex (ChatGPT account {s}…) — /model codex\n", .{acct[0..@min(acct.len, 8)]});
@@ -165,9 +165,8 @@ pub fn setupWorktreeAndBanner(
     }
 }
 
-/// A best-effort append-only session-log file (session trace / trajectory
-/// archive): the opened file handle (null on a failed open — tracing/
-/// trajectory just stays off) plus the File.Writer wrapping it. The caller
+/// A best-effort run-local JSONL file: the opened file handle (null on a
+/// failed open — tracing/trajectory just stays off) plus the File.Writer. The caller
 /// owns `buf`'s storage (a stack array in main()) and must keep it alive as
 /// long as the returned writer is used; the writer itself is safe to copy by
 /// value (see startup.zig's header) since nothing takes `&writer.interface`
@@ -177,39 +176,39 @@ pub const FileWriterOpen = struct {
     writer: Io.File.Writer,
 };
 
-/// Opens the session trace file (`harness.trace.jsonl`, truncated fresh each
-/// run). Moved out of main() (600-line goal) — see FileWriterOpen's doc for
-/// why this is safe despite tracer/traj's dangling-pointer trap.
-pub fn openTraceFile(io: Io, path: []const u8, buf: []u8) FileWriterOpen {
-    const file: ?Io.File = Io.Dir.cwd().createFile(io, path, .{}) catch null;
+fn openRunFile(io: Io, dir_path: []const u8, path: []const u8, buf: []u8) FileWriterOpen {
+    Io.Dir.cwd().createDir(io, ".graff", .default_dir) catch {};
+    Io.Dir.cwd().createDir(io, dir_path, .default_dir) catch {};
+    // A random run id makes collision vanishingly unlikely; exclusive creation
+    // turns even that case into a disabled writer instead of truncating another
+    // process's file.
+    const file: ?Io.File = Io.Dir.cwd().createFile(io, path, .{ .exclusive = true }) catch null;
     const writer = if (file) |f| f.writer(io, buf) else undefined;
     return .{ .file = file, .writer = writer };
 }
 
-/// Opens the trajectory archive (`harness.trajectory.jsonl`), APPEND-ONLY
-/// (never truncated — it accumulates across sessions), seeking the writer's
-/// position to the current end of file so new session records land after
-/// prior ones. Moved out of main() (600-line goal).
-pub fn openTrajFile(io: Io, path: []const u8, buf: []u8) FileWriterOpen {
-    const file: ?Io.File = Io.Dir.cwd().createFile(io, path, .{ .truncate = false }) catch null;
-    var writer = if (file) |f| f.writer(io, buf) else undefined;
-    if (file != null) {
-        if (Io.Dir.cwd().statFile(io, path, .{})) |st| {
-            writer.pos = st.size; // append after prior sessions
-        } else |_| {}
-    }
-    return .{ .file = file, .writer = writer };
+/// Opens `.graff/traces/<run-id>.jsonl` exclusively.
+pub fn openTraceFile(io: Io, path: []const u8, buf: []u8) FileWriterOpen {
+    return openRunFile(io, trace.traces_dir, path, buf);
 }
 
-/// Score-channel signing (Step 0): a per-session run_id and, if
-/// GRAFF_SCORE_KEY_FILE is set, the HMAC key — so score records written this
-/// session are signed and forged trajectory rows are detectable. Moved out
-/// of main() (600-line goal); writes the scoring.zig globals directly
-/// (mod-prefixed, never aliased).
-pub fn initScoreSigning(io: Io, arena: Allocator, environ_map: anytype) void {
+/// Opens `.graff/trajectories/<run-id>.jsonl` exclusively. The aggregate
+/// archive is the directory, not a shared append cursor.
+pub fn openTrajFile(io: Io, path: []const u8, buf: []u8) FileWriterOpen {
+    return openRunFile(io, trace.trajectories_dir, path, buf);
+}
+
+/// Generate the run id before worktree setup so the banner can show the exact
+/// run-scoped trace path.
+pub fn initScoreRunId(io: Io) void {
     var raw: [8]u8 = undefined;
     io.random(&raw);
     scoring.g_run_id = std.fmt.bytesToHex(raw, .lower);
+}
+
+/// Load the optional signing key after worktree setup, preserving the prior
+/// meaning of relative GRAFF_SCORE_KEY_FILE paths.
+pub fn loadScoreSigningKey(io: Io, arena: Allocator, environ_map: anytype) void {
     scoring.g_score_key = scoring.loadScoreKey(io, arena, environ_map);
 }
 

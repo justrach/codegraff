@@ -50,6 +50,8 @@ pub const ReplCtx = struct {
     fallback_active: bool,
     fallback_blocked: bool,
     registry: ?*mcp.Registry,
+    tracer: ?*@import("trace.zig").Tracer,
+    run_budget: ?*@import("run_budget.zig").RunBudget,
     sys_normal: []const u8,
     tools_anthropic: []const u8,
     tools_openai: []const u8,
@@ -271,6 +273,8 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         .in = null, // never prompt for tool approval / ask_user
         .stream_quiet = false, // stream tokens live into the repl pane
         .registry = c.registry,
+        .tracer = c.tracer,
+        .run_budget = c.run_budget,
         .approvals = &approvals,
         .sys_normal = sys,
         .tools_anthropic = c.tools_anthropic,
@@ -304,7 +308,7 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         c.fallback_active = agent.fallback_active;
         c.fallback_blocked = agent.fallback_blocked;
     }
-    const final = providers.runTurnWithFallback(&agent, c.keys, arena, &sink.writer) catch |err| switch (err) {
+    const final = providers.runTurnWithFallback(&agent, &c.keys, arena, &sink.writer) catch |err| switch (err) {
         // A mid-stream stall (#134): the repl turn IS live (stream_quiet=false),
         // so postStream can return error.StreamStalled. Don't collapse it to
         // null — the pane renders that as "model call failed — check /model and

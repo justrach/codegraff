@@ -12,12 +12,18 @@
 //! only; /yolo disables it); strict mode (/strict) forces a tool call every
 //! turn, ending via attempt_completion instead of plain text.
 //!
-//! Every round trip and tool call is traced to harness.trace.jsonl (/trace
-//! toggles it). std.http.Client for HTTPS, std.json for both wire formats,
+//! Every round trip and tool call is traced to the run's unique JSONL under
+//! .graff/traces (/trace toggles it). std.http.Client for HTTPS, std.json for both wire formats,
 //! std.Io's thread pool for parallel execution, and client-side compaction
 //! as the conversation grows.
 const std = @import("std");
 const Io = std.Io;
+
+fn bootMark(io: Io, started: Io.Timestamp, enabled: bool, label: []const u8) void {
+    if (!enabled) return;
+    const ms = @max(0, started.untilNow(io, .awake).toMilliseconds());
+    std.debug.print("[boot +{d}ms] {s}\n", .{ ms, label });
+}
 
 /// #131: pre-load the shared HTTP client's CA bundle single-threaded, so the
 /// parallel subagents that share this client (on pool threads) never race the
@@ -31,6 +37,14 @@ fn prewarmCaBundle(client: *std.http.Client, gpa: std.mem.Allocator, io: Io) voi
     client.ca_bundle.rescan(gpa, io, now) catch return;
     client.now = now;
 }
+
+/// Warm the shared client's CA bundle off the launch critical path. Outbound
+/// users wait on `http.g_client_ready`, so the prompt can paint during this
+/// scan without reintroducing the concurrent first-connect race above.
+fn prewarmCaBundleTask(client: *std.http.Client, gpa: std.mem.Allocator, io: Io, ready: *Io.Event) void {
+    defer ready.set(io);
+    prewarmCaBundle(client, gpa, io);
+}
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
@@ -43,6 +57,9 @@ const agent_argstream = @import("agent_argstream.zig");
 const agent_render = @import("agent_render.zig");
 const agent_steps = @import("agent_steps.zig");
 const agent_compact = @import("agent_compact.zig");
+const agent_compact_test = @import("agent_compact_test.zig");
+const agent_ws_test = @import("agent_ws_test.zig");
+const run_budget_mod = @import("run_budget.zig");
 const agent_tools = @import("agent_tools.zig");
 const agent_request = @import("agent_request.zig");
 const agent_interrupt = @import("agent_interrupt.zig");
@@ -64,6 +81,7 @@ pub var g_force_drop_once: bool = false; // #132/#133 test seam (GRAFF_FORCE_DRO
 pub var g_force_stall_always: bool = false; // #56 test seam (GRAFF_FORCE_STALL_ALWAYS=1): EVERY live attempt stalls, so the reconnect budget exhausts and the turn ends as a stall — exercises the give-up path offline
 pub var g_force_drop_always: bool = false; // #56 test seam (GRAFF_FORCE_DROP_ALWAYS=1): EVERY live attempt drops
 pub var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
+pub var max_model_calls: u64 = run_budget_mod.default_max_model_calls; // invocation-wide, shared by root/children/title/judges
 pub var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
 pub var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes
 pub var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
@@ -118,6 +136,8 @@ test {
     _ = agent_render;
     _ = agent_steps;
     _ = agent_compact;
+    _ = agent_compact_test;
+    _ = agent_ws_test;
     _ = agent_tools;
     _ = agent_request;
     _ = agent_interrupt;
@@ -141,12 +161,10 @@ const Keys = provider_mod.Keys;
 // Approvals (command/tool approval gate) + confinedPath/noSymlinkEscape live in approvals.zig; main() constructs one directly for the session.
 const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
-// Session tracing (harness.trace.jsonl Tracer) + the DGM trajectory archive (harness.trajectory.jsonl Trajectory) + the per-line JSON writer live in trace.zig; trajectory_path locates the archive file.
+// Run-scoped session tracing + DGM trajectory files live in trace.zig.
 const trace = @import("trace.zig");
 const Tracer = trace.Tracer;
 const Trajectory = trace.Trajectory;
-const trajectory_path = trace.trajectory_path;
-const trace_path = trace.trace_path;
 // Agent types / fleet (MAP-Elites niches): the AgentType registry, backgrounded elite pull, /agents promote, and niche/override resolvers live in fleet.zig.
 const fleet = @import("fleet.zig");
 const joinElites = fleet.joinElites;
@@ -206,7 +224,7 @@ pub var g_companion_disabled = [_]bool{false} ** companion_servers.len;
 var g_codedbpro_licensed: bool = false;
 // Thinking animations: spinner animations + color themes (+ settings persistence) live in anim.zig; spinner consumers (Agent.spinnerTask, /animation, /theme) stay here.
 const anim = @import("anim.zig");
-// Steering (Codex-style): bytes typed while a turn streams are captured (not discarded), echoed live in dim cyan, and queued to run next on Enter —
+// Steering (Codex-style): bytes typed while a turn streams are captured (not discarded), echoed live in dim coral, and queued to run next on Enter —
 // follow-ups queue without waiting for the turn to finish. TTY-only (raw-stdin esc-watch is off in --json/GUI mode); watchdog/select arms may
 // drain/echo stdin while the stream reader is blocked, so g_steer_visible pauses spinner redraws to keep the live row intact.
 pub var g_steer_buf: std.ArrayList(u8) = .empty; // in-progress line (page-alloc)
@@ -247,6 +265,8 @@ const startup = @import("startup.zig");
 const session_start = @import("session_start.zig");
 const session_run = @import("session_run.zig");
 pub fn main(init: std.process.Init) !void {
+    const boot_started = Io.Timestamp.now(init.io, .awake);
+    const boot_debug = init.environ_map.get("GRAFF_BOOT_DEBUG") != null;
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
@@ -263,8 +283,16 @@ pub fn main(init: std.process.Init) !void {
     g_mem_debug = init.environ_map.get("GRAFF_MEM_DEBUG") != null;
     // Windows: let the console interpret ANSI/VT escapes so the harness's color and cursor sequences render instead of literal text.
     if (builtin.os.tag == .windows) tty.enableVtOutput();
+    // Environment supplies the default; an explicit CLI flag parsed below has
+    // the usual higher precedence for this invocation.
+    if (init.environ_map.get("GRAFF_MAX_MODEL_CALLS")) |raw| {
+        max_model_calls = std.fmt.parseInt(u64, raw, 10) catch
+            std.process.fatal("GRAFF_MAX_MODEL_CALLS needs a non-negative integer, got '{s}'", .{raw});
+    }
     // CLI flags: the Flags struct + parsing loop live in args.zig; downstream code reads flags.<name> in place of ~27 locals this block used to declare.
     const flags = try args.parse(init);
+    var invocation_budget: run_budget_mod.RunBudget = .{ .max_model_calls = max_model_calls };
+    bootMark(init.io, boot_started, boot_debug, "args");
     // GRAFF_CODEX_URL: override the codex responses endpoint (localhost mocks / integration tests). Parsed BEFORE subcommand dispatch and
     // resolveKeys — `graff models [refresh]` fetches the catalog inside runSubcommand and the initial Keys.build runs inside resolveKeys.
     // environ_map slices are process-lifetime (resolveKeys stores them into Keys the same way), so the value is kept as-is without duping.
@@ -276,6 +304,7 @@ pub fn main(init: std.process.Init) !void {
     // Credential/model resolution (env vars → on-disk logins → `harness key set` store, env always wins; then --model or the last-saved model) lives
     // in startup.zig as resolveKeys() — pure over env/disk/arena, safe to call outside main()'s own stack frame.
     const resolved_keys = try startup.resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag);
+    bootMark(io, boot_started, boot_debug, "credentials/model");
     var keys = resolved_keys.keys;
     const default_provider = resolved_keys.default_provider;
     const stale_saved_model = resolved_keys.stale_saved_model;
@@ -283,7 +312,14 @@ pub fn main(init: std.process.Init) !void {
     const codex_account = resolved_keys.codex_account;
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
-    prewarmCaBundle(&client, gpa, io);
+    var client_ready: Io.Event = .unset;
+    http.g_client_ready = &client_ready;
+    var client_warm_fut = io.async(prewarmCaBundleTask, .{ &client, gpa, io, &client_ready });
+    bootMark(io, boot_started, boot_debug, "CA warm scheduled");
+    defer {
+        _ = client_warm_fut.await(io);
+        http.g_client_ready = null;
+    }
     var stdin_buf: [64 * 1024]u8 = undefined;
     var stdin_reader = Io.File.stdin().reader(io, &stdin_buf);
     const in = &stdin_reader.interface;
@@ -293,31 +329,47 @@ pub fn main(init: std.process.Init) !void {
     const out = &stdout_writer.interface;
     g_out = out;
 
-    if (try session_start.runTitleCommand(io, gpa, arena, &client, default_provider, out, flags)) return;
-    try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, trace_path, codex_account, stale_saved_model, preferred_provider, default_provider);
+    if (try session_start.runTitleCommand(io, gpa, arena, &client, default_provider, out, flags, &invocation_budget)) return;
+    // Generate identity before opening either JSONL. The score channel and both
+    // files share this run id; session_id is a separate runtime correlation id.
+    session_start.initScoreRunId(io);
+    const runtime_session_id = trace.newSessionId(io);
+    const identity: trace.Identity = .{
+        .run_id = &scoring.g_run_id,
+        .pid = trace.currentPid(),
+        .session_id = &runtime_session_id,
+    };
+    const run_trace_path = try trace.tracePath(arena, identity.run_id);
+    const run_trajectory_path = try trace.trajectoryPath(arena, identity.run_id);
+    try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, run_trace_path, codex_account, stale_saved_model, preferred_provider, default_provider);
+    session_start.loadScoreSigningKey(io, arena, init.environ_map);
+    bootMark(io, boot_started, boot_debug, "banner");
 
     // Session trace (best-effort: a failed open just disables tracing).
     var trace_buf: [8 * 1024]u8 = undefined;
-    var trace_open = session_start.openTraceFile(io, trace_path, &trace_buf);
+    var trace_open = session_start.openTraceFile(io, run_trace_path, &trace_buf);
     defer if (trace_open.file) |f| f.close(io);
     var tracer: Tracer = .{
         .io = io,
         .gpa = gpa,
         .out = if (trace_open.file != null) &trace_open.writer.interface else null,
         .start = Io.Timestamp.now(io, .awake),
+        .identity = identity,
+        .path = run_trace_path,
     };
 
-    // Trajectory archive (DGM-style tree; best-effort like the trace) — unlike the trace it is APPEND-ONLY: it accumulates across sessions and IS
-    // the archive a DGM-style driver selects parents from. Each session starts with a `kind:"session"` header; node ids restart per session,
-    // cross-session lineage threads through prompt_sha.
+    // One trajectory file per run; the archive reader scans the directory.
+    // Node ids restart per run and cross-run lineage threads through prompt_sha.
     var traj_buf: [8 * 1024]u8 = undefined;
-    var traj_open = session_start.openTrajFile(io, trajectory_path, &traj_buf);
+    var traj_open = session_start.openTrajFile(io, run_trajectory_path, &traj_buf);
     defer if (traj_open.file) |f| f.close(io);
     var traj: Trajectory = .{
         .io = io,
         .gpa = gpa,
         .out = if (traj_open.file != null) &traj_open.writer.interface else null,
         .start = Io.Timestamp.now(io, .awake),
+        .identity = identity,
+        .path = run_trajectory_path,
     };
     trace.g_traj = &traj;
     defer {
@@ -325,8 +377,6 @@ pub fn main(init: std.process.Init) !void {
         traj.deinit();
     }
     traj.node(.{ .kind = "session", .version = harness_version, .unix_ms = unixMs(io) });
-
-    session_start.initScoreSigning(io, arena, init.environ_map);
 
     var telem = session_start.initTelemetry(io, gpa, &client, init.environ_map, flags, default_telemetry_endpoint);
     telemetry.g_telem = &telem;
@@ -344,6 +394,7 @@ pub fn main(init: std.process.Init) !void {
     // auto-connect only with --yolo (trusted) or explicit per-session consent; otherwise start with an empty (but live) registry so `/mcp add`
     // still works.
     var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, use_color, json_mode);
+    bootMark(io, boot_started, boot_debug, "MCP registry");
     defer registry_storage.deinit();
     const registry: ?*mcp.Registry = &registry_storage;
     // Per-skill/companion opt-outs, animation/theme settings, and the --selftest-spinner headless render live in session_start.zig. The theme/
@@ -358,13 +409,16 @@ pub fn main(init: std.process.Init) !void {
         out.flush() catch {};
     };
     if (theme_setup.should_exit) return;
+    bootMark(io, boot_started, boot_debug, "settings/theme");
     try session_start.connectCompanion(io, &registry_storage, flags, out, json_mode);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
     if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);
+    bootMark(io, boot_started, boot_debug, "companion");
 
     var approvals: Approvals = undefined;
     try session_run.initApprovalsHooksFleet(io, gpa, arena, init.environ_map, &approvals, flags, out, json_mode);
+    bootMark(io, boot_started, boot_debug, "approvals/hooks/fleet");
     defer {
         for (approvals.prefixes.items) |p| gpa.free(p);
         approvals.prefixes.deinit(gpa);
@@ -386,6 +440,7 @@ pub fn main(init: std.process.Init) !void {
     );
     const sys_normal = sys_prompt.sys_normal;
     const sys_strict = sys_prompt.sys_strict;
+    bootMark(io, boot_started, boot_debug, "system prompt");
 
     var snaps: Snapshots = .{ .gpa = gpa, .io = io };
     defer snaps.deinit();
@@ -394,20 +449,24 @@ pub fn main(init: std.process.Init) !void {
     // Root Agent construction + post-construction config (session name, persisted thinking/goal/eval settings, session-start trace note) + the
     // backgrounded fleet-champion pull live in session_start.zig. `root`'s pointer fields (snapshots/client/tracer/approvals/registry) all reference
     // already-stable main()-owned storage passed in by address, so returning the constructed Agent by value here is safe.
-    var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, sys_strict, mcp_tools, &snaps, flags, telem.endpoint);
+    var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, sys_strict, &snaps, flags, telem.endpoint);
+    root.run_budget = &invocation_budget;
+    root.model_catalog = resolved_keys.model_catalog;
+    root.stored_keys_loaded = resolved_keys.stored_keys_loaded;
     root.scratch_arena = &scratch_state; // #124: route the root's transient parse garbage here; reset per request()
     root.fallback_active = stale_saved_model != null;
     root.fallback_blocked = root.fallback_active and preferred_provider != null and !std.mem.eql(u8, preferred_provider.?, root.provider.id) and !fallback_config.contains(root.fallback_allow, root.provider.id);
+    bootMark(io, boot_started, boot_debug, "root agent");
     defer joinElites(io); // reap if the session quits before any turn joins it
 
-    session_run.saveOrResumeSession(&root, keys, arena, flags);
+    session_run.saveOrResumeSession(&root, &keys, arena, flags);
 
     // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL agent loop — each prompt runs a full root turn (tools + MCP) via
     // replTurnCb, reusing the root agent's tool set + registry + system prompt. Self-contained — exits after.
-    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, keys, &client, in, out, arena, flags)) return;
+    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, &keys, &client, in, out, arena, flags)) return;
     // One-shot print mode: run the single prompt to completion, print the final text to stdout, exit.
     if (flags.oneshot_prompt) |prompt_text| {
-        try session_run.runOneshotPrompt(gpa, io, arena, &root, keys, &tracer, out, prompt_text);
+        try session_run.runOneshotPrompt(gpa, io, arena, &root, &keys, &tracer, out, prompt_text);
         return;
     }
 
@@ -427,7 +486,7 @@ pub fn main(init: std.process.Init) !void {
         root.tools_used.deinit(gpa);
     }
     const interactive = use_color and !json_mode; // stdout is a TTY → enable line editing
-    try session_run.restoreResumedSession(io, arena, out, &root, keys, flags, json_mode, g_cwd_display);
+    try session_run.restoreResumedSession(arena, out, &root, &keys, flags, json_mode, g_cwd_display);
 
     // The interactive-REPL / --json-protocol loop lives in mainloop.zig. main() keeps owning every piece of storage the loop touches (root, keys,
     // tracer/traj/telem via root, history, linebuf, stdin/stdout writers) — Ctx below only holds POINTERS into this stack frame, so nothing dangles

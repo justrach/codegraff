@@ -156,17 +156,14 @@ pub fn readLine(
     out.writeAll("\x1b[6n") catch {};
     out.flush() catch {};
     dsr: {
-        var polls: usize = 0;
         var esc: [16]u8 = undefined;
         var n: usize = 0;
         var in_esc = false;
         while (true) {
-            if (in.buffered().len == 0 and !inputPending()) { // 50ms poll
-                polls += 1;
-                if (polls >= 10) break :dsr; // no reply in ~500ms: fall back
-                // to column 1 — a later reply is still adopted (CSI 'R').
-                continue;
-            }
+            // A local terminal answers DSR in a few milliseconds. Do not hold
+            // every prompt for 500ms when a multiplexer drops/delays it: the
+            // main loop's CSI 'R' arm adopts a late reply without losing layout.
+            if (in.buffered().len == 0 and !inputPendingTimed(20)) break :dsr;
             const b = in.takeByte() catch break :dsr;
             if (!in_esc) {
                 if (b == 0x1b) {
@@ -242,13 +239,12 @@ pub fn readLine(
             pend_i += 1;
             break :blk b;
         } else blk: {
-            // While the input contains `ultracode`, wave the rainbow shine
-            // across the letters: poll for input with a slower 110ms timeout,
+            // While the input contains `ultracode`, drift the ember shine
+            // across the letters: poll for input with a slower 140ms timeout,
             // and on each idle tick advance the phase + redraw so the hue
-            // glides and breathes (~9fps, calm + rhythmic rather than a fast
-            // flicker).
-            while (std.ascii.indexOfIgnoreCase(buf.items, "ultracode") != null) {
-                if (inputPendingTimed(110)) break; // keystroke ready — read it below
+            // glides at ~7fps rather than flickering.
+            while (main_mod.use_color and std.ascii.indexOfIgnoreCase(buf.items, "ultracode") != null) {
+                if (inputPendingTimed(140)) break; // keystroke ready — read it below
                 input_util.g_shine_phase +%= 1;
                 redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
             }
@@ -461,7 +457,7 @@ pub fn readLine(
                         redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                     },
                     'R' => { // late DSR cursor-position reply (slow or
-                        // multiplexed terminal missed the 500ms startup
+                        // multiplexed terminal missed the 20ms startup
                         // window): adopt the real input column so the
                         // horizontal window stays exact instead of the
                         // column-1 fallback. Same narrow-terminal policy as

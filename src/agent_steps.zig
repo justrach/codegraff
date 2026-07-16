@@ -21,6 +21,13 @@ const messages_mod = @import("messages.zig");
 const util = @import("util.zig");
 const toolResultMessage = messages_mod.toolResultMessage;
 
+fn surfaceUnstreamedText(self: *Agent, text: []const u8) !void {
+    if (self.sub or self.streamed_text or text.len == 0) return;
+    if (main_mod.json_mode) {
+        self.emit(.{ .type = "text", .text = text });
+    } else try self.say("{s}\n", .{text});
+}
+
 // ssePayload/sseIndex live in agent_stream.zig; reached through the Agent
 // struct's member aliases.
 const ssePayload = Agent.ssePayload;
@@ -50,7 +57,7 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
                     if (std.mem.eql(u8, bt, "output_text")) {
                         if (block.object.get("text")) |txt| if (txt == .string) {
                             final_text = txt.string;
-                            if (!self.sub and !self.streamed_text) try self.say("{s}\n", .{txt.string});
+                            try surfaceUnstreamedText(self, txt.string);
                         };
                     }
                 }
@@ -66,6 +73,7 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
             try calls.append(self.gpa, .{ .id = call_id, .name = name, .input = input });
         }
     }
+    self.pairContextMeterWithCurrentLocal();
 
     // Codex WS delta: the server now holds up to here (the output items appended
     // above). The NEXT request sends previous_response_id + only what is appended
@@ -115,7 +123,7 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         if (std.mem.eql(u8, kind, "text")) {
             if (block.object.get("text")) |tx| if (tx == .string) {
                 final_text = tx.string;
-                if (!self.sub and !self.streamed_text) try self.say("{s}\n", .{final_text});
+                try surfaceUnstreamedText(self, final_text);
             };
         } else if (std.mem.eql(u8, kind, "tool_use")) {
             const name = if (block.object.get("name")) |n| (if (n == .string) n.string else "") else "";
@@ -125,6 +133,7 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
             try calls.append(self.gpa, .{ .id = id, .name = name, .input = input });
         }
     }
+    self.pairContextMeterWithCurrentLocal();
 
     if (calls.items.len > 0) {
         const results = try self.runTools(calls.items);
@@ -163,7 +172,7 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
     var final_text: []const u8 = "";
     if (message.object.get("content")) |c| if (c == .string and c.string.len > 0) {
         final_text = c.string;
-        if (!self.sub and !self.streamed_text) try self.say("{s}\n", .{c.string});
+        try surfaceUnstreamedText(self, c.string);
     };
 
     var calls: std.ArrayList(ToolCall) = .empty;
@@ -184,6 +193,7 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
             try calls.append(self.gpa, .{ .id = id, .name = name, .input = input });
         }
     };
+    self.pairContextMeterWithCurrentLocal();
 
     if (calls.items.len > 0) {
         const results = try self.runTools(calls.items);
@@ -239,6 +249,7 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     // the next request's scratch reset). Previously every event's parse tree
     // landed on the session arena for the life of the process.
     const scratch = self.scratchAlloc();
+    const result_arena = self.messageMutationAlloc();
     var root: ?std.json.ObjectMap = null;
     var blocks: std.ArrayList(BlockAcc) = .empty;
     var stop_reason: ?Value = null;
@@ -284,7 +295,7 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
             // type=="error" check reports it. Detached from scratch — the
             // rebuild loop can reset the scratch arena before the message
             // is done being read.
-            return (try util.dupeJsonValue(self.arena, v)).object;
+            return (try util.dupeJsonValue(result_arena, v)).object;
         }
     }
     var r = root orelse return null;
@@ -302,6 +313,7 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     }
     try r.put(scratch, "content", .{ .array = content });
     try r.put(scratch, "stop_reason", stop_reason orelse Value{ .string = "end_turn" });
+    if (stop_reason == null) try r.put(scratch, "incomplete", .{ .bool = true });
     if (usage_delta) |ud| {
         var usage: std.json.ObjectMap = .empty;
         if (r.get("usage")) |base| if (base == .object) {
@@ -312,7 +324,7 @@ pub fn assembleAnthropic(self: *Agent, body: []const u8) !?std.json.ObjectMap {
         while (e.next()) |kv| try usage.put(scratch, kv.key_ptr.*, kv.value_ptr.*);
         try r.put(scratch, "usage", .{ .object = usage });
     }
-    return (try util.dupeJsonValue(self.arena, .{ .object = r })).object;
+    return (try util.dupeJsonValue(result_arena, .{ .object = r })).object;
 }
 
 /// One in-flight tool call while reassembling an OpenAI chat stream;
@@ -325,6 +337,7 @@ const CallAcc = struct {
 };
 
 pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
+    const result_arena = self.messageMutationAlloc();
     var content: std.ArrayList(u8) = .empty;
     var reasoning_content: std.ArrayList(u8) = .empty;
     var reasoning: std.ArrayList(u8) = .empty;
@@ -357,9 +370,9 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
         if (d.object.get("role")) |x| if (x == .string) {
             role = x.string;
         };
-        if (d.object.get("content")) |x| if (x == .string) try content.appendSlice(self.arena, x.string);
-        if (d.object.get("reasoning_content")) |x| if (x == .string) try reasoning_content.appendSlice(self.arena, x.string);
-        if (d.object.get("reasoning")) |x| if (x == .string) try reasoning.appendSlice(self.arena, x.string);
+        if (d.object.get("content")) |x| if (x == .string) try content.appendSlice(result_arena, x.string);
+        if (d.object.get("reasoning_content")) |x| if (x == .string) try reasoning_content.appendSlice(result_arena, x.string);
+        if (d.object.get("reasoning")) |x| if (x == .string) try reasoning.appendSlice(result_arena, x.string);
         if (d.object.get("tool_calls")) |tcs| if (tcs == .array) {
             for (tcs.array.items) |tc| {
                 if (tc != .object) continue;
@@ -369,7 +382,7 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
                     // the fragment continues the latest one.
                     break :blk if (tc.object.get("id") != null or calls.items.len == 0) calls.items.len else calls.items.len - 1;
                 };
-                while (calls.items.len <= idx) try calls.append(self.arena, .{});
+                while (calls.items.len <= idx) try calls.append(result_arena, .{});
                 const acc = &calls.items[idx];
                 if (tc.object.get("id")) |x| if (x == .string and x.string.len > 0) {
                     acc.id = x.string;
@@ -378,7 +391,7 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
                     if (f.object.get("name")) |x| if (x == .string and x.string.len > 0) {
                         acc.name = x.string;
                     };
-                    if (f.object.get("arguments")) |x| if (x == .string) try acc.args.appendSlice(self.arena, x.string);
+                    if (f.object.get("arguments")) |x| if (x == .string) try acc.args.appendSlice(result_arena, x.string);
                 };
             }
         };
@@ -386,33 +399,34 @@ pub fn assembleOpenAI(self: *Agent, body: []const u8) !?std.json.ObjectMap {
     if (!saw_chunk) return null;
 
     var message: std.json.ObjectMap = .empty;
-    try message.put(self.arena, "role", .{ .string = try self.arena.dupe(u8, role) }); // #124: role slices the scratch parse tree; dupe so it survives the per-request scratch reset
-    try message.put(self.arena, "content", if (content.items.len > 0) Value{ .string = content.items } else .null);
-    if (reasoning_content.items.len > 0) try message.put(self.arena, "reasoning_content", .{ .string = reasoning_content.items });
-    if (reasoning.items.len > 0) try message.put(self.arena, "reasoning", .{ .string = reasoning.items });
+    try message.put(result_arena, "role", .{ .string = try result_arena.dupe(u8, role) }); // #124: role slices the scratch parse tree; dupe so it survives the per-request scratch reset
+    try message.put(result_arena, "content", if (content.items.len > 0) Value{ .string = content.items } else .null);
+    if (reasoning_content.items.len > 0) try message.put(result_arena, "reasoning_content", .{ .string = reasoning_content.items });
+    if (reasoning.items.len > 0) try message.put(result_arena, "reasoning", .{ .string = reasoning.items });
     if (calls.items.len > 0) {
-        var tcs = std.json.Array.init(self.arena);
+        var tcs = std.json.Array.init(result_arena);
         for (calls.items) |c| {
             if (c.id.len == 0 and c.name.len == 0) continue;
             var function: std.json.ObjectMap = .empty;
-            try function.put(self.arena, "name", .{ .string = try self.arena.dupe(u8, c.name) }); // #124: dupe off the scratch parse tree
-            try function.put(self.arena, "arguments", .{ .string = c.args.items });
+            try function.put(result_arena, "name", .{ .string = try result_arena.dupe(u8, c.name) }); // #124: dupe off the scratch parse tree
+            try function.put(result_arena, "arguments", .{ .string = c.args.items });
             var tc: std.json.ObjectMap = .empty;
-            try tc.put(self.arena, "id", .{ .string = try self.arena.dupe(u8, c.id) }); // #124: dupe off the scratch parse tree
-            try tc.put(self.arena, "type", .{ .string = "function" });
-            try tc.put(self.arena, "function", .{ .object = function });
+            try tc.put(result_arena, "id", .{ .string = try result_arena.dupe(u8, c.id) }); // #124: dupe off the scratch parse tree
+            try tc.put(result_arena, "type", .{ .string = "function" });
+            try tc.put(result_arena, "function", .{ .object = function });
             try tcs.append(.{ .object = tc });
         }
-        if (tcs.items.len > 0) try message.put(self.arena, "tool_calls", .{ .array = tcs });
+        if (tcs.items.len > 0) try message.put(result_arena, "tool_calls", .{ .array = tcs });
     }
     var choice: std.json.ObjectMap = .empty;
-    try choice.put(self.arena, "message", .{ .object = message });
-    try choice.put(self.arena, "finish_reason", finish orelse Value{ .string = "stop" });
-    var choices = std.json.Array.init(self.arena);
+    try choice.put(result_arena, "message", .{ .object = message });
+    try choice.put(result_arena, "finish_reason", finish orelse Value{ .string = "stop" });
+    var choices = std.json.Array.init(result_arena);
     try choices.append(.{ .object = choice });
     var r: std.json.ObjectMap = .empty;
-    try r.put(self.arena, "choices", .{ .array = choices });
-    if (usage) |u| try r.put(self.arena, "usage", u);
+    try r.put(result_arena, "choices", .{ .array = choices });
+    if (usage) |u| try r.put(result_arena, "usage", u);
+    if (finish == null) try r.put(result_arena, "incomplete", .{ .bool = true });
     return r;
 }
 

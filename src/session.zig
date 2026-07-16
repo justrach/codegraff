@@ -246,7 +246,24 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     try s.objectField("updated_ms");
     try s.write(unixMs(root.io));
     try s.objectField("messages");
+    const messages_start = aw.writer.buffered().len;
     try s.write(Value{ .array = root.messages });
+    const messages_bytes = aw.writer.buffered().len - messages_start;
+    const context_estimate = root.contextEstimateFromInputBytes(messages_bytes);
+    // Preserve the last authoritative provider reading across resume. Responses
+    // histories can contain compact encrypted-reasoning handles whose serialized
+    // byte size substantially underestimates their server-side token cost; without
+    // this floor a resumed near-limit session can miss pre-send compaction.
+    try s.objectField("context_tokens");
+    // std.json.Value represents parsed integers as i64, so keep the persisted
+    // value inside the range loadSession can round-trip even if a malformed
+    // provider once reported an extreme unsigned count.
+    try s.write(@min(context_estimate.effective, @as(u64, std.math.maxInt(i64))));
+    // Pair the provider reading with the locally measurable request component.
+    // On resume we can preserve only their hidden-token delta while replacing
+    // this component with today's prompt/tool-schema estimate.
+    try s.objectField("context_local_tokens");
+    try s.write(@min(context_estimate.local, @as(u64, std.math.maxInt(i64))));
     try s.endObject();
 
     Io.Dir.cwd().createDir(root.io, ".graff", .default_dir) catch {};
@@ -305,10 +322,39 @@ test "goalFromValue: legacy string -> active; object round-trips; paused stays p
     const unknown = try std.json.parseFromSliceLeaky(Value, a, "{\"objective\":\"x\",\"status\":\"zzz\"}", .{ .allocate = .alloc_always });
     try std.testing.expectEqual(agent_mod.GoalStatus.active, goalFromValue(unknown, 1).?.status);
 }
+
+fn contextTokensFromSession(obj: std.json.ObjectMap) u64 {
+    const v = obj.get("context_tokens") orelse return 0;
+    if (v != .integer or v.integer <= 0) return 0;
+    return @intCast(v.integer);
+}
+
+fn contextLocalTokensFromSession(obj: std.json.ObjectMap) ?u64 {
+    const v = obj.get("context_local_tokens") orelse return null;
+    if (v != .integer or v.integer < 0) return null;
+    return @intCast(v.integer);
+}
+
+fn restoreContextMeter(root: *Agent, saved_context_tokens: u64, saved_local_tokens: ?u64) void {
+    const current_local = root.fullRequestEstimateTokens();
+    // A provider reading is meaningful across resume only after separating its
+    // locally measurable component. Preserve the server-only delta (encrypted
+    // reasoning, tokenizer differences, output usage), but replace the old
+    // prompt/tool-schema estimate with the current one. Files predating this
+    // paired field safely re-estimate instead of trusting an ungrounded meter.
+    const hidden_delta = if (saved_local_tokens) |saved_local|
+        saved_context_tokens -| saved_local
+    else
+        0;
+    root.last_context_tokens = current_local +| hidden_delta;
+    root.context_local_tokens = current_local;
+    root.last_cache_read = 0;
+}
+
 /// Restore a saved session: parse the file (arena-owned), rebuild the
 /// provider, and replace the live history. The wire format must still match
 /// the restored provider's kind — same provider id guarantees it.
-pub fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !void {
+pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8) !void {
     const path = try sessionPath(arena, name);
     const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch blk: {
         // backward-compat: older builds wrote <name>.session.json in cwd.
@@ -325,8 +371,19 @@ pub fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8)
     const ultracode_mode = if (obj.get("ultracode_mode")) |v| (v == .bool and v.bool) else false;
     const goal: ?agent_mod.Goal = if (obj.get("goal")) |v| goalFromValue(v, unixMs(root.io)) else null;
     const title = if (obj.get("title")) |v| (if (v == .string and v.string.len > 0) v.string else null) else null;
+    // Optional for backward compatibility with sessions written before context
+    // metering was persisted. JSON integers are signed; ignore negative/wrong-type
+    // values instead of turning a corrupt session into an enormous unsigned count.
+    const saved_context_tokens = contextTokensFromSession(obj);
+    const saved_local_tokens = contextLocalTokensFromSession(obj);
 
+    root.ensureStoredKeys(keys);
+    if (std.mem.eql(u8, pid, "codex")) root.ensureModelCatalog(keys.*);
     root.provider = try keys.providerById(pid, model);
+    // A resumed session may use a different wire format than the startup
+    // default. Materialize that catalog before rebasing its saved context
+    // meter, and keep every still-unused format lazy.
+    try root.ensureRootTools(root.provider.kind);
     root.messages = msgs;
     // Repair histories written by older builds where a Responses
     // `function_call_output.output` was persisted as a byte array instead of a
@@ -353,9 +410,82 @@ pub fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8)
     root.ultracode_mode = ultracode_mode;
     root.goal = goal;
     root.session_title = title;
-    root.last_context_tokens = 0;
+    // Rebase the saved server-only delta onto today's prompt/tool-schema input.
+    restoreContextMeter(root, saved_context_tokens, saved_local_tokens);
     root.cap_new = false; // per-provider; relearn on rejection
     root.effort_rejected = false;
+    root.ws_off = false; // transport failures belong to the prior live session
+    root.ws_transport_failures = 0;
+    root.compact_transport_failures = 0;
+    root.last_usage_includes_output = false;
+    root.last_request_context_overflow = false;
+    root.last_request_write_failed = false;
+    root.fallback_active = false;
+    root.fallback_blocked = false;
+}
+
+test "session context meter restores hidden delta and legacy sessions re-estimate" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const current = try std.json.parseFromSliceLeaky(Value, a, "{\"context_tokens\":90000,\"context_local_tokens\":20000}", .{});
+    try std.testing.expectEqual(@as(u64, 90_000), contextTokensFromSession(current.object));
+    try std.testing.expectEqual(@as(u64, 20_000), contextLocalTokensFromSession(current.object).?);
+    const legacy = try std.json.parseFromSliceLeaky(Value, a, "{}", .{});
+    try std.testing.expectEqual(@as(u64, 0), contextTokensFromSession(legacy.object));
+    try std.testing.expect(contextLocalTokensFromSession(legacy.object) == null);
+    const invalid = try std.json.parseFromSliceLeaky(Value, a, "{\"context_tokens\":-1}", .{});
+    try std.testing.expectEqual(@as(u64, 0), contextTokensFromSession(invalid.object));
+    const invalid_local = try std.json.parseFromSliceLeaky(Value, a, "{\"context_local_tokens\":-1}", .{});
+    try std.testing.expect(contextLocalTokensFromSession(invalid_local.object) == null);
+
+    // Model a resumed Responses history whose compact encrypted-reasoning handle
+    // serializes much smaller than the authoritative server token reading.
+    var msgs = std.json.Array.init(a);
+    const reasoning = "{\"type\":\"reasoning\",\"encrypted_content\":\"" ++ ("x" ** 8192) ++ "\"}";
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, reasoning, .{}));
+    var root: Agent = undefined;
+    root.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100_000 };
+    root.messages = msgs;
+    root.sub = false;
+    root.strict = false;
+    root.sys_normal = "";
+    root.sys_strict = "";
+    root.tools_responses = "";
+    root.last_cache_read = 12_345;
+
+    const local_estimate = root.fullRequestEstimateTokens();
+    try std.testing.expect(local_estimate < 90_000);
+    restoreContextMeter(&root, contextTokensFromSession(current.object), contextLocalTokensFromSession(current.object));
+    try std.testing.expectEqual(local_estimate + 70_000, root.last_context_tokens);
+    try std.testing.expectEqual(@as(u64, 0), root.last_cache_read);
+    try std.testing.expect(root.last_context_tokens > local_estimate);
+
+    // A legitimate over-window reading remains evidence when its paired local
+    // estimate matches the current request.
+    restoreContextMeter(&root, 150_000, local_estimate);
+    try std.testing.expectEqual(@as(u64, 150_000), root.last_context_tokens);
+
+    // An unknown window still preserves the paired hidden delta; no clamping is
+    // needed or safe.
+    root.provider.context = 0;
+    restoreContextMeter(&root, 90_000, local_estimate);
+    try std.testing.expectEqual(root.fullRequestEstimateTokens() + (90_000 - local_estimate), root.last_context_tokens);
+    root.provider.context = 100_000;
+
+    // A legacy session has no saved meter, but non-empty restored history must
+    // still produce a live local reading rather than resetting to zero.
+    root.last_cache_read = 99;
+    restoreContextMeter(&root, contextTokensFromSession(legacy.object), contextLocalTokensFromSession(legacy.object));
+    try std.testing.expectEqual(local_estimate, root.last_context_tokens);
+    try std.testing.expectEqual(@as(u64, 0), root.last_cache_read);
+
+    // A meter from an intermediate build without the paired local component is
+    // also ungrounded and must not force destructive recovery after resume.
+    const unpaired = try std.json.parseFromSliceLeaky(Value, a, "{\"context_tokens\":99000}", .{});
+    restoreContextMeter(&root, contextTokensFromSession(unpaired.object), contextLocalTokensFromSession(unpaired.object));
+    try std.testing.expectEqual(local_estimate, root.last_context_tokens);
 }
 
 test "slugifyTitle makes a filesystem-safe slug from an AI title" {

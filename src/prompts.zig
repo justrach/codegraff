@@ -32,13 +32,14 @@ pub const main_system_prompt =
     \\{{prev}} carrying each phase's results into the next. Use todo_write to
     \\track multi-step work. Work directly for small sequential steps.
     \\
-    \\The harness writes a JSONL event trace of this session to
-    \\harness.trace.jsonl in the working directory: one object per line with
+    \\The harness writes this run's JSONL event trace beneath
+    \\.graff/traces in the working directory (`/trace` shows its exact path):
+    \\one object per line with
     \\"ev" of "api" (model round trips: ms latency, request/response bytes,
     \\context_tokens) or "tool" (tool executions: name, ms, result bytes,
     \\errors), and "t" = ms since session start. When asked to debug, profile,
-    \\or explain the harness's own behavior — including your own — read that
-    \\file and analyze it.
+    \\or explain the harness's own behavior — including your own — use `/trace`
+    \\to locate that run's file, then read and analyze it.
     \\
     \\If you hit a bug or limitation in the harness itself (this graff/codegraff
     \\agent — its tools, prompts, streaming, sessions, or behavior — as opposed

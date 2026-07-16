@@ -231,8 +231,9 @@ and points at the one-line install; everything else keeps working without it.
 
 graff doesn't just run an agent; it records every run as a node in a
 **Darwin Gödel Machine-style archive tree** ([arXiv:2505.22954](https://arxiv.org/abs/2505.22954)),
-so the harness itself is the substrate for agent self-improvement. Each session
-appends to `harness.trajectory.jsonl` (truncated per session, like the trace):
+so the harness itself is the substrate for agent self-improvement. Each run
+writes a unique `.graff/trajectories/<run-id>.jsonl`; archive readers aggregate
+the directory, so concurrent processes never share a truncate/append cursor:
 
 - **A lineage tree, not a flat log.** Root turns form a spine (each turn's
   parent is the previous one); every subagent and workflow task hangs off the
@@ -359,6 +360,7 @@ flags:
   --timing         show per-tool wall-clock on result lines (✓ (312ms) …)
   --cost           show running session spend in the prompt ([model · 12k tok · $0.0042])
   --json           structured stdio protocol (JSON in, JSONL events out, SDK transport)
+  --max-model-calls N  cap provider calls across root, children, retries, titles, compaction, and judges (default 256)
   -h, --help       usage
   -V, --version    version
 ```
@@ -400,6 +402,14 @@ and blockquotes use terminal-native markers; bold and inline code drop their raw
 delimiters; tables align; and fenced code stays copyable without decorative
 prefixes on body lines.
 
+The interactive UI uses Codegraff's accent-only **Ensō** palette: vermilion
+coral marks the model, prompt, active selections, tools, and primary Markdown
+structure; ordinary text and supporting metadata stay neutral. Success,
+warning, and error colors remain semantic, the terminal background is never
+overridden, and `NO_COLOR` is respected. The quiet `enso` thinking animation is
+the stable default; `/animation random` restores per-request variety and the
+other animation names remain available.
+
 ```
 /model [name]   no arg → interactive fuzzy picker; or /model <name|provider|provider model>
 /models         list known models, context windows, compaction points
@@ -410,6 +420,7 @@ prefixes on body lines.
 /reasoning      reasoning picker: low|medium|high|xhigh|max|ultra (persists)
 /fast           toggle Codex priority service tier for lower latency
 /ultracode      toggle persistent multi-agent workflow mode
+/animation      choose a thinking animation (`/animation` lists every option)
 /goal [text]    set/show a standing objective; /goal pause|resume|status|clear
 /loop <prompt>  work autonomously toward the prompt, stopping with a named outcome when done or blocked
 /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
@@ -417,7 +428,7 @@ prefixes on body lines.
 /paste          attach the clipboard image (macOS); also Ctrl-V (⌘V can't be captured)
 /strict         toggle "every message is a tool" mode
 /yolo           toggle bash auto-approval (skip permission prompts)
-/trace          toggle the JSONL event trace (harness.trace.jsonl)
+/trace          toggle this run's JSONL event trace and show its path
 /compact        summarize history into a fresh context
 /save | /resume | /sessions   session persistence; bare /resume → interactive picker
 /todo           show the current task list
@@ -450,8 +461,9 @@ configured provider and keeps the saved preference for a future launch. The
 prompt is a small statusline:
 `[model · Fast · Extra high · Plan · cwd /repo · 12345/800k tok (1%) · ⚡cached]`.
 Fast stays immediately beside the model. Active reasoning/workflow modes are
-visible at a glance: Low is green, Medium cyan, High yellow, Extra
-high/Ultra/Ultracode magenta, Max/Strict red, and Plan yellow. YOLO is reported
+visible at a glance: Low is green, Medium/Extra high/Ultra/Ultracode use the
+Codegraff coral accent, High/Plan are yellow, and Max/Strict are red. YOLO is
+reported
 as an explicit warning when enabled instead of occupying the compact prompt.
 Badges for unsupported settings are hidden instead of implying they apply. The
 tail shows context used vs the compaction budget, last cache hit, and (for
@@ -730,7 +742,7 @@ real Anthropic API the harness also sets an explicit `cache_control` breakpoint.
 Cache reads are surfaced: `recordUsage` parses `cache_read_input_tokens`
 (Anthropic) and `prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`
 (OpenAI/DeepSeek), and every `api` trace line carries a `cache_read_tokens` field
-so you can see the hit rate in `harness.trace.jsonl`.
+so you can see the hit rate in the current `.graff/traces/<run-id>.jsonl`.
 
 The one deliberate exception is `set_system_prompt` (--json protocol / SDK
 `setSystemPrompt`): the system prompt is the *first* token of the cached prefix,
@@ -749,11 +761,20 @@ and forth inside an agent loop.
 
 **Tracing: the harness can debug itself.** Every API round trip (latency,
 request/response bytes, context tokens) and every tool execution (duration,
-result size, errors, root-vs-subagent) is appended as one JSON line to
-`harness.trace.jsonl` in the cwd, truncated at startup so it always covers the
-current session. The system prompt tells the agent the file exists, so "profile
-yourself" or "why was that slow?" makes the agent read its own trace and answer
-from data. `/trace` toggles it.
+result size, errors, root-vs-subagent) is appended as one JSON line to the
+run's unique `.graff/traces/<run-id>.jsonl`. Every line carries the run id, PID,
+and runtime session id; concurrent processes therefore remain independently
+inspectable. The system prompt tells the agent how to locate the file, so
+"profile yourself" or "why was that slow?" makes it answer from data. `/trace`
+toggles tracing and prints the exact path.
+
+Long tool results are stored exactly under `.graff/tool-results/`; model history
+receives a short preview and an inspectable file pointer instead. Responses
+requests are explicitly capped at 16k output tokens (4k for compaction and 64
+for titles), while compaction carries the latest clean ~8k-token user-turn
+suffix forward verbatim. A shared atomic run budget allows at most four model
+calls concurrently and one subagent level; set the total provider-call ceiling
+with `--max-model-calls N` or the lower-precedence `GRAFF_MAX_MODEL_CALLS`.
 
 **Telemetry, pseudonymous, opt-out, on by default.** *Every* build (release,
 source, and dev) bakes in a default OTLP endpoint (pass `-Dtelemetry-endpoint=""`

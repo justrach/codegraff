@@ -69,8 +69,13 @@ fn translateHistory(arena: Allocator, msgs: *std.json.Array, to_kind: Provider.K
     msgs.* = out;
 }
 
-fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool) []const u8 {
+fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool) ![]const u8 {
     const same_format = root.provider.kind == p.kind;
+    const same_selection = same_format and
+        root.provider.context == p.context and
+        std.mem.eql(u8, root.provider.id, p.id) and
+        std.mem.eql(u8, root.provider.model, p.model) and
+        std.mem.eql(u8, root.provider.url, p.url);
     var note: []const u8 = "context kept";
     if (!same_format) {
         if (root.keep_context) {
@@ -79,19 +84,28 @@ fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool
         } else {
             root.messages = std.json.Array.init(arena);
             root.last_context_tokens = 0;
+            root.context_local_tokens = 0;
             note = "history cleared — /keepcontext on to carry it across formats";
         }
     }
-    root.cap_new = false; // per-provider token-cap quirk; relearn on rejection
-    root.effort_rejected = false; // new model may accept reasoning_effort; relearn
-    root.ws_off = false; // a previous Codex WS fallback must not leak across switches
     root.provider = p;
-    // #204: a provider switch changes the window; don't carry the previous model's
-    // absolute token count against it. Re-estimate from the (kept or translated)
-    // history so the meter + compaction gate stay consistent until the next response
-    // returns real usage. (The cross-format history-clear above already set 0;
-    // fullInputEstimateTokens over an empty history is 0.)
-    root.last_context_tokens = root.fullInputEstimateTokens();
+    // Keep the context estimate and first request exact without eagerly
+    // materializing formats this session has never used.
+    try root.ensureRootTools(p.kind);
+    // #204: an actual provider/model switch changes the window and tokenizer, so
+    // re-estimate until the next response returns real usage. A no-op set_model is
+    // common in the GUI prompt-settings path; preserve its authoritative server
+    // meter instead of replacing it with the structurally-low local estimate.
+    if (!same_selection) {
+        root.cap_new = false; // per-provider token-cap quirk; relearn on rejection
+        root.effort_rejected = false; // new model may accept reasoning_effort; relearn
+        root.ws_off = false; // a previous Codex WS fallback must not leak across switches
+        root.ws_transport_failures = 0;
+        root.compact_transport_failures = 0;
+        root.last_context_tokens = root.fullRequestEstimateTokens();
+        root.context_local_tokens = root.last_context_tokens;
+        root.last_cache_read = 0;
+    }
     root.fallback_active = !persist;
     root.fallback_blocked = false;
     if (persist) saveModel(root.io, root.home, p.id, p.model);
@@ -99,13 +113,13 @@ fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool
 }
 
 /// An explicit /model or set_model selection becomes the next-launch default.
-pub fn applyProvider(root: *Agent, arena: Allocator, p: Provider) []const u8 {
+pub fn applyProvider(root: *Agent, arena: Allocator, p: Provider) ![]const u8 {
     return applyProviderInner(root, arena, p, true);
 }
 
 /// Automatic failover is session-local: preserve the user's saved preference
 /// so a repaired credential/model is tried again on the next fresh launch.
-pub fn applyFallbackProvider(root: *Agent, arena: Allocator, p: Provider) []const u8 {
+pub fn applyFallbackProvider(root: *Agent, arena: Allocator, p: Provider) ![]const u8 {
     return applyProviderInner(root, arena, p, false);
 }
 
@@ -182,7 +196,7 @@ pub fn failoverEligible(detail: []const u8) bool {
 /// credential-backed providers on a clear auth/model/quota failure. Successful
 /// fallback becomes active for this session but does not replace the saved
 /// model preference.
-pub fn runTurnWithFallback(root: *Agent, keys: Keys, arena: Allocator, out: ?*Io.Writer) anyerror![]const u8 {
+pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer) anyerror![]const u8 {
     if (root.fallback_blocked) return error.FallbackConsentRequired;
     var attempted: [provider_specs.len][]const u8 = undefined;
     var attempted_len: usize = 1;
@@ -197,10 +211,15 @@ pub fn runTurnWithFallback(root: *Agent, keys: Keys, arena: Allocator, out: ?*Io
             if (!failoverEligible(detail)) return err;
             const failed_id = root.provider.id;
             const failed_model = root.provider.model;
-            const fallback = nextFallbackProvider(keys, failed_id, attempted[0..attempted_len], root.fallback_allow) orelse return err;
+            root.ensureStoredKeys(keys);
+            var fallback = nextFallbackProvider(keys.*, failed_id, attempted[0..attempted_len], root.fallback_allow) orelse return err;
+            if (std.mem.eql(u8, fallback.id, "codex")) {
+                root.ensureModelCatalog(keys.*);
+                fallback = nextFallbackProvider(keys.*, failed_id, attempted[0..attempted_len], root.fallback_allow) orelse return err;
+            }
             attempted[attempted_len] = fallback.id;
             attempted_len += 1;
-            const note = applyFallbackProvider(root, arena, fallback);
+            const note = try applyFallbackProvider(root, arena, fallback);
             if (main_mod.json_mode) {
                 root.emit(.{ .type = "model", .ok = true, .provider = fallback.id, .model = fallback.model, .context = fallback.context, .note = "automatic session fallback; saved model preference kept" });
             } else if (out) |w| {
@@ -254,6 +273,30 @@ pub fn resolveProviderControlRequest(
     return resolveProviderRequest(keys, arena, legacy_name);
 }
 
+/// Whether a human `/model` query can observe account-scoped Codex rows.
+/// Explicit non-Codex providers never need the dynamic catalog; bare/fuzzy
+/// model queries do because they may name a new account rollout.
+pub fn modelQueryMayUseCodex(query: []const u8) bool {
+    const arg = std.mem.trim(u8, query, " \t");
+    if (arg.len == 0) return true;
+    const provider_end = std.mem.indexOfAny(u8, arg, " /\t") orelse arg.len;
+    const provider_id = arg[0..provider_end];
+    for (provider_specs) |spec| {
+        if (!std.mem.eql(u8, spec.id, provider_id)) continue;
+        return std.mem.eql(u8, spec.id, "codex");
+    }
+    return true;
+}
+
+/// Structured set_model has separate provider/model fields. An explicit
+/// provider fully determines routing; a model-only request remains fuzzy.
+pub fn controlRequestMayUseCodex(provider_query: []const u8, model_query: []const u8, legacy_name: []const u8) bool {
+    const provider_id = std.mem.trim(u8, provider_query, " \t");
+    if (provider_id.len != 0) return std.mem.eql(u8, provider_id, "codex");
+    if (std.mem.trim(u8, model_query, " \t").len != 0) return true;
+    return modelQueryMayUseCodex(legacy_name);
+}
+
 fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Provider {
     const arg = std.mem.trim(u8, query, " \t");
     if (arg.len == 0) return error.InvalidModelRequest;
@@ -294,7 +337,7 @@ pub fn setModelRequestLabel(arena: Allocator, provider_query: []const u8, model_
 }
 
 pub fn switchProvider(root: *Agent, arena: Allocator, p: Provider, out: *Io.Writer) !void {
-    const note = applyProvider(root, arena, p);
+    const note = try applyProvider(root, arena, p);
     try out.print("switched to {s} via {s} ({t} format, {d}k ctx) — {s} · saved for next session\n", .{
         p.model, p.id, p.kind, p.context / 1000, note,
     });
@@ -362,6 +405,63 @@ test "translateHistory: flattens to {role,content:string}, keeps user/assistant,
     try std.testing.expectEqualStrings("hi", msgs.items[1].object.get("content").?.string);
 }
 
+test "applyProviderInner preserves the server meter on an exact model re-selection" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const p: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 270_000 };
+
+    var root: Agent = undefined;
+    root.provider = p;
+    root.arena = a;
+    root.registry = null;
+    root.messages = std.json.Array.init(a);
+    root.sub = false;
+    root.strict = false;
+    root.sys_normal = "";
+    root.sys_strict = "";
+    root.tools_anthropic = "";
+    root.tools_openai = "";
+    root.tools_responses = "";
+    root.keep_context = true;
+    root.last_context_tokens = 220_000;
+    root.context_local_tokens = root.fullRequestEstimateTokens();
+    root.last_cache_read = 12_345;
+    root.cap_new = true;
+    root.effort_rejected = true;
+    root.ws_off = true;
+    root.ws_transport_failures = 2;
+    _ = try applyProviderInner(&root, a, p, false);
+    try std.testing.expect(root.tools_responses.len > 0);
+    try std.testing.expectEqual(@as(usize, 0), root.tools_anthropic.len);
+    try std.testing.expectEqual(@as(usize, 0), root.tools_openai.len);
+    try std.testing.expectEqual(@as(u64, 220_000), root.last_context_tokens);
+    try std.testing.expectEqual(@as(u64, 12_345), root.last_cache_read);
+    try std.testing.expect(root.cap_new);
+    try std.testing.expect(root.effort_rejected);
+    try std.testing.expect(root.ws_off);
+
+    var changed = p;
+    changed.model = "gpt-5.1";
+    _ = try applyProviderInner(&root, a, changed, false);
+    try std.testing.expectEqual(root.fullRequestEstimateTokens(), root.last_context_tokens);
+    try std.testing.expectEqual(root.last_context_tokens, root.context_local_tokens);
+    try std.testing.expectEqual(@as(u64, 0), root.last_cache_read);
+    try std.testing.expect(!root.cap_new);
+    try std.testing.expect(!root.effort_rejected);
+    try std.testing.expect(!root.ws_off);
+    try std.testing.expectEqual(@as(u8, 0), root.ws_transport_failures);
+
+    var changed_format = changed;
+    changed_format.id = "deepseek";
+    changed_format.kind = .openai;
+    changed_format.model = "deepseek-chat";
+    _ = try applyProviderInner(&root, a, changed_format, false);
+    try std.testing.expect(root.tools_openai.len > 0);
+    try std.testing.expect(root.tools_responses.len > 0); // already paid for, remains cached
+    try std.testing.expectEqual(@as(usize, 0), root.tools_anthropic.len);
+}
+
 test "set_model control resolves explicit provider/model fields" {
     var all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -380,6 +480,19 @@ test "set_model control resolves explicit provider/model fields" {
 
     const local = try resolveProviderControlRequest(&all, arena, "lmstudio", "user-loaded/model", "");
     try std.testing.expectEqualStrings("user-loaded/model", local.model);
+}
+
+test "Codex catalog demand follows model request routing" {
+    try std.testing.expect(modelQueryMayUseCodex(""));
+    try std.testing.expect(!modelQueryMayUseCodex("deepseek"));
+    try std.testing.expect(!modelQueryMayUseCodex("deepseek/deepseek-chat"));
+    try std.testing.expect(modelQueryMayUseCodex("codex"));
+    try std.testing.expect(modelQueryMayUseCodex("codex future-sol"));
+    try std.testing.expect(modelQueryMayUseCodex("future-account-rollout"));
+    try std.testing.expect(!controlRequestMayUseCodex("codegraff", "deepseek-v4-pro", ""));
+    try std.testing.expect(controlRequestMayUseCodex("codex", "", ""));
+    try std.testing.expect(controlRequestMayUseCodex("", "future-account-rollout", ""));
+    try std.testing.expect(!controlRequestMayUseCodex("", "", "openai"));
 }
 
 test "extractText: string content, joined text blocks, and empties" {

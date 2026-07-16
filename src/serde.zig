@@ -14,6 +14,8 @@ const util = @import("util.zig");
 const history_file = ".simple-harness-history";
 const model_file = ".simple-harness-model"; // remembers the last-selected provider+model
 
+pub const SavedModel = struct { pid: []const u8, model: []const u8 };
+
 /// Persist the active provider+model so the next launch starts on it.
 pub fn saveModel(io: Io, home: []const u8, pid: []const u8, model: []const u8) void {
     if (home.len == 0) return;
@@ -28,7 +30,7 @@ pub fn saveModel(io: Io, home: []const u8, pid: []const u8, model: []const u8) v
 }
 
 /// Load the remembered provider+model (pid on line 1, model on line 2).
-pub fn loadModel(io: Io, arena: Allocator, home: []const u8) ?struct { pid: []const u8, model: []const u8 } {
+pub fn loadModel(io: Io, arena: Allocator, home: []const u8) ?SavedModel {
     if (home.len == 0) return null;
     const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, model_file }) catch return null;
     const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(4096)) catch return null;

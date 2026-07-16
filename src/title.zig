@@ -330,7 +330,7 @@ test "cleanTitle: normalizes a model reply into a tab label, else null (/title)"
 /// own arena + a throwaway one-message sub-Agent, so it can be spawned via
 /// io.async and overlap the real turn instead of blocking after it. Returns a
 /// gpa-owned title (caller frees), or null on any failure.
-pub fn titleTask(gpa: std.mem.Allocator, io: Io, client: *std.http.Client, provider: Provider, prompt: []const u8) ?[]const u8 {
+pub fn titleTask(gpa: std.mem.Allocator, io: Io, client: *std.http.Client, provider: Provider, prompt: []const u8, run_budget: ?*@import("run_budget.zig").RunBudget, tracer: ?*@import("trace.zig").Tracer) ?[]const u8 {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -344,6 +344,10 @@ pub fn titleTask(gpa: std.mem.Allocator, io: Io, client: *std.http.Client, provi
         .sub = true, // pool thread: never touches stdout or the main agent's state
         .label = "title",
         .out = null,
+        .tracer = tracer,
+        .run_budget = run_budget,
+        .call_kind = .title,
+        .responses_output_limit = 64,
         .sys_override = "You summarize what a coding session is about in a short, natural phrase. Reply with only the phrase.",
     };
     defer agent.tools_used.deinit(gpa);

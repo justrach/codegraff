@@ -3,7 +3,7 @@
 //! backgrounded elite pull from the fleet worker, /agents promote, and the
 //! niche/override resolvers for subagent + workflow spawns. Split out of
 //! main.zig (#123). Owns the session agent-type globals; back-imports main for
-//! the Telemetry sink (fleet signals), trajectory_path, and the live g_fleet toggle.
+//! the Telemetry sink (fleet signals), trajectory archive, and the live g_fleet toggle.
 
 const std = @import("std");
 const Io = std.Io;
@@ -20,7 +20,7 @@ const root = @import("main.zig");
 const trace = @import("trace.zig");
 const telemetry_mod = @import("telemetry.zig");
 const Telemetry = telemetry_mod.Telemetry;
-const trajectory_path = trace.trajectory_path;
+const http = @import("http.zig");
 
 // ── Agent types (the MAP-Elites niches) ─────────────────────────────────────
 
@@ -143,7 +143,7 @@ fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_p
 }
 
 /// Local single-tenant promote — the "grow for me" loop. Mine
-/// harness.trajectory.jsonl (prompt records → genome text, subagent records →
+/// the run-scoped trajectory archive (prompt records → genome text, subagent records →
 /// niche, score records → fitness), and for each MAP-Elites niche write the
 /// highest-mean-scoring genome that has captured text into the chosen tier
 /// (personal ~/.harness/agents or private ./.harness/agents) as <niche>.md. No
@@ -154,10 +154,11 @@ pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8,
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const data = Io.Dir.cwd().readFileAlloc(io, trajectory_path, arena, .limited(64 << 20)) catch {
-        out.print("  {s}no {s} yet — run some scored agents first{s}\n", .{ style.dim, trajectory_path, style.reset }) catch {};
+    const data = trace.readTrajectoryArchive(io, arena, 64 << 20);
+    if (data.len == 0) {
+        out.print("  {s}no {s} yet — run some scored agents first{s}\n", .{ style.dim, trace.trajectories_dir, style.reset }) catch {};
         return 0;
-    };
+    }
 
     const Cell = struct { sha: []const u8, text: []const u8, niche: []const u8, sum: f64, n: u32 };
     var cells: std.ArrayList(Cell) = .empty;
@@ -240,7 +241,7 @@ pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8,
         var fw = f.writer(io, &wbuf);
         fw.interface.writeAll(content) catch continue;
         fw.interface.flush() catch {};
-        out.print("  {s}✓{s} {s}{s}{s} → {s} {s}(mean {d:.2}, n={d}){s}\n", .{ style.green, style.reset, style.cyan, champ.niche, style.reset, path, style.dim, champ_mean, champ.n, style.reset }) catch {};
+        out.print("  {s}✓{s} {s}{s}{s} → {s} {s}(mean {d:.2}, n={d}){s}\n", .{ style.green, style.reset, style.accent, champ.niche, style.reset, path, style.dim, champ_mean, champ.n, style.reset }) catch {};
         done.append(arena, champ.niche) catch {};
         promoted += 1;
     }
@@ -263,6 +264,7 @@ pub fn agentTypePrompt(name: []const u8) ?[]const u8 {
 /// live beside it at /v1/elites.
 pub fn pullElites(io: Io, arena: Allocator, client: *std.http.Client, telem: ?*Telemetry, endpoint: []const u8, provider_class: []const u8, eval_set_hash: []const u8, types: []const AgentType) []const AgentType {
     if (endpoint.len == 0 or !root.g_fleet) return types;
+    http.waitForClientReady(io);
     var base = std.mem.trimEnd(u8, endpoint, "/");
     if (std.mem.endsWith(u8, base, "/v1/logs")) base = base[0 .. base.len - "/v1/logs".len];
     // No eval suite → omit eval_set_hash entirely (NOT empty): the worker reads an

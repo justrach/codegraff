@@ -45,6 +45,7 @@ const fleet = @import("fleet.zig");
 const jobs = @import("jobs.zig");
 const session = @import("session.zig");
 const repl_glue = @import("repl_glue.zig");
+const mainloop_score = @import("mainloop_score.zig");
 const scoring = @import("scoring.zig");
 const trace = @import("trace.zig");
 const telemetry = @import("telemetry.zig");
@@ -76,23 +77,89 @@ pub const Ctx = struct {
     sys_strict: []const u8,
 };
 
-/// Apply the backgrounded AI session title (titleTask) to the redrawable
-/// window title + saved session filename. Called from BOTH the happy-path
-/// post-turn step and the end-of-iteration `defer`, so an interrupted /
-/// stalled / dropped / errored turn — which `continue`s before the post-turn
-/// step — still lands the title instead of generating it then throwing it away
-/// (ai_title_done is already set, so it would otherwise never regenerate and
-/// the window title stays stuck on the prompt-derived fallback). Awaits once.
-fn applyAiTitle(ctx: *Ctx, f: *Io.Future(?[]const u8)) void {
-    if (f.await(ctx.io)) |t| {
-        ctx.root.session_title = ctx.arena.dupe(u8, t) catch null;
-        ctx.gpa.free(t);
-        if (ctx.root.session_title) |st| {
-            title_mod.setTerminalTitle(ctx.out, st, main_mod.g_cwd_display);
-            session.renameSession(ctx.root, ctx.arena, session.slugifyTitle(ctx.arena, st));
-        }
+fn applyAiTitle(ctx: *Ctx, title: []const u8) void {
+    ctx.root.session_title = ctx.arena.dupe(u8, title) catch null;
+    if (ctx.root.session_title) |st| {
+        title_mod.setTerminalTitle(ctx.out, st, main_mod.g_cwd_display);
+        session.renameSession(ctx.root, ctx.arena, session.slugifyTitle(ctx.arena, st));
     }
 }
+
+const TitleJob = struct {
+    future: ?Io.Future(void) = null,
+    prompt: []const u8, // gpa-owned: readline storage may be reused next turn
+    result: ?[]const u8 = null, // gpa-owned, published before done.release
+    done: std.atomic.Value(bool) = .init(false),
+    generation: u64,
+};
+
+fn detachedTitleTask(job: *TitleJob, gpa: Allocator, io: Io, client: *std.http.Client, provider: provider_mod.Provider, budget: ?*@import("run_budget.zig").RunBudget, tracer: ?*@import("trace.zig").Tracer) void {
+    job.result = title_mod.titleTask(gpa, io, client, provider, job.prompt, budget, tracer);
+    job.done.store(true, .release);
+}
+
+/// Owns title tasks for the whole interactive session. Completed jobs are
+/// polled without waiting; outstanding work is canceled only when mainloop
+/// closes. Multiple generations allow `/new` while an old title is still live.
+const TitleJobs = struct {
+    items: std.ArrayList(*TitleJob) = .empty,
+
+    fn start(self: *TitleJobs, ctx: *Ctx, prompt: []const u8) void {
+        // An explicitly tiny budget still owes the user a real answer. Do not
+        // let cosmetic title work consume the final provider-call slot before
+        // the root request has a chance to acquire it.
+        if (ctx.root.run_budget) |budget| if (budget.remaining() <= 1) {
+            if (ctx.root.tracer) |tr| tr.note("budget", "AI title skipped to reserve the final model call for the root turn");
+            return;
+        };
+        const job = ctx.gpa.create(TitleJob) catch return;
+        const owned_prompt = ctx.gpa.dupe(u8, prompt) catch {
+            ctx.gpa.destroy(job);
+            return;
+        };
+        job.* = .{ .prompt = owned_prompt, .generation = ctx.root.title_generation };
+        const args = .{ job, ctx.gpa, ctx.io, ctx.root.client, ctx.root.provider, ctx.root.run_budget, ctx.root.tracer };
+        job.future = ctx.io.concurrent(detachedTitleTask, args) catch ctx.io.async(detachedTitleTask, args);
+        self.items.append(ctx.gpa, job) catch {
+            if (job.future) |*future| future.cancel(ctx.io);
+            if (job.result) |title| ctx.gpa.free(title);
+            ctx.gpa.free(job.prompt);
+            ctx.gpa.destroy(job);
+        };
+    }
+
+    fn poll(self: *TitleJobs, ctx: *Ctx) void {
+        var i: usize = 0;
+        while (i < self.items.items.len) {
+            const job = self.items.items[i];
+            if (!job.done.load(.acquire)) {
+                i += 1;
+                continue;
+            }
+            if (job.future) |*future| future.await(ctx.io); // done=true: never blocks
+            job.future = null;
+            if (job.result) |title| {
+                // Manual rename/session reset wins over an older detached result.
+                if (job.generation == ctx.root.title_generation and ctx.root.session_title == null)
+                    applyAiTitle(ctx, title);
+                ctx.gpa.free(title);
+            }
+            ctx.gpa.free(job.prompt);
+            _ = self.items.orderedRemove(i);
+            ctx.gpa.destroy(job);
+        }
+    }
+
+    fn deinit(self: *TitleJobs, ctx: *Ctx) void {
+        for (self.items.items) |job| {
+            if (job.future) |*future| future.cancel(ctx.io);
+            if (job.result) |title| ctx.gpa.free(title);
+            ctx.gpa.free(job.prompt);
+            ctx.gpa.destroy(job);
+        }
+        self.items.deinit(ctx.gpa);
+    }
+};
 
 /// #226: true only when the model has a live checklist and every item is marked
 /// completed — a "work asserted done" signal for the /loop continuation gate
@@ -108,6 +175,8 @@ fn allTodosDone(root: *agent_mod.Agent) bool {
 /// resumes right after this returns and does its own final-save/worktree
 /// cleanup (unchanged, still in main.zig).
 pub fn run(ctx: *Ctx) !void {
+    var title_jobs: TitleJobs = .{};
+    defer title_jobs.deinit(ctx);
     // Trajectory spine state: each turn's parent is the previous turn, and a
     // changed prompt fingerprint marks a set_system_prompt mutation edge.
     var prev_turn_id: u64 = 0;
@@ -122,6 +191,9 @@ pub fn run(ctx: *Ctx) !void {
     var loop_continue_armed = false; // a continuation turn is queued for the next readline
 
     while (true) {
+        // Nonblocking completion pump: a title can land between any two user
+        // interactions, but it is never joined on the turn-response path.
+        title_jobs.poll(ctx);
         // Steering drain: prompts typed while the previous turn streamed
         // were captured into g_steer_queue. Run them now, one after
         // another, in place of reading a fresh line — Codex-style
@@ -136,7 +208,7 @@ pub fn run(ctx: *Ctx) !void {
             if (e.force) {
                 try ctx.out.print("{s}↳ force ›{s} {s}\n", .{ style.yellow, style.reset, e.text });
             } else {
-                try ctx.out.print("{s}↳ steer ›{s} {s}\n", .{ style.cyan, style.reset, e.text });
+                try ctx.out.print("{s}↳ steer ›{s} {s}\n", .{ style.accent, style.reset, e.text });
             }
             try ctx.out.flush();
             break :blk e.text;
@@ -153,6 +225,9 @@ pub fn run(ctx: *Ctx) !void {
             try ctx.root.prompt();
             break :blk (try readline.readLine(ctx.root, ctx.in, ctx.out, ctx.gpa, ctx.history, ctx.linebuf)) orelse break;
         } else (try ctx.in.takeDelimiter('\n')) orelse break;
+        // The title may have completed while readline was waiting. Apply it
+        // before starting the newly-entered turn, still without ever waiting.
+        title_jobs.poll(ctx);
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
         const loop_prompt: ?[]const u8 = if (!main_mod.json_mode and std.mem.startsWith(u8, line, "/loop "))
@@ -196,19 +271,24 @@ pub fn run(ctx: *Ctx) !void {
         // {"type":"score","prompt_sha":"...","score":0.7,"notes":"..."}
         // appends an evaluation record for an agent variant to the
         // trajectory archive (the DGM evaluation phase writing back).
+        var json_request: ?std.json.Parsed(Value) = null;
+        defer if (json_request) |*request| request.deinit();
         const base_msg: []const u8 = if (loop_prompt) |lp| lp else if (goal_prompt) |gp| gp else if (main_mod.json_mode) blk: {
-            const parsed = std.json.parseFromSliceLeaky(Value, ctx.arena, line, .{ .allocate = .alloc_always }) catch {
+            json_request = std.json.parseFromSlice(Value, ctx.gpa, line, .{ .allocate = .alloc_if_needed }) catch {
                 ctx.root.emit(.{ .type = "error", .message = "invalid JSON (expect {\"type\":\"user\",\"text\":\"...\"})" });
                 continue;
             };
+            const parsed = json_request.?.value;
             const rtype = if (parsed == .object)
                 (if (parsed.object.get("type")) |v| (if (v == .string) v.string else "") else "")
             else
                 "";
             if (std.mem.eql(u8, rtype, "set_model")) {
+                ctx.root.ensureStoredKeys(ctx.keys);
                 const provider_field = if (parsed.object.get("provider")) |v| (if (v == .string) v.string else "") else "";
                 const model_field = if (parsed.object.get("model")) |v| (if (v == .string) v.string else "") else "";
                 const legacy_name = if (parsed.object.get("name")) |v| (if (v == .string) v.string else "") else "";
+                if (providers.controlRequestMayUseCodex(provider_field, model_field, legacy_name)) ctx.root.ensureModelCatalog(ctx.keys.*);
                 const provider = providers.resolveProviderControlRequest(ctx.keys, ctx.arena, provider_field, model_field, legacy_name) catch |err| {
                     const label = providers.setModelRequestLabel(ctx.arena, provider_field, model_field, legacy_name) catch "<requested model>";
                     const message = switch (err) {
@@ -220,7 +300,7 @@ pub fn run(ctx: *Ctx) !void {
                     ctx.root.emit(.{ .type = "error", .message = message });
                     continue;
                 };
-                const note = providers.applyProvider(ctx.root, ctx.arena, provider);
+                const note = try providers.applyProvider(ctx.root, ctx.arena, provider);
                 ctx.root.emit(.{ .type = "model", .ok = true, .provider = provider.id, .model = provider.model, .context = provider.context, .note = note });
                 continue;
             }
@@ -228,6 +308,7 @@ pub fn run(ctx: *Ctx) !void {
                 const chars = ctx.root.compact() catch |err| {
                     const message = switch (err) {
                         error.EmptySummary => "compaction failed: empty summary, history unchanged",
+                        error.IncompleteSummary => "compaction failed: incomplete summary, history unchanged",
                         else => try std.fmt.allocPrint(ctx.arena, "compaction failed: {s}", .{@errorName(err)}),
                     };
                     ctx.root.emit(.{ .type = "error", .message = message });
@@ -254,6 +335,7 @@ pub fn run(ctx: *Ctx) !void {
                 if (id.len == 0) {
                     ctx.root.sys_normal = ctx.sys_normal;
                     ctx.root.sys_strict = ctx.sys_strict;
+                    ctx.root.rebaseContextMeter();
                     ctx.root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = ctx.root.sys_normal.len });
                     continue;
                 }
@@ -264,6 +346,7 @@ pub fn run(ctx: *Ctx) !void {
                 };
                 ctx.root.sys_normal = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ ctx.sys_normal, prompt });
                 ctx.root.sys_strict = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ ctx.root.sys_normal, prompts.strict_note });
+                ctx.root.rebaseContextMeter();
                 ctx.root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = ctx.root.sys_normal.len });
                 continue;
             }
@@ -292,128 +375,7 @@ pub fn run(ctx: *Ctx) !void {
                 continue;
             }
             if (std.mem.eql(u8, rtype, "score")) {
-                // Fingerprint fields must be exactly 16 hex chars — a
-                // length-only check would let an embedded newline through into
-                // the signed v2 envelope (field-shift ambiguity).
-                const hex16 = struct {
-                    fn ok(s: []const u8) bool {
-                        if (s.len != 16) return false;
-                        for (s) |c| if (!std.ascii.isHex(c)) return false;
-                        return true;
-                    }
-                };
-                const sha = if (parsed.object.get("prompt_sha")) |v| (if (v == .string) v.string else "") else "";
-                const sc: f64 = if (parsed.object.get("score")) |v| switch (v) {
-                    .float => |x| x,
-                    .integer => |x| @floatFromInt(x),
-                    else => std.math.nan(f64),
-                } else std.math.nan(f64);
-                if (!hex16.ok(sha) or std.math.isNan(sc)) {
-                    ctx.root.emit(.{ .type = "error", .message = "score needs prompt_sha (16 hex chars) and a numeric score" });
-                    continue;
-                }
-                const reqStr = struct {
-                    fn s(o: std.json.ObjectMap, k: []const u8) []const u8 {
-                        return if (o.get(k)) |v| (if (v == .string) v.string else "") else "";
-                    }
-                };
-                // SCORE SCALE CONTRACT (issue #168 Gap 4): the canonical wire
-                // scale is [0,1]. An explicit "scale" field overrides the
-                // heuristic (review F9): "percent" always divides by 100 and
-                // accepts values up to 100 (so a percent-scale 0.5 means
-                // 0.005, not 0.5); "unit" requires [0,1] as-is. Absent, the
-                // heuristic applies: [0,1] passes, (1,100] is read as a
-                // percentage and divides by 100, and anything else is rejected
-                // here so the backend never has to clamp a 43 into a fake 1.0.
-                const scale = reqStr.s(parsed.object, "scale");
-                // An unrecognized scale must fail loudly, not fall through to
-                // the heuristic — a typo like "Percent" silently reinterpreting
-                // 0.7-of-100 as unit-scale 0.7 is a 100x corruption.
-                if (scale.len > 0 and !std.mem.eql(u8, scale, "percent") and !std.mem.eql(u8, scale, "unit")) {
-                    ctx.root.emit(.{ .type = "error", .message = "unknown scale: use \"unit\" or \"percent\" (or omit it for the [0,1]/(1,100] heuristic)" });
-                    continue;
-                }
-                const normalized: ?f64 = if (std.mem.eql(u8, scale, "percent"))
-                    (if (sc < 0 or sc > 100) null else sc / 100.0)
-                else if (std.mem.eql(u8, scale, "unit"))
-                    (if (sc < 0 or sc > 1) null else sc)
-                else
-                    scoring.normalizeOutboundScore(sc);
-                const sc01 = normalized orelse {
-                    ctx.root.emit(.{ .type = "error", .message = "score out of range: scale=\"unit\" requires [0,1], scale=\"percent\" requires [0,100] (sent as value/100); without scale, [0,1] passes, (1,100] is normalized to /100, and values outside [0,100] are rejected" });
-                    continue;
-                };
-                const notes = if (parsed.object.get("notes")) |v| (if (v == .string) v.string else "") else "";
-                // Optional genome lineage: which prompt this variant was
-                // mutated from — the children-count input for DGM parent
-                // selection.
-                const parent = if (parsed.object.get("parent_sha")) |v| (if (v == .string and hex16.ok(v.string)) v.string else "") else "";
-                // Provenance (Step 0): the driver names which judge produced
-                // the score, the artifact it judged, and the eval-set hash;
-                // run_id defaults to this session's. All are HMAC-signed so a
-                // forged trajectory row is detectable. User-controlled fields
-                // are sanitized (tab/newline/CR → ' ', review F7) BEFORE
-                // signing so the signed bytes equal the transported bytes —
-                // an embedded tab would otherwise split the prov transport.
-                var jid_buf: [64]u8 = undefined;
-                var art_buf: [64]u8 = undefined;
-                const judge_id = scoring.sanitizeMetaField(&jid_buf, util.utf8Prefix(reqStr.s(parsed.object, "judge_id"), 64));
-                const artifact_sha = scoring.sanitizeMetaField(&art_buf, util.utf8Prefix(reqStr.s(parsed.object, "artifact_sha"), 64));
-                // DGM lever: when the score omits eval_set_hash but an --eval suite is
-                // configured, stamp the suite's stable fingerprint so scores group into a
-                // promotable (niche × tier × suite) cell. Same --eval cmd → same hash
-                // across installs → the fleet can rank + promote a champion.
-                var esh_buf: [16]u8 = undefined;
-                var eshp_buf: [64]u8 = undefined;
-                const eval_set_hash = eshblk: {
-                    const provided = scoring.sanitizeMetaField(&eshp_buf, util.utf8Prefix(reqStr.s(parsed.object, "eval_set_hash"), 64));
-                    if (provided.len > 0) break :eshblk provided;
-                    if (ctx.root.eval_cmd) |c| {
-                        esh_buf = scoring.promptFingerprint(c);
-                        break :eshblk @as([]const u8, &esh_buf);
-                    }
-                    break :eshblk "";
-                };
-                // run_id is signed too — sanitize it like the other meta
-                // fields so an embedded newline can't shift the v2 envelope
-                // (one signature verifying two different field bindings).
-                var run_buf: [64]u8 = undefined;
-                const req_run = scoring.sanitizeMetaField(&run_buf, util.utf8Prefix(reqStr.s(parsed.object, "run_id"), 64));
-                const run_id: []const u8 = if (req_run.len > 0) req_run else &scoring.g_run_id;
-                // v2 envelope (issue #168 Gap 2): niche + provider_class are
-                // signed, so a score for one cell can't be replayed into
-                // another by mutating transport fields. The niche is truncated
-                // to 64 (fleetEvent's own cap) and sanitized BEFORE signing so
-                // the signed bytes match what the backend ingests.
-                var niche_buf: [64]u8 = undefined;
-                const req_niche = scoring.sanitizeMetaField(&niche_buf, util.utf8Prefix(reqStr.s(parsed.object, "niche"), 64));
-                const pclass = scoring.providerClass(ctx.root.provider.model);
-                const sig = scoring.signScore(sha, parent, sc01, run_id, judge_id, artifact_sha, eval_set_hash, req_niche, pclass);
-                const signed = scoring.g_score_key != null;
-                if (trace.g_traj) |tj| tj.node(.{
-                    .kind = "score",
-                    .prompt_sha = sha,
-                    .parent_sha = parent,
-                    .score = sc01,
-                    .notes = util.utf8Prefix(notes, 200),
-                    .run_id = run_id,
-                    .judge_id = judge_id,
-                    .artifact_sha = artifact_sha,
-                    .eval_set_hash = eval_set_hash,
-                    .niche = req_niche,
-                    .provider_class = pclass,
-                    .sig = if (signed) @as([]const u8, &sig) else "",
-                    .t = tj.elapsedMs(),
-                });
-                var provbuf: [512]u8 = undefined;
-                // prov = judge_id, artifact_sha, eval_set_hash + provider_class, niche —
-                // all five folded into the v2 HMAC — so harness_scores can form
-                // (niche x provider_class x eval_set_hash) cells the fleet ranks over.
-                const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ judge_id, artifact_sha, eval_set_hash, pclass, req_niche }) catch "";
-                if (telemetry.g_telem) |t| t.scoreEvent(sha, parent, sc01, run_id, if (signed) @as([]const u8, &sig) else "", prov);
-                // fleet:submit (docs §9.B) — a scored, pinned-eval variant entered the fleet grid.
-                if (eval_set_hash.len > 0) if (telemetry.g_telem) |t| t.fleetEvent("submit", req_niche, sha, "", pclass, eval_set_hash, 0, "");
-                ctx.root.emit(.{ .type = "score", .ok = true, .prompt_sha = sha, .signed = signed });
+                mainloop_score.handle(ctx.root, parsed.object);
                 continue;
             }
             if (std.mem.eql(u8, rtype, "answer")) {
@@ -433,6 +395,7 @@ pub fn run(ctx: *Ctx) !void {
                 else
                     try ctx.arena.dupe(u8, text);
                 ctx.root.sys_strict = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ ctx.root.sys_normal, prompts.strict_note });
+                ctx.root.rebaseContextMeter();
                 ctx.root.emit(.{ .type = "system_prompt", .ok = true, .append = append, .chars = ctx.root.sys_normal.len });
                 continue;
             }
@@ -489,19 +452,12 @@ pub fn run(ctx: *Ctx) !void {
         // model can see (otherwise it only gets the path and resorts to OCR).
         vision.stageGuiImageAttachment(ctx.root, msg);
 
-        // Generate the AI tab-title concurrently (io.async), spawned BEFORE the
-        // header so the first-turn header can wait for the summary title. Applied
-        // after the turn on the happy path (below); the defer is the fallback for
-        // an interrupted/stalled/dropped/errored turn (those `continue` before the
-        // apply step) so the generated title is never silently discarded.
-        var title_fut: ?Io.Future(?[]const u8) = null;
+        // Generate the AI title before the root turn and publish it through the
+        // session-scoped nonblocking completion queue.
         if (!main_mod.json_mode and ctx.root.ai_title and !ctx.root.ai_title_done) {
             ctx.root.ai_title_done = true;
-            title_fut = ctx.io.async(title_mod.titleTask, .{ ctx.gpa, ctx.io, ctx.root.client, ctx.root.provider, base_msg });
+            title_jobs.start(ctx, base_msg);
         }
-        defer if (title_fut) |*f| {
-            applyAiTitle(ctx, f);
-        };
 
         // TUI/session header: once the first real prompt materializes the chat,
         // show what this terminal tab is working on and the exact folder, and
@@ -571,7 +527,11 @@ pub fn run(ctx: *Ctx) !void {
         // A failed turn must never kill the session: ApiError is already
         // reported inside request(); anything else is surfaced here. Either
         // way we drop back to the prompt (or emit a JSON error/turn event).
-        const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys.*, ctx.arena, ctx.out);
+        const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys, ctx.arena, ctx.out);
+        // No successful-path history mutation occurs between the trajectory,
+        // terminal event, and compaction gate. Reuse one full-history scan for
+        // all three instead of serializing an increasingly large history 3x.
+        const post_turn_context_tokens = ctx.root.effectiveContextTokens();
         if (trace.g_traj) |tj| {
             const fp = scoring.promptFingerprint(ctx.root.systemPrompt());
             const turn_ms: i64 = @intCast(@max(0, turn_started.untilNow(ctx.io, .awake).toMilliseconds()));
@@ -590,7 +550,7 @@ pub fn run(ctx: *Ctx) !void {
                 .task = util.utf8Prefix(base_msg, 160),
                 .tools = turn_tools,
                 .ok = turn_ok,
-                .context_tokens = ctx.root.last_context_tokens,
+                .context_tokens = post_turn_context_tokens,
             });
             // Preserve the failure reason in the archive: the turn node only
             // records ok:false, so an adjacent error record keeps the
@@ -640,7 +600,8 @@ pub fn run(ctx: *Ctx) !void {
                     ctx.root.emit(.{ .type = "error", .message = ctx.root.last_api_error orelse "stream stalled — ending turn" });
                     if (partial.len > 0) {
                         ctx.root.emit(.{ .type = "finalizing" });
-                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = ctx.root.last_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = ctx.root.last_context_tokens > 0 });
+                        const context_tokens = ctx.root.effectiveContextTokens();
+                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = context_tokens > 0 });
                     }
                 }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
@@ -661,7 +622,8 @@ pub fn run(ctx: *Ctx) !void {
                     ctx.root.emit(.{ .type = "error", .message = ctx.root.last_api_error orelse "stream dropped — ending turn" });
                     if (partial.len > 0) {
                         ctx.root.emit(.{ .type = "finalizing" });
-                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = ctx.root.last_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = ctx.root.last_context_tokens > 0 });
+                        const context_tokens = ctx.root.effectiveContextTokens();
+                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = context_tokens > 0 });
                     }
                 }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
@@ -674,13 +636,19 @@ pub fn run(ctx: *Ctx) !void {
                     const partial = std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n");
                     if (partial.len > 0) {
                         ctx.root.emit(.{ .type = "finalizing" });
-                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = ctx.root.last_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = ctx.root.last_context_tokens > 0 });
+                        const context_tokens = ctx.root.effectiveContextTokens();
+                        ctx.root.emit(.{ .type = "turn", .text = partial, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = false, .metadata_complete = context_tokens > 0 });
                     }
                 }
                 // A turn can fail because the context window overflowed; if we're
-                // over the compaction threshold, compact (or emergency-trim) now
-                // so the next turn isn't doomed to fail at the same size (#88).
-                if (ctx.root.last_context_tokens >= ctx.root.provider.compactAt()) ctx.root.compactOrRecover(true);
+                // over the compaction threshold, compact now so the next turn
+                // isn't doomed to fail at the same size (#88). Match every other
+                // automatic compaction path: a failed summary may destructively
+                // trim only when the best meter says we're genuinely near 95%.
+                const recovery_meter = ctx.root.effectiveContextTokens();
+                if (recovery_meter >= ctx.root.provider.compactAt()) {
+                    ctx.root.compactOrRecover(ctx.root.provider.nearContextLimit(recovery_meter));
+                }
                 session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
                 continue;
             },
@@ -701,25 +669,22 @@ pub fn run(ctx: *Ctx) !void {
             else
                 final_text;
             ctx.root.emit(.{ .type = "finalizing" });
-            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = ctx.root.last_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = true, .metadata_complete = ctx.root.last_context_tokens > 0 });
+            const context_tokens = post_turn_context_tokens;
             // #124: allocator-level leak telemetry (GRAFF_MEM_DEBUG=1) — arena
             // capacity per turn separates a session-arena leak from gpa-side
-            // growth, which OS-level RSS sampling can't tell apart.
+            // growth, which OS-level RSS sampling can't tell apart. Emit this
+            // before the terminal turn event so protocol bridges that stop at
+            // `complete:true` never strand a debug event for the next request.
             if (main_mod.g_mem_debug) ctx.root.emit(.{
                 .type = "mem",
                 .session_arena_kb = if (main_mod.g_session_arena) |a| a.queryCapacity() / 1024 else 0,
                 .scratch_arena_kb = if (ctx.root.scratch_arena) |a| a.queryCapacity() / 1024 else 0,
             });
+            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = true, .metadata_complete = context_tokens > 0 });
         }
 
-        // Apply the AI summary title + fleet champions that ran in the background
-        // overlapping the turn — both off the critical path. The printed header kept
-        // the fast prompt title; the summary now lands on the redrawable window title
-        // and the saved session filename. Usually already resolved by here.
-        if (title_fut) |*f| {
-            applyAiTitle(ctx, f);
-            title_fut = null;
-        }
+        // Apply only if already complete; poll never waits for title generation.
+        title_jobs.poll(ctx);
         fleet.joinElites(ctx.io); // publish backgrounded fleet champions for the next turn (no-op once joined)
 
         // turn_end lifecycle hooks (best-effort; interrupted/errored turns
@@ -731,10 +696,11 @@ pub fn run(ctx: *Ctx) !void {
             }
         }
 
-        if (ctx.root.last_context_tokens >= ctx.root.provider.compactAt()) {
+        const context_tokens = post_turn_context_tokens;
+        if (context_tokens >= ctx.root.provider.compactAt()) {
             // Trim on failure only when we're genuinely against the window — at
             // 80–95% a transient compaction failure can recover next turn.
-            const near_cap = ctx.root.provider.context > 0 and ctx.root.last_context_tokens * 100 >= ctx.root.provider.context * 95;
+            const near_cap = ctx.root.provider.nearContextLimit(context_tokens);
             ctx.root.compactOrRecover(near_cap);
         }
 

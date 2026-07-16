@@ -42,11 +42,17 @@ jobs:
       - name: zig fmt --check
         run: zig fmt --check src/main.zig src/mcp.zig build.zig
 
+      - name: Zig source size guard
+        run: bash scripts/check-zig-lines.sh
+
       - name: zig build test
         run: zig build test --summary all
 
       - name: JSON live-control protocol test
         run: python3 scripts/test-json-controls.py zig-out/bin/graff
+
+      - name: Live JSON stream contains no raw stdout lines
+        run: python3 scripts/test-json-live.py zig-out/bin/graff
 
       - name: PTY spinner anti-stealth test
         run: python3 scripts/test-pty-spinner.py zig-out/bin/graff
@@ -59,6 +65,12 @@ jobs:
 
       - name: PTY model preference and fallback test
         run: python3 scripts/test-model-preference.py zig-out/bin/graff
+
+      - name: Codex WS/SSE transport and mid-turn compaction test
+        run: python3 scripts/test-pty-codex-ws.py zig-out/bin/graff
+
+      - name: AI title and first turn run in parallel
+        run: python3 scripts/test-title-parallel.py zig-out/bin/graff
 
       - name: Stream stall/drop is not a user Esc (#134/#132)
         run: python3 scripts/test-stall-drop.py zig-out/bin/graff

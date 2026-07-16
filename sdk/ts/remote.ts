@@ -10,7 +10,7 @@
 export const HARNESS_VERSION = "0.4";
 
 export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5.2" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "grok-4.3" | "grok-build" | "kimi-k2.6" | "kimi-k2.7" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | (string & {});
-export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "subagent" | "workflow";
+export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "clock_sleep" | "subagent" | "workflow";
 export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "moonshot" | "xai" | "zai" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
 
 /** Events streamed by the bridge (same `--json` contract as the stdio SDK).
@@ -58,6 +58,8 @@ export interface RemoteOptions {
   appendSystemPrompt?: string;
   /** Hard per-turn root tool-call budget for the child session. */
   maxToolCalls?: number;
+  /** Invocation-wide provider-call ceiling shared by all agent work. */
+  maxModelCalls?: number;
   /** Reject duplicate root tool name+normalized-input calls per turn. */
   dedupeToolCalls?: boolean;
   /** Attach to an existing session instead of creating one. */
@@ -147,6 +149,7 @@ export class RemoteHarness {
     if (opts.systemPrompt) body.system_prompt = opts.systemPrompt;
     if (opts.appendSystemPrompt) body.append_system_prompt = opts.appendSystemPrompt;
     if (opts.maxToolCalls !== undefined) body.maxToolCalls = opts.maxToolCalls;
+    if (opts.maxModelCalls !== undefined) body.maxModelCalls = opts.maxModelCalls;
     if (opts.dedupeToolCalls !== undefined) body.dedupeToolCalls = opts.dedupeToolCalls;
     const res = await this.req("POST", "/v1/sessions", body);
     const data = (await res.json()) as { session_id: string };
@@ -247,4 +250,4 @@ export async function* runAgentRemote(opts: RunAgentRemoteOptions): AsyncGenerat
 }
 
 export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.3", "grok-build", "kimi-k2.6", "kimi-k2.7", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mlx-community/Qwen3.6-27B-OptiQ-4bit"];
-export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "subagent", "workflow"];
+export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow"];

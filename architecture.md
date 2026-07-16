@@ -420,15 +420,17 @@ prompt — and it keeps the per-call cost of the disabled case at one
 
 ## Tracing
 
-One shared `Tracer` (an `Io.Mutex`, an `Io.Writer` over `harness.trace.jsonl`,
-and a monotonic `Io.Timestamp` start) is threaded through every agent and
+One shared `Tracer` (an `Io.Mutex`, an `Io.Writer` over the run-exclusive
+`.graff/traces/<run-id>.jsonl`, and a monotonic `Io.Timestamp` start) is
+threaded through every agent and
 `ToolCtx`, the same way as `Approvals`. `Agent.request` records each API call
 (latency ms, request/response bytes, context tokens, error flag, agent
 label); `execTool` wraps every external tool with timing. Events are structs
 serialized by `std.json.Stringify` — one line each, flushed immediately, so
-the file is always valid JSONL mid-session. The system prompt points the
-agent at the file, which is what makes self-debugging work: the agent reads
-its own trace with `read_file` and analyzes it. `/trace` toggles, best-effort
+the file is always valid JSONL mid-session. Every line carries the run id,
+PID, and runtime session id. The system prompt points the agent at the file,
+which is what makes self-debugging work: the agent reads its own trace with
+`read_file` and analyzes it. `/trace` locates and toggles it, best-effort
 (a failed open just disables tracing).
 
 ## Compaction

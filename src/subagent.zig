@@ -156,6 +156,10 @@ fn subagentFailure(gpa: Allocator, sub_id: []const u8, err: anyerror, detail: ?[
 /// the turn that spawned it, with the prompt's fingerprint.
 pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) !ToolOutput {
     const gpa = ctx.gpa;
+    if (ctx.run_budget) |budget| if (ctx.depth >= budget.max_depth) return .{
+        .text = try gpa.dupe(u8, "agent depth limit reached (max depth 1) — do this work in the current agent"),
+        .is_error = true,
+    };
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -172,6 +176,14 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         .out = null,
         .approvals = ctx.approvals,
         .tracer = ctx.tracer,
+        .run_budget = ctx.run_budget,
+        .depth = ctx.depth + 1,
+        .call_kind = if (std.mem.eql(u8, kind, "judge_task"))
+            .judge
+        else if (std.mem.eql(u8, kind, "workflow_retry"))
+            .workflow_retry
+        else
+            .child,
         .sys_override = sys_override,
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);
@@ -225,7 +237,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             .task = util.utf8Prefix(prompt, 160),
             .tools = used_tools,
             .ok = run_ok,
-            .context_tokens = agent.last_context_tokens,
+            .context_tokens = agent.effectiveContextTokens(),
         });
     }
     if (telemetry.g_telem) |t| t.runEvent(&fp, sys_override != null, run_ok, run_ms, used_tools);
@@ -254,6 +266,12 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
 /// fleet:propose — and scoreVariants' submit — tag the variant's genome.
 pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) ToolOutput {
     return runSub(ctx, "workflow_task", label, prompt, sys_override, niche) catch |err| failure(ctx.gpa, err);
+}
+
+/// A second workflow attempt has its own explicit budget kind. It still shares
+/// the same invocation-wide atomic ceiling and concurrency limiter.
+pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) ToolOutput {
+    return runSub(ctx, "workflow_retry", label, prompt, sys_override, niche) catch |err| failure(ctx.gpa, err);
 }
 
 /// The --judge LLM-as-judge run (see runEval in main): an isolated subagent

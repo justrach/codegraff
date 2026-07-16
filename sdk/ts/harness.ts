@@ -11,7 +11,7 @@ import { createInterface } from "node:readline";
 export const HARNESS_VERSION = "0.4";
 
 export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5.2" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "grok-4.3" | "grok-build" | "kimi-k2.6" | "kimi-k2.7" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | (string & {});
-export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "subagent" | "workflow";
+export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "clock_sleep" | "subagent" | "workflow";
 export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "moonshot" | "xai" | "zai" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
 
 /** Events streamed by `harness --json` (one JSON object per stdout line), each
@@ -38,8 +38,8 @@ export type Event =
   | { type: "score"; ok: boolean; prompt_sha: string }
   | { type: "error"; message: string };
 
-/** Fingerprint of a system prompt as used in harness.trajectory.jsonl —
- *  the append-only DGM-style archive — and by `Harness.score()`:
+/** Fingerprint of a system prompt as used in `.graff/trajectories` —
+ *  the aggregate DGM-style archive — and by `Harness.score()`:
  *  first 8 bytes of SHA-256, hex (16 chars). */
 export function promptFingerprint(text: string): string {
   return createHash("sha256").update(text).digest("hex").slice(0, 16);
@@ -64,6 +64,8 @@ export interface HarnessOptions {
   appendSystemPrompt?: string;
   /** Hard per-turn root tool-call budget. */
   maxToolCalls?: number;
+  /** Invocation-wide provider-call ceiling shared by all agent work. */
+  maxModelCalls?: number;
   /** Reject duplicate root tool name+normalized-input calls per turn. */
   dedupeToolCalls?: boolean;
   /** Extra raw flags. `--json` is always added. */
@@ -91,6 +93,7 @@ function spawnArgs(o: HarnessOptions): string[] {
   if (o.yolo) a.push("--yolo");
   if (o.model) a.push("--model", o.model);
   if (o.maxToolCalls !== undefined) a.push("--max-tool-calls", String(o.maxToolCalls));
+  if (o.maxModelCalls !== undefined) a.push("--max-model-calls", String(o.maxModelCalls));
   if (o.dedupeToolCalls) a.push("--dedupe-tool-calls");
   if (o.systemPrompt) a.push("--system-prompt", o.systemPrompt);
   if (o.appendSystemPrompt) a.push("--append-system-prompt", o.appendSystemPrompt);
@@ -316,7 +319,7 @@ export class Harness {
   appendSystemPrompt(text: string): Promise<void> { return this.setSystemPrompt(text, true); }
 
   /** Record an evaluation score for an agent/prompt variant in the
-   *  trajectory archive (harness.trajectory.jsonl) — the DGM evaluation
+   *  aggregate `.graff/trajectories` archive — the DGM evaluation
    *  phase writing back. `promptOrSha` is either the full system-prompt
    *  text (fingerprinted for you) or an existing 16-hex fingerprint.
    *  Pass `parent` (text or sha) when the variant was mutated from another
@@ -417,4 +420,4 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<Event> {
 }
 
 export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.3", "grok-build", "kimi-k2.6", "kimi-k2.7", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mlx-community/Qwen3.6-27B-OptiQ-4bit"];
-export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "subagent", "workflow"];
+export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow"];

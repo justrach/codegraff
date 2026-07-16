@@ -26,6 +26,9 @@ const ServeConfig = struct {
     model: ?[]const u8,
     system_prompt: ?[]const u8,
     append_system_prompt: ?[]const u8,
+    max_tool_calls: ?u64,
+    max_model_calls: u64,
+    dedupe_tool_calls: bool,
 };
 
 /// Cap on one child event line (a tool_result event carrying a big tool
@@ -223,8 +226,9 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
     var yolo = st.cfg.yolo;
     var sys = st.cfg.system_prompt;
     var append_sys = st.cfg.append_system_prompt;
-    var max_tools: ?u64 = null;
-    var dedupe_tools = false;
+    var max_tools = st.cfg.max_tool_calls;
+    var max_models: ?u64 = st.cfg.max_model_calls;
+    var dedupe_tools = st.cfg.dedupe_tool_calls;
     if (std.mem.trim(u8, body, " \t\r\n").len > 0) {
         const v = std.json.parseFromSliceLeaky(Value, arena, body, .{ .allocate = .alloc_always }) catch
             return respondJson(st, req, .bad_request, "{\"error\":\"body must be a JSON object\"}");
@@ -244,6 +248,9 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
         if (v.object.get("maxToolCalls") orelse v.object.get("max_tool_calls")) |m| if (m == .integer and m.integer >= 0) {
             max_tools = @intCast(m.integer);
         };
+        if (v.object.get("maxModelCalls") orelse v.object.get("max_model_calls")) |m| if (m == .integer and m.integer >= 0) {
+            max_models = @intCast(m.integer);
+        };
         if (v.object.get("dedupeToolCalls") orelse v.object.get("dedupe_tool_calls")) |d| if (d == .bool) {
             dedupe_tools = d.bool;
         };
@@ -254,6 +261,7 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
     if (yolo) try argv.append(arena, "--yolo");
     if (model) |m| try argv.appendSlice(arena, &.{ "--model", m });
     if (max_tools) |n| try argv.appendSlice(arena, &.{ "--max-tool-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
+    if (max_models) |n| try argv.appendSlice(arena, &.{ "--max-model-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
     if (dedupe_tools) try argv.append(arena, "--dedupe-tool-calls");
     if (sys) |s| try argv.appendSlice(arena, &.{ "--system-prompt", s });
     if (append_sys) |s| try argv.appendSlice(arena, &.{ "--append-system-prompt", s });

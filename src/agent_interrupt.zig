@@ -20,6 +20,8 @@ const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const repl_glue = @import("repl_glue.zig");
 const Agent = agent_mod.Agent;
+const ansi = @import("ansi.zig");
+const style = &ansi.style;
 
 const terminal = @import("term.zig");
 const tty = terminal.tty;
@@ -144,7 +146,10 @@ pub fn escPressed(echo: bool) bool {
                 main_mod.g_force_interrupt = true;
                 if (echo) {
                     if (main_mod.g_steer_echoed) repl_glue.steerEcho("\n");
-                    repl_glue.steerEcho("\x1b[33m↳ force › interrupting…\x1b[0m\n");
+                    repl_glue.steerEcho(style.yellow);
+                    repl_glue.steerEcho("↳ force › interrupting…");
+                    repl_glue.steerEcho(style.reset);
+                    repl_glue.steerEcho("\n");
                 }
             }
             main_mod.g_steer_echoed = false;
@@ -166,7 +171,11 @@ pub fn escPressed(echo: bool) bool {
         if (echo) {
             if (!main_mod.g_steer_echoed) {
                 main_mod.g_steer_visible.store(true, .release);
-                repl_glue.steerEcho("\n\x1b[36m↳ steer ›\x1b[0m ");
+                repl_glue.steerEcho("\n");
+                repl_glue.steerEcho(style.accent);
+                repl_glue.steerEcho("↳ steer ›");
+                repl_glue.steerEcho(style.reset);
+                repl_glue.steerEcho(" ");
                 main_mod.g_steer_echoed = true;
             }
             repl_glue.steerEcho(buf[i .. i + 1]);

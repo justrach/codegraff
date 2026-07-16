@@ -22,6 +22,7 @@ const failure = tools.failure;
 
 const subagent = @import("subagent.zig");
 const workflowTask = subagent.workflowTask;
+const workflowRetryTask = subagent.workflowRetryTask;
 const runSub = subagent.runSub;
 const scoreVariants = subagent.scoreVariants;
 const max_workflow_tasks = subagent.max_workflow_tasks;
@@ -118,7 +119,7 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
         var out = runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche) catch |e| failure(gpa, e);
         if (out.is_error) {
             gpa.free(out.text);
-            out = runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche) catch |e| failure(gpa, e);
+            out = runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche) catch |e| failure(gpa, e);
             if (out.is_error) {
                 gpa.free(out.text);
                 return .{
@@ -322,7 +323,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             const refut = try arena.alloc(Io.Future(ToolOutput), nf);
             for (refut, 0..) |*rf, k| {
                 const i = fidx[k];
-                rf.* = ctx.io.async(workflowTask, .{ ctx, labels[i], prompts[i], overrides[i], niches[i] });
+                rf.* = ctx.io.async(workflowRetryTask, .{ ctx, labels[i], prompts[i], overrides[i], niches[i] });
             }
             for (refut, 0..) |*rf, k| {
                 const retry = rf.await(ctx.io);

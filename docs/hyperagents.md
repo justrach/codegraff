@@ -32,8 +32,8 @@ visible in the trajectory log —
 
 ## 2. Trajectory mapping (the DGM archive tree)
 
-`harness.trajectory.jsonl` (truncated per session, like the trace) holds one
-JSON node per agent run, in exactly the shape of the DGM's archive tree:
+Each run-scoped `.graff/trajectories/<run-id>.jsonl` holds one JSON node per
+agent run, in exactly the shape of the DGM's archive tree:
 nodes are agents, edges are parent→child, and every node carries the
 fingerprint of the program (here: system prompt) it ran with.
 
@@ -55,10 +55,11 @@ fingerprint of the program (here: system prompt) it ran with.
   fingerprint is captured once per session as a `kind:"prompt"` record, so
   the archive is self-contained: any lineage can be replayed or re-mutated
   from the file alone.
-- **Append-only archive**: unlike the trace, the trajectory file is never
-  truncated — sessions accumulate, each opening with a `kind:"session"`
-  header (node ids restart per session; cross-session lineage threads
-  through `prompt_sha`). Delete the file any time to reset the archive.
+- **Append-only aggregate archive**: each process exclusively creates one
+  run file, so concurrent sessions never share a cursor. Readers scan all
+  `.graff/trajectories/*.jsonl` files (plus the old single-file archive during
+  migration). Node ids restart per run; cross-run lineage threads through
+  `prompt_sha`. Delete the directory any time to reset the archive.
 - **Scores**: the evaluation phase writes back through the --json protocol —
   `{"type":"score","prompt_sha":"…","score":0.7,"notes":"…"}` appends a
   `kind:"score"` record (SDK: `h.score(prompt_or_sha, value, notes)`, with
@@ -88,7 +89,7 @@ code (Python/TS), not in the harness:
 - **Evaluate** = run the child on a task set; score its reports (an
   LLM-judge subagent, exit-code checks, benchmark diffs — whatever fits the
   domain). Write scores back as an annotation file keyed by `prompt_sha`.
-- **Archive** = the union of `harness.trajectory.jsonl` files across runs
+- **Archive** = the union of `.graff/trajectories/*.jsonl` files across runs
   plus the score annotations. The trajectory gives lineage (`parent`,
   `prompt_sha`, `prompt_mutated`); the annotations give `performance(aᵢ)`
   and children counts — everything DGM-H's parent selection needs:
@@ -105,17 +106,17 @@ Sketch of the driver loop (Python SDK) — everything below is wired today:
 ```python
 from harness_sdk import Harness, prompt_fingerprint
 
-archive = load("harness.trajectory.jsonl")   # prompt records + nodes + scores
+archive = load_all(".graff/trajectories/*.jsonl")  # prompts + nodes + scores
 h = Harness(yolo=True)
 for _ in range(iterations):
     parent = sample(archive, key=lambda a: sigmoid(a.score) / (1 + a.children))
     child = h.ask(f"Mutate this agent prompt to fix its weakest behavior:\n{parent.text}")
     report = h.ask(f'Use the subagent tool: prompt "{task}", system_prompt "{child}"')
     h.score(child, judge(report))            # kind:"score" appended, keyed by sha
-    archive = load("harness.trajectory.jsonl")  # node+prompt+score all captured
+    archive = load_all(".graff/trajectories/*.jsonl")  # all captured
 ```
 
-The archive file is the single source of truth: the harness captures the
+The aggregate archive is the single source of truth: the harness captures the
 lineage (`kind:"turn"/"subagent"` nodes), the genomes (`kind:"prompt"`),
 and the fitness (`kind:"score"`); the driver only decides what to mutate
 and how to judge.
@@ -199,7 +200,7 @@ lineage chain intact in `parent_sha`, and each child's tool sequence
 (`bash,bash`) recorded against its fingerprint.
 
 Tool-sequence mining then works on either store: locally,
-`jq 'select(.kind=="subagent")' harness.trajectory.jsonl` joined to scores
+`jq 'select(.kind=="subagent")' .graff/trajectories/*.jsonl` joined to scores
 by sha; in D1, `run` events land in `harness_events` (attrs JSON includes
 `tools`, `ok`, `variant`) and `harness_variant_children` gives the novelty
 term. Patterns with positive lift feed back as prompt instructions or as
@@ -209,8 +210,8 @@ per-niche tool grants (`agent_variants.tools`).
 
 The four-agent debate (and the honest threat model) converged on one crux:
 the fitness float was both *ungrounded* (an LLM grading a self-report) and
-*unauthenticated* — a forged `{"kind":"score",…}` row appended to
-`harness.trajectory.jsonl` via `write_file` (cwd is inside `confinedPath`)
+*unauthenticated* — a forged `{"kind":"score",…}` row appended to a
+trajectory JSONL via `write_file` (cwd is inside `confinedPath`)
 or `echo >>` manufactures fitness AND `parent_sha` lineage that selection
 then rewards. A perfect judge doesn't matter if nothing forces the loop
 through it. So Step 0 authenticates the channel; it's the precondition for
@@ -221,8 +222,10 @@ where `msg` is the canonical, version-tagged, newline-joined tuple
 `v2\n{prompt_sha}\n{parent_sha}\n{score:.6f}\n{run_id}\n{judge_id}\n{artifact_sha}\n{eval_set_hash}\n{niche}\n{provider_class}`
 (score fixed to 6 decimals so Zig/Python/JS agree byte-for-byte —
 `src/scoring.zig scoreSigMessage`, `harness_sdk.score_signature`, the worker's
-`scoreSignature`). Records gain `run_id` (per-session), `judge_id`,
-`artifact_sha`, `eval_set_hash` so the evaluator, the artifact it judged,
+`scoreSignature`). Run-scoped files reserve top-level `run_id` for invocation
+identity and store the signed score provenance as `score_run_id` (legacy/D1
+rows use `run_id`). Records also gain `judge_id`, `artifact_sha`, and
+`eval_set_hash` so the evaluator, the artifact it judged,
 and the held-out eval are all bound into the signature; v2 (issue #168 Gap 2)
 additionally binds `niche` and `provider_class` so a score can't be replayed
 into another MAP-Elites cell. Verifiers still accept the legacy `v1` envelope

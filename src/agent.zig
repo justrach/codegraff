@@ -35,6 +35,9 @@ const vision = @import("vision.zig");
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");
 const pricing = @import("pricing.zig");
+const models_cache = @import("models_cache.zig");
+const keys_cli = @import("keys_cli.zig");
+const run_budget_mod = @import("run_budget.zig");
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
@@ -53,11 +56,11 @@ fn reasoningPromptLabel(effort: ReasoningEffort) []const u8 {
 fn reasoningPromptColor(effort: ReasoningEffort) []const u8 {
     return switch (effort) {
         .low => style.green,
-        .medium => style.cyan,
+        .medium => style.accent,
         .high => style.yellow,
-        .xhigh => style.magenta,
+        .xhigh => style.accent,
         .max => style.red,
-        .ultra => style.magenta,
+        .ultra => style.accent,
     };
 }
 
@@ -70,6 +73,11 @@ fn compactTokenCount(buf: []u8, tokens: u64) []const u8 {
         std.fmt.bufPrint(buf, "{d}k", .{tokens / 1000}) catch "?"
     else
         std.fmt.bufPrint(buf, "{d}", .{tokens}) catch "?";
+}
+
+fn contextPercent(tokens: u64, window: u64) u64 {
+    if (window == 0) return 0;
+    return @min((tokens *| 100) / window, 100);
 }
 
 pub const TodoItem = struct {
@@ -104,6 +112,10 @@ pub const Agent = struct {
     /// subagents/one-shots (they free their own arena per task); scratchAlloc()
     /// then falls back to arena, so their behavior is unchanged.
     scratch_arena: ?*std.heap.ArenaAllocator = null,
+    /// Optional allocator for a temporary request transaction. compact() points
+    /// this at its arena so failed summaries do not leak message rewrites or
+    /// partial response trees into the long-lived session arena.
+    message_mutation_arena: ?Allocator = null,
     io: Io,
     client: *std.http.Client,
     provider: Provider,
@@ -122,6 +134,9 @@ pub const Agent = struct {
     registry: ?*mcp.Registry = null,
     approvals: ?*approvals_mod.Approvals = null, // shared bash-approval state, set by main()
     tracer: ?*trace.Tracer = null, // shared JSONL event trace, set by main()
+    run_budget: ?*run_budget_mod.RunBudget = null, // shared invocation-wide call/concurrency ceiling
+    depth: u8 = 0, // root/auxiliary = 0; delegated child = 1
+    call_kind: run_budget_mod.CallKind = .root,
     last_cache_read: u64 = 0, // KV-cache read tokens from the latest response
     sys_normal: []const u8 = prompts.main_system_prompt, // root system prompt (+ project instructions)
     sys_override: ?[]const u8 = null, // subagent-only: per-child system prompt (swarm prompt variants)
@@ -141,6 +156,8 @@ pub const Agent = struct {
     snapshots: ?*tools_mod.Snapshots = null, // file-edit history for /rewind (root only)
     pending_image: ?vision.PendingImage = null, // staged by /image, sent with the next turn
     home: []const u8 = "", // $HOME, for /key persistence (set by main)
+    model_catalog: ?models_cache.LazyCodexCatalog = null, // demand-loaded dynamic Codex rows (root only)
+    stored_keys_loaded: bool = true, // false after an explicit-provider launch; model surfaces fill the remaining Keychain slots
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
@@ -167,14 +184,22 @@ pub const Agent = struct {
     strict: bool = false,
     completed: ?[]const u8 = null,
     last_context_tokens: u64 = 0,
+    context_local_tokens: u64 = 0, // local request estimate paired with last_context_tokens
+    last_usage_includes_output: bool = false, // fresh usage covers response items step* is about to append
     /// Detail of the most recent API error — carried into the --json `error`
     /// event, which otherwise only knows "api error".
     last_api_error: ?[]const u8 = null,
     /// Text streamed so far in the current request — on Esc-interrupt this is
     /// what survives into history (with an "[interrupted]" marker appended).
     partial_text: std.ArrayList(u8) = .empty,
-    stream_quiet: bool = false, // suppress live streaming (compaction summary)
+    stream_quiet: bool = false, // suppress live streaming (one-shot and internal requests)
+    compaction_request: bool = false, // the current model call is the synthetic compaction-summary request
+    responses_output_limit: ?u32 = null, // auxiliary override (title=64); compaction always uses 4096
+    last_request_context_overflow: bool = false, // explicit provider rejection, not an inferred meter threshold
+    last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request
+    compact_transport_failures: u8 = 0, // bounded escape for repeated opaque over-cap WriteFailed/network failures
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
+    ws_transport_failures: u8 = 0, // consecutive WS failures; retry once before latching persistent SSE
     streamed_text: bool = false, // the last request printed its text live
     thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
     thinking_rows: usize = 0, // on-screen rows the live Thinking block spans (#75 collapse)
@@ -183,6 +208,7 @@ pub const Agent = struct {
     thinking_folded: bool = false, // user folded the live Thinking block (#92)
     thinking_text: std.ArrayList(u8) = .empty, // buffered reasoning, so a fold can unfold (#92)
     ai_title_done: bool = false, // the one-time AI tab-title call has run this session
+    title_generation: u64 = 0, // invalidates detached results across /clear, /new, and manual /rename
     arg_live: ArgLive = .{}, // live attempt_completion/ask_user argument text
     streamed_args: ArgTool = .none, // which meta tool's prose streamed live this request
     streamed_args_len: usize = 0, // raw bytes emitted for it (gates re-print suppression)
@@ -208,24 +234,25 @@ pub const Agent = struct {
             (std.fmt.bufPrint(&kbuf, " · ⚡{s} cached", .{compactTokenCount(&kval, self.last_cache_read)}) catch "")
         else
             "";
-        try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.cyan, self.provider.model, style.reset });
+        try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.accent, self.provider.model, style.reset });
         // Fast is the most operationally important model setting, so keep it
         // immediately beside the model instead of letting permission modes
         // push it deeper into the status line.
         if (self.fast and self.provider.kind == .responses) try writePromptBadge(w, style.green, "Fast");
         if (self.effortApplies()) try writePromptBadge(w, reasoningPromptColor(self.reasoning), reasoningPromptLabel(self.reasoning));
-        try writePromptBadge(w, style.cyan, self.provider.id);
+        try writePromptBadge(w, style.accent, self.provider.id);
         if (self.fallback_active) try writePromptBadge(w, style.yellow, "Fallback");
         if (main_mod.plan_mode) try writePromptBadge(w, style.yellow, "Plan");
         if (self.strict) try writePromptBadge(w, style.red, "Strict");
-        if (self.ultracode_mode) try writePromptBadge(w, style.magenta, "Ultracode");
+        if (self.ultracode_mode) try writePromptBadge(w, style.accent, "Ultracode");
         try w.print("{s} · cwd {s}{s}{s}", .{ style.dim, style.reset, main_mod.g_cwd_display, style.dim });
+        const context_tokens = self.effectiveContextTokens();
         if (self.last_context_tokens > 0) {
             const threshold = self.provider.compactAt();
-            const pct = if (self.provider.context > 0) self.last_context_tokens * 100 / self.provider.context else 0;
+            const pct = contextPercent(context_tokens, self.provider.context);
             var used_buf: [24]u8 = undefined;
-            try w.print(" · {s}/{d}k ctx ({d}% · compact@{d}k){s}{s}]{s} {s}›{s} ", .{
-                compactTokenCount(&used_buf, self.last_context_tokens),
+            try w.print(" · {s}/{d}k ctx ({d}% · compact@{d}k){s}{s}]{s} {s}{s}›{s} ", .{
+                compactTokenCount(&used_buf, context_tokens),
                 self.provider.context / 1000,
                 pct,
                 threshold / 1000,
@@ -233,15 +260,20 @@ pub const Agent = struct {
                 cost,
                 style.reset,
                 style.bold,
+                style.accent,
                 style.reset,
             });
         } else {
-            try w.print("{s}]{s} {s}›{s} ", .{ cost, style.reset, style.bold, style.reset });
+            try w.print("{s}]{s} {s}{s}›{s} ", .{ cost, style.reset, style.bold, style.accent, style.reset });
         }
         try w.flush();
     }
 
     pub fn say(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
+        // stdout is a strict JSONL transport in --json mode. Human-facing
+        // notices are represented by their structured terminal/error events;
+        // never leak an unframed line that breaks SDK parsers.
+        if (main_mod.json_mode and !self.sub) return;
         if (self.out) |w| {
             try w.print(fmt, args);
             try w.flush();
@@ -293,6 +325,47 @@ pub const Agent = struct {
         };
     }
 
+    /// Root catalogs include meta + MCP tools and are much larger than the
+    /// subagent constants. Materialize only a wire format the session actually
+    /// uses; provider switching calls this before updating the context meter.
+    pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
+        if (self.sub) return;
+        const slot = switch (kind) {
+            .anthropic => &self.tools_anthropic,
+            .openai => &self.tools_openai,
+            .responses => &self.tools_responses,
+        };
+        if (slot.*.len != 0) return;
+        const specs = try schema.effectiveRootSpecs(self.arena);
+        const connected: []const mcp.Tool = if (self.registry) |registry| registry.tools else &.{};
+        slot.* = try schema.renderRootTools(self.arena, kind, specs, connected);
+    }
+
+    /// A live MCP registry change invalidates provider-specific catalogs. The
+    /// active format is immediately rebuilt; inactive formats remain lazy.
+    pub fn invalidateRootTools(self: *Agent) void {
+        if (self.sub) return;
+        self.tools_anthropic = "";
+        self.tools_openai = "";
+        self.tools_responses = "";
+    }
+
+    pub noinline fn ensureModelCatalog(self: *Agent, keys: provider_mod.Keys) void {
+        if (self.model_catalog) |*catalog|
+            catalog.ensure(self.io, self.gpa, self.arena, self.home, keys.get("codex") orelse "", keys.codex_account);
+    }
+
+    pub fn reloadModelCatalog(self: *Agent, keys: provider_mod.Keys) void {
+        if (self.model_catalog) |*catalog| catalog.invalidate();
+        self.ensureModelCatalog(keys);
+    }
+
+    pub noinline fn ensureStoredKeys(self: *Agent, keys: *provider_mod.Keys) void {
+        if (self.stored_keys_loaded) return;
+        if (self.home.len != 0) keys_cli.loadMissingStoredKeys(self.io, self.gpa, self.arena, self.home, keys, .all);
+        self.stored_keys_loaded = true;
+    }
+
     /// Run until the model stops (or, in strict mode, calls
     /// attempt_completion). Returns the final assistant text (arena-owned).
     /// Close the held codex Responses WS session and reset the delta state. Called
@@ -311,6 +384,9 @@ pub const Agent = struct {
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
+        // Defensive for restored/embedded agents whose provider was assigned
+        // directly instead of going through providers.applyProvider.
+        try self.ensureRootTools(self.provider.kind);
         self.closeCodexWs(); // fresh codex WS session per turn
         defer self.closeCodexWs();
         self.completed = null;
@@ -342,7 +418,11 @@ pub const Agent = struct {
                 // keyed to dropped messages (same closeCodexWs-after-trim reason as
                 // the in-turn recovery at agent_request.zig:273).
                 self.closeCodexWs();
-                self.compactOrRecover(true);
+                // Match the between-turn policy: at the ordinary compactAt
+                // threshold, a transient/empty summary must not immediately drop
+                // real history. Destructive recovery is reserved for >=95%.
+                const recovery_meter = self.effectiveContextTokens();
+                self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
                 self.closeCodexWs();
             }
             const root = try self.request(self.toolsJson());
@@ -362,6 +442,12 @@ pub const Agent = struct {
     pub const request = @import("agent_request.zig").request;
     pub const inputOverCompactThreshold = @import("agent_request.zig").inputOverCompactThreshold;
     pub const fullInputEstimateTokens = @import("agent_request.zig").fullInputEstimateTokens;
+    pub const fullRequestEstimateTokens = @import("agent_request.zig").fullRequestEstimateTokens;
+    pub const contextEstimate = @import("agent_request.zig").contextEstimate;
+    pub const contextEstimateFromInputBytes = @import("agent_request.zig").contextEstimateFromInputBytes;
+    pub const effectiveContextTokens = @import("agent_request.zig").effectiveContextTokens;
+    pub const pairContextMeterWithCurrentLocal = @import("agent_request.zig").pairContextMeterWithCurrentLocal;
+    pub const rebaseContextMeter = @import("agent_request.zig").rebaseContextMeter;
     pub const recordUsage = @import("agent_request.zig").recordUsage;
     pub const usageInt = @import("agent_request.zig").usageInt;
     pub const recordCost = @import("agent_request.zig").recordCost;
@@ -419,6 +505,7 @@ pub const Agent = struct {
     pub const appendEvalLog = @import("agent_compact.zig").appendEvalLog;
     pub const runJudge = @import("agent_compact.zig").runJudge;
     pub const compact = @import("agent_compact.zig").compact;
+    pub const recentContextStart = @import("agent_compact.zig").recentContextStart;
     pub const cleanUserTurn = @import("agent_compact.zig").cleanUserTurn;
     pub const emergencyCutIndex = @import("agent_compact.zig").emergencyCutIndex;
     pub const emergencyTrim = @import("agent_compact.zig").emergencyTrim;
@@ -476,6 +563,10 @@ pub const Agent = struct {
     /// scratch arena when set (root), else the session arena (subagents/one-shot).
     pub fn scratchAlloc(self: *Agent) Allocator {
         return if (self.scratch_arena) |sa| sa.allocator() else self.arena;
+    }
+
+    pub fn messageMutationAlloc(self: *Agent) Allocator {
+        return self.message_mutation_arena orelse self.arena;
     }
 
     pub const escWatchTask = @import("agent_interrupt.zig").escWatchTask;
@@ -548,4 +639,45 @@ test "compact token counts keep prompt usage readable" {
     var buf: [24]u8 = undefined;
     try std.testing.expectEqualStrings("999", compactTokenCount(&buf, 999));
     try std.testing.expectEqualStrings("138k", compactTokenCount(&buf, 138_082));
+}
+
+test "context percent saturates malformed or over-window server meters" {
+    try std.testing.expectEqual(@as(u64, 0), contextPercent(100, 0));
+    try std.testing.expectEqual(@as(u64, 50), contextPercent(50_000, 100_000));
+    try std.testing.expectEqual(@as(u64, 100), contextPercent(150_000, 100_000));
+    try std.testing.expectEqual(@as(u64, 100), contextPercent(std.math.maxInt(u64), 100_000));
+}
+
+test "lazy root tool catalogs preserve MCP tools across provider formats" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry = mcp.Registry.empty(std.testing.allocator, std.testing.io);
+    defer registry.deinit();
+    var connected = [_]mcp.Tool{.{
+        .server_index = 0,
+        .original_name = "search",
+        .qualified_name = "mcp__bench__search",
+        .description = "search the benchmark index",
+        .input_schema = .{ .object = .empty },
+    }};
+    registry.tools = &connected;
+
+    var agent: Agent = undefined;
+    agent.arena = arena;
+    agent.sub = false;
+    agent.registry = &registry;
+    agent.tools_anthropic = "";
+    agent.tools_openai = "";
+    agent.tools_responses = "";
+
+    try agent.ensureRootTools(.responses);
+    try std.testing.expect(std.mem.indexOf(u8, agent.tools_responses, "mcp__bench__search") != null);
+    try std.testing.expectEqual(@as(usize, 0), agent.tools_openai.len);
+    try std.testing.expectEqual(@as(usize, 0), agent.tools_anthropic.len);
+
+    agent.invalidateRootTools();
+    try agent.ensureRootTools(.anthropic);
+    try std.testing.expect(std.mem.indexOf(u8, agent.tools_anthropic, "mcp__bench__search") != null);
+    try std.testing.expectEqual(@as(usize, 0), agent.tools_responses.len);
 }

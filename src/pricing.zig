@@ -95,13 +95,13 @@ pub const CostTally = struct {
     pub fn add(self: *CostTally, io: Io, provider_id: []const u8, model: []const u8, uncached_in: i64, cache_in: i64, out: i64) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
-        self.api_calls += 1;
-        self.in_tokens += @intCast(@max(uncached_in, 0));
-        self.cache_tokens += @intCast(@max(cache_in, 0));
-        self.out_tokens += @intCast(@max(out, 0));
+        self.api_calls +|= 1;
+        self.in_tokens +|= @intCast(@max(uncached_in, 0));
+        self.cache_tokens +|= @intCast(@max(cache_in, 0));
+        self.out_tokens +|= @intCast(@max(out, 0));
         switch (billingFor(provider_id, model)) {
-            .sub => self.sub_calls += 1,
-            .unpriced => self.unpriced_calls += 1,
+            .sub => self.sub_calls +|= 1,
+            .unpriced => self.unpriced_calls +|= 1,
             .priced => self.usd += usdFor(priceFor(model).?, uncached_in, cache_in, out),
         }
     }
@@ -118,7 +118,7 @@ pub const CostTally = struct {
     /// One-line summary shared by /cost and the one-shot stderr report.
     pub fn render(c: CostTally, w: *Io.Writer) !void {
         try w.print("{d} api call(s) · {d} in ({d} cached) + {d} out tokens · ${d:.4}", .{
-            c.api_calls, c.in_tokens + c.cache_tokens, c.cache_tokens, c.out_tokens, c.usd,
+            c.api_calls, c.in_tokens +| c.cache_tokens, c.cache_tokens, c.out_tokens, c.usd,
         });
         if (c.sub_calls > 0) try w.print(" · {d} subscription call(s), flat-rate (not in $)", .{c.sub_calls});
         if (c.unpriced_calls > 0) try w.print(" · {d} call(s) on unpriced models", .{c.unpriced_calls});
@@ -448,6 +448,22 @@ test "usdFor: per-million math and negative clamping" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), usdFor(p, 0, 1_000_000, 0), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 3.0), usdFor(p, 0, 0, 100_000), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 0.0), usdFor(p, -42, -1, 0), 1e-9); // clamped
+}
+
+test "CostTally token and call counters saturate" {
+    var tally: CostTally = .{
+        .in_tokens = std.math.maxInt(u64) - 1,
+        .cache_tokens = std.math.maxInt(u64),
+        .out_tokens = std.math.maxInt(u64) - 2,
+        .api_calls = std.math.maxInt(u64),
+        .sub_calls = std.math.maxInt(u64),
+    };
+    tally.add(std.testing.io, "codex", "gpt-5.5", 10, 10, 10);
+    try std.testing.expectEqual(std.math.maxInt(u64), tally.in_tokens);
+    try std.testing.expectEqual(std.math.maxInt(u64), tally.cache_tokens);
+    try std.testing.expectEqual(std.math.maxInt(u64), tally.out_tokens);
+    try std.testing.expectEqual(std.math.maxInt(u64), tally.api_calls);
+    try std.testing.expectEqual(std.math.maxInt(u64), tally.sub_calls);
 }
 
 test "modelInTable: known models present, unknown absent" {

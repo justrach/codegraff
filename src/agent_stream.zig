@@ -67,8 +67,9 @@ pub fn spinnerTask(io: Io) void {
         w.interface.writeAll("\x1b[?7h") catch return; // restore autowrap
         w.interface.flush() catch return;
         i += 1;
+        const frame_ticks = @max(@as(usize, 1), @as(usize, anim.anims[anim.g_anim_current].frame_ms) / 20);
         var t: usize = 0;
-        while (t < 4 and !Agent.g_spin_stop.load(.acquire)) : (t += 1) {
+        while (t < frame_ticks and !Agent.g_spin_stop.load(.acquire)) : (t += 1) {
             if (main_mod.g_steer_visible.load(.acquire)) break;
             io.sleep(.fromMilliseconds(20), .awake) catch break;
         }

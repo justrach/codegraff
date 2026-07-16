@@ -10,6 +10,8 @@ from pty_harness import PtySession, terminal_text
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
+CORAL = b"\x1b[38;2;196;81;61m"
+RESET = b"\x1b[0m"
 
 
 def main() -> None:
@@ -46,16 +48,18 @@ def main() -> None:
                     raise AssertionError(f"missing colored badge {color_bytes!r} after {line}")
 
             base = "deepseek-v4-pro · Extra high · codegraff"
+            # Match through cwd but not the closing bracket: the live context
+            # meter is appended after cwd and changes as the session evolves.
             command(
                 "/effort xhigh",
                 "reasoning effort: Extra high",
-                f"[{base} · cwd {tmp}]",
-                b"\x1b[35mExtra high\x1b[0m",
+                f"[{base} · cwd {tmp}",
+                CORAL + b"Extra high" + RESET,
             )
             command(
                 "/model definitely-not-a-model",
                 "unknown model 'definitely-not-a-model'",
-                f"[{base} · cwd {tmp}]",
+                f"[{base} · cwd {tmp}",
                 None,
             )
             cursor = len(session.raw)
@@ -63,7 +67,7 @@ def main() -> None:
             session.wait_for_literal("/models [health]", start=cursor)
             session.wait_for_literal("/fallback [allow|remove|off]", start=cursor)
             session.wait_for_literal("/login [codegraff|codex|kimi]", start=cursor)
-            session.wait_for_literal(f"[{base} · cwd {tmp}]", start=cursor)
+            session.wait_for_literal(f"[{base} · cwd {tmp}", start=cursor)
             cursor = len(session.raw)
             session.send_line("/models health")
             session.wait_for_literal("active: deepseek-v4-pro via codegraff", start=cursor)
@@ -74,31 +78,31 @@ def main() -> None:
             )
             session.wait_for(r"✓\s+codegraff\s+environment", start=cursor)
             session.wait_for(r"·\s+codex\s+missing", start=cursor)
-            session.wait_for_literal(f"[{base} · cwd {tmp}]", start=cursor)
+            session.wait_for_literal(f"[{base} · cwd {tmp}", start=cursor)
             if b"local-pty-test" in bytes(session.raw[cursor:]):
                 raise AssertionError("/models health exposed a credential value")
             command(
                 "/plan",
                 "plan mode on",
-                f"[{base} · Plan · cwd {tmp}]",
+                f"[{base} · Plan · cwd {tmp}",
                 b"\x1b[33mPlan\x1b[0m",
             )
             command(
                 "/strict",
                 "strict mode ON",
-                f"[{base} · Plan · Strict · cwd {tmp}]",
+                f"[{base} · Plan · Strict · cwd {tmp}",
                 b"\x1b[31mStrict\x1b[0m",
             )
             command(
                 "/ultracode on",
                 "ultracode mode: on",
-                f"[{base} · Plan · Strict · Ultracode · cwd {tmp}]",
-                b"\x1b[35mUltracode\x1b[0m",
+                f"[{base} · Plan · Strict · Ultracode · cwd {tmp}",
+                CORAL + b"Ultracode" + RESET,
             )
             command(
                 "/yolo",
                 "yolo mode ON",
-                f"[{base} · Plan · Strict · Ultracode · cwd {tmp}]",
+                f"[{base} · Plan · Strict · Ultracode · cwd {tmp}",
                 None,
             )
             if b"\x1b[31mYOLO\x1b[0m" in bytes(session.raw):
@@ -106,7 +110,7 @@ def main() -> None:
             cursor = len(session.raw)
             session.send_line("/key no-such-provider supersecret")
             session.wait_for_literal("unknown provider 'no-such-provider'", start=cursor)
-            session.wait_for_literal(f"cwd {tmp}]", start=cursor)
+            session.wait_for_literal(f"cwd {tmp}", start=cursor)
             if b"supersecret" in bytes(session.raw[cursor:]):
                 raise AssertionError("/key secret was echoed to the terminal")
             session.send_key("ctrl-d")
@@ -141,7 +145,7 @@ def main() -> None:
             paint = bytes(session.raw[cursor:]).rsplit(b"\x1b[2J\x1b[H", 1)[-1]
             if paint.count(b"\n") != 11:
                 raise AssertionError("model picker exceeded its 12-row terminal budget")
-            if b"\x1b[7m\xe2\x96\x8c deepseek-v4-pro" not in paint:
+            if CORAL + b"\xe2\x80\xba deepseek-v4-pro" not in paint:
                 raise AssertionError("model picker did not initially select the active model")
             session.send_key("ctrl-c")
             session.wait_for_literal("] ›", start=cursor)
@@ -152,7 +156,7 @@ def main() -> None:
             session.wait_for_literal("Ultra", start=cursor)
             session.pump_for(0.1)
             paint = bytes(session.raw[cursor:]).rsplit(b"\x1b[2J\x1b[H", 1)[-1]
-            if b"\x1b[7m Extra high" not in paint:
+            if CORAL + b"\xe2\x80\xba Extra high" not in paint:
                 raise AssertionError("reasoning picker did not initially select the current level")
             session.send_key("ctrl-c")
             session.wait_for_literal("] ›", start=cursor)

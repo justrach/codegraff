@@ -1,8 +1,5 @@
-//! Context management: client-side history compaction (compact/
-//! compactOrRecover) and emergency-trim recovery when compaction itself
-//! can't run, plus the --eval/--until eval-driven loop (runEval/
-//! appendEvalLog) and its optional LLM-as-judge scorer (runJudge). Split
-//! out of the Agent struct (#123, 600-line goal).
+//! Context management: transactional history compaction and emergency
+//! recovery when a summary request cannot run.
 
 const std = @import("std");
 const Io = std.Io;
@@ -12,11 +9,7 @@ const utf8Prefix = @import("util.zig").utf8Prefix;
 
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
-const repl_glue = @import("repl_glue.zig");
 const Agent = agent_mod.Agent;
-const ToolCall = tools_mod.ToolCall;
-const ExecResult = tools_mod.ExecResult;
-const parseEvalScore = repl_glue.parseEvalScore;
 const prompts = @import("prompts.zig");
 const compact_instruction = prompts.compact_instruction;
 
@@ -26,266 +19,189 @@ const textMessage = messages_mod.textMessage;
 const title_mod = @import("title.zig");
 const assistantText = title_mod.assistantText;
 
-const scoring = @import("scoring.zig");
-const promptFingerprint = scoring.promptFingerprint;
-const providerClass = scoring.providerClass;
-const signScore = scoring.signScore;
+const agent_eval = @import("agent_eval.zig");
+pub const runEval = agent_eval.runEval;
+pub const appendEvalLog = agent_eval.appendEvalLog;
+pub const runJudge = agent_eval.runJudge;
 
-const telemetry = @import("telemetry.zig");
+pub const recent_context_tokens: u64 = 8_000;
 
-const jobs = @import("jobs.zig");
-const runCapped = jobs.runCapped;
-
-const tools_mod = @import("tools.zig");
-const ToolCtx = tools_mod.ToolCtx;
-const ToolOutput = tools_mod.ToolOutput;
-
-const subagent = @import("subagent.zig");
-const judgeTask = subagent.judgeTask;
-
-const provider_mod = @import("provider.zig"); // codex-ws regression tests below
-const Provider = provider_mod.Provider;
-const ws = @import("ws.zig");
-const agent_ws = @import("agent_ws.zig"); // codexWsIdleExpired/codex_ws_idle_ms (#codex-ws)
-
-/// Run the configured --eval scoring command, append the result to the
-/// scores log (.graff/eval-log.tsv), and return a verdict for the model:
-/// score (0-100), best so far, target, and whether the target is met. The
-/// harness runs the command, so the model cannot fake the number. (eval tool)
-pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
-    const cmd = self.eval_cmd orelse return .{
-        .text = "no eval command configured - relaunch graff with --eval <scoring cmd> and --until <N>, or ask the user to set one",
-        .is_error = true,
-    };
-    const run = runCapped(self.gpa, self.io, &.{ "/bin/sh", "-c", cmd }, 64 * 1024, 16 * 1024, 0) catch |e|
-        return .{ .text = try std.fmt.allocPrint(self.arena, "eval command could not run: {t}", .{e}), .is_error = true };
-    defer self.gpa.free(run.stdout);
-    defer self.gpa.free(run.stderr);
-    self.eval_iter += 1;
-    const exit_code: i32 = switch (run.term) {
-        .exited => |c| @intCast(c),
-        else => -1,
-    };
-    const det = parseEvalScore(run.stdout) orelse parseEvalScore(run.stderr);
-
-    // LLM-as-judge (--judge): an independent subagent inspects the actual
-    // artifacts against the rubric and returns its own 0-100 score. Both
-    // scores must clear the target, so the binding value is their min().
-    // Skip the judge when the deterministic command itself produced no
-    // score - fix that first rather than burn a judge run.
-    const judge: ?f64 = if (self.eval_judge != null and det != null) self.runJudge(self.eval_judge.?, run.stdout, note) else null;
-    const combined: ?f64 = if (self.eval_judge == null)
-        det
-    else if (det != null and judge != null)
-        @min(det.?, judge.?)
-    else
-        null;
-
-    const target_f: f64 = @floatFromInt(self.eval_target);
-    const improved = if (combined) |s| (self.eval_best < 0 or s > self.eval_best) else false;
-    if (combined) |s| {
-        if (self.eval_best < 0 or s > self.eval_best) self.eval_best = s;
-    }
-    const met = if (combined) |s| s >= target_f else false;
-    self.appendEvalLog(note, det, judge, combined, exit_code, met) catch {};
-
-    // Feed the eval-driven score into the fleet (docs/hyperagents.md §9.B):
-    // on a NEW BEST, submit the genome (this agent's persona) with its achieved
-    // score on the pinned eval set (the eval command's fingerprint). Without this
-    // the score only ever reached .graff/eval-log.tsv and the DGM/fleet never saw
-    // real eval-driven work — only darwincode/JSON-proto runs ever submitted.
-    if (combined) |s| {
-        if (improved and s > 0) { // s>0: skip the initial-state / total-failure 0 (don't pollute the cell mean)
-            if (s > 100) {
-                // Review F8: parseEvalScore does NOT bound its result (a stray
-                // "score: 9000" line parses as 9000) — an out-of-[0,100] score
-                // must never be signed or submitted. Skip the score AND its
-                // paired propose/submit, mirroring mainloop /score's explicit
-                // rejection, so the submit counter stays in sync with stored
-                // scores. The local eval verdict below still shows the number.
-                if (self.tracer) |tr| tr.note("fleet", "score skipped: eval score outside [0,100]");
-            } else if (telemetry.g_telem) |t| {
-                const sys = self.systemPrompt();
-                const genome_fp = promptFingerprint(sys);
-                const esh_fp = promptFingerprint(cmd);
-                const genome: []const u8 = &genome_fp;
-                const esh: []const u8 = &esh_fp;
-                const run_id: []const u8 = &scoring.g_run_id;
-                const pclass = providerClass(self.provider.model);
-                // --niche tags this score's cell. Without it the score lands in the
-                // anonymous "" niche, which pullElites can never match to a builtin —
-                // so an eval session that wants to grow a champion must name its role.
-                // Truncated to 64 chars and sanitized (tab/newline/CR → ' ', review
-                // F7) BEFORE signing (fleetEvent's own niche cap, same as mainloop
-                // /score) so signed bytes equal ingested bytes.
-                var niche_buf: [64]u8 = undefined;
-                const niche = scoring.sanitizeMetaField(&niche_buf, utf8Prefix(self.eval_niche, 64));
-                // Genome-send (graff-dgm.md §B): the eval genome is this agent's own
-                // persona, never spawned via runSub, so its prompt_text never reached
-                // the worker. A cell only promotes when harness_scores joins to a
-                // harness_genomes row, so ride the genome text over on a `propose`
-                // (deduped by prompt_sha) before the score — else a winning eval cell
-                // has nothing to serve. Gated on a niche: a "" cell is unpromotable.
-                // Oversized genomes skip the propose (review F6): the server verifies
-                // the fingerprint over the carried text, so a truncated genome would
-                // be dropped there anyway.
-                if (niche.len > 0) {
-                    if (sys.len <= telemetry.Telemetry.max_propose_text)
-                        t.fleetEvent("propose", niche, genome, "", pclass, "", 0, sys)
-                    else if (self.tracer) |tr| tr.note("fleet", "propose skipped: genome > 64KB");
-                }
-                // SCORE SCALE CONTRACT (issue #168 Gap 4): local UX stays
-                // 0-100 (the /100 verdicts below, eval_best, eval_target),
-                // but every score that leaves the client is [0,1] — divide at
-                // the emission boundary; s01 is what gets signed (v2: niche +
-                // provider_class in the envelope) and sent.
-                const s01 = s / 100.0;
-                const sig = signScore(genome, "", s01, run_id, "", "", esh, niche, pclass);
-                const sig_s: []const u8 = if (scoring.g_score_key != null) &sig else "";
-                var provbuf: [512]u8 = undefined;
-                const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche }) catch "";
-                t.scoreEvent(genome, "", s01, run_id, sig_s, prov);
-                t.fleetEvent("submit", niche, genome, "", pclass, esh, 0, "");
-            }
-        }
-    }
-
-    var aw: Io.Writer.Allocating = .init(self.arena);
-    const w = &aw.writer;
-    if (combined) |s| {
-        if (self.eval_judge != null) {
-            try w.print("eval #{d}: deterministic {d:.1} + judge {d:.1} -> {d:.1}/100 (best {d:.1}, target {d}). ", .{ self.eval_iter, det.?, judge.?, s, self.eval_best, self.eval_target });
-        } else {
-            try w.print("eval #{d}: score {d:.1}/100 (best {d:.1}, target {d}). ", .{ self.eval_iter, s, self.eval_best, self.eval_target });
-        }
-        if (met)
-            try w.writeAll("TARGET MET - finish and report the final scores.")
-        else if (improved)
-            try w.writeAll("Improved - keep going: fix the next biggest failure with one focused change.")
-        else
-            try w.writeAll("No gain over the best - try a different change; do not build on a regression.");
-    } else if (self.eval_judge != null and det != null and judge == null) {
-        try w.print("eval #{d}: deterministic score {d:.1}/100, but the judge returned no parseable score (it may have errored). Re-run after checking the rubric. ", .{ self.eval_iter, det.? });
-    } else {
-        try w.print("eval #{d}: command ran but no score parsed - print a bare number, or JSON with a score field (0-100 or 0-1), on the last line. ", .{self.eval_iter});
-    }
-    const tail = if (run.stdout.len > 1500) run.stdout[run.stdout.len - 1500 ..] else run.stdout;
-    try w.print("\n[exit {d}] eval output (tail):\n{s}", .{ exit_code, tail });
-    return .{ .text = try self.arena.dupe(u8, aw.writer.buffered()), .is_error = false };
+fn serializedTokens(value: Value) u64 {
+    var buf: [256]u8 = undefined;
+    var d: Io.Writer.Discarding = .init(&buf);
+    var s: std.json.Stringify = .{ .writer = &d.writer };
+    s.write(value) catch {};
+    return @intCast(d.fullCount() / 4);
 }
 
-/// Append one tab-separated row to the scores log (.graff/eval-log.tsv).
-/// Best-effort - a failed write never breaks the loop.
-pub fn appendEvalLog(self: *Agent, note: []const u8, det: ?f64, judge: ?f64, score: ?f64, exit_code: i32, met: bool) !void {
-    Io.Dir.cwd().createDir(self.io, ".graff", .default_dir) catch {};
-    const path = ".graff/eval-log.tsv";
-    const existing = Io.Dir.cwd().readFileAlloc(self.io, path, self.arena, .limited(2 * 1024 * 1024)) catch "";
-    var aw: Io.Writer.Allocating = .init(self.arena);
-    const w = &aw.writer;
-    try w.writeAll(existing);
-    if (existing.len > 0 and existing[existing.len - 1] != '\n') try w.writeByte('\n');
-    try w.print("iter={d}\tscore=", .{self.eval_iter});
-    if (score) |s| try w.print("{d:.2}", .{s}) else try w.writeAll("NA");
-    try w.writeAll("\tdet=");
-    if (det) |d| try w.print("{d:.2}", .{d}) else try w.writeAll("NA");
-    try w.writeAll("\tjudge=");
-    if (judge) |j| try w.print("{d:.2}", .{j}) else try w.writeAll("NA");
-    try w.print("\tbest={d:.2}\ttarget={d}\tmet={s}\texit={d}\tnote=", .{ self.eval_best, self.eval_target, if (met) "yes" else "no", exit_code });
-    for (note) |ch| try w.writeByte(if (ch < 0x20) ' ' else ch);
-    try w.writeByte('\n');
-    Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = aw.writer.buffered() }) catch {};
-}
-
-/// Spawn an independent LLM judge (a read-only subagent) to score the
-/// current work against the --judge rubric on a 0-100 scale. The judge
-/// inspects the real artifacts with its own tools and ends its report with
-/// a `score:` line, parsed the same way as a deterministic eval. Runs on a
-/// pool thread via judgeTask (mirrors workflowTask) so the eval handler can
-/// await it. Returns null if the judge could not run or gave no score.
-pub fn runJudge(self: *Agent, rubric: []const u8, eval_output: []const u8, note: []const u8) ?f64 {
-    const ctx: ToolCtx = .{
-        .gpa = self.gpa,
-        .io = self.io,
-        .client = self.client,
-        .provider = self.provider,
-        .registry = if (self.sub) null else self.registry,
-        .from_sub = self.sub,
-        .approvals = self.approvals,
-        .tracer = self.tracer,
-        .snapshots = self.snapshots,
-        .tools_used = &self.tools_used,
-    };
-    const evidence = if (eval_output.len > 1200) eval_output[eval_output.len - 1200 ..] else eval_output;
-    const what = if (note.len > 0) note else "(no note given)";
-    const judge_prompt = std.fmt.allocPrint(self.arena,
-        \\Score the current state of the work in this directory against the rubric below, on a 0-100 scale.
-        \\
-        \\RUBRIC:
-        \\{s}
-        \\
-        \\The author's note on the latest change: {s}
-        \\
-        \\An automated check was also run; its output (tail) is below as evidence. Form your OWN independent judgement of how well the artifacts satisfy the rubric - do not simply echo the check:
-        \\---
-        \\{s}
-        \\---
-        \\
-        \\Inspect the actual files and artifacts the work produced (read them with your tools; do not modify anything), then score how fully they satisfy the rubric. End your reply with a single final line `score: <N>` where N is an integer from 0 to 100.
-    , .{ rubric, what, evidence }) catch return null;
-    var fut: Io.Future(ToolOutput) = self.io.async(judgeTask, .{ ctx, judge_prompt });
-    const out = fut.await(self.io);
-    defer self.gpa.free(out.text);
-    if (out.is_error) return null;
-    return parseEvalScore(out.text);
+/// Pick the earliest clean user-turn boundary whose suffix fits in the recent
+/// context budget. Returning items.len means "summarize everything". We never
+/// split at a tool output, so retained call/result history stays valid.
+pub fn recentContextStart(items: []const Value, token_budget: u64) usize {
+    if (items.len == 0 or token_budget == 0) return items.len;
+    var total: u64 = 0;
+    var start = items.len;
+    var i = items.len;
+    while (i > 0) {
+        i -= 1;
+        total +|= serializedTokens(items[i]);
+        if (total > token_budget) break;
+        if (cleanUserTurn(items[i])) start = i;
+    }
+    // If the entire conversation fits, summarizing all is the only operation
+    // that can actually reduce context; otherwise compaction would be a no-op.
+    return if (start == 0) items.len else start;
 }
 
 /// Ask the model for a context-handoff summary (no tools), then restart
 /// history from that summary.
+pub fn summaryResponseComplete(self: *Agent, root: std.json.ObjectMap) bool {
+    if (root.get("incomplete")) |value| if (value == .bool and value.bool) return false;
+    return switch (self.provider.kind) {
+        .responses => true, // parseResponses marks incomplete/missing terminals above
+        .anthropic => blk: {
+            // Raw non-streaming compatibility gateways may omit stop_reason.
+            // Stream reassembly marks that same absence as root.incomplete, so
+            // only an explicit truncating/unknown reason is rejected here.
+            const reason = root.get("stop_reason") orelse break :blk true;
+            if (reason == .null) break :blk true;
+            break :blk reason == .string and
+                (std.mem.eql(u8, reason.string, "end_turn") or std.mem.eql(u8, reason.string, "stop_sequence"));
+        },
+        .openai => blk: {
+            const choices = root.get("choices") orelse break :blk false;
+            if (choices != .array or choices.array.items.len == 0) break :blk false;
+            const choice = choices.array.items[0];
+            if (choice != .object) break :blk false;
+            // finish_reason is optional on otherwise-valid raw gateway JSON.
+            // Assembled streams without a terminal reason carry root.incomplete.
+            const reason = choice.object.get("finish_reason") orelse break :blk true;
+            if (reason == .null) break :blk true;
+            break :blk reason == .string and std.mem.eql(u8, reason.string, "stop");
+        },
+    };
+}
+
 pub fn compact(self: *Agent) anyerror!usize {
     if (self.messages.items.len == 0) {
         if (!main_mod.json_mode) try self.say("nothing to compact\n", .{});
         return 0;
     }
-    if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens…]\n", .{self.last_context_tokens});
+    self.last_request_context_overflow = false;
+    if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens…]\n", .{self.effectiveContextTokens()});
     // #163: reclaim room BEFORE the summarization request so it fits under the
     // model's input cap. On codex/gpt-5.x an over-cap request fails to WRITE
     // (WriteFailed) rather than returning a clean overflow, so compaction could
     // never run once near the cap. Old tool outputs are superseded by the summary
     // anyway; truncating them keeps the request sendable + all pairing intact.
-    // #174: on the Responses path, prior-turn reasoning items go first — they
-    // dominate the resend bloat on long high-effort sessions, and the backend
-    // itself discards them from chained context, so dropping them can't lose
-    // anything the server would have kept.
+    // Build the summary request on a temporary deep copy of every JSON
+    // container. Pruning reasoning and truncating tool output must be
+    // transactional: if the summary call fails or returns empty, the live
+    // conversation remains byte-for-byte usable for the next attempt.
+    var compact_arena_state = std.heap.ArenaAllocator.init(self.gpa);
+    defer compact_arena_state.deinit();
+    const compact_arena = compact_arena_state.allocator();
+    const live_messages = self.messages;
+    const live_context_tokens = self.last_context_tokens;
+    const live_context_local_tokens = self.context_local_tokens;
+    const live_effective_context = self.effectiveContextTokens();
+    const recent_start = recentContextStart(live_messages.items, recent_context_tokens);
+    const recent_messages = live_messages.items[recent_start..];
+    var summary_messages = std.json.Array.init(compact_arena);
+    try summary_messages.ensureTotalCapacity(recent_start);
+    for (live_messages.items[0..recent_start]) |item|
+        try summary_messages.append(try cloneJsonValue(compact_arena, item));
+    self.messages = summary_messages;
+    var installed_summary = false;
+    defer if (!installed_summary) {
+        self.messages = live_messages;
+        if (self.last_request_context_overflow) {
+            self.context_local_tokens = self.fullRequestEstimateTokens();
+            self.last_context_tokens = @max(live_effective_context, self.provider.context);
+        } else {
+            // Summary construction and usage sampling are transactional too.
+            self.last_context_tokens = live_context_tokens;
+            self.context_local_tokens = live_context_local_tokens;
+        }
+    };
+
+    try self.messages.append(try textMessage(compact_arena, "user", compact_instruction));
+    // #174: establish the synthetic summary turn before pruning Responses
+    // reasoning. An active tool loop's reasoning is newer than the real user
+    // turn and must remain while that loop is in flight, but it becomes prior-
+    // turn context once this synthetic user request is appended. Pruning first
+    // left precisely that large encrypted blob in the full summary resend.
     _ = dropPriorTurnReasoning(self);
-    _ = trimOldestToolOutputs(self);
-    try self.messages.append(try textMessage(self.arena, "user", compact_instruction));
-    errdefer _ = self.messages.pop();
+    _ = trimOldestToolOutputsAlloc(self, compact_arena);
 
     // The handoff summary is internal — don't stream it to the terminal.
+    const was_quiet = self.stream_quiet;
+    const was_compaction_request = self.compaction_request;
+    const was_message_mutation_arena = self.message_mutation_arena;
     self.stream_quiet = true;
-    defer self.stream_quiet = false;
+    self.compaction_request = true;
+    self.message_mutation_arena = compact_arena;
+    defer self.stream_quiet = was_quiet;
+    defer self.compaction_request = was_compaction_request;
+    defer self.message_mutation_arena = was_message_mutation_arena;
     const root = try self.request(null);
-    const summary = assistantText(self.provider.kind, root);
+    // Any complete transport response proves the previous opaque failure was
+    // transient/non-wedging, even when its summary text is empty or truncated.
+    self.compact_transport_failures = 0;
+    if (!summaryResponseComplete(self, root)) {
+        if (!main_mod.json_mode) try self.say("[compaction failed: provider returned an incomplete summary, history unchanged]\n", .{});
+        return error.IncompleteSummary;
+    }
+    const summary = std.mem.trim(u8, assistantText(self.provider.kind, root), " \t\r\n");
     if (summary.len == 0) {
         if (!main_mod.json_mode) try self.say("[compaction failed: empty summary, history unchanged]\n", .{});
-        _ = self.messages.pop();
         return error.EmptySummary;
     }
 
     var fresh = std.json.Array.init(self.arena);
     const handoff = try std.fmt.allocPrint(self.arena,
-        \\Context: the prior conversation was compacted to save space.
-        \\Summary of everything so far:
+        \\Context: the earlier conversation was compacted to save space.
+        \\Summary of the earlier work:
         \\
         \\{s}
         \\
         \\Continue assisting the user based on this summary.
     , .{summary});
     try fresh.append(try textMessage(self.arena, "user", handoff));
+    // Preserve a valid recent suffix verbatim (up to ~8k estimated tokens),
+    // including its user boundary and paired tool calls/results.
+    for (recent_messages) |message| try fresh.append(message);
     self.messages = fresh;
     self.last_context_tokens = 0;
+    self.context_local_tokens = 0;
+    installed_summary = true;
     if (!main_mod.json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
     return summary.len;
+}
+
+/// Clone JSON arrays/objects while borrowing immutable leaf strings. Send-time
+/// normalization replaces Value slots rather than mutating string bytes, so
+/// separate containers are sufficient to isolate a compaction request without
+/// duplicating multi-megabyte reasoning and tool-output payloads.
+fn cloneJsonValue(arena: Allocator, value: Value) Allocator.Error!Value {
+    return switch (value) {
+        .array => |src| .{ .array = try cloneJsonArray(arena, src) },
+        .object => |src| blk: {
+            var out: std.json.ObjectMap = .empty;
+            var it = src.iterator();
+            while (it.next()) |entry|
+                try out.put(arena, entry.key_ptr.*, try cloneJsonValue(arena, entry.value_ptr.*));
+            break :blk .{ .object = out };
+        },
+        else => value,
+    };
+}
+
+pub fn cloneJsonArray(arena: Allocator, src: std.json.Array) Allocator.Error!std.json.Array {
+    var out = std.json.Array.init(arena);
+    try out.ensureTotalCapacity(src.items.len);
+    for (src.items) |item| try out.append(try cloneJsonValue(arena, item));
+    return out;
 }
 
 pub fn cleanUserTurn(m: Value) bool {
@@ -338,36 +254,6 @@ pub fn dropPriorTurnReasoning(self: *Agent) usize {
     const dropped = self.messages.items.len - w;
     self.messages.shrinkRetainingCapacity(w);
     return dropped;
-}
-
-test "dropPriorTurnReasoning (#174): prior-turn reasoning goes, current turn + non-responses stay" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    var msgs = std.json.Array.init(a);
-    try msgs.append(try textMessage(a, "user", "turn one"));
-    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"reasoning\",\"encrypted_content\":\"OLD1\"}", .{}));
-    try msgs.append(try textMessage(a, "assistant", "reply one"));
-    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"reasoning\",\"encrypted_content\":\"OLD2\"}", .{}));
-    try msgs.append(try textMessage(a, "user", "turn two"));
-    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"reasoning\",\"encrypted_content\":\"CURRENT\"}", .{}));
-    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"function_call\",\"name\":\"bash\",\"call_id\":\"c1\",\"arguments\":\"{}\"}", .{}));
-
-    var agent: Agent = undefined;
-    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100_000 };
-    agent.messages = msgs;
-
-    try std.testing.expectEqual(@as(usize, 2), dropPriorTurnReasoning(&agent));
-    try std.testing.expectEqual(@as(usize, 5), agent.messages.items.len);
-    // current-turn reasoning (after the last user message) survives, in order
-    const kept = agent.messages.items[3].object.get("encrypted_content").?.string;
-    try std.testing.expectEqualStrings("CURRENT", kept);
-
-    // non-responses providers are untouched
-    agent.provider.kind = .openai;
-    try std.testing.expectEqual(@as(usize, 0), dropPriorTurnReasoning(&agent));
-    try std.testing.expectEqual(@as(usize, 5), agent.messages.items.len);
 }
 
 /// Index to cut history at for an emergency trim: the first clean user turn
@@ -433,13 +319,24 @@ fn truncateToolOutput(arena: Allocator, m: *Value, cap: usize, note: []const u8)
     return 0;
 }
 
+/// Re-pair the meter after removing locally measurable context. The server-only
+/// delta remains intact, while the current local component reflects the trim.
+fn accountForReclaimedTokens(self: *Agent, reclaimed_tokens: u64) void {
+    if (reclaimed_tokens == 0) return;
+    self.rebaseContextMeter();
+}
+
+fn accountForReclaimedContext(self: *Agent, reclaimed: usize) void {
+    accountForReclaimedTokens(self, @intCast(reclaimed / 4));
+}
+
 /// #163: reclaim context when it has overflowed and there is no clean user turn
 /// to cut at (a runaway tool loop is all tool_call/tool_result after the last
 /// user turn). Truncate the OLDEST tool outputs in place, keeping the most recent
 /// `keep_recent` verbatim (opencode-style) and every call/output pair intact
 /// (codex's trim_function_call_history). Never drops a message, so no orphaned
 /// tool_result can reach the API. Returns bytes reclaimed.
-pub fn trimOldestToolOutputs(self: *Agent) usize {
+pub fn trimOldestToolOutputsAlloc(self: *Agent, arena: Allocator) usize {
     const keep_recent: usize = 4;
     const stub_cap: usize = 400;
     var total: usize = 0;
@@ -453,11 +350,14 @@ pub fn trimOldestToolOutputs(self: *Agent) usize {
         if (!isToolOutputMsg(m.*)) continue;
         seen += 1;
         if (seen > total - keep_recent) break; // keep the most recent verbatim
-        reclaimed += truncateToolOutput(self.arena, m, stub_cap, "[old tool output truncated to recover context (#163)]");
+        reclaimed += truncateToolOutput(arena, m, stub_cap, "[old tool output truncated to recover context (#163)]");
     }
-    // #202: reflect the trimmed size instead of blinding the meter to 0.
-    if (reclaimed > 0) self.last_context_tokens = self.fullInputEstimateTokens();
+    accountForReclaimedContext(self, reclaimed);
     return reclaimed;
+}
+
+pub fn trimOldestToolOutputs(self: *Agent) usize {
+    return trimOldestToolOutputsAlloc(self, self.arena);
 }
 
 /// #193 follow-up: bound ANY single tool output to `cap` serialized bytes before
@@ -475,25 +375,31 @@ pub fn capOversizedToolOutputs(self: *Agent, cap: usize) usize {
     var reclaimed: usize = 0;
     for (self.messages.items) |*m| {
         if (isToolOutputMsg(m.*))
-            reclaimed += truncateToolOutput(self.arena, m, cap, "[tool output truncated: over this model's per-result cap — read/fetch a smaller range (#193)]");
+            reclaimed += truncateToolOutput(self.messageMutationAlloc(), m, cap, "[tool output truncated: over this model's per-result cap — read/fetch a smaller range (#193)]");
     }
-    // #202: reflect the trimmed size instead of blinding the meter to 0, so the
-    // between-turns gate keeps working and an overflow recover-pin isn't clobbered.
-    if (reclaimed > 0) self.last_context_tokens = self.fullInputEstimateTokens();
+    // These outputs are appended after the prior response's usage was recorded,
+    // so reclaimed bytes were never part of that authoritative server reading.
+    // Never subtract them from it; only raise the floor to the now-capped full
+    // request estimate.
+    if (reclaimed > 0) self.rebaseContextMeter();
     return reclaimed;
 }
 
 /// Last-resort context recovery when compact() itself can't run — typically
 /// because the history already overflows the window, so the summarization
 /// request overflows too and fails. Drops the oldest messages at a safe
-/// boundary; returns the count dropped (0 if none). The next turn re-measures
-/// context from the provider usage.
+/// boundary; returns the count dropped (0 if none). Conservatively reduce the
+/// authoritative meter only by the locally measurable reclaimed tokens: hidden
+/// server-side reasoning may make the true reduction larger, but must never let
+/// a partial trim blind the next pre-send gate.
 pub fn emergencyTrim(self: *Agent) usize {
     if (emergencyCutIndex(self.messages.items)) |cut| {
+        const before_tokens = self.fullInputEstimateTokens();
         var fresh = std.json.Array.init(self.arena);
         for (self.messages.items[cut..]) |m| fresh.append(m) catch return 0;
         self.messages = fresh;
-        self.last_context_tokens = 0;
+        const after_tokens = self.fullInputEstimateTokens();
+        accountForReclaimedTokens(self, before_tokens -| after_tokens);
         return cut;
     }
     // #163: no clean user turn to cut at (a runaway tool loop). Don't wedge the
@@ -508,11 +414,32 @@ pub fn emergencyTrim(self: *Agent) usize {
 /// later turn failed at the same huge token count (issue #88). Surface the
 /// failure and, when `trim_on_fail`, emergency-trim so the next turn has
 /// room. Best-effort; never throws into the REPL loop.
+pub fn repeatedOpaqueCompactionFailure(self: *Agent, err: anyerror) bool {
+    const opaque_transport = err == error.ApiError and self.last_request_write_failed;
+    if (opaque_transport)
+        self.compact_transport_failures +|= 1
+    else
+        self.compact_transport_failures = 0;
+    const threshold = self.provider.compactAt();
+    const effective = self.effectiveContextTokens();
+    const locally_over_window = self.provider.context > 0 and self.fullRequestEstimateTokens() >= self.provider.context;
+    return opaque_transport and
+        threshold > 0 and
+        self.compact_transport_failures >= 2 and
+        (self.provider.nearContextLimit(effective) or locally_over_window);
+}
+
 pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
-    if (self.compact()) |_| return else |err| {
+    if (self.compact()) |_| {
+        self.compact_transport_failures = 0;
+        return;
+    } else |err| {
         switch (err) {
-            error.Interrupted => return, // user hit Esc mid-compaction
-            error.EmptySummary => {}, // compact() already explained it
+            error.Interrupted => {
+                self.compact_transport_failures = 0;
+                return; // user hit Esc mid-compaction
+            },
+            error.EmptySummary, error.IncompleteSummary => {}, // compact() already explained it
             else => {
                 if (main_mod.json_mode)
                     self.emit(.{ .type = "error", .message = std.fmt.allocPrint(self.arena, "auto-compaction failed: {s}", .{@errorName(err)}) catch "auto-compaction failed" })
@@ -520,9 +447,16 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
                     self.say("[auto-compaction failed: {t}]\n", .{err}) catch {};
             },
         }
-        if (!trim_on_fail) return;
+        const repeated_opaque_overflow = repeatedOpaqueCompactionFailure(self, err);
+        // The caller's policy is computed before compact() makes its summary
+        // request. Override it only for a concrete provider overflow rejection,
+        // or after two consecutive WriteFailed compaction attempts when the
+        // effective meter is near 95% (or local bytes prove over-window). The
+        // first failure and ordinary transport outages always preserve history.
+        if (!trim_on_fail and !self.last_request_context_overflow and !repeated_opaque_overflow) return;
         const dropped = self.emergencyTrim();
         if (dropped > 0) {
+            self.compact_transport_failures = 0;
             if (main_mod.json_mode)
                 self.emit(.{ .type = "compact", .ok = true, .trimmed = dropped })
             else
@@ -531,244 +465,4 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
             self.say("[warning: context too large to compact and could not be trimmed safely]\n", .{}) catch {};
         }
     }
-}
-
-test "trimOldestToolOutputs recovers a runaway tool-loop history (#163)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var msgs = std.json.Array.init(a);
-    try msgs.append(try textMessage(a, "user", "babysit the CI")); // the only clean user turn
-    const big = try a.alloc(u8, 5000);
-    @memset(big, 'x');
-    var i: usize = 0;
-    while (i < 10) : (i += 1) {
-        var o: std.json.ObjectMap = .empty;
-        try o.put(a, "type", .{ .string = "function_call_output" });
-        try o.put(a, "call_id", .{ .string = "c" });
-        try o.put(a, "output", .{ .string = big });
-        try msgs.append(.{ .object = o });
-    }
-    var agent: Agent = undefined;
-    agent.messages = msgs;
-    agent.arena = a;
-    agent.last_context_tokens = 100000;
-    // no clean user turn after the midpoint -> the old emergencyTrim would give up
-    try std.testing.expect(emergencyCutIndex(agent.messages.items) == null);
-    const reclaimed = trimOldestToolOutputs(&agent);
-    try std.testing.expect(reclaimed > 0); // recovered instead of wedging
-    // #202: re-measured to the trimmed size instead of blinding the meter to 0
-    try std.testing.expect(agent.last_context_tokens > 0);
-    try std.testing.expectEqual(agent.fullInputEstimateTokens(), agent.last_context_tokens);
-    var truncated: usize = 0;
-    var full: usize = 0;
-    for (agent.messages.items) |m| {
-        if (m == .object) if (m.object.get("output")) |out| if (out == .string) {
-            if (out.string.len < 1000) truncated += 1 else full += 1;
-        };
-    }
-    try std.testing.expectEqual(@as(usize, 6), truncated); // 10 outputs, oldest 6 truncated
-    try std.testing.expectEqual(@as(usize, 4), full); // 4 most-recent kept verbatim
-    try std.testing.expectEqual(@as(usize, 11), agent.messages.items.len); // no message dropped
-}
-
-test "capOversizedToolOutputs (#193): bounds an oversized output in every wire format, leaves small ones + non-tool msgs" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const cap: usize = 1024;
-    const big = try a.alloc(u8, 8192);
-    @memset(big, 'x');
-
-    var msgs = std.json.Array.init(a);
-    // responses function_call_output (oversized)
-    var fco: std.json.ObjectMap = .empty;
-    try fco.put(a, "type", .{ .string = "function_call_output" });
-    try fco.put(a, "call_id", .{ .string = "c1" });
-    try fco.put(a, "output", .{ .string = big });
-    try msgs.append(.{ .object = fco });
-    // openai role:"tool" (oversized)
-    var tool: std.json.ObjectMap = .empty;
-    try tool.put(a, "role", .{ .string = "tool" });
-    try tool.put(a, "tool_call_id", .{ .string = "c2" });
-    try tool.put(a, "content", .{ .string = big });
-    try msgs.append(.{ .object = tool });
-    // anthropic user turn carrying a tool_result block (oversized)
-    var user: std.json.ObjectMap = .empty;
-    try user.put(a, "role", .{ .string = "user" });
-    var blocks = std.json.Array.init(a);
-    var tr: std.json.ObjectMap = .empty;
-    try tr.put(a, "type", .{ .string = "tool_result" });
-    try tr.put(a, "tool_use_id", .{ .string = "c3" });
-    try tr.put(a, "content", .{ .string = big });
-    try blocks.append(.{ .object = tr });
-    try user.put(a, "content", .{ .array = blocks });
-    try msgs.append(.{ .object = user });
-    // a small tool output (within cap) — must be left untouched
-    var small: std.json.ObjectMap = .empty;
-    try small.put(a, "type", .{ .string = "function_call_output" });
-    try small.put(a, "output", .{ .string = "ok" });
-    try msgs.append(.{ .object = small });
-    // a plain assistant text message — never a tool output, left untouched
-    try msgs.append(try textMessage(a, "assistant", "hello"));
-
-    var agent: Agent = undefined;
-    agent.arena = a;
-    agent.messages = msgs;
-    agent.last_context_tokens = 42;
-
-    const reclaimed = capOversizedToolOutputs(&agent, cap);
-    try std.testing.expect(reclaimed > 0);
-    // #202: re-measured to the trimmed size instead of blinding the meter to 0
-    try std.testing.expect(agent.last_context_tokens > 0);
-    try std.testing.expectEqual(agent.fullInputEstimateTokens(), agent.last_context_tokens);
-
-    // every oversized tool output is now within the cap, with a marker
-    const out0 = agent.messages.items[0].object.get("output").?.string;
-    try std.testing.expect(out0.len <= cap);
-    try std.testing.expect(std.mem.indexOf(u8, out0, "truncated") != null);
-    const out1 = agent.messages.items[1].object.get("content").?.string;
-    try std.testing.expect(out1.len <= cap);
-    const block = agent.messages.items[2].object.get("content").?.array.items[0];
-    try std.testing.expect(block.object.get("content").?.string.len <= cap);
-    // within-cap output and the non-tool message are untouched
-    try std.testing.expectEqualStrings("ok", agent.messages.items[3].object.get("output").?.string);
-    try std.testing.expectEqualStrings("hello", agent.messages.items[4].object.get("content").?.string);
-    // cap == 0 disables the cap entirely (unknown window)
-    try std.testing.expectEqual(@as(usize, 0), capOversizedToolOutputs(&agent, 0));
-}
-
-test "cleanUserTurn: plain user text yes; assistant/tool_result no" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    try std.testing.expect(cleanUserTurn(try textMessage(a, "user", "hello")));
-    try std.testing.expect(!cleanUserTurn(try textMessage(a, "assistant", "hi")));
-    // an anthropic tool_result-only user message is NOT a clean conversation start
-    const tr = try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}", .{});
-    try std.testing.expect(!cleanUserTurn(tr));
-}
-
-test "closeCodexWs resets the delta session state + frees the response id (codex-ws)" {
-    var agent: Agent = undefined;
-    agent.gpa = std.testing.allocator;
-    agent.codex_ws = null; // no live WsClient to deinit in a unit test
-    agent.codex_prev_id = try std.testing.allocator.dupe(u8, "resp_abc123"); // must be freed (leak-checked)
-    agent.codex_sent_upto = 5;
-    agent.closeCodexWs();
-    try std.testing.expect(agent.codex_prev_id == null); // freed + nulled
-    try std.testing.expectEqual(@as(usize, 0), agent.codex_sent_upto); // delta boundary reset
-    try std.testing.expect(agent.codex_ws == null);
-}
-
-// (#codex-ws) The delta-body detection string check in agent_ws.zig's
-// postLive() gates the WS-reanchor path (never SSE-replay a delta): it
-// looks for the literal `"previous_response_id"` key that buildBody's
-// .responses branch emits. Pin the exact substring so the two stay in
-// sync — a future rename of the JSON key on either side breaks this test
-// instead of silently reopening the SSE-replay bug.
-test "postLive's delta-body detection matches the key buildBody emits (codex-ws)" {
-    const delta_body = "{\"model\":\"gpt-5\",\"previous_response_id\":\"resp_1\",\"input\":[]}";
-    const full_body = "{\"model\":\"gpt-5\",\"input\":[]}";
-    try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"previous_response_id\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, full_body, "\"previous_response_id\"") == null);
-}
-
-// (#codex-ws) The preemptive idle re-anchor decision (postResponsesWs closes a
-// held WS the server has likely already killed instead of eating a failed
-// round trip). Pure helper so no socket is needed: exactly-at-limit must NOT
-// expire (only strictly past it), and a WS used moments ago must survive.
-// opencode pools at 5 min; ours defaults to 4 (the backend killed a real
-// session within 8.5 min idle).
-test "codexWsIdleExpired: fires only strictly past the idle limit (codex-ws)" {
-    const limit = agent_ws.codex_ws_idle_ms;
-    try std.testing.expectEqual(@as(i64, 4 * std.time.ms_per_min), limit); // default: stay under the observed server kill
-    try std.testing.expect(!agent_ws.codexWsIdleExpired(1_000_000, 1_000_000)); // just used
-    try std.testing.expect(!agent_ws.codexWsIdleExpired(1_000_000 + limit, 1_000_000)); // exactly at the limit — keep
-    try std.testing.expect(agent_ws.codexWsIdleExpired(1_000_000 + limit + 1, 1_000_000)); // past it — re-anchor
-    try std.testing.expect(agent_ws.codexWsIdleExpired(1_000_000 + 510 * std.time.ms_per_s, 1_000_000)); // the real 8.5-min trace gap
-}
-
-// (#codex-ws) End-to-end regression for the reanchor fix: buildBody's
-// .responses branch must emit previous_response_id + a message-slice delta
-// while a WS session + prev id are held, and after closeCodexWs (called by
-// postLive on a delta transport error, and again by request()'s
-// error.CodexWsReanchor handler) a rebuilt body must carry the FULL
-// message history with no previous_response_id — never a stale delta
-// replayed against a dead session.
-test "buildBody (.responses): delta while WS live; full input after closeCodexWs (codex-ws)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    var msgs = std.json.Array.init(a);
-    try msgs.append(try textMessage(a, "user", "first"));
-    try msgs.append(try textMessage(a, "assistant", "second"));
-    try msgs.append(try textMessage(a, "user", "third — not yet sent"));
-
-    var dummy_ws: ws.WsClient = undefined; // buildBody only checks != null, never dereferences
-    var agent: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = a,
-        .io = undefined, // unused by buildBody
-        .client = undefined, // unused by buildBody
-        .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://x/responses", .api_key = "k", .model = "gpt-5", .context = 100_000 },
-        .messages = msgs,
-        .sub = false,
-        .label = "",
-        .out = null,
-        .codex_ws = &dummy_ws,
-        .codex_prev_id = try std.testing.allocator.dupe(u8, "resp_live"),
-        .codex_sent_upto = 2, // server already holds messages[0..2]; delta = [2..]
-    };
-
-    const delta_body = try agent.buildBody(null, false, false, false);
-    defer std.testing.allocator.free(delta_body);
-    try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"previous_response_id\":\"resp_live\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, delta_body, "third — not yet sent") != null);
-    try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"first\"") == null); // NOT resent — already on the server
-
-    // Simulate closeCodexWs's effect (covered by its own unit test above)
-    // without invoking it directly: it would call ws.WsClient.deinit on
-    // codex_ws, which sends a real close frame over `dummy_ws`'s
-    // uninitialized io/fd — fine for a live connection, unsafe for this
-    // struct-literal stand-in. What matters here is buildBody's behavior
-    // given the post-close state postLive/request() leave it in.
-    std.testing.allocator.free(agent.codex_prev_id.?);
-    agent.codex_ws = null;
-    agent.codex_prev_id = null;
-    agent.codex_sent_upto = 0;
-    const rebuilt_body = try agent.buildBody(null, false, false, false);
-    defer std.testing.allocator.free(rebuilt_body);
-    try std.testing.expect(std.mem.indexOf(u8, rebuilt_body, "\"previous_response_id\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, rebuilt_body, "\"first\"") != null); // full history restored
-    try std.testing.expect(std.mem.indexOf(u8, rebuilt_body, "third — not yet sent") != null);
-}
-
-test "emergencyCutIndex: cuts at a clean user turn at/after the midpoint" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var items = std.json.Array.init(a);
-    const roles = [_][]const u8{ "user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant" };
-    for (roles) |r| try items.append(try textMessage(a, r, "x"));
-    try std.testing.expectEqual(@as(?usize, 4), emergencyCutIndex(items.items)); // midpoint 4 is a user turn
-    try std.testing.expectEqual(@as(?usize, null), emergencyCutIndex(items.items[0..3])); // too short to trim
-}
-
-test "emergencyCutIndex: skips a tool_result user message at the midpoint" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var items = std.json.Array.init(a);
-    try items.append(try textMessage(a, "user", "x")); // 0
-    try items.append(try textMessage(a, "assistant", "x")); // 1
-    try items.append(try textMessage(a, "user", "x")); // 2
-    try items.append(try textMessage(a, "assistant", "x")); // 3
-    // 4: an anthropic tool_result-only user message (not a valid conversation start)
-    try items.append(try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"x\"}]}", .{})); // 4 (skip)
-    try items.append(try textMessage(a, "assistant", "x")); // 5
-    try items.append(try textMessage(a, "user", "x")); // 6 (first clean user >= midpoint)
-    try items.append(try textMessage(a, "assistant", "x")); // 7
-    try std.testing.expectEqual(@as(?usize, 6), emergencyCutIndex(items.items));
 }

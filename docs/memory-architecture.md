@@ -20,7 +20,7 @@ minimal memory layer native, with engram as one backend among several.
 |---|---|---|
 | purpose | solve the current & future *tasks* better | improve the *agent itself* over generations |
 | unit | an episode / fact / note | a genome (prompt + tools + memory design) + its fitness |
-| store | `.harness/memory/` (this doc) | `harness.trajectory.jsonl` + `harness_scores` |
+| store | `.harness/memory/` (this doc) | `.graff/trajectories/*.jsonl` + `harness_scores` |
 | lifetime | reused across turns/sessions/projects | append-only archive, fleet-aggregated |
 
 They interact (the memory Design is a *slot in the genome* — §8), but they are
@@ -188,4 +188,3 @@ The minimal version is small — a meta-tool pair + a JSONL episode store + a
 session-start scratchpad — and it immediately makes long-horizon runs less
 amnesiac without touching the hot path or the KV-cache.
 ```
-

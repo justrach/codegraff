@@ -11,7 +11,14 @@ const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
-const builtin = @import("builtin");
+
+const helpers = @import("oauth_helpers.zig");
+const b64url = helpers.b64url;
+const accountFromIdToken = helpers.accountFromIdToken;
+const writeCodexAuth = helpers.writeCodexAuth;
+const codex_login_page_html = helpers.codex_login_page_html;
+const queryParam = helpers.queryParam;
+const openBrowser = helpers.openBrowser;
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
@@ -72,12 +79,6 @@ const codex_redirect = "http://localhost:1455/auth/callback";
 const codex_redirect_enc = "http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback";
 const oauth_scope_enc = "openid%20profile%20email%20offline_access";
 
-fn b64url(arena: Allocator, bytes: []const u8) []const u8 {
-    const enc = std.base64.url_safe_no_pad.Encoder;
-    const buf = arena.alloc(u8, enc.calcSize(bytes.len)) catch return "";
-    return enc.encode(buf, bytes);
-}
-
 /// POST a form body to the OAuth token endpoint; return the parsed JSON object.
 fn oauthTokenPost(io: Io, gpa: Allocator, arena: Allocator, body: []const u8) !std.json.ObjectMap {
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
@@ -95,77 +96,6 @@ fn oauthTokenPost(io: Io, gpa: Allocator, arena: Allocator, body: []const u8) !s
     return v.object;
 }
 
-/// Pull chatgpt_account_id out of an id_token's claims (base64url middle segment).
-fn accountFromIdToken(arena: Allocator, id_token: []const u8) []const u8 {
-    var it = std.mem.splitScalar(u8, id_token, '.');
-    _ = it.next();
-    const payload = it.next() orelse return "";
-    const dec = std.base64.url_safe_no_pad.Decoder;
-    const n = dec.calcSizeForSlice(payload) catch return "";
-    const buf = arena.alloc(u8, n) catch return "";
-    dec.decode(buf, payload) catch return "";
-    const v = std.json.parseFromSliceLeaky(Value, arena, buf, .{ .allocate = .alloc_always }) catch return "";
-    if (v != .object) return "";
-    const a = v.object.get("https://api.openai.com/auth") orelse return "";
-    if (a != .object) return "";
-    const acct = a.object.get("chatgpt_account_id") orelse return "";
-    return if (acct == .string) acct.string else "";
-}
-
-fn writeCodexAuth(io: Io, arena: Allocator, home: []const u8, id_token: []const u8, access: []const u8, refresh: []const u8, account: []const u8) !void {
-    const path = try std.fmt.allocPrint(arena, "{s}/.codex/auth.json", .{home});
-    var toks: std.json.ObjectMap = .empty;
-    try toks.put(arena, "id_token", .{ .string = id_token });
-    try toks.put(arena, "access_token", .{ .string = access });
-    try toks.put(arena, "refresh_token", .{ .string = refresh });
-    try toks.put(arena, "account_id", .{ .string = account });
-    var obj: std.json.ObjectMap = .empty;
-    try obj.put(arena, "auth_mode", .{ .string = "chatgpt" });
-    try obj.put(arena, "tokens", .{ .object = toks });
-    try obj.put(arena, "last_refresh", .{ .string = "harness-login" });
-    var aw: Io.Writer.Allocating = .init(arena);
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    try s.write(Value{ .object = obj });
-    const f = try Io.Dir.cwd().createFile(io, path, .{});
-    defer f.close(io);
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    try fw.interface.writeAll(aw.writer.buffered());
-    try fw.interface.flush();
-}
-
-/// The page the Codex OAuth callback tab lands on after a successful login.
-/// A branded, dark-mode-aware confirmation card; the local server writes this
-/// back, then reads the ?code out of the same request for the token exchange.
-const codex_login_page_html =
-    \\<!doctype html>
-    \\<html lang="en"><head><meta charset="utf-8">
-    \\<meta name="viewport" content="width=device-width, initial-scale=1">
-    \\<title>graff — logged in</title>
-    \\<style>
-    \\:root{color-scheme:light dark}
-    \\html,body{height:100%;margin:0}
-    \\body{display:flex;align-items:center;justify-content:center;
-    \\font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    \\background:#fafafa;color:#18181b}
-    \\.card{text-align:center;padding:2.5rem 3rem;border-radius:16px;background:#fff;
-    \\border:1px solid #e4e4e7;box-shadow:0 8px 30px rgba(0,0,0,.06);max-width:22rem}
-    \\.mark{font-size:1.25rem;font-weight:700;letter-spacing:-.02em}
-    \\.mark b{color:#6d28d9}
-    \\h1{font-size:1.35rem;margin:1rem 0 .5rem;font-weight:650}
-    \\.check{color:#16a34a}
-    \\p{margin:0;color:#52525b;line-height:1.55}
-    \\@media(prefers-color-scheme:dark){
-    \\body{background:#09090b;color:#fafafa}
-    \\.card{background:#18181b;border-color:#27272a;box-shadow:0 8px 30px rgba(0,0,0,.4)}
-    \\p{color:#a1a1aa}.mark b{color:#a78bfa}}
-    \\</style></head>
-    \\<body><div class="card">
-    \\<div class="mark">graff <b>◆</b></div>
-    \\<h1>You're all set <span class="check">✓</span></h1>
-    \\<p>Codex is connected. You can close this tab and return to graff.</p>
-    \\</div></body></html>
-;
 /// `harness login [--refresh]`: the ChatGPT/Codex OAuth flow. Fresh login runs
 /// PKCE (open browser → localhost:1455 callback → code→token exchange); refresh
 /// uses the stored refresh_token. Either way writes ~/.codex/auth.json.
@@ -265,27 +195,6 @@ pub fn codexLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, re
     try writeCodexAuth(io, arena, home, id_token, access, refresh, account);
     try out.print("✓ logged into Codex (account {s}…) — wrote ~/.codex/auth.json. /model codex\n", .{account[0..@min(account.len, 8)]});
     try out.flush();
-}
-
-/// Extract a query-string parameter from an HTTP request line ("GET /p?k=v…").
-fn queryParam(req_line: []const u8, key: []const u8) ?[]const u8 {
-    const q = std.mem.indexOfScalar(u8, req_line, '?') orelse return null;
-    const sp = std.mem.indexOfScalarPos(u8, req_line, q, ' ') orelse req_line.len;
-    var it = std.mem.tokenizeScalar(u8, req_line[q + 1 .. sp], '&');
-    while (it.next()) |pair| {
-        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
-        if (std.mem.eql(u8, pair[0..eq], key)) return pair[eq + 1 ..];
-    }
-    return null;
-}
-
-fn openBrowser(io: Io, url: []const u8) void {
-    const argv: []const []const u8 = if (builtin.os.tag == .macos)
-        &.{ "open", url }
-    else
-        &.{ "xdg-open", url };
-    var child = std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch return;
-    _ = child.wait(io) catch {};
 }
 
 // Kimi Code OAuth — device-code flow, same client + endpoints the Kimi CLI

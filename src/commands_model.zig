@@ -124,20 +124,22 @@ fn handleFallback(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wri
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     if (try handleFallback(root, arena, line, out)) return true;
     if (std.mem.startsWith(u8, line, "/model") and !std.mem.startsWith(u8, line, "/models")) {
+        root.ensureStoredKeys(keys);
         const arg = std.mem.trim(u8, line["/model".len..], " \t");
+        if (providers.modelQueryMayUseCodex(arg)) root.ensureModelCatalog(keys.*);
         if (arg.len == 0) {
             if (main_mod.use_color) { // interactive TTY → fuzzy picker
                 if (modelPicker(root, keys, arena, out)) |idx| {
                     const m = pricing.models()[idx];
                     const provider = keys.providerById(m.provider, m.name) catch {
-                        try offerProviderAuth(root, keys, arena, out, m.provider, m.name);
+                        try offerProviderAuth(root, keys, arena, out, m.provider, m.name, false);
                         return true;
                     };
                     try switchProvider(root, arena, provider, out);
                 }
                 return true;
             }
-            try out.print("current model: {s}{s}{s} via {s}\n", .{ style.cyan, root.provider.model, style.reset, root.provider.id });
+            try out.print("current model: {s}{s}{s} via {s}\n", .{ style.accent, root.provider.model, style.reset, root.provider.id });
             try out.writeAll("switch with /model <name> or /model <provider>:\n");
             for (provider_specs) |spec| {
                 const keyed = keys.get(spec.id) != null;
@@ -168,7 +170,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 }
                 const m = try arena.dupe(u8, mdl);
                 const provider = keys.providerById(pid, m) catch {
-                    try offerProviderAuth(root, keys, arena, out, pid, m);
+                    try offerProviderAuth(root, keys, arena, out, pid, m, false);
                     return true;
                 };
                 try switchProvider(root, arena, provider, out);
@@ -184,7 +186,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             // baked default. One loaded → switch straight to it; many → list to pick.
             if (isLocalUrl(spec.url)) {
                 const key = keys.get(spec.id) orelse {
-                    try offerProviderAuth(root, keys, arena, out, spec.id, pricing.providerDefaultModel(spec.id, spec.default_model));
+                    try offerProviderAuth(root, keys, arena, out, spec.id, pricing.providerDefaultModel(spec.id, spec.default_model), true);
                     return true;
                 };
                 const murl = openAiModelsUrl(arena, spec.url);
@@ -198,14 +200,14 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                     try switchProvider(root, arena, keys.build(spec, key, try arena.dupe(u8, models[0])), out);
                     return true;
                 }
-                try out.print("{s}{s} models{s} — pick with {s}/model {s} <id>{s}:\n", .{ style.bold, spec.id, style.reset, style.cyan, spec.id, style.reset });
-                for (models) |id| try out.print("  {s}{s}{s}\n", .{ style.cyan, id, style.reset });
+                try out.print("{s}{s} models{s} — pick with {s}/model {s} <id>{s}:\n", .{ style.bold, spec.id, style.reset, style.accent, spec.id, style.reset });
+                for (models) |id| try out.print("  {s}{s}{s}\n", .{ style.accent, id, style.reset });
                 try out.flush();
                 return true;
             }
             const default_model = pricing.providerDefaultModel(spec.id, spec.default_model);
             const provider = keys.providerById(spec.id, default_model) catch {
-                try offerProviderAuth(root, keys, arena, out, spec.id, default_model);
+                try offerProviderAuth(root, keys, arena, out, spec.id, default_model, true);
                 return true;
             };
             try switchProvider(root, arena, provider, out);
@@ -219,7 +221,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const name = try arena.dupe(u8, resolved);
         const provider = keys.providerFor(name) catch {
             for (pricing.models()) |mt| if (std.mem.eql(u8, mt.name, name)) {
-                try offerProviderAuth(root, keys, arena, out, mt.provider, name);
+                try offerProviderAuth(root, keys, arena, out, mt.provider, name, false);
                 return true;
             };
             try out.writeAll("no API key for any provider serving that model — see /models, or add one with /key <provider> <key>\n");
@@ -231,7 +233,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/compact")) {
         _ = root.compact() catch |err| switch (err) {
-            error.ApiError => {},
+            error.ApiError, error.EmptySummary, error.IncompleteSummary => {},
             else => |e| return e,
         };
         return true;
@@ -261,7 +263,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 var snip = if (root.messages.items[idx].object.get("content")) |c| (if (c == .string) c.string else "[image]") else "";
                 if (std.mem.indexOfScalar(u8, snip, '\n')) |nl| snip = snip[0..nl];
                 const shown = if (snip.len > 70) snip[0..70] else snip;
-                try out.print("  {s}{d}{s}: {s}{s}\n", .{ style.cyan, n, style.reset, shown, if (snip.len > 70) "…" else "" });
+                try out.print("  {s}{d}{s}: {s}{s}\n", .{ style.accent, n, style.reset, shown, if (snip.len > 70) "…" else "" });
             }
             try out.print("{s}usage: /rewind <n> — drops prompt <n>+after and reverts its write_file/edit_file changes (bash edits aren't tracked){s}\n", .{ style.dim, style.reset });
             try out.flush();
@@ -277,6 +279,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const dropped = root.messages.items.len - cut;
         root.messages.items.len = cut; // truncate (entries are arena-owned)
         root.last_context_tokens = 0;
+        root.context_local_tokens = 0;
+        root.compact_transport_failures = 0;
         // Restore files written/edited during the rewound turns, and re-point the
         // turn counter so the next prompt re-takes turn n.
         var restored: usize = 0;
@@ -316,7 +320,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/title") or std.mem.eql(u8, line, "/title on") or std.mem.eql(u8, line, "/title off")) {
+        const was_on = root.ai_title;
         root.ai_title = if (std.mem.eql(u8, line, "/title on")) true else if (std.mem.eql(u8, line, "/title off")) false else !root.ai_title;
+        if (was_on and !root.ai_title) root.title_generation +%= 1; // discard any detached result already in flight
         const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("AI session title: {s} ({s}){s}\n", .{
             if (root.ai_title) "on" else "off",
@@ -395,6 +401,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.startsWith(u8, line, "/key")) {
+        root.ensureStoredKeys(keys);
         const rest = std.mem.trim(u8, line["/key".len..], " \t");
         if (rest.len == 0) { // show key status + how to add
             try out.writeAll("API keys (✓ = set via env / Keychain / login):\n");
@@ -435,6 +442,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.startsWith(u8, line, "/login")) {
+        root.ensureStoredKeys(keys);
         // Interactive OAuth sign-in for the providers that have a device/PKCE
         // flow (codegraff, codex/ChatGPT, kimi). Mirrors the `graff login`
         // subcommands but runs in-session and pulls the fresh key into the live
@@ -565,6 +573,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/strict")) {
         root.strict = !root.strict;
+        root.rebaseContextMeter();
         try out.print("strict mode {s} — {s}\n", .{
             if (root.strict) "ON" else "off",
             if (root.strict) "every message must be a tool; finish with attempt_completion" else "free-text replies allowed",

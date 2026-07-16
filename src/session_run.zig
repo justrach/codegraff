@@ -52,7 +52,6 @@ const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
 const fleet = @import("fleet.zig");
 const hooks = @import("hooks.zig");
-const schema = @import("schema.zig");
 
 /// `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL
 /// agent loop — each prompt runs a full root turn (tools + MCP) via
@@ -61,18 +60,27 @@ const schema = @import("schema.zig");
 /// `root` is already a stable, fully-constructed main()-owned Agent by the
 /// time this is called, so taking its address here is safe (this helper
 /// only reads through the pointer, it never owns or returns Agent storage).
-pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
+pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "repl"))) return false;
+    root.ensureStoredKeys(keys);
+    root.ensureModelCatalog(keys.*);
+    // The standalone chat REPL can switch wire formats inside its own model
+    // picker, so materialize every catalog only when this surface is entered.
+    try root.ensureRootTools(.anthropic);
+    try root.ensureRootTools(.openai);
+    try root.ensureRootTools(.responses);
     var repl_ctx = repl_glue.ReplCtx{
         .io = io,
         .client = client,
-        .keys = keys,
+        .keys = keys.*,
         .home = root.home,
         .provider = root.provider,
         .fallback_allow = root.fallback_allow,
         .fallback_active = root.fallback_active,
         .fallback_blocked = root.fallback_blocked,
         .registry = root.registry,
+        .tracer = root.tracer,
+        .run_budget = root.run_budget,
         .sys_normal = root.sys_normal,
         .tools_anthropic = root.tools_anthropic,
         .tools_openai = root.tools_openai,
@@ -97,7 +105,7 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
 /// denies anything not pre-approved instead of prompting (there's no one to
 /// ask). Moved out of main() verbatim (600-line goal); `root`/`tracer` are
 /// already stable main()-owned storage by the time this runs.
-pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_mod.Agent, keys: provider_mod.Keys, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
+pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_mod.Agent, keys: *provider_mod.Keys, tracer: *trace.Tracer, out: *Io.Writer, prompt_text: []const u8) !void {
     main_mod.unattended = true;
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
@@ -195,14 +203,10 @@ pub fn buildRootAgent(
     tracer: *trace.Tracer,
     sys_normal: []const u8,
     sys_strict: []const u8,
-    mcp_tools: []const mcp.Tool,
     snaps: *tools_mod.Snapshots,
     flags: args.Flags,
     telem_endpoint: []const u8,
 ) !agent_mod.Agent {
-    // #225: clock_sleep only appears in the model's tool catalog when the
-    // root-only feature flag is on (--clock-sleep / GRAFF_CLOCK_SLEEP=1).
-    const root_tool_specs = try schema.effectiveRootSpecs(arena);
     var root: agent_mod.Agent = .{
         .snapshots = snaps,
         .gpa = gpa,
@@ -221,10 +225,13 @@ pub fn buildRootAgent(
         .tracer = tracer,
         .sys_normal = sys_normal,
         .sys_strict = sys_strict,
-        .tools_anthropic = try schema.renderRootTools(arena, .anthropic, root_tool_specs, mcp_tools),
-        .tools_openai = try schema.renderRootTools(arena, .openai, root_tool_specs, mcp_tools),
-        .tools_responses = try schema.renderRootTools(arena, .responses, root_tool_specs, mcp_tools),
+        .tools_anthropic = "",
+        .tools_openai = "",
+        .tools_responses = "",
     };
+    // Startup pays for one provider format, not all three. Other formats are
+    // rendered on first switch with the same built-in + live MCP inputs.
+    try root.ensureRootTools(default_provider.kind);
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{util.unixMs(io)});
     root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     repl_glue.loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
@@ -251,7 +258,7 @@ pub fn buildRootAgent(
 /// resume-target reload for a resumed one-shot. Moved out of main() verbatim
 /// (600-line goal). Both are best-effort (`catch {}`), matching main()'s
 /// former inline behavior exactly.
-pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: provider_mod.Keys, arena: Allocator, flags: args.Flags) void {
+pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, arena: Allocator, flags: args.Flags) void {
     const will_resume = flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag;
     if (!will_resume) session.saveSession(root, arena, root.session_name) catch {};
     if (flags.oneshot_prompt != null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) {
@@ -265,13 +272,10 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: provider_mod.Keys, aren
 /// as what would trigger live compaction, summarizes up front instead of
 /// re-billing the whole thing on the first turn. Moved out of main()
 /// verbatim (600-line goal); `root` is already stable main()-owned storage.
-pub fn restoreResumedSession(io: Io, arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, keys: provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
+pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, keys: *provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
     if (!(flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag)) return;
     if (session.loadSession(root, keys, arena, root.session_name)) |_| {
         if (root.messages.items.len > 0) {
-            // Estimate the restored context from the file size (~4 bytes/token).
-            const est_path = try session.sessionPath(arena, root.session_name);
-            const est: u64 = if (Io.Dir.cwd().statFile(io, est_path, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
             if (!json_mode) {
                 // Prefer the saved AI summary; fall back to the first user
                 // message only for older sessions that have no saved title.
@@ -282,12 +286,13 @@ pub fn restoreResumedSession(io: Io, arena: Allocator, out: *Io.Writer, root: *a
                 try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ root.session_name, session.session_ext, root.messages.items.len, root.provider.model });
                 try out.flush();
             }
-            // Cold cache: if the restored context is as large as what would
-            // trigger live compaction, the first turn would re-bill the whole
-            // thing — summarize up front instead.
-            if (est >= root.provider.compactAt()) {
-                root.last_context_tokens = est;
-                root.compactOrRecover(true);
+            // Cold cache: loadSession rebased the saved server-only token delta
+            // onto today's complete local request estimate. Summarize up front
+            // when that conservative meter crosses compactAt. Resume itself is
+            // never permission to destructively trim on a transient/empty
+            // summary; a concrete provider overflow can still override this.
+            if (root.inputOverCompactThreshold()) {
+                root.compactOrRecover(false);
             }
         }
     } else |_| {}
@@ -399,11 +404,13 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
         } else |_| {}
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
-    // GRAFF_WS_FORCE_FAIL_ONCE=1|true|on|yes arms the one-shot forced WS
-    // connect failure (integration-test seam for the SSE fallback + ws_off
-    // latch). Only affirmative values arm it — =0 must leave it disarmed.
+    // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
+    // that two consecutive failures latch the SSE fallback. Test seams only.
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {
         ws.g_force_connect_failure_once = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+    }
+    if (environ_map.get("GRAFF_WS_FORCE_FAIL_COUNT")) |v| {
+        ws.g_force_connect_failure_count = std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10) catch 0;
     }
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice

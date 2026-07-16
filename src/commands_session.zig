@@ -39,7 +39,6 @@ const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
 
 const trace = @import("trace.zig");
-const trajectory_path = trace.trajectory_path;
 
 const skills = @import("skills.zig");
 const skillIndex = skills.skillIndex;
@@ -78,10 +77,13 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/clear")) {
         root.messages = std.json.Array.init(arena);
         root.last_context_tokens = 0;
+        root.context_local_tokens = 0;
         root.last_cache_read = 0;
+        root.compact_transport_failures = 0;
         root.tui_header_shown = false;
         root.session_title = null; // re-summarize the now-empty conversation
         root.ai_title_done = false;
+        root.title_generation +%= 1;
         root.todos.clearRetainingCapacity();
         const had_goal = root.goal != null;
         resetConversationSteering(root);
@@ -95,11 +97,14 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/new")) {
         root.messages = std.json.Array.init(arena);
         root.last_context_tokens = 0;
+        root.context_local_tokens = 0;
         root.last_cache_read = 0;
+        root.compact_transport_failures = 0;
         root.todos.clearRetainingCapacity();
         resetConversationSteering(root);
         root.session_title = null;
         root.ai_title_done = false; // let the new session earn its own AI title
+        root.title_generation +%= 1;
         root.tui_header_shown = false;
         root.session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(root.io)});
         saveSession(root, arena, root.session_name) catch {};
@@ -114,6 +119,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         } else {
             root.session_title = try arena.dupe(u8, title);
             root.ai_title_done = true; // a manual /rename wins over the auto-titler
+            root.title_generation +%= 1; // discard any still-running AI result
             saveSession(root, arena, root.session_name) catch {};
             try out.print("session title → {s}\n", .{title});
         }
@@ -194,7 +200,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.startsWith(u8, line, "/agents promote")) {
         const personal = std.mem.indexOf(u8, line, "--personal") != null or std.mem.indexOf(u8, line, "--global") != null;
-        try out.print("{s}promoting local champions{s} → {s} tier (from {s})\n", .{ style.bold, style.reset, if (personal) "personal ~/.harness/agents" else "private ./.harness/agents", trajectory_path });
+        try out.print("{s}promoting local champions{s} → {s} tier (from {s})\n", .{ style.bold, style.reset, if (personal) "personal ~/.harness/agents" else "private ./.harness/agents", trace.trajectories_dir });
         const n = promoteAgents(root.io, root.gpa, out, fleet.g_home, personal);
         if (n > 0) try out.print("{s}✓ promoted {d} niche(s) — they load on next start{s}\n", .{ style.green, n, style.reset });
         try out.flush();
@@ -205,7 +211,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         for (fleet.g_agent_types) |t| {
             const fp = promptFingerprint(t.prompt);
             try out.print("  {s}{s:<14}{s} {s} {s}{s}{s}", .{
-                style.cyan,
+                style.accent,
                 t.name,
                 style.reset,
                 if (t.builtin) "builtin" else "file   ",
@@ -223,13 +229,13 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const arg = std.mem.trim(u8, line["/animation".len..], " ");
         if (arg.len == 0) {
             const current: []const u8 = if (anim.g_anim_off) "off" else if (anim.g_anim_random) "random" else anim.anims[anim.g_anim_index].name;
-            try out.print("{s}thinking animations{s} (current: {s}{s}{s}) — /animation <name> picks one, persists to {s}\n", .{ style.bold, style.reset, style.cyan, current, style.reset, Approvals.settings_path });
+            try out.print("{s}thinking animations{s} (current: {s}{s}{s}) — /animation <name> picks one, persists to {s}\n", .{ style.bold, style.reset, style.accent, current, style.reset, Approvals.settings_path });
             for (anim.anims) |a| {
-                try out.print("  {s}{s:<12}{s} {s}  preview: ", .{ style.cyan, a.name, style.reset, a.desc });
+                try out.print("  {s}{s:<12}{s} {s}  preview: ", .{ style.accent, a.name, style.reset, a.desc });
                 try a.frame(out, 3);
                 try out.writeAll("\n");
             }
-            try out.print("  {s}{s:<12}{s} a different one each request\n  {s}{s:<12}{s} no animation\n", .{ style.cyan, "random", style.reset, style.cyan, "off", style.reset });
+            try out.print("  {s}{s:<12}{s} a different one each request\n  {s}{s:<12}{s} no animation\n", .{ style.accent, "random", style.reset, style.accent, "off", style.reset });
             try out.flush();
             return true;
         }
@@ -263,9 +269,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const arg = std.mem.trim(u8, line["/theme".len..], " ");
         if (arg.len == 0) {
             const current: []const u8 = if (anim.g_theme) |i| anim.themes[i].name else "off";
-            try out.print("{s}color themes{s} (current: {s}{s}{s}) — /theme <name> applies + persists, /theme off resets to your terminal default\n", .{ style.bold, style.reset, style.cyan, current, style.reset });
-            for (anim.themes) |t| try out.print("  {s}{s:<12}{s} {s}\n", .{ style.cyan, t.name, style.reset, t.desc });
-            try out.print("  {s}{s:<12}{s} terminal default (no theme)\n", .{ style.cyan, "off", style.reset });
+            try out.print("{s}color themes{s} (current: {s}{s}{s}) — /theme <name> applies + persists, /theme off resets to your terminal default\n", .{ style.bold, style.reset, style.accent, current, style.reset });
+            for (anim.themes) |t| try out.print("  {s}{s:<12}{s} {s}\n", .{ style.accent, t.name, style.reset, t.desc });
+            try out.print("  {s}{s:<12}{s} terminal default (no theme)\n", .{ style.accent, "off", style.reset });
             try out.flush();
             return true;
         }
@@ -298,7 +304,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.print("{s}lifecycle hooks{s} (from {s}; event JSON on stdin, pre_tool exit 2 blocks):\n", .{ style.bold, style.reset, Approvals.settings_path });
         inline for (.{ "pre_tool", "post_tool", "turn_end" }) |ev| {
             for (@field(main_mod.g_hooks, ev)) |h| {
-                try out.print("  {s}{s:<9}{s} match {s}{s:<16}{s} {d}ms  {s}\n", .{ style.cyan, ev, style.reset, style.dim, h.match, style.reset, h.timeout_ms, h.command });
+                try out.print("  {s}{s:<9}{s} match {s}{s:<16}{s} {d}ms  {s}\n", .{ style.accent, ev, style.reset, style.dim, h.match, style.reset, h.timeout_ms, h.command });
             }
         }
         try out.flush();
@@ -344,7 +350,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                     try out.flush();
                     return true;
                 }
-                try out.print("installing {s}{s}{s}: {s}{s}{s}\n", .{ style.cyan, sk.name, style.reset, style.dim, sk.install, style.reset });
+                try out.print("installing {s}{s}{s}: {s}{s}{s}\n", .{ style.accent, sk.name, style.reset, style.dim, sk.install, style.reset });
                 try out.flush();
                 // The user typed the install command themselves — that's the
                 // consent; the installer runs with our stdio so its progress
@@ -378,7 +384,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             const disabled = skillDisabled(sk.name);
             const state: []const u8 = if (disabled) "disabled     " else if (inst) "installed    " else "not installed";
             try out.print("  {s}{s:<8}{s} {s}{s}{s}  {s}\n", .{
-                style.cyan,                                                           sk.name, style.reset,
+                style.accent,                                                         sk.name, style.reset,
                 if (disabled) style.yellow else if (inst) style.green else style.dim, state,   style.reset,
                 sk.desc,
             });
@@ -388,7 +394,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/trajectory")) {
-        const data = Io.Dir.cwd().readFileAlloc(root.io, trajectory_path, arena, .limited(4 << 20)) catch "";
+        const data = trace.readTrajectoryArchive(root.io, arena, 4 << 20);
         const S = struct {
             fn str(o: std.json.ObjectMap, k: []const u8) []const u8 {
                 const v = o.get(k) orelse return "";
@@ -425,28 +431,25 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             const v = std.json.parseFromSliceLeaky(Value, arena, ln, .{ .allocate = .alloc_always }) catch continue;
             if (v == .object) objs.append(arena, v.object) catch {};
         }
-        // Tree shows the CURRENT session (ids restart per session); scores
-        // come from the whole archive.
-        var session_start: usize = 0;
-        for (objs.items, 0..) |o, i| {
-            if (std.mem.eql(u8, S.str(o, "kind"), "session")) session_start = i + 1;
-        }
-        const session = objs.items[session_start..];
+        // Tree shows this invocation; scores still come from the whole archive.
+        const current_run_id = if (root.tracer) |tr| tr.identity.run_id else if (trace.g_traj) |tj| tj.identity.run_id else "";
         var turns: usize = 0;
-        for (session) |o| {
+        for (objs.items) |o| {
+            if (!std.mem.eql(u8, S.str(o, "run_id"), current_run_id)) continue;
             if (std.mem.eql(u8, S.str(o, "kind"), "turn")) turns += 1;
         }
         if (turns == 0) {
-            try out.writeAll("no trajectory recorded yet — run a turn first (the archive lives in harness.trajectory.jsonl)\n");
+            try out.print("no trajectory recorded yet — run a turn first (current file: {s})\n", .{if (trace.g_traj) |tj| tj.path else trace.trajectories_dir});
             try out.flush();
             return true;
         }
-        try out.print("{s}session trajectory{s} — {d} turn(s); archive: {s} ({d} record(s) total)\n", .{ style.bold, style.reset, turns, trajectory_path, objs.items.len });
-        for (session) |o| {
+        try out.print("{s}session trajectory{s} — {d} turn(s); current: {s}; archive: {s} ({d} record(s) total)\n", .{ style.bold, style.reset, turns, if (trace.g_traj) |tj| tj.path else "", trace.trajectories_dir, objs.items.len });
+        for (objs.items) |o| {
+            if (!std.mem.eql(u8, S.str(o, "run_id"), current_run_id)) continue;
             if (!std.mem.eql(u8, S.str(o, "kind"), "turn")) continue;
             const turn_id = S.int(o, "id");
             out.print("{s}●{s} turn {d} {s} {d}ms · prompt {s}{s}{s}{s} · {s}", .{
-                style.cyan,
+                style.accent,
                 style.reset,
                 turn_id,
                 if (S.flag(o, "ok")) "✓" else "✗",
@@ -462,10 +465,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             out.writeAll("\n") catch {};
             // children: subagents / workflow tasks spawned during this turn
             var remaining: usize = 0;
-            for (session) |c| {
+            for (objs.items) |c| {
+                if (!std.mem.eql(u8, S.str(c, "run_id"), current_run_id)) continue;
                 if (S.int(c, "parent") == turn_id and !std.mem.eql(u8, S.str(c, "kind"), "turn")) remaining += 1;
             }
-            for (session) |c| {
+            for (objs.items) |c| {
+                if (!std.mem.eql(u8, S.str(c, "run_id"), current_run_id)) continue;
                 if (S.int(c, "parent") != turn_id or std.mem.eql(u8, S.str(c, "kind"), "turn")) continue;
                 remaining -= 1;
                 out.print("  {s} {s} {s} {d}ms · prompt {s}{s}{s}{s} · {s}", .{
@@ -490,7 +495,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/plan")) {
         main_mod.plan_mode = !main_mod.plan_mode;
         if (main_mod.plan_mode) {
-            try out.print("plan mode {s}on{s} — read-only: the agent explores and proposes; writes/edits/mutating bash are denied. /plan again to execute.\n", .{ style.cyan, style.reset });
+            try out.print("plan mode {s}on{s} — read-only: the agent explores and proposes; writes/edits/mutating bash are denied. /plan again to execute.\n", .{ style.accent, style.reset });
         } else {
             try out.writeAll("plan mode off — tools may modify things again (normal gating applies)\n");
         }

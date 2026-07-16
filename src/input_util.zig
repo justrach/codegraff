@@ -1,6 +1,6 @@
 //! Line-editor input helpers split out of main.zig (600-line goal): tab
 //! completion (fillCompletions), line-wrap math (wrapAt/LineRender/
-//! parseDsrCol), the ultracode wave-shine palette, the `@` file picker's
+//! parseDsrCol), the ultracode ember-shine palette, the `@` file picker's
 //! binary/dir filters + file collection (codedb-backed with a walk
 //! fallback), drag-and-drop path cleanup, and the redraw + buffer-editing
 //! helpers hoisted out of readLine's body (redraw/setLine/delRange/
@@ -88,28 +88,24 @@ pub fn parseDsrCol(seq: []const u8) ?usize {
     return if (col == 0) null else col;
 }
 
-/// Raw RGB stops for the ultracode wave (mirrors ultracode_rainbow's hues).
+/// Sumi-rust → Codegraff coral → warm-gold stops for the ultracode ember wave.
 const ultracode_rgb = [_]struct { r: u8, g: u8, b: u8 }{
-    .{ .r = 255, .g = 87, .b = 51 },
-    .{ .r = 255, .g = 159, .b = 28 },
-    .{ .r = 255, .g = 222, .b = 51 },
-    .{ .r = 120, .g = 255, .b = 51 },
-    .{ .r = 51, .g = 255, .b = 170 },
-    .{ .r = 51, .g = 170, .b = 255 },
-    .{ .r = 120, .g = 51, .b = 255 },
-    .{ .r = 210, .g = 51, .b = 255 },
-    .{ .r = 255, .g = 51, .b = 159 },
+    .{ .r = 168, .g = 99, .b = 67 },
+    .{ .r = 179, .g = 92, .b = 73 },
+    .{ .r = 196, .g = 81, .b = 61 },
+    .{ .r = 179, .g = 92, .b = 73 },
+    .{ .r = 155, .g = 106, .b = 53 },
+    .{ .r = 165, .g = 101, .b = 59 },
 };
 
-/// Smoothly interpolated rainbow hue for the ultracode wave. `pos_q8` is a
-/// 0..2048 fraction across the 9-stop palette (8 bits index + 8 bits blend),
-/// so the wave glides between colors instead of snapping. A sine brightness
-/// breath (period ~2.2s at 110ms/tick) gives a rhythmic pulse rather than a
-/// mechanical scroll. Writes the SGR escape straight to the writer.
+/// Smoothly interpolated ember hue for the ultracode wave. `pos_q8` uses an
+/// 8-bit stop index + 8-bit blend, so the color glides instead of snapping.
+/// The palette stays at a steady luminance: motion comes from the slow hue
+/// drift, not a flashing brightness pulse.
 fn ultracodeWaveHue(w: *Io.Writer, pos_q8: u16, phase: usize) void {
     const pal = &ultracode_rgb;
     const len: u16 = pal.len;
-    const p: u16 = pos_q8 + @as(u16, @intCast(phase * 32));
+    const p: u16 = pos_q8 +% @as(u16, @truncate(phase *% 16));
     const idx: u16 = (p >> 8) % len;
     const frac: u16 = p & 0xff;
     const a = pal[idx];
@@ -118,34 +114,9 @@ fn ultracodeWaveHue(w: *Io.Writer, pos_q8: u16, phase: usize) void {
     const r: i32 = @as(i32, a.r) + @divTrunc((@as(i32, b.r) - @as(i32, a.r)) * @as(i32, frac), 256);
     const g: i32 = @as(i32, a.g) + @divTrunc((@as(i32, b.g) - @as(i32, a.g)) * @as(i32, frac), 256);
     const bl: i32 = @as(i32, a.b) + @divTrunc((@as(i32, b.b) - @as(i32, a.b)) * @as(i32, frac), 256);
-    // Breath: a gentle sine over phase, period 20 ticks (~2.2s @ 110ms),
-    // modulating brightness between ~81% and ~94% — a soft, subtle pulse.
-    const breath: u16 = switch (phase % 20) {
-        0 => 120,
-        1 => 120,
-        2 => 118,
-        3 => 117,
-        4 => 114,
-        5 => 112,
-        6 => 110,
-        7 => 107,
-        8 => 106,
-        9 => 104,
-        10 => 104,
-        11 => 104,
-        12 => 106,
-        13 => 107,
-        14 => 110,
-        15 => 112,
-        16 => 114,
-        17 => 117,
-        18 => 118,
-        else => 120,
-    };
-    const sc: i32 = @as(i32, breath);
-    const cr: u8 = @intCast(@max(0, @min(255, @divTrunc(r * sc, 128))));
-    const cg: u8 = @intCast(@max(0, @min(255, @divTrunc(g * sc, 128))));
-    const cb: u8 = @intCast(@max(0, @min(255, @divTrunc(bl * sc, 128))));
+    const cr: u8 = @intCast(@max(0, @min(255, r)));
+    const cg: u8 = @intCast(@max(0, @min(255, g)));
+    const cb: u8 = @intCast(@max(0, @min(255, bl)));
     w.print("\x1b[38;2;{d};{d};{d}m", .{ cr, cg, cb }) catch {};
 }
 
@@ -280,8 +251,8 @@ pub fn cleanDroppedPath(gpa: Allocator, home: []const u8, pasted: []const u8) ?[
 
 // Redraw the whole input below a fixed prompt prefix, wrapping it
 // across rows. Spans listed in `marks` (paths from the @ picker or a
-// file drop, plus "[Image]") render as a cyan chip (reverse video +
-// cyan) so they keep reading as attached files, not typed words; a
+// file drop, plus "[Image]") render as an accent chip (reverse video +
+// Codegraff coral) so they keep reading as attached files, not typed words; a
 // chip crossing a row break keeps its colour. `st` carries the row
 // count + cursor row of the previous draw so this one can clear it
 // with relative moves only — no DECSC anchor for a scroll to strand.
@@ -309,11 +280,11 @@ pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const
     var mark_open = false;
     const secret_start = util.sensitiveInputStart(items);
     // `ultracode` shines the input itself: each letter of every
-    // (case-insensitive) occurrence renders in a rotating rainbow hue.
+    // (case-insensitive) occurrence renders in a rotating ember hue.
     var shine_starts: [8]usize = undefined;
     var shine_ends: [8]usize = undefined;
     var nshine: usize = 0;
-    {
+    if (main_mod.use_color) {
         var si: usize = 0;
         while (si + 9 <= items.len) : (si += 1) {
             if (std.ascii.eqlIgnoreCase(items[si .. si + 9], "ultracode")) {
@@ -344,19 +315,18 @@ pub fn redraw(o: *Io.Writer, items: []const u8, c: usize, marks: []const []const
                     o.writeAll("\x1b[0m") catch {};
                     shine_active = false;
                 }
-                o.writeAll("\x1b[7;36m") catch {};
+                o.writeAll(if (main_mod.use_color) "\x1b[7;38;2;196;81;61m" else "\x1b[7m") catch {};
                 mark_end = i + best;
                 mark_open = true;
             }
         }
-        // Rainbow shine for an `ultracode` span (skipped inside a chip).
+        // Ember shine for an `ultracode` span (skipped inside a chip).
         if (!mark_open and !masked) {
             var in_shine = false;
             for (shine_starts[0..nshine], shine_ends[0..nshine]) |sstart, send| {
                 if (i >= sstart and i < send) {
-                    // Smooth interpolated hue + rhythmic brightness
-                    // breath; pos_q8 spreads the 9 letters across a
-                    // full palette pass so the wave glides.
+                    // Smooth interpolated hue; pos_q8 spreads the word across
+                    // one palette pass.
                     ultracodeWaveHue(o, @intCast((i - sstart) * 256), g_shine_phase);
                     in_shine = true;
                     break;
