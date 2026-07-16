@@ -106,8 +106,16 @@ struct AppSessionFull: Decodable {
 
 enum GatewayError: LocalizedError {
     case http(Int, String)
+
     var errorDescription: String? {
         switch self { case .http(let c, let m): return "gateway HTTP \(c): \(m)" }
+    }
+
+    var isInsufficientSessionScope: Bool {
+        switch self {
+        case .http(403, let message): return message.localizedCaseInsensitiveContains("sessions")
+        default: return false
+        }
     }
 }
 

@@ -6,12 +6,23 @@ struct SessionsListView: View {
     @State private var showAccount = false
     @State private var showNewSession = false
     @State private var loadNote = ""
+    @State private var needsSessionRelogin = false
 
     var body: some View {
         NavigationStack {
             List {
                 if !loadNote.isEmpty {
-                    Text(loadNote).font(.footnote).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(loadNote).font(.footnote).foregroundStyle(.secondary)
+                        if needsSessionRelogin {
+                            Button("Sign in again") {
+                                Gateway.signOut()
+                                sessions = []
+                                showAccount = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
                 }
                 ForEach($sessions) { $session in
                     NavigationLink {
@@ -85,9 +96,17 @@ struct SessionsListView: View {
                 }
                 return s
             }
+            needsSessionRelogin = false
             loadNote = sessions.isEmpty ? "No sessions yet — tap + to build something." : ""
         } catch {
-            loadNote = error.localizedDescription
+            if let gatewayError = error as? GatewayError,
+               gatewayError.isInsufficientSessionScope {
+                needsSessionRelogin = true
+                loadNote = "This sign-in predates session sync. Sign in again to renew access."
+            } else {
+                needsSessionRelogin = false
+                loadNote = error.localizedDescription
+            }
         }
     }
 
