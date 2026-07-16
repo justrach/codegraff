@@ -10,6 +10,7 @@ from pty_harness import run_to_exit
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
+CORAL = b"\x1b[38;2;196;81;61m"
 
 
 def main() -> None:
@@ -48,7 +49,7 @@ def main() -> None:
     missing = [line for line in expected if line not in result.text]
     if missing:
         raise SystemExit(f"Markdown render missing {missing!r}\n--- transcript ---\n{result.text}")
-    for ansi in (b"\x1b[36m", b"\x1b[33m", b"\x1b[32m"):
+    for ansi in (CORAL, b"\x1b[33m", b"\x1b[32m"):
         if ansi not in result.raw:
             raise SystemExit(f"Markdown render missing ANSI style {ansi!r}")
     print("ok    PTY Markdown headings, lists, tasks, quotes, inline styles, and ANSI")
