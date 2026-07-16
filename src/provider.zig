@@ -109,6 +109,15 @@ pub const Provider = struct {
         return p.context / 100 * pct;
     }
 
+    /// Whether a failed compaction may safely fall back to destructive trimming.
+    /// Keep this stricter than compactAt(): at 80-95% a transient summary failure
+    /// should leave history intact and retry later. Subtraction avoids overflow for
+    /// provider-controlled token counts near u64.max.
+    pub fn nearContextLimit(p: Provider, tokens: u64) bool {
+        if (p.context == 0) return false;
+        return tokens >= p.context - (p.context / 20); // 95%
+    }
+
     /// #201: absolute ceiling for a single tool output regardless of window size,
     /// so a huge-context model still bounds one pathological result.
     const abs_output_cap_bytes: usize = 256 * 1024;
@@ -241,6 +250,16 @@ test "Provider.compactAt: auto-compacts at 80% of the context window (long-horiz
     try std.testing.expectEqual(@as(u64, 160_000), small.compactAt());
     const zero = Provider{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "m", .context = 0 };
     try std.testing.expectEqual(@as(u64, 0), zero.compactAt());
+}
+
+test "Provider.nearContextLimit: destructive recovery starts at 95% without overflow math" {
+    const p: Provider = .{ .id = "x", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "x", .context = 100_000 };
+    try std.testing.expect(!p.nearContextLimit(94_999));
+    try std.testing.expect(p.nearContextLimit(95_000));
+    try std.testing.expect(p.nearContextLimit(std.math.maxInt(u64)));
+    var unknown = p;
+    unknown.context = 0;
+    try std.testing.expect(!unknown.nearContextLimit(std.math.maxInt(u64)));
 }
 
 test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {

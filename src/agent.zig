@@ -72,6 +72,11 @@ fn compactTokenCount(buf: []u8, tokens: u64) []const u8 {
         std.fmt.bufPrint(buf, "{d}", .{tokens}) catch "?";
 }
 
+fn contextPercent(tokens: u64, window: u64) u64 {
+    if (window == 0) return 0;
+    return @min((tokens *| 100) / window, 100);
+}
+
 pub const TodoItem = struct {
     content: []const u8,
     status: []const u8,
@@ -104,6 +109,10 @@ pub const Agent = struct {
     /// subagents/one-shots (they free their own arena per task); scratchAlloc()
     /// then falls back to arena, so their behavior is unchanged.
     scratch_arena: ?*std.heap.ArenaAllocator = null,
+    /// Optional allocator for a temporary request transaction. compact() points
+    /// this at its arena so failed summaries do not leak message rewrites or
+    /// partial response trees into the long-lived session arena.
+    message_mutation_arena: ?Allocator = null,
     io: Io,
     client: *std.http.Client,
     provider: Provider,
@@ -167,13 +176,19 @@ pub const Agent = struct {
     strict: bool = false,
     completed: ?[]const u8 = null,
     last_context_tokens: u64 = 0,
+    context_local_tokens: u64 = 0, // local request estimate paired with last_context_tokens
+    last_usage_includes_output: bool = false, // fresh usage covers response items step* is about to append
     /// Detail of the most recent API error — carried into the --json `error`
     /// event, which otherwise only knows "api error".
     last_api_error: ?[]const u8 = null,
     /// Text streamed so far in the current request — on Esc-interrupt this is
     /// what survives into history (with an "[interrupted]" marker appended).
     partial_text: std.ArrayList(u8) = .empty,
-    stream_quiet: bool = false, // suppress live streaming (compaction summary)
+    stream_quiet: bool = false, // suppress live streaming (one-shot and internal requests)
+    compaction_request: bool = false, // the current model call is the synthetic compaction-summary request
+    last_request_context_overflow: bool = false, // explicit provider rejection, not an inferred meter threshold
+    last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request
+    compact_transport_failures: u8 = 0, // bounded escape for repeated opaque over-cap WriteFailed/network failures
     ws_off: bool = false, // codex ws transport disabled for this session after a handshake/transport fallback to SSE (#codex-ws)
     streamed_text: bool = false, // the last request printed its text live
     thinking_open: bool = false, // a live "Thinking" reasoning block is currently streaming (/thinking)
@@ -220,12 +235,13 @@ pub const Agent = struct {
         if (self.strict) try writePromptBadge(w, style.red, "Strict");
         if (self.ultracode_mode) try writePromptBadge(w, style.magenta, "Ultracode");
         try w.print("{s} · cwd {s}{s}{s}", .{ style.dim, style.reset, main_mod.g_cwd_display, style.dim });
+        const context_tokens = self.effectiveContextTokens();
         if (self.last_context_tokens > 0) {
             const threshold = self.provider.compactAt();
-            const pct = if (self.provider.context > 0) self.last_context_tokens * 100 / self.provider.context else 0;
+            const pct = contextPercent(context_tokens, self.provider.context);
             var used_buf: [24]u8 = undefined;
             try w.print(" · {s}/{d}k ctx ({d}% · compact@{d}k){s}{s}]{s} {s}›{s} ", .{
-                compactTokenCount(&used_buf, self.last_context_tokens),
+                compactTokenCount(&used_buf, context_tokens),
                 self.provider.context / 1000,
                 pct,
                 threshold / 1000,
@@ -342,7 +358,11 @@ pub const Agent = struct {
                 // keyed to dropped messages (same closeCodexWs-after-trim reason as
                 // the in-turn recovery at agent_request.zig:273).
                 self.closeCodexWs();
-                self.compactOrRecover(true);
+                // Match the between-turn policy: at the ordinary compactAt
+                // threshold, a transient/empty summary must not immediately drop
+                // real history. Destructive recovery is reserved for >=95%.
+                const recovery_meter = self.effectiveContextTokens();
+                self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
                 self.closeCodexWs();
             }
             const root = try self.request(self.toolsJson());
@@ -362,6 +382,10 @@ pub const Agent = struct {
     pub const request = @import("agent_request.zig").request;
     pub const inputOverCompactThreshold = @import("agent_request.zig").inputOverCompactThreshold;
     pub const fullInputEstimateTokens = @import("agent_request.zig").fullInputEstimateTokens;
+    pub const fullRequestEstimateTokens = @import("agent_request.zig").fullRequestEstimateTokens;
+    pub const effectiveContextTokens = @import("agent_request.zig").effectiveContextTokens;
+    pub const pairContextMeterWithCurrentLocal = @import("agent_request.zig").pairContextMeterWithCurrentLocal;
+    pub const rebaseContextMeter = @import("agent_request.zig").rebaseContextMeter;
     pub const recordUsage = @import("agent_request.zig").recordUsage;
     pub const usageInt = @import("agent_request.zig").usageInt;
     pub const recordCost = @import("agent_request.zig").recordCost;
@@ -478,6 +502,10 @@ pub const Agent = struct {
         return if (self.scratch_arena) |sa| sa.allocator() else self.arena;
     }
 
+    pub fn messageMutationAlloc(self: *Agent) Allocator {
+        return self.message_mutation_arena orelse self.arena;
+    }
+
     pub const escWatchTask = @import("agent_interrupt.zig").escWatchTask;
     pub const escPressed = @import("agent_interrupt.zig").escPressed;
     pub const drainSteerStdin = @import("agent_interrupt.zig").drainSteerStdin;
@@ -548,4 +576,11 @@ test "compact token counts keep prompt usage readable" {
     var buf: [24]u8 = undefined;
     try std.testing.expectEqualStrings("999", compactTokenCount(&buf, 999));
     try std.testing.expectEqualStrings("138k", compactTokenCount(&buf, 138_082));
+}
+
+test "context percent saturates malformed or over-window server meters" {
+    try std.testing.expectEqual(@as(u64, 0), contextPercent(100, 0));
+    try std.testing.expectEqual(@as(u64, 50), contextPercent(50_000, 100_000));
+    try std.testing.expectEqual(@as(u64, 100), contextPercent(150_000, 100_000));
+    try std.testing.expectEqual(@as(u64, 100), contextPercent(std.math.maxInt(u64), 100_000));
 }

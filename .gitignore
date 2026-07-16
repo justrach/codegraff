@@ -27,6 +27,7 @@ __pycache__/
 .wrangler/
 
 # local agent/IDE config (not project source)
+.codex/
 .devin/
 
 # release artifacts

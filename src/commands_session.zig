@@ -78,7 +78,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/clear")) {
         root.messages = std.json.Array.init(arena);
         root.last_context_tokens = 0;
+        root.context_local_tokens = 0;
         root.last_cache_read = 0;
+        root.compact_transport_failures = 0;
         root.tui_header_shown = false;
         root.session_title = null; // re-summarize the now-empty conversation
         root.ai_title_done = false;
@@ -95,7 +97,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/new")) {
         root.messages = std.json.Array.init(arena);
         root.last_context_tokens = 0;
+        root.context_local_tokens = 0;
         root.last_cache_read = 0;
+        root.compact_transport_failures = 0;
         root.todos.clearRetainingCapacity();
         resetConversationSteering(root);
         root.session_title = null;
