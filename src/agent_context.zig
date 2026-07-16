@@ -81,6 +81,30 @@ test "fullInputEstimateTokens (#174): counts retained reasoning the chained usag
     try std.testing.expect(est > 2000); // ~8KB serialized / 4 bytes-per-token
 }
 
+test "context estimate reuses an already-serialized history byte count" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var messages = std.json.Array.init(a);
+    try messages.append(try messages_mod.textMessage(a, "user", "measure this once"));
+
+    var agent: Agent = undefined;
+    agent.messages = messages;
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100_000 };
+    agent.sub = false;
+    agent.strict = false;
+    agent.sys_normal = "system";
+    agent.sys_strict = "strict";
+    agent.tools_responses = "[]";
+    agent.last_context_tokens = 12_000;
+    agent.context_local_tokens = 8_000;
+
+    const input_bytes = jsonSerializedLen(Value{ .array = messages });
+    const estimate = contextEstimateFromInputBytes(&agent, input_bytes);
+    try std.testing.expectEqual(fullRequestEstimateTokens(&agent), estimate.local);
+    try std.testing.expectEqual(estimate.local + 4_000, estimate.effective);
+}
+
 pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) void {
     self.last_cache_read = 0;
     self.last_usage_includes_output = false;
@@ -137,9 +161,9 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) 
 /// request-body byte/4 when the history isn't serialized yet) when the API omits
 /// usage, so auto-compaction still triggers. Never lowers an existing higher count.
 fn floorContextTokens(self: *Agent, est: u64) void {
-    const local = self.fullRequestEstimateTokens();
-    self.last_context_tokens = @max(self.effectiveContextTokens(), @max(local, est));
-    self.context_local_tokens = local;
+    const estimate = self.contextEstimate();
+    self.last_context_tokens = @max(estimate.effective, @max(estimate.local, est));
+    self.context_local_tokens = estimate.local;
 }
 
 /// A full-history request's nonzero provider usage is authoritative enough to
@@ -192,8 +216,7 @@ pub fn fullInputEstimateTokens(self: *Agent) u64 {
 /// must additionally count the mutable system prompt and active tool schema. Keep
 /// the old 8k conservative baseline when those serialize smaller, but never let it
 /// hide an unbounded set_system_prompt/set_agent payload.
-pub fn fullRequestEstimateTokens(self: *Agent) u64 {
-    const input_bytes = jsonSerializedLen(Value{ .array = self.messages });
+fn requestEstimateFromInputBytes(self: *Agent, input_bytes: usize) u64 {
     const system_bytes = jsonSerializedLen(self.systemPrompt());
     const total_bytes = input_bytes +| system_bytes +| self.toolsJson().len;
     const measured: u64 = @intCast(total_bytes / 4);
@@ -202,13 +225,38 @@ pub fn fullRequestEstimateTokens(self: *Agent) u64 {
     return @max(measured, input_tokens +| baseline);
 }
 
+pub fn fullRequestEstimateTokens(self: *Agent) u64 {
+    return requestEstimateFromInputBytes(self, jsonSerializedLen(Value{ .array = self.messages }));
+}
+
+pub const ContextEstimate = struct {
+    local: u64,
+    effective: u64,
+};
+
+/// Compute the locally measurable request size and the hidden-token-adjusted
+/// occupancy in one history serialization. Callers that need both previously
+/// walked the entire JSON history twice.
+pub fn contextEstimate(self: *Agent) ContextEstimate {
+    return self.contextEstimateFromInputBytes(jsonSerializedLen(Value{ .array = self.messages }));
+}
+
+/// Variant for callers already serializing the history (session persistence).
+/// Reusing the observed byte count avoids a redundant full JSON walk.
+pub fn contextEstimateFromInputBytes(self: *Agent, input_bytes: usize) ContextEstimate {
+    const local = requestEstimateFromInputBytes(self, input_bytes);
+    return .{
+        .local = local,
+        .effective = local +| (self.last_context_tokens -| self.context_local_tokens),
+    };
+}
+
 /// Current context occupancy: today's locally measurable request plus the
 /// server-only delta paired with the last usage sample. This automatically
 /// counts user/tool content appended after that sample without double-counting
 /// provider output once step* advances the local anchor.
 pub fn effectiveContextTokens(self: *Agent) u64 {
-    const local = self.fullRequestEstimateTokens();
-    return local +| (self.last_context_tokens -| self.context_local_tokens);
+    return self.contextEstimate().effective;
 }
 
 /// Pair a fresh provider usage sample with history after its response items
@@ -224,8 +272,9 @@ pub fn pairContextMeterWithCurrentLocal(self: *Agent) void {
 
 /// Materialize local input mutations while retaining the server-only delta.
 pub fn rebaseContextMeter(self: *Agent) void {
-    self.last_context_tokens = self.effectiveContextTokens();
-    self.context_local_tokens = self.fullRequestEstimateTokens();
+    const estimate = self.contextEstimate();
+    self.last_context_tokens = estimate.effective;
+    self.context_local_tokens = estimate.local;
     self.last_cache_read = 0;
 }
 

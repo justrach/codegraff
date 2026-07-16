@@ -37,11 +37,6 @@ const models_cache = @import("models_cache.zig");
 const command_catalog = @import("command_catalog.zig");
 const serde = @import("serde.zig");
 
-const schema = @import("schema.zig");
-const renderRootTools = schema.renderRootTools;
-const root_specs = schema.root_specs;
-const effectiveRootSpecs = schema.effectiveRootSpecs; // #225: gate clock_sleep on the flag when re-rendering the tool lists
-
 const mcp_cli = @import("mcp_cli.zig");
 const persistMcpServer = mcp_cli.persistMcpServer;
 
@@ -67,6 +62,8 @@ fn providerModelCount(provider_id: []const u8) usize {
 }
 
 fn showModelsHealth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer) !void {
+    root.ensureStoredKeys(keys);
+    root.ensureModelCatalog(keys.*);
     const saved = serde.loadModel(root.io, arena, root.home);
     try out.print("{s}model health{s}\n", .{ style.bold, style.reset });
     try out.print("active: {s} via {s} · {d}k ctx · compact@{d}k{s}{s}\n", .{
@@ -205,11 +202,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             };
-            // Re-render the tool lists so the new tools reach the model.
-            const root_tool_specs = try effectiveRootSpecs(arena); // #225: gate clock_sleep on the flag
-            root.tools_anthropic = try renderRootTools(arena, .anthropic, root_tool_specs, reg.tools);
-            root.tools_openai = try renderRootTools(arena, .openai, root_tool_specs, reg.tools);
-            root.tools_responses = try renderRootTools(arena, .responses, root_tool_specs, reg.tools);
+            // Re-render the active catalog so the new tools reach the model;
+            // inactive provider formats stay lazy until a later switch.
+            root.invalidateRootTools();
+            try root.ensureRootTools(root.provider.kind);
             root.rebaseContextMeter();
             const persisted = persistMcpServer(root.io, arena, name, command, args.items);
             var has_note = false;
@@ -235,11 +231,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             if (n == 0) {
                 try out.writeAll("no untrusted workspace MCP server(s) to connect.\n");
             } else {
-                // Re-render the tool lists so the new tools reach the model.
-                const root_tool_specs = try effectiveRootSpecs(arena); // #225: gate clock_sleep on the flag
-                root.tools_anthropic = try renderRootTools(arena, .anthropic, root_tool_specs, reg.tools);
-                root.tools_openai = try renderRootTools(arena, .openai, root_tool_specs, reg.tools);
-                root.tools_responses = try renderRootTools(arena, .responses, root_tool_specs, reg.tools);
+                // Re-render the active catalog; other wire formats remain lazy.
+                root.invalidateRootTools();
+                try root.ensureRootTools(root.provider.kind);
                 root.rebaseContextMeter();
                 try out.print("{s}✓{s} trusted workspace — connected {d} MCP server(s); {d} tool(s) total\n", .{ style.green, style.reset, n, reg.tools.len });
             }
@@ -267,6 +261,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/models")) {
+        root.ensureStoredKeys(keys);
+        root.ensureModelCatalog(keys.*);
         try out.writeAll("model                      ctx      compact@   provider    key  vision\n");
         for (pricing.models()) |m| {
             const has_key = keys.get(m.provider) != null;
@@ -394,6 +390,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.startsWith(u8, line, "/resume")) {
+        root.ensureStoredKeys(keys);
         const arg = std.mem.trim(u8, line["/resume".len..], " \t");
         var name: []const u8 = if (arg.len == 0) "last" else arg;
         // Bare /resume on a TTY: pick from the saved sessions interactively,
@@ -421,7 +418,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             const idx = listPicker(root, arena, out, "Resume session ›", sessions.items) orelse return true;
             name = entries.items[idx].base;
         }
-        loadSession(root, keys.*, arena, name) catch |err| {
+        loadSession(root, keys, arena, name) catch |err| {
             switch (err) {
                 error.FileNotFound => try out.print("no session named '{s}' ({s}{s} not found in cwd) — /sessions lists saved ones\n", .{ name, name, session_ext }),
                 else => try out.print("resume failed: {t}\n", .{err}),

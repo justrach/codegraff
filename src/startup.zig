@@ -43,7 +43,97 @@ pub const ResolvedKeys = struct {
     stale_saved_model: ?[]const u8,
     preferred_provider: ?[]const u8,
     codex_account: ?[]const u8,
+    model_catalog: models_cache.LazyCodexCatalog,
+    stored_keys_loaded: bool,
 };
+
+fn explicitProvider(model_flag: ?[]const u8) ?[]const u8 {
+    const query = model_flag orelse return null;
+    for (provider_mod.provider_specs) |spec|
+        if (std.mem.eql(u8, spec.id, query)) return spec.id;
+    return null;
+}
+
+/// Whether one stored credential can affect an explicit startup selection.
+/// Provider ids need one key; exact catalog model names need only providers
+/// that serve that model. Aliases/fuzzy queries retain the full scan because
+/// key availability participates in their tie-break.
+fn storedKeyMayAffectSelection(provider_id: []const u8, model_flag: ?[]const u8) bool {
+    const query = model_flag orelse return true;
+    if (explicitProvider(query)) |id| return std.mem.eql(u8, provider_id, id);
+    if (pricing.modelInTable(query)) return pricing.providerModelInTable(provider_id, query);
+    return true;
+}
+
+fn hasSelectiveStoredKeyScope(model_flag: ?[]const u8) bool {
+    const query = model_flag orelse return false;
+    return explicitProvider(query) != null or pricing.modelInTable(query);
+}
+
+fn startupStoredKeyScope(model_flag: ?[]const u8, selective: bool) keys_cli.StoredKeyScope {
+    if (!selective) return .all;
+    var mask = [_]bool{false} ** provider_mod.provider_specs.len;
+    for (provider_mod.provider_specs, 0..) |spec, i|
+        mask[i] = storedKeyMayAffectSelection(spec.id, model_flag);
+    return .{ .mask = mask };
+}
+
+fn startupNeedsCodexCatalog(keys: provider_mod.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) bool {
+    if (keys.get("codex") == null) return false;
+    if (model_flag) |query| {
+        for (provider_mod.provider_specs) |spec| if (std.mem.eql(u8, spec.id, query))
+            return std.mem.eql(u8, spec.id, "codex");
+        // A free-form query may name an account-only rollout.
+        return true;
+    }
+    if (saved) |selection| {
+        if (std.mem.eql(u8, selection.pid, "codex")) return true;
+        if (pricing.providerModelInTable(selection.pid, selection.model) and keys.get(selection.pid) != null) return false;
+        // A stale/keyless preference may fall through to Codex.
+        return true;
+    }
+    const fallback = keys.defaultProvider() catch return false;
+    return std.mem.eql(u8, fallback.id, "codex");
+}
+
+test "Codex catalog loads at startup only when selection can observe it" {
+    try std.testing.expectEqualStrings("deepseek", explicitProvider("deepseek").?);
+    try std.testing.expect(explicitProvider("deepseek-v4-pro") == null);
+    try std.testing.expect(explicitProvider(null) == null);
+    try std.testing.expect(hasSelectiveStoredKeyScope("deepseek-v4-pro"));
+    try std.testing.expect(storedKeyMayAffectSelection("codegraff", "deepseek-v4-pro"));
+    try std.testing.expect(storedKeyMayAffectSelection("deepseek", "deepseek-v4-pro"));
+    try std.testing.expect(!storedKeyMayAffectSelection("anthropic", "deepseek-v4-pro"));
+    try std.testing.expect(storedKeyMayAffectSelection("anthropic", "opus"));
+    try std.testing.expect(storedKeyMayAffectSelection("openai", null));
+    const exact_scope = startupStoredKeyScope("deepseek-v4-pro", true);
+    try std.testing.expect(exact_scope.includes(1, "codegraff"));
+    try std.testing.expect(exact_scope.includes(2, "deepseek"));
+    try std.testing.expect(!exact_scope.includes(0, "anthropic"));
+
+    var keys: provider_mod.Keys = .{ .values = [_]?[]const u8{null} ** provider_mod.provider_specs.len };
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "deepseek") or std.mem.eql(u8, spec.id, "codex")) value.* = "test";
+    }
+    keys.codex_account = "account";
+
+    try std.testing.expect(!startupNeedsCodexCatalog(keys, "deepseek", null));
+    try std.testing.expect(startupNeedsCodexCatalog(keys, "codex", null));
+    try std.testing.expect(startupNeedsCodexCatalog(keys, "future-account-rollout", null));
+    try std.testing.expect(!startupNeedsCodexCatalog(keys, null, .{ .pid = "deepseek", .model = "deepseek-v4-pro" }));
+    try std.testing.expect(!startupNeedsCodexCatalog(keys, null, null));
+
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "deepseek")) value.* = null;
+    }
+    try std.testing.expect(startupNeedsCodexCatalog(keys, null, null));
+    try std.testing.expect(startupNeedsCodexCatalog(keys, null, .{ .pid = "deepseek", .model = "deepseek-v4-pro" }));
+
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "codex")) value.* = null;
+    }
+    try std.testing.expect(!startupNeedsCodexCatalog(keys, "codex", null));
+}
 
 /// Resolves API keys/credentials (env vars → codegraff/codex/kimi on-disk
 /// logins → the `harness key set` store, env always wins — same precedence
@@ -108,36 +198,35 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
             }
         }
     }
-    // Stored keys (macOS Keychain / 0600 file via `harness key set`): fill any
-    // provider slot still empty after env + the login loaders. env always wins.
+    // An explicit provider or exact catalog model can observe only its
+    // candidate providers. Load those stored keys now; model/fallback/resume
+    // surfaces fill the rest on demand. Aliases/default startup still need all
+    // keys because availability participates in their routing tie-break.
+    const selective_stored_keys = hasSelectiveStoredKeyScope(model_flag);
+    var stored_keys_loaded = !selective_stored_keys;
     if (keys_cli.homeEnv(environ_map)) |home| {
-        for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
-            if (value.* == null) {
-                if (keys_cli.loadStoredKey(io, arena, home, spec.id)) |key| {
-                    value.* = key;
-                    source.* = .stored;
-                }
+        if (selective_stored_keys) {
+            keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, startupStoredKeyScope(model_flag, true));
+            // Preserve the old diagnostics/fallback behavior when none of the
+            // selective candidates has any credential: only failed launches
+            // pay for the exhaustive scan.
+            if (keys.defaultProvider()) |_| {} else |_| {
+                keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, .all);
+                stored_keys_loaded = true;
             }
-        }
+        } else keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, .all);
     }
-    // Discover the account-scoped Codex catalog before model selection. This
-    // mirrors openai/codex: 5-minute cache keyed by installed Codex version,
-    // authenticated /models refresh, then stale/native/baked offline fallback.
-    // Model names, rollout visibility, and context windows therefore do not
-    // need a graff release. No Codex login/cache → the baked fallback remains.
-    if (keys_cli.homeEnv(environ_map)) |home| {
-        const codex_home = environ_map.get("CODEX_HOME") orelse
-            (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
-        models_cache.loadCodexCatalog(
-            io,
-            gpa,
-            arena,
-            home,
-            codex_home,
-            keys.get("codex") orelse "",
-            keys.codex_account,
-            false,
-        );
+    const home = keys_cli.homeEnv(environ_map) orelse "";
+    const codex_home = environ_map.get("CODEX_HOME") orelse
+        (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
+    var model_catalog: models_cache.LazyCodexCatalog = .{ .codex_home = codex_home };
+    const saved_model: ?serde.SavedModel = if (model_flag == null) serde.loadModel(io, arena, home) else null;
+    // Dynamic Codex discovery is observable only when startup may select
+    // Codex. Explicit/saved non-Codex launches defer the version subprocess,
+    // native-cache parse, and possible refresh until a model surface needs it.
+    if (startupNeedsCodexCatalog(keys, model_flag, saved_model))
+        model_catalog.ensure(io, gpa, arena, home, keys.get("codex") orelse "", keys.codex_account);
+    if (home.len != 0) {
         // Apply the independent models.dev price/context overlay after routing
         // discovery. Provider-specific Codex windows remain authoritative.
         models_cache.loadOverlay(io, arena, home);
@@ -164,7 +253,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
         };
         const nm = pricing.resolveModelName(keys, mname) orelse std.process.fatal("unknown --model '{s}' — run `graff models refresh` or see /models", .{mname});
         default_provider = keys.providerFor(nm) catch std.process.fatal("no key/login for --model '{s}' — see /models", .{mname});
-    } else if (serde.loadModel(io, arena, keys_cli.homeEnv(environ_map) orelse "")) |saved| {
+    } else if (saved_model) |saved| {
         preferred_provider = saved.pid;
         // No --model flag: resume the model chosen last session only if that
         // exact provider/model pair is still in the catalog; model names can be
@@ -188,7 +277,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
             }
         }
     }
-    return .{ .keys = keys, .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account };
+    return .{ .keys = keys, .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account, .model_catalog = model_catalog, .stored_keys_loaded = stored_keys_loaded };
 }
 
 pub const SystemPrompt = struct {

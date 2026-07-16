@@ -5,7 +5,8 @@
 //! "simple-harness", account=provider id) via the `security` CLI — never on
 //! disk in plaintext. Elsewhere they fall back to a 0600 file
 //! (~/.simple-harness-keys.json). `harness key set <provider> <key>` writes;
-//! startup reads for any provider whose env var isn't set (env always wins).
+//! startup reads the selected provider first (env always wins), then fills the
+//! remaining providers when a picker, switch, resume, or fallback needs them.
 //!
 //! storeKey stays pub — commands_model.zig and pickers.zig back-import it as
 //! `main_mod.storeKey`; isLocalUrl/openAiModelsUrl/fetchOpenAIModels stay pub
@@ -153,6 +154,75 @@ pub fn loadStoredKey(io: Io, arena: Allocator, home: []const u8, provider: []con
     return null;
 }
 
+pub const StoredKeyScope = union(enum) {
+    all,
+    provider: []const u8,
+    mask: [provider_specs.len]bool,
+
+    pub fn includes(scope: StoredKeyScope, index: usize, provider_id: []const u8) bool {
+        return switch (scope) {
+            .all => true,
+            .provider => |id| std.mem.eql(u8, id, provider_id),
+            .mask => |mask| mask[index],
+        };
+    }
+};
+
+test "StoredKeyScope selects all, one provider, or an exact mask" {
+    const all: StoredKeyScope = .all;
+    try std.testing.expect(all.includes(0, provider_specs[0].id));
+    const one: StoredKeyScope = .{ .provider = "deepseek" };
+    try std.testing.expect(one.includes(2, "deepseek"));
+    try std.testing.expect(!one.includes(1, "codegraff"));
+    var mask = [_]bool{false} ** provider_specs.len;
+    mask[1] = true;
+    const selected: StoredKeyScope = .{ .mask = mask };
+    try std.testing.expect(selected.includes(1, "codegraff"));
+    try std.testing.expect(!selected.includes(2, "deepseek"));
+}
+
+fn loadStoredKeyTask(io: Io, gpa: Allocator, home: []const u8, provider_id: []const u8) ?[]u8 {
+    var task_arena = std.heap.ArenaAllocator.init(gpa);
+    defer task_arena.deinit();
+    const key = loadStoredKey(io, task_arena.allocator(), home, provider_id) orelse return null;
+    return gpa.dupe(u8, key) catch null;
+}
+
+/// Fill selected missing credential slots. macOS stores one Keychain item per
+/// provider, so its independent `security` processes run concurrently with
+/// task-local arenas. Other platforms keep all keys in one JSON file: read and
+/// parse it once, then fill every selected slot from that single object.
+pub fn loadMissingStoredKeys(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: *provider_mod.Keys, scope: StoredKeyScope) void {
+    if (builtin.os.tag == .macos) {
+        var futures = [_]?Io.Future(?[]u8){null} ** provider_specs.len;
+        for (provider_specs, keys.values, 0..) |spec, value, i| {
+            if (value != null or !scope.includes(i, spec.id)) continue;
+            const task_args = .{ io, gpa, home, spec.id };
+            futures[i] = io.concurrent(loadStoredKeyTask, task_args) catch
+                io.async(loadStoredKeyTask, task_args);
+        }
+        for (&futures, &keys.values, &keys.sources) |*maybe_future, *value, *source| {
+            const owned = if (maybe_future.*) |*future| future.await(io) orelse continue else continue;
+            value.* = arena.dupe(u8, owned) catch null;
+            gpa.free(owned);
+            if (value.* != null) source.* = .stored;
+        }
+        return;
+    }
+
+    const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file }) catch return;
+    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return;
+    const parsed = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
+    if (parsed != .object) return;
+    for (provider_specs, &keys.values, &keys.sources, 0..) |spec, *value, *source, i| {
+        if (value.* != null or !scope.includes(i, spec.id)) continue;
+        const stored = parsed.object.get(spec.id) orelse continue;
+        if (stored != .string or stored.string.len == 0) continue;
+        value.* = stored.string;
+        source.* = .stored;
+    }
+}
+
 /// `harness key set <provider> <key>` / `harness key list` — manage the safe
 /// key store. Validates the provider id against provider_specs.
 pub fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, args: []const []const u8) !void {
@@ -161,9 +231,11 @@ pub fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, ar
     const out = &ow.interface;
 
     if (args.len == 0 or std.mem.eql(u8, args[0], "list")) {
+        var stored_keys: provider_mod.Keys = .{ .values = [_]?[]const u8{null} ** provider_specs.len };
+        loadMissingStoredKeys(io, gpa, arena, home, &stored_keys, .all);
         try out.writeAll("provider        env var               stored\n");
         for (provider_specs) |spec| {
-            const stored = loadStoredKey(io, arena, home, spec.id) != null;
+            const stored = stored_keys.get(spec.id) != null;
             try out.print("  {s:<14}{s:<22}{s}\n", .{ spec.id, spec.env_key, if (stored) "yes" else "—" });
         }
         try out.flush();

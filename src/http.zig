@@ -17,6 +17,14 @@ const Agent = agent_mod.Agent;
 const anthropic_version = root.anthropic_version;
 const kimi_user_agent = root.kimi_user_agent;
 
+/// Launch-scoped gate installed while the shared client's CA bundle warms in
+/// the background. Null in unit tests and standalone pre-client subcommands.
+pub var g_client_ready: ?*Io.Event = null;
+
+pub fn waitForClientReady(io: Io) void {
+    if (g_client_ready) |ready| ready.waitUncancelable(io);
+}
+
 pub fn providerUserAgent(provider: Provider) std.http.Client.Request.Headers.Value {
     if (std.mem.eql(u8, provider.id, "kimi")) {
         return .{ .override = kimi_user_agent };

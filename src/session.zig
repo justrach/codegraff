@@ -245,6 +245,11 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     if (root.session_title) |title| try s.write(title) else try s.write(sessionTitle(root));
     try s.objectField("updated_ms");
     try s.write(unixMs(root.io));
+    try s.objectField("messages");
+    const messages_start = aw.writer.buffered().len;
+    try s.write(Value{ .array = root.messages });
+    const messages_bytes = aw.writer.buffered().len - messages_start;
+    const context_estimate = root.contextEstimateFromInputBytes(messages_bytes);
     // Preserve the last authoritative provider reading across resume. Responses
     // histories can contain compact encrypted-reasoning handles whose serialized
     // byte size substantially underestimates their server-side token cost; without
@@ -253,14 +258,12 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     // std.json.Value represents parsed integers as i64, so keep the persisted
     // value inside the range loadSession can round-trip even if a malformed
     // provider once reported an extreme unsigned count.
-    try s.write(@min(root.effectiveContextTokens(), @as(u64, std.math.maxInt(i64))));
+    try s.write(@min(context_estimate.effective, @as(u64, std.math.maxInt(i64))));
     // Pair the provider reading with the locally measurable request component.
     // On resume we can preserve only their hidden-token delta while replacing
     // this component with today's prompt/tool-schema estimate.
     try s.objectField("context_local_tokens");
-    try s.write(@min(root.fullRequestEstimateTokens(), @as(u64, std.math.maxInt(i64))));
-    try s.objectField("messages");
-    try s.write(Value{ .array = root.messages });
+    try s.write(@min(context_estimate.local, @as(u64, std.math.maxInt(i64))));
     try s.endObject();
 
     Io.Dir.cwd().createDir(root.io, ".graff", .default_dir) catch {};
@@ -351,7 +354,7 @@ fn restoreContextMeter(root: *Agent, saved_context_tokens: u64, saved_local_toke
 /// Restore a saved session: parse the file (arena-owned), rebuild the
 /// provider, and replace the live history. The wire format must still match
 /// the restored provider's kind — same provider id guarantees it.
-pub fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8) !void {
+pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8) !void {
     const path = try sessionPath(arena, name);
     const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch blk: {
         // backward-compat: older builds wrote <name>.session.json in cwd.
@@ -374,7 +377,13 @@ pub fn loadSession(root: *Agent, keys: Keys, arena: Allocator, name: []const u8)
     const saved_context_tokens = contextTokensFromSession(obj);
     const saved_local_tokens = contextLocalTokensFromSession(obj);
 
+    root.ensureStoredKeys(keys);
+    if (std.mem.eql(u8, pid, "codex")) root.ensureModelCatalog(keys.*);
     root.provider = try keys.providerById(pid, model);
+    // A resumed session may use a different wire format than the startup
+    // default. Materialize that catalog before rebasing its saved context
+    // meter, and keep every still-unused format lazy.
+    try root.ensureRootTools(root.provider.kind);
     root.messages = msgs;
     // Repair histories written by older builds where a Responses
     // `function_call_output.output` was persisted as a byte array instead of a

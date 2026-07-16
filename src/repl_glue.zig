@@ -304,7 +304,7 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         c.fallback_active = agent.fallback_active;
         c.fallback_blocked = agent.fallback_blocked;
     }
-    const final = providers.runTurnWithFallback(&agent, c.keys, arena, &sink.writer) catch |err| switch (err) {
+    const final = providers.runTurnWithFallback(&agent, &c.keys, arena, &sink.writer) catch |err| switch (err) {
         // A mid-stream stall (#134): the repl turn IS live (stream_quiet=false),
         // so postStream can return error.StreamStalled. Don't collapse it to
         // null — the pane renders that as "model call failed — check /model and

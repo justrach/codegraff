@@ -124,13 +124,15 @@ fn handleFallback(root: *Agent, arena: Allocator, line: []const u8, out: *Io.Wri
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     if (try handleFallback(root, arena, line, out)) return true;
     if (std.mem.startsWith(u8, line, "/model") and !std.mem.startsWith(u8, line, "/models")) {
+        root.ensureStoredKeys(keys);
         const arg = std.mem.trim(u8, line["/model".len..], " \t");
+        if (providers.modelQueryMayUseCodex(arg)) root.ensureModelCatalog(keys.*);
         if (arg.len == 0) {
             if (main_mod.use_color) { // interactive TTY → fuzzy picker
                 if (modelPicker(root, keys, arena, out)) |idx| {
                     const m = pricing.models()[idx];
                     const provider = keys.providerById(m.provider, m.name) catch {
-                        try offerProviderAuth(root, keys, arena, out, m.provider, m.name);
+                        try offerProviderAuth(root, keys, arena, out, m.provider, m.name, false);
                         return true;
                     };
                     try switchProvider(root, arena, provider, out);
@@ -168,7 +170,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 }
                 const m = try arena.dupe(u8, mdl);
                 const provider = keys.providerById(pid, m) catch {
-                    try offerProviderAuth(root, keys, arena, out, pid, m);
+                    try offerProviderAuth(root, keys, arena, out, pid, m, false);
                     return true;
                 };
                 try switchProvider(root, arena, provider, out);
@@ -184,7 +186,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             // baked default. One loaded → switch straight to it; many → list to pick.
             if (isLocalUrl(spec.url)) {
                 const key = keys.get(spec.id) orelse {
-                    try offerProviderAuth(root, keys, arena, out, spec.id, pricing.providerDefaultModel(spec.id, spec.default_model));
+                    try offerProviderAuth(root, keys, arena, out, spec.id, pricing.providerDefaultModel(spec.id, spec.default_model), true);
                     return true;
                 };
                 const murl = openAiModelsUrl(arena, spec.url);
@@ -205,7 +207,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             }
             const default_model = pricing.providerDefaultModel(spec.id, spec.default_model);
             const provider = keys.providerById(spec.id, default_model) catch {
-                try offerProviderAuth(root, keys, arena, out, spec.id, default_model);
+                try offerProviderAuth(root, keys, arena, out, spec.id, default_model, true);
                 return true;
             };
             try switchProvider(root, arena, provider, out);
@@ -219,7 +221,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const name = try arena.dupe(u8, resolved);
         const provider = keys.providerFor(name) catch {
             for (pricing.models()) |mt| if (std.mem.eql(u8, mt.name, name)) {
-                try offerProviderAuth(root, keys, arena, out, mt.provider, name);
+                try offerProviderAuth(root, keys, arena, out, mt.provider, name, false);
                 return true;
             };
             try out.writeAll("no API key for any provider serving that model — see /models, or add one with /key <provider> <key>\n");
@@ -397,6 +399,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.startsWith(u8, line, "/key")) {
+        root.ensureStoredKeys(keys);
         const rest = std.mem.trim(u8, line["/key".len..], " \t");
         if (rest.len == 0) { // show key status + how to add
             try out.writeAll("API keys (✓ = set via env / Keychain / login):\n");
@@ -437,6 +440,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.startsWith(u8, line, "/login")) {
+        root.ensureStoredKeys(keys);
         // Interactive OAuth sign-in for the providers that have a device/PKCE
         // flow (codegraff, codex/ChatGPT, kimi). Mirrors the `graff login`
         // subcommands but runs in-session and pulls the fresh key into the live

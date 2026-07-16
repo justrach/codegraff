@@ -20,6 +20,7 @@ const g_cost = &pricing.g_cost;
 const util = @import("util.zig");
 const utf8Prefix = util.utf8Prefix;
 const unixMs = util.unixMs;
+const http = @import("http.zig");
 
 // For the session run id (score/run join key) and the propose-site
 // fingerprint check. No cycle: scoring imports only std + pricing.
@@ -377,6 +378,7 @@ pub const Telemetry = struct {
     }
 
     pub fn postOtlp(client: *std.http.Client, url: []const u8, payload: []const u8) void {
+        http.waitForClientReady(client.io);
         _ = client.fetch(.{
             .location = .{ .url = url },
             .method = .POST,

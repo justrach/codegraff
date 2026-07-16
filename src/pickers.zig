@@ -490,8 +490,8 @@ pub const reloadLoginKey = picker_auth.reloadLoginKey;
 /// When a model's provider has no key, offer OAuth login or key entry and then
 /// switch to that model. The helper owns authentication while this module owns
 /// the picker callback and the live color/TTY mode.
-pub fn offerProviderAuth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer, pid: []const u8, model: []const u8) !void {
-    try picker_auth.offerProviderAuth(root, keys, arena, out, pid, model, main_mod.use_color, listPicker);
+pub fn offerProviderAuth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer, pid: []const u8, model: []const u8, default_selection: bool) !void {
+    try picker_auth.offerProviderAuth(root, keys, arena, out, pid, model, default_selection, main_mod.use_color, listPicker);
 }
 
 // Tests moved from main.zig alongside the functions they cover (#123 split).

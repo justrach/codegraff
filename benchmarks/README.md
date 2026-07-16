@@ -22,7 +22,7 @@ task, the model, and the network.
 | `cost.py` | USD per task (each tool's own usage, [gateway prices](https://codegraff.com/docs/models)) | graff/deepseek-v4-pro **$0.022** vs Claude Code/Opus-4.8 **$0.51** vs Codex/gpt-5.5 **$0.42** |
 | `memory.py` | Peak RSS + CPU (`/usr/bin/time -l`) | graff **~25 MB** floor vs Node **~410 MB** vs Rust **~206 MB** |
 | `latency.py` | One-shot turn latency, same gpt-5.5 endpoint, concurrent pairs | graff **4.4 s** vs codex **8.9 s** (one-shot only) |
-| `memory_session.py` | RSS-vs-turn slope of ONE persistent `--json` session (the #124 leak detector; `memory.py` is one-shot peak RSS and structurally blind to per-turn growth) | flat slope after warmup = no per-turn leak |
+| `memory_session.py` | RSS-vs-turn slope plus session/scratch arena capacity for ONE persistent `--json` session (the #124 leak detector; `memory.py` is one-shot peak RSS and structurally blind to per-turn growth) | flat slope after warmup = no per-turn leak |
 
 ```sh
 python3 benchmarks/cost.py
@@ -30,6 +30,11 @@ python3 benchmarks/memory.py
 python3 benchmarks/latency.py 8
 python3 benchmarks/memory_session.py 50   # N turns, one persistent session
 ```
+
+`memory_session.py` drives and samples one turn at a time so the child remains
+alive at every RSS sample. Set `GRAFF_BENCH_MODEL` to test a model other than
+`deepseek-v4-pro`; the script enables `GRAFF_MEM_DEBUG` itself and prints both
+arena capacities beside process RSS.
 
 Tasks live in `tasks.py` (edit to test other work).
 

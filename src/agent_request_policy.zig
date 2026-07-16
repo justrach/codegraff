@@ -102,9 +102,9 @@ pub fn recoverContextOverflow(self: *Agent, msg: []const u8, code: ?[]const u8, 
     self.last_request_context_overflow = true;
     // Rejection proves at least the advertised window, not an exact total.
     // Preserve stronger server/local evidence already above that floor.
-    const local = self.fullRequestEstimateTokens();
-    self.last_context_tokens = @max(self.effectiveContextTokens(), self.provider.context);
-    self.context_local_tokens = local;
+    const estimate = self.contextEstimate();
+    self.last_context_tokens = @max(estimate.effective, self.provider.context);
+    self.context_local_tokens = estimate.local;
     // compact() marks its synthetic summary request explicitly. Generic
     // in-request recovery is destructive there: the synthetic compact
     // instruction is the newest clean user turn, so emergencyTrim can discard

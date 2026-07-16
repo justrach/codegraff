@@ -20,6 +20,7 @@ const root = @import("main.zig");
 const trace = @import("trace.zig");
 const telemetry_mod = @import("telemetry.zig");
 const Telemetry = telemetry_mod.Telemetry;
+const http = @import("http.zig");
 const trajectory_path = trace.trajectory_path;
 
 // ── Agent types (the MAP-Elites niches) ─────────────────────────────────────
@@ -263,6 +264,7 @@ pub fn agentTypePrompt(name: []const u8) ?[]const u8 {
 /// live beside it at /v1/elites.
 pub fn pullElites(io: Io, arena: Allocator, client: *std.http.Client, telem: ?*Telemetry, endpoint: []const u8, provider_class: []const u8, eval_set_hash: []const u8, types: []const AgentType) []const AgentType {
     if (endpoint.len == 0 or !root.g_fleet) return types;
+    http.waitForClientReady(io);
     var base = std.mem.trimEnd(u8, endpoint, "/");
     if (std.mem.endsWith(u8, base, "/v1/logs")) base = base[0 .. base.len - "/v1/logs".len];
     // No eval suite → omit eval_set_hash entirely (NOT empty): the worker reads an
