@@ -838,7 +838,11 @@ pub fn fullInputEstimateTokens(self: *Agent) u64 {
     var buf: [512]u8 = undefined;
     var d: Io.Writer.Discarding = .init(&buf);
     var s: std.json.Stringify = .{ .writer = &d.writer };
-    s.write(Value{ .array = self.messages }) catch return 0;
+    // On a serialize failure, fall back to the bytes counted so far, never a
+    // spurious 0 — a 0 here would blind the pre-send gate (inputOverCompactThreshold)
+    // AND the #202 meter floor (recordUsageResponses) at once. The Discarding sink is
+    // infallible today so this catch is unreachable; it future-proofs a stricter sink.
+    s.write(Value{ .array = self.messages }) catch return d.fullCount() / 4;
     return d.fullCount() / 4;
 }
 
@@ -853,6 +857,15 @@ pub fn fullInputEstimateTokens(self: *Agent) u64 {
 pub fn inputOverCompactThreshold(self: *Agent) bool {
     const threshold = self.provider.compactAt();
     if (threshold == 0) return false;
+    // The server-reported meter (the same last_context_tokens the between-turns
+    // gates at mainloop.zig:683/734 already trust) is refreshed mid-turn by
+    // recordUsageResponses (agent_request.zig:905/924). On codex/.responses it can
+    // sit far above the local byte/4 estimate — retained encrypted-reasoning items
+    // are billed server-side but the local serialize under-counts them — so on a
+    // long turn it held ~511k while fullInputEstimateTokens stayed under the wall
+    // and the next resend was rejected for "input exceeds the context window"
+    // before any compaction ran. Trip a pre-send compact on the accurate meter too.
+    if (self.last_context_tokens >= threshold) return true;
     // #203: fullInputEstimateTokens omits the ever-present system prompt + tool
     // schemas, so it undercounts the real input and this gate under-fires. Add a
     // baseline for that fixed prefill, clamped to 1/8 of the window so it can never
@@ -870,6 +883,7 @@ test "inputOverCompactThreshold (#193): local estimate gates a pre-send compact"
     var msgs = std.json.Array.init(a);
     var agent: Agent = undefined;
     agent.messages = msgs;
+    agent.last_context_tokens = 0; // the gate now reads this too; `= undefined` won't apply the field default
     // small window: compactAt() = 10_000/10*8 = 8_000 tokens ≈ 32_000 serialized bytes
     agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 10_000 };
     try std.testing.expect(!inputOverCompactThreshold(&agent)); // empty history → under
@@ -878,6 +892,12 @@ test "inputOverCompactThreshold (#193): local estimate gates a pre-send compact"
     try msgs.append(try std.json.parseFromSliceLeaky(Value, a, big, .{}));
     agent.messages = msgs;
     try std.testing.expect(inputOverCompactThreshold(&agent)); // burst → over → compact before send
+    // the server-reported meter alone trips the gate even with an empty local history —
+    // the codex mid-turn case where retained reasoning items undercount the byte/4 estimate
+    agent.messages = std.json.Array.init(a);
+    agent.last_context_tokens = agent.provider.compactAt();
+    try std.testing.expect(inputOverCompactThreshold(&agent));
+    agent.last_context_tokens = 0;
     // unknown window (context 0) never gates
     agent.provider.context = 0;
     try std.testing.expect(!inputOverCompactThreshold(&agent));
