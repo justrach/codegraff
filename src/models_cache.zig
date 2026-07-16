@@ -45,6 +45,25 @@ const codex_cache_ttl_ms: i64 = 5 * 60 * 1000;
 const codex_client_version_floor = "0.144.1";
 pub var codex_catalog_source: []const u8 = "baked offline fallback";
 
+/// Session-owned demand loader. Non-Codex launches keep the baked rows until
+/// a picker, switch, resume, or fallback can actually observe Codex models.
+/// The loader is invalidated after an in-session Codex login so the new
+/// account receives its own catalog before selection.
+pub const LazyCodexCatalog = struct {
+    codex_home: []const u8,
+    loaded: bool = false,
+
+    pub noinline fn ensure(self: *LazyCodexCatalog, io: Io, gpa: Allocator, arena: Allocator, home: []const u8, token: []const u8, account: []const u8) void {
+        if (self.loaded) return;
+        loadCodexCatalog(io, gpa, arena, home, self.codex_home, token, account, false);
+        self.loaded = true;
+    }
+
+    pub fn invalidate(self: *LazyCodexCatalog) void {
+        self.loaded = false;
+    }
+};
+
 /// models.dev provider ids to trust FIRST when a model id appears under
 /// several providers — a vendor's own listing beats a reseller's markup
 /// (models.dev keys resellers like requesty/openrouter/vercel alongside the
@@ -571,6 +590,16 @@ test "numField reads int and float JSON numbers; u64Field clamps" {
     try std.testing.expectEqual(@as(u64, 42), u64Field(v.object, "i"));
     try std.testing.expectEqual(@as(u64, 0), u64Field(v.object, "neg")); // clamped
     try std.testing.expectEqual(@as(u64, 0), u64Field(v.object, "missing"));
+}
+
+test "lazy Codex catalog can be invalidated after account changes" {
+    const previous_source = codex_catalog_source;
+    defer codex_catalog_source = previous_source;
+    var catalog: LazyCodexCatalog = .{ .codex_home = "" };
+    catalog.ensure(std.testing.io, std.testing.allocator, std.testing.allocator, "", "", "");
+    try std.testing.expect(catalog.loaded);
+    catalog.invalidate();
+    try std.testing.expect(!catalog.loaded);
 }
 
 test "findModel prefers the canonical vendor over a reseller markup" {

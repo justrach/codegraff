@@ -216,6 +216,21 @@ const workflow_spec = ToolSpec{
 
 pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec };
 
+// The common catalog (clock_sleep off) is static too. Previously every root
+// startup allocated and filled a filtered ToolSpec array before rendering even
+// one provider catalog.
+const root_specs_without_clock = blk: {
+    var out: [root_specs.len - 1]ToolSpec = undefined;
+    var len: usize = 0;
+    for (root_specs) |tool| {
+        if (std.mem.eql(u8, tool.name, "clock_sleep")) continue;
+        out[len] = tool;
+        len += 1;
+    }
+    if (len != out.len) @compileError("root tool catalog must contain exactly one clock_sleep entry");
+    break :blk out;
+};
+
 pub fn isMetaName(name: []const u8) bool {
     return std.mem.eql(u8, name, "todo_write") or
         std.mem.eql(u8, name, "todo_read") or
@@ -292,12 +307,9 @@ pub fn renderRootTools(
 /// build their tool lists from base_specs only (tools_*_sub above), which
 /// never included meta_specs/clock_sleep in the first place.
 pub fn effectiveRootSpecs(arena: Allocator) ![]const ToolSpec {
+    _ = arena;
     if (root.g_clock_sleep) return &root_specs;
-    var out: std.ArrayList(ToolSpec) = .empty;
-    for (root_specs) |t| {
-        if (!std.mem.eql(u8, t.name, "clock_sleep")) try out.append(arena, t);
-    }
-    return out.items;
+    return &root_specs_without_clock;
 }
 
 const Schema = union(enum) { raw: []const u8, value: Value };
@@ -504,6 +516,7 @@ test "effectiveRootSpecs: drops clock_sleep from the root tool catalog unless th
     const off_specs = try effectiveRootSpecs(a);
     try std.testing.expectEqual(root_specs.len - 1, off_specs.len);
     for (off_specs) |t| try std.testing.expect(!std.mem.eql(u8, t.name, "clock_sleep"));
+    try std.testing.expectEqual(@as(usize, 0), arena_state.queryCapacity());
 
     root.g_clock_sleep = true;
     const on_specs = try effectiveRootSpecs(a);

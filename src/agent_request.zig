@@ -39,6 +39,8 @@ pub const usageInt = context.usageInt;
 pub const recordCost = context.recordCost;
 pub const fullInputEstimateTokens = context.fullInputEstimateTokens;
 pub const fullRequestEstimateTokens = context.fullRequestEstimateTokens;
+pub const contextEstimate = context.contextEstimate;
+pub const contextEstimateFromInputBytes = context.contextEstimateFromInputBytes;
 pub const effectiveContextTokens = context.effectiveContextTokens;
 pub const pairContextMeterWithCurrentLocal = context.pairContextMeterWithCurrentLocal;
 pub const rebaseContextMeter = context.rebaseContextMeter;
@@ -53,7 +55,25 @@ pub const errorMessage = responses.errorMessage;
 
 pub const buildBody = @import("agent_request_body.zig").buildBody;
 
+/// Keep the normal request hot path allocation-free while avoiding a permanent
+/// RSS high-water mark after one anomalously large stream. Small scratch arenas
+/// retain their pages for the next request; large ones return all pages to the
+/// backing allocator. History never lives here, so either reset mode is safe at
+/// the start of the next request.
+const scratch_retain_limit = 4 * 1024 * 1024;
+
+fn resetRequestScratch(scratch: *std.heap.ArenaAllocator) void {
+    if (scratch.queryCapacity() > scratch_retain_limit) {
+        _ = scratch.reset(.free_all);
+    } else {
+        _ = scratch.reset(.retain_capacity);
+    }
+}
+
 pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
+    // Startup paints the prompt while CA loading continues. The root turn and
+    // title task rendezvous here, then issue their requests concurrently.
+    http.waitForClientReady(self.io);
     self.last_request_context_overflow = false;
     self.last_request_write_failed = false;
     self.last_usage_includes_output = false;
@@ -65,7 +85,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     // can use the scratch arena for this request. Safe: all scratch data is
     // consumed before the next request(); messages/todos/prompts live on the
     // session arena.
-    if (self.scratch_arena) |sa| _ = sa.reset(.retain_capacity);
+    if (self.scratch_arena) |sa| resetRequestScratch(sa);
     // #148: a login-sourced OAuth token (kimi/xai, ~1h) expires mid-session and
     // is minted only at startup; refresh it in place before the call when near
     // expiry so a long session — or a subagent that inherited the on-disk token —
@@ -407,4 +427,20 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
         return root;
     }
+}
+
+test "request scratch retains normal capacity but releases an oversized spike" {
+    var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer scratch.deinit();
+
+    _ = try scratch.allocator().alloc(u8, 1024);
+    const normal_capacity = scratch.queryCapacity();
+    try std.testing.expect(normal_capacity > 0);
+    resetRequestScratch(&scratch);
+    try std.testing.expectEqual(normal_capacity, scratch.queryCapacity());
+
+    _ = try scratch.allocator().alloc(u8, scratch_retain_limit + 1);
+    try std.testing.expect(scratch.queryCapacity() > scratch_retain_limit);
+    resetRequestScratch(&scratch);
+    try std.testing.expectEqual(@as(usize, 0), scratch.queryCapacity());
 }

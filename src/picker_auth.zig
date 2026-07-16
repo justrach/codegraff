@@ -17,6 +17,7 @@ const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const command_catalog = @import("command_catalog.zig");
+const pricing = @import("pricing.zig");
 
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
@@ -62,6 +63,8 @@ pub fn reloadLoginKey(root: *Agent, keys: *Keys, arena: Allocator, provider_id: 
             }
         }
     }
+    if (std.mem.eql(u8, provider_id, "codex") and keys.get("codex") != null)
+        root.reloadModelCatalog(keys.*);
 }
 
 /// Read an API key without terminal echo or history persistence. The ordinary
@@ -109,6 +112,7 @@ pub fn offerProviderAuth(
     out: *Io.Writer,
     pid: []const u8,
     model: []const u8,
+    default_selection: bool,
     use_color: bool,
     pick: PickerFn,
 ) !void {
@@ -205,7 +209,11 @@ pub fn offerProviderAuth(
     }
 
     // Auth done — switch now if the key/login took, else keep the current model.
-    const provider = keys.providerById(pid, model) catch {
+    const selected_model = if (default_selection and std.mem.eql(u8, pid, "codex"))
+        pricing.providerDefaultModel(pid, provider_specs[si].default_model)
+    else
+        model;
+    const provider = keys.providerById(pid, selected_model) catch {
         try out.print("still no usable key for {s} — kept {s}{s}{s}\n", .{ pid, style.cyan, root.provider.model, style.reset });
         try out.flush();
         return;

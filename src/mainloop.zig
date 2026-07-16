@@ -197,19 +197,24 @@ pub fn run(ctx: *Ctx) !void {
         // {"type":"score","prompt_sha":"...","score":0.7,"notes":"..."}
         // appends an evaluation record for an agent variant to the
         // trajectory archive (the DGM evaluation phase writing back).
+        var json_request: ?std.json.Parsed(Value) = null;
+        defer if (json_request) |*request| request.deinit();
         const base_msg: []const u8 = if (loop_prompt) |lp| lp else if (goal_prompt) |gp| gp else if (main_mod.json_mode) blk: {
-            const parsed = std.json.parseFromSliceLeaky(Value, ctx.arena, line, .{ .allocate = .alloc_always }) catch {
+            json_request = std.json.parseFromSlice(Value, ctx.gpa, line, .{ .allocate = .alloc_if_needed }) catch {
                 ctx.root.emit(.{ .type = "error", .message = "invalid JSON (expect {\"type\":\"user\",\"text\":\"...\"})" });
                 continue;
             };
+            const parsed = json_request.?.value;
             const rtype = if (parsed == .object)
                 (if (parsed.object.get("type")) |v| (if (v == .string) v.string else "") else "")
             else
                 "";
             if (std.mem.eql(u8, rtype, "set_model")) {
+                ctx.root.ensureStoredKeys(ctx.keys);
                 const provider_field = if (parsed.object.get("provider")) |v| (if (v == .string) v.string else "") else "";
                 const model_field = if (parsed.object.get("model")) |v| (if (v == .string) v.string else "") else "";
                 const legacy_name = if (parsed.object.get("name")) |v| (if (v == .string) v.string else "") else "";
+                if (providers.controlRequestMayUseCodex(provider_field, model_field, legacy_name)) ctx.root.ensureModelCatalog(ctx.keys.*);
                 const provider = providers.resolveProviderControlRequest(ctx.keys, ctx.arena, provider_field, model_field, legacy_name) catch |err| {
                     const label = providers.setModelRequestLabel(ctx.arena, provider_field, model_field, legacy_name) catch "<requested model>";
                     const message = switch (err) {
@@ -221,7 +226,7 @@ pub fn run(ctx: *Ctx) !void {
                     ctx.root.emit(.{ .type = "error", .message = message });
                     continue;
                 };
-                const note = providers.applyProvider(ctx.root, ctx.arena, provider);
+                const note = try providers.applyProvider(ctx.root, ctx.arena, provider);
                 ctx.root.emit(.{ .type = "model", .ok = true, .provider = provider.id, .model = provider.model, .context = provider.context, .note = note });
                 continue;
             }
@@ -373,15 +378,18 @@ pub fn run(ctx: *Ctx) !void {
         // model can see (otherwise it only gets the path and resorts to OCR).
         vision.stageGuiImageAttachment(ctx.root, msg);
 
-        // Generate the AI tab-title concurrently (io.async), spawned BEFORE the
-        // header so the first-turn header can wait for the summary title. Applied
-        // after the turn on the happy path (below); the defer is the fallback for
+        // Generate the AI tab-title concurrently, spawned BEFORE the header and
+        // root turn. `concurrent` guarantees an independent execution slot on
+        // supported Io backends; async preserves portability as the fallback.
+        // Applied after the turn on the happy path (below); the defer is the fallback for
         // an interrupted/stalled/dropped/errored turn (those `continue` before the
         // apply step) so the generated title is never silently discarded.
         var title_fut: ?Io.Future(?[]const u8) = null;
         if (!main_mod.json_mode and ctx.root.ai_title and !ctx.root.ai_title_done) {
             ctx.root.ai_title_done = true;
-            title_fut = ctx.io.async(title_mod.titleTask, .{ ctx.gpa, ctx.io, ctx.root.client, ctx.root.provider, base_msg });
+            const title_args = .{ ctx.gpa, ctx.io, ctx.root.client, ctx.root.provider, base_msg };
+            title_fut = ctx.io.concurrent(title_mod.titleTask, title_args) catch
+                ctx.io.async(title_mod.titleTask, title_args);
         }
         defer if (title_fut) |*f| {
             applyAiTitle(ctx, f);
@@ -455,7 +463,11 @@ pub fn run(ctx: *Ctx) !void {
         // A failed turn must never kill the session: ApiError is already
         // reported inside request(); anything else is surfaced here. Either
         // way we drop back to the prompt (or emit a JSON error/turn event).
-        const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys.*, ctx.arena, ctx.out);
+        const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys, ctx.arena, ctx.out);
+        // No successful-path history mutation occurs between the trajectory,
+        // terminal event, and compaction gate. Reuse one full-history scan for
+        // all three instead of serializing an increasingly large history 3x.
+        const post_turn_context_tokens = ctx.root.effectiveContextTokens();
         if (trace.g_traj) |tj| {
             const fp = scoring.promptFingerprint(ctx.root.systemPrompt());
             const turn_ms: i64 = @intCast(@max(0, turn_started.untilNow(ctx.io, .awake).toMilliseconds()));
@@ -474,7 +486,7 @@ pub fn run(ctx: *Ctx) !void {
                 .task = util.utf8Prefix(base_msg, 160),
                 .tools = turn_tools,
                 .ok = turn_ok,
-                .context_tokens = ctx.root.effectiveContextTokens(),
+                .context_tokens = post_turn_context_tokens,
             });
             // Preserve the failure reason in the archive: the turn node only
             // records ok:false, so an adjacent error record keeps the
@@ -593,16 +605,18 @@ pub fn run(ctx: *Ctx) !void {
             else
                 final_text;
             ctx.root.emit(.{ .type = "finalizing" });
-            const context_tokens = ctx.root.effectiveContextTokens();
-            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = true, .metadata_complete = context_tokens > 0 });
+            const context_tokens = post_turn_context_tokens;
             // #124: allocator-level leak telemetry (GRAFF_MEM_DEBUG=1) — arena
             // capacity per turn separates a session-arena leak from gpa-side
-            // growth, which OS-level RSS sampling can't tell apart.
+            // growth, which OS-level RSS sampling can't tell apart. Emit this
+            // before the terminal turn event so protocol bridges that stop at
+            // `complete:true` never strand a debug event for the next request.
             if (main_mod.g_mem_debug) ctx.root.emit(.{
                 .type = "mem",
                 .session_arena_kb = if (main_mod.g_session_arena) |a| a.queryCapacity() / 1024 else 0,
                 .scratch_arena_kb = if (ctx.root.scratch_arena) |a| a.queryCapacity() / 1024 else 0,
             });
+            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = true, .metadata_complete = context_tokens > 0 });
         }
 
         // Apply the AI summary title + fleet champions that ran in the background
@@ -624,7 +638,7 @@ pub fn run(ctx: *Ctx) !void {
             }
         }
 
-        const context_tokens = ctx.root.effectiveContextTokens();
+        const context_tokens = post_turn_context_tokens;
         if (context_tokens >= ctx.root.provider.compactAt()) {
             // Trim on failure only when we're genuinely against the window — at
             // 80–95% a transient compaction failure can recover next turn.

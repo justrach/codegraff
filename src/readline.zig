@@ -156,17 +156,14 @@ pub fn readLine(
     out.writeAll("\x1b[6n") catch {};
     out.flush() catch {};
     dsr: {
-        var polls: usize = 0;
         var esc: [16]u8 = undefined;
         var n: usize = 0;
         var in_esc = false;
         while (true) {
-            if (in.buffered().len == 0 and !inputPending()) { // 50ms poll
-                polls += 1;
-                if (polls >= 10) break :dsr; // no reply in ~500ms: fall back
-                // to column 1 — a later reply is still adopted (CSI 'R').
-                continue;
-            }
+            // A local terminal answers DSR in a few milliseconds. Do not hold
+            // every prompt for 500ms when a multiplexer drops/delays it: the
+            // main loop's CSI 'R' arm adopts a late reply without losing layout.
+            if (in.buffered().len == 0 and !inputPendingTimed(20)) break :dsr;
             const b = in.takeByte() catch break :dsr;
             if (!in_esc) {
                 if (b == 0x1b) {
@@ -461,7 +458,7 @@ pub fn readLine(
                         redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                     },
                     'R' => { // late DSR cursor-position reply (slow or
-                        // multiplexed terminal missed the 500ms startup
+                        // multiplexed terminal missed the 20ms startup
                         // window): adopt the real input column so the
                         // horizontal window stays exact instead of the
                         // column-1 fallback. Same narrow-terminal policy as

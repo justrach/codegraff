@@ -35,6 +35,8 @@ const vision = @import("vision.zig");
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");
 const pricing = @import("pricing.zig");
+const models_cache = @import("models_cache.zig");
+const keys_cli = @import("keys_cli.zig");
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
@@ -150,6 +152,8 @@ pub const Agent = struct {
     snapshots: ?*tools_mod.Snapshots = null, // file-edit history for /rewind (root only)
     pending_image: ?vision.PendingImage = null, // staged by /image, sent with the next turn
     home: []const u8 = "", // $HOME, for /key persistence (set by main)
+    model_catalog: ?models_cache.LazyCodexCatalog = null, // demand-loaded dynamic Codex rows (root only)
+    stored_keys_loaded: bool = true, // false after an explicit-provider launch; model surfaces fill the remaining Keychain slots
     keep_context: bool = true, // carry the conversation across wire-format model switches (/keepcontext)
     reasoning: ReasoningEffort = .medium, // reasoning/thinking depth — codex, deepseek, codegraff (/effort, /reasoning)
     fast: bool = false, // codex "fast" mode → priority service_tier (/fast)
@@ -258,6 +262,10 @@ pub const Agent = struct {
     }
 
     pub fn say(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
+        // stdout is a strict JSONL transport in --json mode. Human-facing
+        // notices are represented by their structured terminal/error events;
+        // never leak an unframed line that breaks SDK parsers.
+        if (main_mod.json_mode and !self.sub) return;
         if (self.out) |w| {
             try w.print(fmt, args);
             try w.flush();
@@ -309,6 +317,47 @@ pub const Agent = struct {
         };
     }
 
+    /// Root catalogs include meta + MCP tools and are much larger than the
+    /// subagent constants. Materialize only a wire format the session actually
+    /// uses; provider switching calls this before updating the context meter.
+    pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
+        if (self.sub) return;
+        const slot = switch (kind) {
+            .anthropic => &self.tools_anthropic,
+            .openai => &self.tools_openai,
+            .responses => &self.tools_responses,
+        };
+        if (slot.*.len != 0) return;
+        const specs = try schema.effectiveRootSpecs(self.arena);
+        const connected: []const mcp.Tool = if (self.registry) |registry| registry.tools else &.{};
+        slot.* = try schema.renderRootTools(self.arena, kind, specs, connected);
+    }
+
+    /// A live MCP registry change invalidates provider-specific catalogs. The
+    /// active format is immediately rebuilt; inactive formats remain lazy.
+    pub fn invalidateRootTools(self: *Agent) void {
+        if (self.sub) return;
+        self.tools_anthropic = "";
+        self.tools_openai = "";
+        self.tools_responses = "";
+    }
+
+    pub noinline fn ensureModelCatalog(self: *Agent, keys: provider_mod.Keys) void {
+        if (self.model_catalog) |*catalog|
+            catalog.ensure(self.io, self.gpa, self.arena, self.home, keys.get("codex") orelse "", keys.codex_account);
+    }
+
+    pub fn reloadModelCatalog(self: *Agent, keys: provider_mod.Keys) void {
+        if (self.model_catalog) |*catalog| catalog.invalidate();
+        self.ensureModelCatalog(keys);
+    }
+
+    pub noinline fn ensureStoredKeys(self: *Agent, keys: *provider_mod.Keys) void {
+        if (self.stored_keys_loaded) return;
+        if (self.home.len != 0) keys_cli.loadMissingStoredKeys(self.io, self.gpa, self.arena, self.home, keys, .all);
+        self.stored_keys_loaded = true;
+    }
+
     /// Run until the model stops (or, in strict mode, calls
     /// attempt_completion). Returns the final assistant text (arena-owned).
     /// Close the held codex Responses WS session and reset the delta state. Called
@@ -327,6 +376,9 @@ pub const Agent = struct {
     }
 
     pub fn runTurn(self: *Agent) anyerror![]const u8 {
+        // Defensive for restored/embedded agents whose provider was assigned
+        // directly instead of going through providers.applyProvider.
+        try self.ensureRootTools(self.provider.kind);
         self.closeCodexWs(); // fresh codex WS session per turn
         defer self.closeCodexWs();
         self.completed = null;
@@ -383,6 +435,8 @@ pub const Agent = struct {
     pub const inputOverCompactThreshold = @import("agent_request.zig").inputOverCompactThreshold;
     pub const fullInputEstimateTokens = @import("agent_request.zig").fullInputEstimateTokens;
     pub const fullRequestEstimateTokens = @import("agent_request.zig").fullRequestEstimateTokens;
+    pub const contextEstimate = @import("agent_request.zig").contextEstimate;
+    pub const contextEstimateFromInputBytes = @import("agent_request.zig").contextEstimateFromInputBytes;
     pub const effectiveContextTokens = @import("agent_request.zig").effectiveContextTokens;
     pub const pairContextMeterWithCurrentLocal = @import("agent_request.zig").pairContextMeterWithCurrentLocal;
     pub const rebaseContextMeter = @import("agent_request.zig").rebaseContextMeter;
@@ -583,4 +637,38 @@ test "context percent saturates malformed or over-window server meters" {
     try std.testing.expectEqual(@as(u64, 50), contextPercent(50_000, 100_000));
     try std.testing.expectEqual(@as(u64, 100), contextPercent(150_000, 100_000));
     try std.testing.expectEqual(@as(u64, 100), contextPercent(std.math.maxInt(u64), 100_000));
+}
+
+test "lazy root tool catalogs preserve MCP tools across provider formats" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry = mcp.Registry.empty(std.testing.allocator, std.testing.io);
+    defer registry.deinit();
+    var connected = [_]mcp.Tool{.{
+        .server_index = 0,
+        .original_name = "search",
+        .qualified_name = "mcp__bench__search",
+        .description = "search the benchmark index",
+        .input_schema = .{ .object = .empty },
+    }};
+    registry.tools = &connected;
+
+    var agent: Agent = undefined;
+    agent.arena = arena;
+    agent.sub = false;
+    agent.registry = &registry;
+    agent.tools_anthropic = "";
+    agent.tools_openai = "";
+    agent.tools_responses = "";
+
+    try agent.ensureRootTools(.responses);
+    try std.testing.expect(std.mem.indexOf(u8, agent.tools_responses, "mcp__bench__search") != null);
+    try std.testing.expectEqual(@as(usize, 0), agent.tools_openai.len);
+    try std.testing.expectEqual(@as(usize, 0), agent.tools_anthropic.len);
+
+    agent.invalidateRootTools();
+    try agent.ensureRootTools(.anthropic);
+    try std.testing.expect(std.mem.indexOf(u8, agent.tools_anthropic, "mcp__bench__search") != null);
+    try std.testing.expectEqual(@as(usize, 0), agent.tools_responses.len);
 }

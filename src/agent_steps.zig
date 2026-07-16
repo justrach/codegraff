@@ -21,6 +21,13 @@ const messages_mod = @import("messages.zig");
 const util = @import("util.zig");
 const toolResultMessage = messages_mod.toolResultMessage;
 
+fn surfaceUnstreamedText(self: *Agent, text: []const u8) !void {
+    if (self.sub or self.streamed_text or text.len == 0) return;
+    if (main_mod.json_mode) {
+        self.emit(.{ .type = "text", .text = text });
+    } else try self.say("{s}\n", .{text});
+}
+
 // ssePayload/sseIndex live in agent_stream.zig; reached through the Agent
 // struct's member aliases.
 const ssePayload = Agent.ssePayload;
@@ -50,7 +57,7 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
                     if (std.mem.eql(u8, bt, "output_text")) {
                         if (block.object.get("text")) |txt| if (txt == .string) {
                             final_text = txt.string;
-                            if (!self.sub and !self.streamed_text) try self.say("{s}\n", .{txt.string});
+                            try surfaceUnstreamedText(self, txt.string);
                         };
                     }
                 }
@@ -116,7 +123,7 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         if (std.mem.eql(u8, kind, "text")) {
             if (block.object.get("text")) |tx| if (tx == .string) {
                 final_text = tx.string;
-                if (!self.sub and !self.streamed_text) try self.say("{s}\n", .{final_text});
+                try surfaceUnstreamedText(self, final_text);
             };
         } else if (std.mem.eql(u8, kind, "tool_use")) {
             const name = if (block.object.get("name")) |n| (if (n == .string) n.string else "") else "";
@@ -165,7 +172,7 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
     var final_text: []const u8 = "";
     if (message.object.get("content")) |c| if (c == .string and c.string.len > 0) {
         final_text = c.string;
-        if (!self.sub and !self.streamed_text) try self.say("{s}\n", .{c.string});
+        try surfaceUnstreamedText(self, c.string);
     };
 
     var calls: std.ArrayList(ToolCall) = .empty;
