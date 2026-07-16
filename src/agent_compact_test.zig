@@ -14,6 +14,7 @@ const trimOldestToolOutputsAlloc = compact.trimOldestToolOutputsAlloc;
 const repeatedOpaqueCompactionFailure = compact.repeatedOpaqueCompactionFailure;
 const trimOldestToolOutputs = compact.trimOldestToolOutputs;
 const capOversizedToolOutputs = compact.capOversizedToolOutputs;
+const recentContextStart = compact.recentContextStart;
 const cleanUserTurn = compact.cleanUserTurn;
 const emergencyCutIndex = compact.emergencyCutIndex;
 const emergencyTrim = compact.emergencyTrim;
@@ -230,6 +231,27 @@ test "trimOldestToolOutputs recovers a runaway tool-loop history (#163)" {
     try std.testing.expectEqual(@as(usize, 6), truncated); // 10 outputs, oldest 6 truncated
     try std.testing.expectEqual(@as(usize, 4), full); // 4 most-recent kept verbatim
     try std.testing.expectEqual(@as(usize, 11), agent.messages.items.len); // no message dropped
+}
+
+test "recentContextStart keeps a clean recent suffix and never orphans tool output" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try textMessage(a, "user", "old request"));
+    try msgs.append(try textMessage(a, "assistant", "x" ** 36_000));
+    try msgs.append(try textMessage(a, "user", "recent request"));
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"recent result\"}", .{}));
+    try msgs.append(try textMessage(a, "assistant", "recent answer"));
+
+    const start = recentContextStart(msgs.items, 8_000);
+    try std.testing.expectEqual(@as(usize, 2), start);
+    try std.testing.expect(cleanUserTurn(msgs.items[start]));
+    try std.testing.expectEqualStrings("recent request", msgs.items[start].object.get("content").?.string);
+
+    // A short entire conversation must still compact rather than retain all
+    // messages and perform a no-op summary.
+    try std.testing.expectEqual(msgs.items[2..].len, recentContextStart(msgs.items[2..], 8_000));
 }
 
 test "capOversizedToolOutputs (#193): bounds an oversized output in every wire format, leaves small ones + non-tool msgs" {

@@ -38,8 +38,8 @@ export type Event =
   | { type: "score"; ok: boolean; prompt_sha: string }
   | { type: "error"; message: string };
 
-/** Fingerprint of a system prompt as used in harness.trajectory.jsonl —
- *  the append-only DGM-style archive — and by `Harness.score()`:
+/** Fingerprint of a system prompt as used in `.graff/trajectories` —
+ *  the aggregate DGM-style archive — and by `Harness.score()`:
  *  first 8 bytes of SHA-256, hex (16 chars). */
 export function promptFingerprint(text: string): string {
   return createHash("sha256").update(text).digest("hex").slice(0, 16);
@@ -64,6 +64,8 @@ export interface HarnessOptions {
   appendSystemPrompt?: string;
   /** Hard per-turn root tool-call budget. */
   maxToolCalls?: number;
+  /** Invocation-wide provider-call ceiling shared by all agent work. */
+  maxModelCalls?: number;
   /** Reject duplicate root tool name+normalized-input calls per turn. */
   dedupeToolCalls?: boolean;
   /** Extra raw flags. `--json` is always added. */
@@ -91,6 +93,7 @@ function spawnArgs(o: HarnessOptions): string[] {
   if (o.yolo) a.push("--yolo");
   if (o.model) a.push("--model", o.model);
   if (o.maxToolCalls !== undefined) a.push("--max-tool-calls", String(o.maxToolCalls));
+  if (o.maxModelCalls !== undefined) a.push("--max-model-calls", String(o.maxModelCalls));
   if (o.dedupeToolCalls) a.push("--dedupe-tool-calls");
   if (o.systemPrompt) a.push("--system-prompt", o.systemPrompt);
   if (o.appendSystemPrompt) a.push("--append-system-prompt", o.appendSystemPrompt);
@@ -316,7 +319,7 @@ export class Harness {
   appendSystemPrompt(text: string): Promise<void> { return this.setSystemPrompt(text, true); }
 
   /** Record an evaluation score for an agent/prompt variant in the
-   *  trajectory archive (harness.trajectory.jsonl) — the DGM evaluation
+   *  aggregate `.graff/trajectories` archive — the DGM evaluation
    *  phase writing back. `promptOrSha` is either the full system-prompt
    *  text (fingerprinted for you) or an existing 16-hex fingerprint.
    *  Pass `parent` (text or sha) when the variant was mutated from another

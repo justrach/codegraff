@@ -47,6 +47,32 @@ const execTool = exec.execTool;
 
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 
+const tool_results_dir = ".graff/tool-results";
+pub const tool_preview_chars: usize = 2_000;
+var tool_result_seq: std.atomic.Value(u64) = .init(0);
+
+pub fn toolPreviewText(arena: std.mem.Allocator, text: []const u8, path: ?[]const u8) ![]const u8 {
+    if (text.len <= tool_preview_chars) return arena.dupe(u8, text);
+    const marker = if (path) |p|
+        try std.fmt.allocPrint(arena, "[full tool result: {s} — inspect with read_file]", .{p})
+    else
+        "[tool result truncated: full-result persistence failed]";
+    const head = util.utf8Prefix(text, tool_preview_chars -| (marker.len + 2));
+    return std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ head, marker });
+}
+
+fn persistToolResult(self: *Agent, text: []const u8) ?[]const u8 {
+    if (text.len <= tool_preview_chars) return null;
+    // createDir reports PathAlreadyExists, which is the normal case because
+    // trace setup creates `.graff` at launch. createDirPath is idempotent.
+    Io.Dir.cwd().createDirPath(self.io, tool_results_dir) catch return null;
+    const seq = tool_result_seq.fetchAdd(1, .monotonic);
+    const run_id = if (self.tracer) |tr| tr.identity.run_id else "untraced";
+    const path = std.fmt.allocPrint(self.arena, "{s}/{s}-{d}.txt", .{ tool_results_dir, run_id, seq }) catch return null;
+    Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = text, .flags = .{ .exclusive = true } }) catch return null;
+    return path;
+}
+
 // escWatchTask/drainStdin/rawNonblockStdin live in agent_interrupt.zig;
 // Agent.esc_watch_done is a struct-level pub var that STAYS declared inside the
 // Agent struct in main.zig (never alias a var — see esc_cancel/
@@ -94,6 +120,8 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .from_sub = self.sub,
             .approvals = self.approvals,
             .tracer = self.tracer,
+            .run_budget = self.run_budget,
+            .depth = self.depth,
             .snapshots = self.snapshots,
             .tools_used = &self.tools_used,
         };
@@ -125,12 +153,24 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
         for (futures, outputs) |*fut, *output| output.* = fut.await(self.io);
         defer for (outputs) |output| self.gpa.free(output.text);
         for (ext_idx.items, outputs) |i, output| {
-            results[i] = .{ .text = try self.arena.dupe(u8, output.text), .is_error = output.is_error, .ms = output.ms };
+            // Keep the model-facing history compact. The exact output remains
+            // inspectable on disk and the short preview carries its pointer.
+            const detail = persistToolResult(self, output.text);
+            results[i] = .{ .text = try toolPreviewText(self.arena, output.text, detail), .is_error = output.is_error, .ms = output.ms };
         }
     }
     // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
     for (calls, results) |call, r| self.sayToolResult(call.name, r);
     return results;
+}
+
+test "toolPreviewText caps context and preserves an inspect pointer" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const preview = try toolPreviewText(arena_state.allocator(), "x" ** 5000, ".graff/tool-results/run-1.txt");
+    try std.testing.expect(preview.len <= tool_preview_chars);
+    try std.testing.expect(std.mem.indexOf(u8, preview, ".graff/tool-results/run-1.txt") != null);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(preview));
 }
 
 pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
@@ -346,7 +386,6 @@ fn clockSleepSuccessText(arena: std.mem.Allocator, ms: i64, clamped: bool) ![]co
 fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const u8 {
     return std.fmt.allocPrint(arena, "sleep interrupted after {d} ms by user input", .{elapsed_ms});
 }
-
 
 /// Handle a meta tool inline on the agent's own thread.
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {

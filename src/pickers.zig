@@ -510,7 +510,7 @@ test "fuzzyScore ranks basename prefix above substring above subsequence" {
     const readme = fuzzyScore("README.md", "dem").?;
     try std.testing.expect(demo > readme);
     // substring beats subsequence
-    const sub = fuzzyScore("harness.trace.jsonl", "trace").?;
+    const sub = fuzzyScore(".graff/traces/run.jsonl", "trace").?;
     const seq = fuzzyScore("t-r-a-c-e.txt", "trace").?;
     try std.testing.expect(sub > seq);
     // basename prefix beats mid-path substring

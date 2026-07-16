@@ -11,6 +11,11 @@ const serde = @import("serde.zig");
 const writeAnthropicMessages = serde.writeAnthropicMessages;
 const writeOpenAIMessageNormalized = serde.writeOpenAIMessageNormalized;
 
+pub fn responsesOutputLimit(self: *const Agent) u32 {
+    if (self.compaction_request) return 4096;
+    return self.responses_output_limit orelse max_tokens;
+}
+
 pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: bool, stream_usage: bool) ![]u8 {
     var aw: Io.Writer.Allocating = .init(self.gpa);
     errdefer aw.deinit();
@@ -175,6 +180,11 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             try s.endArray();
             try s.objectField("store");
             try s.write(false);
+            // Bound every Responses request explicitly. The normal agent keeps
+            // the existing 16k ceiling; compaction gets a focused 4k handoff
+            // and title generation can override this to 64 tokens.
+            try s.objectField("max_output_tokens");
+            try s.write(responsesOutputLimit(self));
             try s.objectField("stream");
             try s.write(true);
         },

@@ -320,7 +320,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/title") or std.mem.eql(u8, line, "/title on") or std.mem.eql(u8, line, "/title off")) {
+        const was_on = root.ai_title;
         root.ai_title = if (std.mem.eql(u8, line, "/title on")) true else if (std.mem.eql(u8, line, "/title off")) false else !root.ai_title;
+        if (was_on and !root.ai_title) root.title_generation +%= 1; // discard any detached result already in flight
         const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("AI session title: {s} ({s}){s}\n", .{
             if (root.ai_title) "on" else "off",

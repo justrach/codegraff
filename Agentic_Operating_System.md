@@ -90,8 +90,8 @@ Codegraff's design maps naturally onto operating-system concepts.
 | Scheduler | Workflow/fanout orchestration | `workflow`, parallel subagents |
 | Memory manager | Context/history manager | compaction, session save/resume |
 | Filesystem | Durable context substrate | repo files, `.harness/`, trace files |
-| Profiler | Execution trace | `harness.trace.jsonl` |
-| Process tree | Agent trajectory | `harness.trajectory.jsonl` |
+| Profiler | Execution trace | `.graff/traces/<run-id>.jsonl` |
+| Process tree | Agent trajectory | `.graff/trajectories/<run-id>.jsonl` |
 | Program binary | Agent genome | system prompt / persona prompt |
 | Package update | Fleet elite pull | `pullElites` |
 
@@ -237,8 +237,8 @@ An AOS needs multiple memory tiers:
 |---|---|---|
 | L1 working memory | Current prompt/history inside the model context | active messages |
 | L2 session memory | Durable state for the current run | `last.session.json` |
-| L3 trace memory | Profiling and debugging history | `harness.trace.jsonl` |
-| L4 trajectory memory | Evolutionary lineage and scores | `harness.trajectory.jsonl` |
+| L3 trace memory | Profiling and debugging history | `.graff/traces/<run-id>.jsonl` |
+| L4 trajectory memory | Evolutionary lineage and scores | `.graff/trajectories/<run-id>.jsonl` |
 | L5 project/user memory | Cross-session task knowledge | proposed `.harness/memory/` |
 | L6 fleet memory | Shared behavioral improvements | promoted personas/elites |
 
@@ -265,14 +265,14 @@ A key design rule from Codegraff's memory docs is that memory should not mutate 
 
 An AOS must be observable. If the agent is a process, then we need process telemetry.
 
-Codegraff writes a session trace to `harness.trace.jsonl`. The trace records API calls, tool calls, latency, byte counts, context token counts, and errors. This lets the agent inspect its own execution behavior.
+Codegraff writes a run-exclusive trace to `.graff/traces/<run-id>.jsonl`. The trace records API calls, tool calls, latency, byte counts, context token counts, errors, and correlation identity. This lets the agent inspect its own execution behavior without colliding with another process.
 
 That creates a feedback loop:
 
 ```mermaid
 sequenceDiagram
     participant Agent
-    participant Trace as harness.trace.jsonl
+    participant Trace as .graff/traces/run-id.jsonl
     participant User
 
     Agent->>Trace: record API/tool events

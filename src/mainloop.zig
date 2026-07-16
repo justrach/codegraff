@@ -77,23 +77,89 @@ pub const Ctx = struct {
     sys_strict: []const u8,
 };
 
-/// Apply the backgrounded AI session title (titleTask) to the redrawable
-/// window title + saved session filename. Called from BOTH the happy-path
-/// post-turn step and the end-of-iteration `defer`, so an interrupted /
-/// stalled / dropped / errored turn — which `continue`s before the post-turn
-/// step — still lands the title instead of generating it then throwing it away
-/// (ai_title_done is already set, so it would otherwise never regenerate and
-/// the window title stays stuck on the prompt-derived fallback). Awaits once.
-fn applyAiTitle(ctx: *Ctx, f: *Io.Future(?[]const u8)) void {
-    if (f.await(ctx.io)) |t| {
-        ctx.root.session_title = ctx.arena.dupe(u8, t) catch null;
-        ctx.gpa.free(t);
-        if (ctx.root.session_title) |st| {
-            title_mod.setTerminalTitle(ctx.out, st, main_mod.g_cwd_display);
-            session.renameSession(ctx.root, ctx.arena, session.slugifyTitle(ctx.arena, st));
-        }
+fn applyAiTitle(ctx: *Ctx, title: []const u8) void {
+    ctx.root.session_title = ctx.arena.dupe(u8, title) catch null;
+    if (ctx.root.session_title) |st| {
+        title_mod.setTerminalTitle(ctx.out, st, main_mod.g_cwd_display);
+        session.renameSession(ctx.root, ctx.arena, session.slugifyTitle(ctx.arena, st));
     }
 }
+
+const TitleJob = struct {
+    future: ?Io.Future(void) = null,
+    prompt: []const u8, // gpa-owned: readline storage may be reused next turn
+    result: ?[]const u8 = null, // gpa-owned, published before done.release
+    done: std.atomic.Value(bool) = .init(false),
+    generation: u64,
+};
+
+fn detachedTitleTask(job: *TitleJob, gpa: Allocator, io: Io, client: *std.http.Client, provider: provider_mod.Provider, budget: ?*@import("run_budget.zig").RunBudget, tracer: ?*@import("trace.zig").Tracer) void {
+    job.result = title_mod.titleTask(gpa, io, client, provider, job.prompt, budget, tracer);
+    job.done.store(true, .release);
+}
+
+/// Owns title tasks for the whole interactive session. Completed jobs are
+/// polled without waiting; outstanding work is canceled only when mainloop
+/// closes. Multiple generations allow `/new` while an old title is still live.
+const TitleJobs = struct {
+    items: std.ArrayList(*TitleJob) = .empty,
+
+    fn start(self: *TitleJobs, ctx: *Ctx, prompt: []const u8) void {
+        // An explicitly tiny budget still owes the user a real answer. Do not
+        // let cosmetic title work consume the final provider-call slot before
+        // the root request has a chance to acquire it.
+        if (ctx.root.run_budget) |budget| if (budget.remaining() <= 1) {
+            if (ctx.root.tracer) |tr| tr.note("budget", "AI title skipped to reserve the final model call for the root turn");
+            return;
+        };
+        const job = ctx.gpa.create(TitleJob) catch return;
+        const owned_prompt = ctx.gpa.dupe(u8, prompt) catch {
+            ctx.gpa.destroy(job);
+            return;
+        };
+        job.* = .{ .prompt = owned_prompt, .generation = ctx.root.title_generation };
+        const args = .{ job, ctx.gpa, ctx.io, ctx.root.client, ctx.root.provider, ctx.root.run_budget, ctx.root.tracer };
+        job.future = ctx.io.concurrent(detachedTitleTask, args) catch ctx.io.async(detachedTitleTask, args);
+        self.items.append(ctx.gpa, job) catch {
+            if (job.future) |*future| future.cancel(ctx.io);
+            if (job.result) |title| ctx.gpa.free(title);
+            ctx.gpa.free(job.prompt);
+            ctx.gpa.destroy(job);
+        };
+    }
+
+    fn poll(self: *TitleJobs, ctx: *Ctx) void {
+        var i: usize = 0;
+        while (i < self.items.items.len) {
+            const job = self.items.items[i];
+            if (!job.done.load(.acquire)) {
+                i += 1;
+                continue;
+            }
+            if (job.future) |*future| future.await(ctx.io); // done=true: never blocks
+            job.future = null;
+            if (job.result) |title| {
+                // Manual rename/session reset wins over an older detached result.
+                if (job.generation == ctx.root.title_generation and ctx.root.session_title == null)
+                    applyAiTitle(ctx, title);
+                ctx.gpa.free(title);
+            }
+            ctx.gpa.free(job.prompt);
+            _ = self.items.orderedRemove(i);
+            ctx.gpa.destroy(job);
+        }
+    }
+
+    fn deinit(self: *TitleJobs, ctx: *Ctx) void {
+        for (self.items.items) |job| {
+            if (job.future) |*future| future.cancel(ctx.io);
+            if (job.result) |title| ctx.gpa.free(title);
+            ctx.gpa.free(job.prompt);
+            ctx.gpa.destroy(job);
+        }
+        self.items.deinit(ctx.gpa);
+    }
+};
 
 /// #226: true only when the model has a live checklist and every item is marked
 /// completed — a "work asserted done" signal for the /loop continuation gate
@@ -109,6 +175,8 @@ fn allTodosDone(root: *agent_mod.Agent) bool {
 /// resumes right after this returns and does its own final-save/worktree
 /// cleanup (unchanged, still in main.zig).
 pub fn run(ctx: *Ctx) !void {
+    var title_jobs: TitleJobs = .{};
+    defer title_jobs.deinit(ctx);
     // Trajectory spine state: each turn's parent is the previous turn, and a
     // changed prompt fingerprint marks a set_system_prompt mutation edge.
     var prev_turn_id: u64 = 0;
@@ -123,6 +191,9 @@ pub fn run(ctx: *Ctx) !void {
     var loop_continue_armed = false; // a continuation turn is queued for the next readline
 
     while (true) {
+        // Nonblocking completion pump: a title can land between any two user
+        // interactions, but it is never joined on the turn-response path.
+        title_jobs.poll(ctx);
         // Steering drain: prompts typed while the previous turn streamed
         // were captured into g_steer_queue. Run them now, one after
         // another, in place of reading a fresh line — Codex-style
@@ -154,6 +225,9 @@ pub fn run(ctx: *Ctx) !void {
             try ctx.root.prompt();
             break :blk (try readline.readLine(ctx.root, ctx.in, ctx.out, ctx.gpa, ctx.history, ctx.linebuf)) orelse break;
         } else (try ctx.in.takeDelimiter('\n')) orelse break;
+        // The title may have completed while readline was waiting. Apply it
+        // before starting the newly-entered turn, still without ever waiting.
+        title_jobs.poll(ctx);
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
         const loop_prompt: ?[]const u8 = if (!main_mod.json_mode and std.mem.startsWith(u8, line, "/loop "))
@@ -378,22 +452,12 @@ pub fn run(ctx: *Ctx) !void {
         // model can see (otherwise it only gets the path and resorts to OCR).
         vision.stageGuiImageAttachment(ctx.root, msg);
 
-        // Generate the AI tab-title concurrently, spawned BEFORE the header and
-        // root turn. `concurrent` guarantees an independent execution slot on
-        // supported Io backends; async preserves portability as the fallback.
-        // Applied after the turn on the happy path (below); the defer is the fallback for
-        // an interrupted/stalled/dropped/errored turn (those `continue` before the
-        // apply step) so the generated title is never silently discarded.
-        var title_fut: ?Io.Future(?[]const u8) = null;
+        // Generate the AI title before the root turn and publish it through the
+        // session-scoped nonblocking completion queue.
         if (!main_mod.json_mode and ctx.root.ai_title and !ctx.root.ai_title_done) {
             ctx.root.ai_title_done = true;
-            const title_args = .{ ctx.gpa, ctx.io, ctx.root.client, ctx.root.provider, base_msg };
-            title_fut = ctx.io.concurrent(title_mod.titleTask, title_args) catch
-                ctx.io.async(title_mod.titleTask, title_args);
+            title_jobs.start(ctx, base_msg);
         }
-        defer if (title_fut) |*f| {
-            applyAiTitle(ctx, f);
-        };
 
         // TUI/session header: once the first real prompt materializes the chat,
         // show what this terminal tab is working on and the exact folder, and
@@ -619,14 +683,8 @@ pub fn run(ctx: *Ctx) !void {
             ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = true, .metadata_complete = context_tokens > 0 });
         }
 
-        // Apply the AI summary title + fleet champions that ran in the background
-        // overlapping the turn — both off the critical path. The printed header kept
-        // the fast prompt title; the summary now lands on the redrawable window title
-        // and the saved session filename. Usually already resolved by here.
-        if (title_fut) |*f| {
-            applyAiTitle(ctx, f);
-            title_fut = null;
-        }
+        // Apply only if already complete; poll never waits for title generation.
+        title_jobs.poll(ctx);
         fleet.joinElites(ctx.io); // publish backgrounded fleet champions for the next turn (no-op once joined)
 
         // turn_end lifecycle hooks (best-effort; interrupted/errored turns

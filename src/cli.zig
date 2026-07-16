@@ -91,6 +91,7 @@ pub const usage_text =
     \\  --cost           show running session spend in the prompt
     \\  --json           structured stdio protocol (JSON in, JSONL events out)
     \\  --max-tool-calls N  reject root tool calls after N per turn (JSON-safe budget)
+    \\  --max-model-calls N total provider calls allowed across this run (default 256; includes children/title/judges)
     \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn
     \\  --no-telemetry   disable anonymous usage telemetry for this run
     \\  -h, --help       this help

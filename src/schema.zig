@@ -25,7 +25,7 @@ const schema_protocol_json =
     \\{
     \\  "transport": "newline-delimited JSON over stdin/stdout (--json)",
     \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"model\":\"gpt-5.5\",\"provider\":\"codex\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"}, {\"type\":\"set_effort\",\"level\":\"low|medium|high|xhigh|max|ultra\"}, and {\"type\":\"set_fast\",\"on\":true} are live control requests acked by model/compact/mode/agent/effort/fast/ultracode events. For compatibility, set_model also accepts legacy {\"name\":\"provider model|model\"}. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
-    \\  "score_request": "{\"type\":\"score\",\"prompt_sha\":\"<16 hex>\",\"score\":0.7,\"notes\":\"...\",\"parent_sha\":\"<16 hex, optional>\"} appends an evaluation record for an agent/prompt variant to harness.trajectory.jsonl (the append-only DGM-style archive; prompt_sha = first 8 bytes of SHA-256 of the system prompt, hex; parent_sha records which prompt this variant was mutated from — the lineage edge DGM parent selection counts children with) and acks with a score event",
+    \\  "score_request": "{\"type\":\"score\",\"prompt_sha\":\"<16 hex>\",\"score\":0.7,\"notes\":\"...\",\"parent_sha\":\"<16 hex, optional>\"} appends an evaluation record for an agent/prompt variant to this run's file under .graff/trajectories (the aggregate append-only DGM-style archive; prompt_sha = first 8 bytes of SHA-256 of the system prompt, hex; parent_sha records which prompt this variant was mutated from — the lineage edge DGM parent selection counts children with) and acks with a score event",
     \\  "events": [
     \\    {"type": "text", "text": "assistant text delta"},
     \\    {"type": "reasoning", "text": "reasoning/thinking delta (GUI shows a collapsible Thinking block)"},
@@ -63,7 +63,7 @@ const schema_serve_json =
     \\  "endpoints": [
     \\    {"method": "GET", "path": "/healthz", "description": "liveness + version, no auth"},
     \\    {"method": "GET", "path": "/v1/schema", "description": "this schema document"},
-    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
+    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"maxModelCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
     \\    {"method": "POST", "path": "/v1/sessions/{id}", "description": "body is ONE stdio-protocol request object (user / set_system_prompt / set_model / compact / set_mode / set_agent / score / answer); non-answer requests stream application/x-ndjson events until the request's terminal event (turn/error, or the request-specific ack); answer requests return JSON ack while the original user stream continues; one non-answer request in flight per session at a time"},
     \\    {"method": "DELETE", "path": "/v1/sessions/{id}", "description": "graceful close: waits for any in-flight request, then EOFs the child's stdin"}
     \\  ]
@@ -80,6 +80,7 @@ const schema_flags_json =
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
     \\  {"flag": "--json", "arg": null, "description": "structured stdio protocol (JSON in, JSONL events out)"},
     \\  {"flag": "--max-tool-calls", "arg": "N", "description": "hard per-turn root tool-call budget; rejected calls emit tool_rejected/tool_result"},
+    \\  {"flag": "--max-model-calls", "arg": "N", "description": "invocation-wide provider-call ceiling shared by root, subagents, retries, title, compaction, and judges; default 256"},
     \\  {"flag": "--dedupe-tool-calls", "arg": null, "description": "reject duplicate root tool name+normalized-input calls per turn"},
     \\  {"flag": "--no-telemetry", "arg": null, "description": "disable anonymous OTEL usage telemetry for this run"}
     \\]

@@ -36,7 +36,7 @@ const harness_version = root.harness_version;
 /// best-effort POST at session end. Off entirely unless an endpoint is
 /// configured (OTEL_EXPORTER_OTLP_ENDPOINT or GRAFF_OTEL_ENDPOINT env);
 /// GRAFF_NO_TELEMETRY or --no-telemetry forces it off regardless. Counters
-/// feed from the same Tracer hooks that write harness.trace.jsonl, plus
+/// feed from the same Tracer hooks that write `.graff/traces/<run-id>.jsonl`, plus
 /// workflow/ultracode/turn events from the orchestrator. A per-install
 /// anonymous id (~/.simple-harness-install-id) identifies the install; SDKs
 /// pass their own id via HARNESS_SDK_INSTALL_ID + HARNESS_CLIENT so SDK

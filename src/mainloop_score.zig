@@ -94,7 +94,9 @@ pub fn handle(root: *agent_mod.Agent, obj: std.json.ObjectMap) void {
         .parent_sha = parent,
         .score = score,
         .notes = util.utf8Prefix(notes, 200),
-        .run_id = run_id,
+        // `run_id` is reserved for the trajectory file's invocation identity.
+        // A score request may name external provenance, so keep that distinct.
+        .score_run_id = run_id,
         .judge_id = judge_id,
         .artifact_sha = artifact_sha,
         .eval_set_hash = eval_set_hash,

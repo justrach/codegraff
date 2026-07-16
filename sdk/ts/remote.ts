@@ -58,6 +58,8 @@ export interface RemoteOptions {
   appendSystemPrompt?: string;
   /** Hard per-turn root tool-call budget for the child session. */
   maxToolCalls?: number;
+  /** Invocation-wide provider-call ceiling shared by all agent work. */
+  maxModelCalls?: number;
   /** Reject duplicate root tool name+normalized-input calls per turn. */
   dedupeToolCalls?: boolean;
   /** Attach to an existing session instead of creating one. */
@@ -147,6 +149,7 @@ export class RemoteHarness {
     if (opts.systemPrompt) body.system_prompt = opts.systemPrompt;
     if (opts.appendSystemPrompt) body.append_system_prompt = opts.appendSystemPrompt;
     if (opts.maxToolCalls !== undefined) body.maxToolCalls = opts.maxToolCalls;
+    if (opts.maxModelCalls !== undefined) body.maxModelCalls = opts.maxModelCalls;
     if (opts.dedupeToolCalls !== undefined) body.dedupeToolCalls = opts.dedupeToolCalls;
     const res = await this.req("POST", "/v1/sessions", body);
     const data = (await res.json()) as { session_id: string };

@@ -6,13 +6,14 @@
 //! completion logic are shared with the SSE path.
 //!
 //! postLive() is the transport selector called by request(): codex root turns
-//! try ws (postResponsesWs); a handshake/transport failure disables ws for the
-//! session and falls back to postStream (SSE) — a genuine Esc/stall propagates.
+//! try ws (postResponsesWs), retry one failed WS with a clean full-history
+//! re-anchor, then latch onto the launch-scoped prewarmed HTTP client for SSE.
 //!
 //! Observability (issue #134's ask): every ws lifecycle step is routed to the
 //! tracer ("ws" notes: connecting/connected/completed/stall/fallback/errors),
-//! which lands in harness.trace.jsonl so an agent can debug a ws turn after the
-//! fact; GRAFF_WS_DEBUG=1 additionally dumps the handshake + frames to stderr.
+//! which lands in the run's file under .graff/traces so an agent can debug a
+//! ws turn after the fact; GRAFF_WS_DEBUG=1 additionally dumps the handshake +
+//! frames to stderr.
 
 const std = @import("std");
 const Io = std.Io;
@@ -65,9 +66,15 @@ fn nowAwakeMs(io: Io) i64 {
     return @intCast(@divTrunc(Io.Timestamp.now(io, .awake).nanoseconds, std.time.ns_per_ms));
 }
 
-/// Transport selector: try ws for eligible codex turns, else SSE (postStream).
-/// A ws transport/handshake failure disables ws for the session and falls back
-/// to SSE; a deliberate Esc/stall propagates unchanged.
+const ws_failures_before_fallback: u8 = 2;
+
+pub fn wsShouldFallback(consecutive_failures: u8) bool {
+    return consecutive_failures >= ws_failures_before_fallback;
+}
+
+/// Transport selector: try ws for eligible codex turns, else persistent SSE.
+/// The first WS transport/handshake failure rebuilds full input and retries a
+/// fresh socket. The second latches SSE for the session. Esc/stall propagates.
 pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
     // #134/#132 test seam: force a one-shot stall/drop on a live turn so the
     // end-to-end "[response ended early: …]" path (never "[response interrupted
@@ -105,9 +112,15 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
         };
         return error.StreamDropped;
     }
-    if (!wsEligible(self)) return if (self.ws_off) postStreamFresh(self, body) else self.postStream(body);
-    return postResponsesWs(self, body) catch |e| {
+    if (!wsEligible(self)) return self.postStream(body);
+    const response = postResponsesWs(self, body) catch |e| {
         if (e == error.Interrupted or e == error.StreamStalled) return e;
+        // Preemptive idle expiry is not a failed transport attempt; it only asks
+        // request() to rebuild the already-created delta as full input.
+        if (e == error.CodexWsReanchor) return e;
+        self.closeCodexWs();
+        self.ws_transport_failures +|= 1;
+        const fallback = wsShouldFallback(self.ws_transport_failures);
         // (#codex-ws) A delta body carries previous_response_id + only the new
         // messages, anchored to the WS session that just died — the codex HTTP
         // endpoint rejects previous_response_id outright ("Unsupported
@@ -119,21 +132,23 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
         // request() to rebuild + retry (a fresh WS re-anchors with full history)
         // instead of falling back to a stale SSE replay.
         if (std.mem.indexOf(u8, body, "\"previous_response_id\"") != null) {
-            self.closeCodexWs();
-            if (self.tracer) |tr| tr.note("ws", "reuse failed — re-anchoring with full input");
+            if (fallback) self.ws_off = true;
+            if (self.tracer) |tr| tr.note("ws", if (fallback)
+                "reuse failed twice — rebuilding full input for persistent SSE"
+            else
+                "reuse failed — retrying a fresh WS with full input");
+            return error.CodexWsReanchor;
+        }
+        if (!fallback) {
+            if (self.tracer) |tr| tr.note("ws", "transport error — retrying one fresh WS");
             return error.CodexWsReanchor;
         }
         self.ws_off = true;
-        if (self.tracer) |tr| tr.note("ws", "transport error — falling back to fresh-client SSE for this session");
-        return postStreamFresh(self, body);
+        if (self.tracer) |tr| tr.note("ws", "transport failed twice — using persistent prewarmed SSE for this session");
+        return self.postStream(body);
     };
-}
-
-fn postStreamFresh(self: *Agent, body: []const u8) ![]u8 {
-    var client: std.http.Client = .{ .allocator = self.gpa, .io = self.io };
-    defer client.deinit();
-    if (self.tracer) |tr| tr.note("sse_fallback", "fresh HTTP client");
-    return self.postStreamWithClient(&client, body);
+    self.ws_transport_failures = 0;
+    return response;
 }
 
 fn wssUrl(arena: std.mem.Allocator, https_url: []const u8) ![]u8 {

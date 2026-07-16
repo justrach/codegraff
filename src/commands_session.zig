@@ -39,7 +39,6 @@ const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
 
 const trace = @import("trace.zig");
-const trajectory_path = trace.trajectory_path;
 
 const skills = @import("skills.zig");
 const skillIndex = skills.skillIndex;
@@ -84,6 +83,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.tui_header_shown = false;
         root.session_title = null; // re-summarize the now-empty conversation
         root.ai_title_done = false;
+        root.title_generation +%= 1;
         root.todos.clearRetainingCapacity();
         const had_goal = root.goal != null;
         resetConversationSteering(root);
@@ -104,6 +104,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         resetConversationSteering(root);
         root.session_title = null;
         root.ai_title_done = false; // let the new session earn its own AI title
+        root.title_generation +%= 1;
         root.tui_header_shown = false;
         root.session_name = try std.fmt.allocPrint(arena, "session-{d}", .{unixMs(root.io)});
         saveSession(root, arena, root.session_name) catch {};
@@ -118,6 +119,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         } else {
             root.session_title = try arena.dupe(u8, title);
             root.ai_title_done = true; // a manual /rename wins over the auto-titler
+            root.title_generation +%= 1; // discard any still-running AI result
             saveSession(root, arena, root.session_name) catch {};
             try out.print("session title → {s}\n", .{title});
         }
@@ -198,7 +200,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.startsWith(u8, line, "/agents promote")) {
         const personal = std.mem.indexOf(u8, line, "--personal") != null or std.mem.indexOf(u8, line, "--global") != null;
-        try out.print("{s}promoting local champions{s} → {s} tier (from {s})\n", .{ style.bold, style.reset, if (personal) "personal ~/.harness/agents" else "private ./.harness/agents", trajectory_path });
+        try out.print("{s}promoting local champions{s} → {s} tier (from {s})\n", .{ style.bold, style.reset, if (personal) "personal ~/.harness/agents" else "private ./.harness/agents", trace.trajectories_dir });
         const n = promoteAgents(root.io, root.gpa, out, fleet.g_home, personal);
         if (n > 0) try out.print("{s}✓ promoted {d} niche(s) — they load on next start{s}\n", .{ style.green, n, style.reset });
         try out.flush();
@@ -392,7 +394,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/trajectory")) {
-        const data = Io.Dir.cwd().readFileAlloc(root.io, trajectory_path, arena, .limited(4 << 20)) catch "";
+        const data = trace.readTrajectoryArchive(root.io, arena, 4 << 20);
         const S = struct {
             fn str(o: std.json.ObjectMap, k: []const u8) []const u8 {
                 const v = o.get(k) orelse return "";
@@ -429,24 +431,21 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             const v = std.json.parseFromSliceLeaky(Value, arena, ln, .{ .allocate = .alloc_always }) catch continue;
             if (v == .object) objs.append(arena, v.object) catch {};
         }
-        // Tree shows the CURRENT session (ids restart per session); scores
-        // come from the whole archive.
-        var session_start: usize = 0;
-        for (objs.items, 0..) |o, i| {
-            if (std.mem.eql(u8, S.str(o, "kind"), "session")) session_start = i + 1;
-        }
-        const session = objs.items[session_start..];
+        // Tree shows this invocation; scores still come from the whole archive.
+        const current_run_id = if (root.tracer) |tr| tr.identity.run_id else if (trace.g_traj) |tj| tj.identity.run_id else "";
         var turns: usize = 0;
-        for (session) |o| {
+        for (objs.items) |o| {
+            if (!std.mem.eql(u8, S.str(o, "run_id"), current_run_id)) continue;
             if (std.mem.eql(u8, S.str(o, "kind"), "turn")) turns += 1;
         }
         if (turns == 0) {
-            try out.writeAll("no trajectory recorded yet — run a turn first (the archive lives in harness.trajectory.jsonl)\n");
+            try out.print("no trajectory recorded yet — run a turn first (current file: {s})\n", .{if (trace.g_traj) |tj| tj.path else trace.trajectories_dir});
             try out.flush();
             return true;
         }
-        try out.print("{s}session trajectory{s} — {d} turn(s); archive: {s} ({d} record(s) total)\n", .{ style.bold, style.reset, turns, trajectory_path, objs.items.len });
-        for (session) |o| {
+        try out.print("{s}session trajectory{s} — {d} turn(s); current: {s}; archive: {s} ({d} record(s) total)\n", .{ style.bold, style.reset, turns, if (trace.g_traj) |tj| tj.path else "", trace.trajectories_dir, objs.items.len });
+        for (objs.items) |o| {
+            if (!std.mem.eql(u8, S.str(o, "run_id"), current_run_id)) continue;
             if (!std.mem.eql(u8, S.str(o, "kind"), "turn")) continue;
             const turn_id = S.int(o, "id");
             out.print("{s}●{s} turn {d} {s} {d}ms · prompt {s}{s}{s}{s} · {s}", .{
@@ -466,10 +465,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             out.writeAll("\n") catch {};
             // children: subagents / workflow tasks spawned during this turn
             var remaining: usize = 0;
-            for (session) |c| {
+            for (objs.items) |c| {
+                if (!std.mem.eql(u8, S.str(c, "run_id"), current_run_id)) continue;
                 if (S.int(c, "parent") == turn_id and !std.mem.eql(u8, S.str(c, "kind"), "turn")) remaining += 1;
             }
-            for (session) |c| {
+            for (objs.items) |c| {
+                if (!std.mem.eql(u8, S.str(c, "run_id"), current_run_id)) continue;
                 if (S.int(c, "parent") != turn_id or std.mem.eql(u8, S.str(c, "kind"), "turn")) continue;
                 remaining -= 1;
                 out.print("  {s} {s} {s} {d}ms · prompt {s}{s}{s}{s} · {s}", .{

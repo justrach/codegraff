@@ -46,6 +46,13 @@ test "codexWsIdleExpired: fires only strictly past the idle limit (codex-ws)" {
     try std.testing.expect(agent_ws.codexWsIdleExpired(1_000_000 + 510 * std.time.ms_per_s, 1_000_000)); // the real 8.5-min trace gap
 }
 
+test "WS fallback latches only after a retry" {
+    try std.testing.expect(!agent_ws.wsShouldFallback(0));
+    try std.testing.expect(!agent_ws.wsShouldFallback(1));
+    try std.testing.expect(agent_ws.wsShouldFallback(2));
+    try std.testing.expect(agent_ws.wsShouldFallback(255));
+}
+
 // (#codex-ws) End-to-end regression for the reanchor fix: buildBody's
 // .responses branch must emit previous_response_id + a message-slice delta
 // while a WS session + prev id are held, and after closeCodexWs (called by
@@ -84,6 +91,7 @@ test "buildBody (.responses): delta while WS live; full input after closeCodexWs
     try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"previous_response_id\":\"resp_live\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, delta_body, "third — not yet sent") != null);
     try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"first\"") == null); // NOT resent — already on the server
+    try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"max_output_tokens\":16000") != null);
 
     // Simulate closeCodexWs's effect (covered by its own unit test above)
     // without invoking it directly: it would call ws.WsClient.deinit on
@@ -100,4 +108,15 @@ test "buildBody (.responses): delta while WS live; full input after closeCodexWs
     try std.testing.expect(std.mem.indexOf(u8, rebuilt_body, "\"previous_response_id\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rebuilt_body, "\"first\"") != null); // full history restored
     try std.testing.expect(std.mem.indexOf(u8, rebuilt_body, "third — not yet sent") != null);
+
+    agent.compaction_request = true;
+    const compact_body = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(compact_body);
+    try std.testing.expect(std.mem.indexOf(u8, compact_body, "\"max_output_tokens\":4096") != null);
+
+    agent.compaction_request = false;
+    agent.responses_output_limit = 64;
+    const title_body = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(title_body);
+    try std.testing.expect(std.mem.indexOf(u8, title_body, "\"max_output_tokens\":64") != null);
 }

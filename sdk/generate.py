@@ -89,8 +89,8 @@ export type Event =
   | {{ type: "score"; ok: boolean; prompt_sha: string }}
   | {{ type: "error"; message: string }};
 
-/** Fingerprint of a system prompt as used in harness.trajectory.jsonl —
- *  the append-only DGM-style archive — and by `Harness.score()`:
+/** Fingerprint of a system prompt as used in `.graff/trajectories` —
+ *  the aggregate DGM-style archive — and by `Harness.score()`:
  *  first 8 bytes of SHA-256, hex (16 chars). */
 export function promptFingerprint(text: string): string {{
   return createHash("sha256").update(text).digest("hex").slice(0, 16);
@@ -115,6 +115,8 @@ export interface HarnessOptions {{
   appendSystemPrompt?: string;
   /** Hard per-turn root tool-call budget. */
   maxToolCalls?: number;
+  /** Invocation-wide provider-call ceiling shared by all agent work. */
+  maxModelCalls?: number;
   /** Reject duplicate root tool name+normalized-input calls per turn. */
   dedupeToolCalls?: boolean;
   /** Extra raw flags. `--json` is always added. */
@@ -142,6 +144,7 @@ function spawnArgs(o: HarnessOptions): string[] {{
   if (o.yolo) a.push("--yolo");
   if (o.model) a.push("--model", o.model);
   if (o.maxToolCalls !== undefined) a.push("--max-tool-calls", String(o.maxToolCalls));
+  if (o.maxModelCalls !== undefined) a.push("--max-model-calls", String(o.maxModelCalls));
   if (o.dedupeToolCalls) a.push("--dedupe-tool-calls");
   if (o.systemPrompt) a.push("--system-prompt", o.systemPrompt);
   if (o.appendSystemPrompt) a.push("--append-system-prompt", o.appendSystemPrompt);
@@ -367,7 +370,7 @@ export class Harness {{
   appendSystemPrompt(text: string): Promise<void> {{ return this.setSystemPrompt(text, true); }}
 
   /** Record an evaluation score for an agent/prompt variant in the
-   *  trajectory archive (harness.trajectory.jsonl) — the DGM evaluation
+   *  aggregate `.graff/trajectories` archive — the DGM evaluation
    *  phase writing back. `promptOrSha` is either the full system-prompt
    *  text (fingerprinted for you) or an existing 16-hex fingerprint.
    *  Pass `parent` (text or sha) when the variant was mutated from another
@@ -547,6 +550,8 @@ export interface RemoteOptions {{
   appendSystemPrompt?: string;
   /** Hard per-turn root tool-call budget for the child session. */
   maxToolCalls?: number;
+  /** Invocation-wide provider-call ceiling shared by all agent work. */
+  maxModelCalls?: number;
   /** Reject duplicate root tool name+normalized-input calls per turn. */
   dedupeToolCalls?: boolean;
   /** Attach to an existing session instead of creating one. */
@@ -636,6 +641,7 @@ export class RemoteHarness {{
     if (opts.systemPrompt) body.system_prompt = opts.systemPrompt;
     if (opts.appendSystemPrompt) body.append_system_prompt = opts.appendSystemPrompt;
     if (opts.maxToolCalls !== undefined) body.maxToolCalls = opts.maxToolCalls;
+    if (opts.maxModelCalls !== undefined) body.maxModelCalls = opts.maxModelCalls;
     if (opts.dedupeToolCalls !== undefined) body.dedupeToolCalls = opts.dedupeToolCalls;
     const res = await this.req("POST", "/v1/sessions", body);
     const data = (await res.json()) as {{ session_id: string }};
@@ -884,8 +890,8 @@ def _fleet_signal(kind: str, attrs: Optional[dict] = None) -> None:
 
 
 def prompt_fingerprint(text: str) -> str:
-    """Fingerprint of a system prompt as used in harness.trajectory.jsonl —
-    the append-only DGM-style archive — and by `Harness.score()`:
+    """Fingerprint of a system prompt as used in `.graff/trajectories` —
+    the aggregate DGM-style archive — and by `Harness.score()`:
     first 8 bytes of SHA-256, hex (16 chars)."""
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
@@ -917,9 +923,13 @@ def verify_score(key: bytes, rec: dict) -> bool:
     sig = rec.get("sig") or ""
     if not sig:
         return False
+    # Run-scoped JSONL reserves top-level `run_id` for invocation identity.
+    # Score provenance therefore uses `score_run_id`; legacy/D1 records still
+    # carry the signed value as `run_id`.
+    signed_run_id = rec.get("score_run_id", rec.get("run_id", ""))
     want = score_signature(
         key, rec.get("prompt_sha", ""), rec.get("parent_sha", "") or "",
-        float(rec.get("score", "nan")), rec.get("run_id", ""),
+        float(rec.get("score", "nan")), signed_run_id,
         rec.get("judge_id", ""), rec.get("artifact_sha", ""),
         rec.get("eval_set_hash", ""),
         # D1 returns NULL (None) for an empty niche/provider_class — "{{}}"
@@ -930,7 +940,7 @@ def verify_score(key: bytes, rec: dict) -> bool:
         return True
     legacy = "v1\\n{{}}\\n{{}}\\n{{:.6f}}\\n{{}}\\n{{}}\\n{{}}\\n{{}}".format(
         rec.get("prompt_sha", ""), rec.get("parent_sha", "") or "",
-        float(rec.get("score", "nan")), rec.get("run_id", ""),
+        float(rec.get("score", "nan")), signed_run_id,
         rec.get("judge_id", ""), rec.get("artifact_sha", ""),
         rec.get("eval_set_hash", ""))
     return hmac.compare_digest(
@@ -950,7 +960,8 @@ class Harness:
                  system_prompt: Optional[str] = None,
                  append_system_prompt: Optional[str] = None,
                  max_tool_calls: Optional[int] = None,
-                 dedupe_tool_calls: bool = False):
+                 dedupe_tool_calls: bool = False,
+                 max_model_calls: Optional[int] = None):
         binary = binary or _default_binary()
         argv = [binary, "--json"]
         if yolo:
@@ -959,6 +970,8 @@ class Harness:
             argv += ["--model", model]
         if max_tool_calls is not None:
             argv += ["--max-tool-calls", str(max_tool_calls)]
+        if max_model_calls is not None:
+            argv += ["--max-model-calls", str(max_model_calls)]
         if dedupe_tool_calls:
             argv.append("--dedupe-tool-calls")
         if system_prompt:
@@ -1069,7 +1082,7 @@ class Harness:
               artifact_sha: str = "", eval_set_hash: str = "",
               niche: str = "", scale: str = "") -> None:
         """Record an evaluation score for an agent/prompt variant in the
-        trajectory archive (harness.trajectory.jsonl) — the DGM evaluation
+        aggregate trajectory archive (`.graff/trajectories`) — the DGM evaluation
         phase writing back. `prompt_or_sha` is either the full system-prompt
         text (fingerprinted for you) or an existing 16-hex fingerprint.
         Pass `parent` (text or sha) when the variant was mutated from
@@ -1196,7 +1209,8 @@ class RemoteHarness:
                  append_system_prompt: Optional[str] = None,
                  max_tool_calls: Optional[int] = None,
                  dedupe_tool_calls: bool = False,
-                 session_id: Optional[str] = None):
+                 session_id: Optional[str] = None,
+                 max_model_calls: Optional[int] = None):
         self.base = url.rstrip("/")
         self.token = token
         if session_id is not None:
@@ -1213,6 +1227,8 @@ class RemoteHarness:
             opts["append_system_prompt"] = append_system_prompt
         if max_tool_calls is not None:
             opts["maxToolCalls"] = max_tool_calls
+        if max_model_calls is not None:
+            opts["maxModelCalls"] = max_model_calls
         if dedupe_tool_calls:
             opts["dedupeToolCalls"] = True
         resp = self._request("POST", "/v1/sessions", opts)

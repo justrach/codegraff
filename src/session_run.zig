@@ -79,6 +79,8 @@ pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent
         .fallback_active = root.fallback_active,
         .fallback_blocked = root.fallback_blocked,
         .registry = root.registry,
+        .tracer = root.tracer,
+        .run_budget = root.run_budget,
         .sys_normal = root.sys_normal,
         .tools_anthropic = root.tools_anthropic,
         .tools_openai = root.tools_openai,
@@ -402,11 +404,13 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
         } else |_| {}
     }
     ws.g_debug = environ_map.get("GRAFF_WS_DEBUG") != null;
-    // GRAFF_WS_FORCE_FAIL_ONCE=1|true|on|yes arms the one-shot forced WS
-    // connect failure (integration-test seam for the SSE fallback + ws_off
-    // latch). Only affirmative values arm it — =0 must leave it disarmed.
+    // GRAFF_WS_FORCE_FAIL_ONCE proves a clean retry; the counted sibling proves
+    // that two consecutive failures latch the SSE fallback. Test seams only.
     if (environ_map.get("GRAFF_WS_FORCE_FAIL_ONCE")) |v| {
         ws.g_force_connect_failure_once = std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
+    }
+    if (environ_map.get("GRAFF_WS_FORCE_FAIL_COUNT")) |v| {
+        ws.g_force_connect_failure_count = std.fmt.parseInt(u8, std.mem.trim(u8, v, " \t"), 10) catch 0;
     }
     skills.loadSkillSettings(io, arena); // per-skill opt-outs, also gates the auto-connect
     anim.loadAnimationSetting(io, arena); // {"animation": "..."} → thinking spinner choice

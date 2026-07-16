@@ -231,8 +231,9 @@ and points at the one-line install; everything else keeps working without it.
 
 graff doesn't just run an agent; it records every run as a node in a
 **Darwin Gödel Machine-style archive tree** ([arXiv:2505.22954](https://arxiv.org/abs/2505.22954)),
-so the harness itself is the substrate for agent self-improvement. Each session
-appends to `harness.trajectory.jsonl` (truncated per session, like the trace):
+so the harness itself is the substrate for agent self-improvement. Each run
+writes a unique `.graff/trajectories/<run-id>.jsonl`; archive readers aggregate
+the directory, so concurrent processes never share a truncate/append cursor:
 
 - **A lineage tree, not a flat log.** Root turns form a spine (each turn's
   parent is the previous one); every subagent and workflow task hangs off the
@@ -359,6 +360,7 @@ flags:
   --timing         show per-tool wall-clock on result lines (✓ (312ms) …)
   --cost           show running session spend in the prompt ([model · 12k tok · $0.0042])
   --json           structured stdio protocol (JSON in, JSONL events out, SDK transport)
+  --max-model-calls N  cap provider calls across root, children, retries, titles, compaction, and judges (default 256)
   -h, --help       usage
   -V, --version    version
 ```
@@ -426,7 +428,7 @@ other animation names remain available.
 /paste          attach the clipboard image (macOS); also Ctrl-V (⌘V can't be captured)
 /strict         toggle "every message is a tool" mode
 /yolo           toggle bash auto-approval (skip permission prompts)
-/trace          toggle the JSONL event trace (harness.trace.jsonl)
+/trace          toggle this run's JSONL event trace and show its path
 /compact        summarize history into a fresh context
 /save | /resume | /sessions   session persistence; bare /resume → interactive picker
 /todo           show the current task list
@@ -740,7 +742,7 @@ real Anthropic API the harness also sets an explicit `cache_control` breakpoint.
 Cache reads are surfaced: `recordUsage` parses `cache_read_input_tokens`
 (Anthropic) and `prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`
 (OpenAI/DeepSeek), and every `api` trace line carries a `cache_read_tokens` field
-so you can see the hit rate in `harness.trace.jsonl`.
+so you can see the hit rate in the current `.graff/traces/<run-id>.jsonl`.
 
 The one deliberate exception is `set_system_prompt` (--json protocol / SDK
 `setSystemPrompt`): the system prompt is the *first* token of the cached prefix,
@@ -759,11 +761,20 @@ and forth inside an agent loop.
 
 **Tracing: the harness can debug itself.** Every API round trip (latency,
 request/response bytes, context tokens) and every tool execution (duration,
-result size, errors, root-vs-subagent) is appended as one JSON line to
-`harness.trace.jsonl` in the cwd, truncated at startup so it always covers the
-current session. The system prompt tells the agent the file exists, so "profile
-yourself" or "why was that slow?" makes the agent read its own trace and answer
-from data. `/trace` toggles it.
+result size, errors, root-vs-subagent) is appended as one JSON line to the
+run's unique `.graff/traces/<run-id>.jsonl`. Every line carries the run id, PID,
+and runtime session id; concurrent processes therefore remain independently
+inspectable. The system prompt tells the agent how to locate the file, so
+"profile yourself" or "why was that slow?" makes it answer from data. `/trace`
+toggles tracing and prints the exact path.
+
+Long tool results are stored exactly under `.graff/tool-results/`; model history
+receives a short preview and an inspectable file pointer instead. Responses
+requests are explicitly capped at 16k output tokens (4k for compaction and 64
+for titles), while compaction carries the latest clean ~8k-token user-turn
+suffix forward verbatim. A shared atomic run budget allows at most four model
+calls concurrently and one subagent level; set the total provider-call ceiling
+with `--max-model-calls N` or the lower-precedence `GRAFF_MAX_MODEL_CALLS`.
 
 **Telemetry, pseudonymous, opt-out, on by default.** *Every* build (release,
 source, and dev) bakes in a default OTLP endpoint (pass `-Dtelemetry-endpoint=""`

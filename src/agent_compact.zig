@@ -2,6 +2,7 @@
 //! recovery when a summary request cannot run.
 
 const std = @import("std");
+const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const utf8Prefix = @import("util.zig").utf8Prefix;
@@ -22,6 +23,35 @@ const agent_eval = @import("agent_eval.zig");
 pub const runEval = agent_eval.runEval;
 pub const appendEvalLog = agent_eval.appendEvalLog;
 pub const runJudge = agent_eval.runJudge;
+
+pub const recent_context_tokens: u64 = 8_000;
+
+fn serializedTokens(value: Value) u64 {
+    var buf: [256]u8 = undefined;
+    var d: Io.Writer.Discarding = .init(&buf);
+    var s: std.json.Stringify = .{ .writer = &d.writer };
+    s.write(value) catch {};
+    return @intCast(d.fullCount() / 4);
+}
+
+/// Pick the earliest clean user-turn boundary whose suffix fits in the recent
+/// context budget. Returning items.len means "summarize everything". We never
+/// split at a tool output, so retained call/result history stays valid.
+pub fn recentContextStart(items: []const Value, token_budget: u64) usize {
+    if (items.len == 0 or token_budget == 0) return items.len;
+    var total: u64 = 0;
+    var start = items.len;
+    var i = items.len;
+    while (i > 0) {
+        i -= 1;
+        total +|= serializedTokens(items[i]);
+        if (total > token_budget) break;
+        if (cleanUserTurn(items[i])) start = i;
+    }
+    // If the entire conversation fits, summarizing all is the only operation
+    // that can actually reduce context; otherwise compaction would be a no-op.
+    return if (start == 0) items.len else start;
+}
 
 /// Ask the model for a context-handoff summary (no tools), then restart
 /// history from that summary.
@@ -75,7 +105,13 @@ pub fn compact(self: *Agent) anyerror!usize {
     const live_context_tokens = self.last_context_tokens;
     const live_context_local_tokens = self.context_local_tokens;
     const live_effective_context = self.effectiveContextTokens();
-    self.messages = try cloneJsonArray(compact_arena, live_messages);
+    const recent_start = recentContextStart(live_messages.items, recent_context_tokens);
+    const recent_messages = live_messages.items[recent_start..];
+    var summary_messages = std.json.Array.init(compact_arena);
+    try summary_messages.ensureTotalCapacity(recent_start);
+    for (live_messages.items[0..recent_start]) |item|
+        try summary_messages.append(try cloneJsonValue(compact_arena, item));
+    self.messages = summary_messages;
     var installed_summary = false;
     defer if (!installed_summary) {
         self.messages = live_messages;
@@ -124,14 +160,17 @@ pub fn compact(self: *Agent) anyerror!usize {
 
     var fresh = std.json.Array.init(self.arena);
     const handoff = try std.fmt.allocPrint(self.arena,
-        \\Context: the prior conversation was compacted to save space.
-        \\Summary of everything so far:
+        \\Context: the earlier conversation was compacted to save space.
+        \\Summary of the earlier work:
         \\
         \\{s}
         \\
         \\Continue assisting the user based on this summary.
     , .{summary});
     try fresh.append(try textMessage(self.arena, "user", handoff));
+    // Preserve a valid recent suffix verbatim (up to ~8k estimated tokens),
+    // including its user boundary and paired tool calls/results.
+    for (recent_messages) |message| try fresh.append(message);
     self.messages = fresh;
     self.last_context_tokens = 0;
     self.context_local_tokens = 0;

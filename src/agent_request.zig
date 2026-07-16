@@ -25,6 +25,7 @@ const tools_mod = @import("tools.zig");
 const apiErrorMessage = tools_mod.apiErrorMessage;
 const mentionsReasoningEffort = tools_mod.mentionsReasoningEffort;
 const telemetry = @import("telemetry.zig");
+const run_budget_mod = @import("run_budget.zig");
 
 const policy = @import("agent_request_policy.zig");
 const errorCode = policy.errorCode;
@@ -74,6 +75,20 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     // Startup paints the prompt while CA loading continues. The root turn and
     // title task rendezvous here, then issue their requests concurrently.
     http.waitForClientReady(self.io);
+    var budget_permit: ?run_budget_mod.Permit = null;
+    if (self.run_budget) |budget| {
+        const kind: run_budget_mod.CallKind = if (self.compaction_request) .compaction else self.call_kind;
+        budget_permit = budget.acquire(self.io, self.depth, kind) catch |err| {
+            self.last_api_error = switch (err) {
+                error.RunBudgetExhausted => "model-call budget exhausted for this graff run — restart or raise --max-model-calls",
+                error.AgentDepthExceeded => "agent depth limit reached (max depth 1)",
+                else => @errorName(err),
+            };
+            if (self.tracer) |tr| tr.note("budget", self.last_api_error.?);
+            return err;
+        };
+    }
+    defer if (budget_permit) |*permit| permit.release();
     self.last_request_context_overflow = false;
     self.last_request_write_failed = false;
     self.last_usage_includes_output = false;
@@ -153,8 +168,11 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     };
                     self.streamed_text = false;
                     self.streamed_args = .none;
-                    // Esc is a deliberate stop, not a flaky network — no retry.
+                    // Esc and task cancellation are deliberate stops, not flaky
+                    // transport. In particular, session-close cancellation of a
+                    // detached title must not launch a replacement request.
                     if (err == error.Interrupted) return error.Interrupted;
+                    if (err == error.Canceled) return error.Canceled;
                     // #56: a mid-stream idle stall or a connection drop (the
                     // provider closed/reset before its terminal event) — NOT a
                     // user Esc, which is handled above. Usually transient, so

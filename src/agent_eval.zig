@@ -183,6 +183,8 @@ pub fn runJudge(self: *Agent, rubric: []const u8, eval_output: []const u8, note:
         .from_sub = self.sub,
         .approvals = self.approvals,
         .tracer = self.tracer,
+        .run_budget = self.run_budget,
+        .depth = self.depth,
         .snapshots = self.snapshots,
         .tools_used = &self.tools_used,
     };

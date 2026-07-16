@@ -6,7 +6,7 @@ The least things a DGM needs, and where each lives:
   1. genome          a system prompt
                      (auto-captured: kind:"prompt" records in the archive)
   2. archive+lineage variants, their fitness, and who-was-mutated-from-whom
-                     (auto-captured: harness.trajectory.jsonl; lineage via
+                     (auto-captured: .graff/trajectories/*.jsonl; lineage via
                       score(parent=…))
   3. evaluate        grounded, Step 1: a held-out replay judge in a separate
                      process is the primary gradient (replay_eval below);
@@ -37,7 +37,24 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sdk", "py"))
 from harness_sdk import Harness, prompt_fingerprint, verify_score  # noqa: E402
 
-ARCHIVE = "harness.trajectory.jsonl"
+ARCHIVE_DIR = os.path.join(".graff", "trajectories")
+LEGACY_ARCHIVE = "harness.trajectory.jsonl"
+
+
+def archive_paths():
+    """Current run-scoped archive files plus the pre-migration legacy file."""
+    paths = []
+    try:
+        paths.extend(
+            os.path.join(ARCHIVE_DIR, name)
+            for name in sorted(os.listdir(ARCHIVE_DIR))
+            if name.endswith(".jsonl")
+        )
+    except FileNotFoundError:
+        pass
+    if os.path.isfile(LEGACY_ARCHIVE):
+        paths.append(LEGACY_ARCHIVE)
+    return paths
 
 
 def _score_key():
@@ -62,28 +79,27 @@ def load_archive():
     """genomes: sha → prompt text; scores: sha → [values]; children: sha → n.
 
     When GRAFF_SCORE_KEY_FILE is set, score rows must carry a valid HMAC or
-    they are dropped (and counted) — a forged `echo >> harness.trajectory.jsonl`
-    row can't poison fitness or manufacture lineage."""
+    they are dropped (and counted) — a forged trajectory score row can't
+    poison fitness or manufacture lineage."""
     key = _score_key()
     genomes, scores, children = {}, collections.defaultdict(list), collections.Counter()
     seen_edges = set()
     rejected = 0
-    try:
-        for ln in open(ARCHIVE):
-            o = json.loads(ln)
-            if o.get("kind") == "prompt":
-                genomes[o["prompt_sha"]] = o["text"]
-            elif o.get("kind") == "score":
-                if key is not None and not verify_score(key, o):
-                    rejected += 1
-                    continue
-                scores[o["prompt_sha"]].append(o["score"])
-                p = o.get("parent_sha")
-                if p and (p, o["prompt_sha"]) not in seen_edges:
-                    seen_edges.add((p, o["prompt_sha"]))
-                    children[p] += 1
-    except FileNotFoundError:
-        pass
+    for path in archive_paths():
+        with open(path, encoding="utf-8") as archive:
+            for ln in archive:
+                o = json.loads(ln)
+                if o.get("kind") == "prompt":
+                    genomes[o["prompt_sha"]] = o["text"]
+                elif o.get("kind") == "score":
+                    if key is not None and not verify_score(key, o):
+                        rejected += 1
+                        continue
+                    scores[o["prompt_sha"]].append(o["score"])
+                    p = o.get("parent_sha")
+                    if p and (p, o["prompt_sha"]) not in seen_edges:
+                        seen_edges.add((p, o["prompt_sha"]))
+                        children[p] += 1
     if rejected:
         print(f"  [archive] rejected {rejected} unsigned/forged score row(s)")
     return genomes, scores, children

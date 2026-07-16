@@ -278,6 +278,8 @@ def assert_midturn_requests(mock: CodexMock) -> None:
             f"midturn: expected exactly 3 model requests, got {len(requests)}: {requests!r}"
         )
     first, compact, final = requests
+    if [request.body.get("max_output_tokens") for request in requests] != [16000, 4096, 16000]:
+        raise AssertionError("midturn: expected root/compaction/root output caps 16k/4k/16k")
     transports = [request.transport for request in requests]
     if transports != ["ws", "sse", "ws"]:
         raise AssertionError(f"midturn: expected WS -> SSE -> WS, got {transports!r}")
@@ -350,7 +352,7 @@ def assert_midturn_requests(mock: CodexMock) -> None:
         or len(final_input) != 1
         or len(final_texts) != 1
         or not final_texts[0].startswith(
-            "Context: the prior conversation was compacted"
+            "Context: the earlier conversation was compacted"
         )
         or MIDTURN_SUMMARY not in final_texts[0]
         or "tools" not in final.body
@@ -369,6 +371,8 @@ def assert_transactional_requests(mock: CodexMock) -> None:
             f"got {len(requests)}: {requests!r}"
         )
     first, compact, final = requests
+    if [request.body.get("max_output_tokens") for request in requests] != [16000, 4096, 16000]:
+        raise AssertionError("transactional: expected root/compaction/root output caps 16k/4k/16k")
     transports = [request.transport for request in requests]
     if transports != ["ws", "sse", "ws"]:
         raise AssertionError(
@@ -615,12 +619,20 @@ def main() -> None:
                 "ok    codex WS primary: mock reply + ctx meter over WebSocket",
             ),
             (
-                "ws-forced-fallback",
+                "ws-clean-retry",
                 {"GRAFF_WS_FORCE_FAIL_ONCE": "1"},
+                1,
+                0,
+                "WebSocket primary with automatic SSE fallback",
+                "ok    codex first WS failure: clean WS retry succeeded without latching fallback",
+            ),
+            (
+                "ws-forced-fallback",
+                {"GRAFF_WS_FORCE_FAIL_COUNT": "2"},
                 0,
                 1,
                 "SSE fallback (WebSocket failed this session)",
-                "ok    codex forced WS failure: SSE fallback reply + ctx meter + latched health",
+                "ok    codex second WS failure: persistent SSE fallback reply + latched health",
             ),
             (
                 "ws-off",

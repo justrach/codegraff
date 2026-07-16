@@ -15,6 +15,7 @@ from pty_harness import PtySession
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
 MAIN_REPLY = "PARALLEL_TITLE_MAIN_OK"
+TITLE_DELAY_SECONDS = 1.5
 
 
 def message_item(text: str, item_id: str) -> dict:
@@ -45,6 +46,11 @@ def main() -> None:
             barrier.wait(timeout=3.0)
         except threading.BrokenBarrierError:
             pass
+        # The title deliberately finishes well after the main reply. A detached
+        # implementation paints the next prompt immediately; an end-of-turn
+        # join makes the user wait for this sleep.
+        if is_title:
+            time.sleep(TITLE_DELAY_SECONDS)
         text = "Parallel title generation" if is_title else MAIN_REPLY
         return [
             {
@@ -114,7 +120,7 @@ def main() -> None:
             )
             with PtySession(
                 GRAFF,
-                ["--model", "codex", "--no-telemetry"],
+                ["--model", "codex", "--max-model-calls", "2", "--no-telemetry"],
                 cwd=tmp,
                 env=env,
                 unset_env=ambient,
@@ -122,9 +128,16 @@ def main() -> None:
             ) as session:
                 session.wait_for_literal("] ›")
                 cursor = len(session.raw)
+                sent_at = time.monotonic()
                 session.send_line("make the title and answer overlap")
                 session.wait_for_literal(MAIN_REPLY, start=cursor)
                 session.wait_for_literal("] ›", start=cursor)
+                prompt_elapsed = time.monotonic() - sent_at
+                if prompt_elapsed >= TITLE_DELAY_SECONDS - 0.4:
+                    raise AssertionError(
+                        "next prompt waited for detached title "
+                        f"({prompt_elapsed:.2f}s)"
+                    )
                 session.send_key("ctrl-d")
                 result = session.read_until_exit(5.0)
                 if result.timed_out or result.exit_code != 0:
@@ -138,10 +151,26 @@ def main() -> None:
         observed = sorted(arrivals)
     if len(observed) != 2 or {kind for _, kind in observed} != {"title", "main"}:
         raise AssertionError(f"expected one title and one main request: {observed!r}")
+    requests = mock.recorded_requests()
+    limits = {
+        (
+            "title"
+            if "You summarize what a coding session is about"
+            in request.body.get("instructions", "")
+            else "main"
+        ): request.body.get("max_output_tokens")
+        for request in requests
+    }
+    if limits != {"title": 64, "main": 16000}:
+        raise AssertionError(f"unexpected Responses output caps: {limits!r}")
     delta_ms = (observed[1][0] - observed[0][0]) * 1000
     if delta_ms > 750:
         raise AssertionError(f"title/main requests serialized ({delta_ms:.1f}ms apart)")
-    print(f"ok    AI title and main turn overlapped ({delta_ms:.1f}ms apart)")
+    print(
+        "ok    AI title and main turn overlapped "
+        f"({delta_ms:.1f}ms apart); prompt returned in {prompt_elapsed:.2f}s "
+        f"while title stayed busy for {TITLE_DELAY_SECONDS:.1f}s"
+    )
 
 
 if __name__ == "__main__":

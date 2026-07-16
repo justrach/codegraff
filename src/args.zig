@@ -14,8 +14,8 @@
 //! Back-imports main (as main_mod, the established convention — see
 //! mainloop.zig/tools.zig/etc.) for the handful of globals that STAY in
 //! main.zig and were only ever *set* (never read) by the parse loop itself:
-//! show_timing/show_cost/json_mode/max_tool_calls/dedupe_tool_calls (`--timing`
-//! /`--cost`/`--json`/`--max-tool-calls`/`--dedupe-tool-calls`) and
+//! show_timing/show_cost/json_mode/max_tool_calls/max_model_calls/dedupe_tool_calls (`--timing`
+//! /`--cost`/`--json`/`--max-tool-calls`/`--max-model-calls`/`--dedupe-tool-calls`) and
 //! g_worktree_autocommit (`--no-autocommit`). These are mutable globals, so
 //! per the mod-prefix rule they are written through `main_mod.` — never
 //! aliased (aliasing a `var` freezes its value at import time).
@@ -106,6 +106,9 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--max-tool-calls")) {
                     const mv = it.next() orelse std.process.fatal("--max-tool-calls needs a non-negative integer — harness --help", .{});
                     main_mod.max_tool_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-tool-calls needs a non-negative integer, got '{s}'", .{mv});
+                } else if (std.mem.eql(u8, arg, "--max-model-calls")) {
+                    const mv = it.next() orelse std.process.fatal("--max-model-calls needs a non-negative integer — graff --help", .{});
+                    main_mod.max_model_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-model-calls needs a non-negative integer, got '{s}'", .{mv});
                 } else if (std.mem.eql(u8, arg, "--dedupe-tool-calls")) {
                     main_mod.dedupe_tool_calls = true;
                 } else if (std.mem.eql(u8, arg, "--clock-sleep")) {

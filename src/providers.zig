@@ -100,6 +100,7 @@ fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool
         root.cap_new = false; // per-provider token-cap quirk; relearn on rejection
         root.effort_rejected = false; // new model may accept reasoning_effort; relearn
         root.ws_off = false; // a previous Codex WS fallback must not leak across switches
+        root.ws_transport_failures = 0;
         root.compact_transport_failures = 0;
         root.last_context_tokens = root.fullRequestEstimateTokens();
         root.context_local_tokens = root.last_context_tokens;
@@ -429,6 +430,7 @@ test "applyProviderInner preserves the server meter on an exact model re-selecti
     root.cap_new = true;
     root.effort_rejected = true;
     root.ws_off = true;
+    root.ws_transport_failures = 2;
     _ = try applyProviderInner(&root, a, p, false);
     try std.testing.expect(root.tools_responses.len > 0);
     try std.testing.expectEqual(@as(usize, 0), root.tools_anthropic.len);
@@ -448,6 +450,7 @@ test "applyProviderInner preserves the server meter on an exact model re-selecti
     try std.testing.expect(!root.cap_new);
     try std.testing.expect(!root.effort_rejected);
     try std.testing.expect(!root.ws_off);
+    try std.testing.expectEqual(@as(u8, 0), root.ws_transport_failures);
 
     var changed_format = changed;
     changed_format.id = "deepseek";

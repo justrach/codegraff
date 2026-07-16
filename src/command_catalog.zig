@@ -41,7 +41,7 @@ pub const commands = [_]Item{
     .{ .name = "/title", .desc = "name the tab from your first prompt (AI session title; toggle, persists)" },
     .{ .name = "/strict", .desc = "toggle \"every message is a tool\" mode" },
     .{ .name = "/yolo", .desc = "toggle bash auto-approval (skip permission prompts)" },
-    .{ .name = "/trace", .desc = "toggle the JSONL event trace (harness.trace.jsonl)" },
+    .{ .name = "/trace", .desc = "toggle this run's JSONL event trace (and show its path)" },
     .{ .name = "/trajectory", .desc = "show this session's agent tree — turns + spawned subagents" },
     .{ .name = "/agents", .desc = "list agent types — builtin personas + .harness/agents/*.md" },
     .{ .name = "/skills", .usage = "/skills [remove <name>]", .desc = "list available skills; /skills remove <name> disables one" },

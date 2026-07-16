@@ -404,6 +404,9 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             .model = flags.model_flag,
             .system_prompt = flags.system_prompt_flag,
             .append_system_prompt = flags.append_system_flag,
+            .max_tool_calls = main_mod.max_tool_calls,
+            .max_model_calls = main_mod.max_model_calls,
+            .dedupe_tool_calls = main_mod.dedupe_tool_calls,
         }, exe);
         return true;
     }

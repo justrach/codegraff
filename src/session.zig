@@ -415,6 +415,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.cap_new = false; // per-provider; relearn on rejection
     root.effort_rejected = false;
     root.ws_off = false; // transport failures belong to the prior live session
+    root.ws_transport_failures = 0;
     root.compact_transport_failures = 0;
     root.last_usage_includes_output = false;
     root.last_request_context_overflow = false;

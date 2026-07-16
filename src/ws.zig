@@ -12,7 +12,7 @@
 //!
 //! Observability: set `g_debug = true` (GRAFF_WS_DEBUG=1) to trace the
 //! handshake + every frame to stderr; the transport layer additionally routes
-//! structured ws lifecycle events to the tracer (harness.trace.jsonl) so an
+//! structured ws lifecycle events to the run's file under .graff/traces so an
 //! agent can debug a ws turn after the fact.
 
 const std = @import("std");
@@ -25,8 +25,10 @@ const tls = std.crypto.tls;
 /// GRAFF_WS_DEBUG=1 → dump the handshake + frame headers to stderr.
 pub var g_debug: bool = false;
 /// Deterministic integration-test seam: fail the next WS connect so the live
-/// binary can prove its SSE fallback against the real endpoint.
+/// binary can prove its clean retry against the real endpoint.
 pub var g_force_connect_failure_once: bool = false;
+/// Counted sibling used to prove the second consecutive failure latches SSE.
+pub var g_force_connect_failure_count: u8 = 0;
 
 fn dbg(comptime fmt: []const u8, args: anytype) void {
     if (g_debug) std.debug.print("[ws] " ++ fmt ++ "\n", args);
@@ -87,6 +89,11 @@ pub const WsClient = struct {
     /// Reader/Writer interfaces and the TLS client reference its inline buffers
     /// and each other).
     pub fn connect(gpa: Allocator, io: Io, url: []const u8, insecure: bool, headers: []const Header) Error!*WsClient {
+        if (g_force_connect_failure_count > 0) {
+            g_force_connect_failure_count -= 1;
+            dbg("forced connect failure (GRAFF_WS_FORCE_FAIL_COUNT)", .{});
+            return error.HandshakeFailed;
+        }
         if (g_force_connect_failure_once) {
             g_force_connect_failure_once = false;
             dbg("forced connect failure (GRAFF_WS_FORCE_FAIL_ONCE)", .{});
@@ -334,4 +341,16 @@ test "forced WS failure is one-shot for SSE fallback integration tests" {
         &.{},
     ));
     try std.testing.expect(!g_force_connect_failure_once);
+}
+
+test "counted forced WS failures exhaust exactly" {
+    g_force_connect_failure_count = 2;
+    inline for (0..2) |_| try std.testing.expectError(error.HandshakeFailed, WsClient.connect(
+        std.testing.allocator,
+        std.testing.io,
+        "wss://unused.invalid/x",
+        false,
+        &.{},
+    ));
+    try std.testing.expectEqual(@as(u8, 0), g_force_connect_failure_count);
 }

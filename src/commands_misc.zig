@@ -51,7 +51,6 @@ const PickItem = pickers.PickItem;
 const listPicker = pickers.listPicker;
 
 const trace = @import("trace.zig");
-const trace_path = trace.trace_path;
 
 fn providerModelCount(provider_id: []const u8) usize {
     var count: usize = 0;
@@ -353,7 +352,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/trace")) {
         if (root.tracer) |tr| {
             const on = tr.toggle();
-            try out.print("tracing {s} → {s}\n", .{ if (on) "ON" else "off", trace_path });
+            try out.print("tracing {s} → {s}\n", .{ if (on) "ON" else "off", tr.path });
         } else {
             try out.writeAll("no trace file (failed to open at startup)\n");
         }

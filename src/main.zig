@@ -12,8 +12,8 @@
 //! only; /yolo disables it); strict mode (/strict) forces a tool call every
 //! turn, ending via attempt_completion instead of plain text.
 //!
-//! Every round trip and tool call is traced to harness.trace.jsonl (/trace
-//! toggles it). std.http.Client for HTTPS, std.json for both wire formats,
+//! Every round trip and tool call is traced to the run's unique JSONL under
+//! .graff/traces (/trace toggles it). std.http.Client for HTTPS, std.json for both wire formats,
 //! std.Io's thread pool for parallel execution, and client-side compaction
 //! as the conversation grows.
 const std = @import("std");
@@ -59,6 +59,7 @@ const agent_steps = @import("agent_steps.zig");
 const agent_compact = @import("agent_compact.zig");
 const agent_compact_test = @import("agent_compact_test.zig");
 const agent_ws_test = @import("agent_ws_test.zig");
+const run_budget_mod = @import("run_budget.zig");
 const agent_tools = @import("agent_tools.zig");
 const agent_request = @import("agent_request.zig");
 const agent_interrupt = @import("agent_interrupt.zig");
@@ -80,6 +81,7 @@ pub var g_force_drop_once: bool = false; // #132/#133 test seam (GRAFF_FORCE_DRO
 pub var g_force_stall_always: bool = false; // #56 test seam (GRAFF_FORCE_STALL_ALWAYS=1): EVERY live attempt stalls, so the reconnect budget exhausts and the turn ends as a stall — exercises the give-up path offline
 pub var g_force_drop_always: bool = false; // #56 test seam (GRAFF_FORCE_DROP_ALWAYS=1): EVERY live attempt drops
 pub var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
+pub var max_model_calls: u64 = run_budget_mod.default_max_model_calls; // invocation-wide, shared by root/children/title/judges
 pub var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
 pub var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes
 pub var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
@@ -159,12 +161,10 @@ const Keys = provider_mod.Keys;
 // Approvals (command/tool approval gate) + confinedPath/noSymlinkEscape live in approvals.zig; main() constructs one directly for the session.
 const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
-// Session tracing (harness.trace.jsonl Tracer) + the DGM trajectory archive (harness.trajectory.jsonl Trajectory) + the per-line JSON writer live in trace.zig; trajectory_path locates the archive file.
+// Run-scoped session tracing + DGM trajectory files live in trace.zig.
 const trace = @import("trace.zig");
 const Tracer = trace.Tracer;
 const Trajectory = trace.Trajectory;
-const trajectory_path = trace.trajectory_path;
-const trace_path = trace.trace_path;
 // Agent types / fleet (MAP-Elites niches): the AgentType registry, backgrounded elite pull, /agents promote, and niche/override resolvers live in fleet.zig.
 const fleet = @import("fleet.zig");
 const joinElites = fleet.joinElites;
@@ -283,8 +283,15 @@ pub fn main(init: std.process.Init) !void {
     g_mem_debug = init.environ_map.get("GRAFF_MEM_DEBUG") != null;
     // Windows: let the console interpret ANSI/VT escapes so the harness's color and cursor sequences render instead of literal text.
     if (builtin.os.tag == .windows) tty.enableVtOutput();
+    // Environment supplies the default; an explicit CLI flag parsed below has
+    // the usual higher precedence for this invocation.
+    if (init.environ_map.get("GRAFF_MAX_MODEL_CALLS")) |raw| {
+        max_model_calls = std.fmt.parseInt(u64, raw, 10) catch
+            std.process.fatal("GRAFF_MAX_MODEL_CALLS needs a non-negative integer, got '{s}'", .{raw});
+    }
     // CLI flags: the Flags struct + parsing loop live in args.zig; downstream code reads flags.<name> in place of ~27 locals this block used to declare.
     const flags = try args.parse(init);
+    var invocation_budget: run_budget_mod.RunBudget = .{ .max_model_calls = max_model_calls };
     bootMark(init.io, boot_started, boot_debug, "args");
     // GRAFF_CODEX_URL: override the codex responses endpoint (localhost mocks / integration tests). Parsed BEFORE subcommand dispatch and
     // resolveKeys — `graff models [refresh]` fetches the catalog inside runSubcommand and the initial Keys.build runs inside resolveKeys.
@@ -322,32 +329,47 @@ pub fn main(init: std.process.Init) !void {
     const out = &stdout_writer.interface;
     g_out = out;
 
-    if (try session_start.runTitleCommand(io, gpa, arena, &client, default_provider, out, flags)) return;
-    try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, trace_path, codex_account, stale_saved_model, preferred_provider, default_provider);
+    if (try session_start.runTitleCommand(io, gpa, arena, &client, default_provider, out, flags, &invocation_budget)) return;
+    // Generate identity before opening either JSONL. The score channel and both
+    // files share this run id; session_id is a separate runtime correlation id.
+    session_start.initScoreRunId(io);
+    const runtime_session_id = trace.newSessionId(io);
+    const identity: trace.Identity = .{
+        .run_id = &scoring.g_run_id,
+        .pid = trace.currentPid(),
+        .session_id = &runtime_session_id,
+    };
+    const run_trace_path = try trace.tracePath(arena, identity.run_id);
+    const run_trajectory_path = try trace.trajectoryPath(arena, identity.run_id);
+    try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, run_trace_path, codex_account, stale_saved_model, preferred_provider, default_provider);
+    session_start.loadScoreSigningKey(io, arena, init.environ_map);
     bootMark(io, boot_started, boot_debug, "banner");
 
     // Session trace (best-effort: a failed open just disables tracing).
     var trace_buf: [8 * 1024]u8 = undefined;
-    var trace_open = session_start.openTraceFile(io, trace_path, &trace_buf);
+    var trace_open = session_start.openTraceFile(io, run_trace_path, &trace_buf);
     defer if (trace_open.file) |f| f.close(io);
     var tracer: Tracer = .{
         .io = io,
         .gpa = gpa,
         .out = if (trace_open.file != null) &trace_open.writer.interface else null,
         .start = Io.Timestamp.now(io, .awake),
+        .identity = identity,
+        .path = run_trace_path,
     };
 
-    // Trajectory archive (DGM-style tree; best-effort like the trace) — unlike the trace it is APPEND-ONLY: it accumulates across sessions and IS
-    // the archive a DGM-style driver selects parents from. Each session starts with a `kind:"session"` header; node ids restart per session,
-    // cross-session lineage threads through prompt_sha.
+    // One trajectory file per run; the archive reader scans the directory.
+    // Node ids restart per run and cross-run lineage threads through prompt_sha.
     var traj_buf: [8 * 1024]u8 = undefined;
-    var traj_open = session_start.openTrajFile(io, trajectory_path, &traj_buf);
+    var traj_open = session_start.openTrajFile(io, run_trajectory_path, &traj_buf);
     defer if (traj_open.file) |f| f.close(io);
     var traj: Trajectory = .{
         .io = io,
         .gpa = gpa,
         .out = if (traj_open.file != null) &traj_open.writer.interface else null,
         .start = Io.Timestamp.now(io, .awake),
+        .identity = identity,
+        .path = run_trajectory_path,
     };
     trace.g_traj = &traj;
     defer {
@@ -355,8 +377,6 @@ pub fn main(init: std.process.Init) !void {
         traj.deinit();
     }
     traj.node(.{ .kind = "session", .version = harness_version, .unix_ms = unixMs(io) });
-
-    session_start.initScoreSigning(io, arena, init.environ_map);
 
     var telem = session_start.initTelemetry(io, gpa, &client, init.environ_map, flags, default_telemetry_endpoint);
     telemetry.g_telem = &telem;
@@ -430,6 +450,7 @@ pub fn main(init: std.process.Init) !void {
     // backgrounded fleet-champion pull live in session_start.zig. `root`'s pointer fields (snapshots/client/tracer/approvals/registry) all reference
     // already-stable main()-owned storage passed in by address, so returning the constructed Agent by value here is safe.
     var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, sys_strict, &snaps, flags, telem.endpoint);
+    root.run_budget = &invocation_budget;
     root.model_catalog = resolved_keys.model_catalog;
     root.stored_keys_loaded = resolved_keys.stored_keys_loaded;
     root.scratch_arena = &scratch_state; // #124: route the root's transient parse garbage here; reset per request()
