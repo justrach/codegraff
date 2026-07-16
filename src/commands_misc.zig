@@ -210,6 +210,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             root.tools_anthropic = try renderRootTools(arena, .anthropic, root_tool_specs, reg.tools);
             root.tools_openai = try renderRootTools(arena, .openai, root_tool_specs, reg.tools);
             root.tools_responses = try renderRootTools(arena, .responses, root_tool_specs, reg.tools);
+            root.rebaseContextMeter();
             const persisted = persistMcpServer(root.io, arena, name, command, args.items);
             var has_note = false;
             for (mcp_notes) |mn| if (std.mem.eql(u8, mn.server, name)) {
@@ -239,6 +240,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 root.tools_anthropic = try renderRootTools(arena, .anthropic, root_tool_specs, reg.tools);
                 root.tools_openai = try renderRootTools(arena, .openai, root_tool_specs, reg.tools);
                 root.tools_responses = try renderRootTools(arena, .responses, root_tool_specs, reg.tools);
+                root.rebaseContextMeter();
                 try out.print("{s}✓{s} trusted workspace — connected {d} MCP server(s); {d} tool(s) total\n", .{ style.green, style.reset, n, reg.tools.len });
             }
             try out.flush();

@@ -6,6 +6,8 @@
 const std = @import("std");
 const zz = @import("zigzag");
 
+pub const accent = zz.Color.fromRgb(0xD9, 0x77, 0x57); // Claude coral
+
 pub const HELP_CHAT =
     \\Commands (mirrors the graff session):
     \\  /help /clear /new /quit          conversation

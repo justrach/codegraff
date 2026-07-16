@@ -35,6 +35,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -71,11 +72,14 @@ def assistant_item() -> dict:
     }
 
 
-def turn_events() -> list[dict]:
+def turn_events(response_id: str = "resp_mock_1") -> list[dict]:
     """The two events one mocked turn produces, in send order."""
     return [
         {"type": "response.output_item.done", "item": assistant_item()},
-        {"type": "response.completed", "response": {"usage": dict(USAGE)}},
+        {
+            "type": "response.completed",
+            "response": {"id": response_id, "usage": dict(USAGE)},
+        },
     ]
 
 
@@ -84,6 +88,20 @@ class Frame:
     opcode: int
     payload: bytes
     fin: bool
+
+
+@dataclass(frozen=True)
+class RecordedRequest:
+    """One decoded Responses request, in server-observed order.
+
+    ``connection_id`` is populated for WebSocket requests so tests can prove a
+    post-compaction request re-anchored on a new socket. SSE requests use None.
+    """
+
+    ordinal: int
+    transport: str
+    connection_id: int | None
+    body: dict
 
 
 class _SockReader:
@@ -169,7 +187,9 @@ def _read_message(reader: _SockReader, sock: socket.socket) -> Frame:
             raise ConnectionError("message too long")
         parts.append(frame.payload)
         if frame.fin:
-            return Frame(opcode if opcode is not None else OP_TEXT, b"".join(parts), True)
+            return Frame(
+                opcode if opcode is not None else OP_TEXT, b"".join(parts), True
+            )
 
 
 def ws_accept_value(key: str) -> str:
@@ -181,13 +201,22 @@ def ws_accept_value(key: str) -> str:
 @dataclass
 class CodexMock:
     """Threaded fake codex backend: start() binds and returns the real port,
-    stop() tears it down. ws_turns/sse_turns count served turns per transport."""
+    stop() tears it down. ws_turns/sse_turns count served turns per transport.
+
+    ``events_for_request`` optionally scripts replies from the decoded request;
+    the default remains the fixed mock reply used by the transport smoke tests.
+    """
 
     host: str = "127.0.0.1"
     port: int = 0
     verbose: bool = False
     ws_turns: int = 0
     sse_turns: int = 0
+    ws_connections: int = 0
+    events_for_request: Callable[[RecordedRequest], list[dict]] | None = field(
+        default=None, repr=False
+    )
+    requests: list[RecordedRequest] = field(default_factory=list, repr=False)
     _sock: socket.socket | None = field(default=None, repr=False)
     _threads: list[threading.Thread] = field(default_factory=list, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -217,11 +246,31 @@ class CodexMock:
             thread.join(timeout=1.0)
         self._threads.clear()
 
+    def recorded_requests(self) -> list[RecordedRequest]:
+        """Return a stable snapshot for assertions after a scenario completes."""
+        with self._lock:
+            return list(self.requests)
+
     # ── internals ─────────────────────────────────────────────────────────
 
     def _log(self, message: str) -> None:
         if self.verbose:
             print(f"[codex-mock] {message}", file=sys.stderr, flush=True)
+
+    def _events(
+        self, transport: str, connection_id: int | None, body: dict
+    ) -> list[dict]:
+        with self._lock:
+            request = RecordedRequest(
+                ordinal=len(self.requests) + 1,
+                transport=transport,
+                connection_id=connection_id,
+                body=body,
+            )
+            self.requests.append(request)
+        if self.events_for_request is not None:
+            return self.events_for_request(request)
+        return turn_events(f"resp_mock_{request.ordinal}")
 
     def _accept_loop(self) -> None:
         srv = self._sock
@@ -275,7 +324,12 @@ class CodexMock:
                 pass
             conn.close()
 
-    def _serve_ws(self, conn: socket.socket, reader: _SockReader, headers: dict[str, str]) -> None:
+    def _serve_ws(
+        self, conn: socket.socket, reader: _SockReader, headers: dict[str, str]
+    ) -> None:
+        with self._lock:
+            self.ws_connections += 1
+            connection_id = self.ws_connections
         accept = ws_accept_value(headers.get("sec-websocket-key", ""))
         conn.sendall(
             (
@@ -286,7 +340,7 @@ class CodexMock:
                 "\r\n"
             ).encode("ascii")
         )
-        self._log("ws upgraded")
+        self._log(f"ws upgraded (connection {connection_id})")
         while True:
             message = _read_message(reader, conn)
             if message.opcode == OP_CLOSE:
@@ -304,17 +358,27 @@ class CodexMock:
             self._log(f"ws <- {etype} ({len(message.payload)}b)")
             if etype != "response.create":
                 continue
-            for ev in turn_events():
-                _send_frame(conn, OP_TEXT, json.dumps(ev, separators=(",", ":")).encode("utf-8"))
+            for ev in self._events("ws", connection_id, event):
+                _send_frame(
+                    conn, OP_TEXT, json.dumps(ev, separators=(",", ":")).encode("utf-8")
+                )
                 self._log(f"ws -> {ev['type']}")
             with self._lock:
                 self.ws_turns += 1
 
-    def _serve_sse(self, conn: socket.socket, reader: _SockReader, headers: dict[str, str]) -> None:
+    def _serve_sse(
+        self, conn: socket.socket, reader: _SockReader, headers: dict[str, str]
+    ) -> None:
         length = int(headers.get("content-length", "0") or 0)
         body = reader.read_exact(length) if length else b""
         self._log(f"sse <- POST ({len(body)}b)")
-        events = turn_events()
+        try:
+            parsed = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            parsed = {}
+        if not isinstance(parsed, dict):
+            parsed = {}
+        events = self._events("sse", None, parsed)
         payload = "".join(
             f"data: {json.dumps(ev, separators=(',', ':'))}\n\n" for ev in events
         ).encode("utf-8")
@@ -338,7 +402,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Fake codex Responses backend (WebSocket + SSE) for manual debugging."
     )
-    parser.add_argument("--port", type=int, default=0, help="TCP port to bind (default: ephemeral)")
+    parser.add_argument(
+        "--port", type=int, default=0, help="TCP port to bind (default: ephemeral)"
+    )
     args = parser.parse_args()
     mock = CodexMock(port=args.port, verbose=True)
     port = mock.start()

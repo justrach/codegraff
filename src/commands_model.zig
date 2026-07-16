@@ -231,7 +231,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/compact")) {
         _ = root.compact() catch |err| switch (err) {
-            error.ApiError => {},
+            error.ApiError, error.EmptySummary, error.IncompleteSummary => {},
             else => |e| return e,
         };
         return true;
@@ -277,6 +277,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const dropped = root.messages.items.len - cut;
         root.messages.items.len = cut; // truncate (entries are arena-owned)
         root.last_context_tokens = 0;
+        root.context_local_tokens = 0;
+        root.compact_transport_failures = 0;
         // Restore files written/edited during the rewound turns, and re-point the
         // turn counter so the next prompt re-takes turn n.
         var restored: usize = 0;
@@ -565,6 +567,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/strict")) {
         root.strict = !root.strict;
+        root.rebaseContextMeter();
         try out.print("strict mode {s} — {s}\n", .{
             if (root.strict) "ON" else "off",
             if (root.strict) "every message must be a tool; finish with attempt_completion" else "free-text replies allowed",

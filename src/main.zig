@@ -43,6 +43,8 @@ const agent_argstream = @import("agent_argstream.zig");
 const agent_render = @import("agent_render.zig");
 const agent_steps = @import("agent_steps.zig");
 const agent_compact = @import("agent_compact.zig");
+const agent_compact_test = @import("agent_compact_test.zig");
+const agent_ws_test = @import("agent_ws_test.zig");
 const agent_tools = @import("agent_tools.zig");
 const agent_request = @import("agent_request.zig");
 const agent_interrupt = @import("agent_interrupt.zig");
@@ -118,6 +120,8 @@ test {
     _ = agent_render;
     _ = agent_steps;
     _ = agent_compact;
+    _ = agent_compact_test;
+    _ = agent_ws_test;
     _ = agent_tools;
     _ = agent_request;
     _ = agent_interrupt;
@@ -427,7 +431,7 @@ pub fn main(init: std.process.Init) !void {
         root.tools_used.deinit(gpa);
     }
     const interactive = use_color and !json_mode; // stdout is a TTY → enable line editing
-    try session_run.restoreResumedSession(io, arena, out, &root, keys, flags, json_mode, g_cwd_display);
+    try session_run.restoreResumedSession(arena, out, &root, keys, flags, json_mode, g_cwd_display);
 
     // The interactive-REPL / --json-protocol loop lives in mainloop.zig. main() keeps owning every piece of storage the loop touches (root, keys,
     // tracer/traj/telem via root, history, linebuf, stdin/stdout writers) — Ctx below only holds POINTERS into this stack frame, so nothing dangles

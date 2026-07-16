@@ -71,6 +71,11 @@ fn translateHistory(arena: Allocator, msgs: *std.json.Array, to_kind: Provider.K
 
 fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool) []const u8 {
     const same_format = root.provider.kind == p.kind;
+    const same_selection = same_format and
+        root.provider.context == p.context and
+        std.mem.eql(u8, root.provider.id, p.id) and
+        std.mem.eql(u8, root.provider.model, p.model) and
+        std.mem.eql(u8, root.provider.url, p.url);
     var note: []const u8 = "context kept";
     if (!same_format) {
         if (root.keep_context) {
@@ -79,19 +84,24 @@ fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool
         } else {
             root.messages = std.json.Array.init(arena);
             root.last_context_tokens = 0;
+            root.context_local_tokens = 0;
             note = "history cleared — /keepcontext on to carry it across formats";
         }
     }
-    root.cap_new = false; // per-provider token-cap quirk; relearn on rejection
-    root.effort_rejected = false; // new model may accept reasoning_effort; relearn
-    root.ws_off = false; // a previous Codex WS fallback must not leak across switches
     root.provider = p;
-    // #204: a provider switch changes the window; don't carry the previous model's
-    // absolute token count against it. Re-estimate from the (kept or translated)
-    // history so the meter + compaction gate stay consistent until the next response
-    // returns real usage. (The cross-format history-clear above already set 0;
-    // fullInputEstimateTokens over an empty history is 0.)
-    root.last_context_tokens = root.fullInputEstimateTokens();
+    // #204: an actual provider/model switch changes the window and tokenizer, so
+    // re-estimate until the next response returns real usage. A no-op set_model is
+    // common in the GUI prompt-settings path; preserve its authoritative server
+    // meter instead of replacing it with the structurally-low local estimate.
+    if (!same_selection) {
+        root.cap_new = false; // per-provider token-cap quirk; relearn on rejection
+        root.effort_rejected = false; // new model may accept reasoning_effort; relearn
+        root.ws_off = false; // a previous Codex WS fallback must not leak across switches
+        root.compact_transport_failures = 0;
+        root.last_context_tokens = root.fullRequestEstimateTokens();
+        root.context_local_tokens = root.last_context_tokens;
+        root.last_cache_read = 0;
+    }
     root.fallback_active = !persist;
     root.fallback_blocked = false;
     if (persist) saveModel(root.io, root.home, p.id, p.model);
@@ -360,6 +370,45 @@ test "translateHistory: flattens to {role,content:string}, keeps user/assistant,
     try std.testing.expectEqualStrings("hello", msgs.items[0].object.get("content").?.string);
     try std.testing.expectEqualStrings("assistant", msgs.items[1].object.get("role").?.string);
     try std.testing.expectEqualStrings("hi", msgs.items[1].object.get("content").?.string);
+}
+
+test "applyProviderInner preserves the server meter on an exact model re-selection" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const p: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 270_000 };
+
+    var root: Agent = undefined;
+    root.provider = p;
+    root.messages = std.json.Array.init(a);
+    root.sub = false;
+    root.strict = false;
+    root.sys_normal = "";
+    root.sys_strict = "";
+    root.tools_responses = "";
+    root.keep_context = true;
+    root.last_context_tokens = 220_000;
+    root.context_local_tokens = root.fullRequestEstimateTokens();
+    root.last_cache_read = 12_345;
+    root.cap_new = true;
+    root.effort_rejected = true;
+    root.ws_off = true;
+    _ = applyProviderInner(&root, a, p, false);
+    try std.testing.expectEqual(@as(u64, 220_000), root.last_context_tokens);
+    try std.testing.expectEqual(@as(u64, 12_345), root.last_cache_read);
+    try std.testing.expect(root.cap_new);
+    try std.testing.expect(root.effort_rejected);
+    try std.testing.expect(root.ws_off);
+
+    var changed = p;
+    changed.model = "gpt-5.1";
+    _ = applyProviderInner(&root, a, changed, false);
+    try std.testing.expectEqual(root.fullRequestEstimateTokens(), root.last_context_tokens);
+    try std.testing.expectEqual(root.last_context_tokens, root.context_local_tokens);
+    try std.testing.expectEqual(@as(u64, 0), root.last_cache_read);
+    try std.testing.expect(!root.cap_new);
+    try std.testing.expect(!root.effort_rejected);
+    try std.testing.expect(!root.ws_off);
 }
 
 test "set_model control resolves explicit provider/model fields" {

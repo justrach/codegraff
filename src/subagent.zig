@@ -225,7 +225,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             .task = util.utf8Prefix(prompt, 160),
             .tools = used_tools,
             .ok = run_ok,
-            .context_tokens = agent.last_context_tokens,
+            .context_tokens = agent.effectiveContextTokens(),
         });
     }
     if (telemetry.g_telem) |t| t.runEvent(&fp, sys_override != null, run_ok, run_ms, used_tools);

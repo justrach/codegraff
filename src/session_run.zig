@@ -265,13 +265,10 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: provider_mod.Keys, aren
 /// as what would trigger live compaction, summarizes up front instead of
 /// re-billing the whole thing on the first turn. Moved out of main()
 /// verbatim (600-line goal); `root` is already stable main()-owned storage.
-pub fn restoreResumedSession(io: Io, arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, keys: provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
+pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, keys: provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
     if (!(flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag)) return;
     if (session.loadSession(root, keys, arena, root.session_name)) |_| {
         if (root.messages.items.len > 0) {
-            // Estimate the restored context from the file size (~4 bytes/token).
-            const est_path = try session.sessionPath(arena, root.session_name);
-            const est: u64 = if (Io.Dir.cwd().statFile(io, est_path, .{})) |st| @as(u64, @intCast(st.size)) / 4 else |_| 0;
             if (!json_mode) {
                 // Prefer the saved AI summary; fall back to the first user
                 // message only for older sessions that have no saved title.
@@ -282,12 +279,13 @@ pub fn restoreResumedSession(io: Io, arena: Allocator, out: *Io.Writer, root: *a
                 try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ root.session_name, session.session_ext, root.messages.items.len, root.provider.model });
                 try out.flush();
             }
-            // Cold cache: if the restored context is as large as what would
-            // trigger live compaction, the first turn would re-bill the whole
-            // thing — summarize up front instead.
-            if (est >= root.provider.compactAt()) {
-                root.last_context_tokens = est;
-                root.compactOrRecover(true);
+            // Cold cache: loadSession rebased the saved server-only token delta
+            // onto today's complete local request estimate. Summarize up front
+            // when that conservative meter crosses compactAt. Resume itself is
+            // never permission to destructively trim on a transient/empty
+            // summary; a concrete provider overflow can still override this.
+            if (root.inputOverCompactThreshold()) {
+                root.compactOrRecover(false);
             }
         }
     } else |_| {}
