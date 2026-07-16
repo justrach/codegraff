@@ -6,7 +6,7 @@
 const std = @import("std");
 const zz = @import("zigzag");
 
-pub const accent = zz.Color.fromRgb(0xD9, 0x77, 0x57); // Claude coral
+pub const accent = zz.Color.fromRgb(0xC4, 0x51, 0x3D); // accessible Codegraff vermilion coral
 
 pub const HELP_CHAT =
     \\Commands (mirrors the graff session):
@@ -17,7 +17,7 @@ pub const HELP_CHAT =
     \\  /fast /thinking /ultracode       thinking controls (toggles)
     \\  /goal <text>                     standing objective (tracked as a checklist)
     \\  /plan /strict /yolo /keepcontext /title   modes
-    \\  /rename <name>  /animation braille|dragon
+    \\  /rename <name>  /animation enso|braille|dragon
     \\  /bash /save /resume /sessions /trace /trajectory
     \\  /agents /skills /hooks /mcp /loop /image /paste /key
     \\
@@ -31,7 +31,7 @@ pub fn renderInline(out: *std.array_list.Managed(u8), a: std.mem.Allocator, line
         const c = line[i];
         if (c == '`') {
             if (std.mem.indexOfScalarPos(u8, line, i + 1, '`')) |end| {
-                try out.appendSlice(try (zz.Style{}).fg(.cyan).render(a, line[i + 1 .. end]));
+                try out.appendSlice(try (zz.Style{}).fg(accent).render(a, line[i + 1 .. end]));
                 i = end + 1;
                 continue;
             }

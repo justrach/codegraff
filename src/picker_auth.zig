@@ -151,14 +151,14 @@ pub fn offerProviderAuth(
 
     const title = std.fmt.allocPrint(arena, "No key for {s} \xe2\x80\xba", .{pid}) catch "No key \xe2\x80\xba";
     const choice = pick(root, arena, out, title, items[0..n]) orelse {
-        try out.print("kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+        try out.print("kept {s}{s}{s}\n", .{ style.accent, root.provider.model, style.reset });
         try out.flush();
         return;
     };
     const picked = items[choice].name;
 
     if (std.mem.eql(u8, picked, "keep current model")) {
-        try out.print("kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+        try out.print("kept {s}{s}{s}\n", .{ style.accent, root.provider.model, style.reset });
         try out.flush();
         return;
     }
@@ -197,7 +197,7 @@ pub fn offerProviderAuth(
         try out.flush();
         const key = readSecret(root, arena, out) orelse "";
         if (key.len == 0) {
-            try out.print("cancelled — kept {s}{s}{s}\n", .{ style.cyan, root.provider.model, style.reset });
+            try out.print("cancelled — kept {s}{s}{s}\n", .{ style.accent, root.provider.model, style.reset });
             try out.flush();
             return;
         }
@@ -214,7 +214,7 @@ pub fn offerProviderAuth(
     else
         model;
     const provider = keys.providerById(pid, selected_model) catch {
-        try out.print("still no usable key for {s} — kept {s}{s}{s}\n", .{ pid, style.cyan, root.provider.model, style.reset });
+        try out.print("still no usable key for {s} — kept {s}{s}{s}\n", .{ pid, style.accent, root.provider.model, style.reset });
         try out.flush();
         return;
     };

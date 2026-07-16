@@ -400,6 +400,14 @@ and blockquotes use terminal-native markers; bold and inline code drop their raw
 delimiters; tables align; and fenced code stays copyable without decorative
 prefixes on body lines.
 
+The interactive UI uses Codegraff's accent-only **Ensō** palette: vermilion
+coral marks the model, prompt, active selections, tools, and primary Markdown
+structure; ordinary text and supporting metadata stay neutral. Success,
+warning, and error colors remain semantic, the terminal background is never
+overridden, and `NO_COLOR` is respected. The quiet `enso` thinking animation is
+the stable default; `/animation random` restores per-request variety and the
+other animation names remain available.
+
 ```
 /model [name]   no arg → interactive fuzzy picker; or /model <name|provider|provider model>
 /models         list known models, context windows, compaction points
@@ -410,6 +418,7 @@ prefixes on body lines.
 /reasoning      reasoning picker: low|medium|high|xhigh|max|ultra (persists)
 /fast           toggle Codex priority service tier for lower latency
 /ultracode      toggle persistent multi-agent workflow mode
+/animation      choose a thinking animation (`/animation` lists every option)
 /goal [text]    set/show a standing objective; /goal pause|resume|status|clear
 /loop <prompt>  work autonomously toward the prompt, stopping with a named outcome when done or blocked
 /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
@@ -450,8 +459,9 @@ configured provider and keeps the saved preference for a future launch. The
 prompt is a small statusline:
 `[model · Fast · Extra high · Plan · cwd /repo · 12345/800k tok (1%) · ⚡cached]`.
 Fast stays immediately beside the model. Active reasoning/workflow modes are
-visible at a glance: Low is green, Medium cyan, High yellow, Extra
-high/Ultra/Ultracode magenta, Max/Strict red, and Plan yellow. YOLO is reported
+visible at a glance: Low is green, Medium/Extra high/Ultra/Ultracode use the
+Codegraff coral accent, High/Plan are yellow, and Max/Strict are red. YOLO is
+reported
 as an explicit warning when enabled instead of occupying the compact prompt.
 Badges for unsupported settings are hidden instead of implying they apply. The
 tail shows context used vs the compaction budget, last cache hit, and (for

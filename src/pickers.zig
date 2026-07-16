@@ -228,7 +228,7 @@ pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer)
         }
 
         out.writeAll("\x1b[2J\x1b[H") catch {};
-        out.print("{s}Model ›{s} {s}\n", .{ style.cyan, style.reset, query.items }) catch {};
+        out.print("{s}Model ›{s} {s}\n", .{ style.accent, style.reset, query.items }) catch {};
         out.print("{s}{d}/{d}{s}\n", .{ style.dim, filtered.items.len, model_table.len, style.reset }) catch {};
         out.writeAll(style.dim) catch {};
         out.writeAll("  ") catch {};
@@ -247,8 +247,8 @@ pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer)
             const cur = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id);
             const keyed = keys.get(m.provider) != null;
             const context = pricing.contextFor(m.provider, m.name);
-            if (row == sel) out.writeAll("\x1b[7m") catch {};
-            out.print("{s} ", .{if (cur) "▌" else " "}) catch {};
+            if (row == sel) out.writeAll(style.accent) catch {};
+            out.print("{s} ", .{if (row == sel) "›" else if (cur) "▌" else " "}) catch {};
             writeCell(out, m.name, layout.name_width);
             out.writeByte(' ') catch {};
             writeCell(out, m.provider, layout.provider_width);
@@ -264,7 +264,7 @@ pub fn modelPicker(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer)
                 // Preserve the keyless warning even when CTX is hidden.
                 out.writeAll(" !") catch {};
             }
-            if (row == sel) out.writeAll("\x1b[0m") catch {};
+            if (row == sel) out.writeAll(style.reset) catch {};
             out.writeByte('\n') catch {};
         }
         out.writeAll(style.dim) catch {};
@@ -346,16 +346,16 @@ pub fn listPickerAt(root: *Agent, arena: Allocator, out: *Io.Writer, title: []co
         if (filtered.items.len == 0) sel = 0 else if (sel >= filtered.items.len) sel = filtered.items.len - 1;
 
         out.writeAll("\x1b[2J\x1b[H") catch {};
-        out.print("{s}{s}{s} {s}\n", .{ style.cyan, title, style.reset, query.items }) catch {};
+        out.print("{s}{s}{s} {s}\n", .{ style.accent, title, style.reset, query.items }) catch {};
         out.print("{s}{d}/{d}{s}\n", .{ style.dim, filtered.items.len, items.len, style.reset }) catch {};
         const off = if (sel >= layout.visible) sel - layout.visible + 1 else 0;
         var row = off;
         while (row < filtered.items.len and row < off + layout.visible) : (row += 1) {
             const item = items[filtered.items[row]];
-            if (row == sel) out.writeAll("\x1b[7m") catch {};
-            out.writeByte(' ') catch {};
-            writeCell(out, item.name, layout.name_width);
-            if (row == sel) out.writeAll("\x1b[0m") catch {};
+            if (row == sel) out.writeAll(style.accent) catch {};
+            out.print("{s} ", .{if (row == sel) "›" else " "}) catch {};
+            writeCell(out, item.name, if (layout.name_width > 1) layout.name_width - 1 else 1);
+            if (row == sel) out.writeAll(style.reset) catch {};
             if (layout.show_desc) {
                 out.print(" {s}", .{style.dim}) catch {};
                 writeCell(out, item.desc, layout.desc_width);

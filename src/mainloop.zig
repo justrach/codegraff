@@ -137,7 +137,7 @@ pub fn run(ctx: *Ctx) !void {
             if (e.force) {
                 try ctx.out.print("{s}↳ force ›{s} {s}\n", .{ style.yellow, style.reset, e.text });
             } else {
-                try ctx.out.print("{s}↳ steer ›{s} {s}\n", .{ style.cyan, style.reset, e.text });
+                try ctx.out.print("{s}↳ steer ›{s} {s}\n", .{ style.accent, style.reset, e.text });
             }
             try ctx.out.flush();
             break :blk e.text;

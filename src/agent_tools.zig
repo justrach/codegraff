@@ -485,7 +485,7 @@ pub fn sayToolUse(self: *Agent, call: ToolCall) !void {
     const full = aw.writer.buffered();
     const shown = if (full.len > 160) full[0..160] else full;
     try self.say("{s}⚙{s} {s}{s} {s}{s}{s}{s}\n", .{
-        style.dim,   style.reset, style.cyan, call.name,
+        style.dim,   style.reset, style.accent, call.name,
         style.dim,   shown,
         if (full.len > 160) "…" else "",
         style.reset,

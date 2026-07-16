@@ -54,7 +54,7 @@ fn taskItem(body: []const u8) ?TaskItem {
 }
 
 fn headingColor(level: usize) []const u8 {
-    return if (level == 1) style.magenta else if (level == 2) style.cyan else style.yellow;
+    return if (level <= 2) style.accent else style.yellow;
 }
 
 fn renderHeading(w: *Io.Writer, level: usize, text: []const u8) void {
@@ -156,7 +156,7 @@ pub fn mdTryClassify(self: *Agent, w: *Io.Writer) void {
                 if (taskItem(body)) |task| {
                     mdStartItem(self, w, held, lead, 6, if (task.checked) "☑" else "☐", if (task.checked) style.green else style.yellow);
                 } else {
-                    mdStartItem(self, w, held, lead, 2, if (lead == 0) "•" else "◦", style.cyan);
+                    mdStartItem(self, w, held, lead, 2, if (lead == 0) "•" else "◦", style.accent);
                 }
                 return;
             }
@@ -175,7 +175,7 @@ pub fn mdTryClassify(self: *Agent, w: *Io.Writer) void {
                     self.md_col = lead + d + 2; // "12. " — align under the text
                     self.md_indent = lead + d + 2;
                     w.writeAll(held[0..lead]) catch {};
-                    w.print("{s}{s}{c}{s} ", .{ style.cyan, body[0..d], body[d], style.reset }) catch {};
+                    w.print("{s}{s}{c}{s} ", .{ style.accent, body[0..d], body[d], style.reset }) catch {};
                     const rest = body[d + 2 ..];
                     var tmp: [8]u8 = undefined;
                     const n = @min(rest.len, tmp.len);
@@ -418,8 +418,8 @@ pub fn flushStreamTail(self: *Agent) void {
 
 /// Render one markdown line to ANSI (portable SGR only — bold/color, no
 /// italic, so iTerm/Ghostty/Terminal/Windows-Terminal all agree): code
-/// fences + fenced bodies dimmed, ATX headers bold-cyan, `-`/`*`/`+`
-/// bullets → cyan •, and inline `**bold**` / `` `code` `` spans.
+/// fences + fenced bodies dimmed, ATX headers bold-coral, `-`/`*`/`+`
+/// bullets → coral •, and inline `**bold**` / `` `code` `` spans.
 pub fn renderMdLine(self: *Agent, w: *Io.Writer, line: []const u8) void {
     var lead: usize = 0;
     while (lead < line.len and line[lead] == ' ') lead += 1;
@@ -491,7 +491,7 @@ pub fn renderMdLine(self: *Agent, w: *Io.Writer, line: []const u8) void {
     // Bullet list item.
     if (std.mem.startsWith(u8, body, "- ") or std.mem.startsWith(u8, body, "* ") or std.mem.startsWith(u8, body, "+ ")) {
         w.writeAll(line[0..lead]) catch {};
-        w.print("{s}{s}{s} ", .{ style.cyan, if (lead == 0) "•" else "◦", style.reset }) catch {};
+        w.print("{s}{s}{s} ", .{ style.accent, if (lead == 0) "•" else "◦", style.reset }) catch {};
         renderInline(w, body[2..]);
         return;
     }
@@ -500,7 +500,7 @@ pub fn renderMdLine(self: *Agent, w: *Io.Writer, line: []const u8) void {
     while (d < body.len and body[d] >= '0' and body[d] <= '9') d += 1;
     if (d >= 1 and d + 1 < body.len and (body[d] == '.' or body[d] == ')') and body[d + 1] == ' ') {
         w.writeAll(line[0..lead]) catch {};
-        w.print("{s}{s}{c}{s} ", .{ style.cyan, body[0..d], body[d], style.reset }) catch {};
+        w.print("{s}{s}{c}{s} ", .{ style.accent, body[0..d], body[d], style.reset }) catch {};
         renderInline(w, body[d + 2 ..]);
         return;
     }

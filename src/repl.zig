@@ -1,12 +1,12 @@
-//! `graff repl` — an interactive chat REPL on the zigzag TUI, styled like
-//! Claude Code: a bordered welcome box with the `✻` accent, conversation turns
+//! `graff repl` — an interactive chat REPL on the zigzag TUI, styled in the
+//! Codegraff ink-and-coral language: a bordered welcome box, conversation turns
 //! (`>` you, `⏺` the model), a rounded input box pinned to the bottom, a status
 //! line, and `/`-style commands mirroring the harness's interactive set.
 //!
 //! Spike branch: spike/zigzag-repl. Reachable as `graff repl` (subcommand of
 //! the main binary) and the standalone `graff-repl` exe — both call `run()`.
 //!
-//! The model call runs on a background thread so the braille thinking spinner
+//! The model call runs on a background thread so the ensō thinking spinner
 //! animates while it works (the zigzag loop re-renders every frame). The whole
 //! conversation is sent each turn (multi-turn memory). Without a model wired in
 //! (standalone exe) it falls back to a pure i64 arithmetic evaluator, which
@@ -111,17 +111,18 @@ pub var g_debug: bool = false; // GRAFF_REPL_DEBUG / `/debug` → dump raw strea
 
 pub const accent = util.accent;
 
-/// `/ultracode` rainbow shine — sweeps across the input border per frame.
-pub const rainbow = [_]zz.Color{
-    zz.Color.fromRgb(0xFF, 0x5C, 0x57), zz.Color.fromRgb(0xFF, 0x9F, 0x43),
-    zz.Color.fromRgb(0xFE, 0xD3, 0x30), zz.Color.fromRgb(0x6B, 0xCB, 0x77),
-    zz.Color.fromRgb(0x4D, 0x96, 0xFF), zz.Color.fromRgb(0xB1, 0x7A, 0xFF),
+/// `/ultracode` ember shine — a slow coral/rust/gold border sweep.
+pub const ultracode_palette = [_]zz.Color{
+    zz.Color.fromRgb(0xA8, 0x63, 0x43), zz.Color.fromRgb(0xB3, 0x5C, 0x49),
+    zz.Color.fromRgb(0xC4, 0x51, 0x3D), zz.Color.fromRgb(0xB3, 0x5C, 0x49),
+    zz.Color.fromRgb(0x9B, 0x6A, 0x35), zz.Color.fromRgb(0xA5, 0x65, 0x3B),
 };
 
+pub const enso_frames = [_][]const u8{ "◜", "◝", "◞", "◟" };
 pub const braille_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 pub const dragon_frames = [_][]const u8{ "🐉  ", "🐉 ✦", "🐉 ✧", "🐉 ✦" };
 
-const Anim = enum { braille, dragon };
+const Anim = enum { enso, braille, dragon };
 pub const Toast = enum { none, copied, failed };
 pub const TOAST_MS: u64 = 1500; // copy-confirmation toast window (wall-clock ms), #85
 
@@ -173,7 +174,7 @@ pub const Model = struct {
     thinking_show: bool = false,
     ultracode: bool = false,
     goal: ?[]const u8 = null, // owned
-    anim: Anim = .braille,
+    anim: Anim = .enso,
     scroll: usize = 0,
     // Mouse drag-selection → auto-copy (OSC52). Screen rows, 0-based.
     sel_anchor_row: ?usize = null,
@@ -385,7 +386,7 @@ pub const HELP_CALC =
     \\Commands:
     \\  /help     this help
     \\  /clear    clear the conversation
-    \\  /animation braille|dragon   spinner style
+    \\  /animation enso|braille|dragon   spinner style
     \\  /quit     exit  (also /q, ctrl-c)
     \\
     \\Offline mode (no model): evaluates i64 arithmetic — + - * / %, parens.
@@ -411,6 +412,7 @@ test "model: offline arithmetic path (no turn_fn)" {
     var m: Model = undefined;
     m.setup(std.testing.allocator);
     defer m.deinit();
+    try std.testing.expectEqual(Anim.enso, m.anim);
 
     try std.testing.expectEqual(Effect.stay, m.applyLine("2 + 3 * 4"));
     const out = try m.render(std.testing.allocator, 60, 24, 0);
@@ -471,6 +473,8 @@ test "model: commands toggle settings" {
     try std.testing.expect(m.goal != null);
     _ = m.applyLine("/animation dragon");
     try std.testing.expectEqual(Anim.dragon, m.anim);
+    _ = m.applyLine("/animation enso");
+    try std.testing.expectEqual(Anim.enso, m.anim);
 }
 
 fn stubTurn(_: ?*anyopaque, gpa: std.mem.Allocator, history: []const Turn, params: Params, _: *StreamBuf) ?[]const u8 {

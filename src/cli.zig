@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.206
+    \\  • The CLI now uses Codegraff's accessible vermilion-coral accent for prompts, tools, Markdown structure, and active selections
+    \\  • A quiet Ensō brush-circle is the stable thinking default; every existing animation remains selectable, including random
+    \\  • Ultracode motion is now a slower rust/coral/gold ember sweep instead of a full-spectrum rainbow
+    \\
     \\0.0.201
     \\  • A send-failed request no longer re-pools its dead connection, so one network blip can't storm every later compaction, title, and subagent call
     \\  • The "ultracode" codeword is matched only on what you actually typed (not on appended goal/todo notes), and /clear now clears the standing goal and ultracode mode
