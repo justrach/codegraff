@@ -372,7 +372,7 @@ fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const u8,
 /// a per-commit git describe) — bump this only when the schema or JSONL
 /// protocol changes shape, so SDK regeneration stays byte-stable across
 /// commits.
-pub const schema_version = "0.4";
+pub const schema_version = "0.5";
 
 /// Emit the machine-readable interface description for `harness --schema`:
 /// providers, models, built-in tools (name/description/parameters), and the
@@ -401,12 +401,13 @@ fn providerDisplayName(id: []const u8) []const u8 {
 fn providerLoginKind(id: []const u8) []const u8 {
     if (std.mem.eql(u8, id, "codegraff")) return "codegraff_device";
     if (std.mem.eql(u8, id, "codex")) return "codex_device";
+    if (std.mem.eql(u8, id, "kimi")) return "kimi_device";
     return "api_key";
 }
 
 /// Whether a (kind,id,model) combo should carry a top-level reasoning_effort
 /// hint. Effort-honoring providers: the Responses API (codex) and the
-/// OpenAI-compatible gateways we know normalize it (codegraff, deepseek, kimi).
+/// OpenAI-compatible gateways we know normalize it (codegraff, deepseek).
 /// Grok models reject the hint even through the codegraff gateway, so they are
 /// excluded up front (mirrors how opencode gates effort per-model) — the
 /// reactive drop-and-retry in request() still covers any other model that
@@ -415,8 +416,7 @@ pub fn providerTakesEffort(kind: Provider.Kind, id: []const u8, model: []const u
     if (std.mem.startsWith(u8, model, "grok")) return false;
     return kind == .responses or
         std.mem.eql(u8, id, "codegraff") or
-        std.mem.eql(u8, id, "deepseek") or
-        std.mem.eql(u8, id, "kimi");
+        std.mem.eql(u8, id, "deepseek");
 }
 
 pub fn emitSchema(w: *Io.Writer) !void {
@@ -463,6 +463,7 @@ pub fn emitSchema(w: *Io.Writer) !void {
     try s.objectField("dynamic_model_providers");
     try s.beginArray();
     try s.write("codex");
+    try s.write("kimi");
     try s.endArray();
     try s.objectField("tools");
     try s.beginArray();
@@ -493,6 +494,7 @@ test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
     try std.testing.expectEqualStrings("mystery", providerDisplayName("mystery")); // unknown -> echoed id
     try std.testing.expectEqualStrings("codegraff_device", providerLoginKind("codegraff"));
     try std.testing.expectEqualStrings("codex_device", providerLoginKind("codex"));
+    try std.testing.expectEqualStrings("kimi_device", providerLoginKind("kimi"));
     try std.testing.expectEqualStrings("api_key", providerLoginKind("openai"));
 }
 test "isMetaName: the five orchestrator-handled meta tools" {
@@ -532,7 +534,7 @@ test "providerTakesEffort: effort-honoring providers, but never for grok models"
     try std.testing.expect(providerTakesEffort(.responses, "codex", "gpt-5.5"));
     try std.testing.expect(providerTakesEffort(.openai, "codegraff", "deepseek-v4-pro"));
     try std.testing.expect(providerTakesEffort(.openai, "deepseek", "deepseek-v4-pro"));
-    try std.testing.expect(providerTakesEffort(.openai, "kimi", "kimi-k2.7"));
+    try std.testing.expect(!providerTakesEffort(.anthropic, "kimi", "k3"));
     try std.testing.expect(!providerTakesEffort(.openai, "openai", "gpt-5.5")); // direct openai chat
     try std.testing.expect(!providerTakesEffort(.openai, "xai", "grok-4.3")); // xai not in the list
     // grok via the codegraff gateway must NOT get reasoning_effort (grok rejects it)

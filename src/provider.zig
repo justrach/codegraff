@@ -56,8 +56,10 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "openai", .kind = .openai, .auth = .bearer, .url = "https://api.openai.com/v1/chat/completions", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
     .{ .id = "minimax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
     .{ .id = "xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
-    // OpenAI-format direct providers (matched to graff's provider.json).
-    .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/chat/completions", .env_key = "KIMI_API_KEY", .default_model = "kimi-k2.7" },
+    // Kimi Code follows Anthropic Messages (including Anthropic tool schemas),
+    // despite exposing an OpenAI-shaped /models listing. OpenCode uses the same
+    // @ai-sdk/anthropic transport for its `kimi-for-coding` provider.
+    .{ .id = "kimi", .kind = .anthropic, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/messages", .env_key = "KIMI_API_KEY", .default_model = "k3" },
     // moonshot: the regular Kimi Open Platform (pay-as-you-go API key, not the
     // Coding plan). OpenAI-compatible; .cn host for China. kimi-latest tracks
     // the newest Kimi. Same /v1/models discovery applies if wired later.

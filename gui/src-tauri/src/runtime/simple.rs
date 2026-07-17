@@ -2936,10 +2936,10 @@ fn selected_prompt_model_pair(
 fn prompt_model_arg(_provider: &str, model: &str) -> String {
     // Pass the BARE model name and let the harness route it to a provider via the
     // same prefer-direct resolution the TUI uses (`/model <name>`). Prefixing the
-    // provider ("kimi kimi-k2.7" or "kimi/kimi-k2.7") is NOT understood by
+    // provider ("kimi k3" or "kimi/k3") is NOT understood by
     // `--model`: it falls back to the codegraff gateway, which then rejects the
     // unknown model. The harness picks the right provider for a bare model name
-    // (kimi-k2.7 -> kimi when keyed; only falling back to codegraff if no direct
+    // (k3 -> kimi when keyed; only falling back to codegraff if no direct
     // provider is configured), so the GUI must call it exactly like the terminal.
     model.to_string()
 }
@@ -4439,7 +4439,7 @@ mod tests {
         // prefer-direct, like the TUI's `/model`); a "provider model" prefix is
         // not understood by --model and falls back to the codegraff gateway.
         assert_eq!(prompt_model_arg("codex", "gpt-5.5"), "gpt-5.5");
-        assert_eq!(prompt_model_arg("kimi", "kimi-k2.7"), "kimi-k2.7");
+        assert_eq!(prompt_model_arg("kimi", "k3"), "k3");
     }
 
     #[test]

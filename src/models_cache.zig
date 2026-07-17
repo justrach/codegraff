@@ -32,6 +32,7 @@ const pricing = @import("pricing.zig");
 const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
 const provider = @import("provider.zig"); // g_codex_url_override: keep /models discovery on the same origin as the overridden responses endpoint
+const kimi_catalog = @import("kimi_catalog.zig");
 
 const models_dev_url = "https://models.dev/api.json";
 const codex_models_url = "https://chatgpt.com/backend-api/codex/models";
@@ -544,6 +545,8 @@ pub fn list(out: *Io.Writer) !void {
         if (!std.mem.eql(u8, m.provider, last)) {
             if (std.mem.eql(u8, m.provider, "codex"))
                 try out.print("\n{s} ({s}):\n", .{ m.provider, codex_catalog_source })
+            else if (std.mem.eql(u8, m.provider, "kimi"))
+                try out.print("\n{s} ({s}):\n", .{ m.provider, kimi_catalog.catalog_source })
             else
                 try out.print("\n{s}:\n", .{m.provider});
             last = m.provider;

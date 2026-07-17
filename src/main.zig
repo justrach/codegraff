@@ -531,7 +531,7 @@ const messages_mod = @import("messages.zig");
 const vision = @import("vision.zig"); // staged-image type, /image·/paste stagers, macOS clipboard grab
 /// User-Agent for outbound provider calls. The Kimi for Coding plan gates access by User-Agent (a graff/* or bare UA gets `access_terminated`), so
 /// graff identifies as claude-code/1.0.0 — a user's Kimi Code key then works here the same as in Kimi CLI or Claude Code. Other providers keep the default.
-pub const kimi_user_agent = "claude-code/1.0.0";
+pub const kimi_user_agent = @import("kimi_catalog.zig").user_agent;
 // HTTP transport (auth headers, raw POST, 5xx-body capture, watchdogs) lives in http.zig.
 const http = @import("http.zig");
 // Subprocess execution (runCapped, git-worktree mgmt, background bash-job pool) lives in jobs.zig; jobsReap is aliased back for main()'s cleanup defer.

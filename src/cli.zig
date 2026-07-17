@@ -21,6 +21,10 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.208
+    \\  • Kimi Code now uses its Anthropic Messages transport and authenticated live model catalog
+    \\  • `--model kimi` selects K3 today and automatically follows future pure Kimi generations
+    \\
     \\0.0.206
     \\  • The CLI now uses Codegraff's accessible vermilion-coral accent for prompts, tools, Markdown structure, and active selections
     \\  • A quiet Ensō brush-circle is the stable thinking default; every existing animation remains selectable, including random

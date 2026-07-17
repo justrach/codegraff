@@ -280,7 +280,7 @@ from [models.dev](https://models.dev)'s `api.json` (snapshot 2026-06-10).
 | `openai`    | OpenAI chat, bearer         | `OPENAI_API_KEY`     |
 | `minimax`   | Anthropic Messages, bearer  | `MINIMAX_API_KEY`    |
 | `xiaomi` (MiMo) | OpenAI chat, bearer     | `XIAOMI_API_KEY`     |
-| `kimi` / `xai` (grok) / `zai` (GLM) | OpenAI chat, bearer | `KIMI_API_KEY` / `XAI_API_KEY` / `ZAI_API_KEY` (via `graff key set`) |
+| `kimi` / `xai` (grok) / `zai` (GLM) | Kimi: Anthropic Messages; xAI/ZAI: OpenAI chat | `KIMI_API_KEY` / `XAI_API_KEY` / `ZAI_API_KEY` (via `graff key set`) |
 | `codex`     | Responses API, ChatGPT login | `${CODEX_HOME:-~/.codex}/auth.json` (no API key) |
 
 **Using a specific provider directly** is always the same two steps: give it

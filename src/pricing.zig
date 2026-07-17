@@ -64,7 +64,7 @@ pub fn priceFor(model: []const u8) ?ModelPrice {
 pub const Billing = enum { sub, priced, unpriced };
 
 pub fn billingFor(provider_id: []const u8, model: []const u8) Billing {
-    if (std.mem.eql(u8, provider_id, "codex")) return .sub;
+    if (std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "kimi")) return .sub;
     return if (priceFor(model) != null) .priced else .unpriced;
 }
 
@@ -224,10 +224,12 @@ pub const model_table = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "glm-5.2", .context = 204_800 },
     .{ .provider = "codegraff", .name = "mimo-v2.5", .context = 128_000 },
     .{ .provider = "codegraff", .name = "mimo-v2.5-pro", .context = 128_000 },
-    // kimi: the Kimi for Coding plan endpoint accepts versioned ids (and the
-    // `kimi-for-coding` alias), all routed to the latest coding model. We expose
-    // `kimi-k2.7` — its current release. Verified via /coding/v1 2026-06-16.
-    .{ .provider = "kimi", .name = "kimi-k2.7", .context = 262_144 },
+    // Kimi Code offline fallback. Authenticated startup replaces this slice
+    // from /coding/v1/models; K3 is the current explicit generation while the
+    // two compatibility aliases keep their smaller advertised window.
+    .{ .provider = "kimi", .name = "k3", .context = 1_048_576 },
+    .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144 },
+    .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144 },
     .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
@@ -246,31 +248,62 @@ pub fn models() []const ModelInfo {
     return active_model_table;
 }
 
-/// Codex's first visible account model is its dynamic default, matching
-/// openai/codex's priority-sorted picker. Other providers retain their baked
-/// default; the supplied fallback also covers offline Codex startup.
+fn pureKimiGeneration(name: []const u8) ?u32 {
+    if (name.len < 2 or name[0] != 'k') return null;
+    for (name[1..]) |c| if (!std.ascii.isDigit(c)) return null;
+    return std.fmt.parseInt(u32, name[1..], 10) catch null;
+}
+
+/// Codex's first visible account model is its dynamic default. Kimi prefers
+/// the newest explicit pure generation (`k3`, then future `k4`, etc.) over
+/// compatibility aliases and K2 point-release ids.
 pub fn providerDefaultModel(provider_id: []const u8, fallback: []const u8) []const u8 {
-    if (!std.mem.eql(u8, provider_id, "codex")) return fallback;
-    for (models()) |model| if (std.mem.eql(u8, model.provider, "codex")) return model.name;
+    if (std.mem.eql(u8, provider_id, "codex")) {
+        for (models()) |model| if (std.mem.eql(u8, model.provider, "codex")) return model.name;
+        return fallback;
+    }
+    if (!std.mem.eql(u8, provider_id, "kimi")) return fallback;
+    var best: ?[]const u8 = null;
+    var best_generation: u32 = 0;
+    var alias: ?[]const u8 = null;
+    for (models()) |model| {
+        if (!std.mem.eql(u8, model.provider, "kimi")) continue;
+        if (std.mem.eql(u8, model.name, "kimi-for-coding")) alias = model.name;
+        const generation = pureKimiGeneration(model.name) orelse continue;
+        if (best == null or generation > best_generation) {
+            best = model.name;
+            best_generation = generation;
+        }
+    }
+    if (best) |model| return model;
+    if (alias) |model| return model;
     return fallback;
 }
 
-pub fn activateCodexModels(arena: std.mem.Allocator, discovered: []const ModelInfo) bool {
+fn activateProviderModels(arena: std.mem.Allocator, provider_id: []const u8, discovered: []const ModelInfo) bool {
     if (discovered.len == 0) return false;
-    var non_codex: usize = 0;
-    for (model_table) |m| if (!std.mem.eql(u8, m.provider, "codex")) {
-        non_codex += 1;
+    var retained: usize = 0;
+    for (active_model_table) |m| if (!std.mem.eql(u8, m.provider, provider_id)) {
+        retained += 1;
     };
-    const combined = arena.alloc(ModelInfo, non_codex + discovered.len) catch return false;
+    const combined = arena.alloc(ModelInfo, retained + discovered.len) catch return false;
     var n: usize = 0;
-    for (model_table) |m| {
-        if (std.mem.eql(u8, m.provider, "codex")) continue;
+    for (active_model_table) |m| {
+        if (std.mem.eql(u8, m.provider, provider_id)) continue;
         combined[n] = m;
         n += 1;
     }
     @memcpy(combined[n..], discovered);
     active_model_table = combined;
     return true;
+}
+
+pub fn activateCodexModels(arena: std.mem.Allocator, discovered: []const ModelInfo) bool {
+    return activateProviderModels(arena, "codex", discovered);
+}
+
+pub fn activateKimiModels(arena: std.mem.Allocator, discovered: []const ModelInfo) bool {
+    return activateProviderModels(arena, "kimi", discovered);
 }
 
 pub const default_context = 200_000;
@@ -375,8 +408,27 @@ pub fn providerModelInTable(provider_id: []const u8, model: []const u8) bool {
 }
 
 test "contextFor known model and default fallback" {
-    try std.testing.expectEqual(@as(u64, 262_144), contextFor("kimi", "kimi-k2.7"));
+    try std.testing.expectEqual(@as(u64, 1_048_576), contextFor("kimi", "k3"));
     try std.testing.expectEqual(@as(u64, default_context), contextFor("nope", "unknown-xyz"));
+}
+
+test "Kimi discovery preserves Codex and chooses the newest pure generation" {
+    const saved = active_model_table;
+    defer active_model_table = saved;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const discovered = [_]ModelInfo{
+        .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144 },
+        .{ .provider = "kimi", .name = "k2p7", .context = 262_144 },
+        .{ .provider = "kimi", .name = "k3", .context = 1_048_576 },
+    };
+    try std.testing.expect(activateKimiModels(arena_state.allocator(), &discovered));
+    try std.testing.expectEqualStrings("k3", providerDefaultModel("kimi", "fallback"));
+    try std.testing.expect(providerModelInTable("codex", "gpt-5.6-sol"));
+    try std.testing.expect(!providerModelInTable("kimi", "kimi-for-coding-highspeed"));
+    const codex = [_]ModelInfo{.{ .provider = "codex", .name = "future-sol", .context = 270_000 }};
+    try std.testing.expect(activateCodexModels(arena_state.allocator(), &codex));
+    try std.testing.expect(providerModelInTable("kimi", "k3"));
 }
 
 test "Codex discovery replaces only the baked Codex fallback" {
@@ -437,6 +489,7 @@ test "refresh overlay augments price/context lookups (codex cap still applies)" 
 
 test "billingFor: subscription, priced, unpriced classification" {
     try std.testing.expectEqual(Billing.sub, billingFor("codex", "gpt-5.5")); // priced model, but flat-rate login
+    try std.testing.expectEqual(Billing.sub, billingFor("kimi", "k3"));
     try std.testing.expectEqual(Billing.priced, billingFor("openai", "gpt-5.5"));
     try std.testing.expectEqual(Billing.priced, billingFor("anthropic", "claude-sonnet-4-6"));
     try std.testing.expectEqual(Billing.unpriced, billingFor("openai", "mystery-model"));

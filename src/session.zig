@@ -108,7 +108,7 @@ test "sessionMetaFromBytes falls back cleanly on legacy/invalid headers" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const legacy = sessionMetaFromBytes(arena,
-        \\{"provider":"kimi","model":"kimi-k2.7","strict":false,"messages":[]}
+        \\{"provider":"kimi","model":"k3","strict":false,"messages":[]}
     );
     try std.testing.expect(legacy.title == null);
     try std.testing.expectEqual(@as(i64, 0), legacy.updated_ms);

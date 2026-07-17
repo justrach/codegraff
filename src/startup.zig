@@ -33,6 +33,7 @@ const keys_cli = @import("keys_cli.zig");
 const oauth = @import("oauth.zig");
 const pricing = @import("pricing.zig");
 const models_cache = @import("models_cache.zig");
+const kimi_catalog = @import("kimi_catalog.zig");
 const serde = @import("serde.zig");
 const skills = @import("skills.zig");
 const prompts = @import("prompts.zig");
@@ -226,6 +227,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     // native-cache parse, and possible refresh until a model surface needs it.
     if (startupNeedsCodexCatalog(keys, model_flag, saved_model))
         model_catalog.ensure(io, gpa, arena, home, keys.get("codex") orelse "", keys.codex_account);
+    if (keys.get("kimi")) |token| _ = kimi_catalog.load(io, gpa, arena, token);
     if (home.len != 0) {
         // Apply the independent models.dev price/context overlay after routing
         // discovery. Provider-specific Codex windows remain authoritative.
@@ -474,6 +476,8 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
                     std.mem.eql(u8, flags.positionals.items[1], "--refresh") or
                     std.mem.eql(u8, flags.positionals.items[1], "update")),
         );
+        const kimi_token = init.environ_map.get("KIMI_API_KEY") orelse oauth.loadKimiOAuth(io, gpa, arena, home, false) orelse "";
+        _ = kimi_catalog.load(io, gpa, arena, kimi_token);
         try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]);
         return true;
     }

@@ -4,7 +4,7 @@
 //!
 //! Every entry point takes (io, gpa, arena, home) and reaches no Agent/global
 //! state, so the coupling back to main is tiny: ansi for the palette, util for
-//! the JSON getters, and a few shared consts (kimi_user_agent, unixMs, the
+//! the JSON getters, and a few shared consts (unixMs, the
 //! codegraff gateway base) back-imported from main.
 
 const std = @import("std");
@@ -30,8 +30,9 @@ const intFieldObj = util.intFieldObj;
 
 const root = @import("main.zig");
 const unixMs = util.unixMs;
-const kimi_user_agent = root.kimi_user_agent;
 const codegraff_device_base = root.codegraff_device_base;
+const kimi_catalog = @import("kimi_catalog.zig");
+const pricing = @import("pricing.zig");
 
 pub const CodexAuth = struct { token: []const u8, account: []const u8 };
 
@@ -283,10 +284,10 @@ pub fn kimiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !vo
             const refresh = strFieldObj(resp, "refresh_token") orelse "";
             const expires_in: i64 = if (resp.get("expires_in")) |ei| (if (ei == .integer) ei.integer else 900) else 900;
             try writeKimiAuth(io, arena, home, a.string, refresh, @divTrunc(unixMs(io), 1000) + expires_in);
-            if (fetchKimiModel(io, gpa, arena, a.string)) |model|
-                try out.print("✓ logged into Kimi — wrote {s}. /model kimi {s}\n", .{ kimiAuthPath(arena, home), model })
-            else
-                try out.print("✓ logged into Kimi — wrote {s}. /model kimi-k2.7\n", .{kimiAuthPath(arena, home)});
+            _ = kimi_catalog.load(io, gpa, arena, a.string);
+            try out.print("✓ logged into Kimi — wrote {s}. /model kimi selects {s}\n", .{
+                kimiAuthPath(arena, home), pricing.providerDefaultModel("kimi", "k3"),
+            });
             try out.flush();
             return;
         };
@@ -343,44 +344,6 @@ pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u
     oauth_refresh_mutex.lockUncancelable(io);
     defer oauth_refresh_mutex.unlock(io);
     return if (is_kimi) loadKimiOAuth(io, gpa, arena, home, force) else loadXaiOAuth(io, gpa, arena, home, force);
-}
-
-// The Kimi for Coding plan's model-listing endpoint (sibling of the
-// chat/completions URL in provider_specs). The official Kimi Code client reads
-// the served model id from here rather than baking in a version, so login does
-// the same — staying correct when the plan's coding model is bumped.
-const kimi_models_url = "https://api.kimi.com/coding/v1/models";
-
-/// GET the coding-plan /models endpoint and return the first model id it
-/// advertises (arena-owned), or null on any failure — the caller falls back to
-/// the baked-in id so a network hiccup never breaks login. Carries the same
-/// bearer token + claude-code User-Agent the plan gates on.
-fn fetchKimiModel(io: Io, gpa: Allocator, arena: Allocator, access: []const u8) ?[]const u8 {
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var aw: Io.Writer.Allocating = .init(arena);
-    const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{access}) catch return null;
-    const extra = [_]std.http.Header{
-        .{ .name = "authorization", .value = bearer },
-        .{ .name = "Accept", .value = "application/json" },
-    };
-    const res = client.fetch(.{
-        .location = .{ .url = kimi_models_url },
-        .method = .GET,
-        .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = kimi_user_agent } },
-        .extra_headers = &extra,
-    }) catch return null;
-    if (@intFromEnum(res.status) != 200) return null;
-    const v = std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always }) catch return null;
-    if (v != .object) return null;
-    const data = v.object.get("data") orelse return null;
-    if (data != .array) return null;
-    for (data.array.items) |item| {
-        if (item != .object) continue;
-        if (strFieldObj(item.object, "id")) |id| if (id.len > 0) return id;
-    }
-    return null;
 }
 
 // xAI (Grok) OAuth — device-code flow against auth.x.ai. The OIDC discovery

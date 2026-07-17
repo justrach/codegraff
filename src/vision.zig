@@ -36,7 +36,8 @@ pub fn visionModel(m_full: []const u8) bool {
         std.mem.startsWith(u8, m, "gpt-5") or
         std.mem.startsWith(u8, m, "gpt-4") or
         std.mem.startsWith(u8, m, "grok-4") or
-        std.mem.startsWith(u8, m, "kimi") or // kimi-k2.7+ see images (Kimi for Coding endpoint, verified 2026-06-16)
+        std.mem.startsWith(u8, m, "kimi") or
+        (m.len > 1 and m[0] == 'k' and std.ascii.isDigit(m[1])) or // Kimi Code k3+
         std.mem.startsWith(u8, m, "gemini") or
         std.mem.startsWith(u8, m, "gemma") or // gemma-3/4 are multimodal (LM Studio etc.)
         std.mem.startsWith(u8, m, "llava") or
@@ -183,7 +184,7 @@ test "visionCapable allowlist" {
     try std.testing.expect(visionCapable(mk("claude-opus-4-8")));
     try std.testing.expect(visionCapable(mk("gpt-5.5")));
     try std.testing.expect(!visionCapable(mk("deepseek-v4-pro")));
-    try std.testing.expect(visionCapable(mk("kimi-k2.7"))); // Kimi for Coding sees images
+    try std.testing.expect(visionCapable(mk("k3"))); // Kimi for Coding sees images
     try std.testing.expect(!visionCapable(mk("minimax-m3")));
 }
 
@@ -192,7 +193,7 @@ test "visionModel: vision-capable model families only" {
     try std.testing.expect(visionModel("gpt-5.5"));
     try std.testing.expect(visionModel("gpt-4o"));
     try std.testing.expect(visionModel("grok-4.3"));
-    try std.testing.expect(visionModel("kimi-k2.7"));
+    try std.testing.expect(visionModel("k3"));
     try std.testing.expect(visionModel("gemini-2.0"));
     // Local / OpenAI-compat providers report org-prefixed ids — match the bare name.
     try std.testing.expect(visionModel("google/gemma-4-26b-a4b-qat"));
