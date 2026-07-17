@@ -40,6 +40,7 @@ const mcp = @import("mcp.zig");
 const jobs = @import("jobs.zig");
 const trace = @import("trace.zig");
 const scoring = @import("scoring.zig");
+const recipe = @import("recipe.zig");
 const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
 const ansi = @import("ansi.zig");
@@ -63,7 +64,7 @@ const hooks = @import("hooks.zig");
 pub fn runReplCommand(gpa: Allocator, io: Io, environ_map: anytype, root: *agent_mod.Agent, keys: *provider_mod.Keys, client: *std.http.Client, in: *Io.Reader, out: *Io.Writer, arena: Allocator, flags: args.Flags) !bool {
     if (!(flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "repl"))) return false;
     root.ensureStoredKeys(keys);
-    root.ensureModelCatalog(keys.*);
+    providers.ensureModelQueryCatalogs(root, keys.*, "");
     // The standalone chat REPL can switch wire formats inside its own model
     // picker, so materialize every catalog only when this surface is entered.
     try root.ensureRootTools(.anthropic);
@@ -239,6 +240,7 @@ pub fn buildRootAgent(
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     if (flags.eval_target_flag) |t| root.eval_target = t;
     if (flags.eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);
+    _ = recipe.record(tracer, trace.g_traj, root.provider.id, root.provider.model, @tagName(root.reasoning), root.systemPrompt(), root.toolsJson(), if (root.eval_niche.len > 0) root.eval_niche else "interactive");
     tracer.note("session", root.provider.model);
     // Distribute (docs §9.E): pull this tier's live fleet champions and prefer
     // them over the baked builtins. Best-effort + bounded; emits fleet:elite_pull.

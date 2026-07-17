@@ -54,10 +54,13 @@ pub fn build(b: *std.Build) void {
     // standalone graff-repl exe below). The repo's first dependency.
     const zigzag = b.dependency("zigzag", .{ .target = target, .optimize = optimize });
     exe.root_module.addImport("zigzag", zigzag.module("zigzag"));
-    b.installArtifact(exe);
+    const install_graff = b.addInstallArtifact(exe, .{});
+    b.getInstallStep().dependOn(&install_graff.step);
+    const graff_step = b.step("graff", "Build and install only the release CLI");
+    graff_step.dependOn(&install_graff.step);
 
     const run_cmd = b.addRunArtifact(exe);
-    run_cmd.step.dependOn(b.getInstallStep());
+    run_cmd.step.dependOn(&install_graff.step);
     const run_step = b.step("run", "Run the harness");
     run_step.dependOn(&run_cmd.step);
 

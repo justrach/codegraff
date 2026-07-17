@@ -95,6 +95,13 @@ code (Python/TS), not in the harness:
   and children counts — everything DGM-H's parent selection needs:
   `sᵢ = σ(λ(αᵢ − α_mid))`, `hᵢ = 1/(1+nᵢ)`, sample ∝ sᵢ·hᵢ (λ=10, α_mid =
   mean of top-3, per the paper).
+- **Recipe outcome** = every root turn also binds the prompt genome to its
+  exact provider/model, reasoning effort, toolset hash, harness version, and
+  coarse task class. Success, latency, model/tool calls, tool errors,
+  cache/uncached tokens, and estimated cost remain separate objectives so a
+  later selector can maintain a Pareto frontier instead of promoting a cheap
+  failure through one gameable scalar. This is observational today; automatic
+  model/effort promotion requires signed recipe provenance and canary rollback.
 - **Recitation / memory** (the capability DGM-H invents for itself —
   performance trackers, IMPROVEMENTS.md): the harness already encourages
   filesystem-as-context (Manus lessons); the driver should keep its

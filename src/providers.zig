@@ -14,6 +14,7 @@ const Value = std.json.Value;
 
 const pricing = @import("pricing.zig");
 const resolveModelName = pricing.resolveModelName;
+const kimi_catalog = @import("kimi_catalog.zig");
 
 const serde = @import("serde.zig");
 const saveModel = serde.saveModel;
@@ -213,11 +214,10 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
             const failed_id = root.provider.id;
             const failed_model = root.provider.model;
             root.ensureStoredKeys(keys);
-            var fallback = nextFallbackProvider(keys.*, failed_id, attempted[0..attempted_len], root.fallback_allow) orelse return err;
-            if (std.mem.eql(u8, fallback.id, "codex")) {
-                root.ensureModelCatalog(keys.*);
-                fallback = nextFallbackProvider(keys.*, failed_id, attempted[0..attempted_len], root.fallback_allow) orelse return err;
-            }
+            // The failure path is already paying for exhaustive credentials;
+            // hydrate deferred account catalogs before choosing a fallback.
+            ensureModelQueryCatalogs(root, keys.*, "");
+            const fallback = nextFallbackProvider(keys.*, failed_id, attempted[0..attempted_len], root.fallback_allow) orelse return err;
             attempted[attempted_len] = fallback.id;
             attempted_len += 1;
             const note = try applyFallbackProvider(root, arena, fallback);
@@ -289,6 +289,25 @@ pub fn modelQueryMayUseCodex(query: []const u8) bool {
     return true;
 }
 
+fn modelQueryMayUseKimi(query: []const u8) bool {
+    const arg = std.mem.trim(u8, query, " \t");
+    if (arg.len == 0) return true;
+    const provider_end = std.mem.indexOfAny(u8, arg, " /\t") orelse arg.len;
+    const provider_id = arg[0..provider_end];
+    for (provider_specs) |spec| {
+        if (!std.mem.eql(u8, spec.id, provider_id)) continue;
+        return std.mem.eql(u8, spec.id, "kimi");
+    }
+    if (pricing.modelInTable(arg)) return pricing.providerModelInTable("kimi", arg);
+    return true;
+}
+
+pub fn ensureModelQueryCatalogs(root: *Agent, keys: Keys, query: []const u8) void {
+    if (modelQueryMayUseCodex(query)) root.ensureModelCatalog(keys);
+    if (modelQueryMayUseKimi(query))
+        kimi_catalog.ensure(root.io, root.gpa, root.arena, root.home, keys.get("kimi") orelse "");
+}
+
 /// Structured set_model has separate provider/model fields. An explicit
 /// provider fully determines routing; a model-only request remains fuzzy.
 pub fn controlRequestMayUseCodex(provider_query: []const u8, model_query: []const u8, legacy_name: []const u8) bool {
@@ -296,6 +315,18 @@ pub fn controlRequestMayUseCodex(provider_query: []const u8, model_query: []cons
     if (provider_id.len != 0) return std.mem.eql(u8, provider_id, "codex");
     if (std.mem.trim(u8, model_query, " \t").len != 0) return true;
     return modelQueryMayUseCodex(legacy_name);
+}
+
+pub fn ensureControlRequestCatalogs(root: *Agent, keys: Keys, provider_query: []const u8, model_query: []const u8, legacy_name: []const u8) void {
+    if (controlRequestMayUseCodex(provider_query, model_query, legacy_name)) root.ensureModelCatalog(keys);
+    const query = if (std.mem.trim(u8, provider_query, " \t").len != 0)
+        provider_query
+    else if (std.mem.trim(u8, model_query, " \t").len != 0)
+        model_query
+    else
+        legacy_name;
+    if (modelQueryMayUseKimi(query))
+        kimi_catalog.ensure(root.io, root.gpa, root.arena, root.home, keys.get("kimi") orelse "");
 }
 
 fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Provider {
@@ -490,6 +521,10 @@ test "Codex catalog demand follows model request routing" {
     try std.testing.expect(modelQueryMayUseCodex("codex"));
     try std.testing.expect(modelQueryMayUseCodex("codex future-sol"));
     try std.testing.expect(modelQueryMayUseCodex("future-account-rollout"));
+    try std.testing.expect(modelQueryMayUseKimi(""));
+    try std.testing.expect(!modelQueryMayUseKimi("codegraff"));
+    try std.testing.expect(modelQueryMayUseKimi("kimi"));
+    try std.testing.expect(modelQueryMayUseKimi("k3"));
     try std.testing.expect(!controlRequestMayUseCodex("codegraff", "deepseek-v4-pro", ""));
     try std.testing.expect(controlRequestMayUseCodex("codex", "", ""));
     try std.testing.expect(controlRequestMayUseCodex("", "future-account-rollout", ""));

@@ -328,6 +328,12 @@ pub const ToolSink = struct {
         return alloc.dupe(u8, aw.writer.buffered()) catch "";
     }
 
+    pub fn errorCount(self: *const ToolSink) u64 {
+        var total: u64 = 0;
+        for (self.entries.items) |entry| total += @intFromBool(entry.err);
+        return total;
+    }
+
     pub fn clear(self: *ToolSink, io: Io) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);

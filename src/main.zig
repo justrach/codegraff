@@ -5,12 +5,6 @@
 const std = @import("std");
 const Io = std.Io;
 
-fn bootMark(io: Io, started: Io.Timestamp, enabled: bool, label: []const u8) void {
-    if (!enabled) return;
-    const ms = @max(0, started.untilNow(io, .awake).toMilliseconds());
-    std.debug.print("[boot +{d}ms] {s}\n", .{ ms, label });
-}
-
 /// #131: pre-load the shared HTTP client's CA bundle single-threaded, so the
 /// parallel subagents that share this client (on pool threads) never race the
 /// lazy CA-bundle rescan on their first concurrent HTTPS connect. Zig std flags
@@ -131,6 +125,7 @@ test {
     _ = mainloop;
     _ = args;
     _ = startup;
+    _ = startup_timing;
     _ = session_start;
     _ = session_run;
     _ = provider_mod;
@@ -248,11 +243,11 @@ const cli = @import("cli.zig");
 const args = @import("args.zig");
 // Post-arg-parse setup (resolveKeys, buildSystemPrompt, early subcommand dispatch) lives in startup.zig; everything after credentials/http.Client exist lives in sibling session_start.zig.
 const startup = @import("startup.zig");
+const startup_timing = @import("startup_timing.zig");
 const session_start = @import("session_start.zig");
 const session_run = @import("session_run.zig");
 pub fn main(init: std.process.Init) !void {
-    const boot_started = Io.Timestamp.now(init.io, .awake);
-    const boot_debug = init.environ_map.get("GRAFF_BOOT_DEBUG") != null;
+    var boot = startup_timing.Tracker.init(init.io, init.environ_map.get("GRAFF_BOOT_DEBUG") != null);
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
@@ -278,7 +273,7 @@ pub fn main(init: std.process.Init) !void {
     // CLI flags: the Flags struct + parsing loop live in args.zig; downstream code reads flags.<name> in place of ~27 locals this block used to declare.
     const flags = try args.parse(init);
     var invocation_budget: run_budget_mod.RunBudget = .{ .max_model_calls = max_model_calls };
-    bootMark(init.io, boot_started, boot_debug, "args");
+    boot.mark(init.io, "args");
     // GRAFF_CODEX_URL: override the codex responses endpoint (localhost mocks / integration tests). Parsed BEFORE subcommand dispatch and
     // resolveKeys — `graff models [refresh]` fetches the catalog inside runSubcommand and the initial Keys.build runs inside resolveKeys.
     // environ_map slices are process-lifetime (resolveKeys stores them into Keys the same way), so the value is kept as-is without duping.
@@ -290,7 +285,7 @@ pub fn main(init: std.process.Init) !void {
     // Credential/model resolution (env vars → on-disk logins → `harness key set` store, env always wins; then --model or the last-saved model) lives
     // in startup.zig as resolveKeys() — pure over env/disk/arena, safe to call outside main()'s own stack frame.
     const resolved_keys = try startup.resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag);
-    bootMark(io, boot_started, boot_debug, "credentials/model");
+    boot.mark(io, "credentials/model");
     var keys = resolved_keys.keys;
     const default_provider = resolved_keys.default_provider;
     const stale_saved_model = resolved_keys.stale_saved_model;
@@ -301,7 +296,7 @@ pub fn main(init: std.process.Init) !void {
     var client_ready: Io.Event = .unset;
     http.g_client_ready = &client_ready;
     var client_warm_fut = io.async(prewarmCaBundleTask, .{ &client, gpa, io, &client_ready });
-    bootMark(io, boot_started, boot_debug, "CA warm scheduled");
+    boot.mark(io, "CA warm scheduled");
     defer {
         _ = client_warm_fut.await(io);
         http.g_client_ready = null;
@@ -329,7 +324,7 @@ pub fn main(init: std.process.Init) !void {
     const run_trajectory_path = try trace.trajectoryPath(arena, identity.run_id);
     try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, run_trace_path, codex_account, stale_saved_model, preferred_provider, default_provider);
     session_start.loadScoreSigningKey(io, arena, init.environ_map);
-    bootMark(io, boot_started, boot_debug, "banner");
+    boot.mark(io, "banner");
 
     // Session trace (best-effort: a failed open just disables tracing).
     var trace_buf: [8 * 1024]u8 = undefined;
@@ -343,6 +338,7 @@ pub fn main(init: std.process.Init) !void {
         .identity = identity,
         .path = run_trace_path,
     };
+    boot.attach(&tracer);
 
     // One trajectory file per run; the archive reader scans the directory.
     // Node ids restart per run and cross-run lineage threads through prompt_sha.
@@ -380,7 +376,7 @@ pub fn main(init: std.process.Init) !void {
     // auto-connect only with --yolo (trusted) or explicit per-session consent; otherwise start with an empty (but live) registry so `/mcp add`
     // still works.
     var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, use_color, json_mode);
-    bootMark(io, boot_started, boot_debug, "MCP registry");
+    boot.mark(io, "MCP registry");
     defer registry_storage.deinit();
     const registry: ?*mcp.Registry = &registry_storage;
     // Per-skill/companion opt-outs, animation/theme settings, and the --selftest-spinner headless render live in session_start.zig. The theme/
@@ -395,16 +391,16 @@ pub fn main(init: std.process.Init) !void {
         out.flush() catch {};
     };
     if (theme_setup.should_exit) return;
-    bootMark(io, boot_started, boot_debug, "settings/theme");
+    boot.mark(io, "settings/theme");
     try session_start.connectCompanion(io, &registry_storage, flags, out, json_mode);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
     if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);
-    bootMark(io, boot_started, boot_debug, "companion");
+    boot.mark(io, "companion");
 
     var approvals: Approvals = undefined;
     try session_run.initApprovalsHooksFleet(io, gpa, arena, init.environ_map, &approvals, flags, out, json_mode);
-    bootMark(io, boot_started, boot_debug, "approvals/hooks/fleet");
+    boot.mark(io, "approvals/hooks/fleet");
     defer {
         for (approvals.prefixes.items) |p| gpa.free(p);
         approvals.prefixes.deinit(gpa);
@@ -426,7 +422,7 @@ pub fn main(init: std.process.Init) !void {
     );
     const sys_normal = sys_prompt.sys_normal;
     const sys_strict = sys_prompt.sys_strict;
-    bootMark(io, boot_started, boot_debug, "system prompt");
+    boot.mark(io, "system prompt");
 
     var snaps: Snapshots = .{ .gpa = gpa, .io = io };
     defer snaps.deinit();
@@ -442,7 +438,7 @@ pub fn main(init: std.process.Init) !void {
     root.scratch_arena = &scratch_state; // #124: route the root's transient parse garbage here; reset per request()
     root.fallback_active = stale_saved_model != null;
     root.fallback_blocked = root.fallback_active and preferred_provider != null and !std.mem.eql(u8, preferred_provider.?, root.provider.id) and !fallback_config.contains(root.fallback_allow, root.provider.id);
-    bootMark(io, boot_started, boot_debug, "root agent");
+    boot.mark(io, "root agent");
     defer joinElites(io); // reap if the session quits before any turn joins it
 
     session_run.saveOrResumeSession(&root, &keys, arena, flags);

@@ -6,6 +6,7 @@ const std = @import("std");
 
 const agent_mod = @import("agent.zig");
 const scoring = @import("scoring.zig");
+const recipe = @import("recipe.zig");
 const telemetry = @import("telemetry.zig");
 const trace = @import("trace.zig");
 const util = @import("util.zig");
@@ -85,6 +86,7 @@ pub fn handle(root: *agent_mod.Agent, obj: std.json.ObjectMap) void {
     var niche_buf: [64]u8 = undefined;
     const niche = scoring.sanitizeMetaField(&niche_buf, util.utf8Prefix(stringField(obj, "niche"), 64));
     const provider_class = scoring.providerClass(root.provider.model);
+    const recipe_snapshot = recipe.snapshotForPromptHash(root.provider.id, root.provider.model, @tagName(root.reasoning), sha, recipe.toolsetFingerprint(root.toolsJson()), if (niche.len > 0) niche else "interactive");
     const signature = scoring.signScore(sha, parent, score, run_id, judge_id, artifact_sha, eval_set_hash, niche, provider_class);
     const signed = scoring.g_score_key != null;
 
@@ -102,6 +104,12 @@ pub fn handle(root: *agent_mod.Agent, obj: std.json.ObjectMap) void {
         .eval_set_hash = eval_set_hash,
         .niche = niche,
         .provider_class = provider_class,
+        // Recipe metadata is local observability for now. It intentionally is
+        // not sent to fleet selection until a future signed envelope version.
+        .recipe_sha = &recipe_snapshot.recipe_sha,
+        .recipe_model = root.provider.model,
+        .recipe_effort = @tagName(root.reasoning),
+        .recipe_toolset_sha = &recipe_snapshot.toolset_sha,
         .sig = if (signed) @as([]const u8, &signature) else "",
         .t = trajectory.elapsedMs(),
     });

@@ -34,6 +34,8 @@ const pricing = @import("pricing.zig");
 const default_context = pricing.default_context;
 const g_cost = &pricing.g_cost;
 const models_cache = @import("models_cache.zig");
+const kimi_catalog = @import("kimi_catalog.zig");
+const providers = @import("providers.zig");
 const command_catalog = @import("command_catalog.zig");
 const serde = @import("serde.zig");
 
@@ -261,7 +263,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/models")) {
         root.ensureStoredKeys(keys);
-        root.ensureModelCatalog(keys.*);
+        providers.ensureModelQueryCatalogs(root, keys.*, "");
         try out.writeAll("model                      ctx      compact@   provider    key  vision\n");
         for (pricing.models()) |m| {
             const has_key = keys.get(m.provider) != null;
@@ -278,6 +280,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             });
         }
         try out.print("(codex catalog: {s})\n", .{models_cache.codex_catalog_source});
+        try out.print("(kimi catalog: {s})\n", .{kimi_catalog.catalog_source});
         try out.print("(unknown models: {d}k ctx; claude* → anthropic, else → codegraff)\n", .{default_context / 1000});
         // Live LM Studio models: query the local server so loaded models show up
         // in /models without hand-typing their ids. Best-effort and silent if the

@@ -27,6 +27,7 @@ const fetchOpenAIModels = keys_cli.fetchOpenAIModels;
 const harness_version = main_mod.harness_version;
 
 const pricing = @import("pricing.zig");
+const kimi_catalog = @import("kimi_catalog.zig");
 const resolveModelName = pricing.resolveModelName;
 
 const pickers = @import("pickers.zig");
@@ -126,7 +127,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.startsWith(u8, line, "/model") and !std.mem.startsWith(u8, line, "/models")) {
         root.ensureStoredKeys(keys);
         const arg = std.mem.trim(u8, line["/model".len..], " \t");
-        if (providers.modelQueryMayUseCodex(arg)) root.ensureModelCatalog(keys.*);
+        providers.ensureModelQueryCatalogs(root, keys.*, arg);
         if (arg.len == 0) {
             if (main_mod.use_color) { // interactive TTY → fuzzy picker
                 if (modelPicker(root, keys, arena, out)) |idx| {
@@ -437,6 +438,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const home = root.home;
         const saved = storeKey(root.io, root.gpa, arena, home, pid, key); // persist
         keys.sources[idx.?] = if (saved) .stored else .session;
+        if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, home, keys.values[idx.?].?);
         try out.print("✓ {s} key set (live{s}) — now: /model {s}\n", .{ pid, if (saved) " + Keychain" else "", pid });
         try out.flush();
         return true;

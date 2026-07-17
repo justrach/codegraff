@@ -97,6 +97,24 @@ fn startupNeedsCodexCatalog(keys: provider_mod.Keys, model_flag: ?[]const u8, sa
     return std.mem.eql(u8, fallback.id, "codex");
 }
 
+fn startupNeedsKimiCatalog(keys: provider_mod.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) bool {
+    if (keys.get("kimi") == null) return false;
+    if (model_flag) |query| {
+        if (explicitProvider(query)) |id| return std.mem.eql(u8, id, "kimi");
+        if (pricing.modelInTable(query)) return pricing.providerModelInTable("kimi", query);
+        // A free-form query may name an account-only rollout.
+        return true;
+    }
+    if (saved) |selection| {
+        if (std.mem.eql(u8, selection.pid, "kimi")) return true;
+        if (pricing.providerModelInTable(selection.pid, selection.model) and keys.get(selection.pid) != null) return false;
+        // A stale/keyless preference may fall through to Kimi.
+        return true;
+    }
+    const fallback = keys.defaultProvider() catch return false;
+    return std.mem.eql(u8, fallback.id, "kimi");
+}
+
 test "Codex catalog loads at startup only when selection can observe it" {
     try std.testing.expectEqualStrings("deepseek", explicitProvider("deepseek").?);
     try std.testing.expect(explicitProvider("deepseek-v4-pro") == null);
@@ -134,6 +152,19 @@ test "Codex catalog loads at startup only when selection can observe it" {
         if (std.mem.eql(u8, spec.id, "codex")) value.* = null;
     }
     try std.testing.expect(!startupNeedsCodexCatalog(keys, "codex", null));
+}
+
+test "Kimi catalog loads at startup only when selection can observe it" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "kimi") or std.mem.eql(u8, spec.id, "codegraff")) value.* = "token";
+    }
+    try std.testing.expect(!startupNeedsKimiCatalog(keys, "codegraff", null));
+    try std.testing.expect(startupNeedsKimiCatalog(keys, "kimi", null));
+    try std.testing.expect(startupNeedsKimiCatalog(keys, "k3", null));
+    try std.testing.expect(startupNeedsKimiCatalog(keys, "future-kimi-rollout", null));
+    try std.testing.expect(!startupNeedsKimiCatalog(keys, null, .{ .pid = "codegraff", .model = "deepseek-v4-pro" }));
+    try std.testing.expect(startupNeedsKimiCatalog(keys, null, .{ .pid = "kimi", .model = "k3" }));
 }
 
 /// Resolves API keys/credentials (env vars → codegraff/codex/kimi on-disk
@@ -227,7 +258,8 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     // native-cache parse, and possible refresh until a model surface needs it.
     if (startupNeedsCodexCatalog(keys, model_flag, saved_model))
         model_catalog.ensure(io, gpa, arena, home, keys.get("codex") orelse "", keys.codex_account);
-    if (keys.get("kimi")) |token| _ = kimi_catalog.load(io, gpa, arena, home, token);
+    if (startupNeedsKimiCatalog(keys, model_flag, saved_model))
+        kimi_catalog.ensure(io, gpa, arena, home, keys.get("kimi") orelse "");
     if (home.len != 0) {
         // Apply the independent models.dev price/context overlay after routing
         // discovery. Provider-specific Codex windows remain authoritative.

@@ -19,6 +19,7 @@ pub const device_model = @tagName(builtin.os.tag) ++ " " ++ @tagName(builtin.cpu
 pub const os_version = @tagName(builtin.os.tag);
 pub var device_id: []const u8 = "unknown";
 pub var catalog_source: []const u8 = "baked offline fallback";
+var catalog_attempted = false;
 
 const private_file_permissions: Io.File.Permissions = if (Io.File.Permissions.has_executable_bit) @enumFromInt(0o600) else .default_file;
 const private_dir_permissions: Io.File.Permissions = if (Io.File.Permissions.has_executable_bit) @enumFromInt(0o700) else .default_dir;
@@ -188,6 +189,7 @@ pub fn load(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, access: 
         catalog_source = "baked fallback — no Kimi login";
         return false;
     }
+    catalog_attempted = true;
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
     var aw: Io.Writer.Allocating = .init(arena);
@@ -217,6 +219,14 @@ pub fn load(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, access: 
     if (!pricing.activateKimiModels(arena, rows)) return false;
     catalog_source = "live account catalog";
     return true;
+}
+
+/// Demand-load the account catalog at most once per process. Startup calls
+/// this only when Kimi can actually win model selection; `/model` and
+/// `/models` call it when their catalog surfaces become visible.
+pub fn ensure(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, access: []const u8) void {
+    if (catalog_attempted) return;
+    _ = load(io, gpa, arena, home, access);
 }
 
 test "parseModels accepts Kimi aliases and K3 context windows" {

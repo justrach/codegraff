@@ -24,6 +24,7 @@ const jobs = @import("jobs.zig");
 const session = @import("session.zig");
 const repl_glue = @import("repl_glue.zig");
 const mainloop_score = @import("mainloop_score.zig");
+const mainloop_trace = @import("mainloop_trace.zig");
 const scoring = @import("scoring.zig");
 const trace = @import("trace.zig");
 const telemetry = @import("telemetry.zig");
@@ -240,7 +241,7 @@ pub fn run(ctx: *Ctx) !void {
                 const provider_field = if (parsed.object.get("provider")) |v| (if (v == .string) v.string else "") else "";
                 const model_field = if (parsed.object.get("model")) |v| (if (v == .string) v.string else "") else "";
                 const legacy_name = if (parsed.object.get("name")) |v| (if (v == .string) v.string else "") else "";
-                if (providers.controlRequestMayUseCodex(provider_field, model_field, legacy_name)) ctx.root.ensureModelCatalog(ctx.keys.*);
+                providers.ensureControlRequestCatalogs(ctx.root, ctx.keys.*, provider_field, model_field, legacy_name);
                 const provider = providers.resolveProviderControlRequest(ctx.keys, ctx.arena, provider_field, model_field, legacy_name) catch |err| {
                     const label = providers.setModelRequestLabel(ctx.arena, provider_field, model_field, legacy_name) catch "<requested model>";
                     const message = switch (err) {
@@ -466,6 +467,7 @@ pub fn run(ctx: *Ctx) !void {
             try ctx.out.writeAll("\n");
             try ctx.out.flush();
         }
+        const turn_before = mainloop_trace.begin(ctx.root, ctx.io);
         const turn_started = Io.Timestamp.now(ctx.io, .awake);
         // A failed turn must never kill the session: ApiError is already
         // reported inside request(); anything else is surfaced here. Either
@@ -475,42 +477,7 @@ pub fn run(ctx: *Ctx) !void {
         // terminal event, and compaction gate. Reuse one full-history scan for
         // all three instead of serializing an increasingly large history 3x.
         const post_turn_context_tokens = ctx.root.effectiveContextTokens();
-        if (trace.g_traj) |tj| {
-            const fp = scoring.promptFingerprint(ctx.root.systemPrompt());
-            const turn_ms: i64 = @intCast(@max(0, turn_started.untilNow(ctx.io, .awake).toMilliseconds()));
-            const turn_ok = if (turn_result) |_| true else |_| false;
-            const turn_tools = ctx.root.tools_used.render(ctx.arena);
-            tj.capturePrompt(fp, ctx.root.systemPrompt());
-            tj.node(.{
-                .id = turn_id,
-                .parent = prev_turn_id,
-                .kind = "turn",
-                .label = ctx.root.provider.model,
-                .t = tj.elapsedMs(),
-                .ms = turn_ms,
-                .prompt_sha = &fp,
-                .prompt_mutated = !std.mem.eql(u8, &fp, &prev_prompt_fp),
-                .task = util.utf8Prefix(base_msg, 160),
-                .tools = turn_tools,
-                .ok = turn_ok,
-                .context_tokens = post_turn_context_tokens,
-            });
-            // Preserve the failure reason in the archive: the turn node only
-            // records ok:false, so an adjacent error record keeps the
-            // user-visible detail (network give-up, api error) joinable to it (#86).
-            if (!turn_ok) {
-                const fail_detail: []const u8 = if (turn_result) |_| "" else |e| switch (e) {
-                    error.ApiError => ctx.root.last_api_error orelse "api error",
-                    error.StreamStalled => ctx.root.last_api_error orelse "stream stalled — ended turn",
-                    error.StreamDropped => ctx.root.last_api_error orelse "stream dropped — ended turn",
-                    else => @errorName(e),
-                };
-                tj.node(.{ .kind = "turn_error", .parent = turn_id, .t = tj.elapsedMs(), .detail = fail_detail });
-            }
-            if (telemetry.g_telem) |t| t.runEvent(&fp, !std.mem.eql(u8, &fp, &prev_prompt_fp), turn_ok, turn_ms, turn_tools);
-            prev_turn_id = turn_id;
-            prev_prompt_fp = fp;
-        }
+        mainloop_trace.record(ctx.root, ctx.io, ctx.arena, base_msg, turn_id, turn_started, turn_result, post_turn_context_tokens, turn_before, &prev_turn_id, &prev_prompt_fp);
         const final_text = turn_result catch |err| switch (err) {
             error.Interrupted => {
                 // Esc: keep what streamed so far in history (as an assistant

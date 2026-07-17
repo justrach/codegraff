@@ -770,6 +770,14 @@ inspectable. The system prompt tells the agent how to locate the file, so
 "profile yourself" or "why was that slow?" makes it answer from data. `/trace`
 toggles tracing and prints the exact path.
 
+Startup also emits structured `startup_phase` receipts with cumulative and
+per-phase milliseconds. Each turn emits a `recipe_outcome` keyed by an exact
+recipe fingerprint: provider, model, effort, prompt, toolset, harness version,
+and an observational task class, alongside success, latency, model/tool calls,
+tool errors, uncached/cache-read tokens, and estimated cost. These records are
+the data plane for task-aware recipe comparison; they do not silently switch
+models or effort levels.
+
 Long tool results are stored exactly under `.graff/tool-results/`; model history
 receives a short preview and an inspectable file pointer instead. Responses
 requests are explicitly capped at 16k output tokens (4k for compaction and 64

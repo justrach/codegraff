@@ -18,6 +18,7 @@ const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const command_catalog = @import("command_catalog.zig");
 const pricing = @import("pricing.zig");
+const kimi_catalog = @import("kimi_catalog.zig");
 
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
@@ -205,6 +206,7 @@ pub fn offerProviderAuth(
         keys.values[si] = dup;
         const saved = storeKey(root.io, root.gpa, arena, root.home, pid, dup);
         keys.sources[si] = if (saved) .stored else .session;
+        if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, root.home, dup);
         try out.print("\xe2\x9c\x93 {s} key set (live{s})\n", .{ pid, if (saved) " + Keychain" else "" });
     }
 
