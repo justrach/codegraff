@@ -16,6 +16,7 @@ const Provider = provider_mod.Provider;
 const Agent = agent_mod.Agent;
 const anthropic_version = root.anthropic_version;
 const kimi_user_agent = root.kimi_user_agent;
+const kimi_catalog = @import("kimi_catalog.zig");
 
 /// Launch-scoped gate installed while the shared client's CA bundle warms in
 /// the background. Null in unit tests and standalone pre-client subcommands.
@@ -31,7 +32,7 @@ pub fn providerUserAgent(provider: Provider) std.http.Client.Request.Headers.Val
     }
     return .default;
 }
-pub fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[6]std.http.Header) []const std.http.Header {
+pub fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[12]std.http.Header) []const std.http.Header {
     var n: usize = 0;
     switch (provider.auth) {
         .x_api_key => {
@@ -48,6 +49,10 @@ pub fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[6]std.http
     if (provider.kind == .anthropic) {
         buf[n] = .{ .name = "anthropic-version", .value = anthropic_version };
         n += 1;
+    }
+    if (std.mem.eql(u8, provider.id, "kimi")) {
+        const identity = kimi_catalog.identityHeaders(buf[n..]);
+        n += identity.len;
     }
     // Codex / ChatGPT backend: identify as the codex client and carry the
     // ChatGPT account id + Responses beta opt-in.
@@ -166,7 +171,7 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
     };
     defer if (bearer.len > 0) gpa.free(bearer);
 
-    var headers_buf: [6]std.http.Header = undefined;
+    var headers_buf: [12]std.http.Header = undefined;
     const extra = providerHeaders(provider, bearer, &headers_buf);
 
     var req = try client.request(.POST, try std.Uri.parse(provider.url), .{

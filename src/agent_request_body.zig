@@ -8,7 +8,10 @@ const main_mod = @import("main.zig");
 const max_tokens = main_mod.max_tokens;
 const Agent = @import("agent.zig").Agent;
 const serde = @import("serde.zig");
+const pricing = @import("pricing.zig");
 const writeAnthropicMessages = serde.writeAnthropicMessages;
+const writeAnthropicTools = serde.writeAnthropicTools;
+const writeKimiTools = serde.writeKimiTools;
 const writeOpenAIMessageNormalized = serde.writeOpenAIMessageNormalized;
 
 pub fn responsesOutputLimit(self: *const Agent) u32 {
@@ -25,26 +28,43 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
     try s.write(self.provider.model);
     switch (self.provider.kind) {
         .anthropic => {
+            const is_kimi = std.mem.eql(u8, self.provider.id, "kimi");
             try s.objectField("max_tokens");
             try s.write(max_tokens);
             if (stream) {
                 try s.objectField("stream");
                 try s.write(true);
             }
-            // Forced tool_choice conflicts with adaptive thinking; skip
-            // thinking only when forcing.
+            // Kimi's catalog-declared Anthropic transport uses enabled
+            // thinking plus output_config.effort; Claude uses adaptive.
+            // Forced tool_choice conflicts with thinking, so skip it then.
             if (!force_tool) {
-                try s.objectField("thinking");
-                try s.print("{s}", .{"{\"type\":\"adaptive\"}"});
+                if (is_kimi) {
+                    if (pricing.kimiSupportsThinking(self.provider.model)) {
+                        try s.objectField("thinking");
+                        try s.print("{s}", .{"{\"type\":\"enabled\"}"});
+                        if (pricing.kimiThinkingEffort(self.provider.model, @tagName(self.reasoning))) |effort| {
+                            try s.objectField("output_config");
+                            try s.beginObject();
+                            try s.objectField("effort");
+                            try s.write(effort);
+                            try s.endObject();
+                        }
+                    }
+                } else {
+                    try s.objectField("thinking");
+                    try s.print("{s}", .{"{\"type\":\"adaptive\"}"});
+                }
             }
             // Prompt caching (Anthropic): a cache_control breakpoint on the
             // system block caches the whole stable prefix (system + tools).
             // Must be block-level — a top-level cache_control is invalid.
-            // Other anthropic-format providers (minimax) get a plain
-            // string, since cache_control isn't part of their API.
+            // Other anthropic-format providers (minimax) get a plain string,
+            // since cache_control isn't part of their API. Kimi's official
+            // Anthropic adapter uses the same cached text-block shape.
             try s.objectField("system");
             const cc = "{\"type\":\"ephemeral\"}";
-            if (std.mem.eql(u8, self.provider.id, "anthropic")) {
+            if (std.mem.eql(u8, self.provider.id, "anthropic") or is_kimi) {
                 try s.beginArray();
                 try s.beginObject();
                 try s.objectField("type");
@@ -60,7 +80,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
             if (tools) |t| {
                 try s.objectField("tools");
-                try s.print("{s}", .{t});
+                try writeAnthropicTools(&s, self.scratchAlloc(), t, is_kimi);
                 if (force_tool) {
                     try s.objectField("tool_choice");
                     try s.print("{s}", .{"{\"type\":\"any\"}"});
@@ -68,17 +88,18 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
             try s.objectField("messages");
             // Cache the conversation prefix too (not just system) on the real
-            // Anthropic API: a rolling cache_control breakpoint on the last
-            // message. minimax (anthropic-format, no cache_control) is excluded.
-            const cache_msgs = std.mem.eql(u8, self.provider.id, "anthropic");
-            try writeAnthropicMessages(&s, self.messages, cache_msgs);
+            // Anthropic API and Kimi's declared Anthropic transport. Kimi also
+            // normalizes all string content into Anthropic text blocks.
+            const cache_msgs = std.mem.eql(u8, self.provider.id, "anthropic") or is_kimi;
+            try writeAnthropicMessages(&s, self.messages, cache_msgs, is_kimi);
         },
         .openai => {
             // graff's MakeOpenAiCompat: OpenAI deprecated max_tokens in
             // favor of max_completion_tokens — send the new name to the
             // direct OpenAI API, and to any provider that rejected the
             // old one (cap_new, learned via the retry in request()).
-            const cap_field = if (std.mem.eql(u8, self.provider.id, "openai") or self.cap_new)
+            const is_kimi = std.mem.eql(u8, self.provider.id, "kimi");
+            const cap_field = if (std.mem.eql(u8, self.provider.id, "openai") or is_kimi or self.cap_new)
                 "max_completion_tokens"
             else
                 "max_tokens";
@@ -96,7 +117,10 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
             if (tools) |t| {
                 try s.objectField("tools");
-                try s.print("{s}", .{t});
+                if (is_kimi)
+                    try writeKimiTools(&s, self.scratchAlloc(), t)
+                else
+                    try s.print("{s}", .{t});
                 if (force_tool) {
                     try s.objectField("tool_choice");
                     try s.write("required");
@@ -112,10 +136,24 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             try s.endObject();
             for (self.messages.items) |m| try writeOpenAIMessageNormalized(&s, m);
             try s.endArray();
+            // The live Kimi catalog declares thinking support and allowed
+            // efforts per model. Native Kimi places this proprietary object at
+            // the top level (not `reasoning_effort`).
+            if (is_kimi and pricing.kimiSupportsThinking(self.provider.model)) {
+                try s.objectField("thinking");
+                try s.beginObject();
+                try s.objectField("type");
+                try s.write("enabled");
+                if (pricing.kimiThinkingEffort(self.provider.model, @tagName(self.reasoning))) |effort| {
+                    try s.objectField("effort");
+                    try s.write(effort);
+                }
+                try s.endObject();
+            }
             // Reasoning-effort hint for OpenAI-compatible providers that
             // honor it (codegraff gateway, deepseek). Mirrors the
             // Responses `reasoning.effort` set in the branch below.
-            if (self.effortApplies() and !self.effort_rejected) {
+            if (!is_kimi and self.effortApplies() and !self.effort_rejected) {
                 try s.objectField("reasoning_effort");
                 try s.write(if (self.reasoning == .ultra) "max" else @tagName(self.reasoning));
             }
@@ -182,4 +220,57 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
     }
     try s.endObject();
     return aw.toOwnedSlice();
+}
+
+test "Kimi request body follows live native or Anthropic protocol metadata" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    const rows = [_]pricing.ModelInfo{
+        .{ .provider = "kimi", .name = "native-k3", .context = 1_048_576, .protocol = .kimi, .supports_reasoning = true, .support_efforts = &.{"max"}, .default_effort = "max" },
+        .{ .provider = "kimi", .name = "anthropic-k3", .context = 1_048_576, .protocol = .anthropic, .supports_reasoning = true, .support_efforts = &.{"max"}, .default_effort = "max" },
+    };
+    try std.testing.expect(pricing.activateKimiModels(arena, &rows));
+
+    var messages = std.json.Array.init(arena);
+    var user: std.json.ObjectMap = .empty;
+    try user.put(arena, "role", .{ .string = "user" });
+    try user.put(arena, "content", .{ .string = "hello" });
+    try messages.append(.{ .object = user });
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = undefined,
+        .client = undefined,
+        .provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "native-k3", .context = 1_048_576 },
+        .messages = messages,
+        .sub = false,
+        .label = "",
+        .out = null,
+        .sys_normal = "system",
+    };
+    const openai_tools = "[{\"type\":\"function\",\"function\":{\"name\":\"ping\",\"description\":\"\",\"parameters\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"anyOf\":[{\"const\":\"one\"},{\"const\":\"two\"}]},\"other\":{\"type\":\"string\"}},\"anyOf\":[{\"required\":[\"target\"]},{\"required\":[\"other\"]}]}}}]";
+    const native = try agent.buildBody(openai_tools, false, true, true);
+    defer std.testing.allocator.free(native);
+    try std.testing.expect(std.mem.indexOf(u8, native, "\"max_completion_tokens\":16000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, native, "\"thinking\":{\"type\":\"enabled\",\"effort\":\"max\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, native, "\"role\":\"system\",\"content\":\"system\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, native, "\"reasoning_effort\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, native, "\"target\":{\"anyOf\":[{\"const\":\"one\",\"type\":\"string\"},{\"const\":\"two\",\"type\":\"string\"}]}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, native, "\"oneOf\":[{\"required\":[\"target\"],\"type\":\"object\"},{\"required\":[\"other\"],\"type\":\"object\"}]") != null);
+
+    agent.provider.kind = .anthropic;
+    agent.provider.auth = .x_api_key;
+    agent.provider.model = "anthropic-k3";
+    const anthropic_tools = "[{\"name\":\"ping\",\"description\":\"\",\"input_schema\":{\"type\":\"object\"}}]";
+    const anthropic = try agent.buildBody(anthropic_tools, false, true, true);
+    defer std.testing.allocator.free(anthropic);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"thinking\":{\"type\":\"enabled\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"output_config\":{\"effort\":\"max\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"type\":\"adaptive\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"system\":[{\"type\":\"text\",\"text\":\"system\",\"cache_control\":{\"type\":\"ephemeral\"}}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"content\":[{\"type\":\"text\",\"text\":\"hello\",\"cache_control\":{\"type\":\"ephemeral\"}}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"input_schema\":{\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\"}") != null);
 }

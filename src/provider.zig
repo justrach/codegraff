@@ -56,10 +56,10 @@ pub const provider_specs = [_]ProviderSpec{
     .{ .id = "openai", .kind = .openai, .auth = .bearer, .url = "https://api.openai.com/v1/chat/completions", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
     .{ .id = "minimax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
     .{ .id = "xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
-    // Kimi Code follows Anthropic Messages (including Anthropic tool schemas),
-    // despite exposing an OpenAI-shaped /models listing. OpenCode uses the same
-    // @ai-sdk/anthropic transport for its `kimi-for-coding` provider.
-    .{ .id = "kimi", .kind = .anthropic, .auth = .bearer, .url = "https://api.kimi.com/coding/v1/messages", .env_key = "KIMI_API_KEY", .default_model = "k3" },
+    // Kimi Code publishes the protocol per model. Missing/`kimi` is the native
+    // chat-completions wire; a live `protocol: anthropic` row is switched in
+    // Keys.build to the beta Messages endpoint + x-api-key, matching kimi-code.
+    .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = kimi_native_url, .env_key = "KIMI_API_KEY", .default_model = "k3" },
     // moonshot: the regular Kimi Open Platform (pay-as-you-go API key, not the
     // Coding plan). OpenAI-compatible; .cn host for China. kimi-latest tracks
     // the newest Kimi. Same /v1/models discovery applies if wired later.
@@ -80,6 +80,9 @@ pub const provider_specs = [_]ProviderSpec{
     // codegraff gateway key in ~/forge/.credentials.json.
     .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.6-sol" },
 };
+
+pub const kimi_native_url = "https://api.kimi.com/coding/v1/chat/completions";
+pub const kimi_anthropic_url = "https://api.kimi.com/coding/v1/messages?beta=true";
 
 /// Codex responses-endpoint override (GRAFF_CODEX_URL, parsed in main.zig at
 /// startup — localhost mocks / integration tests). Lives here because every
@@ -183,11 +186,12 @@ pub const Keys = struct {
 
     pub fn build(keys: Keys, spec: ProviderSpec, key: []const u8, model: []const u8) Provider {
         const is_codex = std.mem.eql(u8, spec.id, "codex");
+        const is_kimi_anthropic = std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic;
         return .{
             .id = spec.id,
-            .kind = spec.kind,
-            .auth = spec.auth,
-            .url = if (is_codex) g_codex_url_override orelse spec.url else spec.url,
+            .kind = if (is_kimi_anthropic) .anthropic else spec.kind,
+            .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else spec.url,
             .api_key = key,
             .model = model,
             .context = contextWindowFor(spec.id, model),
@@ -299,6 +303,30 @@ test "Keys.build: g_codex_url_override rewires only the codex endpoint" {
     try std.testing.expectEqualStrings("http://127.0.0.1:8765/responses", codex.url);
     const anthropic = try all.providerById("anthropic", "claude-opus-4-8");
     try std.testing.expectEqualStrings("https://api.anthropic.com/v1/messages", anthropic.url);
+}
+
+test "Keys.build: Kimi follows the live model protocol and auth style" {
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const rows = [_]pricing.ModelInfo{
+        .{ .provider = "kimi", .name = "native", .context = 1, .protocol = .kimi },
+        .{ .provider = "kimi", .name = "messages", .context = 1, .protocol = .anthropic },
+    };
+    try std.testing.expect(pricing.activateKimiModels(arena_state.allocator(), &rows));
+    var keys = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    for (provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "kimi")) keys.values[i] = "token";
+    }
+    const native = try keys.providerById("kimi", "native");
+    try std.testing.expectEqual(Provider.Kind.openai, native.kind);
+    try std.testing.expectEqual(Provider.Auth.bearer, native.auth);
+    try std.testing.expectEqualStrings(kimi_native_url, native.url);
+    const messages = try keys.providerById("kimi", "messages");
+    try std.testing.expectEqual(Provider.Kind.anthropic, messages.kind);
+    try std.testing.expectEqual(Provider.Auth.x_api_key, messages.auth);
+    try std.testing.expectEqualStrings(kimi_anthropic_url, messages.url);
 }
 
 test "perOutputCap (#201): window-proportional with an absolute ceiling, keep_recent-safe" {

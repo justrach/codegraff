@@ -21,8 +21,9 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
-    \\0.0.208
-    \\  • Kimi Code now uses its Anthropic Messages transport and authenticated live model catalog
+    \\0.0.209
+    \\  • Kimi Code now follows each live catalog model's native or Anthropic beta protocol, auth style, context, and thinking metadata
+    \\  • Native Kimi tool schemas are normalized to Moonshot's stricter validator; OAuth requests carry the current Kimi Code identity headers
     \\  • `--model kimi` selects K3 today and automatically follows future pure Kimi generations
     \\
     \\0.0.206

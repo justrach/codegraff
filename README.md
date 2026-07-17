@@ -131,6 +131,7 @@ Three ways, pick whichever is easiest:
 
 ```sh
 graff login                     # free codegraff key (device-code OAuth, no signup forms)
+graff login kimi                # Kimi Code subscription OAuth (device-code)
 graff key set deepseek sk-...   # store ANY provider's key (macOS Keychain, else 0600 file)
 export DEEPSEEK_API_KEY=sk-...  # or just an env var (env always wins)
 ```
@@ -139,10 +140,10 @@ Already logged into the Codex CLI? Skip this step. Your ChatGPT subscription is
 picked up automatically from `${CODEX_HOME:-~/.codex}/auth.json`. Or run
 `graff login codex`.
 
-> **Note on `login`:** there is no per-provider `login` command. `graff login`
-> is *specifically* the free codegraff key, and `graff login codex` is the
-> ChatGPT-subscription OAuth. **Every other provider** (deepseek, openai,
-> anthropic, kimi, xai, zai, minimax, xiaomi) is a key: set it with
+> **Note on `login`:** `graff login` is the free codegraff key, `graff login
+> codex` is the ChatGPT-subscription OAuth, and `graff login kimi` is Kimi
+> Code's device-code OAuth. **Every other provider** (deepseek, openai,
+> anthropic, xai, zai, minimax, xiaomi) is a key: set it with
 > `graff key set <provider> <key>` or its `<PROVIDER>_API_KEY` env var, then
 > select a model with `--model` / `/model`. See [Providers & models](#providers--models).
 
@@ -267,7 +268,7 @@ the directory, so concurrent processes never share a truncate/append cursor:
 
 ## Providers & models
 
-Six API-key providers plus a subscription login, three wire formats. A
+Direct API-key and OAuth providers across three wire formats. A
 `ProviderSpec` table (`provider_specs` in `src/main.zig`) holds each provider's
 endpoint, auth style, env var, and default model; base URLs and key names come
 from [models.dev](https://models.dev)'s `api.json` (snapshot 2026-06-10).
@@ -280,7 +281,8 @@ from [models.dev](https://models.dev)'s `api.json` (snapshot 2026-06-10).
 | `openai`    | OpenAI chat, bearer         | `OPENAI_API_KEY`     |
 | `minimax`   | Anthropic Messages, bearer  | `MINIMAX_API_KEY`    |
 | `xiaomi` (MiMo) | OpenAI chat, bearer     | `XIAOMI_API_KEY`     |
-| `kimi` / `xai` (grok) / `zai` (GLM) | Kimi: Anthropic Messages; xAI/ZAI: OpenAI chat | `KIMI_API_KEY` / `XAI_API_KEY` / `ZAI_API_KEY` (via `graff key set`) |
+| `kimi` | Live catalog-selected: native Kimi chat + bearer, or Anthropic beta Messages + x-api-key when declared | `graff login kimi` or `KIMI_API_KEY` |
+| `xai` (grok) / `zai` (GLM) | OpenAI chat, bearer | `XAI_API_KEY` / `ZAI_API_KEY` (via `graff key set`) |
 | `codex`     | Responses API, ChatGPT login | `${CODEX_HOME:-~/.codex}/auth.json` (no API key) |
 
 **Using a specific provider directly** is always the same two steps: give it
@@ -859,9 +861,13 @@ codegraff.com/cli/auth → poll → key, saved to `~/.simple-harness-codegraff.j
 the codegraff key is also auto-picked-up from graff's own
 `~/forge/.credentials.json` if present, so no env var is needed. `graff login
 codex` runs the Codex/ChatGPT OAuth browser flow (PKCE → localhost callback →
-token) and `graff login codex --refresh` refreshes it. Those built-in login
-flows write `~/.codex/auth.json`; set `CODEX_HOME` when reusing credentials from
-a custom Codex CLI home.
+token) and `graff login codex --refresh` refreshes it. `graff login kimi` runs
+Kimi Code's device flow and stores its refreshable credential separately under
+`~/.kimi/credentials/`. Kimi models, context sizes, thinking efforts, and
+native-vs-Anthropic wire protocol are refreshed from the authenticated catalog
+at startup; `--model kimi` follows the newest pure Kimi generation. Codex auth
+lives in `~/.codex/auth.json`; set `CODEX_HOME` when reusing credentials from a
+custom Codex CLI home.
 
 **SDKs.** `graff --json` exposes a structured stdio protocol (JSON requests in,
 JSONL events out) and `graff --schema` prints the machine-readable interface.

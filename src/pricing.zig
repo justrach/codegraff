@@ -137,7 +137,18 @@ pub const ModelInfo = struct {
     provider: []const u8,
     name: []const u8,
     context: u64,
+    // Kimi Code's authenticated /models catalog may choose the wire protocol
+    // per model. Missing/`kimi` uses its native OpenAI-shaped transport;
+    // `anthropic` switches only that model to beta Messages.
+    protocol: ModelProtocol = .provider_default,
+    supports_reasoning: bool = false,
+    thinking_support: ThinkingSupport = .unknown,
+    support_efforts: []const []const u8 = &.{},
+    default_effort: ?[]const u8 = null,
 };
+
+pub const ModelProtocol = enum { provider_default, kimi, anthropic };
+pub const ThinkingSupport = enum { unknown, no, both, only };
 
 // Hard cap on the usable input for ANY codex (ChatGPT-account) model. The
 // backend enforces ~272k input for every gpt-5.x regardless of what the /models
@@ -227,9 +238,9 @@ pub const model_table = [_]ModelInfo{
     // Kimi Code offline fallback. Authenticated startup replaces this slice
     // from /coding/v1/models; K3 is the current explicit generation while the
     // two compatibility aliases keep their smaller advertised window.
-    .{ .provider = "kimi", .name = "k3", .context = 1_048_576 },
-    .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144 },
-    .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144 },
+    .{ .provider = "kimi", .name = "k3", .context = 1_048_576, .protocol = .kimi, .supports_reasoning = true, .support_efforts = &.{"max"}, .default_effort = "max" },
+    .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
+    .{ .provider = "kimi", .name = "kimi-for-coding-highspeed", .context = 262_144, .protocol = .kimi, .supports_reasoning = true },
     .{ .provider = "moonshot", .name = "kimi-latest", .context = 131_072 },
     .{ .provider = "xai", .name = "grok-4.3", .context = 1_000_000 },
     .{ .provider = "xai", .name = "grok-build", .context = 256_000 },
@@ -246,6 +257,43 @@ pub var active_model_table: []const ModelInfo = model_table[0..];
 
 pub fn models() []const ModelInfo {
     return active_model_table;
+}
+
+pub fn modelInfoFor(provider_id: []const u8, model: []const u8) ?ModelInfo {
+    for (models()) |info| {
+        if (std.mem.eql(u8, info.provider, provider_id) and std.mem.eql(u8, info.name, model)) return info;
+    }
+    return null;
+}
+
+/// The official Kimi Code client treats an absent protocol exactly like
+/// `kimi`; only a server-declared `anthropic` row uses Messages beta.
+pub fn kimiProtocol(model: []const u8) ModelProtocol {
+    const info = modelInfoFor("kimi", model) orelse return .kimi;
+    return if (info.protocol == .anthropic) .anthropic else .kimi;
+}
+
+pub fn kimiSupportsThinking(model: []const u8) bool {
+    const info = modelInfoFor("kimi", model) orelse return false;
+    return switch (info.thinking_support) {
+        .no => false,
+        .both, .only => true,
+        .unknown => info.supports_reasoning,
+    };
+}
+
+/// Normalize a requested Graff effort to the server's live allow-list. Kimi
+/// Code uses the declared default (or the middle entry) when the requested
+/// value is unavailable; an empty list means boolean thinking with no effort.
+pub fn kimiThinkingEffort(model: []const u8, requested: []const u8) ?[]const u8 {
+    const info = modelInfoFor("kimi", model) orelse return null;
+    if (!kimiSupportsThinking(model) or info.support_efforts.len == 0) return null;
+    const normalized = if (std.mem.eql(u8, requested, "ultra")) "max" else requested;
+    for (info.support_efforts) |effort| if (std.mem.eql(u8, effort, normalized)) return effort;
+    if (info.default_effort) |fallback| {
+        for (info.support_efforts) |effort| if (std.mem.eql(u8, effort, fallback)) return effort;
+    }
+    return info.support_efforts[info.support_efforts.len / 2];
 }
 
 fn pureKimiGeneration(name: []const u8) ?u32 {
@@ -420,10 +468,13 @@ test "Kimi discovery preserves Codex and chooses the newest pure generation" {
     const discovered = [_]ModelInfo{
         .{ .provider = "kimi", .name = "kimi-for-coding", .context = 262_144 },
         .{ .provider = "kimi", .name = "k2p7", .context = 262_144 },
-        .{ .provider = "kimi", .name = "k3", .context = 1_048_576 },
+        .{ .provider = "kimi", .name = "k3", .context = 1_048_576, .protocol = .anthropic, .supports_reasoning = true, .support_efforts = &.{"max"}, .default_effort = "max" },
     };
     try std.testing.expect(activateKimiModels(arena_state.allocator(), &discovered));
     try std.testing.expectEqualStrings("k3", providerDefaultModel("kimi", "fallback"));
+    try std.testing.expectEqual(ModelProtocol.anthropic, kimiProtocol("k3"));
+    try std.testing.expect(kimiSupportsThinking("k3"));
+    try std.testing.expectEqualStrings("max", kimiThinkingEffort("k3", "medium").?);
     try std.testing.expect(providerModelInTable("codex", "gpt-5.6-sol"));
     try std.testing.expect(!providerModelInTable("kimi", "kimi-for-coding-highspeed"));
     const codex = [_]ModelInfo{.{ .provider = "codex", .name = "future-sol", .context = 270_000 }};

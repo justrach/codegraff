@@ -372,7 +372,7 @@ fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const u8,
 /// a per-commit git describe) — bump this only when the schema or JSONL
 /// protocol changes shape, so SDK regeneration stays byte-stable across
 /// commits.
-pub const schema_version = "0.5";
+pub const schema_version = "0.6";
 
 /// Emit the machine-readable interface description for `harness --schema`:
 /// providers, models, built-in tools (name/description/parameters), and the
@@ -405,9 +405,9 @@ fn providerLoginKind(id: []const u8) []const u8 {
     return "api_key";
 }
 
-/// Whether a (kind,id,model) combo should carry a top-level reasoning_effort
-/// hint. Effort-honoring providers: the Responses API (codex) and the
-/// OpenAI-compatible gateways we know normalize it (codegraff, deepseek).
+/// Whether a model exposes a user-selectable reasoning effort. Kimi maps the
+/// setting through its live effort list into `thinking`; the other listed
+/// providers use reasoning_effort / Responses reasoning.effort.
 /// Grok models reject the hint even through the codegraff gateway, so they are
 /// excluded up front (mirrors how opencode gates effort per-model) — the
 /// reactive drop-and-retry in request() still covers any other model that
@@ -415,6 +415,7 @@ fn providerLoginKind(id: []const u8) []const u8 {
 pub fn providerTakesEffort(kind: Provider.Kind, id: []const u8, model: []const u8) bool {
     if (std.mem.startsWith(u8, model, "grok")) return false;
     return kind == .responses or
+        (std.mem.eql(u8, id, "kimi") and pricing.kimiSupportsThinking(model)) or
         std.mem.eql(u8, id, "codegraff") or
         std.mem.eql(u8, id, "deepseek");
 }
@@ -444,6 +445,12 @@ pub fn emitSchema(w: *Io.Writer) !void {
         try s.write(providerLoginKind(p.id));
         try s.objectField("default_model");
         try s.write(p.default_model);
+        if (std.mem.eql(u8, p.id, "kimi")) {
+            try s.objectField("protocol_source");
+            try s.write("live_model_catalog");
+            try s.objectField("anthropic_auth");
+            try s.write("x_api_key");
+        }
         try s.endObject();
     }
     try s.endArray();
@@ -534,7 +541,7 @@ test "providerTakesEffort: effort-honoring providers, but never for grok models"
     try std.testing.expect(providerTakesEffort(.responses, "codex", "gpt-5.5"));
     try std.testing.expect(providerTakesEffort(.openai, "codegraff", "deepseek-v4-pro"));
     try std.testing.expect(providerTakesEffort(.openai, "deepseek", "deepseek-v4-pro"));
-    try std.testing.expect(!providerTakesEffort(.anthropic, "kimi", "k3"));
+    try std.testing.expect(providerTakesEffort(.openai, "kimi", "k3"));
     try std.testing.expect(!providerTakesEffort(.openai, "openai", "gpt-5.5")); // direct openai chat
     try std.testing.expect(!providerTakesEffort(.openai, "xai", "grok-4.3")); // xai not in the list
     // grok via the codegraff gateway must NOT get reasoning_effort (grok rejects it)

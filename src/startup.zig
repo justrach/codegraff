@@ -227,7 +227,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     // native-cache parse, and possible refresh until a model surface needs it.
     if (startupNeedsCodexCatalog(keys, model_flag, saved_model))
         model_catalog.ensure(io, gpa, arena, home, keys.get("codex") orelse "", keys.codex_account);
-    if (keys.get("kimi")) |token| _ = kimi_catalog.load(io, gpa, arena, token);
+    if (keys.get("kimi")) |token| _ = kimi_catalog.load(io, gpa, arena, home, token);
     if (home.len != 0) {
         // Apply the independent models.dev price/context overlay after routing
         // discovery. Provider-specific Codex windows remain authoritative.
@@ -477,7 +477,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
                     std.mem.eql(u8, flags.positionals.items[1], "update")),
         );
         const kimi_token = init.environ_map.get("KIMI_API_KEY") orelse oauth.loadKimiOAuth(io, gpa, arena, home, false) orelse "";
-        _ = kimi_catalog.load(io, gpa, arena, kimi_token);
+        _ = kimi_catalog.load(io, gpa, arena, home, kimi_token);
         try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]);
         return true;
     }

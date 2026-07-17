@@ -194,7 +194,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         .bearer => try std.fmt.allocPrint(gpa, "Bearer {s}", .{provider.api_key}),
     };
     defer if (bearer.len > 0) gpa.free(bearer);
-    var headers_buf: [6]std.http.Header = undefined;
+    var headers_buf: [12]std.http.Header = undefined;
     const extra = providerHeaders(provider, bearer, &headers_buf);
 
     self.md_buf.clearRetainingCapacity(); // fresh markdown state per stream
