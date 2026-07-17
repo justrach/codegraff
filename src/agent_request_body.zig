@@ -209,11 +209,13 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             try s.endArray();
             try s.objectField("store");
             try s.write(false);
-            // Bound every Responses request explicitly. The normal agent keeps
-            // the existing 16k ceiling; compaction gets a focused 4k handoff
-            // and title generation can override this to 64 tokens.
-            try s.objectField("max_output_tokens");
-            try s.write(responsesOutputLimit(self));
+            // Do NOT send a top-level `max_output_tokens` on the Codex Responses
+            // request. The chatgpt.com/backend-api/codex/responses backend rejects
+            // it ("Unsupported parameter: max_output_tokens") on gpt-5.6-* models,
+            // which hard-fails every turn (incl. the title task). openai/codex
+            // itself never puts it at the request top level — there it is only a
+            // tool argument (exec_command/wait output truncation). Output length is
+            // bounded by the model's own cap and our prompts instead.
             try s.objectField("stream");
             try s.write(true);
         },

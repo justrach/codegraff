@@ -91,7 +91,7 @@ test "buildBody (.responses): delta while WS live; full input after closeCodexWs
     try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"previous_response_id\":\"resp_live\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, delta_body, "third — not yet sent") != null);
     try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"first\"") == null); // NOT resent — already on the server
-    try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"max_output_tokens\":16000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, delta_body, "max_output_tokens") == null); // #codex: backend rejects a top-level max_output_tokens (gpt-5.6) — never emit it
 
     // Simulate closeCodexWs's effect (covered by its own unit test above)
     // without invoking it directly: it would call ws.WsClient.deinit on
@@ -112,11 +112,11 @@ test "buildBody (.responses): delta while WS live; full input after closeCodexWs
     agent.compaction_request = true;
     const compact_body = try agent.buildBody(null, false, false, false);
     defer std.testing.allocator.free(compact_body);
-    try std.testing.expect(std.mem.indexOf(u8, compact_body, "\"max_output_tokens\":4096") != null);
+    try std.testing.expect(std.mem.indexOf(u8, compact_body, "max_output_tokens") == null); // #codex: no top-level max_output_tokens even in compaction
 
     agent.compaction_request = false;
     agent.responses_output_limit = 64;
     const title_body = try agent.buildBody(null, false, false, false);
     defer std.testing.allocator.free(title_body);
-    try std.testing.expect(std.mem.indexOf(u8, title_body, "\"max_output_tokens\":64") != null);
+    try std.testing.expect(std.mem.indexOf(u8, title_body, "max_output_tokens") == null); // #codex: no top-level max_output_tokens even for the bounded title task
 }
