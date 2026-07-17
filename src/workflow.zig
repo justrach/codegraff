@@ -56,7 +56,7 @@ fn cappedPrevBody(arena: Allocator, text: []const u8) []const u8 {
 /// e.g. gate a synthesis phase on a findings sentinel so it never runs when the
 /// earlier phase turned up nothing. Empty `when` (or phase 1, no prev) → runs.
 fn gateAllows(prev: []const u8, when: []const u8) bool {
-    return when.len == 0 or std.ascii.indexOfIgnoreCase(prev, when) != null;
+    return when.len == 0 or util.indexOfIgnoreCase(prev, when) != null;
 }
 
 // ── Pipeline mode (#3) ──────────────────────────────────────────────────────
@@ -373,7 +373,7 @@ test "cappedPrevBody bounds a wide phase output, keeps head + inspect tail (#4)"
 
     // A huge result is capped: head kept, the trailing inspect: pointer kept,
     // a truncation marker added, and the full text never lands verbatim.
-    const big = ("X" ** 9000) ++ "\n[subagent sa-007-abcd · inspect: .graff/subagents/sa-007-abcd.md]";
+    const big = util.repeatBytes("X", 9000) ++ "\n[subagent sa-007-abcd · inspect: .graff/subagents/sa-007-abcd.md]";
     const capped = cappedPrevBody(a, big);
     try std.testing.expect(capped.len < big.len);
     try std.testing.expect(capped.len <= max_prev_per_task + 200); // head + tail + marker overhead

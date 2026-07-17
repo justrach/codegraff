@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Io = std.Io;
+const util = @import("util.zig");
 
 /// Per-model token pricing in USD per 1M tokens (from models.dev, snapshot
 /// 2026-06-10). Keyed by model name, provider-agnostic. Login providers
@@ -434,7 +435,7 @@ pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
     for (models()) |m| {
         var nbuf: [128]u8 = undefined;
         const nnorm = normalizeModelAlias(&nbuf, m.name);
-        if (std.ascii.indexOfIgnoreCase(m.name, query) == null and std.mem.indexOf(u8, nnorm, qnorm) == null) continue;
+        if (util.indexOfIgnoreCase(m.name, query) == null and std.mem.indexOf(u8, nnorm, qnorm) == null) continue;
         if (keys.get(m.provider) != null) return m.name;
         if (fallback == null) fallback = m.name;
     }
@@ -585,8 +586,7 @@ test "priceFor: known model priced, unknown is null" {
 test "resolveModelName exact aliases and miss" {
     const provider_mod = @import("provider.zig");
     const Keys = provider_mod.Keys;
-    const provider_specs = provider_mod.provider_specs;
-    const keys = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    const keys = Keys{ .values = @splat(null) };
     try std.testing.expect(resolveModelName(keys, "gpt-5.5") != null); // exact name
     try std.testing.expectEqualStrings("glm-5.2", resolveModelName(keys, "glm5.2").?); // natural alias
     try std.testing.expect(resolveModelName(keys, "totally-unknown-zzz") == null);

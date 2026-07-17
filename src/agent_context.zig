@@ -1,6 +1,7 @@
 //! Context-window estimation, usage accounting, and cost metering.
 
 const std = @import("std");
+const util = @import("util.zig");
 const Io = std.Io;
 const Value = std.json.Value;
 
@@ -74,7 +75,7 @@ test "fullInputEstimateTokens (#174): counts retained reasoning the chained usag
     agent.messages = msgs;
     try std.testing.expectEqual(@as(u64, 0), fullInputEstimateTokens(&agent) / 100); // empty history ≈ nothing
     // a fat encrypted-reasoning item — exactly what a WS-chained total_tokens excludes
-    const blob = "{\"type\":\"reasoning\",\"encrypted_content\":\"" ++ ("A" ** 8192) ++ "\"}";
+    const blob = "{\"type\":\"reasoning\",\"encrypted_content\":\"" ++ util.repeatBytes("A", 8192) ++ "\"}";
     try msgs.append(try std.json.parseFromSliceLeaky(Value, a, blob, .{}));
     agent.messages = msgs;
     const est = fullInputEstimateTokens(&agent);
@@ -287,7 +288,7 @@ test "rebaseContextMeter preserves hidden context while replacing local input" {
     agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100_000 };
     agent.sub = false;
     agent.strict = false;
-    agent.sys_normal = "x" ** 40_000;
+    agent.sys_normal = &util.repeatBytes("x", 40_000);
     agent.sys_strict = "";
     agent.tools_responses = "";
     agent.last_cache_read = 99;
@@ -318,7 +319,7 @@ test "context anchor counts unsampled growth and pairs provider-covered output" 
     agent.context_local_tokens = base_local;
     agent.last_usage_includes_output = false;
 
-    try agent.messages.append(try messages_mod.textMessage(a, "assistant", "x" ** 4000));
+    try agent.messages.append(try messages_mod.textMessage(a, "assistant", &util.repeatBytes("x", 4000)));
     agent.pairContextMeterWithCurrentLocal();
     try std.testing.expect(agent.effectiveContextTokens() > 50_000);
     try std.testing.expectEqual(base_local, agent.context_local_tokens);
@@ -370,7 +371,7 @@ test "inputOverCompactThreshold (#193): local estimate gates a pre-send compact"
     agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 10_000 };
     try std.testing.expect(!inputOverCompactThreshold(&agent)); // empty history → under
     // one fat tool output (~40KB serialized ≈ 10k est tokens) crosses 8k in a single append
-    const big = "{\"type\":\"function_call_output\",\"output\":\"" ++ ("x" ** 40000) ++ "\"}";
+    const big = "{\"type\":\"function_call_output\",\"output\":\"" ++ util.repeatBytes("x", 40000) ++ "\"}";
     try msgs.append(try std.json.parseFromSliceLeaky(Value, a, big, .{}));
     agent.messages = msgs;
     try std.testing.expect(inputOverCompactThreshold(&agent)); // burst → over → compact before send
@@ -384,7 +385,7 @@ test "inputOverCompactThreshold (#193): local estimate gates a pre-send compact"
     agent.context_local_tokens = 0;
     // Mutable system prompts are real input, not a fixed 8k prefill. A large
     // prompt must trip the gate even with no message history.
-    agent.sys_normal = "x" ** 40_000;
+    agent.sys_normal = &util.repeatBytes("x", 40_000);
     try std.testing.expect(inputOverCompactThreshold(&agent));
     agent.sys_normal = "";
     // unknown window (context 0) never gates

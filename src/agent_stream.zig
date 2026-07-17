@@ -375,7 +375,10 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 rsel.cancelDiscard();
                 _ = r.line catch |e| {
                     if (saw_done and readErrIsClose(e)) break :stream;
-                    if (got_body and readErrIsClose(e)) { noteDropped(self); return error.StreamDropped; } // #133
+                    if (got_body and readErrIsClose(e)) {
+                        noteDropped(self);
+                        return error.StreamDropped;
+                    } // #133
                     return e;
                 };
                 break :read;
@@ -388,7 +391,10 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
             switch (first) {
                 .line => |r| _ = r catch |e| {
                     if (saw_done and readErrIsClose(e)) break :stream; // #134/#135: post-completion close/reset is success, not a retryable flake
-                    if (got_body and readErrIsClose(e)) { noteDropped(self); return error.StreamDropped; } // #133: closed before the terminal event
+                    if (got_body and readErrIsClose(e)) {
+                        noteDropped(self);
+                        return error.StreamDropped;
+                    } // #133: closed before the terminal event
                     return e;
                 },
                 .stall => |w| {

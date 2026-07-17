@@ -51,7 +51,7 @@ pub const skills_registry = [_]SkillDef{
         .desc = "browser automation, web crawling, iOS/Android device control (github.com/justrach/kuri)",
         .bins = &.{"kuri"},
         .install = "curl -fsSL https://raw.githubusercontent.com/justrach/kuri/main/install.sh | sh",
-        .note = "The `kuri` CLI is installed (browser automation, HAR capture, iOS/Android device control) — prefer it via bash for browser and device tasks; run `kuri --help` once to see subcommands before using it. Plain page fetching is already covered: the webfetch tool uses kuri-fetch under the hood.",
+        .note = "The `kuri` CLI is installed (browser automation, HAR capture, iOS/Android device control) — prefer it via bash for browser and device tasks; run `kuri --help` once to see subcommands before using it. Plain page fetching is already covered: the webfetch tool uses kuri-fetch under the hood. WARNING: iOS/Android simulator input (`kuri ios tap`/`swipe`/`scroll`/`type`) synthesizes host-level GUI events and grabs the user's real mouse cursor and keyboard focus — never use these during background work without explicit user consent (recent kuri gates them behind `--host-input`/`KURI_ALLOW_HOST_INPUT=1`). For background/non-interactive device tasks prefer `xcrun simctl` (boot/install/launch and `io ... screenshot`) and app-level deterministic/autotest hooks.",
     },
 };
 
@@ -370,7 +370,7 @@ test "companion opt-out: {\"skills\":{\"codedbpro\":false}} disables auto-connec
         main_mod.g_companion_disabled = saved_companion;
         main_mod.g_skill_disabled[ki] = saved_kuri;
     }
-    main_mod.g_companion_disabled = [_]bool{false} ** companion_servers.len;
+    main_mod.g_companion_disabled = @splat(false);
     main_mod.g_skill_disabled[ki] = false;
 
     var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);

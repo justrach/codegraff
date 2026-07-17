@@ -20,8 +20,8 @@
 //! refreshes numbers for names the active table already routes.
 //!
 //! Cache path: ~/.codegraff/models.json, falling back to the flat dotfile
-//! ~/.codegraff-models.json when that directory doesn't exist (zig 0.16's
-//! Io.Dir has no mkdir, and the flat form matches ~/.simple-harness-*.json).
+//! ~/.codegraff-models.json when that directory doesn't exist; the flat form
+//! also matches the existing ~/.simple-harness-*.json state layout.
 
 const std = @import("std");
 const Io = std.Io;

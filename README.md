@@ -18,9 +18,9 @@
 
 <p align="center">
   <img alt="macOS · Linux" src="https://img.shields.io/badge/macOS%20·%20Linux-555">
-  <img alt="One binary, 1.7 MB" src="https://img.shields.io/badge/one%20binary-1.7%20MB-44cc11">
+  <img alt="One binary, 2.7 MB" src="https://img.shields.io/badge/one%20binary-2.7%20MB-44cc11">
   <img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-44cc11">
-  <img alt="Built in Zig 0.16" src="https://img.shields.io/badge/built%20in-Zig%200.16-f7a41d?logo=zig&logoColor=white">
+  <img alt="Built in Zig 0.17 dev" src="https://img.shields.io/badge/built%20in-Zig%200.17%20dev-f7a41d?logo=zig&logoColor=white">
 </p>
 
 ```sh
@@ -55,7 +55,7 @@ Run the same job on graff, Claude Code, and Codex (three read-only questions abo
 
 **Your AI bill is a fraction.** graff runs the same task on whatever model fits your budget. On `deepseek-v4-pro` it averaged **$0.022 per task**, against Claude Code's **$0.51** (Opus 4.8) and Codex's **$0.42** (gpt-5.5). That is roughly **20× cheaper**, because Claude Code only runs Claude and Codex only runs GPT, while graff runs deepseek, kimi, glm, grok, minimax, gpt, claude, and more. On the *same* model the token usage is comparable, so the win is the freedom to pick a cheaper one, not a token trick.
 
-**It stays out of your way.** graff is one 1.7 MB Zig binary. In these runs it used about **25 MB of memory** for focused work (more when it reads a lot of code), against Claude Code's steady **~410 MB** (Node) and Codex's **~206 MB** (Rust). Leave it running next to everything else and your laptop won't notice.
+**It stays out of your way.** graff is one 2.7 MB Zig binary. In these runs it used about **25 MB of memory** for focused work (more when it reads a lot of code), against Claude Code's steady **~410 MB** (Node) and Codex's **~206 MB** (Rust). Leave it running next to everything else and your laptop won't notice.
 
 **Scripts and CI finish in half the time.** For one-shot runs (`graff -p`, the SDKs, a CI step), graff completed a gpt-5.5 turn in **4.4 s** versus Codex's **8.9 s** on the identical ChatGPT endpoint, on every single trial. That is graff's near-instant startup beating a heavier per-call launch. In a long interactive session the startup amortizes and both settle to model latency, so this is a one-shot and automation win, not a blanket "graff is faster."
 
@@ -64,7 +64,7 @@ Run the same job on graff, Claude Code, and Codex (three read-only questions abo
 ---
 ## Under the hood
 
-<strong>the super simple harness.</strong> A minimal agentic coding harness in Zig 0.16. One <strong>1.7&nbsp;MB</strong> binary, zero dependencies. Talks to <strong>Anthropic</strong>, any <strong>OpenAI-compatible</strong> endpoint (DeepSeek, OpenAI, …), or your <strong>ChatGPT subscription</strong>.
+<strong>the super simple harness.</strong> A minimal agentic coding harness in Zig 0.17 dev. One <strong>2.7&nbsp;MB</strong> binary, zero runtime dependencies. Talks to <strong>Anthropic</strong>, any <strong>OpenAI-compatible</strong> endpoint (DeepSeek, OpenAI, …), or your <strong>ChatGPT subscription</strong>.
 
 ```
 user text ─→ POST ─→ model asks for tools?
@@ -111,7 +111,7 @@ Prefer a window over a terminal? Download the latest signed, notarized build, dr
 
 Grab the latest prebuilt release binary: macOS builds are Developer ID signed
 and Apple notarized; on any other platform the installer builds from source with
-Zig 0.16:
+Zig `0.17.0-dev.813+2153f8143` (select it with `zigup`):
 
 ```sh
 curl -fsSL https://github.com/justrach/codegraff/releases/latest/download/install.sh | sh
@@ -173,8 +173,8 @@ change is held to live in [architecture.md](architecture.md):
 
 | metric                      | measured                                        |
 | --------------------------- | ----------------------------------------------- |
-| binary                      | **1.69 MB**, zero dependencies (Zig std only)   |
-| cold start                  | **~1.4 ms**                                     |
+| binary                      | **2.74 MB**, self-contained with zero runtime dependencies |
+| cold start                  | **~1.8 ms**                                     |
 | full agentic turn           | **12 MB** peak RSS, ~4% CPU (network-bound)     |
 | 8 parallel subagents        | **+0.4 MB each** (15 MB total)                  |
 | tool output into history    | hard 128 KB cap: a 500 MB python child process never touches the harness's footprint |
@@ -183,7 +183,7 @@ Benchmarked against the Rust codegraff ([justrach/codegraff](https://github.com/
 39 MB binary, 934 crates) on the *same model through the same endpoint*,
 interleaved 3×: turn speed was a dead tie (2.94 s vs 2.93 s; the network and
 the model dominate the turn), but the Zig harness ran in **4.3× less memory**
-(11.3 MB vs 48.5 MB), starts 3.5× faster, and is 23× smaller on disk. An agent
+(11.3 MB vs 48.5 MB), starts roughly 3× faster, and is about 14× smaller on disk. An agent
 CLI rarely wins on turn speed; it can win on the cost of being there.
 
 ---
@@ -829,7 +829,8 @@ rules in `AGENTS.md` and the harness picks them up like any real coding agent.
 
 `install.sh` compiles `graff` (ReleaseFast) and installs it to `~/bin` (override
 with `HARNESS_DIR=`); it builds the current checkout, or clones the repo if run
-standalone. It detects the platform (Windows → WSL hint), checks for Zig 0.16,
+standalone. It detects the platform (Windows → WSL hint), checks for the pinned
+Zig 0.17 development build,
 and ends with a PATH check. Alternatively, run in place:
 
 ```sh
@@ -894,7 +895,7 @@ and Python's `RemoteHarness` (stdlib urllib). Endpoints are documented under the
 
 <br/>
 
-- An agent harness is I/O-bound, so you don't need an async runtime. Zig 0.16's
+- An agent harness is I/O-bound, so you don't need an async runtime. Zig 0.17's
   new `std.Io` interface gives you one anyway: `io.async(fn, args)` returns a
   typed `Future`, executed on a thread pool you configure (`std.Io.Threaded`).
   Parallel tools and parallel subagents are the same ~6 lines (see
@@ -1003,4 +1004,4 @@ licensing, contact the authors.
 
 ---
 
-<p align="center"><sub>Built in Zig 0.16 · <a href="LICENSE">AGPL-3.0 (modified)</a> · <a href="architecture.md">architecture.md</a> · <a href="uxlog.md">uxlog.md</a></sub></p>
+<p align="center"><sub>Built in Zig 0.17 dev · <a href="LICENSE">AGPL-3.0 (modified)</a> · <a href="architecture.md">architecture.md</a> · <a href="uxlog.md">uxlog.md</a></sub></p>

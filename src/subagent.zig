@@ -102,7 +102,7 @@ const FailKind = enum {
 };
 
 fn containsAnyCI(hay: []const u8, needles: []const []const u8) bool {
-    for (needles) |n| if (std.ascii.indexOfIgnoreCase(hay, n) != null) return true;
+    for (needles) |n| if (util.indexOfIgnoreCase(hay, n) != null) return true;
     return false;
 }
 
@@ -407,15 +407,15 @@ test "variantJudgePrompt: bounded, names the phase, keeps the score contract" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const big_task = "T" ** 4000;
-    const big_out = "O" ** 5000;
-    const p = try variantJudgePrompt(a, "code-review", big_task, big_out);
+    const big_task = util.repeatBytes("T", 4000);
+    const big_out = util.repeatBytes("O", 5000);
+    const p = try variantJudgePrompt(a, "code-review", &big_task, &big_out);
 
     // Names the shared phase so the judge has the tournament context.
     try std.testing.expect(std.mem.indexOf(u8, p, "\"code-review\" phase") != null);
     // Task is prefix-capped and output tail-capped — neither lands verbatim.
-    try std.testing.expect(std.mem.indexOf(u8, p, big_task) == null);
-    try std.testing.expect(std.mem.indexOf(u8, p, big_out) == null);
+    try std.testing.expect(std.mem.indexOf(u8, p, &big_task) == null);
+    try std.testing.expect(std.mem.indexOf(u8, p, &big_out) == null);
     // The `score:` contract parseEvalScore depends on is spelled out…
     try std.testing.expect(std.mem.indexOf(u8, p, "score: <N>") != null);
     // …and it round-trips: a judge tail like this parses back to the score.

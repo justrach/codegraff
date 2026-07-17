@@ -167,7 +167,7 @@ pub const Keys = struct {
     };
 
     values: [provider_specs.len]?[]const u8,
-    sources: [provider_specs.len]CredentialSource = [_]CredentialSource{.none} ** provider_specs.len,
+    sources: [provider_specs.len]CredentialSource = @splat(.none),
     codex_account: []const u8 = "", // ChatGPT account id for the codex provider
 
     pub fn get(keys: Keys, provider_id: []const u8) ?[]const u8 {
@@ -269,8 +269,8 @@ test "Provider.nearContextLimit: destructive recovery starts at 95% without over
 }
 
 test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
-    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
-    const none = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    const all = Keys{ .values = @splat("k") };
+    const none = Keys{ .values = @splat(null) };
     try std.testing.expectEqualStrings("anthropic", (try all.providerFor("claude-does-not-exist")).id);
     try std.testing.expectEqualStrings("codegraff", (try all.providerFor("totally-made-up-model")).id);
     try std.testing.expectEqualStrings("gpt-5.5", (try all.providerFor("gpt-5.5")).model);
@@ -278,7 +278,7 @@ test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
 }
 
 test "Keys.providerById: exact id wins, unknown id falls back to model routing" {
-    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    const all = Keys{ .values = @splat("k") };
     const p = try all.providerById("anthropic", "claude-opus-4-8");
     try std.testing.expectEqualStrings("anthropic", p.id);
     try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
@@ -287,16 +287,16 @@ test "Keys.providerById: exact id wins, unknown id falls back to model routing" 
 }
 
 test "Keys.defaultProvider: first keyed provider on its default model" {
-    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    const all = Keys{ .values = @splat("k") };
     const p = try all.defaultProvider();
     try std.testing.expectEqualStrings("anthropic", p.id); // anthropic leads provider_specs
     try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
-    const none = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    const none = Keys{ .values = @splat(null) };
     try std.testing.expectError(error.MissingKey, none.defaultProvider());
 }
 
 test "Keys.build: g_codex_url_override rewires only the codex endpoint" {
-    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    const all = Keys{ .values = @splat("k") };
     g_codex_url_override = "http://127.0.0.1:8765/responses";
     defer g_codex_url_override = null;
     const codex = try all.providerById("codex", "gpt-5.6-sol");
@@ -315,7 +315,7 @@ test "Keys.build: Kimi follows the live model protocol and auth style" {
         .{ .provider = "kimi", .name = "messages", .context = 1, .protocol = .anthropic },
     };
     try std.testing.expect(pricing.activateKimiModels(arena_state.allocator(), &rows));
-    var keys = Keys{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    var keys = Keys{ .values = @splat(null) };
     for (provider_specs, 0..) |spec, i| {
         if (std.mem.eql(u8, spec.id, "kimi")) keys.values[i] = "token";
     }

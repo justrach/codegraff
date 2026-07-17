@@ -1,0 +1,15 @@
+.{
+    .name = .zigzag,
+    .version = "0.1.2",
+    .fingerprint = 0xdffe16194b187c61,
+    .minimum_zig_version = "0.17.0-dev.813+2153f8143",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+        "LICENSE",
+        "VENDORED.md",
+    },
+    .dependencies = .{},
+}

@@ -1,7 +1,7 @@
 # Architecture
 
-`simple-harness` is a terminal agentic loop in ~1,250 lines of Zig 0.16 with
-zero third-party dependencies — only the Zig standard library. It talks to
+`simple-harness` is a terminal agentic loop built with Zig 0.17 dev and one
+vendored TUI dependency. It talks to
 two LLM providers, runs tools (including subagents and MCP servers) in
 parallel, and compacts its own context. This document explains how the
 pieces fit together.
@@ -233,7 +233,7 @@ external ones out with `io.async` — one `Future` per call — and awaits them
 in order. Because subagents are themselves external tool calls, three
 subagents requested in one assistant message become three `Agent.runTurn`
 loops running concurrently on the pool, each making its own HTTPS calls
-through the shared client. The concurrency primitive is Zig 0.16's structured
+through the shared client. The concurrency primitive is Zig 0.17's structured
 `std.Io`: no async runtime, no manual thread management — `io.async(fn, args)`
 returns a typed `Future` executed on `std.Io.Threaded`.
 
@@ -474,7 +474,7 @@ history is left untouched.
 ```
 ```
 
-## Performance baseline (v0.1.0 · arm64 macOS · ReleaseFast)
+## Performance baseline (v0.0.210 · arm64 macOS · stripped ReleaseFast)
 
 Measured budgets — a change that blows past one of these deserves a look
 before it merges. Re-measure with `hyperfine -N '<bin> --version'` for
@@ -482,8 +482,8 @@ startup and `/usr/bin/time -l <bin> …` for memory.
 
 | metric                                | v0.1.0          | budget        |
 | ------------------------------------- | --------------- | ------------- |
-| binary size (ReleaseFast, arm64)      | 1.69 MB         | < 3 MB        |
-| cold start (`--version` / `--schema`) | ~1.5 ms mean    | < 10 ms       |
+| binary size (ReleaseFast, arm64)      | 2.74 MB         | < 3 MB        |
+| cold start (`--version` / `--schema`) | ~1.8 ms mean    | < 10 ms       |
 | peak RSS, no network (`--schema`)     | 1.8 MB          | < 8 MB        |
 | peak RSS, full one-shot turn (`-p`)   | 12.1 MB         | < 64 MB       |
 | CPU share of a one-shot turn          | ~4% (0.11 s of 2.7 s) | network-bound |

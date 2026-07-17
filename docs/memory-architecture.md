@@ -139,7 +139,7 @@ optional `muonry` MCP upgrade): a **file-backed default that needs nothing
 installed**, and an **optional semantic backend (`engram`) auto-detected on
 PATH**. The Design abstracts the substrate, so `recall`/`note` are identical
 whether memory is a JSONL file or an engram vector index. No vector DB is ever
-*baked into* the 1.7 MB binary.
+*baked into* the 2.7 MB binary.
 
 ## 7. Evolving the memory layer (ALMA × the fleet)
 

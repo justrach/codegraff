@@ -107,7 +107,7 @@ pub fn setupWorktreeAndBanner(
                 gpa.free(r.stdout);
                 gpa.free(r.stderr);
             } else |_| {}
-            const wt_z = arena.dupeZ(u8, wt_path) catch std.process.fatal("--worktree: out of memory", .{});
+            const wt_z = arena.dupeSentinel(u8, wt_path, 0) catch std.process.fatal("--worktree: out of memory", .{});
             if (std.posix.system.chdir(wt_z.ptr) != 0)
                 std.process.fatal("--worktree '{s}': could not enter {s} (is this a git repository?)", .{ wt, wt_path });
             main_mod.g_worktree_branch = wt_branch; // non-null = auto-commit each turn to this scratch branch

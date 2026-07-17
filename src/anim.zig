@@ -134,7 +134,7 @@ pub fn saveThemeSetting(io: Io, gpa: Allocator, value: []const u8) bool {
 /// Restrained ember sweep for `ultracode`: sumi-adjacent rust through the
 /// Codegraff coral accent to warm gold, without the old full-spectrum flash.
 pub const ultracode_ember = [_][]const u8{
-    "\x1b[38;2;168;99;67m", "\x1b[38;2;179;92;73m", "\x1b[38;2;196;81;61m",
+    "\x1b[38;2;168;99;67m", "\x1b[38;2;179;92;73m",  "\x1b[38;2;196;81;61m",
     "\x1b[38;2;179;92;73m", "\x1b[38;2;155;106;53m", "\x1b[38;2;165;101;59m",
 };
 

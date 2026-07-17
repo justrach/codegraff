@@ -174,7 +174,7 @@ test "StoredKeyScope selects all, one provider, or an exact mask" {
     const one: StoredKeyScope = .{ .provider = "deepseek" };
     try std.testing.expect(one.includes(2, "deepseek"));
     try std.testing.expect(!one.includes(1, "codegraff"));
-    var mask = [_]bool{false} ** provider_specs.len;
+    var mask: [provider_specs.len]bool = @splat(false);
     mask[1] = true;
     const selected: StoredKeyScope = .{ .mask = mask };
     try std.testing.expect(selected.includes(1, "codegraff"));
@@ -194,7 +194,7 @@ fn loadStoredKeyTask(io: Io, gpa: Allocator, home: []const u8, provider_id: []co
 /// parse it once, then fill every selected slot from that single object.
 pub fn loadMissingStoredKeys(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: *provider_mod.Keys, scope: StoredKeyScope) void {
     if (builtin.os.tag == .macos) {
-        var futures = [_]?Io.Future(?[]u8){null} ** provider_specs.len;
+        var futures: [provider_specs.len]?Io.Future(?[]u8) = @splat(null);
         for (provider_specs, keys.values, 0..) |spec, value, i| {
             if (value != null or !scope.includes(i, spec.id)) continue;
             const task_args = .{ io, gpa, home, spec.id };
@@ -231,7 +231,7 @@ pub fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, ar
     const out = &ow.interface;
 
     if (args.len == 0 or std.mem.eql(u8, args[0], "list")) {
-        var stored_keys: provider_mod.Keys = .{ .values = [_]?[]const u8{null} ** provider_specs.len };
+        var stored_keys: provider_mod.Keys = .{ .values = @splat(null) };
         loadMissingStoredKeys(io, gpa, arena, home, &stored_keys, .all);
         try out.writeAll("provider        env var               stored\n");
         for (provider_specs) |spec| {
