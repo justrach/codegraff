@@ -52,17 +52,25 @@ pub fn trajectoryPath(allocator: Allocator, run_id: []const u8) Allocator.Error!
 /// truncated line plus leftover buffer bytes that the next record concatenated
 /// onto, corrupting the JSONL (issue #86: lines like `{"text":"You ar{"kind":…`).
 /// Flushing per line keeps the buffer empty between records. Best-effort.
-fn writeJsonLine(gpa: Allocator, w: *Io.Writer, identity: Identity, rec: anytype) void {
+/// Returns `false` only when the *file* write/flush fails. A failed drain can
+/// leave the shared buffered writer's offset desynced from the bytes actually on
+/// disk; the caller must then stop using the writer, otherwise the next record
+/// lands at the drifted offset and leaves a sparse NUL gap or splices onto a
+/// half-written record — the large NUL holes + prefix-less fragments seen in long
+/// sessions (issue #242). In-memory serialization failures (OOM) return `true`:
+/// they wrote nothing to disk, so the writer stays consistent and tracing
+/// continues (best-effort, per #86).
+fn writeJsonLine(gpa: Allocator, w: *Io.Writer, identity: Identity, rec: anytype) bool {
     var aw: Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };
-    s.beginObject() catch return;
-    s.objectField("run_id") catch return;
-    s.write(identity.run_id) catch return;
-    s.objectField("pid") catch return;
-    s.write(identity.pid) catch return;
-    s.objectField("session_id") catch return;
-    s.write(identity.session_id) catch return;
+    s.beginObject() catch return true;
+    s.objectField("run_id") catch return true;
+    s.write(identity.run_id) catch return true;
+    s.objectField("pid") catch return true;
+    s.write(identity.pid) catch return true;
+    s.objectField("session_id") catch return true;
+    s.write(identity.session_id) catch return true;
     const Rec = @TypeOf(rec);
     switch (@typeInfo(Rec)) {
         .@"struct" => inline for (std.meta.fields(Rec)) |field| {
@@ -71,15 +79,19 @@ fn writeJsonLine(gpa: Allocator, w: *Io.Writer, identity: Identity, rec: anytype
             if (comptime std.mem.eql(u8, field.name, "run_id") or
                 std.mem.eql(u8, field.name, "pid") or
                 std.mem.eql(u8, field.name, "session_id")) continue;
-            s.objectField(field.name) catch return;
-            s.write(@field(rec, field.name)) catch return;
+            s.objectField(field.name) catch return true;
+            s.write(@field(rec, field.name)) catch return true;
         },
         else => @compileError("trace records must be structs"),
     }
-    s.endObject() catch return;
-    aw.writer.writeByte('\n') catch return;
-    w.writeAll(aw.writer.buffered()) catch return;
-    w.flush() catch return;
+    s.endObject() catch return true;
+    aw.writer.writeByte('\n') catch return true;
+    // The record is fully built; one writeAll keeps it atomic under the caller's
+    // mutex. A failure here means the on-disk offset may be desynced — tell the
+    // caller to stop (see the doc comment).
+    w.writeAll(aw.writer.buffered()) catch return false;
+    w.flush() catch return false;
+    return true;
 }
 
 /// Session event trace: one JSON object per line in the run's unique file.
@@ -140,7 +152,9 @@ pub const Tracer = struct {
         defer self.mutex.unlock(self.io);
         const w = self.out orelse return;
         if (!self.enabled) return;
-        writeJsonLine(self.gpa, w, self.identity, event);
+        // Drop the writer on a file-write failure: a desynced offset would
+        // otherwise corrupt later records (sparse NUL holes / spliced lines, #242).
+        if (!writeJsonLine(self.gpa, w, self.identity, event)) self.out = null;
     }
 
     pub fn toggle(self: *Tracer) bool {
@@ -224,7 +238,9 @@ pub const Trajectory = struct {
 
     pub fn writeLocked(self: *Trajectory, rec: anytype) void {
         const w = self.out orelse return;
-        writeJsonLine(self.gpa, w, self.identity, rec);
+        // See Tracer.write: stop on a failed drain so a desynced offset can't
+        // corrupt later records (#242).
+        if (!writeJsonLine(self.gpa, w, self.identity, rec)) self.out = null;
     }
 
     pub fn deinit(self: *Trajectory) void {
@@ -326,8 +342,8 @@ test "writeJsonLine: one complete newline-terminated JSON record per call" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     const identity: Identity = .{ .run_id = "run-a", .pid = 42, .session_id = "session-a" };
-    writeJsonLine(std.testing.allocator, &aw.writer, identity, .{ .kind = "turn", .id = @as(u64, 7), .ok = true });
-    writeJsonLine(std.testing.allocator, &aw.writer, identity, .{ .kind = "prompt", .text = "hi" });
+    try std.testing.expect(writeJsonLine(std.testing.allocator, &aw.writer, identity, .{ .kind = "turn", .id = @as(u64, 7), .ok = true }));
+    try std.testing.expect(writeJsonLine(std.testing.allocator, &aw.writer, identity, .{ .kind = "prompt", .text = "hi" }));
     const out = aw.writer.buffered();
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "\n"));
     var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out, "\n"), '\n');
@@ -339,6 +355,22 @@ test "writeJsonLine: one complete newline-terminated JSON record per call" {
         try std.testing.expectEqual(@as(i64, 42), p.value.object.get("pid").?.integer);
         try std.testing.expectEqualStrings("session-a", p.value.object.get("session_id").?.string);
     }
+}
+
+test "writeJsonLine signals a file-write failure so the tracer can disable (#242)" {
+    // A fixed sink too small for a whole record forces the file write to fail.
+    // writeJsonLine must return false so the caller drops the writer instead of
+    // writing the next record at a desynced offset — the failure mode behind the
+    // large NUL holes and prefix-less fragments in long sessions.
+    const identity: Identity = .{ .run_id = "r", .pid = 1, .session_id = "s" };
+
+    var tiny: [8]u8 = undefined;
+    var wf = Io.Writer.fixed(&tiny);
+    try std.testing.expect(!writeJsonLine(std.testing.allocator, &wf, identity, .{ .ev = "ws", .detail = "connecting" }));
+
+    var big: [512]u8 = undefined;
+    var wb = Io.Writer.fixed(&big);
+    try std.testing.expect(writeJsonLine(std.testing.allocator, &wb, identity, .{ .ev = "ws", .detail = "connecting" }));
 }
 
 test "run-scoped paths separate traces and trajectories" {
