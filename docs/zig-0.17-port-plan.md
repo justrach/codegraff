@@ -48,7 +48,7 @@ trading away runtime speed.
 - [x] full deterministic Python/PTY integration matrix
 - [x] SDK regeneration drift check
 - [x] all six release cross-target builds
-- [ ] signed and notarized macOS release artifacts
+- [x] signed and notarized macOS release artifacts
 
 ## Rollback
 
