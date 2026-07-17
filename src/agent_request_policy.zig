@@ -6,13 +6,14 @@ const Agent = @import("agent.zig").Agent;
 const http = @import("http.zig");
 const RetryPlan = http.RetryPlan;
 const telemetry = @import("telemetry.zig");
+const util = @import("util.zig");
 
 pub fn isAuthError(msg: []const u8) bool {
-    return std.ascii.indexOfIgnoreCase(msg, "api key") != null or
-        std.ascii.indexOfIgnoreCase(msg, "unauthorized") != null or
-        std.ascii.indexOfIgnoreCase(msg, "expired") != null or
-        std.ascii.indexOfIgnoreCase(msg, "authentication") != null or
-        std.ascii.indexOfIgnoreCase(msg, "invalid_api_key") != null;
+    return util.indexOfIgnoreCase(msg, "api key") != null or
+        util.indexOfIgnoreCase(msg, "unauthorized") != null or
+        util.indexOfIgnoreCase(msg, "expired") != null or
+        util.indexOfIgnoreCase(msg, "authentication") != null or
+        util.indexOfIgnoreCase(msg, "invalid_api_key") != null;
 }
 
 test "isAuthError (#148): auth failures only, not credits/rate/other" {
@@ -128,9 +129,9 @@ const max_server_retries: usize = 3; // #opencode-parity: bounded retries for a 
 fn isTransientServerError(etype: []const u8, code: ?[]const u8, msg: []const u8) bool {
     const needles = [_][]const u8{ "overloaded", "server_error", "server_is_overloaded" };
     for (needles) |n| {
-        if (std.ascii.indexOfIgnoreCase(etype, n) != null) return true;
-        if (std.ascii.indexOfIgnoreCase(msg, n) != null) return true;
-        if (code) |c| if (std.ascii.indexOfIgnoreCase(c, n) != null) return true;
+        if (util.indexOfIgnoreCase(etype, n) != null) return true;
+        if (util.indexOfIgnoreCase(msg, n) != null) return true;
+        if (code) |c| if (util.indexOfIgnoreCase(c, n) != null) return true;
     }
     return false;
 }
@@ -168,10 +169,10 @@ test "isTransientServerError (#opencode-parity): overload/server_error retry; qu
 /// clear, unlike transient rate-limit throttling — so we fail fast + fail over rather
 /// than burning retry attempts.
 pub fn isQuotaExceeded(body: []const u8) bool {
-    return std.ascii.indexOfIgnoreCase(body, "insufficient_quota") != null or
-        std.ascii.indexOfIgnoreCase(body, "insufficient quota") != null or
-        std.ascii.indexOfIgnoreCase(body, "exceeded your current quota") != null or
-        std.ascii.indexOfIgnoreCase(body, "quota exceeded") != null;
+    return util.indexOfIgnoreCase(body, "insufficient_quota") != null or
+        util.indexOfIgnoreCase(body, "insufficient quota") != null or
+        util.indexOfIgnoreCase(body, "exceeded your current quota") != null or
+        util.indexOfIgnoreCase(body, "quota exceeded") != null;
 }
 
 test "isQuotaExceeded (#opencode-parity): billing cap detected, transient throttle not" {

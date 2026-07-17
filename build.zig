@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const lean_release = optimize == .ReleaseFast or optimize == .ReleaseSmall;
 
     // `--version` string: stamped from `git describe` at build time so every
     // binary says which commit built it; `-Dversion=X.Y.Z` overrides (the
@@ -10,7 +11,7 @@ pub fn build(b: *std.Build) void {
     const version = b.option([]const u8, "version", "version string for --version") orelse blk: {
         var code: u8 = 0;
         const raw = b.runAllowFail(
-            &.{ "git", "-C", b.build_root.path orelse ".", "describe", "--tags", "--always", "--dirty" },
+            &.{ "git", "-C", ".", "describe", "--tags", "--always", "--dirty" },
             &code,
             .ignore,
         ) catch break :blk "0.1.0-dev";
@@ -45,6 +46,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = lean_release,
         }),
     });
     exe.root_module.addOptions("build_options", opts);
@@ -84,6 +86,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/repl.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = lean_release,
         }),
     });
     repl_exe.root_module.addImport("zigzag", zigzag.module("zigzag"));

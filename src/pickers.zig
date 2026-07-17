@@ -24,6 +24,7 @@ const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const command_catalog = @import("command_catalog.zig");
 const picker_auth = @import("picker_auth.zig");
+const util = @import("util.zig");
 
 /// Case-insensitive subsequence match (fzf-style): every char of `needle`
 /// appears in `hay` in order, gaps allowed — so "gpt5.5" matches "gpt-5.5".
@@ -50,7 +51,7 @@ fn fuzzyScore(hay: []const u8, needle: []const u8) ?i32 {
     const base = if (std.mem.lastIndexOfScalar(u8, hay, '/')) |sl| sl + 1 else 0;
     if (std.ascii.startsWithIgnoreCase(hay[base..], needle) or
         std.ascii.startsWithIgnoreCase(hay, needle)) return 300_000 - len_pen;
-    if (std.ascii.indexOfIgnoreCase(hay, needle)) |p| {
+    if (util.indexOfIgnoreCase(hay, needle)) |p| {
         const pos_pen: i32 = @intCast(@min(p, 1000));
         return 200_000 - pos_pen * 10 - len_pen;
     }
@@ -431,7 +432,7 @@ const ultracode_persistent_note =
 /// every turn after /clear bannered as explicit even though the user never
 /// typed the word (#178).
 pub fn applyUltracodeSteering(arena: Allocator, msg: []const u8, raw: []const u8, persistent_enabled: bool) !UltracodeMessage {
-    const explicit = std.ascii.indexOfIgnoreCase(raw, "ultracode") != null;
+    const explicit = util.indexOfIgnoreCase(raw, "ultracode") != null;
     if (explicit) {
         return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_explicit_note }), .explicit = true };
     }

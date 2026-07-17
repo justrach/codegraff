@@ -14,6 +14,7 @@ set -euo pipefail
 REPO="${HARNESS_REPO:-https://github.com/justrach/codegraff}"
 INSTALL_DIR="${HARNESS_DIR:-$HOME/bin}"
 BIN="graff"
+ZIG_VERSION="0.17.0-dev.813+2153f8143"
 
 # Colors
 R='\033[0;31m' G='\033[0;32m' Y='\033[0;33m' C='\033[0;36m' W='\033[1;37m' D='\033[0;90m' N='\033[0m'
@@ -40,14 +41,14 @@ detect_platform() {
 
 need_zig() {
   if ! command -v zig >/dev/null 2>&1; then
-    printf "\n  ${R}error: zig not found${N} — harness needs the Zig 0.16 toolchain.\n"
-    printf "  install it: ${C}brew install zig${N}  or  ${C}https://ziglang.org/download${N}\n\n" >&2
+    printf "\n  ${R}error: zig not found${N} — harness needs Zig $ZIG_VERSION.\n"
+    printf "  install it with: ${C}zigup $ZIG_VERSION${N}\n\n" >&2
     exit 1
   fi
   local v; v="$(zig version 2>/dev/null || echo '?')"
   case "$v" in
-    0.16.*) ;; # ok
-    *) printf "  ${Y}warning:${N} zig $v detected; harness targets 0.16 — build may fail.\n" ;;
+    "$ZIG_VERSION") ;; # exact reproducible toolchain
+    *) printf "  ${Y}warning:${N} zig $v detected; harness targets $ZIG_VERSION — run 'zigup $ZIG_VERSION'.\n" ;;
   esac
   printf "  ${D}zig${N}       $v\n"
 }

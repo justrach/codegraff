@@ -203,9 +203,9 @@ const repl_glue = @import("repl_glue.zig");
 const fallback_config = @import("fallback_config.zig");
 /// Per-skill user opt-out, persisted as {"skills": {"kuri": false}} in .harness/settings.json. A disabled skill is treated as not installed
 /// anywhere — no system-prompt note, /skills shows it disabled, and webfetch never shells out to it, even when its binaries are on PATH.
-pub var g_skill_disabled = [_]bool{false} ** skills_registry.len;
+pub var g_skill_disabled: [skills_registry.len]bool = @splat(false);
 /// Same opt-out, for the metered companion MCP servers (codedb-pro) — they live in companion_servers, NOT skills_registry, so need their own flags.
-pub var g_companion_disabled = [_]bool{false} ** companion_servers.len;
+pub var g_companion_disabled: [companion_servers.len]bool = @splat(false);
 /// True when `codedb-pro probe` exits 0 (paid + usable); set once at startup after the companion connects, selecting the licensed vs conservative note.
 var g_codedbpro_licensed: bool = false;
 // Thinking animations: spinner animations + color themes (+ settings persistence) live in anim.zig; spinner consumers (Agent.spinnerTask, /animation, /theme) stay here.
@@ -592,7 +592,7 @@ test "incremental markdown streaming renders like renderMdLine" {
 
     // Fences: open/close render as labeled dim rules, body streams unprefixed.
     a.streamMarkdown("```zig\nconst x = 1;\n```\nafter\n");
-    try std.testing.expectEqualStrings("── zig " ++ ("─" ** 33) ++ "\nconst x = 1;\n" ++ ("─" ** 40) ++ "\nafter\n", aw.writer.buffered());
+    try std.testing.expectEqualStrings("── zig " ++ util.repeatBytes("─", 33) ++ "\nconst x = 1;\n" ++ util.repeatBytes("─", 40) ++ "\nafter\n", aw.writer.buffered());
     try std.testing.expect(!a.md_fence);
     aw.clearRetainingCapacity();
 
@@ -681,7 +681,7 @@ test "/bash slash command runs the bash tool and frees its gpa-allocated result"
         .label = "test",
         .out = null,
     };
-    var keys: Keys = .{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    var keys: Keys = .{ .values = @splat(null) };
     var aw: Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
     defer root.tools_used.deinit(gpa);

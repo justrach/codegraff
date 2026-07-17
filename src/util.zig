@@ -9,6 +9,31 @@ const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
 
+/// Case-insensitive ASCII substring search. Zig 0.17 removed
+/// std.ascii.indexOfIgnoreCase, so keep the small operation local.
+pub fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0) return 0;
+    if (needle.len > haystack.len) return null;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return i;
+    }
+    return null;
+}
+
+/// Comptime byte-string repetition replacing Zig's removed `**` operator.
+pub fn repeatBytes(comptime bytes: []const u8, comptime count: usize) [bytes.len * count]u8 {
+    var out: [bytes.len * count]u8 = undefined;
+    for (0..count) |i| @memcpy(out[i * bytes.len ..][0..bytes.len], bytes);
+    return out;
+}
+
+test "Zig 0.17 compatibility helpers" {
+    try std.testing.expectEqual(@as(?usize, 2), indexOfIgnoreCase("aBcDe", "CD"));
+    try std.testing.expect(indexOfIgnoreCase("abc", "z") == null);
+    try std.testing.expectEqualStrings("xyxyxy", &repeatBytes("xy", 3));
+}
+
 /// Byte offset where a secret begins in an interactive command, or null when
 /// the line is safe to render/store verbatim. `/key` with no value remains a
 /// useful history entry; `/key <provider> <secret>` is masked and forgotten.

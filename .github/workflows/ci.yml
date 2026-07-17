@@ -24,7 +24,7 @@ jobs:
           node -e "JSON.parse(require('fs').readFileSync('sdk/ts/package.json','utf8')); console.log('package.json ok')"
           node --experimental-strip-types -e "import('./sdk/ts/harness.ts').then(m => { if (!m.Harness || !m.runAgent || !m.MODELS) throw new Error('missing exports'); console.log('ts sdk ok:', m.MODELS.length, 'models'); })"
 
-  # Zig build / fmt / test + SDK drift, pinned to the 0.16.0 release the
+  # Zig build / fmt / test + SDK drift, pinned to the exact 0.17 dev build the
   # codebase targets.
   zig:
     runs-on: ubuntu-latest
@@ -34,7 +34,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0-dev.813+2153f8143
 
       - name: zig build
         run: zig build
@@ -95,7 +95,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0-dev.813+2153f8143
 
       - name: zig build
         run: zig build

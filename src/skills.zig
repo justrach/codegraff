@@ -370,7 +370,7 @@ test "companion opt-out: {\"skills\":{\"codedbpro\":false}} disables auto-connec
         main_mod.g_companion_disabled = saved_companion;
         main_mod.g_skill_disabled[ki] = saved_kuri;
     }
-    main_mod.g_companion_disabled = [_]bool{false} ** companion_servers.len;
+    main_mod.g_companion_disabled = @splat(false);
     main_mod.g_skill_disabled[ki] = false;
 
     var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);

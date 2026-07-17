@@ -1,6 +1,7 @@
 //! Focused regression tests for transactional compaction and context recovery.
 
 const std = @import("std");
+const util = @import("util.zig");
 const Value = std.json.Value;
 const Agent = @import("agent.zig").Agent;
 const textMessage = @import("messages.zig").textMessage;
@@ -239,7 +240,7 @@ test "recentContextStart keeps a clean recent suffix and never orphans tool outp
     const a = arena_state.allocator();
     var msgs = std.json.Array.init(a);
     try msgs.append(try textMessage(a, "user", "old request"));
-    try msgs.append(try textMessage(a, "assistant", "x" ** 36_000));
+    try msgs.append(try textMessage(a, "assistant", &util.repeatBytes("x", 36_000)));
     try msgs.append(try textMessage(a, "user", "recent request"));
     try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"recent result\"}", .{}));
     try msgs.append(try textMessage(a, "assistant", "recent answer"));

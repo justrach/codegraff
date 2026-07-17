@@ -243,7 +243,7 @@ pub fn readLine(
             // across the letters: poll for input with a slower 140ms timeout,
             // and on each idle tick advance the phase + redraw so the hue
             // glides at ~7fps rather than flickering.
-            while (main_mod.use_color and std.ascii.indexOfIgnoreCase(buf.items, "ultracode") != null) {
+            while (main_mod.use_color and util.indexOfIgnoreCase(buf.items, "ultracode") != null) {
                 if (inputPendingTimed(140)) break; // keystroke ready — read it below
                 input_util.g_shine_phase +%= 1;
                 redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);

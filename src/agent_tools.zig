@@ -167,7 +167,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
 test "toolPreviewText caps context and preserves an inspect pointer" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const preview = try toolPreviewText(arena_state.allocator(), "x" ** 5000, ".graff/tool-results/run-1.txt");
+    const preview = try toolPreviewText(arena_state.allocator(), &util.repeatBytes("x", 5000), ".graff/tool-results/run-1.txt");
     try std.testing.expect(preview.len <= tool_preview_chars);
     try std.testing.expect(std.mem.indexOf(u8, preview, ".graff/tool-results/run-1.txt") != null);
     try std.testing.expect(std.unicode.utf8ValidateSlice(preview));

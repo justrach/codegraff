@@ -4,13 +4,17 @@ set -euo pipefail
 repo_root=$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)
 cd "$repo_root"
 
-# Keep every checked-in Zig source below the agreed 700-line ceiling. Include
-# untracked, non-ignored files locally so a newly split module is checked before
-# it is staged; CI sees the same files once they are committed.
+# Keep every first-party Zig source below the agreed ceiling. Include untracked,
+# non-ignored files locally so a newly split module is checked before it is
+# staged; CI sees the same files once committed. Vendored sources are exempt per
+# AGENTS.md and are maintained by their upstream project.
 max_lines=699
 failed=0
 
 while IFS= read -r -d '' file; do
+  case "$file" in
+    vendor/*) continue ;;
+  esac
   lines=$(awk 'END { print NR }' "$file")
   if (( lines > max_lines )); then
     printf 'Zig source exceeds %d lines: %s (%d)\n' "$max_lines" "$file" "$lines" >&2

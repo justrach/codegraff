@@ -443,7 +443,7 @@ test "session context meter restores hidden delta and legacy sessions re-estimat
     // Model a resumed Responses history whose compact encrypted-reasoning handle
     // serializes much smaller than the authoritative server token reading.
     var msgs = std.json.Array.init(a);
-    const reasoning = "{\"type\":\"reasoning\",\"encrypted_content\":\"" ++ ("x" ** 8192) ++ "\"}";
+    const reasoning = "{\"type\":\"reasoning\",\"encrypted_content\":\"" ++ util.repeatBytes("x", 8192) ++ "\"}";
     try msgs.append(try std.json.parseFromSliceLeaky(Value, a, reasoning, .{}));
     var root: Agent = undefined;
     root.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100_000 };

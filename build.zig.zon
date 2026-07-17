@@ -1,12 +1,12 @@
 .{
     .name = .codegraff,
-    .version = "0.16.0",
+    .version = "0.17.0",
+    .minimum_zig_version = "0.17.0-dev.813+2153f8143",
     .dependencies = .{
         .zigzag = .{
-            .url = "git+https://github.com/meszmate/zigzag?ref=main#ad3c8b5d70deba10fef1a0cc33334b8666fb8400",
-            .hash = "zigzag-0.1.2-YXwYS13rEQB8S2YvMes5r0Ui3HTpM88HpLMWQ4GNBrmr",
+            .path = "vendor/zigzag",
         },
     },
-    .paths = .{""},
+    .paths = .{ "", "vendor/zigzag" },
     .fingerprint = 0x99ab87d62eef2520,
 }

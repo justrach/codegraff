@@ -22,6 +22,7 @@ const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
 const ansi = @import("ansi.zig");
 const fallback_config = @import("fallback_config.zig");
+const util = @import("util.zig");
 
 fn localProviderUrl(url: []const u8) bool {
     return std.mem.startsWith(u8, url, "http://127.0.0.1") or std.mem.startsWith(u8, url, "http://localhost") or std.mem.startsWith(u8, url, "http://[::1]");
@@ -188,7 +189,7 @@ pub fn failoverEligible(detail: []const u8) bool {
         "no credits",
         "billing limit",
     };
-    for (needles) |needle| if (std.ascii.indexOfIgnoreCase(detail, needle) != null) return true;
+    for (needles) |needle| if (util.indexOfIgnoreCase(detail, needle) != null) return true;
     return false;
 }
 
@@ -358,7 +359,7 @@ test "failoverEligible: accepts unavailable credentials/models, rejects transien
 }
 
 test "nextFallbackProvider: rotates after the failed provider and skips missing or tried credentials" {
-    const all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    const all = Keys{ .values = @splat("k") };
     const tried_codex = [_][]const u8{"codex"};
     const allow_all = blk: {
         var ids: [provider_specs.len][]const u8 = undefined;
@@ -368,7 +369,7 @@ test "nextFallbackProvider: rotates after the failed provider and skips missing 
     const wrapped = nextFallbackProvider(all, "codex", &tried_codex, &allow_all).?;
     try std.testing.expectEqualStrings("anthropic", wrapped.id);
 
-    var values = [_]?[]const u8{null} ** provider_specs.len;
+    var values: [provider_specs.len]?[]const u8 = @splat(null);
     for (provider_specs, 0..) |spec, i| {
         if (std.mem.eql(u8, spec.id, "codegraff") or std.mem.eql(u8, spec.id, "openai")) values[i] = "k";
     }
@@ -463,7 +464,7 @@ test "applyProviderInner preserves the server meter on an exact model re-selecti
 }
 
 test "set_model control resolves explicit provider/model fields" {
-    var all = Keys{ .values = [_]?[]const u8{"k"} ** provider_specs.len };
+    var all = Keys{ .values = @splat("k") };
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

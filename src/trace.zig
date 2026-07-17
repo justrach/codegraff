@@ -73,14 +73,14 @@ fn writeJsonLine(gpa: Allocator, w: *Io.Writer, identity: Identity, rec: anytype
     s.write(identity.session_id) catch return true;
     const Rec = @TypeOf(rec);
     switch (@typeInfo(Rec)) {
-        .@"struct" => inline for (std.meta.fields(Rec)) |field| {
+        .@"struct" => inline for (comptime std.meta.fieldNames(Rec)) |field_name| {
             // Identity owns these top-level names. Event-specific provenance
             // must use a more precise name such as `score_run_id`.
-            if (comptime std.mem.eql(u8, field.name, "run_id") or
-                std.mem.eql(u8, field.name, "pid") or
-                std.mem.eql(u8, field.name, "session_id")) continue;
-            s.objectField(field.name) catch return true;
-            s.write(@field(rec, field.name)) catch return true;
+            if (comptime std.mem.eql(u8, field_name, "run_id") or
+                std.mem.eql(u8, field_name, "pid") or
+                std.mem.eql(u8, field_name, "session_id")) continue;
+            s.objectField(field_name) catch return true;
+            s.write(@field(rec, field_name)) catch return true;
         },
         else => @compileError("trace records must be structs"),
     }

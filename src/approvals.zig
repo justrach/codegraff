@@ -329,8 +329,8 @@ pub fn confinedPath(path: []const u8) bool {
 
 /// Defense-in-depth on top of confinedPath: a confined path with no `..` and no
 /// absolute prefix can still escape the cwd through a symlink that points
-/// outside (e.g. `evil -> /etc`, then `read_file evil/passwd`). Zig 0.16 has no
-/// realpath, so we refuse to traverse symlinks at all: walk each path prefix and
+/// outside (e.g. `evil -> /etc`, then `read_file evil/passwd`). We refuse to
+/// traverse symlinks at all: walk each path prefix and
 /// reject if any component is a symlink (readLink succeeds). Conservative — a
 /// symlink inside the repo becomes unreadable via the file tools — but it makes
 /// confinement structural rather than lexical. bash (gated) is unaffected.

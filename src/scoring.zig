@@ -11,6 +11,7 @@ const Allocator = std.mem.Allocator;
 
 const pricing = @import("pricing.zig");
 const priceFor = pricing.priceFor;
+const util = @import("util.zig");
 
 /// Short stable fingerprint of a system prompt (first 8 bytes of SHA-256,
 /// hex): equal hashes along a trajectory edge mean the prompt didn't change.
@@ -47,7 +48,7 @@ pub fn providerClass(model: []const u8) []const u8 {
         .{ .needle = "gemini-3", .tier = "frontier" },
         .{ .needle = "sonnet", .tier = "mid" },
     };
-    for (known) |k| if (std.ascii.indexOfIgnoreCase(model, k.needle) != null) return k.tier;
+    for (known) |k| if (util.indexOfIgnoreCase(model, k.needle) != null) return k.tier;
     // Unknown family: bucket by models.dev output price ($/1M output tokens).
     if (priceFor(model)) |p| {
         if (p.out >= 10) return "frontier";

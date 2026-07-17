@@ -73,7 +73,7 @@ fn hasSelectiveStoredKeyScope(model_flag: ?[]const u8) bool {
 
 fn startupStoredKeyScope(model_flag: ?[]const u8, selective: bool) keys_cli.StoredKeyScope {
     if (!selective) return .all;
-    var mask = [_]bool{false} ** provider_mod.provider_specs.len;
+    var mask: [provider_mod.provider_specs.len]bool = @splat(false);
     for (provider_mod.provider_specs, 0..) |spec, i|
         mask[i] = storedKeyMayAffectSelection(spec.id, model_flag);
     return .{ .mask = mask };
@@ -112,7 +112,7 @@ test "Codex catalog loads at startup only when selection can observe it" {
     try std.testing.expect(exact_scope.includes(2, "deepseek"));
     try std.testing.expect(!exact_scope.includes(0, "anthropic"));
 
-    var keys: provider_mod.Keys = .{ .values = [_]?[]const u8{null} ** provider_mod.provider_specs.len };
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
     for (provider_mod.provider_specs, &keys.values) |spec, *value| {
         if (std.mem.eql(u8, spec.id, "deepseek") or std.mem.eql(u8, spec.id, "codex")) value.* = "test";
     }
