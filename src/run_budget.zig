@@ -2,13 +2,21 @@
 //! subagents, workflow retries, judges, compaction, and AI title generation.
 //! Every Agent borrows the same instance; atomics make admission safe across
 //! the Io pool without serializing network calls behind a mutex.
+//!
+//! The model-call *count* ceiling defaults to unlimited (`max_model_calls == 0`).
+//! It is a process-lifetime counter that never resets, so any finite cap wedges
+//! every later turn once a workflow fan-out hits it — and the Workflow layer
+//! already carries its own 1000-agent runaway backstop. Depth and concurrency
+//! stay bounded: those cap recursion and parallel connections, not whole turns.
 
 const std = @import("std");
 const Io = std.Io;
 
-pub const default_max_concurrency: u32 = 4;
+pub const default_max_concurrency: u32 = 8;
 pub const default_max_depth: u8 = 1;
-pub const default_max_model_calls: u64 = 256;
+/// 0 = unlimited (default). Set a positive --max-model-calls / GRAFF_MAX_MODEL_CALLS
+/// only when you deliberately want a hard ceiling on model calls for the whole run.
+pub const default_max_model_calls: u64 = 0;
 
 pub const CallKind = enum {
     root,
@@ -59,6 +67,8 @@ pub const RunBudget = struct {
     }
 
     fn reserveCall(self: *RunBudget) !u64 {
+        // 0 = unlimited: keep counting for used()/telemetry, but never refuse.
+        if (self.max_model_calls == 0) return self.model_calls.fetchAdd(1, .acq_rel) + 1;
         var current = self.model_calls.load(.acquire);
         while (current < self.max_model_calls) {
             if (self.model_calls.cmpxchgWeak(current, current + 1, .acq_rel, .acquire)) |observed| {
@@ -89,6 +99,7 @@ pub const RunBudget = struct {
     }
 
     pub fn remaining(self: *const RunBudget) u64 {
+        if (self.max_model_calls == 0) return std.math.maxInt(u64); // 0 = unlimited
         return self.max_model_calls -| self.used();
     }
 };
@@ -107,4 +118,15 @@ test "RunBudget enforces depth, call ceiling, and releases concurrency" {
     try std.testing.expectError(error.AgentDepthExceeded, budget.acquire(std.testing.io, 2, .child));
     try std.testing.expectEqual(@as(u64, 0), budget.remaining());
     try std.testing.expectEqual(@as(u32, 1), budget.peak_active.load(.acquire));
+}
+
+test "RunBudget with max_model_calls = 0 is unlimited and never exhausts" {
+    var budget: RunBudget = .{ .max_model_calls = 0, .max_concurrency = 1, .max_depth = 1 };
+    var i: u64 = 0;
+    while (i < 1000) : (i += 1) {
+        var permit = try budget.acquire(std.testing.io, 0, .root);
+        permit.release();
+    }
+    try std.testing.expectEqual(@as(u64, 1000), budget.used());
+    try std.testing.expectEqual(std.math.maxInt(u64), budget.remaining());
 }

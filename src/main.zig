@@ -61,7 +61,7 @@ pub var g_force_drop_once: bool = false; // #132/#133 test seam (GRAFF_FORCE_DRO
 pub var g_force_stall_always: bool = false; // #56 test seam (GRAFF_FORCE_STALL_ALWAYS=1): EVERY live attempt stalls, so the reconnect budget exhausts and the turn ends as a stall — exercises the give-up path offline
 pub var g_force_drop_always: bool = false; // #56 test seam (GRAFF_FORCE_DROP_ALWAYS=1): EVERY live attempt drops
 pub var max_tool_calls: ?u64 = null; // --max-tool-calls: hard per-turn root tool budget
-pub var max_model_calls: u64 = run_budget_mod.default_max_model_calls; // invocation-wide, shared by root/children/title/judges
+pub var max_model_calls: u64 = run_budget_mod.default_max_model_calls; // invocation-wide, shared by root/children/title/judges; 0 = unlimited (default)
 pub var dedupe_tool_calls = false; // --dedupe-tool-calls: reject duplicate root calls in a turn
 pub var plan_mode = false; // /plan: read-only — mutating tools are denied, the model proposes
 pub var unattended = false; // -p one-shot: no human to prompt; unapproved tool calls are denied
