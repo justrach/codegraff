@@ -91,7 +91,7 @@ test "buildBody (.responses): delta while WS live; full input after closeCodexWs
     try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"previous_response_id\":\"resp_live\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, delta_body, "third — not yet sent") != null);
     try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"first\"") == null); // NOT resent — already on the server
-    try std.testing.expect(std.mem.indexOf(u8, delta_body, "\"max_output_tokens\":16000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, delta_body, "max_output_tokens") == null); // #codex: backend rejects a top-level max_output_tokens (gpt-5.6) — never emit it
 
     // Simulate closeCodexWs's effect (covered by its own unit test above)
     // without invoking it directly: it would call ws.WsClient.deinit on
@@ -112,11 +112,62 @@ test "buildBody (.responses): delta while WS live; full input after closeCodexWs
     agent.compaction_request = true;
     const compact_body = try agent.buildBody(null, false, false, false);
     defer std.testing.allocator.free(compact_body);
-    try std.testing.expect(std.mem.indexOf(u8, compact_body, "\"max_output_tokens\":4096") != null);
+    try std.testing.expect(std.mem.indexOf(u8, compact_body, "max_output_tokens") == null); // #codex: no top-level max_output_tokens even in compaction
 
     agent.compaction_request = false;
     agent.responses_output_limit = 64;
     const title_body = try agent.buildBody(null, false, false, false);
     defer std.testing.allocator.free(title_body);
-    try std.testing.expect(std.mem.indexOf(u8, title_body, "\"max_output_tokens\":64") != null);
+    try std.testing.expect(std.mem.indexOf(u8, title_body, "max_output_tokens") == null); // #codex: no top-level max_output_tokens even for the bounded title task
+}
+
+// Regression (#codex gpt-5.6): the Codex Responses backend rejects a top-level
+// `max_output_tokens` ("Unsupported parameter: max_output_tokens"), which hard-
+// failed EVERY turn including the title task. openai/codex never sends it at the
+// request top level — there it is only a tool argument (exec_command/wait output
+// truncation). buildBody's .responses branch must never emit a top-level
+// max_output_tokens in ANY mode (normal, compaction, or the bounded title task),
+// while still carrying the required Responses fields. Pin it so a re-add fails here.
+test "buildBody (.responses): never emits a top-level max_output_tokens (codex gpt-5.6)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try textMessage(a, "user", "hello"));
+
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = a,
+        .io = undefined, // unused by buildBody
+        .client = undefined, // unused by buildBody
+        .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://x/responses", .api_key = "k", .model = "gpt-5.6-sol", .context = 270_000 },
+        .messages = msgs,
+        .sub = false,
+        .label = "",
+        .out = null,
+    };
+
+    // Normal first-turn body: no max_output_tokens, but the required fields present.
+    const body = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "max_output_tokens") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"instructions\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"input\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"store\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"stream\":true") != null);
+
+    // Compaction mode must not reintroduce it.
+    agent.compaction_request = true;
+    const compact = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(compact);
+    try std.testing.expect(std.mem.indexOf(u8, compact, "max_output_tokens") == null);
+
+    // The bounded title task must not reintroduce it either.
+    agent.compaction_request = false;
+    agent.responses_output_limit = 64;
+    const title = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(title);
+    try std.testing.expect(std.mem.indexOf(u8, title, "max_output_tokens") == null);
 }
