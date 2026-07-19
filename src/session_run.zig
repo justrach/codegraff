@@ -122,10 +122,18 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));
     if (telemetry.g_telem) |t| t.countTurn();
-    const final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| switch (err) {
-        error.FallbackConsentRequired => std.process.fatal("saved model unavailable; provider '{s}' is not allowlisted — run graff interactively, then /fallback allow {s}", .{ root.provider.id, root.provider.id }),
-        error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
-        else => |e| std.process.fatal("turn failed: {t}", .{e}),
+    const final_text = providers.runTurnWithFallback(root, keys, arena, null) catch |err| {
+        // std.process.fatal does not unwind main's defers. Mirror their normal
+        // order here: join the fleet worker, reap background jobs and pumps,
+        // then emit/upload the terminal behavioral event.
+        fleet.joinElites(io);
+        jobs.jobsReap(gpa, io);
+        if (tracer.behavior) |behavior| behavior.finish(.failed);
+        switch (err) {
+            error.FallbackConsentRequired => std.process.fatal("saved model unavailable; provider '{s}' is not allowlisted — run graff interactively, then /fallback allow {s}", .{ root.provider.id, root.provider.id }),
+            error.ApiError => std.process.fatal("{s}", .{root.last_api_error orelse "api error"}),
+            else => |e| std.process.fatal("turn failed: {t}", .{e}),
+        }
     };
     try out.print("{s}\n", .{final_text});
     try out.flush();
@@ -270,10 +278,10 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, are
 
 /// Explicit resume only: bare `graff` starts fresh, while `--resume <name>`
 /// restores that autosave target. Best-effort: a missing/keyless/corrupt
-/// file silently starts fresh. If the restored context is already as large
-/// as what would trigger live compaction, summarizes up front instead of
-/// re-billing the whole thing on the first turn. Moved out of main()
-/// verbatim (600-line goal); `root` is already stable main()-owned storage.
+/// file silently starts fresh. This load-only phase deliberately performs no
+/// model work: main emits run_started from the restored configuration before
+/// optional cold-cache compaction begins. `root` is already stable
+/// main()-owned storage.
 pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, keys: *provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
     if (!(flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag)) return;
     if (session.loadSession(root, keys, arena, root.session_name)) |_| {
@@ -288,16 +296,22 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
                 try out.print("↩ resumed {s}{s} — {d} message(s) on {s} · /new or /clear for a fresh start\n", .{ root.session_name, session.session_ext, root.messages.items.len, root.provider.model });
                 try out.flush();
             }
-            // Cold cache: loadSession rebased the saved server-only token delta
-            // onto today's complete local request estimate. Summarize up front
-            // when that conservative meter crosses compactAt. Resume itself is
-            // never permission to destructively trim on a transient/empty
-            // summary; a concrete provider overflow can still override this.
-            if (root.inputOverCompactThreshold()) {
-                root.compactOrRecover(false);
-            }
         }
     } else |_| {}
+}
+
+/// Summarize a large restored context only after behavioral lifecycle start.
+/// This preprocessing is outside a root-turn scope, so its operational API
+/// trace is explicitly attributed to turn 0 rather than to a stale user turn.
+/// Cold cache: loadSession rebased the saved server-only token delta onto
+/// today's complete local request estimate; summarize up front when that
+/// conservative meter crosses compactAt. Resume itself is never permission to
+/// destructively trim on a transient/empty summary; a concrete provider
+/// overflow can still override this.
+pub fn compactResumedSession(root: *agent_mod.Agent) void {
+    if (root.inputOverCompactThreshold()) {
+        root.compactOrRecover(false);
+    }
 }
 
 /// Final save-on-exit (also captures command-driven edits since the last

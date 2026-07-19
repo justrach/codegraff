@@ -79,7 +79,9 @@ pub fn parse(init: std.process.Init) !Flags {
         defer it.deinit();
         _ = it.next(); // argv[0]
         while (it.next()) |arg| {
-            if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
+            if (flags.positionals.items.len > 0 and
+                (std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn")))
+            {
                 try flags.positionals.append(arena, try arena.dupe(u8, arg));
             } else if (std.mem.startsWith(u8, arg, "-")) {
                 if (std.mem.eql(u8, arg, "--yolo")) {
@@ -174,7 +176,7 @@ pub fn parse(init: std.process.Init) !Flags {
     // One-shot print mode: `harness -p "prompt"` or a bare positional prompt
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     flags.is_subcommand = flags.positionals.items.len > 0 and
-        (std.mem.eql(u8, flags.positionals.items[0], "login") or std.mem.eql(u8, flags.positionals.items[0], "key") or std.mem.eql(u8, flags.positionals.items[0], "mcp") or
+        (std.mem.eql(u8, flags.positionals.items[0], "login") or std.mem.eql(u8, flags.positionals.items[0], "key") or std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or
             std.mem.eql(u8, flags.positionals.items[0], "serve") or std.mem.eql(u8, flags.positionals.items[0], "update") or std.mem.eql(u8, flags.positionals.items[0], "title") or std.mem.eql(u8, flags.positionals.items[0], "repl") or
             std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models"));
     if (!flags.is_subcommand and flags.positionals.items.len > 0) {

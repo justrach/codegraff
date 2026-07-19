@@ -63,6 +63,7 @@ pub const usage_text =
     \\  graff models [refresh]           list the live catalog; refresh Codex + models.dev metadata
     \\  graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
     \\  graff mcp                         list configured MCP servers
+    \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
     \\  graff worktree list              list the per-tab worktrees created by -w
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
@@ -110,7 +111,8 @@ pub const usage_text =
     \\.harness/settings.json.
     \\telemetry: anonymous OTLP usage stats are sent only when
     \\OTEL_EXPORTER_OTLP_ENDPOINT (or GRAFF_OTEL_ENDPOINT) is set; opt out
-    \\with --no-telemetry or GRAFF_NO_TELEMETRY=1.
+    \\with --no-telemetry or GRAFF_NO_TELEMETRY=1. GRAFF_TELEMETRY_KEY sends
+    \\an optional x-harness-key token to the configured collector.
     \\
 ;
 

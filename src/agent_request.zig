@@ -247,7 +247,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     {
                         self.last_api_error = std.fmt.allocPrint(self.arena, "rate limited (429): quota/billing cap — {s}", .{main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len]}) catch "rate limited (429): quota exceeded";
                         if (telemetry.g_telem) |t| t.errorEvent("quota", self.last_api_error orelse "quota exceeded");
-                        if (self.tracer) |tr| tr.api(self.label, self.provider.model, 0, body.len, 0, 0, 0, true);
+                        if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);
                         return error.ApiError;
                     }
                     if (attempt < max_attempts) {
@@ -295,7 +295,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     self.last_api_error = std.fmt.allocPrint(self.arena, "network error: {s} (gave up after {d} attempts)", .{ @errorName(err), max_attempts }) catch null;
                     self.last_request_write_failed = std.mem.eql(u8, @errorName(err), "WriteFailed");
                     if (telemetry.g_telem) |t| t.errorEvent("net", @errorName(err));
-                    if (self.tracer) |tr| tr.api(self.label, self.provider.model, 0, body.len, 0, 0, 0, true);
+                    if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);
                     return error.ApiError;
                 }
             }
@@ -308,14 +308,14 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
         if (self.provider.kind == .responses) {
             const r = self.parseResponses(resp_body) catch {
                 try self.say("unparseable codex response: {s}\n", .{resp_body[0..@min(resp_body.len, 600)]});
-                if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
+                if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                 return error.ApiError;
             };
             switch (r) {
                 .ok => |obj| {
                     if (!self.compaction_request) self.compact_transport_failures = 0;
                     self.recordUsageResponses(obj, body.len);
-                    if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+                    if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
                     if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                     return obj;
                 },
@@ -345,7 +345,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                         self.closeCodexWs();
                         continue :rebuild;
                     }
-                    if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
+                    if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("codex api error: {s}", .{msg});
                     return error.ApiError;
                 },
@@ -365,13 +365,13 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
                     const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
                     if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: streamed error event overflow (by code or phrasing) → trim + retry
                     if (try retryTransientServerError(self, etype, ecode, emsg, &server_retries)) continue; // #opencode-parity: transient server overload → retry
-                    if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
+                    if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                     try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
                     return error.ApiError;
                 };
                 self.recordUsage(root, body.len);
                 if (!self.compaction_request) self.compact_transport_failures = 0;
-                if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+                if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
                 if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
                 return root;
             }
@@ -392,7 +392,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             const ecode = if (eo) |e| (if (e.get("code")) |cv| (if (cv == .string) cv.string else null) else null) else null;
             if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: {"type":"error"} overflow (by code or phrasing) → trim + retry
             if (try retryTransientServerError(self, etype, ecode, emsg, &server_retries)) continue; // #opencode-parity: transient server overload → retry
-            if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
+            if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error ({s}): {s}", .{ etype, emsg });
             return error.ApiError;
         };
@@ -434,14 +434,14 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             // local provider whose message text we don't match on still recovers.
             if (recoverContextOverflow(self, msg, errorCode(root), &context_retried)) continue;
             if (try retryTransientServerError(self, "", errorCode(root), msg, &server_retries)) continue; // #opencode-parity: transient server overload → retry, not hard-fail
-            if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
+            if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
             try self.sayApiError("api error: {s}", .{msg});
             return error.ApiError;
         }
 
         self.recordUsage(root, body.len);
         if (!self.compaction_request) self.compact_transport_failures = 0;
-        if (self.tracer) |tr| tr.api(self.label, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
+        if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_finished", .provider = self.provider.id, .model = self.provider.model, .ok = true, .ms = ms });
         return root;
     }

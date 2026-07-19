@@ -69,6 +69,9 @@ const pricing = @import("pricing.zig"); // model pricing/catalog + session cost 
 const models_cache = @import("models_cache.zig"); // graff models [refresh]: models.dev metadata cache + runtime overlay
 const command_catalog = @import("command_catalog.zig");
 const util = @import("util.zig"); // shared JSON ObjectMap getters (strFieldObj/intFieldObj)
+const learn_store = @import("learn_store.zig");
+const learn_eval = @import("learn_eval.zig");
+const learn_cli = @import("learn_cli.zig");
 test {
     // build.zig's unit_tests root is main.zig only — reference every split-out module so their test blocks keep running.
     _ = pricing;
@@ -76,6 +79,9 @@ test {
     _ = ansi;
     _ = serve;
     _ = util;
+    _ = learn_store;
+    _ = learn_eval;
+    _ = learn_cli;
     _ = oauth;
     _ = anim;
     _ = approvals_mod;
@@ -142,10 +148,16 @@ const Keys = provider_mod.Keys;
 // Approvals (command/tool approval gate) + confinedPath/noSymlinkEscape live in approvals.zig; main() constructs one directly for the session.
 const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
-// Run-scoped session tracing + DGM trajectory files live in trace.zig.
+// Operational tracing, per-run behavioral traces, and run-scoped DGM
+// trajectory files live in trace.zig.
 const trace = @import("trace.zig");
 const Tracer = trace.Tracer;
+const BehaviorTrace = trace.BehaviorTrace;
+const behavior_upload = @import("behavior_upload.zig");
 const Trajectory = trace.Trajectory;
+const behavior_dir = trace.behavior_dir;
+const trajectory_path = trace.trajectory_path;
+const trace_path = trace.trace_path;
 // Agent types / fleet (MAP-Elites niches): the AgentType registry, backgrounded elite pull, /agents promote, and niche/override resolvers live in fleet.zig.
 const fleet = @import("fleet.zig");
 const joinElites = fleet.joinElites;
@@ -426,8 +438,10 @@ pub fn main(init: std.process.Init) !void {
 
     var snaps: Snapshots = .{ .gpa = gpa, .io = io };
     defer snaps.deinit();
-    // Background bash jobs die with the session: kill, await pumps, free.
-    defer jobsReap(gpa, io);
+    // Keep an early fallback for failures before behavioral tracing is set up.
+    // A later guarded defer moves normal reaping ahead of terminal upload.
+    var jobs_reaped = false;
+    defer if (!jobs_reaped) jobsReap(gpa, io);
     // Root Agent construction + post-construction config (session name, persisted thinking/goal/eval settings, session-start trace note) + the
     // backgrounded fleet-champion pull live in session_start.zig. `root`'s pointer fields (snapshots/client/tracer/approvals/registry) all reference
     // already-stable main()-owned storage passed in by address, so returning the constructed Agent by value here is safe.
@@ -439,9 +453,79 @@ pub fn main(init: std.process.Init) !void {
     root.fallback_active = stale_saved_model != null;
     root.fallback_blocked = root.fallback_active and preferred_provider != null and !std.mem.eql(u8, preferred_provider.?, root.provider.id) and !fallback_config.contains(root.fallback_allow, root.provider.id);
     boot.mark(io, "root agent");
+
+    // Behavioral tracing starts only after the root Agent exists, so utility
+    // and self-test paths do not create zero-turn behavioral runs. The local
+    // JSONL and the privacy-projected upload are independent sinks.
+    const behavior_upload_mode = behavior_upload.resolveMode(
+        init.environ_map.get("GRAFF_BEHAVIOR_UPLOAD"),
+        telem.endpoint.len > 0,
+    );
+    var behavior_uploader: behavior_upload.Upload = .{
+        .io = io,
+        .gpa = gpa,
+        .client = &client,
+        .endpoint = telem.endpoint,
+        .auth_key = telem.auth_key,
+        .install_id = telem.install_id,
+        .client_name = telem.client_name,
+        .service_version = harness_version,
+        .run_id = &scoring.g_run_id,
+        .mode = behavior_upload_mode,
+    };
+    defer behavior_uploader.deinit();
+
+    const behavior_enabled = if (init.environ_map.get("GRAFF_BEHAVIOR_TRACE")) |value|
+        !(std.ascii.eqlIgnoreCase(value, "off") or std.mem.eql(u8, value, "0") or std.ascii.eqlIgnoreCase(value, "false") or std.ascii.eqlIgnoreCase(value, "no"))
+    else
+        true;
+    var behavior_buf: [8 * 1024]u8 = undefined;
+    var behavior_open = if (behavior_enabled)
+        session_start.openBehaviorFile(io, Io.Dir.cwd(), behavior_dir, &scoring.g_run_id, &behavior_buf)
+    else
+        session_start.FileWriterOpen{ .file = null, .writer = undefined };
+    defer if (behavior_open.file) |f| f.close(io);
+    var behavior: BehaviorTrace = .{
+        .io = io,
+        .gpa = gpa,
+        .out = if (behavior_open.file != null) &behavior_open.writer.interface else null,
+        .upload = if (behavior_uploader.active()) &behavior_uploader else null,
+        .run_id = &scoring.g_run_id,
+    };
+    // Assigned once; all root/subagent callbacks already share this stable
+    // tracer. The behavior storage remains alive until main's frame unwinds.
+    tracer.behavior = &behavior;
+    defer {
+        // A clean return is not a task success verdict. Session-owned workers
+        // are joined by newer defers before this terminal event and upload.
+        behavior.finish(.closed);
+        tracer.behavior = null;
+    }
+    // Registered after the normal defer so error unwinding records `error`
+    // first; finish() is idempotent and keeps that status terminal.
+    errdefer behavior.finish(.failed);
+
+    // LIFO teardown: joinElites, then background bash pumps, then emit/send
+    // run_finished, then close/deinit the two behavioral sinks. The earlier
+    // fallback remains for failures that occur before this defer is registered.
+    defer if (!jobs_reaped) {
+        jobsReap(gpa, io);
+        jobs_reaped = true;
+    };
     defer joinElites(io); // reap if the session quits before any turn joins it
 
     session_run.saveOrResumeSession(&root, &keys, arena, flags);
+    // Load restored configuration before run_started, but defer any model-backed
+    // cold-cache compaction until after lifecycle start.
+    try session_run.restoreResumedSession(arena, out, &root, &keys, flags, json_mode, g_cwd_display);
+    const behavior_prompt_sha = scoring.promptFingerprint(root.systemPrompt());
+    behavior.startWithMetadata(harness_version, telem.start_unix_ms, .{
+        .provider = root.provider.id,
+        .model = root.provider.model,
+        .prompt_sha = &behavior_prompt_sha,
+        .effort = @tagName(root.reasoning),
+    });
+    session_run.compactResumedSession(&root);
 
     // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL agent loop — each prompt runs a full root turn (tools + MCP) via
     // replTurnCb, reusing the root agent's tool set + registry + system prompt. Self-contained — exits after.
@@ -468,7 +552,6 @@ pub fn main(init: std.process.Init) !void {
         root.tools_used.deinit(gpa);
     }
     const interactive = use_color and !json_mode; // stdout is a TTY → enable line editing
-    try session_run.restoreResumedSession(arena, out, &root, &keys, flags, json_mode, g_cwd_display);
 
     // The interactive-REPL / --json-protocol loop lives in mainloop.zig. main() keeps owning every piece of storage the loop touches (root, keys,
     // tracer/traj/telem via root, history, linebuf, stdin/stdout writers) — Ctx below only holds POINTERS into this stack frame, so nothing dangles

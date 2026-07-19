@@ -15,6 +15,7 @@ const style = &ansi.style;
 
 const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
+const learn_store = @import("learn_store.zig");
 
 const root = @import("main.zig");
 const trace = @import("trace.zig");
@@ -36,6 +37,7 @@ pub const AgentType = struct {
     prompt: []const u8,
     score: ?f64 = null, // written by the evolution driver, shown in /agents
     builtin: bool = false,
+    learned: bool = false,
 };
 
 /// Preloaded niches: deliberately orthogonal *behavioral* dimensions (what
@@ -91,6 +93,26 @@ pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const Agent
         if (personal.len > 0) loadAgentDir(io, arena, &list, personal);
     }
     loadAgentDir(io, arena, &list, agents_dir);
+    // A verified learning ref is the highest-precedence project policy. The
+    // loader fails closed: incomplete/corrupt learning state contributes no
+    // agent and can be diagnosed with `graff learn verify`.
+    if (learn_store.loadActiveAgent(io, arena)) |learned| {
+        const at: AgentType = .{
+            .name = learned.name,
+            .desc = learned.description,
+            .prompt = learned.prompt,
+            .learned = true,
+        };
+        var replaced = false;
+        for (list.items) |*existing| {
+            if (std.mem.eql(u8, existing.name, at.name)) {
+                existing.* = at;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) list.append(arena, at) catch {};
+    }
     return list.items;
 }
 
@@ -256,6 +278,18 @@ pub fn agentTypePrompt(name: []const u8) ?[]const u8 {
     return null;
 }
 
+fn applyRemoteElite(arena: Allocator, types: []AgentType, name: []const u8, prompt: []const u8) bool {
+    for (types) |*agent_type| {
+        if (!std.mem.eql(u8, agent_type.name, name)) continue;
+        // A verified local learning ref is an activation authority; best-effort
+        // remote fleet data is not. Preserve unrelated remote elite updates.
+        if (agent_type.learned) return false;
+        agent_type.prompt = arena.dupe(u8, prompt) catch return false;
+        return true;
+    }
+    return false;
+}
+
 /// Distribute (docs/hyperagents.md §9.E): fetch this tier's live fleet champions
 /// from <base>/v1/elites, emit a fleet:elite_pull signal, and override matching
 /// niches with the champion prompt so the baked builtins defer to the fleet
@@ -314,10 +348,7 @@ pub fn pullElites(io: Io, arena: Allocator, client: *std.http.Client, telem: ?*T
         const nm = if (el.object.get("niche")) |x| (if (x == .string) x.string else "") else "";
         const pt = if (el.object.get("prompt_text")) |x| (if (x == .string) x.string else "") else "";
         if (nm.len == 0 or pt.len == 0) continue;
-        for (out.items) |*t| if (std.mem.eql(u8, t.name, nm)) {
-            t.prompt = arena.dupe(u8, pt) catch t.prompt;
-            break;
-        };
+        _ = applyRemoteElite(arena, out.items, nm, pt);
     }
     if (telem) |tl| tl.fleetEvent("elite_pull", "", "", "", provider_class, eval_set_hash, n, "");
     return out.items;
@@ -387,4 +418,19 @@ test "resolveNiche: agent name is the fleet cell, inline variant is uncelled" {
     try std.testing.expectEqualStrings("", resolveNiche(obj(a, "{\"system_prompt\":\"be terse\"}")));
     // A plain task is uncelled too.
     try std.testing.expectEqualStrings("", resolveNiche(obj(a, "{\"description\":\"x\",\"prompt\":\"y\"}")));
+}
+
+test "remote elites cannot replace a verified learned policy" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var types = [_]AgentType{
+        .{ .name = "learned", .desc = "local", .prompt = "verified-local", .learned = true },
+        .{ .name = "reviewer", .desc = "remote-eligible", .prompt = "old" },
+    };
+
+    try std.testing.expect(!applyRemoteElite(arena, &types, "learned", "untrusted-remote"));
+    try std.testing.expectEqualStrings("verified-local", types[0].prompt);
+    try std.testing.expect(applyRemoteElite(arena, &types, "reviewer", "new-remote"));
+    try std.testing.expectEqualStrings("new-remote", types[1].prompt);
 }

@@ -22,13 +22,21 @@ const ToolOutput = tools_mod.ToolOutput;
 const codegraff_coauthor = "Co-Authored-By: Codegraff <blackfloofie@codegraff.com>";
 const Agent = agent_mod.Agent;
 
-const CappedRun = struct {
+pub const CappedRun = struct {
     term: std.process.Child.Term,
     stdout: []u8,
     stderr: []u8,
     stdout_truncated: bool,
     stderr_truncated: bool,
     timed_out: bool,
+};
+
+/// Optional process isolation knobs for trusted orchestrators. Supplying an
+/// explicit environment replaces (rather than augments) the parent process
+/// environment; argv is always executed directly, never through a shell.
+pub const CappedRunOptions = struct {
+    cwd: std.process.Child.Cwd = .inherit,
+    environ_map: ?*const std.process.Environ.Map = null,
 };
 
 /// Like `std.process.run`, but hitting an output cap *truncates* instead of
@@ -43,8 +51,14 @@ const CappedRun = struct {
 /// that long and reports `timed_out`. Subagents pass a real deadline since
 /// they have no Esc (#93).
 pub fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize, stderr_cap: usize, deadline_ms: u64) !CappedRun {
+    return runCappedWithOptions(gpa, io, argv, stdout_cap, stderr_cap, deadline_ms, .{});
+}
+
+pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize, stderr_cap: usize, deadline_ms: u64, options: CappedRunOptions) !CappedRun {
     var child = try std.process.spawn(io, .{
         .argv = argv,
+        .cwd = options.cwd,
+        .environ_map = options.environ_map,
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,

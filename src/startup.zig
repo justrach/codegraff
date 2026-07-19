@@ -375,6 +375,7 @@ pub fn buildSystemPrompt(
 
 const args = @import("args.zig");
 const mcp_cli = @import("mcp_cli.zig");
+const learn_cli = @import("learn_cli.zig");
 const cli = @import("cli.zig");
 const jobs = @import("jobs.zig");
 const cube = @import("cube.zig");
@@ -411,6 +412,15 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     // `harness mcp add <name> -- <command> [args...]`: write workspace MCP config.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
         try mcp_cli.mcpCommand(io, arena, flags.positionals.items[1..]);
+        return true;
+    }
+
+    // `graff learn ...`: local immutable policy learning. It runs before key
+    // resolution and normal session construction; configured child tools get
+    // only their explicitly allowlisted environment.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "learn")) {
+        learn_cli.command(io, gpa, arena, init, flags.positionals.items[1..]) catch |err|
+            std.process.fatal("learn: {s}", .{@errorName(err)});
         return true;
     }
 

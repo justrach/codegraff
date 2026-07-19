@@ -428,10 +428,89 @@ threaded through every agent and
 label); `execTool` wraps every external tool with timing. Events are structs
 serialized by `std.json.Stringify` — one line each, flushed immediately, so
 the file is always valid JSONL mid-session. Every line carries the run id,
-PID, and runtime session id. The system prompt points the agent at the file,
-which is what makes self-debugging work: the agent reads its own trace with
-`read_file` and analyzes it. `/trace` locates and toggles it, best-effort
+PID, and runtime session id. Consumers must still tolerate a malformed final
+tail after a crash or I/O failure. The system prompt points the agent at the
+file, which is what makes self-debugging work: the agent reads its own trace
+with `read_file` and analyzes it. `/trace` locates and toggles it, best-effort
 (a failed open just disables tracing).
+
+`BehaviorTrace` is a second, mutex-protected producer with two independent
+sinks: a per-run `.graff/trajectories/<run_id>.jsonl` local stream and an optional
+bounded `behavior_upload.Upload` projection. Both use flat
+`codegraff.behavior.v1` events and retain one logical source sequence. A healthy
+local file is a contiguous prefix; bounded upload admission can preserve sparse
+source sequence numbers and reports gaps with `dropped_events`. Main owns both
+sinks, joins session workers before terminal closure, emits `run_finished`, and
+then makes at most one best-effort three-second POST beside the configured OTLP
+endpoint at `/v1/behavior`. An upload claims `complete=true` only when terminal
+event admission succeeds; a dropped terminal remains `complete=false` and is
+included in `dropped_events`. Timeout cancellation synchronously joins the HTTP
+task before its payload is released. The local file itself is never uploaded.
+
+`providers.runTurnWithFallback` is the common root-turn boundary. API/tool rows
+in the operational trace carry that active turn until the provider operation
+returns; subsequent administrative or resume-preprocessing work is turn `0`.
+The upload accumulates content-free per-turn API/tool-category metrics. Local
+run-start provider/model/effort/prompt-fingerprint fields are explicitly an
+initial snapshot, not per-turn wire facts. The deterministic prompt fingerprint
+is omitted from every network projection because low-entropy prompt variants can
+be enumerated. With ordinary telemetry enabled,
+the upload defaults to a fixed-field allowlisted metadata projection, including
+only a controlled client class rather than arbitrary `HARNESS_CLIENT` content;
+only an explicit content opt-in can serialize opaque fields supplied through the
+typed commitment/misprediction APIs. Provider/tool plumbing does not infer dedicated
+prompt-text, generated-output, hidden-reasoning, source, path, argument, result,
+or task-state fields. Initial provider and model identifiers are serialized
+exactly as configured and are not inspected or value-redacted. No built-in
+production adapter invokes the typed APIs yet, and automatic
+verification, behavioral scoring, repair, and fleet consumption remain deferred.
+The pre-existing append-only `Trajectory` DGM ledger and its record shapes remain
+unchanged. See
+[`docs/behavioral-trajectories.md`](docs/behavioral-trajectories.md).
+
+## Local learning engine
+
+`startup.zig` dispatches `graff learn` before ordinary provider/key/session
+initialization. `learn_cli.zig` owns strict command parsing and orchestration;
+`learn_eval.zig` owns typed mutation/evaluation protocols, deterministic seeds,
+paired aggregation, and evidence re-verification; `learn_store.zig` owns the
+private content-addressed store and activation transaction chain. The engine is
+separate from the append-only DGM trajectory and behavioral streams: neither is
+accepted as promotion evidence.
+
+A run binds the immutable config, harness version, parent genome, parent
+generation, parent transaction, random nonce, and a recomputed trial ID.
+Candidate and pair seeds derive from that envelope. Adapter requests/responses,
+genomes, and the final run record are domain-separated immutable objects. On
+promotion the engine reloads every object, reconstructs seeds and aggregates,
+checks mutation output bytes against the mutator's declared SHA-256, and requires
+the run's complete parent ref to equal the active ref.
+
+Repetitions remain useful measurements but are clustered by unique suite case
+for the one-sided sign test and `minimum_pairs`; repeating one case cannot create
+independent statistical units. Critical regressions reject immediately,
+Bonferroni correction uses the planned candidate count, holdout gates follow the
+primary gate, and cost participates only after correctness.
+
+Configured tools, declared inputs, and suites are read and hash-checked through
+single open handles. Each invocation executes a private verified program
+snapshot; the program must remain directly executable after relocation. Exact
+declared-input arguments are rewritten to private snapshots, and the evaluator
+sees a private `suite.json`. This closes pathname-reopen TOCTOU for the bytes
+Codegraff claims to pin. It is not process isolation: interpreters, libraries,
+undeclared dependencies, subprocesses, network data, and all other files visible
+to the user's OS account remain in the trusted computing base.
+
+On POSIX, activation publishes and synchronizes an immutable transaction, then
+atomically replaces `refs/active.json` and synchronizes its directory. Windows
+uses synced file contents and atomic replacement but skips unsupported directory
+flushes, so its power-loss guarantee is weaker; learning files there inherit
+ambient workspace/temp ACLs. Loads verify the complete ancestry; rollback
+appends a new transaction rather than deleting history. `fleet.zig`
+marks the verified learned agent as local activation authority so later remote
+elite merges cannot replace that name. Full schemas, operational guidance,
+privacy implications, and the unimplemented collective-learning design are in
+[`docs/local-learning.md`](docs/local-learning.md).
 
 ## Compaction
 

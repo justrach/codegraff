@@ -37,6 +37,7 @@ const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
 const pricing = @import("pricing.zig");
 const providers = @import("providers.zig");
+const trace = @import("trace.zig");
 const serde = @import("serde.zig");
 const fallback_config = @import("fallback_config.zig");
 
@@ -50,7 +51,7 @@ pub const ReplCtx = struct {
     fallback_active: bool,
     fallback_blocked: bool,
     registry: ?*mcp.Registry,
-    tracer: ?*@import("trace.zig").Tracer,
+    tracer: ?*trace.Tracer,
     run_budget: ?*@import("run_budget.zig").RunBudget,
     sys_normal: []const u8,
     tools_anthropic: []const u8,

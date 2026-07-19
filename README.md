@@ -236,9 +236,9 @@ so the harness itself is the substrate for agent self-improvement. Each run
 writes a unique `.graff/trajectories/<run-id>.jsonl`; archive readers aggregate
 the directory, so concurrent processes never share a truncate/append cursor:
 
-- **A lineage tree, not a flat log.** Root turns form a spine (each turn's
-  parent is the previous one); every subagent and workflow task hangs off the
-  turn that spawned it. Each node carries a **fingerprint of the system prompt
+- **A lineage tree, not a flat log.** Interactive root turns form a spine (each
+  turn's parent is the previous one); every subagent and workflow task hangs off
+  the turn that spawned it. Each node carries a **fingerprint of the system prompt
   it ran with** (`prompt_sha` = first 8 bytes of SHA-256), so prompt mutations (
   `set_system_prompt` on the spine, per-child `system_prompt` overrides on the
   fan-out) show up as hash changes along edges. A lineage can be replayed or
@@ -263,6 +263,14 @@ the directory, so concurrent processes never share a truncate/append cursor:
   telemetry (opt-out) so agent-variant fitness is learned across the fleet, not
   just one laptop. `/trajectory` renders the current session's agent tree; see
   [docs/hyperagents.md](docs/hyperagents.md) for the full design.
+
+For controlled local hill-climbing, `graff learn` adds a separate
+parent → mutate → paired-evaluate → select loop with immutable evidence, manual
+promotion by default, explicitly gated automatic promotion, atomic activation,
+and rollback. It never treats trajectories or best-effort telemetry as promotion
+authority. See [Local prompt-policy learning](docs/local-learning.md), including
+the no-sandbox trust boundary and the collective-learning design that is **not**
+yet an implemented remote authority.
 
 ---
 
@@ -353,6 +361,7 @@ usage:
   graff key list                   show which providers have keys
   graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
   graff mcp                         list configured MCP servers
+  graff learn <command>             local prompt-policy learning and rollback
   graff --schema                   print the machine-readable interface (SDK codegen)
 
 flags:
@@ -372,6 +381,10 @@ value is an error, and `--help`/`--version` are handled before subcommand
 dispatch, so `graff login --help` prints usage instead of starting an OAuth
 flow. With no key configured at all, startup fails with the three quickest fixes
 spelled out rather than a bare env-var list.
+
+`graff learn help` lists the local learning commands. Configuration, adapter
+protocols, statistical gates, activation semantics, and security limitations are
+specified in [docs/local-learning.md](docs/local-learning.md).
 
 **One-shot mode** makes the harness scriptable without the SDK: `graff -p "how
 many TODOs in src/?"` runs a full agentic turn (tools included), prints only the
@@ -766,7 +779,8 @@ request/response bytes, context tokens) and every tool execution (duration,
 result size, errors, root-vs-subagent) is appended as one JSON line to the
 run's unique `.graff/traces/<run-id>.jsonl`. Every line carries the run id, PID,
 and runtime session id; concurrent processes therefore remain independently
-inspectable. The system prompt tells the agent how to locate the file, so
+inspectable. API/tool rows also carry the active behavioral `turn` when one
+exists. The system prompt tells the agent how to locate the file, so
 "profile yourself" or "why was that slow?" makes it answer from data. `/trace`
 toggles tracing and prints the exact path.
 
@@ -786,24 +800,63 @@ suffix forward verbatim. A shared atomic run budget allows at most four model
 calls concurrently and one subagent level; set the total provider-call ceiling
 with `--max-model-calls N` or the lower-precedence `GRAFF_MAX_MODEL_CALLS`.
 
+**Behavioral trajectories are a separate experimental stream.** Each initialized
+agent session can write an exclusively-created
+`.graff/trajectories/<run_id>.jsonl` with an ordered, attributable lifecycle
+envelope. The local JSONL is never uploaded wholesale. Local capture defaults on
+and is independently disabled with `GRAFF_BEHAVIOR_TRACE=off`.
+
+When ordinary telemetry is enabled, Codegraff also defaults to one bounded,
+end-of-run **field-allowlisted metadata** POST. A terminal `/v1/logs` path is
+replaced with `/v1/behavior`; otherwise `/v1/behavior` is appended to the
+configured base path. Query parameters are preserved and URL fragments omitted.
+Disable it with `GRAFF_BEHAVIOR_UPLOAD=off` or either ordinary telemetry opt-out.
+Only exact lowercase `metadata` or `content` values enable an explicit upload
+mode; `content` opts into caller-supplied adapter content and unknown/case/
+whitespace variants fail closed. `GRAFF_TELEMETRY_KEY` supplies an optional
+bounded `x-harness-key` token to both OTLP and behavioral requests. Metadata mode
+includes lifecycle/correlation fields, a controlled client class (`harness`,
+`sdk-ts`, or `sdk-py`), an initial run-start provider/model/effort snapshot,
+drop/completeness status, and content-free per-turn API/tool-category aggregates.
+The local prompt fingerprint is omitted from default metadata because a
+low-entropy prompt can be recovered by enumeration. It has no dedicated fields for prompts, generated text or hidden
+reasoning, source code or diffs, filesystem paths or repository names, tool
+arguments/results, commands, arbitrary environment values, or exact private MCP
+names. Provider and model identifiers are included exactly as configured; Phase
+1 does not inspect, classify, or redact those identifier values.
+
+Ordinary Phase 1 runs contain lifecycle events only: typed
+commitment/misprediction APIs exist, but no built-in task adapter calls them yet.
+Content mode adds fields supplied through those APIs, with no redactor or secret
+scanner; the local prompt fingerprint remains excluded. This is not yet a
+generic predict → act → verify → repair loop
+or a behavioral score source. Individual collector rows are not publicly exposed;
+public behavioral statistics are aggregate-only, and opted-in content rows expire
+after 30 days. See [the schema, privacy policy, and current
+limitations](docs/behavioral-trajectories.md).
+
 **Telemetry, pseudonymous, opt-out, on by default.** *Every* build (release,
 source, and dev) bakes in a default OTLP endpoint (pass `-Dtelemetry-endpoint=""`
-to disable it at build time), so by default a session ships best-effort OTLP/HTTP
-JSON POSTs to `<endpoint>/v1/logs` (at exit, plus mid-session batches). **Opt out
-any time** with `--no-telemetry` or `GRAFF_NO_TELEMETRY=1`; setting
-`OTEL_EXPORTER_OTLP_ENDPOINT` (or `GRAFF_OTEL_ENDPOINT`) redirects it to your own
-collector instead.
+to disable it at build time). A default session ships best-effort operational
+OTLP/HTTP JSON POSTs to `<endpoint>/v1/logs` (at exit, plus mid-session batches)
+and the metadata-only behavioral POST described above. **Opt out of both** with
+`--no-telemetry` or `GRAFF_NO_TELEMETRY=1`; setting
+`OTEL_EXPORTER_OTLP_ENDPOINT` (or `GRAFF_OTEL_ENDPOINT`) redirects both paths to
+your own collector instead. `GRAFF_BEHAVIOR_UPLOAD=off` disables only the
+behavioral POST.
 
 It's *pseudonymous, not anonymous*: records carry a **random** per-install id
 (`~/.simple-harness-install-id`, generated with `io.random`, not derived from your
-name, host, or user) plus your request IP, version, OS, and arch. The payload is
-**counts, hashes, and tool names**: a `session` summary (duration, turns, API/tool
-call+error counts, models used, workflow/ultracode counts), per-`workflow` and
-per-error records, and per-turn/score records keyed by a one-way **system-prompt
-fingerprint** + `prompt_sha` hashes with a tool-**name** sequence (e.g.
-`read_file, bash, edit_file`). It does **not** send your prompts, your code, file
-contents, file paths, or tool arguments. Your input is never an argument to any
-telemetry call.
+name, host, or user) plus your request IP, version, OS, and arch. The
+**operational OTLP payload** is counts, hashes, and tool names: a `session`
+summary (duration, turns, API/tool call+error counts, models used,
+workflow/ultracode counts), per-`workflow` and per-error records, and
+per-turn/score records keyed by a one-way **system-prompt fingerprint** +
+`prompt_sha` hashes with a tool-**name** sequence (for example,
+`read_file, bash, edit_file`). It does not send prompts, code, file contents,
+file paths, or tool arguments. The separately bounded behavioral payload follows
+the metadata/content rules above; only explicit content mode permits opaque
+adapter fields that may contain task content.
 
 **Fleet / evolution signals** (`fleet:propose|submit|elite_pull`, the
 agent-evolution fitness loop) ride the same channel and have a *separate* opt-out:
