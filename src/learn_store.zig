@@ -138,20 +138,36 @@ pub const ActiveAgent = struct {
 const dir_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700);
 const file_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
 
-/// Persist a directory entry after an atomic link or rename. Io.Dir owns the
-/// handle; the temporary Io.File view must never be closed independently.
-/// Windows directory handles do not portably support FlushFileBuffers through
-/// this API (ACCESS_DENIED is common), so Windows relies on atomic replacement
-/// plus synced file contents and has a weaker crash-durability guarantee.
+/// Persist a directory entry after an atomic link or rename. Linux Io.Dir
+/// handles may use O_PATH and cannot be passed to fsync, so reopen the same
+/// directory read-only to obtain a syncable handle. Windows directory handles
+/// do not portably support FlushFileBuffers (ACCESS_DENIED is common), so
+/// Windows relies on atomic replacement plus synced file contents and has a
+/// weaker crash-durability guarantee.
 fn syncDirectory(io: Io, dir: Io.Dir) !void {
     if (builtin.os.tag == .windows) return;
-    if (builtin.os.tag != .wasi and dir.handle == std.posix.AT.FDCWD) {
-        var actual = try dir.openDir(io, ".", .{ .iterate = true, .follow_symlinks = false });
-        defer actual.close(io);
-        return syncDirectory(io, actual);
-    }
-    const file: Io.File = .{ .handle = dir.handle, .flags = .{ .nonblocking = false } };
+    const file = try dir.openFile(io, ".", .{
+        .allow_directory = true,
+        .follow_symlinks = false,
+        .resolve_beneath = true,
+    });
+    defer file.close(io);
     try file.sync(io);
+}
+
+/// Zig 0.16 opens Windows no-follow files asynchronously but marks the returned
+/// handle as blocking. Correct the flag so reads use the APC-aware path instead
+/// of treating a legitimate STATUS_PENDING result as unreachable.
+fn openFileNoFollow(io: Io, dir: Io.Dir, path: []const u8, options: Io.Dir.OpenFileOptions) !Io.File {
+    var adjusted = options;
+    adjusted.follow_symlinks = false;
+    if (!std.fs.path.isAbsolute(path)) adjusted.resolve_beneath = true;
+    var file = if (std.fs.path.isAbsolute(path))
+        try Io.Dir.openFileAbsolute(io, path, adjusted)
+    else
+        try dir.openFile(io, path, adjusted);
+    if (builtin.os.tag == .windows) file.flags.nonblocking = true;
+    return file;
 }
 
 pub fn validId(id: []const u8) bool {
@@ -278,10 +294,7 @@ pub fn randomId(io: Io) [64]u8 {
 }
 
 pub fn readFileNoFollow(io: Io, dir: Io.Dir, path: []const u8, gpa: Allocator, max: usize) ![]u8 {
-    const file = if (std.fs.path.isAbsolute(path))
-        try Io.Dir.openFileAbsolute(io, path, .{ .follow_symlinks = false })
-    else
-        try dir.openFile(io, path, .{ .follow_symlinks = false, .resolve_beneath = true });
+    const file = try openFileNoFollow(io, dir, path, .{});
     defer file.close(io);
     const before = try file.stat(io);
     if (before.kind != .file) return error.NotRegularFile;
@@ -302,7 +315,7 @@ pub fn readPinnedFileAlloc(io: Io, gpa: Allocator, pin: PinnedFile, max: u64) ![
     const real_len = try Io.Dir.realPathFileAbsolute(io, pin.path, &real_buf);
     if (!std.mem.eql(u8, pin.path, real_buf[0..real_len])) return error.NonCanonicalPath;
 
-    const file = try Io.Dir.openFileAbsolute(io, pin.path, .{ .follow_symlinks = false });
+    const file = try openFileNoFollow(io, .cwd(), pin.path, .{});
     defer file.close(io);
     const before = try file.stat(io);
     if (before.kind != .file) return error.NotRegularFile;
@@ -326,7 +339,7 @@ pub fn hashFileNoFollow(io: Io, path: []const u8) ![64]u8 {
     const real_len = try Io.Dir.realPathFileAbsolute(io, path, &real_buf);
     if (!std.mem.eql(u8, path, real_buf[0..real_len])) return error.NonCanonicalPath;
 
-    const file = try Io.Dir.openFileAbsolute(io, path, .{ .follow_symlinks = false });
+    const file = try openFileNoFollow(io, .cwd(), path, .{});
     defer file.close(io);
     const before = try file.stat(io);
     if (before.kind != .file) return error.NotRegularFile;
@@ -762,6 +775,23 @@ test "learning config parser rejects unknown fields and unsafe auto" {
     try validateConfig(parsed.value);
     const unknown = good[0 .. good.len - 1] ++ ",\"surprise\":true}";
     try std.testing.expectError(error.UnknownField, std.json.parseFromSlice(Config, std.testing.allocator, unknown, .{}));
+}
+
+test "directory synchronization reopens path-only handles" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try syncDirectory(io, tmp.dir);
+}
+
+test "no-follow reads preserve exact bytes" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "sample", .data = "exact bytes" });
+    const bytes = try readFileNoFollow(io, tmp.dir, "sample", std.testing.allocator, 64);
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expectEqualStrings("exact bytes", bytes);
 }
 
 test "immutable learning objects and atomic active ref round trip" {
