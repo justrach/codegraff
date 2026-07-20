@@ -12,12 +12,12 @@ pub const batch_schema = "codegraff.behavior.batch.v1";
 pub const event_schema = "codegraff.behavior.v1";
 
 pub const max_events = 4096;
-const max_event_bytes = 16 * 1024;
+pub const max_event_bytes = 16 * 1024;
 // Leave enough room below the 256 KiB wire limit for worst-case u64 turn
 // counters, the batch envelope, and JSON punctuation.
 const max_event_storage = 112 * 1024;
-const max_turns = 128;
-const max_payload_bytes = 256 * 1024;
+pub const max_turns = 128;
+pub const max_payload_bytes = 256 * 1024;
 
 pub const Mode = enum {
     off,
@@ -62,7 +62,7 @@ pub fn resolveMode(value: ?[]const u8, telemetry_enabled: bool) Mode {
 /// HARNESS_CLIENT remains an unconstrained ordinary-telemetry attribute, but
 /// behavioral metadata must not serialize arbitrary environment content.
 /// Preserve only the stable SDK attribution labels that Codegraff defines.
-fn controlledClientName(raw: []const u8) []const u8 {
+pub fn controlledClientName(raw: []const u8) []const u8 {
     const allowed = [_][]const u8{ "harness", "sdk-ts", "sdk-py" };
     for (allowed) |name| if (std.mem.eql(u8, raw, name)) return name;
     return "harness";
@@ -126,7 +126,7 @@ fn toolClass(name: []const u8) ToolClass {
     return .other;
 }
 
-const max_safe_json_integer: u64 = 9_007_199_254_740_991;
+pub const max_safe_json_integer: u64 = 9_007_199_254_740_991;
 
 fn saturatingAdd(dst: *u64, value: u64) void {
     // The collector validates counters as exactly representable JSON numbers.
@@ -378,7 +378,7 @@ pub const Upload = struct {
         self.sendWithDeadline(complete, terminal_status, .fromSeconds(3));
     }
 
-    fn sendWithDeadline(self: *Upload, complete: bool, terminal_status: []const u8, deadline: Io.Duration) void {
+    pub fn sendWithDeadline(self: *Upload, complete: bool, terminal_status: []const u8, deadline: Io.Duration) void {
         if (!self.active() or self.sent or self.events.items.len == 0) return;
         self.sent = true;
         self.last_send_result = .failed;
@@ -419,7 +419,7 @@ fn writeJsonValue(w: *Io.Writer, value: anytype) !void {
     try s.write(value);
 }
 
-fn behaviorUrl(gpa: Allocator, endpoint: []const u8) !?[]u8 {
+pub fn behaviorUrl(gpa: Allocator, endpoint: []const u8) !?[]u8 {
     // Derive from the URL path, not from its query. This preserves custom
     // collector query parameters without appending a path inside their value.
     const fragment_at = std.mem.indexOfScalar(u8, endpoint, '#') orelse endpoint.len;
@@ -433,7 +433,7 @@ fn behaviorUrl(gpa: Allocator, endpoint: []const u8) !?[]u8 {
     return try std.fmt.allocPrint(gpa, "{s}/v1/behavior{s}", .{ base, query });
 }
 
-fn postBatch(client: *std.http.Client, url: []const u8, payload: []const u8, auth_key: []const u8) bool {
+pub fn postBatch(client: *std.http.Client, url: []const u8, payload: []const u8, auth_key: []const u8) bool {
     const auth_header = [_]std.http.Header{.{ .name = "x-harness-key", .value = auth_key }};
     const extra_headers: []const std.http.Header = if (auth_key.len > 0) &auth_header else &.{};
     const response = client.fetch(.{
@@ -451,7 +451,7 @@ fn uploadDeadline(io: Io, deadline: Io.Duration) void {
     io.sleep(deadline, .awake) catch {};
 }
 
-fn stallBehaviorCollector(io: Io, server: *Io.net.Server, accepted: *std.atomic.Value(bool)) void {
+pub fn stallBehaviorCollector(io: Io, server: *Io.net.Server, accepted: *std.atomic.Value(bool)) void {
     const stream = server.accept(io) catch return;
     defer stream.close(io);
     accepted.store(true, .release);
@@ -460,7 +460,7 @@ fn stallBehaviorCollector(io: Io, server: *Io.net.Server, accepted: *std.atomic.
     io.sleep(.fromSeconds(5), .awake) catch {};
 }
 
-fn answerBehaviorCollector(
+pub fn answerBehaviorCollector(
     io: Io,
     server: *Io.net.Server,
     expected_key: []const u8,
@@ -488,305 +488,6 @@ fn answerBehaviorCollector(
     writer.interface.flush() catch {};
 }
 
-test "behavior upload mode follows telemetry consent and fails closed" {
-    try std.testing.expectEqual(Mode.off, resolveMode(null, false));
-    try std.testing.expectEqual(Mode.off, resolveMode("content", false));
-    try std.testing.expectEqual(Mode.metadata, resolveMode(null, true));
-    try std.testing.expectEqual(Mode.metadata, resolveMode("metadata", true));
-    try std.testing.expectEqual(Mode.off, resolveMode("METADATA", true));
-    try std.testing.expectEqual(Mode.off, resolveMode("metadata ", true));
-    try std.testing.expectEqual(Mode.off, resolveMode("off", true));
-    try std.testing.expectEqual(Mode.off, resolveMode("0", true));
-    try std.testing.expectEqual(Mode.content, resolveMode("content", true));
-    try std.testing.expectEqual(Mode.off, resolveMode("CONTENT", true));
-    try std.testing.expectEqual(Mode.off, resolveMode("Content", true));
-    try std.testing.expectEqual(Mode.off, resolveMode("content ", true));
-    try std.testing.expectEqual(Mode.off, resolveMode("sanitized", true));
-    try std.testing.expectEqual(Mode.off, resolveMode("full", true));
-    try std.testing.expectEqual(Mode.off, resolveMode("typo", true));
-}
-
-test "behavior client attribution never serializes arbitrary HARNESS_CLIENT content" {
-    const gpa = std.testing.allocator;
-    var upload: Upload = .{
-        .io = std.testing.io,
-        .gpa = gpa,
-        .client = null,
-        .endpoint = "https://collector.example/v1/logs",
-        .install_id = @splat('a'),
-        .client_name = "HARNESS_CLIENT_PRIVATE_SENTINEL",
-        .service_version = "test",
-        .run_id = "0123456789abcdef",
-        .mode = .metadata,
-    };
-    defer upload.deinit();
-
-    const metadata_payload = try upload.buildPayload(true, "closed");
-    defer gpa.free(metadata_payload);
-    try std.testing.expect(std.mem.indexOf(u8, metadata_payload, "HARNESS_CLIENT_PRIVATE_SENTINEL") == null);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, metadata_payload, .{});
-    defer parsed.deinit();
-    try std.testing.expectEqualStrings("harness", parsed.value.object.get("client_name").?.string);
-
-    upload.mode = .content;
-    const content_payload = try upload.buildPayload(true, "closed");
-    defer gpa.free(content_payload);
-    try std.testing.expect(std.mem.indexOf(u8, content_payload, "HARNESS_CLIENT_PRIVATE_SENTINEL") == null);
-
-    try std.testing.expectEqualStrings("sdk-ts", controlledClientName("sdk-ts"));
-    try std.testing.expectEqualStrings("sdk-py", controlledClientName("sdk-py"));
-}
-
-test "upload deadline synchronously cancels and joins a stalled POST" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var address = try Io.net.IpAddress.parseLiteral("127.0.0.1:0");
-    var server = try Io.net.IpAddress.listen(&address, io, .{});
-    defer server.deinit(io);
-
-    var accepted: std.atomic.Value(bool) = .init(false);
-    var server_group: Io.Group = .init;
-    defer server_group.cancel(io);
-    try server_group.concurrent(io, stallBehaviorCollector, .{ io, &server, &accepted });
-
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var endpoint_buf: [64]u8 = undefined;
-    const endpoint = try std.fmt.bufPrint(&endpoint_buf, "http://127.0.0.1:{d}", .{server.socket.address.getPort()});
-    var upload: Upload = .{
-        .io = io,
-        .gpa = gpa,
-        .client = &client,
-        .endpoint = endpoint,
-        .install_id = @splat('a'),
-        .client_name = "harness",
-        .service_version = "test",
-        .run_id = "0123456789abcdef",
-        .mode = .metadata,
-    };
-    defer upload.deinit();
-    try std.testing.expect(upload.appendEvent("run_started", 1, 1.0, .{}, .{}));
-
-    const started = Io.Timestamp.now(io, .awake).nanoseconds;
-    upload.sendWithDeadline(true, "closed", .fromMilliseconds(250));
-    const elapsed = Io.Timestamp.now(io, .awake).nanoseconds - started;
-
-    try std.testing.expect(accepted.load(.acquire));
-    try std.testing.expectEqual(SendResult.deadline, upload.last_send_result);
-    try std.testing.expect(elapsed >= 100 * std.time.ns_per_ms);
-    try std.testing.expect(elapsed < 3 * std.time.ns_per_s);
-}
-
-test "behavior POST sends the collector key and rejects non-success status" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-
-    inline for (.{ true, false }) |accept_request| {
-        var address = try Io.net.IpAddress.parseLiteral("127.0.0.1:0");
-        var server = try Io.net.IpAddress.listen(&address, io, .{});
-        defer server.deinit(io);
-        var saw_key: std.atomic.Value(bool) = .init(false);
-        var server_group: Io.Group = .init;
-        defer server_group.cancel(io);
-        try server_group.concurrent(io, answerBehaviorCollector, .{ io, &server, "collector-secret", accept_request, &saw_key });
-
-        var endpoint_buf: [64]u8 = undefined;
-        const endpoint = try std.fmt.bufPrint(&endpoint_buf, "http://127.0.0.1:{d}/v1/behavior", .{server.socket.address.getPort()});
-        try std.testing.expectEqual(accept_request, postBatch(&client, endpoint, "{}", "collector-secret"));
-        try std.testing.expect(saw_key.load(.acquire));
-    }
-}
-
-test "metadata projection omits content while explicit content mode includes it" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    const common = .{
-        .io = io,
-        .gpa = gpa,
-        .client = @as(?*std.http.Client, null),
-        .endpoint = "https://collector.example/v1/logs",
-        .install_id = @as([32]u8, @splat('a')),
-        .client_name = "test",
-        .service_version = "test",
-        .run_id = "0123456789abcdef",
-    };
-
-    var metadata: Upload = .{
-        .io = common.io,
-        .gpa = common.gpa,
-        .client = common.client,
-        .endpoint = common.endpoint,
-        .install_id = common.install_id,
-        .client_name = common.client_name,
-        .service_version = common.service_version,
-        .run_id = common.run_id,
-        .mode = .metadata,
-    };
-    defer metadata.deinit();
-    try std.testing.expect(metadata.appendEvent(
-        "turn_committed",
-        1,
-        1.5,
-        .{ .turn = @as(u64, 1), .commitment_ref = "safe-ref" },
-        .{ .turn = @as(u64, 1), .commitment_id = "private-id", .action = .{ .secret = "TOP_SECRET" }, .expect = .{ .ok = true }, .reason = "private reason" },
-    ));
-    const metadata_payload = try metadata.buildPayload(true, "closed");
-    defer gpa.free(metadata_payload);
-    try std.testing.expect(std.mem.indexOf(u8, metadata_payload, "safe-ref") != null);
-    try std.testing.expect(std.mem.indexOf(u8, metadata_payload, "TOP_SECRET") == null);
-    try std.testing.expect(std.mem.indexOf(u8, metadata_payload, "private reason") == null);
-
-    var content: Upload = .{
-        .io = common.io,
-        .gpa = common.gpa,
-        .client = common.client,
-        .endpoint = common.endpoint,
-        .install_id = common.install_id,
-        .client_name = common.client_name,
-        .service_version = common.service_version,
-        .run_id = common.run_id,
-        .mode = .content,
-    };
-    defer content.deinit();
-    try std.testing.expect(content.appendEvent(
-        "turn_committed",
-        1,
-        1.5,
-        .{ .turn = @as(u64, 1), .commitment_ref = "safe-ref" },
-        .{ .turn = @as(u64, 1), .commitment_id = "private-id", .action = .{ .secret = "TOP_SECRET" }, .expect = .{ .ok = true }, .reason = "adapter-sanitized reason" },
-    ));
-    const content_payload = try content.buildPayload(true, "closed");
-    defer gpa.free(content_payload);
-    try std.testing.expect(std.mem.indexOf(u8, content_payload, "TOP_SECRET") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content_payload, "content_opt_in") != null);
-}
-
-test "turn metrics aggregate safe categories without exact MCP names" {
-    const gpa = std.testing.allocator;
-    var upload: Upload = .{
-        .io = std.testing.io,
-        .gpa = gpa,
-        .client = null,
-        .endpoint = "https://collector.example",
-        .install_id = @splat('b'),
-        .client_name = "test",
-        .service_version = "test",
-        .run_id = "fedcba9876543210",
-        .mode = .metadata,
-    };
-    defer upload.deinit();
-    upload.recordApi(1, false, 20, 100, 200, 300, 250, false);
-    upload.recordTool(1, "bash", false, 5, 40, false);
-    upload.recordTool(1, "mcp__private_server__lookup_customer", true, 7, 80, true);
-    try std.testing.expectEqual(@as(usize, 1), upload.turns.items.len);
-    const metrics = upload.turns.items[0];
-    try std.testing.expectEqual(@as(u64, 1), metrics.api_calls);
-    try std.testing.expectEqual(@as(u64, 2), metrics.tool_calls);
-    try std.testing.expectEqual(@as(u64, 1), metrics.tool_shell);
-    try std.testing.expectEqual(@as(u64, 1), metrics.tool_mcp);
-    try std.testing.expectEqual(@as(u64, 1), metrics.tool_errors);
-
-    _ = upload.appendEvent("run_started", 1, 1.0, .{ .version = "test", .unix_ms = @as(i64, 1) }, .{ .version = "test", .unix_ms = @as(i64, 1) });
-    const payload = try upload.buildPayload(true, "closed");
-    defer gpa.free(payload);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "lookup_customer") == null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"tool_mcp\":1") != null);
-}
-
-test "batch admission limits always fit the wire cap" {
-    const gpa = std.testing.allocator;
-    var upload: Upload = .{
-        .io = std.testing.io,
-        .gpa = gpa,
-        .client = null,
-        .endpoint = "https://collector.example",
-        .install_id = @splat('d'),
-        .client_name = "test",
-        .service_version = "test",
-        .run_id = "0123456789abcdef",
-        .mode = .metadata,
-    };
-    defer upload.deinit();
-
-    var turn: u64 = 1;
-    while (turn <= max_turns) : (turn += 1) {
-        upload.recordApi(turn, false, std.math.maxInt(i64), std.math.maxInt(usize), std.math.maxInt(usize), std.math.maxInt(u64), std.math.maxInt(u64), true);
-        upload.recordTool(turn, "bash", true, std.math.maxInt(i64), std.math.maxInt(usize), true);
-        inline for (comptime std.meta.fieldNames(TurnMetrics)) |name| {
-            if (!std.mem.eql(u8, name, "turn")) @field(upload.turns.items[@intCast(turn - 1)], name) = max_safe_json_integer;
-        }
-    }
-    upload.recordApi(max_turns + 1, false, 1, 1, 1, 1, 1, false);
-    try std.testing.expectEqual(@as(u64, 1), upload.dropped_metrics);
-
-    var seq: u64 = 1;
-    while (seq <= max_events) : (seq += 1) {
-        if (!upload.appendEvent(
-            "run_started",
-            seq,
-            1.0,
-            .{ .version = "test", .unix_ms = @as(i64, 1), .provider = "provider-padding-provider-padding-provider-padding" },
-            .{ .version = "test", .unix_ms = @as(i64, 1) },
-        )) break;
-    }
-    try std.testing.expect(upload.dropped_events > 0);
-    const payload = try upload.buildPayload(true, "closed");
-    defer gpa.free(payload);
-    try std.testing.expect(payload.len <= max_payload_bytes);
-    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, payload, .{});
-    defer parsed.deinit();
-    try std.testing.expect(parsed.value == .object);
-}
-
-test "oversized content event is rejected before queueing" {
-    const gpa = std.testing.allocator;
-    var upload: Upload = .{
-        .io = std.testing.io,
-        .gpa = gpa,
-        .client = null,
-        .endpoint = "https://collector.example",
-        .install_id = @splat('e'),
-        .client_name = "test",
-        .service_version = "test",
-        .run_id = "0123456789abcdef",
-        .mode = .content,
-    };
-    defer upload.deinit();
-    var oversized: [max_event_bytes * 2]u8 = @splat('x');
-    try std.testing.expect(!upload.appendEvent(
-        "turn_committed",
-        1,
-        1.0,
-        .{ .turn = @as(u64, 1), .commitment_ref = "safe" },
-        .{ .turn = @as(u64, 1), .reason = oversized[0..] },
-    ));
-    try std.testing.expectEqual(@as(usize, 0), upload.events.items.len);
-    try std.testing.expectEqual(@as(u64, 1), upload.dropped_events);
-}
-
-test "behavior endpoint derives beside OTLP logs without a fixed URL buffer" {
-    const gpa = std.testing.allocator;
-    const Case = struct {
-        fn expect(gpa_inner: Allocator, endpoint: []const u8, expected: []const u8) !void {
-            const actual = (try behaviorUrl(gpa_inner, endpoint)).?;
-            defer gpa_inner.free(actual);
-            try std.testing.expectEqualStrings(expected, actual);
-        }
-    };
-    try Case.expect(gpa, "https://example.test/v1/logs", "https://example.test/v1/behavior");
-    try Case.expect(gpa, "https://example.test/base/", "https://example.test/base/v1/behavior");
-    try Case.expect(gpa, "https://example.test/v1/logs?token=x#ignored", "https://example.test/v1/behavior?token=x");
-    try Case.expect(gpa, "https://example.test/base/?token=x", "https://example.test/base/v1/behavior?token=x");
-
-    const long_token: [768]u8 = @splat('x');
-    var endpoint_buf: [1024]u8 = undefined;
-    const endpoint = try std.fmt.bufPrint(&endpoint_buf, "https://example.test/v1/logs?token={s}", .{long_token});
-    const actual = (try behaviorUrl(gpa, endpoint)).?;
-    defer gpa.free(actual);
-    try std.testing.expect(actual.len > 512);
-    try std.testing.expect(std.mem.startsWith(u8, actual, "https://example.test/v1/behavior?token="));
-    try std.testing.expect(std.mem.endsWith(u8, actual, &long_token));
+test {
+    _ = @import("behavior_upload_tests.zig");
 }

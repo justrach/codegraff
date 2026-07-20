@@ -9,6 +9,9 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const behavior_upload = @import("behavior_upload.zig");
+const session_start = @import("session_start.zig");
+const scoring = @import("scoring.zig");
+const trace = @import("trace.zig");
 
 test {
     _ = @import("behavior_trace_tests.zig");
@@ -338,3 +341,76 @@ pub const BehaviorTrace = struct {
         if (state.uploader) |uploader| uploader.send(state.complete, status_name);
     }
 };
+
+// ── Session bootstrap (main's sink wiring, 600-line goal) ─────────────────
+
+/// The two behavioral sinks owned by main()'s frame: the privacy-projected
+/// uploader and the local JSONL behind `behavior`. Construct with boot(),
+/// then call link() exactly once after the value has settled at its final
+/// address — openBehaviorFile's writer is only safe to point at after the
+/// copy has landed (see session_start.zig's FileWriterOpen header).
+pub const Boot = struct {
+    io: Io,
+    uploader: behavior_upload.Upload,
+    open: session_start.FileWriterOpen,
+    behavior: BehaviorTrace,
+
+    /// Point the behavior stream at this Boot's settled storage and assign
+    /// the shared tracer. All root/subagent callbacks already share that
+    /// stable tracer, so this single assignment covers every producer.
+    pub fn link(self: *Boot, tracer: ?*trace.Tracer) void {
+        self.behavior.out = if (self.open.file != null) &self.open.writer.interface else null;
+        self.behavior.upload = if (self.uploader.active()) &self.uploader else null;
+        if (tracer) |tr| tr.behavior = &self.behavior;
+    }
+
+    /// Terminal lifecycle event + upload, then close/deinit both sinks. A
+    /// clean return is not a task success verdict; finish() is idempotent and
+    /// keeps an earlier error-unwind status terminal.
+    pub fn finishAndClose(self: *Boot, tracer: ?*trace.Tracer, status: BehaviorRunStatus) void {
+        self.behavior.finish(status);
+        if (tracer) |tr| tr.behavior = null;
+        if (self.open.file) |f| f.close(self.io);
+        self.uploader.deinit();
+    }
+};
+
+/// Construct the behavioral sinks for an agent session. Behavioral tracing
+/// starts only after the root Agent exists, so utility and self-test paths do
+/// not create zero-turn behavioral runs. The local JSONL and the
+/// privacy-projected upload are independent sinks. `buf` storage is owned by
+/// the caller (a stack array in main()) and must outlive the Boot.
+pub fn boot(io: Io, gpa: Allocator, client: ?*std.http.Client, environ_map: anytype, endpoint: []const u8, auth_key: ?[]const u8, install_id: [32]u8, client_name: []const u8, service_version: []const u8, buf: []u8) Boot {
+    const uploader: behavior_upload.Upload = .{
+        .io = io,
+        .gpa = gpa,
+        .client = client,
+        .endpoint = endpoint,
+        .auth_key = auth_key,
+        .install_id = install_id,
+        .client_name = client_name,
+        .service_version = service_version,
+        .run_id = &scoring.g_run_id,
+        .mode = behavior_upload.resolveMode(environ_map.get("GRAFF_BEHAVIOR_UPLOAD"), endpoint.len > 0),
+    };
+    const enabled = if (environ_map.get("GRAFF_BEHAVIOR_TRACE")) |value|
+        !(std.ascii.eqlIgnoreCase(value, "off") or std.mem.eql(u8, value, "0") or std.ascii.eqlIgnoreCase(value, "false") or std.ascii.eqlIgnoreCase(value, "no"))
+    else
+        true;
+    const open = if (enabled)
+        session_start.openBehaviorFile(io, Io.Dir.cwd(), behavior_dir, &scoring.g_run_id, buf)
+    else
+        session_start.FileWriterOpen{ .file = null, .writer = undefined };
+    return .{
+        .io = io,
+        .uploader = uploader,
+        .open = open,
+        .behavior = .{
+            .io = io,
+            .gpa = gpa,
+            .out = null,
+            .upload = null,
+            .run_id = &scoring.g_run_id,
+        },
+    };
+}

@@ -144,7 +144,7 @@ const file_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .d
 /// do not portably support FlushFileBuffers (ACCESS_DENIED is common), so
 /// Windows relies on atomic replacement plus synced file contents and has a
 /// weaker crash-durability guarantee.
-fn syncDirectory(io: Io, dir: Io.Dir) !void {
+pub fn syncDirectory(io: Io, dir: Io.Dir) !void {
     if (builtin.os.tag == .windows) return;
     const file = try dir.openFile(io, ".", .{
         .allow_directory = true,
@@ -170,94 +170,12 @@ fn openFileNoFollow(io: Io, dir: Io.Dir, path: []const u8, options: Io.Dir.OpenF
     return file;
 }
 
-pub fn validId(id: []const u8) bool {
-    if (id.len != 64) return false;
-    for (id) |c| if (!(std.ascii.isDigit(c) or (c >= 'a' and c <= 'f'))) return false;
-    return true;
-}
-
-fn validName(value: []const u8, max: usize) bool {
-    if (value.len == 0 or value.len > max or !std.unicode.utf8ValidateSlice(value)) return false;
-    for (value) |c| {
-        if (!(std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.')) return false;
-    }
-    return !std.mem.eql(u8, value, ".") and !std.mem.eql(u8, value, "..");
-}
-
-fn validText(value: []const u8, max: usize) bool {
-    return value.len > 0 and value.len <= max and std.unicode.utf8ValidateSlice(value) and std.mem.indexOfScalar(u8, value, 0) == null;
-}
-
-fn validEnvName(value: []const u8) bool {
-    if (value.len == 0 or value.len > 128) return false;
-    if (!(std.ascii.isAlphabetic(value[0]) or value[0] == '_')) return false;
-    for (value[1..]) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_')) return false;
-    return !std.mem.eql(u8, value, "HOME") and
-        !std.mem.eql(u8, value, "USERPROFILE") and
-        !std.mem.eql(u8, value, "TMPDIR") and
-        !std.mem.eql(u8, value, "TMP") and
-        !std.mem.eql(u8, value, "TEMP") and
-        !std.mem.startsWith(u8, value, "GRAFF_LEARN_");
-}
-
-pub fn validateConfig(config: Config) !void {
-    if (!std.mem.eql(u8, config.schema, config_schema)) return error.UnsupportedSchema;
-    if (!validName(config.agent_name, 64)) return error.InvalidAgentName;
-    if (!validText(config.agent_description, 512)) return error.InvalidDescription;
-    if (!validText(config.mutation_instruction, 4096)) return error.InvalidMutationInstruction;
-    try validateProgram(config.mutator);
-    try validateProgram(config.evaluator);
-    try validateSuitePin(config.evaluation_suite);
-    if (config.holdout_suite) |suite| try validateSuitePin(suite);
-
-    if (config.limits.genome_bytes == 0 or config.limits.genome_bytes > 8 << 20) return error.InvalidLimit;
-    if (config.limits.request_bytes < 1024 or config.limits.request_bytes > max_record_bytes) return error.InvalidLimit;
-    if (config.limits.response_bytes < 1024 or config.limits.response_bytes > max_record_bytes) return error.InvalidLimit;
-    if (config.limits.stdout_bytes > 1 << 20 or config.limits.stderr_bytes > 1 << 20) return error.InvalidLimit;
-    if (config.limits.mutator_timeout_ms == 0 or config.limits.mutator_timeout_ms > 3_600_000) return error.InvalidLimit;
-    if (config.limits.evaluator_timeout_ms == 0 or config.limits.evaluator_timeout_ms > 3_600_000) return error.InvalidLimit;
-
-    if (config.gate.alpha_ppm == 0 or config.gate.alpha_ppm > 500_000) return error.InvalidGate;
-    if (config.gate.minimum_delta_ppm > 1_000_000) return error.InvalidGate;
-    if (config.gate.minimum_pairs == 0 or config.gate.minimum_pairs > max_pairs) return error.InvalidGate;
-    if (config.gate.default_candidates == 0 or config.gate.default_candidates > 16) return error.InvalidGate;
-    if (config.gate.default_repetitions == 0 or config.gate.default_repetitions > 100) return error.InvalidGate;
-    if (config.auto.enabled and config.holdout_suite == null) return error.AutoRequiresHoldout;
-
-    inline for (.{ config.cohort.provider, config.cohort.model, config.cohort.task_family, config.cohort.adapter_version, config.cohort.verifier_version }) |field| {
-        if (!validText(field, 256)) return error.InvalidCohort;
-    }
-}
-
-fn validateProgram(program: Program) !void {
-    if (!std.fs.path.isAbsolute(program.program) or !validText(program.program, std.fs.max_path_bytes)) return error.InvalidProgramPath;
-    if (!validId(program.sha256)) return error.InvalidDigest;
-    if (program.args.len > 64 or program.inputs.len > 64 or program.pass_env.len > 32) return error.InvalidProgramConfig;
-    for (program.args) |arg| if (arg.len > 4096 or std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidProgramConfig;
-    for (program.inputs, 0..) |input, i| {
-        if (!std.fs.path.isAbsolute(input.path) or !validText(input.path, std.fs.max_path_bytes) or !validId(input.sha256)) return error.InvalidProgramConfig;
-        for (program.inputs[0..i]) |prior| if (std.mem.eql(u8, prior.path, input.path)) return error.DuplicateProgramInput;
-    }
-    for (program.pass_env, 0..) |name, i| {
-        if (!validEnvName(name)) return error.InvalidEnvironmentName;
-        for (program.pass_env[0..i]) |prior| if (std.mem.eql(u8, prior, name)) return error.DuplicateEnvironmentName;
-    }
-}
-
-fn validateSuitePin(suite: Suite) !void {
-    if (!std.fs.path.isAbsolute(suite.path) or !validText(suite.path, std.fs.max_path_bytes)) return error.InvalidSuitePath;
-    if (!validId(suite.sha256)) return error.InvalidDigest;
-}
-
-pub fn validateSuite(manifest: SuiteManifest) !void {
-    if (!std.mem.eql(u8, manifest.schema, suite_schema)) return error.UnsupportedSuiteSchema;
-    if (!validName(manifest.suite_id, 128)) return error.InvalidSuiteId;
-    if (manifest.cases.len == 0 or manifest.cases.len > max_pairs) return error.InvalidSuiteCases;
-    for (manifest.cases, 0..) |case, i| {
-        if (!validName(case.id, 128)) return error.InvalidCaseId;
-        for (manifest.cases[0..i]) |prior| if (std.mem.eql(u8, prior.id, case.id)) return error.DuplicateCaseId;
-    }
-}
+// Input validation lives in learn_store_validate.zig (600-line goal); the
+// public entry points are re-exported so external call sites are unchanged.
+const validate_mod = @import("learn_store_validate.zig");
+pub const validId = validate_mod.validId;
+pub const validateConfig = validate_mod.validateConfig;
+const validateSuite = validate_mod.validateSuite;
 
 pub fn rawSha256(bytes: []const u8) [64]u8 {
     var digest: [32]u8 = undefined;
@@ -535,7 +453,7 @@ pub const Store = struct {
         try syncDirectory(self.io, dir);
     }
 
-    fn writeAtomicReplace(self: *Store, dir: Io.Dir, name: []const u8, bytes: []const u8) !void {
+    pub fn writeAtomicReplace(self: *Store, dir: Io.Dir, name: []const u8, bytes: []const u8) !void {
         var atomic = try dir.createFileAtomic(self.io, name, .{ .permissions = file_permissions, .replace = true });
         defer atomic.deinit(self.io);
         try atomic.file.writeStreamingAll(self.io, bytes);
@@ -756,127 +674,6 @@ pub fn loadActiveAgent(io: Io, arena: Allocator) ?ActiveAgent {
     };
 }
 
-test "learning IDs are full, domain-separated, and byte exact" {
-    const a = domainId("codegraff-learn/genome/v1", "hello\n");
-    const b = domainId("codegraff-learn/genome/v1", "hello");
-    const c = domainId("codegraff-learn/evidence/v1", "hello\n");
-    try std.testing.expect(validId(&a));
-    try std.testing.expect(!std.mem.eql(u8, &a, &b));
-    try std.testing.expect(!std.mem.eql(u8, &a, &c));
-    try std.testing.expect(!validId("ABC"));
-}
-
-test "learning config parser rejects unknown fields and unsafe auto" {
-    const good =
-        \\{"schema":"codegraff.learn.config.v1","agent_name":"candidate","mutation_instruction":"change one behavior","mutator":{"program":"/bin/a","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"evaluator":{"program":"/bin/b","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"evaluation_suite":{"path":"/suite","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"cohort":{"provider":"test","model":"test","task_family":"test","adapter_version":"v1","verifier_version":"v1"}}
-    ;
-    var parsed = try std.json.parseFromSlice(Config, std.testing.allocator, good, .{});
-    defer parsed.deinit();
-    try validateConfig(parsed.value);
-    const unknown = good[0 .. good.len - 1] ++ ",\"surprise\":true}";
-    try std.testing.expectError(error.UnknownField, std.json.parseFromSlice(Config, std.testing.allocator, unknown, .{}));
-}
-
-test "directory synchronization reopens path-only handles" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try syncDirectory(io, tmp.dir);
-}
-
-test "no-follow reads preserve exact bytes" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "sample", .data = "exact bytes" });
-    const bytes = try readFileNoFollow(io, tmp.dir, "sample", std.testing.allocator, 64);
-    defer std.testing.allocator.free(bytes);
-    try std.testing.expectEqualStrings("exact bytes", bytes);
-}
-
-test "immutable learning objects and atomic active ref round trip" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var store = try Store.initAt(io, tmp.dir);
-    defer store.deinit();
-
-    const first = try store.writeGenome(std.testing.allocator, "prompt one");
-    const again = try store.writeGenome(std.testing.allocator, "prompt one");
-    try std.testing.expectEqualStrings(&first, &again);
-    const read = try store.readGenome(std.testing.allocator, &first, 1024);
-    defer std.testing.allocator.free(read);
-    try std.testing.expectEqualStrings("prompt one", read);
-}
-
-test "learning activation rejects stale refs and broken transaction ancestry" {
-    const io = std.testing.io;
-    const allocator = std.testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var store = try Store.initAt(io, tmp.dir);
-    defer store.deinit();
-
-    const config: Config = .{
-        .schema = config_schema,
-        .agent_name = "test-agent",
-        .mutation_instruction = "change",
-        .mutator = .{ .program = "/bin/a", .sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-        .evaluator = .{ .program = "/bin/b", .sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
-        .evaluation_suite = .{ .path = "/suite", .sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
-        .cohort = .{ .provider = "p", .model = "m", .task_family = "t", .adapter_version = "a", .verifier_version = "v" },
-    };
-    const config_bytes = try jsonBytes(allocator, config);
-    defer allocator.free(config_bytes);
-    _ = try store.bootstrap(allocator, arena, config_bytes, "parent", 1);
-    const loaded_config = try store.loadConfig(arena);
-    const active_zero = try store.loadActive(arena, loaded_config);
-    const second = try store.writeGenome(allocator, "second");
-    try std.testing.expectError(error.FileTooBig, store.activate(allocator, active_zero.ref, &loaded_config.id, &second, null, "rollback", 1, 2));
-    try store.activate(allocator, active_zero.ref, &loaded_config.id, &second, null, "rollback", config.limits.genome_bytes, 2);
-    const active_one = try store.loadActive(arena, loaded_config);
-    const third = try store.writeGenome(allocator, "third");
-    try std.testing.expectError(error.ActiveRefChanged, store.activate(allocator, active_zero.ref, &loaded_config.id, &third, null, "rollback", config.limits.genome_bytes, 3));
-
-    const broken_tx: Transaction = .{
-        .schema = transaction_schema,
-        .generation = 2,
-        .operation = "rollback",
-        .previous_genome_id = active_one.ref.genome_id,
-        .next_genome_id = &third,
-        .run_id = null,
-        .previous_transaction_id = active_zero.ref.transaction_id,
-        .created_unix_ms = 4,
-    };
-    const broken_tx_bytes = try jsonBytes(allocator, broken_tx);
-    defer allocator.free(broken_tx_bytes);
-    const broken_tx_id = try store.writeTransaction(allocator, broken_tx_bytes);
-    const broken_active: ActiveRef = .{
-        .schema = active_schema,
-        .config_id = &loaded_config.id,
-        .generation = 2,
-        .genome_id = &third,
-        .transaction_id = &broken_tx_id,
-    };
-    const broken_active_bytes = try jsonBytes(allocator, broken_active);
-    defer allocator.free(broken_active_bytes);
-    try store.writeAtomicReplace(store.refs, "active.json", broken_active_bytes);
-    try std.testing.expectError(error.BrokenTransactionChain, store.loadActive(arena, loaded_config));
-}
-
-test "learning store rejects symlinked root" {
-    if (builtin.os.tag == .windows) return;
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.createDir(io, "outside", .default_dir);
-    try tmp.dir.symLink(io, "outside", ".graff", .{ .is_directory = true });
-    if (Store.initAt(io, tmp.dir)) |opened| {
-        var store = opened;
-        store.deinit();
-        return error.TestExpectedError;
-    } else |_| {}
+test {
+    _ = @import("learn_store_tests.zig");
 }

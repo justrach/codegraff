@@ -12,7 +12,7 @@ const Io = std.Io;
 /// rescan+swap+deinit the bundle, a handshake reading it mid-swap fails instantly
 /// with error.TlsInitializationFailed (ms=0, resp_bytes=0 — see #131). Warming it
 /// here sets client.now, so every later connect skips the rescan entirely.
-fn prewarmCaBundle(client: *std.http.Client, gpa: std.mem.Allocator, io: Io) void {
+pub fn prewarmCaBundle(client: *std.http.Client, gpa: std.mem.Allocator, io: Io) void {
     const now = Io.Clock.real.now(io);
     client.ca_bundle.rescan(gpa, io, now) catch return;
     client.now = now;
@@ -144,7 +144,7 @@ const schema = @import("schema.zig");
 // The provider/keys core (ProviderSpec/provider_specs, Provider, Keys) lives in provider.zig; provider_specs/Keys stay local aliases for main()'s credential setup and tests.
 const provider_mod = @import("provider.zig");
 const provider_specs = provider_mod.provider_specs;
-const Keys = provider_mod.Keys;
+pub const Keys = provider_mod.Keys;
 // Approvals (command/tool approval gate) + confinedPath/noSymlinkEscape live in approvals.zig; main() constructs one directly for the session.
 const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
@@ -153,6 +153,7 @@ const Approvals = approvals_mod.Approvals;
 const trace = @import("trace.zig");
 const Tracer = trace.Tracer;
 const BehaviorTrace = trace.BehaviorTrace;
+const behavior_trace = @import("behavior_trace.zig");
 const behavior_upload = @import("behavior_upload.zig");
 const Trajectory = trace.Trajectory;
 const behavior_dir = trace.behavior_dir;
@@ -456,54 +457,15 @@ pub fn main(init: std.process.Init) !void {
 
     // Behavioral tracing starts only after the root Agent exists, so utility
     // and self-test paths do not create zero-turn behavioral runs. The local
-    // JSONL and the privacy-projected upload are independent sinks.
-    const behavior_upload_mode = behavior_upload.resolveMode(
-        init.environ_map.get("GRAFF_BEHAVIOR_UPLOAD"),
-        telem.endpoint.len > 0,
-    );
-    var behavior_uploader: behavior_upload.Upload = .{
-        .io = io,
-        .gpa = gpa,
-        .client = &client,
-        .endpoint = telem.endpoint,
-        .auth_key = telem.auth_key,
-        .install_id = telem.install_id,
-        .client_name = telem.client_name,
-        .service_version = harness_version,
-        .run_id = &scoring.g_run_id,
-        .mode = behavior_upload_mode,
-    };
-    defer behavior_uploader.deinit();
-
-    const behavior_enabled = if (init.environ_map.get("GRAFF_BEHAVIOR_TRACE")) |value|
-        !(std.ascii.eqlIgnoreCase(value, "off") or std.mem.eql(u8, value, "0") or std.ascii.eqlIgnoreCase(value, "false") or std.ascii.eqlIgnoreCase(value, "no"))
-    else
-        true;
+    // JSONL and the privacy-projected upload are independent sinks; the Boot
+    // owns both, wired and torn down in LIFO order (behavior_trace.zig).
     var behavior_buf: [8 * 1024]u8 = undefined;
-    var behavior_open = if (behavior_enabled)
-        session_start.openBehaviorFile(io, Io.Dir.cwd(), behavior_dir, &scoring.g_run_id, &behavior_buf)
-    else
-        session_start.FileWriterOpen{ .file = null, .writer = undefined };
-    defer if (behavior_open.file) |f| f.close(io);
-    var behavior: BehaviorTrace = .{
-        .io = io,
-        .gpa = gpa,
-        .out = if (behavior_open.file != null) &behavior_open.writer.interface else null,
-        .upload = if (behavior_uploader.active()) &behavior_uploader else null,
-        .run_id = &scoring.g_run_id,
-    };
-    // Assigned once; all root/subagent callbacks already share this stable
-    // tracer. The behavior storage remains alive until main's frame unwinds.
-    tracer.behavior = &behavior;
-    defer {
-        // A clean return is not a task success verdict. Session-owned workers
-        // are joined by newer defers before this terminal event and upload.
-        behavior.finish(.closed);
-        tracer.behavior = null;
-    }
+    var behavior_boot = behavior_trace.boot(io, gpa, &client, init.environ_map, telem.endpoint, telem.auth_key, telem.install_id, telem.client_name, harness_version, &behavior_buf);
+    behavior_boot.link(&tracer);
+    defer behavior_boot.finishAndClose(&tracer, .closed);
     // Registered after the normal defer so error unwinding records `error`
     // first; finish() is idempotent and keeps that status terminal.
-    errdefer behavior.finish(.failed);
+    errdefer behavior_boot.behavior.finish(.failed);
 
     // LIFO teardown: joinElites, then background bash pumps, then emit/send
     // run_finished, then close/deinit the two behavioral sinks. The earlier
@@ -519,7 +481,7 @@ pub fn main(init: std.process.Init) !void {
     // cold-cache compaction until after lifecycle start.
     try session_run.restoreResumedSession(arena, out, &root, &keys, flags, json_mode, g_cwd_display);
     const behavior_prompt_sha = scoring.promptFingerprint(root.systemPrompt());
-    behavior.startWithMetadata(harness_version, telem.start_unix_ms, .{
+    behavior_boot.behavior.startWithMetadata(harness_version, telem.start_unix_ms, .{
         .provider = root.provider.id,
         .model = root.provider.model,
         .prompt_sha = &behavior_prompt_sha,
@@ -603,7 +565,7 @@ const serve = @import("serve.zig");
 pub const codegraff_device_base = "https://gateway.codegraff.com";
 // The Agent struct (fields + smallest methods) + TodoItem live in agent.zig, imported as agent_mod (not agent) since several functions here declare a local `var agent: Agent = ...` that would shadow a bare import.
 const agent_mod = @import("agent.zig");
-const Agent = agent_mod.Agent;
+pub const Agent = agent_mod.Agent;
 // Wire-format message construction lives in messages.zig, imported as messages_mod to avoid shadowing the `messages` params/fields.
 const messages_mod = @import("messages.zig");
 /// A base64-encoded image staged by `/image`, sent with the next user turn.
@@ -725,47 +687,5 @@ test "incremental markdown streaming renders like renderMdLine" {
 
 test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
-}
-
-test "/bash slash command runs the bash tool and frees its gpa-allocated result" {
-    // Regression guard for PR #38: the /bash slash handler routes through execTool, whose result.text is gpa-owned (NOT arena-owned — every other
-    // caller frees it). Forgetting `defer root.gpa.free(result.text)` in handleCommand leaks on every /bash call; std.testing.allocator catches it here.
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    prewarmCaBundle(&client, gpa, io);
-
-    var root: Agent = .{
-        .gpa = gpa,
-        .arena = arena,
-        .io = io,
-        .client = &client,
-        .provider = .{
-            .id = "test",
-            .kind = .openai,
-            .auth = .bearer,
-            .url = "",
-            .api_key = "",
-            .model = "m",
-            .context = 100_000,
-        },
-        .messages = std.json.Array.init(arena),
-        .sub = false,
-        .label = "test",
-        .out = null,
-    };
-    var keys: Keys = .{ .values = @splat(null) };
-    var aw: Io.Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    defer root.tools_used.deinit(gpa);
-    try handleCommand(&root, &keys, arena, "/bash echo leak-guard-XYZ", &aw.writer);
-
-    const written = aw.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, written, "leak-guard-XYZ") != null);
+    _ = @import("main_tests.zig");
 }
