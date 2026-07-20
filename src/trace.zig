@@ -231,19 +231,19 @@ fn writeBehaviorLine(gpa: Allocator, w: *Io.Writer, kind: BehaviorKind, seq: u64
     s.write(run_id) catch return false;
     s.objectField("schema") catch return false;
     s.write(behavior_schema) catch return false;
-    inline for (std.meta.fields(@TypeOf(fields))) |field| {
+    inline for (comptime std.meta.fieldNames(@TypeOf(fields))) |name| {
         comptime {
-            if (std.mem.eql(u8, field.name, "kind") or
-                std.mem.eql(u8, field.name, "seq") or
-                std.mem.eql(u8, field.name, "ts") or
-                std.mem.eql(u8, field.name, "run_id") or
-                std.mem.eql(u8, field.name, "schema"))
+            if (std.mem.eql(u8, name, "kind") or
+                std.mem.eql(u8, name, "seq") or
+                std.mem.eql(u8, name, "ts") or
+                std.mem.eql(u8, name, "run_id") or
+                std.mem.eql(u8, name, "schema"))
             {
-                @compileError("behavioral event field collides with the common envelope: " ++ field.name);
+                @compileError("behavioral event field collides with the common envelope: " ++ name);
             }
         }
-        s.objectField(field.name) catch return false;
-        s.write(@field(fields, field.name)) catch return false;
+        s.objectField(name) catch return false;
+        s.write(@field(fields, name)) catch return false;
     }
     s.endObject() catch return false;
     if (line.buffered().len > max_local_behavior_event_bytes) return false;

@@ -151,9 +151,11 @@ fn isMetadataField(comptime name: []const u8) bool {
 }
 
 fn assertMetadataFields(comptime T: type) void {
-    inline for (std.meta.fields(T)) |field| {
-        if (!isMetadataField(field.name))
-            @compileError("field is not allowed in behavioral metadata: " ++ field.name);
+    // std.meta.fieldNames works on both 0.16 and 0.17-dev (std.meta.fields is
+    // deprecated there); only names are needed for the allowlist check.
+    inline for (comptime std.meta.fieldNames(T)) |name| {
+        if (!isMetadataField(name))
+            @compileError("field is not allowed in behavioral metadata: " ++ name);
     }
 }
 
@@ -242,19 +244,19 @@ pub const Upload = struct {
         s.write(self.run_id) catch return null;
         s.objectField("schema") catch return null;
         s.write(event_schema) catch return null;
-        inline for (std.meta.fields(@TypeOf(fields))) |field| {
+        inline for (comptime std.meta.fieldNames(@TypeOf(fields))) |name| {
             comptime {
-                if (std.mem.eql(u8, field.name, "kind") or
-                    std.mem.eql(u8, field.name, "seq") or
-                    std.mem.eql(u8, field.name, "ts") or
-                    std.mem.eql(u8, field.name, "run_id") or
-                    std.mem.eql(u8, field.name, "schema"))
+                if (std.mem.eql(u8, name, "kind") or
+                    std.mem.eql(u8, name, "seq") or
+                    std.mem.eql(u8, name, "ts") or
+                    std.mem.eql(u8, name, "run_id") or
+                    std.mem.eql(u8, name, "schema"))
                 {
-                    @compileError("behavior upload field collides with the event envelope: " ++ field.name);
+                    @compileError("behavior upload field collides with the event envelope: " ++ name);
                 }
             }
-            s.objectField(field.name) catch return null;
-            s.write(@field(fields, field.name)) catch return null;
+            s.objectField(name) catch return null;
+            s.write(@field(fields, name)) catch return null;
         }
         s.endObject() catch return null;
         if (w.buffered().len > max_event_bytes) return null;
@@ -713,8 +715,8 @@ test "batch admission limits always fit the wire cap" {
     while (turn <= max_turns) : (turn += 1) {
         upload.recordApi(turn, false, std.math.maxInt(i64), std.math.maxInt(usize), std.math.maxInt(usize), std.math.maxInt(u64), std.math.maxInt(u64), true);
         upload.recordTool(turn, "bash", true, std.math.maxInt(i64), std.math.maxInt(usize), true);
-        inline for (std.meta.fields(TurnMetrics)) |field| {
-            if (!std.mem.eql(u8, field.name, "turn")) @field(upload.turns.items[@intCast(turn - 1)], field.name) = max_safe_json_integer;
+        inline for (comptime std.meta.fieldNames(TurnMetrics)) |name| {
+            if (!std.mem.eql(u8, name, "turn")) @field(upload.turns.items[@intCast(turn - 1)], name) = max_safe_json_integer;
         }
     }
     upload.recordApi(max_turns + 1, false, 1, 1, 1, 1, 1, false);
