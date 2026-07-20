@@ -278,8 +278,11 @@ def assert_midturn_requests(mock: CodexMock) -> None:
             f"midturn: expected exactly 3 model requests, got {len(requests)}: {requests!r}"
         )
     first, compact, final = requests
-    if [request.body.get("max_output_tokens") for request in requests] != [16000, 4096, 16000]:
-        raise AssertionError("midturn: expected root/compaction/root output caps 16k/4k/16k")
+    if any("max_output_tokens" in request.body for request in requests):
+        raise AssertionError(
+            "midturn: Responses requests must not carry a top-level "
+            "max_output_tokens (gpt-5.6 backend rejects it, #247)"
+        )
     transports = [request.transport for request in requests]
     if transports != ["ws", "sse", "ws"]:
         raise AssertionError(f"midturn: expected WS -> SSE -> WS, got {transports!r}")
@@ -371,8 +374,11 @@ def assert_transactional_requests(mock: CodexMock) -> None:
             f"got {len(requests)}: {requests!r}"
         )
     first, compact, final = requests
-    if [request.body.get("max_output_tokens") for request in requests] != [16000, 4096, 16000]:
-        raise AssertionError("transactional: expected root/compaction/root output caps 16k/4k/16k")
+    if any("max_output_tokens" in request.body for request in requests):
+        raise AssertionError(
+            "transactional: Responses requests must not carry a top-level "
+            "max_output_tokens (gpt-5.6 backend rejects it, #247)"
+        )
     transports = [request.transport for request in requests]
     if transports != ["ws", "sse", "ws"]:
         raise AssertionError(
