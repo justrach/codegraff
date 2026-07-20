@@ -30,7 +30,6 @@ const root = @import("main.zig");
 const harness_version = root.harness_version;
 
 // ── Telemetry (OTEL) ────────────────────────────────────────────────────────
-// ── Telemetry (OTEL) ────────────────────────────────────────────────────────
 
 /// Anonymous usage telemetry, exported as OTLP/HTTP JSON log records in one
 /// best-effort POST at session end. Off entirely unless an endpoint is
@@ -41,27 +40,17 @@ const harness_version = root.harness_version;
 /// anonymous id (~/.simple-harness-install-id) identifies the install; SDKs
 /// pass their own id via HARNESS_SDK_INSTALL_ID + HARNESS_CLIENT so SDK
 /// users are counted separately. Flush failures never disturb the session.
-pub fn validatedAuthKey(value: ?[]const u8) ?[]const u8 {
-    const key = value orelse return null;
-    if (key.len == 0 or key.len > 1024) return null;
-    // Header values must not admit control/whitespace injection. Collector keys
-    // are intentionally a single visible token rather than generic OTLP header
-    // syntax, which also keeps secrets out of parsing diagnostics.
-    for (key) |byte| if (byte < 0x21 or byte > 0x7e) return null;
-    return key;
-}
+///
+/// Transport helpers (collector key validation, signal-URL derivation, the
+/// bounded-deadline POST path's mock collectors and tests) live in
+/// telemetry_net.zig (600-line goal).
+const telemetry_net = @import("telemetry_net.zig");
+pub const validatedAuthKey = telemetry_net.validatedAuthKey;
+const otlpLogsUrl = telemetry_net.otlpLogsUrl;
 
-fn otlpLogsUrl(gpa: Allocator, endpoint: []const u8) !?[]u8 {
-    // Append the signal path to the URL path rather than to a query value. URL
-    // fragments are client-side only and must not be sent to the collector.
-    const fragment_at = std.mem.indexOfScalar(u8, endpoint, '#') orelse endpoint.len;
-    const without_fragment = endpoint[0..fragment_at];
-    const query_at = std.mem.indexOfScalar(u8, without_fragment, '?') orelse without_fragment.len;
-    const query = without_fragment[query_at..];
-    const base = std.mem.trimEnd(u8, without_fragment[0..query_at], "/");
-    if (base.len == 0) return null;
-    if (std.mem.endsWith(u8, base, "/v1/logs")) return try std.fmt.allocPrint(gpa, "{s}{s}", .{ base, query });
-    return try std.fmt.allocPrint(gpa, "{s}/v1/logs{s}", .{ base, query });
+test {
+    _ = telemetry_net;
+    _ = @import("telemetry_tests.zig");
 }
 
 pub const Telemetry = struct {
@@ -93,7 +82,7 @@ pub const Telemetry = struct {
     /// One buffered log record. body "error": kind/detail set. body
     /// "workflow": phases/tasks/failed/duration set. body "score":
     /// detail = prompt_sha, score = the evaluation value.
-    const Event = struct {
+    pub const Event = struct {
         t_ms: i64,
         body: []const u8, // "error" | "workflow" | "ultracode" | "score" (static)
         kind: []const u8 = "", // error source: "api" | "tool" | "turn" (static)
@@ -379,7 +368,7 @@ pub const Telemetry = struct {
         self.sendBatchWithDeadline(events, include_summary, .fromSeconds(3));
     }
 
-    fn sendBatchWithDeadline(self: *Telemetry, events: []const Event, include_summary: bool, deadline: Io.Duration) void {
+    pub fn sendBatchWithDeadline(self: *Telemetry, events: []const Event, include_summary: bool, deadline: Io.Duration) void {
         if (!self.on()) return;
         const client = self.client orelse return;
         if (events.len == 0 and !include_summary) return;
@@ -591,209 +580,6 @@ pub const Telemetry = struct {
     }
 };
 
-fn stallTelemetryCollector(io: Io, server: *Io.net.Server, accepted: *std.atomic.Value(bool)) void {
-    const stream = server.accept(io) catch return;
-    defer stream.close(io);
-    accepted.store(true, .release);
-    io.sleep(.fromSeconds(5), .awake) catch {};
-}
-
-fn answerTelemetryCollector(
-    io: Io,
-    server: *Io.net.Server,
-    expected_key: []const u8,
-    saw_key: *std.atomic.Value(bool),
-) void {
-    const stream = server.accept(io) catch return;
-    defer stream.close(io);
-    var read_buf: [16 * 1024]u8 = undefined;
-    var reader = Io.net.Stream.Reader.init(stream, io, &read_buf);
-    while (reader.interface.takeDelimiter('\n') catch null) |line| {
-        if (std.mem.eql(u8, line, "\r") or line.len == 0) break;
-        const prefix = "x-harness-key:";
-        if (!std.ascii.startsWithIgnoreCase(line, prefix)) continue;
-        const value = std.mem.trim(u8, line[prefix.len..], " \t\r\n");
-        saw_key.store(std.mem.eql(u8, value, expected_key), .release);
-    }
-    const response = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-    var write_buf: [256]u8 = undefined;
-    var writer = Io.net.Stream.Writer.init(stream, io, &write_buf);
-    writer.interface.writeAll(response) catch return;
-    writer.interface.flush() catch {};
-}
-
 /// Set once in main() when telemetry is configured; Tracer and the workflow
 /// runner feed it through this. Null → every hook is a no-op.
 pub var g_telem: ?*Telemetry = null;
-
-test "telemetry collector key accepts one bounded visible token" {
-    try std.testing.expectEqual(@as(?[]const u8, null), validatedAuthKey(null));
-    try std.testing.expectEqual(@as(?[]const u8, null), validatedAuthKey(""));
-    try std.testing.expectEqual(@as(?[]const u8, null), validatedAuthKey("secret key"));
-    try std.testing.expectEqual(@as(?[]const u8, null), validatedAuthKey("secret\r\ninjected"));
-    try std.testing.expectEqual(@as(?[]const u8, null), validatedAuthKey("nön-ascii"));
-    try std.testing.expectEqualStrings("safe-token_123", validatedAuthKey("safe-token_123").?);
-}
-
-test "OTLP URL derivation preserves queries and drops fragments" {
-    const gpa = std.testing.allocator;
-    const appended = (try otlpLogsUrl(gpa, "https://collector.example/base/?token=x#ignored")).?;
-    defer gpa.free(appended);
-    try std.testing.expectEqualStrings("https://collector.example/base/v1/logs?token=x", appended);
-
-    const exact = (try otlpLogsUrl(gpa, "https://collector.example/v1/logs/?token=x#ignored")).?;
-    defer gpa.free(exact);
-    try std.testing.expectEqualStrings("https://collector.example/v1/logs?token=x", exact);
-
-    var long_host: [600]u8 = undefined;
-    @memset(&long_host, 'a');
-    const long_endpoint = try std.fmt.allocPrint(gpa, "https://{s}.example?token=x", .{long_host});
-    defer gpa.free(long_endpoint);
-    const long_url = (try otlpLogsUrl(gpa, long_endpoint)).?;
-    defer gpa.free(long_url);
-    try std.testing.expect(long_url.len > 512);
-    try std.testing.expect(std.mem.endsWith(u8, long_url, ".example/v1/logs?token=x"));
-}
-
-test "OTLP POST sends the collector key" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var address = try Io.net.IpAddress.parseLiteral("127.0.0.1:0");
-    var server = try Io.net.IpAddress.listen(&address, io, .{});
-    defer server.deinit(io);
-    var saw_key: std.atomic.Value(bool) = .init(false);
-    var server_group: Io.Group = .init;
-    defer server_group.cancel(io);
-    try server_group.concurrent(io, answerTelemetryCollector, .{ io, &server, "collector-secret", &saw_key });
-
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var endpoint_buf: [64]u8 = undefined;
-    const endpoint = try std.fmt.bufPrint(&endpoint_buf, "http://127.0.0.1:{d}/v1/logs", .{server.socket.address.getPort()});
-    try std.testing.expect(Telemetry.postOtlp(&client, endpoint, "{}", "collector-secret"));
-    try std.testing.expect(saw_key.load(.acquire));
-}
-
-test "OTLP flush arms its deadline before network I/O" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var address = try Io.net.IpAddress.parseLiteral("127.0.0.1:0");
-    var server = try Io.net.IpAddress.listen(&address, io, .{});
-    defer server.deinit(io);
-    var accepted: std.atomic.Value(bool) = .init(false);
-    var server_group: Io.Group = .init;
-    defer server_group.cancel(io);
-    try server_group.concurrent(io, stallTelemetryCollector, .{ io, &server, &accepted });
-
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var endpoint_buf: [64]u8 = undefined;
-    const endpoint = try std.fmt.bufPrint(&endpoint_buf, "http://127.0.0.1:{d}", .{server.socket.address.getPort()});
-    var telemetry: Telemetry = .{
-        .io = io,
-        .gpa = gpa,
-        .endpoint = endpoint,
-        .client = &client,
-        .install_id = @splat('0'),
-        .client_name = "harness",
-        .sdk_install_id = "",
-        .start = Io.Timestamp.now(io, .awake),
-        .start_unix_ms = 0,
-    };
-    defer telemetry.deinit();
-    const started = Io.Timestamp.now(io, .awake).nanoseconds;
-    telemetry.sendBatchWithDeadline(&.{}, true, .fromMilliseconds(250));
-    const elapsed = Io.Timestamp.now(io, .awake).nanoseconds - started;
-    try std.testing.expect(accepted.load(.acquire));
-    try std.testing.expect(elapsed >= 100 * std.time.ns_per_ms);
-    try std.testing.expect(elapsed < 3 * std.time.ns_per_s);
-}
-
-test "telemetry dupDetail never yields invalid UTF-8" {
-    var t: Telemetry = .{
-        .io = undefined, // dupDetail only touches gpa
-        .gpa = std.testing.allocator,
-        .endpoint = "x",
-        .install_id = @splat('0'),
-        .client_name = "harness",
-        .sdk_install_id = "",
-        .start = undefined,
-        .start_unix_ms = 0,
-    };
-    // The 200-byte cap lands mid-codepoint: 199 ASCII bytes + 2-byte 'é'.
-    var buf: [201]u8 = undefined;
-    @memset(buf[0..199], 'a');
-    buf[199] = 0xC3;
-    buf[200] = 0xA9;
-    const cut = t.dupDetail(&buf);
-    defer std.testing.allocator.free(cut);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(cut));
-    try std.testing.expectEqual(@as(usize, 199), cut.len); // split lead byte dropped
-    // Raw invalid bytes mid-string (unparseable provider response) degrade
-    // to ASCII instead of corrupting the OTLP payload.
-    const garbage = t.dupDetail("ok\xff\xfe more text here");
-    defer std.testing.allocator.free(garbage);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(garbage));
-    try std.testing.expect(std.mem.startsWith(u8, garbage, "ok??"));
-}
-test "telemetry writeOtlp emits a fleet record with kind + split prov attrs" {
-    var t: Telemetry = .{
-        .io = undefined, // writeOtlp(.., include_summary=false) never touches io
-        .gpa = std.testing.allocator,
-        .endpoint = "x",
-        .install_id = @splat('0'),
-        .client_name = "harness",
-        .sdk_install_id = "",
-        .start = undefined,
-        .start_unix_ms = 0,
-    };
-    const events = [_]Telemetry.Event{.{
-        .t_ms = 0,
-        .body = "fleet",
-        .kind = "propose",
-        .detail = "abcd1234", // prompt_sha
-        .extra = "reviewer", // niche
-        .run_id = "deadbeef", // parent_sha
-        .prov = "frontier\ta9134381", // provider_class \t eval_set_hash
-    }};
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    try t.writeOtlp(&aw.writer, &events, false);
-    const out = aw.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"stringValue\":\"fleet\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"propose\"") != null); // kind
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"reviewer\"") != null); // niche
-    try std.testing.expect(std.mem.indexOf(u8, out, "parent_sha") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"frontier\"") != null); // provider_class (split from prov)
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"a9134381\"") != null); // eval_set_hash (split from prov)
-}
-test "telemetry writeOtlp stamps run records with run_id (issue #168 Gap 6)" {
-    var t: Telemetry = .{
-        .io = undefined, // writeOtlp(.., include_summary=false) never touches io
-        .gpa = std.testing.allocator,
-        .endpoint = "x",
-        .install_id = @splat('0'),
-        .client_name = "harness",
-        .sdk_install_id = "",
-        .start = undefined,
-        .start_unix_ms = 0,
-    };
-    const events = [_]Telemetry.Event{.{
-        .t_ms = 0,
-        .body = "run",
-        .kind = "default",
-        .detail = "abcd1234", // prompt_sha
-        .extra = "read,edit", // tools
-        .run_id = "cafef00dcafef00d",
-        .ms = 42,
-        .flag = true,
-    }};
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    try t.writeOtlp(&aw.writer, &events, false);
-    const out = aw.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"stringValue\":\"run\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "run_id") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"cafef00dcafef00d\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"read,edit\"") != null); // tools
-}
