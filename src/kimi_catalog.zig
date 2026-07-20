@@ -25,7 +25,10 @@ const private_file_permissions: Io.File.Permissions = if (Io.File.Permissions.ha
 const private_dir_permissions: Io.File.Permissions = if (Io.File.Permissions.has_executable_bit) @enumFromInt(0o700) else .default_dir;
 
 fn secureDir(io: Io, path: []const u8) void {
-    const dir = Io.Dir.cwd().openDir(io, path, .{}) catch return;
+    // iterate=true: a default openDir can yield an O_PATH handle on Linux, and
+    // fchmod on O_PATH fails EBADF — which std.Io treats as a programmer-bug
+    // panic, not a catchable error. A readable handle chmods fine everywhere.
+    const dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
     dir.setPermissions(io, private_dir_permissions) catch {};
 }

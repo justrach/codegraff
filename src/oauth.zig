@@ -244,7 +244,9 @@ fn writeKimiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8,
     Io.Dir.cwd().createDir(io, kimi_dir, private_dir_permissions) catch {};
     Io.Dir.cwd().createDir(io, credentials_dir, private_dir_permissions) catch {};
     for ([_][]const u8{ kimi_dir, credentials_dir }) |path| {
-        const dir = Io.Dir.cwd().openDir(io, path, .{}) catch continue;
+        // iterate=true: see kimi_catalog.secureDir — a default openDir can be
+        // O_PATH on Linux, where fchmod panics EBADF instead of erroring.
+        const dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch continue;
         defer dir.close(io);
         dir.setPermissions(io, private_dir_permissions) catch {};
     }
