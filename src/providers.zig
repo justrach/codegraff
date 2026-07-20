@@ -407,7 +407,7 @@ test "runTurnWithFallback: blocked return closes behavioral root scope" {
     var root: Agent = undefined;
     root.tracer = &tracer;
     root.fallback_blocked = true;
-    const keys: Keys = .{ .values = [_]?[]const u8{null} ** provider_specs.len };
+    const keys: Keys = .{ .values = @splat(null) };
     try std.testing.expectError(
         error.FallbackConsentRequired,
         runTurnWithFallback(&root, @constCast(&keys), gpa, null),
