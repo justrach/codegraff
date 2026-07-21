@@ -47,6 +47,126 @@ def write_private(path: Path, data: bytes, mode: int = 0o600) -> None:
     path.chmod(mode)
 
 
+# Real bodies of the fixture mutator/evaluator programs, kept as plain
+# (non-f, raw) strings: they carry their own `"\n"` escapes verbatim into
+# the generated file, and none of their braces or quotes need doubling up
+# the way an f-string would demand.
+MUTATOR_BODY = r'''import hashlib, json, os, pathlib, sys
+assert pathlib.Path(sys.argv[0]).resolve() != pathlib.Path(os.environ["FIXTURE_MUTATOR_SOURCE"]).resolve()
+operation, request_path, response_path = sys.argv[1:4]
+assert operation == "mutate"
+request = json.loads(pathlib.Path(request_path).read_text())
+parent = pathlib.Path(request["parent"]["path"]).read_text()
+child = parent.rstrip() + "\n\nLearned fixture policy.\n"
+child_bytes = child.encode()
+pathlib.Path(request["child_path"]).write_bytes(child_bytes)
+response = {
+    "schema": "codegraff.learn.mutation.response.v1",
+    "trial_id": request["trial_id"],
+    "candidate_index": request["candidate_index"],
+    "parent_id": request["parent"]["id"],
+    "child_path": request["child_path"],
+    "child_sha256": hashlib.sha256(child_bytes).hexdigest(),
+    "description": "deterministic fixture mutation",
+}
+pathlib.Path(response_path).write_text(json.dumps(response, separators=(",", ":")) + "\n")
+'''
+
+EVALUATOR_BODY = r'''import hashlib, json, os, pathlib, sys
+assert pathlib.Path(sys.argv[0]).resolve() != pathlib.Path(os.environ["FIXTURE_EVALUATOR_SOURCE"]).resolve()
+operation, request_path, response_path = sys.argv[1:4]
+assert operation == "evaluate"
+request = json.loads(pathlib.Path(request_path).read_text())
+assert request["suite_path"] == "suite.json"
+suite_bytes = pathlib.Path(request["suite_path"]).read_bytes()
+assert hashlib.sha256(suite_bytes).hexdigest() == request["suite_sha256"]
+pairs = []
+for pair in request["pairs"]:
+    pairs.append({
+        "case_id": pair["case_id"],
+        "seed": pair["seed"],
+        "parent_pass": False,
+        "child_pass": True,
+        "parent_score_ppm": 0,
+        "child_score_ppm": 1000000,
+        "parent_cost_micros": 100,
+        "child_cost_micros": 90,
+    })
+response = {
+    "schema": "codegraff.learn.evaluation.response.v1",
+    "trial_id": request["trial_id"],
+    "candidate_index": request["candidate_index"],
+    "cohort_id": request["cohort_id"],
+    "suite_sha256": request["suite_sha256"],
+    "parent_id": request["parent"]["id"],
+    "child_id": request["child"]["id"],
+    "pairs": pairs,
+}
+pathlib.Path(response_path).write_text(json.dumps(response, separators=(",", ":")) + "\n")
+'''
+
+MUTATOR_IDENTICAL_BODY = r'''import hashlib, json, pathlib, sys
+operation, request_path, response_path = sys.argv[1:4]
+assert operation == "mutate"
+request = json.loads(pathlib.Path(request_path).read_text())
+parent = pathlib.Path(request["parent"]["path"]).read_text()
+child = parent if request["candidate_index"] < 2 else parent.rstrip() + "\n\nLearned fixture policy.\n"
+child_bytes = child.encode()
+pathlib.Path(request["child_path"]).write_bytes(child_bytes)
+response = {
+    "schema": "codegraff.learn.mutation.response.v1",
+    "trial_id": request["trial_id"],
+    "candidate_index": request["candidate_index"],
+    "parent_id": request["parent"]["id"],
+    "child_path": request["child_path"],
+    "child_sha256": hashlib.sha256(child_bytes).hexdigest(),
+    "description": "parent-identical below index 2",
+}
+pathlib.Path(response_path).write_text(json.dumps(response, separators=(",", ":")) + "\n")
+'''
+
+
+def write_posix_shebang(path: Path, python: Path, body: str, mode: int = 0o700) -> None:
+    """POSIX-only: a directly-executed `#!` script. Not viable on Windows —
+    CreateProcess has no notion of a shebang line, so a `.py` written this
+    way just fails to launch there."""
+    write_private(path, (f"#!{python}\n" + body).encode(), mode)
+
+
+def write_interpreter_shim(tools: Path, name: str, python: Path, body: str) -> tuple[dict[str, Any], Path]:
+    """Write the real script as inert data (never executed directly) plus a
+    tiny launcher that execs the pinned CPython interpreter with it: a
+    `.cmd` on Windows, since CreateProcess cannot run a `.py`'s shebang line
+    there, and a `.sh` everywhere else so the very same launcher shape is
+    exercised cross-platform.
+
+    The launcher is the config Program's `program` (what invoke() snapshots
+    and executes); the real script travels back as one of the Program's
+    pinned `inputs`, and its original path is echoed into `args` so
+    invoke()'s substitution rewrites it to the snapshot path before exec.
+    Returns the Program dict plus the script's own pre-snapshot path (the
+    latter for FIXTURE_*_SOURCE env wiring: an identity check the fixture
+    programs use to prove they are executing off the scratch snapshot, not
+    the original pinned file).
+    """
+    script = tools / f"{name}-real.py"
+    write_private(script, body.encode(), 0o600)
+    if sys.platform == "win32":
+        launcher = tools / f"{name}.cmd"
+        launcher_source = f'@echo off\r\n"{python}" %*\r\n'
+    else:
+        launcher = tools / f"{name}.sh"
+        launcher_source = f'#!/bin/sh\nexec "{python}" "$@"\n'
+    write_private(launcher, launcher_source.encode(), 0o700)
+    program = {
+        "program": str(launcher.resolve()),
+        "sha256": raw_sha256(launcher),
+        "args": [str(script.resolve())],
+        "inputs": [{"path": str(script.resolve()), "sha256": raw_sha256(script)}],
+    }
+    return program, script
+
+
 def invoke(graff: Path, workspace: Path, env: dict[str, str], *args: str, succeeds: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         [str(graff), "learn", *args],
@@ -89,65 +209,28 @@ def exercise(graff: Path, root: Path) -> None:
     tools = root / "tools"
     tools.mkdir(mode=0o700)
 
-    mutator = tools / "mutator.py"
-    evaluator = tools / "evaluator.py"
     python = Path(sys.executable).resolve()
-    mutator_source = f"""#!{python}
-import hashlib, json, os, pathlib, sys
-assert pathlib.Path(sys.argv[0]).resolve() != pathlib.Path(os.environ[\"FIXTURE_MUTATOR_SOURCE\"]).resolve()
-operation, request_path, response_path = sys.argv[1:4]
-assert operation == \"mutate\"
-request = json.loads(pathlib.Path(request_path).read_text())
-parent = pathlib.Path(request[\"parent\"][\"path\"]).read_text()
-child = parent.rstrip() + \"\\n\\nLearned fixture policy.\\n\"
-child_bytes = child.encode()
-pathlib.Path(request[\"child_path\"]).write_bytes(child_bytes)
-response = {{
-    \"schema\": \"codegraff.learn.mutation.response.v1\",
-    \"trial_id\": request[\"trial_id\"],
-    \"candidate_index\": request[\"candidate_index\"],
-    \"parent_id\": request[\"parent\"][\"id\"],
-    \"child_path\": request[\"child_path\"],
-    \"child_sha256\": hashlib.sha256(child_bytes).hexdigest(),
-    \"description\": \"deterministic fixture mutation\",
-}}
-pathlib.Path(response_path).write_text(json.dumps(response, separators=(\",\", \":\")) + \"\\n\")
-"""
-    evaluator_source = f"""#!{python}
-import hashlib, json, os, pathlib, sys
-assert pathlib.Path(sys.argv[0]).resolve() != pathlib.Path(os.environ[\"FIXTURE_EVALUATOR_SOURCE\"]).resolve()
-operation, request_path, response_path = sys.argv[1:4]
-assert operation == \"evaluate\"
-request = json.loads(pathlib.Path(request_path).read_text())
-assert request[\"suite_path\"] == \"suite.json\"
-suite_bytes = pathlib.Path(request[\"suite_path\"]).read_bytes()
-assert hashlib.sha256(suite_bytes).hexdigest() == request[\"suite_sha256\"]
-pairs = []
-for pair in request[\"pairs\"]:
-    pairs.append({{
-        \"case_id\": pair[\"case_id\"],
-        \"seed\": pair[\"seed\"],
-        \"parent_pass\": False,
-        \"child_pass\": True,
-        \"parent_score_ppm\": 0,
-        \"child_score_ppm\": 1000000,
-        \"parent_cost_micros\": 100,
-        \"child_cost_micros\": 90,
-    }})
-response = {{
-    \"schema\": \"codegraff.learn.evaluation.response.v1\",
-    \"trial_id\": request[\"trial_id\"],
-    \"candidate_index\": request[\"candidate_index\"],
-    \"cohort_id\": request[\"cohort_id\"],
-    \"suite_sha256\": request[\"suite_sha256\"],
-    \"parent_id\": request[\"parent\"][\"id\"],
-    \"child_id\": request[\"child\"][\"id\"],
-    \"pairs\": pairs,
-}}
-pathlib.Path(response_path).write_text(json.dumps(response, separators=(\",\", \":\")) + \"\\n\")
-"""
-    write_private(mutator, mutator_source.encode(), 0o700)
-    write_private(evaluator, evaluator_source.encode(), 0o700)
+
+    # The mutator keeps the plain shebang model unchanged on POSIX; on
+    # Windows every tool must go through write_interpreter_shim since
+    # CreateProcess cannot execute a .py shebang script directly.
+    if sys.platform == "win32":
+        mutator_program, mutator_source = write_interpreter_shim(tools, "mutator", python, MUTATOR_BODY)
+    else:
+        mutator_source = tools / "mutator.py"
+        write_posix_shebang(mutator_source, python, MUTATOR_BODY)
+        mutator_program = {"program": str(mutator_source.resolve()), "sha256": raw_sha256(mutator_source)}
+    mutator_program["pass_env"] = ["FIXTURE_MUTATOR_SOURCE"]
+
+    # The evaluator always travels as interpreter + pinned input, on POSIX
+    # too, even though POSIX could run it as a plain shebang script like the
+    # mutator above. This is deliberate: it is the only way this fixture,
+    # run on this (non-Windows) machine, can actually exercise invoke()'s
+    # inputs+args-substitution path end to end and prove the machinery the
+    # Windows .cmd shim depends on really works. windows-latest CI remains
+    # the real arbiter for the Windows launcher itself.
+    evaluator_program, evaluator_source = write_interpreter_shim(tools, "evaluator", python, EVALUATOR_BODY)
+    evaluator_program["pass_env"] = ["FIXTURE_EVALUATOR_SOURCE"]
 
     evaluation_suite = tools / "evaluation-suite.json"
     holdout_suite = tools / "holdout-suite.json"
@@ -172,16 +255,8 @@ pathlib.Path(response_path).write_text(json.dumps(response, separators=(\",\", \
         "agent_name": "fixture-agent",
         "agent_description": "local deterministic learning fixture",
         "mutation_instruction": "append the fixture policy sentence",
-        "mutator": {
-            "program": str(mutator.resolve()),
-            "sha256": raw_sha256(mutator),
-            "pass_env": ["FIXTURE_MUTATOR_SOURCE"],
-        },
-        "evaluator": {
-            "program": str(evaluator.resolve()),
-            "sha256": raw_sha256(evaluator),
-            "pass_env": ["FIXTURE_EVALUATOR_SOURCE"],
-        },
+        "mutator": mutator_program,
+        "evaluator": evaluator_program,
         "evaluation_suite": {"path": str(evaluation_suite.resolve()), "sha256": raw_sha256(evaluation_suite)},
         "holdout_suite": {"path": str(holdout_suite.resolve()), "sha256": raw_sha256(holdout_suite)},
         "gate": {
@@ -207,8 +282,8 @@ pathlib.Path(response_path).write_text(json.dumps(response, separators=(\",\", \
         {
             "GRAFF_NO_TELEMETRY": "1",
             "GRAFF_BEHAVIOR_TRACE": "0",
-            "FIXTURE_MUTATOR_SOURCE": str(mutator.resolve()),
-            "FIXTURE_EVALUATOR_SOURCE": str(evaluator.resolve()),
+            "FIXTURE_MUTATOR_SOURCE": str(mutator_source.resolve()),
+            "FIXTURE_EVALUATOR_SOURCE": str(evaluator_source.resolve()),
         }
     )
 
@@ -281,14 +356,14 @@ pathlib.Path(response_path).write_text(json.dumps(response, separators=(\",\", \
     verified = invoke(graff, workspace, env, "verify")
     assert json.loads(verified.stdout)["integrity"] == "ok"
 
-    exercise_identical_parent(graff, root, evaluator, holdout_suite, evaluation_suite, parent, env)
+    exercise_identical_parent(graff, root, evaluator_program, holdout_suite, evaluation_suite, parent, env)
     exercise_init_recovery(graff, root, config_path, parent, env)
 
 
 def exercise_identical_parent(
     graff: Path,
     root: Path,
-    evaluator: Path,
+    evaluator_program: dict[str, Any],
     holdout_suite: Path,
     evaluation_suite: Path,
     parent: Path,
@@ -302,28 +377,13 @@ def exercise_identical_parent(
     workspace.mkdir(mode=0o700)
     tools = root / "tools"
     python = Path(sys.executable).resolve()
-    mutator = tools / "mutator-identical.py"
-    mutator_source = f"""#!{python}
-import hashlib, json, pathlib, sys
-operation, request_path, response_path = sys.argv[1:4]
-assert operation == \"mutate\"
-request = json.loads(pathlib.Path(request_path).read_text())
-parent = pathlib.Path(request[\"parent\"][\"path\"]).read_text()
-child = parent if request[\"candidate_index\"] < 2 else parent.rstrip() + \"\\n\\nLearned fixture policy.\\n\"
-child_bytes = child.encode()
-pathlib.Path(request[\"child_path\"]).write_bytes(child_bytes)
-response = {{
-    \"schema\": \"codegraff.learn.mutation.response.v1\",
-    \"trial_id\": request[\"trial_id\"],
-    \"candidate_index\": request[\"candidate_index\"],
-    \"parent_id\": request[\"parent\"][\"id\"],
-    \"child_path\": request[\"child_path\"],
-    \"child_sha256\": hashlib.sha256(child_bytes).hexdigest(),
-    \"description\": \"parent-identical below index 2\",
-}}
-pathlib.Path(response_path).write_text(json.dumps(response, separators=(\",\", \":\")) + \"\\n\")
-"""
-    write_private(mutator, mutator_source.encode(), 0o700)
+
+    if sys.platform == "win32":
+        mutator_program, _ = write_interpreter_shim(tools, "mutator-identical", python, MUTATOR_IDENTICAL_BODY)
+    else:
+        mutator_source = tools / "mutator-identical.py"
+        write_posix_shebang(mutator_source, python, MUTATOR_IDENTICAL_BODY)
+        mutator_program = {"program": str(mutator_source.resolve()), "sha256": raw_sha256(mutator_source)}
 
     config_path = root / "config-identical.json"
     config = {
@@ -331,12 +391,8 @@ pathlib.Path(response_path).write_text(json.dumps(response, separators=(\",\", \
         "agent_name": "fixture-identical",
         "agent_description": "parent-identical candidate regression",
         "mutation_instruction": "reproduce the parent for the first two candidates",
-        "mutator": {"program": str(mutator.resolve()), "sha256": raw_sha256(mutator)},
-        "evaluator": {
-            "program": str(evaluator.resolve()),
-            "sha256": raw_sha256(evaluator),
-            "pass_env": ["FIXTURE_EVALUATOR_SOURCE"],
-        },
+        "mutator": mutator_program,
+        "evaluator": evaluator_program,
         "evaluation_suite": {"path": str(evaluation_suite.resolve()), "sha256": raw_sha256(evaluation_suite)},
         "holdout_suite": {"path": str(holdout_suite.resolve()), "sha256": raw_sha256(holdout_suite)},
         "gate": {
