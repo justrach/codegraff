@@ -99,8 +99,10 @@ comptime {
     // turn_metrics rows bypass assertMetadataFields, so close the same
     // privacy hole structurally: every field must stay a content-free u64
     // counter, and a string or nested payload cannot ride along unnoticed.
-    for (@typeInfo(TurnMetrics).@"struct".fields) |field| {
-        if (field.type != u64) @compileError("TurnMetrics fields must be content-free u64 counters: " ++ field.name);
+    // fieldNames + @FieldType instead of @typeInfo: the Type.Struct member
+    // layout differs between 0.16 and 0.17-dev, these two do not.
+    for (std.meta.fieldNames(TurnMetrics)) |name| {
+        if (@FieldType(TurnMetrics, name) != u64) @compileError("TurnMetrics fields must be content-free u64 counters: " ++ name);
     }
 }
 
