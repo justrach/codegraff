@@ -1,20 +1,21 @@
-//! Minimal MCP (Model Context Protocol) client over the stdio transport.
+//! Minimal MCP (Model Context Protocol) client over stdio and Streamable HTTP.
 //!
-//! For each server in .mcp.json we spawn the configured command, speak
-//! newline-delimited JSON-RPC 2.0 over its stdin/stdout, run the
-//! initialize -> initialized -> tools/list handshake, and expose the
-//! discovered tools to the agent. Tool calls are routed back via tools/call.
+//! A .mcp.json entry may contain either `command`/`args` (a child process using
+//! newline-delimited JSON-RPC on stdio) or `url` (JSON-RPC POSTs using MCP's
+//! Streamable HTTP transport). Both run the initialize -> initialized ->
+//! tools/list handshake and expose discovered tools to the agent.
 //!
-//! Concurrency: tool calls arrive from agent pool threads, but a single
-//! server is one bidirectional pipe — so every request/response round trip
-//! holds `mutex`, serializing access per registry. MCP calls are rare and
-//! fast relative to LLM calls, so global serialization is fine.
+//! Concurrency: tool calls arrive from agent pool threads, but transport state
+//! (stdio pipes, HTTP session IDs) is sequential, so every request/response
+//! round trip holds `mutex`. MCP calls are rare relative to LLM calls, so
+//! registry-wide serialization is fine.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
+const mcp_oauth = @import("mcp_oauth.zig");
 
 pub const Tool = struct {
     server_index: usize,
@@ -55,9 +56,11 @@ fn rewriteOneOf(a: Allocator, v: *Value) Allocator.Error!void {
 /// 2025-11-25. Everything 2025-11-25 added (tasks, extensions, URL-mode
 /// elicitation, sampling tool-calls) is opt-in via capabilities, and we
 /// declare `capabilities:{}`, so servers can't expect any of it from us.
-/// The HTTP-only parts of the spec (MCP-Protocol-Version header, the
-/// HTTP+SSE removal) don't apply to this stdio-only client.
+/// Streamable HTTP additionally carries this revision in each request after
+/// initialization. Responses may be JSON or one or more SSE `data:` events.
 const latest_protocol = "2025-11-25";
+const max_http_response = 1 << 20;
+pub const smolify_url = "https://app.smol.ly/mcp";
 
 const shutdown_grace = std.Io.Duration.fromMilliseconds(100);
 
@@ -110,11 +113,43 @@ fn stopChild(io: Io, child: *std.process.Child) void {
     }
 }
 
-const Server = struct {
-    name: []const u8,
+const StdioTransport = struct {
     child: std.process.Child,
     stdin_writer: Io.File.Writer,
     stdout_reader: Io.File.Reader,
+};
+
+const HttpTransport = struct {
+    url: []const u8,
+    client: std.http.Client,
+    headers: []const std.http.Header = &.{},
+    oauth_home: ?[]const u8 = null,
+    session_id: ?[]const u8 = null,
+};
+
+const Transport = union(enum) {
+    stdio: StdioTransport,
+    http: HttpTransport,
+};
+
+fn validRemoteUri(uri: std.Uri) bool {
+    if (uri.host == null) return false;
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) return true;
+    if (!std.ascii.eqlIgnoreCase(uri.scheme, "http")) return false;
+    const host = uri.host.?.percent_encoded;
+    return std.ascii.eqlIgnoreCase(host, "localhost") or
+        std.mem.eql(u8, host, "127.0.0.1") or
+        std.mem.eql(u8, host, "[::1]") or
+        std.mem.eql(u8, host, "::1");
+}
+
+pub fn validRemoteUrl(url: []const u8) bool {
+    return validRemoteUri(std.Uri.parse(url) catch return false);
+}
+
+const Server = struct {
+    name: []const u8,
+    transport: Transport,
     next_id: i64 = 1,
     /// Revision the server negotiated in its `initialize` response ("?" if
     /// it didn't say) — shown in `/mcp` so version skew is visible.
@@ -124,6 +159,7 @@ const Server = struct {
 pub const Registry = struct {
     gpa: Allocator,
     io: Io,
+    home: []const u8,
     arena_state: std.heap.ArenaAllocator,
     mutex: Io.Mutex = .init,
     servers: []*Server = &.{},
@@ -133,10 +169,11 @@ pub const Registry = struct {
         return self.arena_state.allocator();
     }
 
-    /// Load .mcp.json (`{"mcpServers": {"name": {"command","args","env"}}}`),
-    /// spawn each server, handshake, and collect their tools. Returns null
+    /// Load .mcp.json entries containing either `command`/`args`/`env` or a
+    /// Streamable HTTP `url`, handshake each server, and collect their tools.
+    /// Returns null
     /// (no error) when the config file is absent — MCP is optional.
-    pub fn init(gpa: Allocator, io: Io, config_path: []const u8) !?Registry {
+    pub fn init(gpa: Allocator, io: Io, config_path: []const u8, home: []const u8) !?Registry {
         const text = Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .limited(1 << 20)) catch |err| switch (err) {
             error.FileNotFound => return null,
             else => return err,
@@ -146,6 +183,7 @@ pub const Registry = struct {
         var reg: Registry = .{
             .gpa = gpa,
             .io = io,
+            .home = home,
             .arena_state = std.heap.ArenaAllocator.init(gpa),
         };
         errdefer reg.deinit();
@@ -159,6 +197,9 @@ pub const Registry = struct {
 
         var it = servers_obj.iterator();
         while (it.next()) |entry| {
+            // The core Smolify name is pinned below and cannot be shadowed by
+            // repository configuration.
+            if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
             const name = try a.dupe(u8, entry.key_ptr.*);
             const cfg = entry.value_ptr.*.object;
             reg.startServer(a, &servers, &tools, name, cfg) catch |err| {
@@ -173,8 +214,8 @@ pub const Registry = struct {
 
     /// An empty registry (no config file present), so the harness can still
     /// accept servers added at runtime via `addServer`.
-    pub fn empty(gpa: Allocator, io: Io) Registry {
-        return .{ .gpa = gpa, .io = io, .arena_state = std.heap.ArenaAllocator.init(gpa) };
+    pub fn empty(gpa: Allocator, io: Io, home: []const u8) Registry {
+        return .{ .gpa = gpa, .io = io, .home = home, .arena_state = std.heap.ArenaAllocator.init(gpa) };
     }
 
     /// Spawn + handshake a server at runtime and append its tools. Returns the
@@ -182,6 +223,8 @@ pub const Registry = struct {
     /// callers must re-render their tool list afterward. Run between turns only
     /// (no tool calls in flight).
     pub fn addServer(reg: *Registry, name: []const u8, command: []const u8, args: []const []const u8) !usize {
+        for (reg.servers) |server| if (std.mem.eql(u8, server.name, name)) return error.McpServerAlreadyConnected;
+        if (std.mem.eql(u8, name, "smolify")) return error.ReservedMcpServerName;
         const a = reg.arena();
         var servers: std.ArrayList(*Server) = .empty;
         try servers.appendSlice(a, reg.servers);
@@ -199,6 +242,40 @@ pub const Registry = struct {
         reg.servers = try a.dupe(*Server, servers.items);
         reg.tools = try a.dupe(Tool, tools.items);
         return tools.items.len - before;
+    }
+
+    /// Connect a Streamable HTTP server at runtime. `headers` are copied into
+    /// registry storage and sent on every request (for example Authorization).
+    pub fn addRemoteServer(reg: *Registry, name: []const u8, url: []const u8, headers: []const std.http.Header) !usize {
+        for (reg.servers) |server| if (std.mem.eql(u8, server.name, name)) return error.McpServerAlreadyConnected;
+        if (std.mem.eql(u8, name, "smolify") and (!std.mem.eql(u8, url, smolify_url) or headers.len != 0)) return error.ReservedMcpServerName;
+        const a = reg.arena();
+        var servers: std.ArrayList(*Server) = .empty;
+        try servers.appendSlice(a, reg.servers);
+        var tools: std.ArrayList(Tool) = .empty;
+        try tools.appendSlice(a, reg.tools);
+        const before = tools.items.len;
+
+        var cfg: std.json.ObjectMap = .empty;
+        try cfg.put(a, "url", .{ .string = try a.dupe(u8, url) });
+        if (headers.len > 0) {
+            var header_obj: std.json.ObjectMap = .empty;
+            for (headers) |header| try header_obj.put(a, try a.dupe(u8, header.name), .{ .string = try a.dupe(u8, header.value) });
+            try cfg.put(a, "headers", .{ .object = header_obj });
+        }
+
+        try reg.startServer(a, &servers, &tools, try a.dupe(u8, name), cfg);
+        reg.servers = try a.dupe(*Server, servers.items);
+        reg.tools = try a.dupe(Tool, tools.items);
+        return tools.items.len - before;
+    }
+
+    /// Connect Smolify's public documentation MCP as a core service. It is a
+    /// stateless Streamable HTTP endpoint, so no helper process or Node runtime
+    /// is required. Public search/read tools work anonymously.
+    pub fn connectSmolify(reg: *Registry) !usize {
+        for (reg.servers) |server| if (std.mem.eql(u8, server.name, "smolify")) return 0;
+        return reg.addRemoteServer("smolify", smolify_url, &.{});
     }
 
     /// Connect any workspace `.mcp.json` servers not already running — the
@@ -229,6 +306,7 @@ pub const Registry = struct {
         var it = servers_v.object.iterator();
         while (it.next()) |entry| {
             const name = entry.key_ptr.*;
+            if (std.mem.eql(u8, name, "smolify")) continue;
             if (entry.value_ptr.* != .object) continue;
             // Already connected (auto-activated muonry, or a prior /mcp trust)? skip.
             var present = false;
@@ -259,6 +337,7 @@ pub const Registry = struct {
         var n: usize = 0;
         var it = servers_v.object.iterator();
         while (it.next()) |entry| {
+            if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
             if (entry.value_ptr.* != .object) continue;
             var present = false;
             for (reg.servers) |s| if (std.mem.eql(u8, s.name, entry.key_ptr.*)) {
@@ -286,66 +365,98 @@ pub const Registry = struct {
         name: []const u8,
         cfg: std.json.ObjectMap,
     ) !void {
-        const command = if (cfg.get("command")) |c| (if (c == .string) c.string else return error.BadMcpConfig) else return error.BadMcpConfig;
-        var argv: std.ArrayList([]const u8) = .empty;
-        try argv.append(a, command);
-        if (cfg.get("args")) |args| if (args == .array) {
-            for (args.array.items) |arg| if (arg == .string) try argv.append(a, arg.string);
-        };
-
-        // Optional per-server env overlaid on the parent environment.
-        var env_map: ?*std.process.Environ.Map = null;
-        if (cfg.get("env")) |env| if (env == .object) {
-            const m = try a.create(std.process.Environ.Map);
-            m.* = std.process.Environ.Map.init(reg.gpa);
-            var env_it = env.object.iterator();
-            while (env_it.next()) |e| try m.put(e.key_ptr.*, e.value_ptr.*.string);
-            env_map = m;
-        };
-
-        var child = try std.process.spawn(reg.io, .{
-            .argv = argv.items,
-            .stdin = .pipe,
-            .stdout = .pipe,
-            .stderr = .ignore, // server logs/banners stay off our JSON channel
-            .environ_map = env_map,
-        });
-        // Until the server is appended below, we own the child and must kill
-        // it on any error path. Once it's in `reg.servers`, `deinit` becomes
-        // the sole owner: killing here *and* there would reap the pid twice,
-        // and the second kill panics on ESRCH in debug builds (a server whose
-        // handshake fails — McpClosed — has an already-dead child).
-        var registry_owns_child = false;
-        errdefer if (!registry_owns_child) {
-            stopChild(reg.io, &child);
-        };
+        const command_v = cfg.get("command");
+        const url_v = cfg.get("url");
+        if ((command_v == null) == (url_v == null)) return error.BadMcpConfig;
 
         const server = try a.create(Server);
-        const in_buf = try a.alloc(u8, 64 * 1024);
-        const out_buf = try a.alloc(u8, 1 << 20);
-        server.* = .{
-            .name = name,
-            .child = child,
-            .stdin_writer = child.stdin.?.writerStreaming(reg.io, in_buf),
-            .stdout_reader = child.stdout.?.readerStreaming(reg.io, out_buf),
-        };
+        if (url_v) |url| {
+            if (url != .string) return error.BadMcpConfig;
+            const uri = std.Uri.parse(url.string) catch return error.BadMcpUrl;
+            if (!validRemoteUri(uri)) return error.BadMcpUrl;
+
+            var headers: std.ArrayList(std.http.Header) = .empty;
+            var has_authorization = false;
+            if (cfg.get("headers")) |headers_v| {
+                if (headers_v != .object) return error.BadMcpConfig;
+                var header_it = headers_v.object.iterator();
+                while (header_it.next()) |entry| {
+                    if (entry.value_ptr.* != .string) return error.BadMcpConfig;
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "authorization")) has_authorization = true;
+                    try headers.append(a, .{
+                        .name = try a.dupe(u8, entry.key_ptr.*),
+                        .value = try a.dupe(u8, entry.value_ptr.*.string),
+                    });
+                }
+            }
+            server.* = .{
+                .name = name,
+                .transport = .{ .http = .{
+                    .url = try a.dupe(u8, url.string),
+                    .client = .{ .allocator = reg.gpa, .io = reg.io },
+                    .headers = try a.dupe(std.http.Header, headers.items),
+                    .oauth_home = if (!has_authorization and reg.home.len != 0) try a.dupe(u8, reg.home) else null,
+                } },
+            };
+        } else {
+            const command = if (command_v.? == .string) command_v.?.string else return error.BadMcpConfig;
+            var argv: std.ArrayList([]const u8) = .empty;
+            try argv.append(a, command);
+            if (cfg.get("args")) |args| {
+                if (args != .array) return error.BadMcpConfig;
+                for (args.array.items) |arg| {
+                    if (arg != .string) return error.BadMcpConfig;
+                    try argv.append(a, arg.string);
+                }
+            }
+
+            // Optional per-server env overlaid on the parent environment.
+            var env_map: ?*std.process.Environ.Map = null;
+            if (cfg.get("env")) |env| {
+                if (env != .object) return error.BadMcpConfig;
+                const m = try a.create(std.process.Environ.Map);
+                m.* = std.process.Environ.Map.init(reg.gpa);
+                var env_it = env.object.iterator();
+                while (env_it.next()) |entry| {
+                    if (entry.value_ptr.* != .string) return error.BadMcpConfig;
+                    try m.put(entry.key_ptr.*, entry.value_ptr.*.string);
+                }
+                env_map = m;
+            }
+
+            var child = try std.process.spawn(reg.io, .{
+                .argv = argv.items,
+                .stdin = .pipe,
+                .stdout = .pipe,
+                .stderr = .ignore,
+                .environ_map = env_map,
+            });
+            var server_owns_child = false;
+            errdefer if (!server_owns_child) {
+                stopChild(reg.io, &child);
+            };
+            const in_buf = try a.alloc(u8, 64 * 1024);
+            const out_buf = try a.alloc(u8, 1 << 20);
+            server.* = .{
+                .name = name,
+                .transport = .{ .stdio = .{
+                    .child = child,
+                    .stdin_writer = child.stdin.?.writerStreaming(reg.io, in_buf),
+                    .stdout_reader = child.stdout.?.readerStreaming(reg.io, out_buf),
+                } },
+            };
+            server_owns_child = true;
+        }
+
+        var registry_owns_server = false;
+        errdefer if (!registry_owns_server) deinitServer(server, reg.io);
         const server_index = servers.items.len;
-        try servers.append(a, server);
-        registry_owns_child = true; // deinit now owns the child; don't double-kill
+        const tools_before = tools.items.len;
+        errdefer tools.shrinkRetainingCapacity(tools_before);
 
         // Handshake. The server's reply tells us which revision it picked;
         // record it (we proceed regardless — see `latest_protocol`).
-        const init_resp = try request(server, a,
-            \\{"protocolVersion":"
-        ++ latest_protocol ++
-            \\","capabilities":{},"clientInfo":{"name":"simple-harness","version":"0.1"}}
-        , "initialize");
-        if (init_resp.object.get("result")) |res| if (res == .object) {
-            if (res.object.get("protocolVersion")) |pv| if (pv == .string) {
-                server.protocol_version = try a.dupe(u8, pv.string);
-            };
-        };
-        try notify(server, "notifications/initialized");
+        try initializeServer(server, a, a);
 
         const listed = try request(server, a, "{}", "tools/list");
         const result_v = listed.object.get("result") orelse return error.BadMcpResponse;
@@ -371,11 +482,13 @@ pub const Registry = struct {
                 .input_schema = schema,
             });
         }
+        try servers.append(a, server);
+        registry_owns_server = true;
         std.debug.print("  [mcp:{s}] connected (mcp {s}) — {d} tool(s)\n", .{ name, server.protocol_version, tools_v.array.items.len });
     }
 
     pub fn deinit(reg: *Registry) void {
-        for (reg.servers) |server| stopChild(reg.io, &server.child);
+        for (reg.servers) |server| deinitServer(server, reg.io);
         reg.arena_state.deinit();
     }
 
@@ -407,16 +520,34 @@ pub const Registry = struct {
         reg.mutex.lockUncancelable(reg.io);
         defer reg.mutex.unlock(reg.io);
 
-        const a = reg.arena(); // response Values; freed at session end
-        const resp = try request(server, a, pw.writer.buffered(), "tools/call");
+        // Tool responses can be large and numerous; keep them out of the
+        // session arena. Only the returned text is copied to `out_alloc`.
+        var response_arena_state = std.heap.ArenaAllocator.init(reg.gpa);
+        defer response_arena_state.deinit();
+        const response_alloc = response_arena_state.allocator();
+        const resp = request(server, response_alloc, pw.writer.buffered(), "tools/call") catch |err| switch (err) {
+            // Streamable HTTP servers use 404 to expire a session. Re-run the
+            // MCP handshake once, then retry the call without the stale ID.
+            error.McpSessionExpired => retry: {
+                try initializeServer(server, response_alloc, reg.arena());
+                break :retry try request(server, response_alloc, pw.writer.buffered(), "tools/call");
+            },
+            else => return err,
+        };
 
         if (resp.object.get("error")) |e| {
             // Protocol-level failure (unknown tool, invalid args, server
             // crash) — distinct from a tool that ran and *returned* an error
             // (isError below). Keep the JSON-RPC code: models retry better
             // when they can tell -32602 bad-params from a tool-side failure.
-            const msg = if (e.object.get("message")) |m| m.string else "MCP error";
-            const code: i64 = if (e.object.get("code")) |c| (if (c == .integer) c.integer else 0) else 0;
+            const msg = if (e == .object) blk: {
+                const m = e.object.get("message") orelse break :blk "MCP error";
+                break :blk if (m == .string) m.string else "MCP error";
+            } else "MCP error";
+            const code: i64 = if (e == .object) blk: {
+                const c = e.object.get("code") orelse break :blk 0;
+                break :blk if (c == .integer) c.integer else 0;
+            } else 0;
             const text = if (code != 0)
                 try std.fmt.allocPrint(out_alloc, "MCP error {d}: {s}", .{ code, msg })
             else
@@ -456,37 +587,346 @@ pub const Registry = struct {
     }
 };
 
-/// JSON-RPC request/response over one server's stdio pipe. `params` is a raw
-/// JSON object string. Skips interleaved notifications (messages without our
-/// id) until the matching response arrives. Result Values are arena-owned.
-fn request(server: *Server, a: Allocator, params: []const u8, method: []const u8) !Value {
+fn deinitServer(server: *Server, io: Io) void {
+    switch (server.transport) {
+        .stdio => |*stdio| stopChild(io, &stdio.child),
+        .http => |*http| {
+            if (http.session_id) |session_id| http.client.allocator.free(session_id);
+            http.client.deinit();
+        },
+    }
+}
+
+fn initializeServer(server: *Server, response_alloc: Allocator, session_alloc: Allocator) !void {
+    const init_resp = try request(server, response_alloc,
+        \\{"protocolVersion":"
+    ++ latest_protocol ++
+        \\","capabilities":{},"clientInfo":{"name":"simple-harness","version":"0.1"}}
+    , "initialize");
+    if (init_resp.object.get("result")) |res| if (res == .object) {
+        if (res.object.get("protocolVersion")) |pv| if (pv == .string) {
+            server.protocol_version = try session_alloc.dupe(u8, pv.string);
+        };
+    };
+    try notify(server, response_alloc, "notifications/initialized");
+}
+
+/// JSON-RPC request/response over either transport. `params` is a raw JSON
+/// object string. Result Values use `response_alloc`.
+fn request(server: *Server, response_alloc: Allocator, params: []const u8, method: []const u8) !Value {
     const id = server.next_id;
     server.next_id += 1;
 
-    const w = &server.stdin_writer.interface;
-    try w.print(
-        \\{{"jsonrpc":"2.0","id":{d},"method":"{s}","params":{s}}}
-    ++ "\n", .{ id, method, params });
-    try w.flush();
+    switch (server.transport) {
+        .stdio => |*stdio| {
+            const w = &stdio.stdin_writer.interface;
+            try w.print(
+                \\{{"jsonrpc":"2.0","id":{d},"method":"{s}","params":{s}}}
+            ++ "\n", .{ id, method, params });
+            try w.flush();
 
-    const r = &server.stdout_reader.interface;
-    while (true) {
-        const line = (try r.takeDelimiter('\n')) orelse return error.McpClosed;
-        if (line.len == 0) continue;
-        const parsed = std.json.parseFromSliceLeaky(Value, a, line, .{ .allocate = .alloc_always }) catch continue;
-        if (parsed != .object) continue;
-        const got = parsed.object.get("id") orelse continue; // notification
-        if (got == .integer and got.integer == id) return parsed;
+            const r = &stdio.stdout_reader.interface;
+            while (true) {
+                const line = (try r.takeDelimiter('\n')) orelse return error.McpClosed;
+                if (matchingResponse(response_alloc, line, id)) |parsed| return parsed;
+            }
+        },
+        .http => |*http| {
+            const body = try std.fmt.allocPrint(response_alloc,
+                \\{{"jsonrpc":"2.0","id":{d},"method":"{s}","params":{s}}}
+            , .{ id, method, params });
+            const protocol_version = if (std.mem.eql(u8, method, "initialize")) latest_protocol else server.protocol_version;
+            const response_body = (try httpPost(http, body, protocol_version, id)) orelse return error.BadMcpResponse;
+            defer http.client.allocator.free(response_body);
+            return parseHttpResponse(response_alloc, response_body, id) orelse error.BadMcpResponse;
+        },
     }
 }
 
 /// Fire-and-forget JSON-RPC notification (no id, no response).
-fn notify(server: *Server, method: []const u8) !void {
-    const w = &server.stdin_writer.interface;
-    try w.print(
-        \\{{"jsonrpc":"2.0","method":"{s}","params":{{}}}}
-    ++ "\n", .{method});
-    try w.flush();
+fn notify(server: *Server, response_alloc: Allocator, method: []const u8) !void {
+    switch (server.transport) {
+        .stdio => |*stdio| {
+            const w = &stdio.stdin_writer.interface;
+            try w.print(
+                \\{{"jsonrpc":"2.0","method":"{s}","params":{{}}}}
+            ++ "\n", .{method});
+            try w.flush();
+        },
+        .http => |*http| {
+            const body = try std.fmt.allocPrint(response_alloc,
+                \\{{"jsonrpc":"2.0","method":"{s}","params":{{}}}}
+            , .{method});
+            if (try httpPost(http, body, server.protocol_version, null)) |response_body| {
+                http.client.allocator.free(response_body);
+            }
+        },
+    }
+}
+
+fn matchingResponse(a: Allocator, bytes: []const u8, id: i64) ?Value {
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    const parsed = std.json.parseFromSliceLeaky(Value, a, trimmed, .{ .allocate = .alloc_always }) catch return null;
+    if (parsed != .object) return null;
+    const got = parsed.object.get("id") orelse return null;
+    if (got != .integer or got.integer != id) return null;
+    return parsed;
+}
+
+/// Streamable HTTP permits either a plain application/json body or an SSE
+/// response. MCP JSON-RPC payloads are compact one-line `data:` events; ignore
+/// comments/notifications and return the event matching our request id.
+fn parseHttpResponse(a: Allocator, body: []const u8, id: i64) ?Value {
+    if (matchingResponse(a, body, id)) |parsed| return parsed;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trimEnd(u8, raw_line, "\r");
+        if (!std.mem.startsWith(u8, line, "data:")) continue;
+        if (matchingResponse(a, std.mem.trimStart(u8, line["data:".len..], " \t"), id)) |parsed| return parsed;
+    }
+    return null;
+}
+
+fn jsonResponseMatches(gpa: Allocator, bytes: []const u8, expected_id: i64) bool {
+    const parsed = std.json.parseFromSlice(Value, gpa, bytes, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const id = parsed.value.object.get("id") orelse return false;
+    return id == .integer and id.integer == expected_id;
+}
+
+/// Read SSE one event at a time and return as soon as the matching JSON-RPC
+/// response arrives. This is important for servers that keep the POST stream
+/// open after emitting the response. Multiple `data:` fields are joined with
+/// newlines per the SSE specification.
+fn readSseResponse(gpa: Allocator, reader: *Io.Reader, expected_id: ?i64) !?[]u8 {
+    const line_buf = try gpa.alloc(u8, max_http_response);
+    defer gpa.free(line_buf);
+    var event_data: std.ArrayList(u8) = .empty;
+    defer event_data.deinit(gpa);
+    var consumed: usize = 0;
+
+    while (consumed < max_http_response) {
+        var line_writer = Io.Writer.fixed(line_buf);
+        const remaining = max_http_response - consumed;
+        const n = reader.streamDelimiterLimit(&line_writer, '\n', .limited(remaining)) catch |err| switch (err) {
+            error.StreamTooLong, error.WriteFailed => return error.McpResponseTooLarge,
+            else => return err,
+        };
+        consumed += n;
+        const line = std.mem.trimEnd(u8, line_writer.buffered(), "\r");
+
+        var at_eof = false;
+        const delimiter = reader.takeByte() catch |err| switch (err) {
+            error.EndOfStream => blk: {
+                at_eof = true;
+                break :blk 0;
+            },
+            else => return err,
+        };
+        if (!at_eof) {
+            std.debug.assert(delimiter == '\n');
+            consumed += 1;
+        }
+
+        if (std.mem.startsWith(u8, line, "data:")) {
+            const data = std.mem.trimStart(u8, line["data:".len..], " \t");
+            if (event_data.items.len > 0) try event_data.append(gpa, '\n');
+            if (event_data.items.len + data.len > max_http_response) return error.McpResponseTooLarge;
+            try event_data.appendSlice(gpa, data);
+        }
+
+        if (line.len == 0 or at_eof) {
+            if (event_data.items.len > 0) {
+                const matches = if (expected_id) |id| jsonResponseMatches(gpa, event_data.items, id) else true;
+                if (matches) return try gpa.dupe(u8, event_data.items);
+                event_data.clearRetainingCapacity();
+            }
+        }
+        if (at_eof) break;
+    }
+    if (consumed >= max_http_response) return error.McpResponseTooLarge;
+    return null;
+}
+
+/// Perform one bounded Streamable HTTP POST, retaining the MCP session ID from
+/// initialize and accepting both JSON and SSE responses. A 202 with no body is
+/// the normal response to a notification.
+fn httpPostUnwatched(http: *HttpTransport, body: []const u8, protocol_version: []const u8, expected_id: ?i64) !?[]u8 {
+    var oauth_arena_state = std.heap.ArenaAllocator.init(http.client.allocator);
+    defer oauth_arena_state.deinit();
+    const oauth_arena = oauth_arena_state.allocator();
+
+    var extra: std.ArrayList(std.http.Header) = .empty;
+    defer extra.deinit(http.client.allocator);
+    try extra.appendSlice(http.client.allocator, http.headers);
+    if (http.oauth_home) |home| if (mcp_oauth.loadAccessToken(http.client.io, http.client.allocator, oauth_arena, home, http.url)) |token| {
+        try extra.append(http.client.allocator, .{
+            .name = "authorization",
+            .value = try std.fmt.allocPrint(oauth_arena, "Bearer {s}", .{token}),
+        });
+    };
+    try extra.append(http.client.allocator, .{ .name = "accept", .value = "application/json, text/event-stream" });
+    try extra.append(http.client.allocator, .{ .name = "mcp-protocol-version", .value = protocol_version });
+    if (http.session_id) |session_id| try extra.append(http.client.allocator, .{ .name = "mcp-session-id", .value = session_id });
+
+    var req = try http.client.request(.POST, try std.Uri.parse(http.url), .{
+        .redirect_behavior = .unhandled,
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+            .accept_encoding = .omit,
+            .user_agent = .{ .override = "codegraff-mcp/1" },
+        },
+        .extra_headers = extra.items,
+    });
+    defer req.deinit();
+    errdefer {
+        if (req.connection) |connection| connection.closing = true;
+    }
+
+    req.transfer_encoding = .{ .content_length = body.len };
+    var body_writer = try req.sendBodyUnflushed(&.{});
+    try body_writer.writer.writeAll(body);
+    try body_writer.end();
+    try req.connection.?.flush();
+    var response = try req.receiveHead(&.{});
+
+    const status = @intFromEnum(response.head.status);
+    if (status == 401 or status == 403) {
+        if (req.connection) |connection| connection.closing = true;
+        return error.McpAuthenticationRequired;
+    }
+    if (status == 404 and http.session_id != null) {
+        if (req.connection) |connection| connection.closing = true;
+        http.client.allocator.free(http.session_id.?);
+        http.session_id = null;
+        return error.McpSessionExpired;
+    }
+    if (status < 200 or status >= 300) {
+        if (req.connection) |connection| connection.closing = true;
+        return error.McpHttpStatus;
+    }
+
+    var header_it = response.head.iterateHeaders();
+    while (header_it.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "mcp-session-id")) {
+            if (http.session_id) |session_id| {
+                if (!std.mem.eql(u8, session_id, header.value)) return error.McpSessionChanged;
+            } else {
+                http.session_id = try http.client.allocator.dupe(u8, header.value);
+            }
+        }
+    }
+
+    if (response.head.content_length == 0) return null;
+    const is_sse = if (response.head.content_type) |content_type|
+        std.ascii.startsWithIgnoreCase(content_type, "text/event-stream")
+    else
+        false;
+    var transfer_buf: [4096]u8 = undefined;
+    const reader = response.reader(&transfer_buf);
+    if (is_sse) return readSseResponse(http.client.allocator, reader, expected_id);
+
+    const response_buf = try http.client.allocator.alloc(u8, max_http_response);
+    errdefer http.client.allocator.free(response_buf);
+    var fixed = Io.Writer.fixed(response_buf);
+    _ = reader.streamRemaining(&fixed) catch |err| switch (err) {
+        error.WriteFailed => return error.McpResponseTooLarge,
+        else => return err,
+    };
+    const len = fixed.buffered().len;
+    if (len == 0) {
+        http.client.allocator.free(response_buf);
+        return null;
+    }
+    return try http.client.allocator.realloc(response_buf, len);
+}
+
+const HttpPostDone = union(enum) {
+    posted: anyerror!?[]u8,
+    timeout,
+};
+
+fn httpPostTask(http: *HttpTransport, body: []const u8, protocol_version: []const u8, expected_id: ?i64) anyerror!?[]u8 {
+    return httpPostUnwatched(http, body, protocol_version, expected_id);
+}
+
+fn httpPostTimeout(io: Io) void {
+    io.sleep(.fromSeconds(15), .awake) catch {};
+}
+
+fn freeLateHttpPost(allocator: Allocator, result: anyerror!?[]u8) void {
+    if (result) |body| {
+        if (body) |bytes| allocator.free(bytes);
+    } else |_| {}
+}
+
+fn cancelHttpPost(select: *Io.Select(HttpPostDone), allocator: Allocator) void {
+    while (select.cancel()) |late| switch (late) {
+        .posted => |result| freeLateHttpPost(allocator, result),
+        .timeout => {},
+    };
+}
+
+/// Race network I/O against a hard deadline. Cancellation unwinds the request,
+/// whose errdefer poisons the connection so a timed-out socket is never pooled.
+fn httpPost(http: *HttpTransport, body: []const u8, protocol_version: []const u8, expected_id: ?i64) !?[]u8 {
+    var done_buf: [2]HttpPostDone = undefined;
+    var select: Io.Select(HttpPostDone) = .init(http.client.io, &done_buf);
+    select.concurrent(.posted, httpPostTask, .{ http, body, protocol_version, expected_id }) catch
+        return error.McpRequestTimedOut;
+    select.concurrent(.timeout, httpPostTimeout, .{http.client.io}) catch {
+        const only = select.await() catch |err| {
+            cancelHttpPost(&select, http.client.allocator);
+            return err;
+        };
+        select.cancelDiscard();
+        return only.posted;
+    };
+
+    const first = select.await() catch |err| {
+        cancelHttpPost(&select, http.client.allocator);
+        return err;
+    };
+    switch (first) {
+        .posted => |result| {
+            select.cancelDiscard();
+            return result;
+        },
+        .timeout => {
+            while (select.cancel()) |late| switch (late) {
+                .posted => |result| freeLateHttpPost(http.client.allocator, result),
+                .timeout => {},
+            };
+            return error.McpRequestTimedOut;
+        },
+    }
+}
+
+test "remote URLs require HTTPS except on loopback" {
+    try std.testing.expect(validRemoteUrl("https://api.mobbin.com/mcp"));
+    try std.testing.expect(validRemoteUrl("http://localhost:3000/mcp"));
+    try std.testing.expect(validRemoteUrl("http://127.0.0.1:3000/mcp"));
+    try std.testing.expect(validRemoteUrl("http://[::1]:3000/mcp"));
+    try std.testing.expect(!validRemoteUrl("http://api.mobbin.com/mcp"));
+    try std.testing.expect(!validRemoteUrl("ftp://localhost/mcp"));
+    try std.testing.expect(!validRemoteUrl("not a URL"));
+}
+
+test "parseHttpResponse accepts JSON and Streamable HTTP SSE" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const json = parseHttpResponse(a, "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}", 7).?;
+    try std.testing.expect(json.object.get("result") != null);
+
+    const sse = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\r\n\r\n" ++
+        "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{\"tools\":[]}}\r\n\r\n";
+    const event = parseHttpResponse(a, sse, 8).?;
+    try std.testing.expectEqual(@as(i64, 8), event.object.get("id").?.integer);
+    try std.testing.expect(parseHttpResponse(a, sse, 9) == null);
 }
 
 test "rewriteOneOf: converts oneOf to anyOf, recursively" {

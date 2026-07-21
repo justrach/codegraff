@@ -375,7 +375,8 @@ pub fn main(init: std.process.Init) !void {
     // MCP servers from .mcp.json. SECURITY: a workspace .mcp.json launches arbitrary local commands, so opening an untrusted repo could run them —
     // auto-connect only with --yolo (trusted) or explicit per-session consent; otherwise start with an empty (but live) registry so `/mcp add`
     // still works.
-    var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, use_color, json_mode);
+    const mcp_home = homeEnv(init.environ_map) orelse "";
+    var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, mcp_home, use_color, json_mode);
     boot.mark(io, "MCP registry");
     defer registry_storage.deinit();
     const registry: ?*mcp.Registry = &registry_storage;
@@ -392,7 +393,8 @@ pub fn main(init: std.process.Init) !void {
     };
     if (theme_setup.should_exit) return;
     boot.mark(io, "settings/theme");
-    try session_start.connectCompanion(io, &registry_storage, flags, out, json_mode);
+    const smolify_enabled = init.environ_map.get("GRAFF_NO_SMOLIFY") == null;
+    try session_start.connectCompanion(io, &registry_storage, flags, out, json_mode, smolify_enabled);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
     if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);

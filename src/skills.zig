@@ -78,6 +78,10 @@ pub const mcp_notes = [_]McpNote{
         .server = "muonry",
         .note = "The muonry MCP server is connected (mcp__muonry__* tools). SEARCH ORDER: the native codedb tool is free and indexed — always try it first for code search (search/symbol/callers/outline/find); use mcp__muonry__search or faster_search only when codedb can't answer (raw literal/regex content matches, non-code or non-indexed files) — muonry is metered. Prefer mcp__muonry__read (mode=outline first, then symbol) over read_file for navigating large code files, and mcp__muonry__batch to run several independent reads/searches/edits in one round-trip. Keep edits inside the cwd on the native edit_file/write_file tools (they are snapshot-tracked for /rewind); for an explicitly user-requested external target, use permission-gated bash with quoted paths and disclose that /rewind does not cover it. These tools are accelerators, not requirements: whenever an mcp__muonry__ call fails or is unavailable, fall back to read_file/codedb/bash and continue.",
     },
+    .{
+        .server = "smolify",
+        .note = "The core Smolify MCP is connected (mcp__smolify__* tools). Use it to discover and search generated API documentation when a task involves an unfamiliar public project or library; prefer local repository code and its own docs when they already answer the question.",
+    },
 };
 
 /// The metered code-intelligence companion. It first shipped as `muonry` and

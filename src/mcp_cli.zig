@@ -11,6 +11,8 @@ const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
 const skills = @import("skills.zig");
+const mcp = @import("mcp.zig");
+const mcp_oauth = @import("mcp_oauth.zig");
 const mcp_config_path = root.mcp_config_path;
 const companion_servers = skills.companion_servers;
 
@@ -41,6 +43,9 @@ pub fn countMcpServers(io: Io, arena: Allocator) usize {
     var n: usize = 0;
     var it = servers.object.iterator();
     while (it.next()) |entry| {
+        // `smolify` is a reserved core server; workspace entries cannot shadow
+        // its pinned endpoint and therefore need no workspace consent.
+        if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
         if (!trustedMcpEntry(entry.key_ptr.*, entry.value_ptr.*)) n += 1;
     }
     return n;
@@ -49,6 +54,7 @@ pub fn countMcpServers(io: Io, arena: Allocator) usize {
 /// Best-effort write of a server entry into .mcp.json (so `/mcp add` survives
 /// a restart). Merges into any existing config. Returns false on any error.
 const McpEnvPair = struct { key: []const u8, value: []const u8 };
+pub const McpHeaderPair = struct { key: []const u8, value: []const u8 };
 
 pub fn persistMcpServer(io: Io, arena: Allocator, name: []const u8, command: []const u8, args: []const []const u8) bool {
     return persistMcpServerWithEnv(io, arena, name, command, args, &.{});
@@ -92,14 +98,56 @@ fn persistMcpServerWithEnv(io: Io, arena: Allocator, name: []const u8, command: 
     return true;
 }
 
+/// Persist a native Streamable HTTP entry. Headers are optional and intended
+/// for static bearer/API tokens; OAuth-capable servers can remain anonymous
+/// until an authorization flow is configured.
+pub fn persistMcpUrl(io: Io, arena: Allocator, name: []const u8, url: []const u8, headers: []const McpHeaderPair) bool {
+    var root_obj: std.json.ObjectMap = .empty;
+    if (Io.Dir.cwd().readFileAlloc(io, mcp_config_path, arena, .limited(1 << 20))) |text| {
+        if (std.json.parseFromSliceLeaky(Value, arena, text, .{ .allocate = .alloc_always })) |v| {
+            if (v == .object) root_obj = v.object;
+        } else |_| {}
+    } else |_| {}
+
+    var servers: std.json.ObjectMap = .empty;
+    if (root_obj.get("mcpServers")) |m| if (m == .object) {
+        servers = m.object;
+    };
+    var entry: std.json.ObjectMap = .empty;
+    entry.put(arena, "url", .{ .string = url }) catch return false;
+    if (headers.len > 0) {
+        var header_obj: std.json.ObjectMap = .empty;
+        for (headers) |header| header_obj.put(arena, header.key, .{ .string = header.value }) catch return false;
+        entry.put(arena, "headers", .{ .object = header_obj }) catch return false;
+    }
+    servers.put(arena, name, .{ .object = entry }) catch return false;
+    root_obj.put(arena, "mcpServers", .{ .object = servers }) catch return false;
+
+    var aw: Io.Writer.Allocating = .init(arena);
+    var stringify: std.json.Stringify = .{ .writer = &aw.writer };
+    stringify.write(Value{ .object = root_obj }) catch return false;
+    const file = Io.Dir.cwd().createFile(io, mcp_config_path, .{}) catch return false;
+    defer file.close(io);
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    writer.interface.writeAll(aw.writer.buffered()) catch return false;
+    writer.interface.flush() catch return false;
+    return true;
+}
+
 fn mcpCliUsage(w: *Io.Writer) !void {
     try w.writeAll(
         \\usage:
         \\  graff mcp                      list servers in .mcp.json
+        \\  graff mcp add <name> --url <https://...> [--header KEY=VALUE ...]
+        \\  graff mcp login <name>        OAuth login for a remote server
         \\  graff mcp add <name> [--env KEY=VALUE ...] -- <command> [args...]
         \\  graff mcp add <name> <command> [args...]
         \\
         \\examples:
+        \\  graff mcp add mobbin --url https://api.mobbin.com/mcp
+        \\  graff mcp login mobbin
+        \\  graff mcp login smolify
         \\  graff mcp add context7 -- npx -y @upstash/context7-mcp
         \\  graff mcp add playwright -- npx -y @playwright/mcp
         \\  graff mcp add sentry --env SENTRY_AUTH_TOKEN=... -- npx -y @sentry/mcp-server
@@ -107,7 +155,7 @@ fn mcpCliUsage(w: *Io.Writer) !void {
     );
 }
 
-pub fn mcpCommand(io: Io, arena: Allocator, args: []const []const u8) !void {
+pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, args: []const []const u8) !void {
     var obuf: [4096]u8 = undefined;
     var out = Io.File.stdout().writer(io, &obuf);
 
@@ -134,11 +182,15 @@ pub fn mcpCommand(io: Io, arena: Allocator, args: []const []const u8) !void {
             while (it.next()) |entry| {
                 const cfg = entry.value_ptr.*;
                 if (cfg != .object) continue;
-                const command = if (cfg.object.get("command")) |c| if (c == .string) c.string else "?" else "?";
-                try out.interface.print("  {s}: {s}", .{ entry.key_ptr.*, command });
-                if (cfg.object.get("args")) |argv| if (argv == .array) for (argv.array.items) |a| {
-                    if (a == .string) try out.interface.print(" {s}", .{a.string});
-                };
+                if (cfg.object.get("url")) |url| {
+                    try out.interface.print("  {s}: {s}", .{ entry.key_ptr.*, if (url == .string) url.string else "?" });
+                } else {
+                    const command = if (cfg.object.get("command")) |c| if (c == .string) c.string else "?" else "?";
+                    try out.interface.print("  {s}: {s}", .{ entry.key_ptr.*, command });
+                    if (cfg.object.get("args")) |argv| if (argv == .array) for (argv.array.items) |arg| {
+                        if (arg == .string) try out.interface.print(" {s}", .{arg.string});
+                    };
+                }
                 try out.interface.writeByte('\n');
             }
         }
@@ -149,6 +201,33 @@ pub fn mcpCommand(io: Io, arena: Allocator, args: []const []const u8) !void {
     if (std.mem.eql(u8, args[0], "help") or std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")) {
         try mcpCliUsage(&out.interface);
         try out.interface.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, args[0], "login")) {
+        if (args.len != 2) {
+            try out.interface.writeAll("usage: graff mcp login <name>\n");
+            try out.interface.flush();
+            return;
+        }
+        const name = args[1];
+        const url = if (std.mem.eql(u8, name, "smolify"))
+            mcp.smolify_url
+        else url: {
+            const data = Io.Dir.cwd().readFileAlloc(io, mcp_config_path, arena, .limited(1 << 20)) catch
+                std.process.fatal("mcp login: no .mcp.json; add the remote server first", .{});
+            const config = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch
+                std.process.fatal("mcp login: .mcp.json is not valid JSON", .{});
+            if (config != .object) std.process.fatal("mcp login: .mcp.json is not an object", .{});
+            const servers = config.object.get("mcpServers") orelse std.process.fatal("mcp login: server '{s}' is not configured", .{name});
+            if (servers != .object) std.process.fatal("mcp login: mcpServers is not an object", .{});
+            const entry = servers.object.get(name) orelse std.process.fatal("mcp login: server '{s}' is not configured", .{name});
+            if (entry != .object) std.process.fatal("mcp login: server '{s}' has invalid config", .{name});
+            const remote = entry.object.get("url") orelse std.process.fatal("mcp login: server '{s}' is not a remote URL server", .{name});
+            if (remote != .string or !mcp.validRemoteUrl(remote.string)) std.process.fatal("mcp login: server '{s}' has an invalid URL", .{name});
+            break :url remote.string;
+        };
+        try mcp_oauth.login(io, gpa, arena, home, name, url);
         return;
     }
 
@@ -164,6 +243,36 @@ pub fn mcpCommand(io: Io, arena: Allocator, args: []const []const u8) !void {
     }
 
     const name = args[1];
+    if (std.mem.eql(u8, name, "smolify")) std.process.fatal("mcp add: 'smolify' is a reserved core server", .{});
+    if (std.mem.eql(u8, args[2], "--url") or std.mem.startsWith(u8, args[2], "--url=")) {
+        const url = if (std.mem.eql(u8, args[2], "--url")) blk: {
+            if (args.len < 4) std.process.fatal("mcp add: --url needs an HTTP(S) URL", .{});
+            break :blk args[3];
+        } else args[2]["--url=".len..];
+        if (!mcp.validRemoteUrl(url)) std.process.fatal("mcp add: URL must use HTTPS (HTTP is allowed only for localhost)", .{});
+        const first_option: usize = if (std.mem.eql(u8, args[2], "--url")) 4 else 3;
+        var headers: std.ArrayList(McpHeaderPair) = .empty;
+        defer headers.deinit(arena);
+        var j = first_option;
+        while (j < args.len) : (j += 1) {
+            const arg = args[j];
+            const raw = if (std.mem.eql(u8, arg, "--header")) value: {
+                j += 1;
+                if (j >= args.len) std.process.fatal("mcp add: --header needs KEY=VALUE", .{});
+                break :value args[j];
+            } else if (std.mem.startsWith(u8, arg, "--header="))
+                arg["--header=".len..]
+            else
+                std.process.fatal("mcp add: unexpected URL option '{s}'", .{arg});
+            const eq = std.mem.indexOfScalar(u8, raw, '=') orelse std.process.fatal("mcp add: --header expects KEY=VALUE", .{});
+            try headers.append(arena, .{ .key = raw[0..eq], .value = raw[eq + 1 ..] });
+        }
+        if (!persistMcpUrl(io, arena, name, url, headers.items)) std.process.fatal("could not write .mcp.json", .{});
+        try out.interface.print("saved Streamable HTTP MCP server '{s}' to .mcp.json\n", .{name});
+        try out.interface.flush();
+        return;
+    }
+
     var env_pairs: std.ArrayList(McpEnvPair) = .empty;
     defer env_pairs.deinit(arena);
     var command_index: ?usize = null;
@@ -217,4 +326,10 @@ test "trustedMcpEntry: only the exact companion shape skips the consent gate" {
     try std.testing.expect(!trustedMcpEntry("muonry", parse(a, "{\"command\":\"muonry\",\"args\":[\"--mcp\",\"--evil\"]}")));
     try std.testing.expect(!trustedMcpEntry("muonry", parse(a, "{\"command\":\"./muonry\",\"args\":[\"--mcp\"]}")));
     try std.testing.expect(!trustedMcpEntry("other", parse(a, "{\"command\":\"muonry\"}")));
+    // Workspace remote servers cross a network/data boundary and need consent
+    // just like local commands.
+    try std.testing.expect(!trustedMcpEntry("remote", parse(a, "{\"url\":\"https://example.com/mcp\"}")));
+    try std.testing.expect(!trustedMcpEntry("local-http", parse(a, "{\"url\":\"http://127.0.0.1:3000/mcp\"}")));
+    try std.testing.expect(!trustedMcpEntry("remote", parse(a, "{\"url\":\"file:///tmp/mcp\"}")));
+    try std.testing.expect(!trustedMcpEntry("remote", parse(a, "{\"url\":\"https://example.com/mcp\",\"command\":\"evil\"}")));
 }
