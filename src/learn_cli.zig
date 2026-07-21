@@ -249,9 +249,15 @@ fn verifyRun(
     for (run.candidates, 0..) |candidate, index| {
         _ = try store.readGenome(arena, candidate.genome_id, config.value.limits.genome_bytes);
         try verifyMutationEvidence(arena, store, config.value, run, index, candidate);
+        // Mirror runCommand's precedence exactly: identical_parent wins and
+        // skips the prior-duplicate scan. Letting duplicate_candidate
+        // overwrite it made a run with two parent-identical candidates
+        // permanently unverifiable (writer said identical_parent, verifier
+        // demanded duplicate_candidate).
         var duplicate_reason: ?[]const u8 = null;
-        if (std.mem.eql(u8, candidate.genome_id, run.parent_genome_id)) duplicate_reason = "identical_parent";
-        for (run.candidates[0..index]) |prior| if (std.mem.eql(u8, candidate.genome_id, prior.genome_id)) {
+        if (std.mem.eql(u8, candidate.genome_id, run.parent_genome_id)) {
+            duplicate_reason = "identical_parent";
+        } else for (run.candidates[0..index]) |prior| if (std.mem.eql(u8, candidate.genome_id, prior.genome_id)) {
             duplicate_reason = "duplicate_candidate";
             break;
         };
@@ -291,6 +297,12 @@ fn initCommand(gpa: Allocator, arena: Allocator, io: Io, args: InitArgs, out: *I
     try store_mod.validateConfig(config);
     try verifyPins(io, arena, config);
     const parent = try store_mod.readFileNoFollow(io, Io.Dir.cwd(), args.parent, arena, config.limits.genome_bytes);
+    // Validate the genome BEFORE creating the store tree: a rejected parent
+    // must not leave a half-initialized .graff/learn behind (which used to
+    // wedge every later init with AlreadyInitialized).
+    if (!std.unicode.utf8ValidateSlice(parent) or
+        std.mem.indexOfScalar(u8, parent, 0) != null or
+        std.mem.trim(u8, parent, " \t\r\n").len == 0) return error.InvalidParentGenome;
 
     var store = try store_mod.Store.initAt(io, Io.Dir.cwd());
     defer store.deinit();
@@ -316,7 +328,7 @@ fn runCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.proc
     if (args.auto and config.value.holdout_suite == null) return error.AutoRequiresHoldout;
 
     try out.writeAll("warning: mutator and evaluator execute as your OS user; scratch isolation is not a sandbox\n");
-    const nonce = store_mod.randomId(io);
+    const nonce = try store_mod.randomId(io);
     const trial_id = trialId(&config.id, active.ref.genome_id, active.ref.generation, active.ref.transaction_id, &nonce);
     const candidates = try arena.alloc(eval.CandidateRecord, candidate_count);
 
@@ -444,6 +456,11 @@ fn promoteCommand(gpa: Allocator, arena: Allocator, io: Io, args: PromoteArgs, o
 }
 
 fn ancestorTarget(arena: Allocator, store: *store_mod.Store, active: store_mod.LoadedActive, requested: ?[]const u8) ![]const u8 {
+    // After a rollback, previous_genome_id names the genome just rolled AWAY
+    // from, so a default-target rollback would move forward and reinstate it.
+    // Require an explicit --to instead of silently undoing the rollback.
+    if (requested == null and std.mem.eql(u8, active.transaction.operation, "rollback"))
+        return error.RollbackNeedsExplicitTarget;
     const default_target = active.transaction.previous_genome_id orelse return error.NoRollbackAvailable;
     const target = requested orelse default_target;
     if (std.mem.eql(u8, target, active.ref.genome_id)) return error.AlreadyActive;

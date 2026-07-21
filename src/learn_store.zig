@@ -205,9 +205,12 @@ pub fn jsonBytes(gpa: Allocator, value: anytype) ![]u8 {
     return gpa.dupe(u8, allocating.writer.buffered());
 }
 
-pub fn randomId(io: Io) [64]u8 {
+pub fn randomId(io: Io) ![64]u8 {
     var raw: [32]u8 = undefined;
-    io.randomSecure(&raw) catch io.random(&raw);
+    // Fail closed: trial nonces feed trial-ID derivation, so degrading to
+    // non-cryptographic randomness silently would weaken an integrity
+    // boundary rather than a convenience.
+    try io.randomSecure(&raw);
     return std.fmt.bytesToHex(raw, .lower);
 }
 
@@ -231,7 +234,7 @@ pub fn readPinnedFileAlloc(io: Io, gpa: Allocator, pin: PinnedFile, max: u64) ![
     if (!std.fs.path.isAbsolute(pin.path)) return error.PathNotAbsolute;
     var real_buf: [std.fs.max_path_bytes]u8 = undefined;
     const real_len = try Io.Dir.realPathFileAbsolute(io, pin.path, &real_buf);
-    if (!std.mem.eql(u8, pin.path, real_buf[0..real_len])) return error.NonCanonicalPath;
+    if (!canonicalPathEql(pin.path, real_buf[0..real_len])) return error.NonCanonicalPath;
 
     const file = try openFileNoFollow(io, .cwd(), pin.path, .{});
     defer file.close(io);
@@ -251,11 +254,23 @@ pub fn readPinnedFileAlloc(io: Io, gpa: Allocator, pin: PinnedFile, max: u64) ![
     return bytes;
 }
 
+/// Byte equality, except case-insensitive on the platforms whose default
+/// filesystems are case-insensitive. The kernel canonicalizes casing in
+/// realPath output there, so an exact compare rejected valid pinned paths
+/// that differ only by case; symlinked components still differ after
+/// resolution and are still rejected. Content authenticity comes from the
+/// sha256 pin, not from this check.
+fn canonicalPathEql(configured: []const u8, canonical: []const u8) bool {
+    if (builtin.os.tag == .windows or builtin.os.tag.isDarwin())
+        return std.ascii.eqlIgnoreCase(configured, canonical);
+    return std.mem.eql(u8, configured, canonical);
+}
+
 pub fn hashFileNoFollow(io: Io, path: []const u8) ![64]u8 {
     if (!std.fs.path.isAbsolute(path)) return error.PathNotAbsolute;
     var real_buf: [std.fs.max_path_bytes]u8 = undefined;
     const real_len = try Io.Dir.realPathFileAbsolute(io, path, &real_buf);
-    if (!std.mem.eql(u8, path, real_buf[0..real_len])) return error.NonCanonicalPath;
+    if (!canonicalPathEql(path, real_buf[0..real_len])) return error.NonCanonicalPath;
 
     const file = try openFileNoFollow(io, .cwd(), path, .{});
     defer file.close(io);
@@ -317,6 +332,36 @@ fn createPrivateDir(io: Io, parent: Io.Dir, name: []const u8) !Io.Dir {
     return dir;
 }
 
+/// createPrivateDir that tolerates an existing directory, reopening it with
+/// the same permission checks as openPrivateDir. Used when resuming an
+/// interrupted init: leftovers must be adopted only if they are still
+/// private.
+fn ensurePrivateDir(io: Io, parent: Io.Dir, name: []const u8) !Io.Dir {
+    parent.createDir(io, name, dir_permissions) catch |err| switch (err) {
+        error.PathAlreadyExists => return openPrivateDir(io, parent, name),
+        else => return err,
+    };
+    var dir = try parent.openDir(io, name, .{ .iterate = true, .follow_symlinks = false });
+    errdefer dir.close(io);
+    if (builtin.os.tag != .windows) try dir.setPermissions(io, dir_permissions);
+    try syncDirectory(io, dir);
+    try syncDirectory(io, parent);
+    return dir;
+}
+
+/// A store is complete once refs/active.json exists (bootstrap's final
+/// write). Unreadable state is treated as initialized so nothing is adopted
+/// or overwritten blindly.
+fn hasActiveRef(io: Io, graff: Io.Dir) bool {
+    const root = graff.openDir(io, "learn", .{ .iterate = true, .follow_symlinks = false }) catch return true;
+    defer root.close(io);
+    const refs = root.openDir(io, "refs", .{ .iterate = true, .follow_symlinks = false }) catch return false;
+    defer refs.close(io);
+    const file = openFileNoFollow(io, refs, "active.json", .{}) catch return false;
+    file.close(io);
+    return true;
+}
+
 pub const Store = struct {
     io: Io,
     root: Io.Dir,
@@ -338,7 +383,13 @@ pub const Store = struct {
         defer graff.close(io);
         try syncDirectory(io, base);
         graff.createDir(io, "learn", dir_permissions) catch |err| switch (err) {
-            error.PathAlreadyExists => return error.AlreadyInitialized,
+            // A completed store has refs/active.json (bootstrap's final
+            // write). A learn tree without it is the residue of a failed or
+            // interrupted init and used to wedge every later `learn init`
+            // with AlreadyInitialized until the tree was deleted by hand.
+            // Resume initializing instead: every write below is
+            // create-or-verify, and reopened leftovers must still be private.
+            error.PathAlreadyExists => if (hasActiveRef(io, graff)) return error.AlreadyInitialized,
             else => return err,
         };
         var root = try graff.openDir(io, "learn", .{ .iterate = true, .follow_symlinks = false });
@@ -347,28 +398,32 @@ pub const Store = struct {
         try syncDirectory(io, root);
         try syncDirectory(io, graff);
 
-        var configs = try createPrivateDir(io, root, "configs");
+        var configs = try ensurePrivateDir(io, root, "configs");
         errdefer configs.close(io);
-        var genomes = try createPrivateDir(io, root, "genomes");
+        var genomes = try ensurePrivateDir(io, root, "genomes");
         errdefer genomes.close(io);
-        var evidence = try createPrivateDir(io, root, "evidence");
+        var evidence = try ensurePrivateDir(io, root, "evidence");
         errdefer evidence.close(io);
-        var runs = try createPrivateDir(io, root, "runs");
+        var runs = try ensurePrivateDir(io, root, "runs");
         errdefer runs.close(io);
-        var transactions = try createPrivateDir(io, root, "transactions");
+        var transactions = try ensurePrivateDir(io, root, "transactions");
         errdefer transactions.close(io);
-        var refs = try createPrivateDir(io, root, "refs");
+        var refs = try ensurePrivateDir(io, root, "refs");
         errdefer refs.close(io);
-        var locks = try createPrivateDir(io, root, "locks");
+        var locks = try ensurePrivateDir(io, root, "locks");
         errdefer locks.close(io);
-        var tmp = try createPrivateDir(io, root, "tmp");
+        var tmp = try ensurePrivateDir(io, root, "tmp");
         errdefer tmp.close(io);
 
         var store: Store = .{ .io = io, .root = root, .configs = configs, .genomes = genomes, .evidence = evidence, .runs = runs, .transactions = transactions, .refs = refs, .locks = locks, .tmp = tmp };
         try store.writeImmutable(store.root, "VERSION", version_bytes, std.heap.page_allocator);
-        const lock = try store.locks.createFile(io, "engine.lock", .{ .exclusive = true, .permissions = file_permissions });
-        defer lock.close(io);
-        try lock.sync(io);
+        if (store.locks.createFile(io, "engine.lock", .{ .exclusive = true, .permissions = file_permissions })) |lock| {
+            defer lock.close(io);
+            try lock.sync(io);
+        } else |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        }
         try syncDirectory(io, store.locks);
         return store;
     }

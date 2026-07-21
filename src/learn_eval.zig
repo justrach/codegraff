@@ -195,13 +195,17 @@ pub fn createScratch(io: Io, store: *store_mod.Store) !struct { name: [32]u8, di
     var attempts: usize = 0;
     while (attempts < 16) : (attempts += 1) {
         var raw: [16]u8 = undefined;
-        io.randomSecure(&raw) catch io.random(&raw);
+        try io.randomSecure(&raw);
         const name = std.fmt.bytesToHex(raw, .lower);
         store.tmp.createDir(io, &name, dir_permissions) catch |err| switch (err) {
             error.PathAlreadyExists => continue,
             else => return err,
         };
+        // The directory exists from here on: clean it up if the open or the
+        // permission tightening fails, instead of leaking it into store.tmp.
+        errdefer store.tmp.deleteTree(io, &name) catch {};
         const dir = try store.tmp.openDir(io, &name, .{ .iterate = true, .follow_symlinks = false });
+        errdefer dir.close(io);
         if (builtin.os.tag != .windows) try dir.setPermissions(io, dir_permissions);
         return .{ .name = name, .dir = dir };
     }
@@ -327,8 +331,18 @@ pub fn invoke(
         gpa.free(run.stdout);
         gpa.free(run.stderr);
     }
-    if (run.timed_out) return error.ProcessTimedOut;
-    if (run.term != .exited or run.term.exited != 0) return error.ProcessFailed;
+    if (run.timed_out) {
+        std.debug.print("learn: {s} timed out after {d} ms\n", .{ program.program, timeout_ms });
+        return error.ProcessTimedOut;
+    }
+    if (run.term != .exited or run.term.exited != 0) {
+        // The bare error alone cost real debugging time: surface which tool
+        // failed and a bounded stderr excerpt before the scratch dir (and the
+        // request/response evidence in it) is deleted by the caller.
+        const excerpt = run.stderr[0..@min(run.stderr.len, 512)];
+        std.debug.print("learn: {s} failed ({any}); stderr (first {d} of {d} bytes):\n{s}\n", .{ program.program, run.term, excerpt.len, run.stderr.len, excerpt });
+        return error.ProcessFailed;
+    }
 }
 
 fn validDescription(value: []const u8) bool {

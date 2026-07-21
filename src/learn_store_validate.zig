@@ -37,11 +37,20 @@ pub fn validEnvName(value: []const u8) bool {
     if (value.len == 0 or value.len > 128) return false;
     if (!(std.ascii.isAlphabetic(value[0]) or value[0] == '_')) return false;
     for (value[1..]) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_')) return false;
-    return !std.mem.eql(u8, value, "HOME") and
-        !std.mem.eql(u8, value, "USERPROFILE") and
-        !std.mem.eql(u8, value, "TMPDIR") and
-        !std.mem.eql(u8, value, "TMP") and
-        !std.mem.eql(u8, value, "TEMP") and
+    // Case-insensitive: Windows environment lookups are case-insensitive,
+    // and a case-variant of a denied name must not slip through. PATH and
+    // the dynamic-linker variables would otherwise let a config override the
+    // scrubbed execution environment that buildEnvironment constructs.
+    return !std.ascii.eqlIgnoreCase(value, "HOME") and
+        !std.ascii.eqlIgnoreCase(value, "USERPROFILE") and
+        !std.ascii.eqlIgnoreCase(value, "TMPDIR") and
+        !std.ascii.eqlIgnoreCase(value, "TMP") and
+        !std.ascii.eqlIgnoreCase(value, "TEMP") and
+        !std.ascii.eqlIgnoreCase(value, "PATH") and
+        !std.ascii.eqlIgnoreCase(value, "COMSPEC") and
+        !std.ascii.eqlIgnoreCase(value, "SYSTEMROOT") and
+        !std.ascii.startsWithIgnoreCase(value, "LD_") and
+        !std.ascii.startsWithIgnoreCase(value, "DYLD_") and
         !std.mem.startsWith(u8, value, "GRAFF_LEARN_");
 }
 

@@ -252,6 +252,12 @@ pathlib.Path(response_path).write_text(json.dumps(response, separators=(\",\", \
     assert rolled_back["generation"] == 2
     assert rolled_back["active_genome_id"] == initial_genome
 
+    # A second default-target rollback would move FORWARD (previous_genome_id
+    # of a rollback transaction names the genome just rolled away from) and
+    # silently reinstate it; it must demand an explicit --to instead.
+    invoke(graff, workspace, env, "rollback", succeeds=False)
+    assert status(graff, workspace, env)["generation"] == 2
+
     # Returning to identical parent bytes does not make old evidence fresh: the
     # parent generation and transaction ID must also match.
     invoke(graff, workspace, env, "promote", manual_run, succeeds=False)
@@ -274,6 +280,111 @@ pathlib.Path(response_path).write_text(json.dumps(response, separators=(\",\", \
     assert automatic["active_genome_id"] != initial_genome
     verified = invoke(graff, workspace, env, "verify")
     assert json.loads(verified.stdout)["integrity"] == "ok"
+
+    exercise_identical_parent(graff, root, evaluator, holdout_suite, evaluation_suite, parent, env)
+    exercise_init_recovery(graff, root, config_path, parent, env)
+
+
+def exercise_identical_parent(
+    graff: Path,
+    root: Path,
+    evaluator: Path,
+    holdout_suite: Path,
+    evaluation_suite: Path,
+    parent: Path,
+    env: dict[str, str],
+) -> None:
+    """Regression: a run whose first candidates reproduce the parent byte for
+    byte must stay verifiable and promotable. verifyRun used to let
+    duplicate_candidate overwrite identical_parent (diverging from the
+    writer), which made such a run permanently unpromotable."""
+    workspace = root / "workspace-identical"
+    workspace.mkdir(mode=0o700)
+    tools = root / "tools"
+    python = Path(sys.executable).resolve()
+    mutator = tools / "mutator-identical.py"
+    mutator_source = f"""#!{python}
+import hashlib, json, pathlib, sys
+operation, request_path, response_path = sys.argv[1:4]
+assert operation == \"mutate\"
+request = json.loads(pathlib.Path(request_path).read_text())
+parent = pathlib.Path(request[\"parent\"][\"path\"]).read_text()
+child = parent if request[\"candidate_index\"] < 2 else parent.rstrip() + \"\\n\\nLearned fixture policy.\\n\"
+child_bytes = child.encode()
+pathlib.Path(request[\"child_path\"]).write_bytes(child_bytes)
+response = {{
+    \"schema\": \"codegraff.learn.mutation.response.v1\",
+    \"trial_id\": request[\"trial_id\"],
+    \"candidate_index\": request[\"candidate_index\"],
+    \"parent_id\": request[\"parent\"][\"id\"],
+    \"child_path\": request[\"child_path\"],
+    \"child_sha256\": hashlib.sha256(child_bytes).hexdigest(),
+    \"description\": \"parent-identical below index 2\",
+}}
+pathlib.Path(response_path).write_text(json.dumps(response, separators=(\",\", \":\")) + \"\\n\")
+"""
+    write_private(mutator, mutator_source.encode(), 0o700)
+
+    config_path = root / "config-identical.json"
+    config = {
+        "schema": "codegraff.learn.config.v1",
+        "agent_name": "fixture-identical",
+        "agent_description": "parent-identical candidate regression",
+        "mutation_instruction": "reproduce the parent for the first two candidates",
+        "mutator": {"program": str(mutator.resolve()), "sha256": raw_sha256(mutator)},
+        "evaluator": {
+            "program": str(evaluator.resolve()),
+            "sha256": raw_sha256(evaluator),
+            "pass_env": ["FIXTURE_EVALUATOR_SOURCE"],
+        },
+        "evaluation_suite": {"path": str(evaluation_suite.resolve()), "sha256": raw_sha256(evaluation_suite)},
+        "holdout_suite": {"path": str(holdout_suite.resolve()), "sha256": raw_sha256(holdout_suite)},
+        "gate": {
+            "alpha_ppm": 50000,
+            "minimum_delta_ppm": 100000,
+            "minimum_pairs": 6,
+            "default_candidates": 3,
+            "default_repetitions": 3,
+        },
+        "auto": {"enabled": False},
+        "cohort": {
+            "provider": "fixture",
+            "model": "fixture",
+            "task_family": "local-e2e",
+            "adapter_version": "v1",
+            "verifier_version": "v1",
+        },
+    }
+    write_private(config_path, json_bytes(config))
+
+    invoke(graff, workspace, env, "init", "--parent", str(parent.resolve()), "--config", str(config_path.resolve()))
+    run_output = invoke(graff, workspace, env, "run").stdout
+    run_id = run_id_from(run_output)
+    record = json.loads((workspace / ".graff" / "learn" / "runs" / f"{run_id}.json").read_text())
+    reasons = [candidate["reason"] for candidate in record["candidates"]]
+    assert reasons[0] == "identical_parent" and reasons[1] == "identical_parent", reasons
+    assert record["candidates"][2]["eligible"], reasons
+    invoke(graff, workspace, env, "promote", run_id)
+    assert status(graff, workspace, env)["generation"] == 1
+
+
+def exercise_init_recovery(graff: Path, root: Path, config_path: Path, parent: Path, env: dict[str, str]) -> None:
+    """Regression: a rejected parent must not create the store tree, and the
+    residue of an interrupted init must be re-initializable rather than
+    wedging every later init with AlreadyInitialized."""
+    workspace = root / "workspace-wedge"
+    workspace.mkdir(mode=0o700)
+    bad_parent = root / "bad-parent.md"
+    write_private(bad_parent, b"   \n\t\n")
+    invoke(graff, workspace, env, "init", "--parent", str(bad_parent.resolve()), "--config", str(config_path.resolve()), succeeds=False)
+    assert not (workspace / ".graff" / "learn").exists(), "rejected parent must not create the store"
+
+    # Crash residue: a partial tree without refs/active.json must be adopted.
+    (workspace / ".graff").mkdir(mode=0o700)
+    (workspace / ".graff" / "learn").mkdir(mode=0o700)
+    (workspace / ".graff" / "learn" / "configs").mkdir(mode=0o700)
+    invoke(graff, workspace, env, "init", "--parent", str(parent.resolve()), "--config", str(config_path.resolve()))
+    assert status(graff, workspace, env)["generation"] == 0
 
 
 def main() -> int:
