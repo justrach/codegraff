@@ -2,10 +2,10 @@
 
 const std = @import("std");
 const util = @import("util.zig");
-const Io = std.Io;
 const Value = std.json.Value;
 
 const Agent = @import("agent.zig").Agent;
+const context_tokens = @import("context_tokens.zig");
 const messages_mod = @import("messages.zig");
 const pricing = @import("pricing.zig");
 const g_cost = &pricing.g_cost;
@@ -100,7 +100,7 @@ test "context estimate reuses an already-serialized history byte count" {
     agent.last_context_tokens = 12_000;
     agent.context_local_tokens = 8_000;
 
-    const input_bytes = jsonSerializedLen(Value{ .array = messages });
+    const input_bytes = context_tokens.serializedLen(Value{ .array = messages });
     const estimate = contextEstimateFromInputBytes(&agent, input_bytes);
     try std.testing.expectEqual(fullRequestEstimateTokens(&agent), estimate.local);
     try std.testing.expectEqual(estimate.local + 4_000, estimate.effective);
@@ -109,12 +109,12 @@ test "context estimate reuses an already-serialized history byte count" {
 pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) void {
     self.last_cache_read = 0;
     self.last_usage_includes_output = false;
-    // #202: keep the context meter live when the provider omits usage — otherwise
-    // the between-turns compaction gate freezes at a stale value and a long session
-    // can wedge. Mirror the codex/.responses fallback (req_body_len/4, floored at the
-    // full-input estimate) that recordUsageResponses already applies (#174).
-    const usage = root.get("usage") orelse return floorContextTokens(self, req_body_len / 4);
-    if (usage != .object) return floorContextTokens(self, req_body_len / 4);
+    // #202/#260: keep the context meter live when the provider omits usage.
+    // Estimate the serialized body while replacing inline image transport bytes
+    // with bounded vision tokens, then floor it at the full-input estimate.
+    const fallback = requestBodyEstimateTokens(self, req_body_len);
+    const usage = root.get("usage") orelse return floorContextTokens(self, fallback);
+    if (usage != .object) return floorContextTokens(self, fallback);
     const u = usage.object;
     switch (self.provider.kind) {
         .anthropic => {
@@ -127,7 +127,7 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) 
             if (total > 0)
                 replaceContextTokens(self, @intCast(total))
             else
-                floorContextTokens(self, req_body_len / 4);
+                floorContextTokens(self, fallback);
             self.last_usage_includes_output = total > 0 and if (u.get("output_tokens")) |v| v == .integer and v.integer >= 0 else false;
             const cache = usageInt(u, "cache_read_input_tokens");
             if (cache > 0) self.last_cache_read = @intCast(cache);
@@ -141,7 +141,7 @@ pub fn recordUsage(self: *Agent, root: std.json.ObjectMap, req_body_len: usize) 
             if (reported_total > 0)
                 replaceContextTokens(self, @intCast(reported_total))
             else
-                floorContextTokens(self, req_body_len / 4);
+                floorContextTokens(self, fallback);
             self.last_usage_includes_output = reported_total > 0 and
                 (total > 0 or if (u.get("completion_tokens")) |v| v == .integer and v.integer >= 0 else false);
             // deepseek reports prompt_cache_hit_tokens; the OpenAI shape
@@ -190,17 +190,6 @@ pub fn recordCost(self: *Agent, uncached_in: i64, cache_in: i64, out: i64) void 
     g_cost.add(self.io, self.provider.id, self.provider.model, uncached_in, cache_in, out);
 }
 
-/// Count a value's serialized JSON bytes without allocating the output.
-fn jsonSerializedLen(value: anytype) usize {
-    var buf: [512]u8 = undefined;
-    var d: Io.Writer.Discarding = .init(&buf);
-    var s: std.json.Stringify = .{ .writer = &d.writer };
-    // Discarding is infallible today. Preserve the bytes counted so far if a
-    // future writer becomes stricter instead of returning a spurious zero.
-    s.write(value) catch return d.fullCount();
-    return d.fullCount();
-}
-
 /// #174: ~4-bytes/token estimate of the FULL history serialized as Responses
 /// `input` items — the cost of the next full-history resend (runTurn closes
 /// the WS per turn, so every turn's first request replays everything). The
@@ -209,7 +198,7 @@ fn jsonSerializedLen(value: anytype) usize {
 /// every retained encrypted reasoning item again. Counting discard writer —
 /// no allocation.
 pub fn fullInputEstimateTokens(self: *Agent) u64 {
-    return @intCast(jsonSerializedLen(Value{ .array = self.messages }) / 4);
+    return context_tokens.estimatedTokens(Value{ .array = self.messages });
 }
 
 /// Estimate the complete fixed+history input sent by a normal model request.
@@ -218,16 +207,19 @@ pub fn fullInputEstimateTokens(self: *Agent) u64 {
 /// the old 8k conservative baseline when those serialize smaller, but never let it
 /// hide an unbounded set_system_prompt/set_agent payload.
 fn requestEstimateFromInputBytes(self: *Agent, input_bytes: usize) u64 {
-    const system_bytes = jsonSerializedLen(self.systemPrompt());
-    const total_bytes = input_bytes +| system_bytes +| self.toolsJson().len;
-    const measured: u64 = @intCast(total_bytes / 4);
-    const input_tokens: u64 = @intCast(input_bytes / 4);
+    const input_tokens = context_tokens.estimatedTokensFromLen(Value{ .array = self.messages }, input_bytes);
+    const fixed_bytes = context_tokens.serializedLen(self.systemPrompt()) +| self.toolsJson().len;
+    const measured = input_tokens +| @as(u64, @intCast(fixed_bytes / 4));
     const baseline = @min(@as(u64, 8000), self.provider.context / 8);
     return @max(measured, input_tokens +| baseline);
 }
 
 pub fn fullRequestEstimateTokens(self: *Agent) u64 {
-    return requestEstimateFromInputBytes(self, jsonSerializedLen(Value{ .array = self.messages }));
+    return requestEstimateFromInputBytes(self, context_tokens.serializedLen(Value{ .array = self.messages }));
+}
+
+fn requestBodyEstimateTokens(self: *Agent, body_bytes: usize) u64 {
+    return context_tokens.estimatedTokensFromLen(Value{ .array = self.messages }, body_bytes);
 }
 
 pub const ContextEstimate = struct {
@@ -239,7 +231,7 @@ pub const ContextEstimate = struct {
 /// occupancy in one history serialization. Callers that need both previously
 /// walked the entire JSON history twice.
 pub fn contextEstimate(self: *Agent) ContextEstimate {
-    return self.contextEstimateFromInputBytes(jsonSerializedLen(Value{ .array = self.messages }));
+    return self.contextEstimateFromInputBytes(context_tokens.serializedLen(Value{ .array = self.messages }));
 }
 
 /// Variant for callers already serializing the history (session persistence).
@@ -393,13 +385,51 @@ test "inputOverCompactThreshold (#193): local estimate gates a pre-send compact"
     try std.testing.expect(!inputOverCompactThreshold(&agent));
 }
 
+test "inputOverCompactThreshold (#260): a fresh Base64 image is vision context, not text" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const payload = try a.alloc(u8, 1_600_000);
+    @memset(payload, 'A');
+    const uri = try std.fmt.allocPrint(a, "data:image/png;base64,{s}", .{payload});
+    var image_url: std.json.ObjectMap = .empty;
+    try image_url.put(a, "url", .{ .string = uri });
+    var image: std.json.ObjectMap = .empty;
+    try image.put(a, "type", .{ .string = "image_url" });
+    try image.put(a, "image_url", .{ .object = image_url });
+    var content = std.json.Array.init(a);
+    try content.append(.{ .object = image });
+    var user: std.json.ObjectMap = .empty;
+    try user.put(a, "role", .{ .string = "user" });
+    try user.put(a, "content", .{ .array = content });
+    var messages = std.json.Array.init(a);
+    try messages.append(.{ .object = user });
+
+    var agent: Agent = undefined;
+    agent.messages = messages;
+    agent.last_context_tokens = 0;
+    agent.context_local_tokens = 0;
+    agent.sub = false;
+    agent.strict = false;
+    agent.sys_normal = "";
+    agent.sys_strict = "";
+    agent.tools_openai = "";
+    agent.provider = .{ .id = "codegraff", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "kimi-k2.6", .context = 262_000 };
+
+    const raw_tokens: u64 = @intCast(context_tokens.serializedLen(Value{ .array = messages }) / 4);
+    try std.testing.expect(raw_tokens > agent.provider.compactAt());
+    try std.testing.expect(fullInputEstimateTokens(&agent) < 5_000);
+    try std.testing.expect(!inputOverCompactThreshold(&agent));
+}
+
 pub fn recordUsageResponses(self: *Agent, response: std.json.ObjectMap, req_body_len: usize) void {
     self.last_cache_read = 0;
     self.last_usage_includes_output = false;
-    // Fallback estimate (~4 bytes/token) from the serialized request body,
-    // which holds the full conversation — keeps the ctx meter and the
-    // compact@ trigger live when codex omits usage counts entirely.
-    const est: u64 = req_body_len / 4;
+    // Fallback estimate from the serialized request body, with inline Base64
+    // images charged as bounded vision tokens rather than text. This keeps the
+    // context meter live when Codex omits usage without compacting fresh images.
+    const est = requestBodyEstimateTokens(self, req_body_len);
     // A held Codex WS sends only previous_response_id + the unsent delta, so
     // body/4 can be tiny even when the preceding response reported a near-full
     // context. Missing or malformed usage is not evidence that the context got
