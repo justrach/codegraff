@@ -33,6 +33,7 @@ uploader. Local capture and upload have separate controls:
 | Setting | Effect |
 | --- | --- |
 | `GRAFF_BEHAVIOR_TRACE=off` | Disables the local behavioral file only. `0`, `false`, and `no` are also accepted. |
+| `GRAFF_BEHAVIOR_TRACE=full` | Opt-in rich capture (#255): the local file additionally records tool names/arguments and completed assistant text — see [Opt-in rich capture](#opt-in-rich-capture-graff_behavior_tracefull) below. Only the exact lowercase literal `full` enables it; every other enabling value (including unset) stays lifecycle-only. |
 | `GRAFF_BEHAVIOR_UPLOAD=off` | Disables the behavioral POST only. `0`, `false`, and `no` are also accepted. |
 | `GRAFF_BEHAVIOR_UPLOAD=metadata` | Explicitly selects the field-allowlisted metadata projection. This is the default when ordinary telemetry is enabled. Only the exact lowercase literal enables an explicit selection. |
 | `GRAFF_BEHAVIOR_UPLOAD=content` | Explicitly opts into opaque content supplied by a task adapter. Only the exact lowercase literal `content` enables this mode. |
@@ -140,8 +141,10 @@ or edited after the run.
 
 ## Current event support
 
-The enum reserves the nine schema-harness event names, but Phase 1 intentionally
-implements only the lifecycle and caller-asserted adapter subset.
+The enum implements all nine schema-harness event names: five are always
+automatically emitted (lifecycle) or caller-asserted (adapter), and the
+remaining four are automatically emitted only under the opt-in rich capture
+described below.
 
 ### Automatically emitted
 
@@ -240,29 +243,87 @@ upload can retain a second copy under the 30-day policy above. Codegraff does no
 check semantic equivalence, prove that a verifier is correct, maintain a
 commitment registry, cancel a plan, or initiate a repair turn.
 
-### Reserved, not emitted in Phase 1
+### Opt-in rich capture (`GRAFF_BEHAVIOR_TRACE=full`)
 
-- `text_delta`
-- `tool_started`
-- `tool_finished`
-- `action_taken`
+The remaining four reserved kinds (#255) are automatically emitted by the
+generic provider/tool plumbing, but only when rich capture is explicitly
+opted into with `GRAFF_BEHAVIOR_TRACE=full`. The default lifecycle-only
+posture (any other enabling value, including unset) never emits them — do not
+interpret their absence as an empty tool/action history.
 
-These names are reserved so later task adapters can use the same envelope. They
-are not automatically emitted yet because generic provider/tool plumbing cannot
-honestly determine task state, distinguish an action from an observation, or
-verify a prediction. Tool arguments, results, model text, and state snapshots
-also carry substantial credential/source/privacy risk. Do not interpret their
-absence as an empty tool/action history. The Phase 1 collector rejects these
-reserved kinds until a typed producer and versioned validation contract exist.
+**These four kinds are local-file only.** The Phase 1 collector rejects
+unrecognized kinds for the whole batch, not just one event, so `BehaviorTrace`
+never offers them to the uploader regardless of `GRAFF_BEHAVIOR_UPLOAD` mode.
+This is a documented exclusion, not a drop: it is not counted in
+`dropped_events`, and `local_sink`/`local_dropped` accounting is unaffected.
+
+#### `tool_started`
+
+Emitted before a tool call runs. Fields:
+
+- `turn` — the current nonzero behavioral turn.
+- `call_id` — a per-run monotonic ID (starts at `1`) that pairs this event
+  with the matching `tool_finished`.
+- `name` — the tool name.
+- `args` — the tool's JSON arguments, embedded verbatim when they parse as
+  valid JSON; otherwise (or when truncated) a plain string.
+- `args_truncated` — `true` when the serialized arguments exceeded 4,096
+  bytes. A truncated payload may be cut mid-token, so it is always
+  re-embedded as a string rather than risking invalid JSON dressed up as
+  structured data.
+
+#### `tool_finished`
+
+Emitted after a tool call completes. Fields:
+
+- `turn`, `call_id`, `name` — as above.
+- `ms` — wall-clock duration of the call.
+- `is_error` — whether the tool reported an error.
+- `result_bytes` — the result's byte length. The result **content** is never
+  recorded.
+
+#### `action_taken`
+
+The generic coding-task mapping: a state mutation, emitted once a tool call
+that finished belongs to a mutating tool class (`write` or `shell`, per
+`behavior_upload.toolClass`). Read/search/verify/agent/mcp/other classes are
+observations and never emit this kind. Fields:
+
+- `turn`, `call_id`, `name`, `is_error` — as above.
+
+#### `text_delta`
+
+One completed assistant text segment — called once per finished segment, not
+per streaming token. In practice, Phase 1's only choke point common to every
+provider streaming path is the root turn's final text, so today this fires
+once per root turn rather than once per intermediate segment. Fields:
+
+- `turn` — the current nonzero behavioral turn.
+- `text` — the text, capped at 2,048 bytes.
+- `text_truncated` — `true` when the text exceeded the cap.
+
+#### Local privacy posture in full mode
+
+In lifecycle-only mode (the default), automatic events never include tool
+arguments or model text, as described below. `GRAFF_BEHAVIOR_TRACE=full`
+changes that for the **local plaintext file only**: tool names and arguments,
+and completed assistant text, land there in cleartext, subject only to the
+4,096/2,048-byte caps above. There is no redaction or secret scanning. Rich
+capture never changes what is uploaded — the four kinds stay local-only
+regardless of `GRAFF_BEHAVIOR_UPLOAD`.
 
 ## Local retention and privacy
 
-Behavioral files are ordinary local plaintext. Automatic Phase 1 events do
-**not** include prompts, generated text, hidden reasoning, source code, tool
-arguments/results, credentials, or environment contents. Opaque adapter values
-can contain sensitive task data, however. Adapter authors and callers are
-responsible for minimizing them; neither the local writer nor explicit content
-upload scans or sanitizes them.
+Behavioral files are ordinary local plaintext. In the default lifecycle-only
+posture, automatic events do **not** include prompts, generated text, hidden
+reasoning, source code, tool arguments/results, credentials, or environment
+contents. `GRAFF_BEHAVIOR_TRACE=full` (#255) is an explicit opt-in that
+changes this locally: tool names/arguments and completed assistant text land
+in the local file, subject only to the 4,096/2,048-byte caps described above
+— see [Opt-in rich capture](#opt-in-rich-capture-graff_behavior_tracefull).
+Opaque adapter values can also contain sensitive task data. Adapter authors
+and callers are responsible for minimizing them; neither the local writer nor
+explicit content upload scans or sanitizes any of this.
 
 - `.graff/` is ignored by Git.
 - Directory components are opened relative to verified no-follow handles, so a
@@ -321,8 +382,11 @@ A complete predict–verify implementation still needs:
 
 1. Task adapters that define state snapshots, legal actions, action/observation
    boundaries, and outcome semantics.
-2. Stable agent/invocation identities and real dispatch/completion hooks for
-   concurrent tool events (the four reserved kinds above).
+2. `tool_started`/`tool_finished`/`action_taken` now have real, `call_id`-paired
+   dispatch/completion hooks (#255) generic across every tool. `text_delta`
+   still only fires once per root turn (the one choke point common to every
+   provider streaming path), not once per intermediate assistant text
+   segment — a real per-segment hook remains open work.
 3. Explicit expectation binding, verification, surprise interruption, and
    repair behavior wired to a production producer.
 4. Versioned Zig-side behavioral score events plus recipe/eval identity and

@@ -804,7 +804,10 @@ with `--max-model-calls N` or the lower-precedence `GRAFF_MAX_MODEL_CALLS`.
 agent session can write an exclusively-created
 `.graff/behavior/<run_id>.jsonl` with an ordered, attributable lifecycle
 envelope. The local JSONL is never uploaded wholesale. Local capture defaults on
-and is independently disabled with `GRAFF_BEHAVIOR_TRACE=off`.
+and is independently disabled with `GRAFF_BEHAVIOR_TRACE=off`. Set
+`GRAFF_BEHAVIOR_TRACE=full` to additionally record tool names/arguments and
+completed assistant text in that local file (opt-in, capped, and never
+uploaded).
 
 When ordinary telemetry is enabled, Codegraff also defaults to one bounded,
 end-of-run **field-allowlisted metadata** POST. A terminal `/v1/logs` path is
@@ -825,8 +828,10 @@ arguments/results, commands, arbitrary environment values, or exact private MCP
 names. Provider and model identifiers are included exactly as configured; Phase
 1 does not inspect, classify, or redact those identifier values.
 
-Ordinary Phase 1 runs contain lifecycle events only: typed
-commitment/misprediction APIs exist, but no built-in task adapter calls them yet.
+Ordinary Phase 1 runs contain lifecycle events only (plus tool/action/text
+events with `GRAFF_BEHAVIOR_TRACE=full`, local-only in every upload mode):
+typed commitment/misprediction APIs exist, but no built-in task adapter calls
+them yet.
 Content mode adds fields supplied through those APIs, with no redactor or secret
 scanner; the local prompt fingerprint remains excluded. This is not yet a
 generic predict → act → verify → repair loop

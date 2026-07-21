@@ -14,7 +14,9 @@ Usage:
 Profiles:
     codegraff  (default) strict Phase 1 producer audit: contiguous seq from 1,
                constant run_id/schema, single first run_started, terminal
-               run_finished, dense turns, commitment/mispredict field checks.
+               run_finished, dense turns, commitment/mispredict field checks,
+               plus (#255) tool_started/tool_finished call_id pairing for the
+               opt-in rich kinds (GRAFF_BEHAVIOR_TRACE=full).
     replay     relaxed envelope audit for streams converted from external
                schema-harness trajectories (their turn_started/turn_committed
                carry task fields codegraff does not emit, and vice versa).
@@ -102,6 +104,13 @@ def audit(path: Path, profile: str) -> dict:
     level_actions = 0
     total_actions = 0
     final_state = None
+    # #255 opt-in rich capture (GRAFF_BEHAVIOR_TRACE=full): tool_started and
+    # tool_finished pair by call_id; a finished call with no matching started
+    # call is a pairing violation, not a warning.
+    open_tool_calls: set[int] = set()
+    tool_calls = 0
+    tool_errors = 0
+    text_deltas = 0
 
     for line_no, event in read_events(path):
         if event is None:
@@ -167,6 +176,43 @@ def audit(path: Path, profile: str) -> dict:
             current_turn = turn
             turn_active = True
             turns += 1
+        elif kind == "text_delta":
+            text_deltas += 1
+            if strict:
+                turn = event.get("turn")
+                if not isinstance(turn, int) or turn < 1:
+                    raise AuditError(f"line {line_no}: text_delta needs a positive integer turn")
+                if not turn_active or turn != current_turn:
+                    raise AuditError(f"line {line_no}: text_delta outside its active turn")
+        elif kind == "tool_started":
+            if strict:
+                turn = event.get("turn")
+                if not isinstance(turn, int) or turn < 1:
+                    raise AuditError(f"line {line_no}: tool_started needs a positive integer turn")
+                if not turn_active or turn != current_turn:
+                    raise AuditError(f"line {line_no}: tool_started outside its active turn")
+                call_id = event.get("call_id")
+                if not isinstance(call_id, int):
+                    raise AuditError(f"line {line_no}: tool_started needs an integer call_id")
+                if call_id in open_tool_calls:
+                    raise AuditError(f"line {line_no}: duplicate tool_started for call_id {call_id!r}")
+                open_tool_calls.add(call_id)
+        elif kind == "tool_finished":
+            tool_calls += 1
+            if event.get("is_error") is True:
+                tool_errors += 1
+            if strict:
+                turn = event.get("turn")
+                if not isinstance(turn, int) or turn < 1:
+                    raise AuditError(f"line {line_no}: tool_finished needs a positive integer turn")
+                if not turn_active or turn != current_turn:
+                    raise AuditError(f"line {line_no}: tool_finished outside its active turn")
+                call_id = event.get("call_id")
+                if not isinstance(call_id, int):
+                    raise AuditError(f"line {line_no}: tool_finished needs an integer call_id")
+                if call_id not in open_tool_calls:
+                    raise AuditError(f"line {line_no}: tool_finished for call_id {call_id!r} has no matching tool_started")
+                open_tool_calls.discard(call_id)
         elif kind == "turn_committed":
             commitments += 1
             if open_mispredict_seq is not None:
@@ -191,6 +237,12 @@ def audit(path: Path, profile: str) -> dict:
         elif kind == "action_taken":
             total_actions += 1
             level_actions += 1
+            if strict:
+                turn = event.get("turn")
+                if not isinstance(turn, int) or turn < 1:
+                    raise AuditError(f"line {line_no}: action_taken needs a positive integer turn")
+                if not turn_active or turn != current_turn:
+                    raise AuditError(f"line {line_no}: action_taken outside its active turn")
             if event.get("state") is not None:
                 final_state = str(event["state"]).upper()
             if event.get("level_up") is True:
@@ -246,6 +298,9 @@ def audit(path: Path, profile: str) -> dict:
         "completed_level_actions": completed_levels,
         "incomplete_level_actions": level_actions if level_actions else None,
         "final_state": final_state,
+        "tool_calls": tool_calls,
+        "tool_errors": tool_errors,
+        "text_deltas": text_deltas,
     }
 
 

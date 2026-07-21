@@ -42,6 +42,28 @@ pub const BehaviorKind = enum {
     run_finished,
 };
 
+/// Kinds the deployed collector accepts (Phase 1 contract). The four rich
+/// opt-in kinds (#255, GRAFF_BEHAVIOR_TRACE=full) are local-file only:
+/// offering an unrecognized kind fails the whole upload batch, not just one
+/// event, so this gate runs before eventLocked ever calls the uploader.
+fn uploadEligible(kind: BehaviorKind) bool {
+    return switch (kind) {
+        .run_started, .turn_started, .turn_committed, .model_mispredicted, .run_finished => true,
+        .text_delta, .tool_started, .tool_finished, .action_taken => false,
+    };
+}
+
+/// Byte-cap a string without splitting a multi-byte UTF-8 sequence, so a
+/// truncated payload can never desync the JSON string encoder mid-codepoint
+/// (same defense as tools.zig's hookPayload output echo).
+fn utf8SafeClip(text: []const u8, max_len: usize) []const u8 {
+    var t = text[0..@min(text.len, max_len)];
+    var strips: usize = 0;
+    while (strips < 3 and t.len > 0 and !std.unicode.utf8ValidateSlice(t)) : (strips += 1) t = t[0 .. t.len - 1];
+    if (!std.unicode.utf8ValidateSlice(t)) t = "";
+    return t;
+}
+
 /// Typed lifecycle status; `.failed` is serialized as the JSON value `error`.
 pub const BehaviorRunStatus = enum {
     closed,
@@ -49,6 +71,13 @@ pub const BehaviorRunStatus = enum {
 };
 
 pub const max_local_behavior_event_bytes = 64 * 1024;
+
+/// Opt-in rich capture caps (#255). A tool's arguments and a completed text
+/// segment are the two content-bearing rich fields; both are bounded so one
+/// huge adapter payload cannot dominate the local file the way
+/// max_local_behavior_event_bytes already bounds a whole line.
+pub const max_tool_args_bytes = 4096;
+pub const max_text_delta_bytes = 2048;
 
 /// How one local write attempt ended. `dropped` failures happen before any
 /// byte reaches the file (allocation, serialization, or the size cap), so the
@@ -144,6 +173,14 @@ pub const BehaviorTrace = struct {
     local_dropped: u64 = 0,
     commitment_key: [32]u8 = undefined,
     commitment_key_initialized: bool = false,
+    /// Opt-in rich capture (#255, GRAFF_BEHAVIOR_TRACE=full). Off by default:
+    /// automatic events then never carry tool names/arguments or model text
+    /// (docs/behavioral-trajectories.md privacy posture). Set by boot().
+    rich: bool = false,
+    /// Monotonic per-run id pairing tool_started/tool_finished (#255).
+    /// Reservation does not depend on rich/turn state, so a call_id is stable
+    /// even when the paired event itself ends up a no-op.
+    next_call_id: u64 = 0,
 
     fn timestamp(self: *BehaviorTrace) f64 {
         const now = Io.Timestamp.now(self.io, .real);
@@ -156,7 +193,10 @@ pub const BehaviorTrace = struct {
     /// describe a batch whose terminal event was dropped during admission.
     fn eventLocked(self: *BehaviorTrace, kind: BehaviorKind, local_fields: anytype, metadata_fields: anytype, content_fields: anytype) bool {
         if (self.closed or self.seq == std.math.maxInt(u64)) return false;
-        const uploader_active = if (self.upload) |uploader| uploader.active() else false;
+        // Rich kinds (#255) never reach the uploader (see uploadEligible), so
+        // an upload-only sink with no local file is not a viable sink for them.
+        const upload_eligible = uploadEligible(kind);
+        const uploader_active = if (self.upload) |uploader| (upload_eligible and uploader.active()) else false;
         if (self.out == null and !uploader_active) return false;
 
         // This is the logical source sequence, reserved before either
@@ -178,8 +218,10 @@ pub const BehaviorTrace = struct {
                 .sink_failed => self.out = null,
             }
         }
-        if (self.upload) |uploader| {
-            return uploader.appendEvent(@tagName(kind), next, ts, metadata_fields, content_fields);
+        if (upload_eligible) {
+            if (self.upload) |uploader| {
+                return uploader.appendEvent(@tagName(kind), next, ts, metadata_fields, content_fields);
+            }
         }
         return false;
     }
@@ -304,6 +346,99 @@ pub const BehaviorTrace = struct {
             .turn = turn,
             .commitment_ref = &commitment_ref,
         }, local_fields);
+    }
+
+    /// Reserve the next call_id for one tool invocation (#255). Independent
+    /// of rich/turn state: a call_id stays stable even when the emitter that
+    /// would use it turns out to be a no-op (rich off, turn already ended).
+    pub fn reserveCallId(self: *BehaviorTrace) u64 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.next_call_id += 1;
+        return self.next_call_id;
+    }
+
+    /// Record a tool invocation before it runs (#255, opt-in rich capture
+    /// only — the default lifecycle-only posture never records tool names or
+    /// arguments). `args_json` is capped at max_tool_args_bytes; a truncated
+    /// payload may be cut mid-token, so it is always re-embedded as a plain
+    /// string rather than risking invalid JSON dressed up as structured data.
+    pub fn toolStarted(self: *BehaviorTrace, turn: u64, call_id: u64, name: []const u8, args_json: []const u8) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (!self.rich or !self.started or self.closed or !self.turn_active or turn == 0 or turn != self.current_turn) return;
+        const truncated = args_json.len > max_tool_args_bytes;
+        var parsed: ?std.json.Parsed(std.json.Value) = null;
+        // The arena backing a successful parse must outlive eventLocked's
+        // synchronous serialization below, so it is only freed on return.
+        defer if (parsed) |p| p.deinit();
+        const args_value: std.json.Value = blk: {
+            if (!truncated) {
+                if (std.json.parseFromSlice(std.json.Value, self.gpa, args_json, .{})) |p| {
+                    parsed = p;
+                    break :blk p.value;
+                } else |_| {}
+            }
+            break :blk .{ .string = utf8SafeClip(args_json, max_tool_args_bytes) };
+        };
+        const fields = .{
+            .turn = turn,
+            .call_id = call_id,
+            .name = name,
+            .args = args_value,
+            .args_truncated = truncated,
+        };
+        _ = self.eventLocked(.tool_started, fields, .{}, .{});
+    }
+
+    /// Record a tool's outcome (#255, opt-in rich capture only). Only
+    /// content-free operational shape — duration, error flag, result byte
+    /// count — never the result content itself.
+    pub fn toolFinished(self: *BehaviorTrace, turn: u64, call_id: u64, name: []const u8, ms: i64, is_error: bool, result_bytes: usize) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (!self.rich or !self.started or self.closed or !self.turn_active or turn == 0 or turn != self.current_turn) return;
+        const fields = .{
+            .turn = turn,
+            .call_id = call_id,
+            .name = name,
+            .ms = ms,
+            .is_error = is_error,
+            .result_bytes = result_bytes,
+        };
+        _ = self.eventLocked(.tool_finished, fields, .{}, .{});
+    }
+
+    /// The generic coding-task action mapping (#255): a state mutation after
+    /// it finishes. Only the write/shell tool classes (behavior_upload.
+    /// toolClass) count as actions; read/search/verify/agent/mcp/other are
+    /// observations and never emit this kind.
+    pub fn actionTaken(self: *BehaviorTrace, turn: u64, call_id: u64, name: []const u8, is_error: bool) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (!self.rich or !self.started or self.closed or !self.turn_active or turn == 0 or turn != self.current_turn) return;
+        switch (behavior_upload.toolClass(name)) {
+            .write, .shell => {},
+            else => return,
+        }
+        const fields = .{ .turn = turn, .call_id = call_id, .name = name, .is_error = is_error };
+        _ = self.eventLocked(.action_taken, fields, .{}, .{});
+    }
+
+    /// Record one completed assistant text segment (#255, opt-in rich
+    /// capture only). Called once per finished segment, not per streaming
+    /// token; capped at max_text_delta_bytes.
+    pub fn textDelta(self: *BehaviorTrace, turn: u64, text: []const u8) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (!self.rich or !self.started or self.closed or !self.turn_active or turn == 0 or turn != self.current_turn or text.len == 0) return;
+        const truncated = text.len > max_text_delta_bytes;
+        const fields = .{
+            .turn = turn,
+            .text = utf8SafeClip(text, max_text_delta_bytes),
+            .text_truncated = truncated,
+        };
+        _ = self.eventLocked(.text_delta, fields, .{}, .{});
     }
 
     /// Attach content-free operational aggregates to the active root turn.
@@ -433,10 +568,16 @@ pub fn boot(io: Io, gpa: Allocator, client: ?*std.http.Client, environ_map: anyt
         .run_id = &scoring.g_run_id,
         .mode = behavior_upload.resolveMode(environ_map.get("GRAFF_BEHAVIOR_UPLOAD"), endpoint.len > 0),
     };
-    const enabled = if (environ_map.get("GRAFF_BEHAVIOR_TRACE")) |value|
+    const trace_value = environ_map.get("GRAFF_BEHAVIOR_TRACE");
+    const enabled = if (trace_value) |value|
         !(std.ascii.eqlIgnoreCase(value, "off") or std.mem.eql(u8, value, "0") or std.ascii.eqlIgnoreCase(value, "false") or std.ascii.eqlIgnoreCase(value, "no"))
     else
         true;
+    // Rich capture (#255) is a narrower, separate opt-in: only the literal
+    // "full" turns on tool names/args and model text in the local file.
+    // Every other enabling value (unset, or anything outside the disable set
+    // above) stays lifecycle-only — the documented default privacy posture.
+    const rich = if (trace_value) |value| std.ascii.eqlIgnoreCase(value, "full") else false;
     const open = if (enabled)
         session_start.openBehaviorFile(io, Io.Dir.cwd(), behavior_dir, &scoring.g_run_id, buf)
     else
@@ -451,6 +592,7 @@ pub fn boot(io: Io, gpa: Allocator, client: ?*std.http.Client, environ_map: anyt
             .out = null,
             .upload = null,
             .run_id = &scoring.g_run_id,
+            .rich = rich,
         },
         .local_sink_failed = enabled and open.file == null,
     };

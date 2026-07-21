@@ -174,7 +174,40 @@ def check_scorer(root: Path) -> None:
     assert report["ok"], report
     assert report["completed_level_actions"] == [1]
     assert report["rhae"]["score"] == round(min(115.0 * 1 / 3, 1 / 3 * 100.0), 2)
-    print("scorer: behavioral metrics, audit failures, truncation, RHAE math ok")
+
+    # #255 opt-in rich capture (GRAFF_BEHAVIOR_TRACE=full): tool_started/
+    # tool_finished pair by call_id, action_taken is the state-mutation
+    # subset of finished tool calls, text_delta is completed assistant text.
+    rich = root / "rich.jsonl"
+    write_stream(rich, [
+        {"kind": "run_started", "version": "test", "unix_ms": 1},
+        {"kind": "turn_started", "turn": 1, "parent_turn": 0, "trajectory_node": 0},
+        {"kind": "text_delta", "turn": 1, "text": "on it", "text_truncated": False},
+        {"kind": "tool_started", "turn": 1, "call_id": 1, "name": "edit_file",
+         "args": {"path": "a.zig"}, "args_truncated": False},
+        {"kind": "tool_finished", "turn": 1, "call_id": 1, "name": "edit_file",
+         "ms": 5, "is_error": False, "result_bytes": 40},
+        {"kind": "action_taken", "turn": 1, "call_id": 1, "name": "edit_file", "is_error": False},
+        {"kind": "run_finished", "status": "closed"},
+    ])
+    report = score(rich)
+    assert report["ok"] and report["complete"], report
+    assert report["tool_calls"] == 1 and report["tool_errors"] == 0
+    assert report["text_deltas"] == 1
+    assert report["actions"] == 1
+
+    # A tool_finished with no matching tool_started is a pairing violation,
+    # not a warning — it must fail the strict audit.
+    mismatch = root / "rich-mismatch.jsonl"
+    write_stream(mismatch, [
+        {"kind": "run_started", "version": "test", "unix_ms": 1},
+        {"kind": "turn_started", "turn": 1, "parent_turn": 0, "trajectory_node": 0},
+        {"kind": "tool_finished", "turn": 1, "call_id": 1, "name": "edit_file",
+         "ms": 5, "is_error": False, "result_bytes": 40},
+        {"kind": "run_finished", "status": "closed"},
+    ])
+    assert score(mismatch)["exit"] == 1, "tool_finished without tool_started must fail the audit"
+    print("scorer: behavioral metrics, audit failures, truncation, RHAE math, rich-kind pairing ok")
 
 
 def check_replay_round_trip(root: Path) -> None:

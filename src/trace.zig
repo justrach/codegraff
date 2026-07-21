@@ -154,6 +154,42 @@ pub const Tracer = struct {
         });
     }
 
+    /// Reserve a call_id and emit `tool_started` (#255, opt-in rich capture
+    /// only — behavior.toolStarted no-ops when rich is off). 0 means there is
+    /// no behavioral sink to attribute against; toolFinished/actionTaken
+    /// below treat that the same way turn 0 means "unattributed" elsewhere
+    /// in this file. `args` is serialized into a bounded scratch buffer —
+    /// BehaviorTrace's own max_tool_args_bytes cap does the real truncation,
+    /// this just keeps an oversized adapter payload off the stack.
+    pub fn toolStarted(self: *Tracer, name: []const u8, args: Value) u64 {
+        const behavior = self.behavior orelse return 0;
+        const call_id = behavior.reserveCallId();
+        var buf: [8192]u8 = undefined;
+        var w: Io.Writer = .fixed(&buf);
+        var s: std.json.Stringify = .{ .writer = &w };
+        s.write(args) catch {}; // a partial/overflowed buffer is fine: BehaviorTrace caps and truncates
+        behavior.toolStarted(behavior.currentTurn(), call_id, name, w.buffered());
+        return call_id;
+    }
+
+    /// Emit `tool_finished`, then `action_taken` for state-mutating tool
+    /// classes (#255). Both are no-ops when call_id is 0 (toolStarted found
+    /// no behavioral sink) or rich capture is off.
+    pub fn toolFinished(self: *Tracer, name: []const u8, call_id: u64, ms: i64, is_error: bool, result_bytes: usize) void {
+        if (call_id == 0) return;
+        const behavior = self.behavior orelse return;
+        const turn = behavior.currentTurn();
+        behavior.toolFinished(turn, call_id, name, ms, is_error, result_bytes);
+        behavior.actionTaken(turn, call_id, name, is_error);
+    }
+
+    /// Emit `text_delta` for one completed assistant text segment (#255,
+    /// opt-in rich capture only).
+    pub fn textDelta(self: *Tracer, text: []const u8) void {
+        const behavior = self.behavior orelse return;
+        behavior.textDelta(behavior.currentTurn(), text);
+    }
+
     pub fn note(self: *Tracer, kind: []const u8, detail: []const u8) void {
         self.write(.{ .t = self.elapsedMs(), .ev = kind, .detail = detail });
     }

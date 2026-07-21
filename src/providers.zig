@@ -209,7 +209,13 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
     while (true) {
         root.last_api_error = null;
         const result = root.runTurn();
-        if (result) |text| return text else |err| {
+        if (result) |text| {
+            // #255: no clean per-segment choke point exists across the
+            // provider streaming paths, so the root turn's final text is
+            // recorded once here (opt-in rich capture only; no-op otherwise).
+            if (root.tracer) |tr| tr.textDelta(text);
+            return text;
+        } else |err| {
             if (err != error.ApiError or root.partial_text.items.len != 0 or root.tool_calls_this_turn != 0)
                 return err;
             const detail = root.last_api_error orelse return err;

@@ -104,7 +104,7 @@ comptime {
     }
 }
 
-const ToolClass = enum {
+pub const ToolClass = enum {
     shell,
     read,
     write,
@@ -116,7 +116,10 @@ const ToolClass = enum {
     other,
 };
 
-fn toolClass(name: []const u8) ToolClass {
+/// Public so behavior_trace.zig's action_taken emitter (#255) can reuse the
+/// same state-mutation classification instead of duplicating the tool-name
+/// table.
+pub fn toolClass(name: []const u8) ToolClass {
     if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "bash_output") or std.mem.eql(u8, name, "bash_kill")) return .shell;
     if (std.mem.eql(u8, name, "read_file")) return .read;
     if (std.mem.eql(u8, name, "edit_file") or std.mem.eql(u8, name, "write_file")) return .write;

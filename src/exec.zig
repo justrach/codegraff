@@ -68,10 +68,16 @@ const subagent_bash_deadline_ms: u64 = 120 * 1000;
 /// Every execution is timed (out.ms) and traced.
 pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     const t0: Io.Timestamp = .now(ctx.io, .awake);
+    // #255: reserved before any gate/dispatch runs so tool_started/
+    // tool_finished bracket the whole call, including a gate denial below.
+    const call_id: u64 = if (ctx.tracer) |tr| tr.toolStarted(call.name, call.input) else 0;
     if (codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
-        if (ctx.tracer) |tr| tr.tool(call.name, out.ms, true, out.text.len, ctx.from_sub);
+        if (ctx.tracer) |tr| {
+            tr.tool(call.name, out.ms, true, out.text.len, ctx.from_sub);
+            tr.toolFinished(call.name, call_id, out.ms, true, out.text.len);
+        }
         if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, true);
         return out;
     }
@@ -85,7 +91,10 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
         break :blk failure(ctx.gpa, err);
     };
     out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
-    if (ctx.tracer) |tr| tr.tool(call.name, out.ms, out.is_error, out.text.len, ctx.from_sub);
+    if (ctx.tracer) |tr| {
+        tr.tool(call.name, out.ms, out.is_error, out.text.len, ctx.from_sub);
+        tr.toolFinished(call.name, call_id, out.ms, out.is_error, out.text.len);
+    }
     if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, out.is_error);
     runPostToolHooks(ctx, call, out);
     return out;
