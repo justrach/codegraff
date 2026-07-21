@@ -128,6 +128,10 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
         // then emit/upload the terminal behavioral event.
         fleet.joinElites(io);
         jobs.jobsReap(gpa, io);
+        // Mirror main's teardown fully: flush buffered OTLP telemetry too,
+        // not just the behavioral batch, so a fatal one-shot is not invisible
+        // in ordinary telemetry while visible in behavioral data.
+        if (telemetry.g_telem) |t| t.flush();
         if (tracer.behavior) |behavior| behavior.finish(.failed);
         switch (err) {
             error.FallbackConsentRequired => std.process.fatal("saved model unavailable; provider '{s}' is not allowlisted — run graff interactively, then /fallback allow {s}", .{ root.provider.id, root.provider.id }),

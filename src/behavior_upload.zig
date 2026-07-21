@@ -7,6 +7,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const http = @import("http.zig");
 
 pub const batch_schema = "codegraff.behavior.batch.v1";
 pub const event_schema = "codegraff.behavior.v1";
@@ -94,6 +95,15 @@ pub const TurnMetrics = struct {
     tool_other: u64 = 0,
 };
 
+comptime {
+    // turn_metrics rows bypass assertMetadataFields, so close the same
+    // privacy hole structurally: every field must stay a content-free u64
+    // counter, and a string or nested payload cannot ride along unnoticed.
+    for (@typeInfo(TurnMetrics).@"struct".fields) |field| {
+        if (field.type != u64) @compileError("TurnMetrics fields must be content-free u64 counters: " ++ field.name);
+    }
+}
+
 const ToolClass = enum {
     shell,
     read,
@@ -147,7 +157,12 @@ fn isMetadataField(comptime name: []const u8) bool {
         std.mem.eql(u8, name, "parent_turn") or
         std.mem.eql(u8, name, "trajectory_node") or
         std.mem.eql(u8, name, "commitment_ref") or
-        std.mem.eql(u8, name, "status");
+        std.mem.eql(u8, name, "status") or
+        // Sink-health diagnostics: whether the local JSONL opened at run start
+        // and how many events it dropped before write. Counters and booleans
+        // only; nothing content-bearing.
+        std.mem.eql(u8, name, "local_sink") or
+        std.mem.eql(u8, name, "local_dropped");
 }
 
 fn assertMetadataFields(comptime T: type) void {
@@ -434,6 +449,11 @@ pub fn behaviorUrl(gpa: Allocator, endpoint: []const u8) !?[]u8 {
 }
 
 pub fn postBatch(client: *std.http.Client, url: []const u8, payload: []const u8, auth_key: []const u8) bool {
+    // Same gate as Telemetry.postOtlp: the terminal upload can run before the
+    // shared client's CA-bundle prewarm has joined (finishAndClose is
+    // registered after the prewarm-join defer), and an ungated fetch then
+    // races the prewarm task on the shared client (#131).
+    http.waitForClientReady(client.io);
     const auth_header = [_]std.http.Header{.{ .name = "x-harness-key", .value = auth_key }};
     const extra_headers: []const std.http.Header = if (auth_key.len > 0) &auth_header else &.{};
     const response = client.fetch(.{

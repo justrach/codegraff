@@ -19,7 +19,13 @@ test {
 
 // ── Behavioral trace (one experimental event file per run) ────────────────
 
-pub const behavior_dir = ".graff/trajectories";
+// Behavioral events get their own directory. The legacy DGM trajectory file
+// is already created earlier in startup as
+// `.graff/trajectories/<g_run_id>.jsonl` (main.zig trajectoryPath), and the
+// behavioral stream is named by the same run id, so sharing that directory
+// made the exclusive create collide every session and silently disabled
+// local behavioral capture.
+pub const behavior_dir = ".graff/behavior";
 pub const behavior_schema = "codegraff.behavior.v1";
 
 /// Task-agnostic behavioral records. Per-kind fields stay flat, matching the
@@ -44,28 +50,35 @@ pub const BehaviorRunStatus = enum {
 
 pub const max_local_behavior_event_bytes = 64 * 1024;
 
+/// How one local write attempt ended. `dropped` failures happen before any
+/// byte reaches the file (allocation, serialization, or the size cap), so the
+/// stream stays healthy and later events may follow; the drop is counted and
+/// declared on `run_finished` as `local_dropped`. `sink_failed` means the
+/// file write itself failed and a partial tail may exist, so the caller must
+/// stop using the sink.
+pub const LineResult = enum { written, dropped, sink_failed };
+
 /// Serialize a behavioral event as one flat JSON object. `fields` must be a
 /// struct; its fields are appended after the common envelope. Building the
 /// full line before writing prevents serialization failures from corrupting the
 /// file. The fixed 64 KiB line buffer also prevents an opaque adapter value from
-/// causing unbounded temporary allocation. A write failure disables the stream
-/// so a partial tail is never joined to a later event.
-pub fn writeBehaviorLine(gpa: Allocator, w: *Io.Writer, kind: BehaviorKind, seq: u64, ts: f64, run_id: []const u8, fields: anytype) bool {
-    const backing = gpa.alloc(u8, max_local_behavior_event_bytes + 1) catch return false;
+/// causing unbounded temporary allocation.
+pub fn writeBehaviorLine(gpa: Allocator, w: *Io.Writer, kind: BehaviorKind, seq: u64, ts: f64, run_id: []const u8, fields: anytype) LineResult {
+    const backing = gpa.alloc(u8, max_local_behavior_event_bytes + 1) catch return .dropped;
     defer gpa.free(backing);
     var line: Io.Writer = .fixed(backing);
     var s: std.json.Stringify = .{ .writer = &line };
-    s.beginObject() catch return false;
-    s.objectField("kind") catch return false;
-    s.write(@tagName(kind)) catch return false;
-    s.objectField("seq") catch return false;
-    s.write(seq) catch return false;
-    s.objectField("ts") catch return false;
-    s.write(ts) catch return false;
-    s.objectField("run_id") catch return false;
-    s.write(run_id) catch return false;
-    s.objectField("schema") catch return false;
-    s.write(behavior_schema) catch return false;
+    s.beginObject() catch return .dropped;
+    s.objectField("kind") catch return .dropped;
+    s.write(@tagName(kind)) catch return .dropped;
+    s.objectField("seq") catch return .dropped;
+    s.write(seq) catch return .dropped;
+    s.objectField("ts") catch return .dropped;
+    s.write(ts) catch return .dropped;
+    s.objectField("run_id") catch return .dropped;
+    s.write(run_id) catch return .dropped;
+    s.objectField("schema") catch return .dropped;
+    s.write(behavior_schema) catch return .dropped;
     inline for (comptime std.meta.fieldNames(@TypeOf(fields))) |name| {
         comptime {
             if (std.mem.eql(u8, name, "kind") or
@@ -77,15 +90,15 @@ pub fn writeBehaviorLine(gpa: Allocator, w: *Io.Writer, kind: BehaviorKind, seq:
                 @compileError("behavioral event field collides with the common envelope: " ++ name);
             }
         }
-        s.objectField(name) catch return false;
-        s.write(@field(fields, name)) catch return false;
+        s.objectField(name) catch return .dropped;
+        s.write(@field(fields, name)) catch return .dropped;
     }
-    s.endObject() catch return false;
-    if (line.buffered().len > max_local_behavior_event_bytes) return false;
-    line.writeByte('\n') catch return false;
-    w.writeAll(line.buffered()) catch return false;
-    w.flush() catch return false;
-    return true;
+    s.endObject() catch return .dropped;
+    if (line.buffered().len > max_local_behavior_event_bytes) return .dropped;
+    line.writeByte('\n') catch return .dropped;
+    w.writeAll(line.buffered()) catch return .sink_failed;
+    w.flush() catch return .sink_failed;
+    return .written;
 }
 
 /// Per-run behavioral event stream written to
@@ -125,6 +138,10 @@ pub const BehaviorTrace = struct {
     turn_active: bool = false,
     started: bool = false,
     closed: bool = false,
+    /// Events rejected before any byte reached the local file (oversize,
+    /// allocation, serialization). Declared on `run_finished` so a local seq
+    /// gap is distinguishable from truncation or tampering.
+    local_dropped: u64 = 0,
     commitment_key: [32]u8 = undefined,
     commitment_key_initialized: bool = false,
 
@@ -150,10 +167,15 @@ pub const BehaviorTrace = struct {
         self.seq = next;
         const ts = self.timestamp();
         if (self.out) |w| {
-            if (!writeBehaviorLine(self.gpa, w, kind, next, ts, self.run_id, local_fields)) {
+            switch (writeBehaviorLine(self.gpa, w, kind, next, ts, self.run_id, local_fields)) {
+                .written => {},
+                // Nothing reached the file: count the gap and keep the stream
+                // alive. One oversized opaque payload must not erase the rest
+                // of the run (and run_finished) from the local record.
+                .dropped => self.local_dropped +|= 1,
                 // Do not append after a possible partial write. Upload remains
                 // independent so a local disk failure need not erase metadata.
-                self.out = null;
+                .sink_failed => self.out = null,
             }
         }
         if (self.upload) |uploader| {
@@ -172,7 +194,14 @@ pub const BehaviorTrace = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         if (self.started or self.closed) return;
-        self.io.randomSecure(&self.commitment_key) catch self.io.random(&self.commitment_key);
+        self.io.randomSecure(&self.commitment_key) catch {
+            // Fail closed: without secure entropy the keyed commitment
+            // references become dictionary-recoverable, so drop the upload
+            // sink rather than silently degrade to weaker randomness. The
+            // local file never uses the key.
+            self.commitment_key = @splat(0);
+            self.upload = null;
+        };
         self.commitment_key_initialized = true;
         self.started = true;
         const local_fields = .{
@@ -193,6 +222,10 @@ pub const BehaviorTrace = struct {
             .provider = metadata.provider,
             .model = metadata.model,
             .effort = metadata.effort,
+            // Sink health, so collector-side data knows whether a local
+            // stream exists to reconcile against (the local file is the
+            // source of truth when both are present).
+            .local_sink = self.out != null,
         };
         _ = self.eventLocked(.run_started, local_fields, upload_fields, upload_fields);
     }
@@ -315,7 +348,10 @@ pub const BehaviorTrace = struct {
 
         var terminal_retained = false;
         if (self.started) {
-            const fields = .{ .status = status_name };
+            // Declaring the local drop count on the terminal event makes a
+            // seq-gapped local file auditable: a scorer can verify that
+            // max seq == lines present + local_dropped.
+            const fields = .{ .status = status_name, .local_dropped = self.local_dropped };
             terminal_retained = self.eventLocked(.run_finished, fields, fields, fields);
         }
         self.turn_active = false;
@@ -354,6 +390,10 @@ pub const Boot = struct {
     uploader: behavior_upload.Upload,
     open: session_start.FileWriterOpen,
     behavior: BehaviorTrace,
+    /// True when local capture was requested but the file could not be
+    /// created (directory failure, exclusive-open collision). Callers surface
+    /// one warning so a dead local sink is not silent (#246 review).
+    local_sink_failed: bool = false,
 
     /// Point the behavior stream at this Boot's settled storage and assign
     /// the shared tracer. All root/subagent callbacks already share that
@@ -412,5 +452,6 @@ pub fn boot(io: Io, gpa: Allocator, client: ?*std.http.Client, environ_map: anyt
             .upload = null,
             .run_id = &scoring.g_run_id,
         },
+        .local_sink_failed = enabled and open.file == null,
     };
 }

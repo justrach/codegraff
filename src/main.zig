@@ -462,6 +462,12 @@ pub fn main(init: std.process.Init) !void {
     var behavior_buf: [8 * 1024]u8 = undefined;
     var behavior_boot = behavior_trace.boot(io, gpa, &client, init.environ_map, telem.endpoint, telem.auth_key, telem.install_id, telem.client_name, harness_version, &behavior_buf);
     behavior_boot.link(&tracer);
+    // A dead local sink must not be silent: the collision that disabled local
+    // capture in every session shipped invisibly because every failure path
+    // was a silent null (#246 review). stderr, so JSON/one-shot stdout stays
+    // protocol-clean.
+    if (behavior_boot.local_sink_failed)
+        std.debug.print("warning: behavioral trace file could not be created under {s}; local capture is off for this run\n", .{behavior_dir});
     defer behavior_boot.finishAndClose(&tracer, .closed);
     // Registered after the normal defer so error unwinding records `error`
     // first; finish() is idempotent and keeps that status terminal.

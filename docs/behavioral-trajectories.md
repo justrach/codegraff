@@ -14,7 +14,7 @@ scoring, or fleet/DGM selection from those scores.
 | Stream | Lifetime | Purpose |
 | --- | --- | --- |
 | `harness.trace.jsonl` | Truncated at startup | Operational API/tool latency and error counters, with active behavioral-turn attribution, used to debug the harness. |
-| `.graff/trajectories/<run_id>.jsonl` | Up to one exclusively-created file per initialized agent session | Experimental lifecycle and caller-asserted belief events. |
+| `.graff/behavior/<run_id>.jsonl` | Up to one exclusively-created file per initialized agent session | Experimental lifecycle and caller-asserted belief events. |
 | `harness.trajectory.jsonl` | Append-only across runs | Existing DGM/MAP-Elites lineage and fitness ledger. Its record shapes are unchanged. |
 
 Behavioral events are deliberately not mixed into the legacy DGM ledger. This
@@ -64,8 +64,9 @@ The batch schema is `codegraff.behavior.batch.v1`; projected events retain
 `codegraff.behavior.v1`. In metadata mode the batch contains pseudonymous
 install/run attribution, a controlled client class (`harness`, `sdk-ts`, or
 `sdk-py`), lifecycle and turn relationships, an initial provider/model/effort
-snapshot, terminal and drop status, keyed opaque commitment references, and
-content-free per-turn API/tool aggregates. The local deterministic prompt
+snapshot, local-sink health (`local_sink` on `run_started`, `local_dropped` on
+`run_finished`), terminal and drop status, keyed opaque commitment references,
+and content-free per-turn API/tool aggregates. The local deterministic prompt
 fingerprint is deliberately omitted from all behavioral uploads because
 low-entropy prompt variants can be recovered by enumeration. Tool aggregates use
 controlled classes (`shell`, `read`, `write`, `search`, `web`, `agent`, `verify`,
@@ -105,7 +106,7 @@ Every complete line is one flat JSON object with these required envelope fields:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `kind` | string | One of the nine event-kind names below. |
-| `seq` | positive integer | Logical source-event order. A healthy local file is a contiguous prefix starting at `1`; a bounded upload projection can have gaps reported by its drop counters. |
+| `seq` | positive integer | Logical source-event order, reserved before either sink is attempted. A healthy local file starts at `1` and is contiguous except for events rejected before write, which the terminal `run_finished` accounts for in `local_dropped`; a bounded upload projection can have gaps reported by its own drop counters. |
 | `ts` | number | Wall-clock Unix time in fractional seconds. It can repeat or move backwards if the system clock changes. |
 | `run_id` | string | The run's random hexadecimal identifier, also used in the filename. |
 | `schema` | string | `codegraff.behavior.v1`. |
@@ -115,16 +116,22 @@ Consumers should ignore unknown top-level fields so compatible additions remain
 possible.
 
 A logical `seq` is reserved once before either sink is attempted. Each local
-record is built completely in memory, written, and flushed as one line. If local
-serialization or output fails, local capture is disabled for the rest of the
-process while upload remains independent; an upload admission failure likewise
-does not disable the local file. This makes a healthy local stream a contiguous
-prefix, while an upload may contain source-sequence gaps accounted for by
-`dropped_events`. A local event is capped at 64 KiB to bound temporary
-serialization memory; exceeding that cap disables the local sink for the rest of
-the run but does not disable metadata upload. Directory creation,
-private-permission setup, and exclusive-open collisions are best-effort; a
-failure silently leaves only local behavioral capture disabled. An I/O failure
+record is built completely in memory, written, and flushed as one line.
+Failures that happen before any byte reaches the file (allocation,
+serialization, or the 64 KiB per-event cap that bounds temporary
+serialization memory) drop only that event: the local stream stays alive, the
+drop is counted, and the terminal `run_finished` declares the total as
+`local_dropped` so an auditor can reconcile every gap. A failure of the file
+write itself still disables local capture for the rest of the process, because
+a partial tail may exist and later records must not be appended after it.
+Upload remains independent in both directions: an upload admission failure
+does not disable the local file, and an upload may contain source-sequence
+gaps accounted for by its own `dropped_events`. Directory creation and
+private-permission setup are best-effort; if the local file cannot be created,
+the harness prints one stderr warning, reports `local_sink=false` in the
+uploaded `run_started` projection, and leaves only local capture disabled. If
+secure entropy is unavailable at run start, behavioral upload is disabled for
+the run instead of degrading the commitment-reference key. An I/O failure
 can still leave one malformed final
 line; consumers should process only complete JSON lines and treat a missing
 terminal `run_finished` as incomplete. The files currently have no manifest,
@@ -187,6 +194,8 @@ key. One-shot and zigzag modes preserve their old DGM behavior and currently use
 Required field:
 
 - `status` — currently `closed` or `error`.
+- `local_dropped` — how many events were rejected before reaching the local
+  file (each one leaves a `seq` gap that this count must equal).
 
 `closed` means that the initialized agent session returned without propagating
 a Zig error. It is **not** a task-success verdict and does not prove that every
@@ -258,7 +267,7 @@ upload scans or sanitizes them.
 - `.graff/` is ignored by Git.
 - Directory components are opened relative to verified no-follow handles, so a
   workspace symlink cannot redirect the trace outside the working directory.
-  On POSIX, the trajectories directory is set to mode `0700`; new files request
+  On POSIX, the behavior directory is set to mode `0700`; new files request
   a maximum mode of `0600`, which a restrictive process umask may reduce
   further. On Windows, access follows the directory's inherited ACLs.
 - The local JSONL bytes are never automatically uploaded. A separately built
@@ -267,7 +276,7 @@ upload scans or sanitizes them.
 - Local capture is enabled by default and independent of the operational
   `/trace` toggle and behavioral upload setting.
 - Local files have no automatic retention limit. Delete files from
-  `.graff/trajectories/` when they are no longer needed. Git ignore rules do not
+  `.graff/behavior/` when they are no longer needed. Git ignore rules do not
   prevent backups, artifact collectors, support bundles, workspace-capable
   agent tools, or manual uploads from reading or copying them.
 - Behavioral events are not consumed for fleet/DGM selection in Phase 1.
@@ -281,8 +290,30 @@ upload scans or sanitizes them.
 {"kind":"turn_started","seq":2,"ts":1770000001.25,"run_id":"0123456789abcdef","schema":"codegraff.behavior.v1","turn":1,"parent_turn":0,"trajectory_node":1}
 {"kind":"turn_committed","seq":3,"ts":1770000002.5,"run_id":"0123456789abcdef","schema":"codegraff.behavior.v1","turn":1,"commitment_id":"build-1","action":{"kind":"edit"},"expect":{"build":"passes"},"reason":"verify the patch"}
 {"kind":"model_mispredicted","seq":4,"ts":1770000003.75,"run_id":"0123456789abcdef","schema":"codegraff.behavior.v1","turn":1,"commitment_id":"build-1","predicted":{"build":"passes"},"actual":{"build":"fails"},"detail":"compiler verification contradicted the expectation"}
-{"kind":"run_finished","seq":5,"ts":1770000004.0,"run_id":"0123456789abcdef","schema":"codegraff.behavior.v1","status":"closed"}
+{"kind":"run_finished","seq":5,"ts":1770000004.0,"run_id":"0123456789abcdef","schema":"codegraff.behavior.v1","status":"closed","local_dropped":0}
 ```
+
+## Recomputable scoring and replay
+
+Two stdlib-only tools make the stream auditable on its own, mirroring the
+schema-harness `score_trajectories.py` contract:
+
+- `scripts/score_run.py <stream.jsonl>` audits a local behavioral file
+  (envelope, seq/gap reconciliation against `local_dropped`, turn density,
+  commitment fields) and derives behavioral metrics from events alone:
+  turns, commitments, mispredicts, mispredict rate, commitment coverage, and
+  mean repair gap. With `--profile replay --baseline <csv> --game <id>` it
+  scores a converted external trajectory with the reference RHAE math
+  (per-level `min(115, 100*(baseline/actions)^2)`, level-index weights,
+  completion cap).
+- `scripts/replay_schema_harness.py events.jsonl out.jsonl` converts a
+  schema-harness trajectory into this envelope mechanically.
+
+Round-trip validation: converting the published
+`claude_fable_opus/claude-fable-5_max_ft09_100.0` trajectory and re-scoring
+the converted stream reproduces its published 100.0 RHAE exactly (the issue
+#246 validation criterion). CI runs a hermetic version of the same round trip
+plus the live-session audit in `scripts/test-behavior-trace.py`.
 
 ## Deferred work for the full issue
 
@@ -291,12 +322,11 @@ A complete predict–verify implementation still needs:
 1. Task adapters that define state snapshots, legal actions, action/observation
    boundaries, and outcome semantics.
 2. Stable agent/invocation identities and real dispatch/completion hooks for
-   concurrent tool events.
+   concurrent tool events (the four reserved kinds above).
 3. Explicit expectation binding, verification, surprise interruption, and
-   repair behavior.
-4. Versioned, recomputable behavioral scorers plus recipe/eval identity and
-   trace-integrity metadata.
+   repair behavior wired to a production producer.
+4. Versioned Zig-side behavioral score events plus recipe/eval identity and
+   trace-integrity metadata (the stdlib auditor above recomputes metrics and
+   replay scores, but no built-in run emits a score-bearing outcome yet).
 5. Admission of only trusted recomputed scores into eval, fleet, MAP-Elites,
    and DGM selection.
-6. Replay of the published schema-harness ft09 trajectory and reproduction of
-   its reference score.

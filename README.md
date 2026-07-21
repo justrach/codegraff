@@ -802,7 +802,7 @@ with `--max-model-calls N` or the lower-precedence `GRAFF_MAX_MODEL_CALLS`.
 
 **Behavioral trajectories are a separate experimental stream.** Each initialized
 agent session can write an exclusively-created
-`.graff/trajectories/<run_id>.jsonl` with an ordered, attributable lifecycle
+`.graff/behavior/<run_id>.jsonl` with an ordered, attributable lifecycle
 envelope. The local JSONL is never uploaded wholesale. Local capture defaults on
 and is independently disabled with `GRAFF_BEHAVIOR_TRACE=off`.
 
