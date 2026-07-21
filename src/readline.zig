@@ -51,6 +51,19 @@ const session = @import("session.zig");
 const Agent = agent_mod.Agent;
 const saveSession = session.saveSession;
 
+const ClipboardPasteSource = union(enum) {
+    image: []const u8,
+    no_image,
+    no_vision,
+    unsupported_platform,
+};
+
+fn clipboardPasteSource(io: Io, supports_vision: bool, is_macos: bool, grabber: anytype) ClipboardPasteSource {
+    if (!supports_vision) return .no_vision;
+    if (!is_macos) return .unsupported_platform;
+    return .{ .image = grabber(io) orelse return .no_image };
+}
+
 /// History + unsent-draft navigation for the line editor (#101). Mirrors the
 /// GUI's promptHistoryNavigation.ts: stepping UP out of the fresh slot snapshots
 /// the half-typed draft; stepping DOWN past the newest entry restores it instead
@@ -323,17 +336,22 @@ pub fn readLine(
             },
             0x16 => { // Ctrl-V: attach a clipboard image (macOS) at the cursor
                 var msg: ?[]const u8 = null;
-                if (grabClipboardImage(root.io)) |p| switch (stageImagePath(root, p)) {
-                    .ok => {
-                        const marker = "[Image] ";
-                        buf.insertSlice(gpa, cur, marker) catch {};
-                        cur += marker.len;
-                        addMark(gpa, &marks, "[Image]");
-                        redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
-                    },
+                switch (clipboardPasteSource(root.io, vision.visionCapable(root.provider), builtin.os.tag == .macos, grabClipboardImage)) {
                     .no_vision => msg = "this model can't see images — /model to a vision one (claude-*, gpt-5*)",
-                    .read_fail => msg = "couldn't read the clipboard image",
-                } else msg = if (builtin.os.tag == .macos) "no image on the clipboard — copy an image first (this is Ctrl-V; ⌘V can't be captured)" else "clipboard image paste is macOS-only — use /image <path>";
+                    .unsupported_platform => msg = "clipboard image paste is macOS-only — use /image <path>",
+                    .no_image => msg = "no image on the clipboard — copy an image first (this is Ctrl-V; ⌘V can't be captured)",
+                    .image => |p| switch (stageImagePath(root, p)) {
+                        .ok => {
+                            const marker = "[Image] ";
+                            buf.insertSlice(gpa, cur, marker) catch {};
+                            cur += marker.len;
+                            addMark(gpa, &marks, "[Image]");
+                            redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
+                        },
+                        .no_vision => msg = "this model can't see images — /model to a vision one (claude-*, gpt-5*)",
+                        .read_fail => msg = "couldn't read the clipboard image",
+                    },
+                }
                 if (msg) |m| { // feedback below the input, then redraw the prompt+buffer fresh
                     if (rstate.rows - 1 > rstate.crow) out.print("\x1b[{d}B", .{rstate.rows - 1 - rstate.crow}) catch {};
                     out.print("\r\n{s}· {s}{s}", .{ style.dim, m, style.reset }) catch {};
@@ -595,4 +613,34 @@ pub fn readLine(
         history.append(gpa, dup) catch {};
     }
     return buf.items;
+}
+
+test "clipboard paste checks vision support before clipboard access" {
+    const MockGrabber = struct {
+        var calls: usize = 0;
+        var image: ?[]const u8 = "/tmp/test.png";
+
+        fn grab(_: Io) ?[]const u8 {
+            calls += 1;
+            return image;
+        }
+    };
+    const expectTag = struct {
+        fn expect(expected: std.meta.Tag(ClipboardPasteSource), actual: ClipboardPasteSource) !void {
+            try std.testing.expectEqual(expected, std.meta.activeTag(actual));
+        }
+    }.expect;
+
+    MockGrabber.calls = 0;
+    try expectTag(.no_vision, clipboardPasteSource(std.testing.io, false, true, MockGrabber.grab));
+    try expectTag(.no_vision, clipboardPasteSource(std.testing.io, false, false, MockGrabber.grab));
+    try expectTag(.unsupported_platform, clipboardPasteSource(std.testing.io, true, false, MockGrabber.grab));
+    try std.testing.expectEqual(@as(usize, 0), MockGrabber.calls);
+
+    try expectTag(.image, clipboardPasteSource(std.testing.io, true, true, MockGrabber.grab));
+    try std.testing.expectEqual(@as(usize, 1), MockGrabber.calls);
+
+    MockGrabber.image = null;
+    try expectTag(.no_image, clipboardPasteSource(std.testing.io, true, true, MockGrabber.grab));
+    try std.testing.expectEqual(@as(usize, 2), MockGrabber.calls);
 }
