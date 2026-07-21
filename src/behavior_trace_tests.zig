@@ -34,9 +34,6 @@ test "writeBehaviorLine: oversized adapter content is rejected before local allo
     const oversized = try gpa.alloc(u8, max_local_behavior_event_bytes + 1);
     defer gpa.free(oversized);
     @memset(oversized, 'x');
-    // Pre-existing #246 bug fixed in passing: writeBehaviorLine returns
-    // LineResult (.written/.dropped/.sink_failed), not bool — this call site
-    // still compared against `!bool` and failed to compile.
     try std.testing.expectEqual(btrace.LineResult.dropped, writeBehaviorLine(gpa, &out.writer, .turn_committed, 1, 1.0, "0123456789abcdef", .{
         .turn = @as(u64, 1),
         .reason = oversized,
@@ -366,15 +363,10 @@ test "BehaviorTrace: metadata-default upload is an exact content-free projection
     try std.testing.expectEqualStrings("metadata", batch.get("privacy").?.string);
     const events = batch.get("events").?.array.items;
     try std.testing.expectEqual(@as(usize, 5), events.len);
-    // Pre-existing staleness fixed in passing: startWithMetadata's
-    // upload_fields already carries local_sink (sink-health diagnostics,
-    // #246) but this key list predated that field.
     try expectObjectKeys(events[0].object, &.{ "kind", "seq", "ts", "run_id", "schema", "version", "unix_ms", "provider", "model", "effort", "local_sink" });
     try expectObjectKeys(events[1].object, &.{ "kind", "seq", "ts", "run_id", "schema", "turn", "parent_turn", "trajectory_node" });
     try expectObjectKeys(events[2].object, &.{ "kind", "seq", "ts", "run_id", "schema", "turn", "commitment_ref" });
     try expectObjectKeys(events[3].object, &.{ "kind", "seq", "ts", "run_id", "schema", "turn", "commitment_ref" });
-    // Same staleness: run_finished's fields already carry local_dropped
-    // (#246 audit reconciliation) alongside status.
     try expectObjectKeys(events[4].object, &.{ "kind", "seq", "ts", "run_id", "schema", "status", "local_dropped" });
     try std.testing.expectEqualStrings(events[2].object.get("commitment_ref").?.string, events[3].object.get("commitment_ref").?.string);
 
@@ -415,6 +407,64 @@ test "BehaviorTrace: prompt fingerprint stays local in content mode" {
     try std.testing.expectEqual(@as(usize, 1), upload.events.items.len);
     try std.testing.expect(std.mem.indexOf(u8, upload.events.items[0], "0011223344556677") == null);
     try std.testing.expect(std.mem.indexOf(u8, upload.events.items[0], "prompt_sha") == null);
+}
+
+test "BehaviorTrace: eval-driven loop producer pattern - misprediction on failure, commitment only on success (#256)" {
+    // Mirrors agent_eval.zig's runEval, the first production caller of this
+    // pair: commit before the command runs, then resolve with a
+    // misprediction only when the command failed or missed its target. A
+    // met target intentionally gets no paired misprediction call - the
+    // commitment alone is the success signal (docs/behavioral-trajectories.md).
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var aw: Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var behavior: BehaviorTrace = .{
+        .io = io,
+        .gpa = gpa,
+        .out = &aw.writer,
+        .run_id = "eval-pattern-run",
+    };
+    behavior.start("test", 1);
+    const turn = behavior.beginTurn(0);
+
+    behavior.recordExpectedAction(turn, "eval-1-1", .{ .kind = "eval" }, .{ .pass = true }, "eval-driven loop verifier");
+    behavior.recordMisprediction(turn, "eval-1-1", .{ .pass = true }, .{ .pass = false, .exit = @as(i32, 1) }, "target not met");
+
+    behavior.recordExpectedAction(turn, "eval-1-2", .{ .kind = "eval" }, .{ .pass = true }, "eval-driven loop verifier");
+    // (no recordMisprediction call for the second commitment: success)
+
+    behavior.finish(.closed);
+
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, aw.writer.buffered(), "\n"), '\n');
+    _ = lines.next(); // run_started
+    _ = lines.next(); // turn_started
+
+    var committed1 = try std.json.parseFromSlice(Value, gpa, lines.next().?, .{});
+    defer committed1.deinit();
+    try std.testing.expectEqualStrings("turn_committed", committed1.value.object.get("kind").?.string);
+    try std.testing.expectEqualStrings("eval-1-1", committed1.value.object.get("commitment_id").?.string);
+    try std.testing.expectEqual(@as(i64, @intCast(turn)), committed1.value.object.get("turn").?.integer);
+
+    var mispredicted = try std.json.parseFromSlice(Value, gpa, lines.next().?, .{});
+    defer mispredicted.deinit();
+    try std.testing.expectEqualStrings("model_mispredicted", mispredicted.value.object.get("kind").?.string);
+    try std.testing.expectEqualStrings("eval-1-1", mispredicted.value.object.get("commitment_id").?.string);
+    try std.testing.expectEqual(@as(i64, @intCast(turn)), mispredicted.value.object.get("turn").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), mispredicted.value.object.get("actual").?.object.get("exit").?.integer);
+    try std.testing.expect(!mispredicted.value.object.get("actual").?.object.get("pass").?.bool);
+
+    var committed2 = try std.json.parseFromSlice(Value, gpa, lines.next().?, .{});
+    defer committed2.deinit();
+    try std.testing.expectEqualStrings("turn_committed", committed2.value.object.get("kind").?.string);
+    try std.testing.expectEqualStrings("eval-1-2", committed2.value.object.get("commitment_id").?.string);
+
+    var finished = try std.json.parseFromSlice(Value, gpa, lines.next().?, .{});
+    defer finished.deinit();
+    try std.testing.expectEqualStrings("run_finished", finished.value.object.get("kind").?.string);
+    // Exactly: run_started, turn_started, committed, mispredicted, committed,
+    // run_finished - the second (met-target) commitment has no misprediction.
+    try std.testing.expect(lines.next() == null);
 }
 
 test "beginRootTurn: correlates without allocating a legacy node" {

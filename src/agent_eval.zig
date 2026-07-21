@@ -1,4 +1,5 @@
 //! Eval-driven scoring loop and its optional LLM-as-judge scorer.
+//! Tests live in agent_eval_tests.zig.
 
 const std = @import("std");
 const Io = std.Io;
@@ -19,6 +20,10 @@ const telemetry = @import("telemetry.zig");
 const runCapped = @import("jobs.zig").runCapped;
 const judgeTask = @import("subagent.zig").judgeTask;
 
+test {
+    _ = @import("agent_eval_tests.zig");
+}
+
 /// Run the configured --eval scoring command, append the result to the
 /// scores log (.graff/eval-log.tsv), and return a verdict for the model:
 /// score (0-100), best so far, target, and whether the target is met. The
@@ -28,8 +33,28 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
         .text = "no eval command configured - relaunch graff with --eval <scoring cmd> and --until <N>, or ask the user to set one",
         .is_error = true,
     };
-    const run = runCapped(self.gpa, self.io, &.{ "/bin/sh", "-c", cmd }, 64 * 1024, 16 * 1024, 0) catch |e|
+
+    // Behavioral commitment (issue #256): the eval-driven loop is the first
+    // production caller of turn_committed/model_mispredicted. The commitment
+    // asserts the loop's own belief - the command will meet the target -
+    // before the command runs, so a later contradiction is provable rather
+    // than reconstructed after the fact. commitment_id is opaque and
+    // per-invocation; the command text and its stdout/stderr are content and
+    // must never reach either typed field (docs/behavioral-trajectories.md).
+    const behavior = if (self.tracer) |tracer| tracer.behavior else null;
+    const eval_turn = if (behavior) |bt| bt.currentTurn() else 0;
+    var commitment_buf: [48]u8 = undefined;
+    const commitment_id = std.fmt.bufPrint(&commitment_buf, "eval-{d}-{d}", .{ eval_turn, self.eval_iter + 1 }) catch "";
+    if (behavior) |bt| bt.recordExpectedAction(eval_turn, commitment_id, .{ .kind = "eval" }, .{ .pass = true }, "eval-driven loop verifier");
+
+    const run = runCapped(self.gpa, self.io, &.{ "/bin/sh", "-c", cmd }, 64 * 1024, 16 * 1024, 0) catch |e| {
+        // The command never ran, so the commitment can never be verified by
+        // the normal exit-code/score path below; resolve it here instead of
+        // leaving a dangling turn_committed that a scorer would misread as
+        // an unresolved success.
+        if (behavior) |bt| bt.recordMisprediction(eval_turn, commitment_id, .{ .pass = true }, .{ .pass = false, .exit = @as(i32, -1) }, "eval command could not run");
         return .{ .text = try std.fmt.allocPrint(self.arena, "eval command could not run: {t}", .{e}), .is_error = true };
+    };
     defer self.gpa.free(run.stdout);
     defer self.gpa.free(run.stderr);
     self.eval_iter += 1;
@@ -58,6 +83,13 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
         if (self.eval_best < 0 or s > self.eval_best) self.eval_best = s;
     }
     const met = if (combined) |s| s >= target_f else false;
+    // Resolve the commitment made above: a nonzero exit or an unmet/unparsed
+    // target contradicts "this command will meet the target", so it is a
+    // misprediction. Meeting the target leaves the commitment unresolved by
+    // design - docs/behavioral-trajectories.md: a commitment with no paired
+    // misprediction is itself the success signal.
+    if (behavior) |bt| if (exit_code != 0 or !met)
+        bt.recordMisprediction(eval_turn, commitment_id, .{ .pass = true }, .{ .pass = false, .exit = exit_code }, "target not met");
     self.appendEvalLog(note, det, judge, combined, exit_code, met) catch {};
 
     // Feed the eval-driven score into the fleet (docs/hyperagents.md §9.B):

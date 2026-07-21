@@ -828,10 +828,13 @@ arguments/results, commands, arbitrary environment values, or exact private MCP
 names. Provider and model identifiers are included exactly as configured; Phase
 1 does not inspect, classify, or redact those identifier values.
 
-Ordinary Phase 1 runs contain lifecycle events only (plus tool/action/text
-events with `GRAFF_BEHAVIOR_TRACE=full`, local-only in every upload mode):
-typed commitment/misprediction APIs exist, but no built-in task adapter calls
-them yet.
+Most Phase 1 runs contain lifecycle events only (plus tool/action/text
+events with `GRAFF_BEHAVIOR_TRACE=full`, local-only in every upload mode).
+The eval-driven loop (`--eval`/`--until`) is the first built-in caller of the
+typed commitment/misprediction APIs, committing to a target before running
+the scoring command and recording a misprediction only on a nonzero exit or a
+missed target, with no command text, stdout, or stderr ever entering either
+field. No other built-in adapter calls them.
 Content mode adds fields supplied through those APIs, with no redactor or secret
 scanner; the local prompt fingerprint remains excluded. This is not yet a
 generic predict → act → verify → repair loop

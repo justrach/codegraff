@@ -19,9 +19,13 @@ scoring, or fleet/DGM selection from those scores.
 
 Behavioral events are deliberately not mixed into the legacy DGM ledger. This
 keeps old consumers working and prevents concurrent processes from interleaving
-unattributed event rows. No built-in production task adapter calls the
-commitment or misprediction APIs yet, so ordinary Phase 1 files contain lifecycle
-events only. Adapter rows in the example below are illustrative.
+unattributed event rows. The eval-driven loop (`--eval`/`--until`, `agent_eval.zig`)
+is the first production caller of the commitment and misprediction APIs
+(issue #256): before it runs the configured scoring command it commits to
+`{kind:"eval"}`/`{pass:true}`, then records a misprediction only if the command
+exits nonzero or the parsed score misses `--until`. Every other invocation path
+still contains lifecycle events only. Adapter rows in the example below are
+illustrative.
 
 ## Behavioral network upload
 
@@ -90,8 +94,11 @@ credentials, headers, identity, prompt fingerprints, or free-text adapter
 content. Content mode changes typed adapter events: it may include
 `commitment_id`, `action`, `expect`, `reason`, `predicted`, `actual`, and `detail`
 exactly as supplied. There
-is no redactor, sanitizer, or secret scanner. No built-in production adapter
-currently supplies those fields.
+is no redactor, sanitizer, or secret scanner. The eval-driven loop is the only
+built-in production adapter that currently supplies those fields, and it
+supplies only static/opaque values (`{kind:"eval"}`, `{pass:<bool>}`,
+`{pass:false,exit:<int>}`, and a short fixed reason/detail string) - never the
+configured command text or its stdout/stderr.
 
 The collector stores individual runs privately and has no raw behavioral GET
 endpoint; its public stats expose aggregate totals only. Content-opt-in fields
