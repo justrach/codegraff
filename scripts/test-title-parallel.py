@@ -152,17 +152,8 @@ def main() -> None:
     if len(observed) != 2 or {kind for _, kind in observed} != {"title", "main"}:
         raise AssertionError(f"expected one title and one main request: {observed!r}")
     requests = mock.recorded_requests()
-    limits = {
-        (
-            "title"
-            if "You summarize what a coding session is about"
-            in request.body.get("instructions", "")
-            else "main"
-        ): request.body.get("max_output_tokens")
-        for request in requests
-    }
-    if limits != {"title": 64, "main": 16000}:
-        raise AssertionError(f"unexpected Responses output caps: {limits!r}")
+    if any("max_output_tokens" in request.body for request in requests):
+        raise AssertionError("Responses title/main requests must omit max_output_tokens")
     delta_ms = (observed[1][0] - observed[0][0]) * 1000
     if delta_ms > 750:
         raise AssertionError(f"title/main requests serialized ({delta_ms:.1f}ms apart)")
