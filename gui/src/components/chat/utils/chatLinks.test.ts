@@ -29,8 +29,19 @@ describe("getChatLinkMatches URL vs Markdown delimiters", () => {
     expect(firstUrl("see http://a.com/x*y here")).toBe("http://a.com/x*y");
   });
 
-  test("preserves a legitimate tilde in the URL path", () => {
+  test("preserves legitimate trailing asterisks on unwrapped URLs", () => {
+    expect(firstUrl("https://example.com/path*")).toBe("https://example.com/path*");
+    expect(firstUrl("https://example.com/?q=*")).toBe("https://example.com/?q=*");
+  });
+
+  test("preserves legitimate tildes in unwrapped URLs", () => {
     expect(firstUrl("https://example.com/~user")).toBe("https://example.com/~user");
+    expect(firstUrl("https://example.com/~")).toBe("https://example.com/~");
+  });
+
+  test("removes only the matching closing delimiter", () => {
+    expect(firstUrl("*https://example.com/path**")).toBe("https://example.com/path*");
+    expect(firstUrl("~~https://example.com/path~~~")).toBe("https://example.com/path~");
   });
 
   test("still balances closing parens in a Wikipedia-style URL", () => {
