@@ -45,6 +45,9 @@ def check_live_session(graff: Path, root: Path) -> None:
     env = os.environ.copy()
     env.update({
         "GRAFF_NO_TELEMETRY": "1",
+        # LM Studio accepts any bearer token, but graff still requires the
+        # provider to be explicitly configured in a credential-free CI home.
+        "LMSTUDIO_API_KEY": "local",
         # Refused immediately: the discard port on localhost is closed.
         "GRAFF_LMSTUDIO_URL": "http://127.0.0.1:9",
     })
@@ -52,7 +55,10 @@ def check_live_session(graff: Path, root: Path) -> None:
     assert result.returncode != 0, "dead-endpoint one-shot should fail"
 
     behavior_files = sorted((workspace / ".graff" / "behavior").glob("*.jsonl"))
-    assert len(behavior_files) == 1, f"expected one behavioral file, got {behavior_files}"
+    assert len(behavior_files) == 1, (
+        f"expected one behavioral file, got {behavior_files}; "
+        f"graff stderr: {result.stderr.strip()}"
+    )
     run_id = behavior_files[0].stem
     trajectory = workspace / ".graff" / "trajectories" / f"{run_id}.jsonl"
     assert trajectory.is_file(), "legacy DGM trajectory must coexist for the same run id"
