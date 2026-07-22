@@ -652,7 +652,7 @@ test "lazy root tool catalogs preserve MCP tools across provider formats" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    var registry = mcp.Registry.empty(std.testing.allocator, std.testing.io, "");
+    var registry = mcp.Registry.empty(std.testing.allocator, std.testing.io);
     defer registry.deinit();
     var connected = [_]mcp.Tool{.{
         .server_index = 0,

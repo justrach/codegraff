@@ -259,9 +259,9 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
         try out.print("[mcp] init failed: {t} — continuing without MCP\n", .{err});
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;
-    }) orelse mcp.Registry.empty(gpa, io, home)) else outer: {
+    }) orelse mcp.Registry.emptyWithOAuthHome(gpa, io, home)) else outer: {
         if (mcp_count > 0) try out.print("{s}skipped {d} workspace MCP server(s) — /mcp trust to connect them now (or re-run with --yolo){s}\n", .{ ansi.style.dim, mcp_count, ansi.style.reset });
-        break :outer mcp.Registry.empty(gpa, io, home);
+        break :outer mcp.Registry.emptyWithOAuthHome(gpa, io, home);
     };
 }
 

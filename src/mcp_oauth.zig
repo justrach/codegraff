@@ -4,6 +4,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const util = @import("util.zig");
+const discovery = @import("mcp_oauth_discovery.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -32,53 +33,7 @@ const TokenSet = struct {
     expires_at_ms: i64,
 };
 
-fn requireHttps(url: []const u8) !void {
-    if (!std.mem.startsWith(u8, url, "https://")) return error.InsecureOAuthEndpoint;
-    const rest = url["https://".len..];
-    if (rest.len == 0 or rest[0] == '/' or std.mem.indexOfScalar(u8, rest, '@') != null)
-        return error.InvalidOAuthUrl;
-}
-
-fn splitOrigin(url: []const u8) !struct { origin: []const u8, path: []const u8 } {
-    try requireHttps(url);
-    const authority_start = "https://".len;
-    var authority_end = url.len;
-    for (url[authority_start..], authority_start..) |c, i| {
-        if (c == '/' or c == '?' or c == '#') {
-            authority_end = i;
-            break;
-        }
-    }
-    if (authority_end == authority_start) return error.InvalidOAuthUrl;
-    const tail = url[authority_end..];
-    const path_end = std.mem.indexOfAny(u8, tail, "?#") orelse tail.len;
-    const path = if (path_end == 0 or tail[0] != '/') "/" else tail[0..path_end];
-    return .{ .origin = url[0..authority_end], .path = path };
-}
-
-/// RFC 9728 section 3.1: insert the well-known name between the origin and the
-/// protected resource's path.
-fn protectedMetadataUrl(arena: Allocator, resource_url: []const u8) ![]const u8 {
-    const p = try splitOrigin(resource_url);
-    return std.fmt.allocPrint(arena, "{s}/.well-known/oauth-protected-resource{s}", .{
-        p.origin,
-        if (std.mem.eql(u8, p.path, "/")) "" else p.path,
-    });
-}
-
-/// RFC 8414 section 3: issuer paths follow the well-known component.
-fn authorizationMetadataUrl(arena: Allocator, issuer: []const u8) ![]const u8 {
-    const p = try splitOrigin(issuer);
-    return std.fmt.allocPrint(arena, "{s}/.well-known/oauth-authorization-server{s}", .{
-        p.origin,
-        if (std.mem.eql(u8, p.path, "/")) "" else p.path,
-    });
-}
-
-fn oidcMetadataUrl(arena: Allocator, issuer: []const u8) ![]const u8 {
-    try requireHttps(issuer);
-    return std.fmt.allocPrint(arena, "{s}/.well-known/openid-configuration", .{std.mem.trimEnd(u8, issuer, "/")});
-}
+const requireHttps = discovery.requireHttps;
 
 fn writePercentEncoded(w: *Io.Writer, value: []const u8) !void {
     const hex = "0123456789ABCDEF";
@@ -188,10 +143,38 @@ fn postForm(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, payload: 
     return jsonObject(writer.buffered(), arena);
 }
 
+fn authorizationEndpoints(io: Io, gpa: Allocator, arena: Allocator, issuer: []const u8, metadata_url: []const u8) !EndpointSet {
+    const metadata = try fetchJson(io, gpa, arena, metadata_url);
+    const advertised_issuer = stringField(metadata, "issuer") orelse return error.AuthorizationServerMismatch;
+    if (!std.mem.eql(u8, advertised_issuer, issuer)) return error.AuthorizationServerMismatch;
+    if (!discovery.supportsS256(metadata)) return error.PkceS256Unsupported;
+
+    const authorization = stringField(metadata, "authorization_endpoint") orelse return error.BadOAuthResponse;
+    const token = stringField(metadata, "token_endpoint") orelse return error.BadOAuthResponse;
+    const registration = stringField(metadata, "registration_endpoint") orelse return error.DynamicRegistrationUnsupported;
+    try requireHttps(authorization);
+    try requireHttps(token);
+    try requireHttps(registration);
+    return .{
+        .issuer = issuer,
+        .authorization = authorization,
+        .token = token,
+        .registration = registration,
+        .scope = try supportedScopes(arena, metadata),
+    };
+}
+
 fn discover(io: Io, gpa: Allocator, arena: Allocator, resource_url: []const u8) !EndpointSet {
-    const resource_metadata = try fetchJson(io, gpa, arena, try protectedMetadataUrl(arena, resource_url));
-    if (stringField(resource_metadata, "resource")) |advertised|
-        if (!std.mem.eql(u8, advertised, resource_url)) return error.ResourceMetadataMismatch;
+    // RFC 9728 challenges are authoritative hints and must be obtained before
+    // attempting either protected-resource well-known location.
+    const challenge = try discovery.probe(io, gpa, arena, resource_url);
+    const resource_metadata = if (challenge.resource_metadata) |url|
+        try fetchJson(io, gpa, arena, url)
+    else
+        fetchJson(io, gpa, arena, try discovery.protectedMetadataUrl(arena, resource_url)) catch
+            try fetchJson(io, gpa, arena, try discovery.rootProtectedMetadataUrl(arena, resource_url));
+    const advertised_resource = stringField(resource_metadata, "resource") orelse return error.ResourceMetadataMismatch;
+    if (!std.mem.eql(u8, advertised_resource, resource_url)) return error.ResourceMetadataMismatch;
 
     const servers = resource_metadata.get("authorization_servers") orelse return error.MissingAuthorizationServer;
     if (servers != .array or servers.array.items.len == 0) return error.MissingAuthorizationServer;
@@ -204,30 +187,29 @@ fn discover(io: Io, gpa: Allocator, arena: Allocator, resource_url: []const u8) 
     }
     const selected = issuer orelse return error.InsecureOAuthEndpoint;
 
-    const metadata = fetchJson(io, gpa, arena, try authorizationMetadataUrl(arena, selected)) catch
-        try fetchJson(io, gpa, arena, try oidcMetadataUrl(arena, selected));
-    if (stringField(metadata, "issuer")) |advertised|
-        if (!std.mem.eql(u8, std.mem.trimEnd(u8, advertised, "/"), std.mem.trimEnd(u8, selected, "/")))
-            return error.AuthorizationServerMismatch;
-
-    const authorization = stringField(metadata, "authorization_endpoint") orelse return error.BadOAuthResponse;
-    const token = stringField(metadata, "token_endpoint") orelse return error.BadOAuthResponse;
-    const registration = stringField(metadata, "registration_endpoint") orelse return error.DynamicRegistrationUnsupported;
-    try requireHttps(authorization);
-    try requireHttps(token);
-    try requireHttps(registration);
-    var scope = try supportedScopes(arena, resource_metadata);
-    if (scope.len == 0) scope = try supportedScopes(arena, metadata);
-    // Core Smolify is a documentation reader. Do not request its advertised
-    // contribution/publication capabilities merely because they exist.
-    if (std.mem.eql(u8, resource_url, smolify_resource)) scope = smolify_read_scopes;
-    return .{
-        .issuer = selected,
-        .authorization = authorization,
-        .token = token,
-        .registration = registration,
-        .scope = scope,
-    };
+    var endpoints = authorizationEndpoints(io, gpa, arena, selected, try discovery.authorizationMetadataUrl(arena, selected)) catch
+        authorizationEndpoints(io, gpa, arena, selected, try discovery.oidcInsertedMetadataUrl(arena, selected)) catch
+        try authorizationEndpoints(io, gpa, arena, selected, try discovery.oidcAppendedMetadataUrl(arena, selected));
+    var scope = discovery.preferredScope(
+        challenge.scope,
+        try supportedScopes(arena, resource_metadata),
+        endpoints.scope,
+    );
+    // Core Smolify remains read-only. An explicit challenge is authoritative,
+    // but fail closed if it requests permissions outside the pinned allowlist.
+    if (std.mem.eql(u8, resource_url, smolify_resource)) {
+        if (challenge.scope) |challenged| {
+            if (challenged.len == 0) {
+                scope = smolify_read_scopes;
+            } else if (!discovery.scopeSubsetOf(challenged, smolify_read_scopes)) {
+                return error.SmolifyScopeNotReadOnly;
+            }
+        } else {
+            scope = smolify_read_scopes;
+        }
+    }
+    endpoints.scope = scope;
+    return endpoints;
 }
 
 fn registerClient(io: Io, gpa: Allocator, arena: Allocator, endpoint: []const u8, server_name: []const u8) !ClientInfo {
@@ -540,16 +522,6 @@ pub fn loadAccessToken(io: Io, gpa: Allocator, arena: Allocator, home: []const u
     };
     writeCredentials(io, arena, home, resource_url, endpoints, client, tokens) catch return null;
     return tokens.access;
-}
-
-test "RFC 9728 and RFC 8414 metadata URL construction" {
-    const arena = std.testing.allocator;
-    const protected = try protectedMetadataUrl(arena, "https://mcp.example:8443/a/b?x=1");
-    defer arena.free(protected);
-    try std.testing.expectEqualStrings("https://mcp.example:8443/.well-known/oauth-protected-resource/a/b", protected);
-    const auth = try authorizationMetadataUrl(arena, "https://login.example/tenant");
-    defer arena.free(auth);
-    try std.testing.expectEqualStrings("https://login.example/.well-known/oauth-authorization-server/tenant", auth);
 }
 
 test "form encoding uses RFC 3986 percent encoding" {
