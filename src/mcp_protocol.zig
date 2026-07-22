@@ -39,15 +39,28 @@ pub const supported_protocols = [_][]const u8{
     "2024-11-05",
 };
 
-pub fn negotiatedProtocol(response: Value) ![]const u8 {
+pub const Transport = enum {
+    stdio,
+    streamable_http,
+};
+
+fn supportsProtocol(transport: Transport, version: []const u8) bool {
+    for (supported_protocols) |supported| {
+        if (!std.mem.eql(u8, version, supported)) continue;
+        // Streamable HTTP replaced the legacy HTTP+SSE transport in
+        // 2025-03-26. The older revision remains compatible over stdio only.
+        return transport == .stdio or !std.mem.eql(u8, version, "2024-11-05");
+    }
+    return false;
+}
+
+pub fn negotiatedProtocol(response: Value, transport: Transport) ![]const u8 {
     if (response != .object) return error.BadMcpInitializeResponse;
     const result = response.object.get("result") orelse return error.BadMcpInitializeResponse;
     if (result != .object) return error.BadMcpInitializeResponse;
     const version = result.object.get("protocolVersion") orelse return error.MissingMcpProtocolVersion;
     if (version != .string) return error.InvalidMcpProtocolVersion;
-    for (supported_protocols) |supported| {
-        if (std.mem.eql(u8, version.string, supported)) return version.string;
-    }
+    if (supportsProtocol(transport, version.string)) return version.string;
     return error.UnsupportedMcpProtocolVersion;
 }
 
@@ -92,7 +105,7 @@ test "rewriteOneOf: arrays and scalars pass through untouched" {
     try std.testing.expect(first.object.get("anyOf") != null);
 }
 
-test "initialize negotiation accepts supported protocol versions" {
+test "initialize negotiation accepts transport-compatible protocol versions" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -102,7 +115,12 @@ test "initialize negotiation accepts supported protocol versions" {
             \\{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"{s}"}}}}
         , .{version});
         const response = try std.json.parseFromSliceLeaky(Value, a, json, .{});
-        try std.testing.expectEqualStrings(version, try negotiatedProtocol(response));
+        try std.testing.expectEqualStrings(version, try negotiatedProtocol(response, .stdio));
+        if (std.mem.eql(u8, version, "2024-11-05")) {
+            try std.testing.expectError(error.UnsupportedMcpProtocolVersion, negotiatedProtocol(response, .streamable_http));
+        } else {
+            try std.testing.expectEqualStrings(version, try negotiatedProtocol(response, .streamable_http));
+        }
     }
 }
 
@@ -115,6 +133,6 @@ test "initialize negotiation rejects missing, non-string, and unsupported versio
     for (cases) |case| {
         var parsed = try std.json.parseFromSlice(Value, std.testing.allocator, case.json, .{});
         defer parsed.deinit();
-        try std.testing.expectError(case.expected, negotiatedProtocol(parsed.value));
+        try std.testing.expectError(case.expected, negotiatedProtocol(parsed.value, .streamable_http));
     }
 }

@@ -503,7 +503,11 @@ fn initializeServer(server: *Server, response_alloc: Allocator, session_alloc: A
     ++ latest_protocol ++
         \\","capabilities":{},"clientInfo":{"name":"simple-harness","version":"0.1"}}
     , "initialize");
-    const protocol_version = try mcp_protocol.negotiatedProtocol(init_resp);
+    const protocol_transport: mcp_protocol.Transport = switch (server.transport) {
+        .stdio => .stdio,
+        .http => .streamable_http,
+    };
+    const protocol_version = try mcp_protocol.negotiatedProtocol(init_resp, protocol_transport);
     server.protocol_version = try session_alloc.dupe(u8, protocol_version);
     try notify(server, response_alloc, "notifications/initialized");
 }
