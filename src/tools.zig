@@ -30,6 +30,7 @@ pub const ToolCall = struct {
 pub const ExecResult = struct {
     text: []const u8,
     is_error: bool,
+    cancelled: bool = false,
     ms: i64 = 0, // wall-clock of the tool exec (external tools only; --timing)
 };
 
@@ -75,6 +76,7 @@ const run_budget_mod = @import("run_budget.zig");
 pub const ToolOutput = struct {
     text: []u8 = &.{}, // gpa-owned
     is_error: bool = false,
+    cancelled: bool = false,
     ms: i64 = 0, // set by execTool
 };
 

@@ -1,9 +1,5 @@
-//! Subprocess execution: the capped-output runner (runCapped), git-worktree
-//! management (`graff worktree` add/merge/remove + the -w auto-checkpoint
-//! commits), and the background bash-job pool (spawn/output/kill/reap). Split
-//! out of main.zig (600-line goal). Back-imports main for ToolOutput (the job
-//! tools' result shape). main re-exports runCapped (hooks.zig back-imports it)
-//! and aliases the worktree + job entry points back.
+//! Capped subprocess execution, git-worktree management, and background bash
+//! jobs. Split from main.zig to keep process lifecycle logic together.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -29,27 +25,19 @@ const CappedRun = struct {
     stdout_truncated: bool,
     stderr_truncated: bool,
     timed_out: bool,
+    cancelled: bool,
 };
 
-/// Like `std.process.run`, but hitting an output cap *truncates* instead of
-/// failing the call: the first `cap` bytes are kept, the rest is discarded
-/// as it streams (retained memory never exceeds the caps), and the child
-/// still runs to completion so its exit code is real. A chatty `python`
-/// (or an accidental `cat` of something huge) costs the child's own
-/// process memory, never the harness's.
-///
-/// `deadline_ms` is a wall-clock kill switch: 0 means "no deadline" (the
-/// root's Esc is the only stop), non-zero kills the child once it has run
-/// that long and reports `timed_out`. Subagents pass a real deadline since
-/// they have no Esc (#93).
+/// Capture capped output; a deadline or root Esc terminates the process group.
 pub fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize, stderr_cap: usize, deadline_ms: u64) !CappedRun {
     var child = try std.process.spawn(io, .{
         .argv = argv,
+        .pgid = if (builtin.os.tag == .windows) null else 0,
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
     });
-    defer child.kill(io);
+    defer killChildTree(&child, io);
 
     var multi_reader_buffer: Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: Io.File.MultiReader = undefined;
@@ -82,12 +70,12 @@ pub fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: u
         }
         if (Agent.esc_cancel.load(.acquire)) {
             esc_killed = true;
-            child.kill(io);
+            killChildTree(&child, io);
             break :loop;
         }
         if (deadline_ms > 0 and t0.untilNow(io, .awake).toMilliseconds() >= deadline_ms) {
             timed_out = true;
-            child.kill(io);
+            killChildTree(&child, io);
             break :loop;
         }
     }
@@ -105,7 +93,18 @@ pub fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: u
         .stdout_truncated = saved[0] != null,
         .stderr_truncated = saved[1] != null,
         .timed_out = timed_out,
+        .cancelled = esc_killed,
     };
+}
+
+/// Shell commands use their own POSIX process group so cancelling /bin/sh also
+/// terminates grandchildren such as ssh. Windows currently falls back to the
+/// direct child until job-object support is added.
+fn killChildTree(child: *std.process.Child, io: Io) void {
+    if (builtin.os.tag != .windows) {
+        if (child.id) |pid| std.posix.kill(-pid, .KILL) catch {};
+    }
+    child.kill(io);
 }
 
 /// True if a CappedRun child exited cleanly (status 0).
@@ -315,6 +314,7 @@ const Job = struct {
     exit_code: ?u8 = null, // meaningful once done
     done: bool = false,
     killed: bool = false, // ended via bash_kill rather than naturally
+    remote_ssh: bool = false, // local kill cannot prove the remote command ended
     kill_requested: bool = false, // pump notices within one 200ms tick
     dropped: bool = false, // unread output overflowed job_unread_cap
     future: Io.Future(void) = undefined, // the pump; awaited only by jobsReap
@@ -382,7 +382,7 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
     g_jobs.mutex.unlock(io);
     var code: ?u8 = null;
     if (killed) {
-        job.child.kill(io); // also reaps (wait would assert afterwards)
+        killChildTree(&job.child, io); // also reaps (wait would assert afterwards)
     } else if (job.child.wait(io)) |term| {
         code = switch (term) {
             .exited => |c| c,
@@ -406,6 +406,12 @@ pub fn shellArgv(cmd: []const u8) [3][]const u8 {
         .{ "/bin/sh", "-c", cmd };
 }
 
+pub fn isSshCommand(cmd: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n");
+    const first = it.next() orelse return false;
+    return std.mem.eql(u8, std.fs.path.basename(first), "ssh");
+}
+
 /// Spawn a background job and its pump. Uses io.concurrent (NOT io.async,
 /// which may run inline and block this tool forever on a long-lived child);
 /// no spare concurrency cleans up and surfaces the error to the model.
@@ -413,20 +419,21 @@ pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
     const argv = shellArgv(cmd);
     var child = try std.process.spawn(io, .{
         .argv = &argv,
+        .pgid = if (builtin.os.tag == .windows) null else 0,
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
     });
     const cmd_copy = gpa.dupe(u8, cmd) catch |e| {
-        child.kill(io);
+        killChildTree(&child, io);
         return e;
     };
     const job = gpa.create(Job) catch |e| {
         gpa.free(cmd_copy);
-        child.kill(io);
+        killChildTree(&child, io);
         return e;
     };
-    job.* = .{ .id = 0, .cmd = cmd_copy, .child = child };
+    job.* = .{ .id = 0, .cmd = cmd_copy, .child = child, .remote_ssh = isSshCommand(cmd) };
     g_jobs.mutex.lockUncancelable(io);
     job.id = g_jobs.next_id;
     g_jobs.next_id += 1;
@@ -436,7 +443,7 @@ pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
     };
     g_jobs.mutex.unlock(io);
     if (!appended) {
-        job.child.kill(io);
+        killChildTree(&job.child, io);
         gpa.free(job.cmd);
         gpa.destroy(job);
         return error.OutOfMemory;
@@ -450,7 +457,7 @@ pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
             }
         }
         g_jobs.mutex.unlock(io);
-        job.child.kill(io);
+        killChildTree(&job.child, io);
         gpa.free(job.cmd);
         gpa.destroy(job);
         return e;
@@ -477,7 +484,7 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             if (!job.done) {
                 try w.print("[job {d}: running]", .{id});
             } else if (job.killed) {
-                try w.print("[job {d}: killed]", .{id});
+                try w.print("[job {d}: killed locally{s}]", .{ id, if (job.remote_ssh) "; remote SSH process status unknown" else "" });
             } else if (job.exit_code) |c| {
                 try w.print("[job {d}: exited with code {d}]", .{ id, c });
             } else {
@@ -493,9 +500,10 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
             } else {
                 try w.writeAll("\n(no new output)");
             }
+            const is_error = job.done and (job.killed or job.exit_code == null or job.exit_code.? != 0);
             job.cursor = job.buf.items.len;
             g_jobs.mutex.unlock(io);
-            return .{ .text = try aw.toOwnedSlice() };
+            return .{ .text = try aw.toOwnedSlice(), .is_error = is_error };
         }
         g_jobs.mutex.unlock(io);
         if (Agent.esc_cancel.load(.acquire)) {
@@ -520,7 +528,7 @@ pub fn jobKill(gpa: Allocator, io: Io, id: u32) !ToolOutput {
         const job = g_jobs.find(id) orelse return .{ .text = try std.fmt.allocPrint(gpa, "no background job {d} — /jobs lists them", .{id}), .is_error = true };
         if (job.done) {
             const unread = job.buf.items.len - job.cursor;
-            return .{ .text = try std.fmt.allocPrint(gpa, "job {d} already finished ({d} unread byte(s) — bash_output reads them)", .{ id, unread }) };
+            return .{ .text = try std.fmt.allocPrint(gpa, "job {d} already finished (killed={any}, exit_code={any}; {d} unread byte(s) — bash_output reads them)", .{ id, job.killed, job.exit_code, unread }) };
         }
         job.kill_requested = true;
     }
@@ -533,13 +541,42 @@ pub fn jobKill(gpa: Allocator, io: Io, id: u32) !ToolOutput {
         if (done) {
             g_jobs.mutex.lockUncancelable(io);
             defer g_jobs.mutex.unlock(io);
-            const unread = if (g_jobs.find(id)) |job| job.buf.items.len - job.cursor else 0;
-            return .{ .text = try std.fmt.allocPrint(gpa, "job {d} killed ({d} unread byte(s) — bash_output reads them)", .{ id, unread }) };
+            const found = g_jobs.find(id);
+            const unread = if (found) |job| job.buf.items.len - job.cursor else 0;
+            const remote_ssh = if (found) |job| job.remote_ssh else false;
+            return .{ .text = try std.fmt.allocPrint(gpa, "job {d} local process group killed ({d} unread byte(s) — bash_output reads them){s}", .{
+                id,
+                unread,
+                if (remote_ssh) "; the remote SSH process may survive a disconnect, so verify it on the remote host" else "",
+            }) };
         }
         io.sleep(.fromMilliseconds(100), .awake) catch break;
         waited += 100;
     }
     return .{ .text = try std.fmt.allocPrint(gpa, "job {d}: kill requested (still shutting down — check bash_output)", .{id}) };
+}
+
+test "isSshCommand recognizes direct ssh executables" {
+    try std.testing.expect(isSshCommand("ssh host command"));
+    try std.testing.expect(isSshCommand("  /usr/bin/ssh host"));
+    try std.testing.expect(!isSshCommand("printf ssh"));
+}
+
+test "runCapped distinguishes timeout from user cancellation" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const timeout = try runCapped(std.testing.allocator, std.testing.io, &.{ "/bin/sh", "-c", "sleep 5 & wait" }, 1024, 1024, 50);
+    defer std.testing.allocator.free(timeout.stdout);
+    defer std.testing.allocator.free(timeout.stderr);
+    try std.testing.expect(timeout.timed_out);
+    try std.testing.expect(!timeout.cancelled);
+
+    Agent.esc_cancel.store(true, .release);
+    defer Agent.esc_cancel.store(false, .release);
+    const cancelled = try runCapped(std.testing.allocator, std.testing.io, &.{ "/bin/sh", "-c", "sleep 5 & wait" }, 1024, 1024, 0);
+    defer std.testing.allocator.free(cancelled.stdout);
+    defer std.testing.allocator.free(cancelled.stderr);
+    try std.testing.expect(cancelled.cancelled);
+    try std.testing.expect(!cancelled.timed_out);
 }
 
 /// Session end: kill every job, await the pumps (sole owner of the futures),

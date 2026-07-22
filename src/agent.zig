@@ -466,10 +466,8 @@ pub const Agent = struct {
     pub const assembleAnthropic = @import("agent_steps.zig").assembleAnthropic;
     pub const assembleOpenAI = @import("agent_steps.zig").assembleOpenAI;
 
-    // Tool-call dispatch (runTools, the human-approval gate, meta-tool
-    // handling, tool-call/result UX lines) lives in agent_tools.zig (#123,
-    // 600-line goal). Member-aliased so self.runTools(...)/etc. resolve
-    // unchanged.
+    // Tool dispatch/gating and user-facing UX are split between
+    // agent_tools.zig and agent_tool_ui.zig; aliases keep call sites stable.
     pub const runTools = @import("agent_tools.zig").runTools;
     pub const rejectToolCall = @import("agent_tools.zig").rejectToolCall;
     pub const toolDedupeKey = @import("agent_tools.zig").toolDedupeKey;
@@ -477,10 +475,10 @@ pub const Agent = struct {
     pub const gateTool = @import("agent_tools.zig").gateTool;
     pub const firstWord = @import("agent_tools.zig").firstWord;
     pub const handleMeta = @import("agent_tools.zig").handleMeta;
-    pub const askUser = @import("agent_tools.zig").askUser;
-    pub const emitAskUser = @import("agent_tools.zig").emitAskUser;
-    pub const sayToolUse = @import("agent_tools.zig").sayToolUse;
-    pub const sayToolResult = @import("agent_tools.zig").sayToolResult;
+    pub const askUser = @import("agent_tool_ui.zig").askUser;
+    pub const emitAskUser = @import("agent_tool_ui.zig").emitAskUser;
+    pub const sayToolUse = @import("agent_tool_ui.zig").sayToolUse;
+    pub const sayToolResult = @import("agent_tool_ui.zig").sayToolResult;
     pub fn renderTodos(self: *Agent) []const u8 {
         if (self.todos.items.len == 0) return "(no todos)";
         var aw: Io.Writer.Allocating = .init(self.arena);

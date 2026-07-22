@@ -51,18 +51,44 @@ const spawnJob = jobs.spawnJob;
 const jobOutput = jobs.jobOutput;
 const jobKill = jobs.jobKill;
 const shellArgv = jobs.shellArgv;
+const isSshCommand = jobs.isSshCommand;
 const skills = @import("skills.zig");
 const input_util = @import("input_util.zig");
 const binaryFileExt = input_util.binaryFileExt;
 const hooks = @import("hooks.zig");
 const telemetry = @import("telemetry.zig");
 
-/// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
-/// threads with no TTY, so there is no Esc to kill a runaway command — without
-/// this, a codedb refusal that pushes a subagent onto an unfiltered `grep ~/`
-/// hangs the whole workflow for ~48 min (#93). The root keeps its Esc-only,
-/// no-deadline behavior (a human is watching and may want a long build).
+/// Every foreground shell has a deadline. SSH gets a shorter default because
+/// a dead connection otherwise looks identical to useful remote work.
 const subagent_bash_deadline_ms: u64 = 120 * 1000;
+const ssh_bash_deadline_ms: u64 = 120 * 1000;
+const root_bash_deadline_ms: u64 = 10 * 60 * 1000;
+const max_bash_deadline_ms: u64 = 60 * 60 * 1000;
+
+fn bashDeadline(input: Value, cmd: []const u8, from_sub: bool) !u64 {
+    if (input == .object) if (input.object.get("timeout_ms")) |v| {
+        if (v != .integer or v.integer < 1000 or v.integer > max_bash_deadline_ms) return error.InvalidBashTimeout;
+        return @intCast(v.integer);
+    };
+    if (from_sub) return subagent_bash_deadline_ms;
+    return if (isSshCommand(cmd)) ssh_bash_deadline_ms else root_bash_deadline_ms;
+}
+
+test "bash deadlines are bounded and SSH defaults shorter" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const empty = try std.json.parseFromSliceLeaky(Value, arena, "{}", .{});
+    try std.testing.expectEqual(root_bash_deadline_ms, try bashDeadline(empty, "zig build", false));
+    try std.testing.expectEqual(ssh_bash_deadline_ms, try bashDeadline(empty, "ssh host status", false));
+    try std.testing.expectEqual(subagent_bash_deadline_ms, try bashDeadline(empty, "zig build", true));
+    const explicit = try std.json.parseFromSliceLeaky(Value, arena, "{\"timeout_ms\":45000}", .{});
+    try std.testing.expectEqual(@as(u64, 45_000), try bashDeadline(explicit, "ssh host status", false));
+    inline for (.{ "{\"timeout_ms\":0}", "{\"timeout_ms\":999}", "{\"timeout_ms\":3600001}", "{\"timeout_ms\":\"soon\"}" }) |json| {
+        const invalid = try std.json.parseFromSliceLeaky(Value, arena, json, .{});
+        try std.testing.expectError(error.InvalidBashTimeout, bashDeadline(invalid, "sleep 1", false));
+    }
+}
 
 /// Runs on a pool thread; never throws — failures become is_error results.
 /// Every execution is timed (out.ms) and traced.
@@ -144,10 +170,19 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                     try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err}),
                 .is_error = true,
             };
-            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.", .{ job.id, job.cmd, job.id }) };
+            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.{s}", .{
+                job.id,
+                job.cmd,
+                job.id,
+                if (isSshCommand(cmd)) " Killing the local SSH job cannot prove a detached remote process stopped; verify the remote host." else "",
+            }) };
         }
+        const deadline_ms = bashDeadline(input, cmd, ctx.from_sub) catch return .{
+            .text = try gpa.dupe(u8, "timeout_ms must be an integer from 1000 to 3600000"),
+            .is_error = true,
+        };
         const sh = shellArgv(cmd);
-        const run = try runCapped(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, if (ctx.from_sub) subagent_bash_deadline_ms else 0);
+        const run = try runCapped(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline_ms);
         defer gpa.free(run.stdout);
         defer gpa.free(run.stderr);
 
@@ -162,13 +197,23 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (run.stdout_truncated) try w.print("\n[stdout truncated at {d} KB]", .{bash_stdout_cap / 1024});
         if (run.stderr.len > 0) try w.print("\n[stderr]\n{s}", .{run.stderr});
         if (run.stderr_truncated) try w.print("\n[stderr truncated at {d} KB]", .{bash_stderr_cap / 1024});
-        if (run.timed_out) {
-            try w.print("\n[timed out after {d}s and was killed — too long for a subagent. Don't retry as-is: scope it to specific paths or globs instead of scanning the whole directory, or report back what you need run.]", .{subagent_bash_deadline_ms / 1000});
+        if (run.cancelled) {
+            try w.writeAll("\n[cancelled by user; local process group killed]");
+        } else if (run.timed_out) {
+            try w.print("\n[timed out after {d} ms; local process group killed]", .{deadline_ms});
+            if (ctx.from_sub) try w.writeAll(" Don't retry as-is: scope the command to specific paths or globs.");
         } else if (exit_code) |code| {
             if (code != 0) try w.print("\n[exit code {d}]", .{code});
         } else try w.writeAll("\n[terminated abnormally]");
+        if ((run.cancelled or run.timed_out) and isSshCommand(cmd)) {
+            try w.writeAll("\n[ssh note: the local SSH client was terminated, but a detached or disconnect-resistant remote process may survive; verify it on the remote host]");
+        }
         if (run.stdout.len == 0 and run.stderr.len == 0 and exit_code == 0) try w.writeAll("(no output)");
-        return .{ .text = try aw.toOwnedSlice(), .is_error = exit_code == null or exit_code.? != 0 };
+        return .{
+            .text = try aw.toOwnedSlice(),
+            .is_error = run.cancelled or run.timed_out or exit_code == null or exit_code.? != 0,
+            .cancelled = run.cancelled,
+        };
     }
     if (std.mem.eql(u8, call.name, "bash_output")) {
         const id = intField(input, "id") orelse return missingArg(gpa, "id");

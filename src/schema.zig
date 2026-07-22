@@ -98,9 +98,9 @@ const empty_schema =
 const base_specs = [_]ToolSpec{
     .{
         .name = "bash",
-        .desc = "Run a shell command via /bin/sh -c in the current working directory. Returns stdout, stderr, and the exit code. For long-running commands (dev servers, watchers) set run_in_background true: it returns a job id immediately; poll output with bash_output and stop it with bash_kill.",
+        .desc = "Run a shell command via /bin/sh -c in the current working directory. Returns stdout, stderr, and terminal status. Foreground commands have a wall-clock timeout (10 minutes by default, 2 minutes for SSH); override with timeout_ms. Esc cancels the local process group, but an SSH remote process may survive a disconnect. For long-running commands set run_in_background true: it returns a job id for bash_output/bash_kill.",
         .schema =
-        \\{"type": "object", "properties": {"command": {"type": "string", "description": "Shell command to execute"}, "run_in_background": {"type": "boolean", "description": "Start as a background job and return its id immediately instead of waiting (default false)"}}, "required": ["command"]}
+        \\{"type": "object", "properties": {"command": {"type": "string", "description": "Shell command to execute"}, "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 3600000, "description": "Foreground wall-clock timeout in milliseconds (default 600000, or 120000 for SSH/subagents)"}, "run_in_background": {"type": "boolean", "description": "Start as a background job and return its id immediately instead of waiting (default false); timeout_ms does not apply"}}, "required": ["command"]}
         ,
     },
     .{

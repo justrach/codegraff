@@ -3,7 +3,7 @@
 //! the human-approval gate for bash/write_file/edit_file/MCP calls
 //! (gateTool), meta-tool handling (attempt_completion/eval/todo_write/
 //! todo_read/ask_user, on the agent's own thread — handleMeta/askUser),
-//! and the tool-call/tool-result UX lines (sayToolUse/sayToolResult).
+//! Tool UX and ask_user handling live in agent_tool_ui.zig.
 //! Split out of the Agent struct (#123, 600-line goal).
 
 const std = @import("std");
@@ -15,10 +15,6 @@ const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
 const ExecResult = tools_mod.ExecResult;
-
-const AnswerRequest = tools_mod.AnswerRequest;
-const answerParseError = tools_mod.answerParseError;
-const parseAnswerRequest = tools_mod.parseAnswerRequest;
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
@@ -41,6 +37,7 @@ const isMetaName = schema.isMetaName;
 const tools_mod = @import("tools.zig");
 const ToolCtx = tools_mod.ToolCtx;
 const ToolOutput = tools_mod.ToolOutput;
+const tool_ui = @import("agent_tool_ui.zig");
 
 const exec = @import("exec.zig");
 const execTool = exec.execTool;
@@ -156,11 +153,12 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             // Keep the model-facing history compact. The exact output remains
             // inspectable on disk and the short preview carries its pointer.
             const detail = persistToolResult(self, output.text);
-            results[i] = .{ .text = try toolPreviewText(self.arena, output.text, detail), .is_error = output.is_error, .ms = output.ms };
+            results[i] = .{ .text = try toolPreviewText(self.arena, output.text, detail), .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
         }
     }
     // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
     for (calls, results) |call, r| self.sayToolResult(call.name, r);
+    if (ext_idx.items.len > 1) tool_ui.sayParallelSummary(self, ext_idx.items, results);
     return results;
 }
 
@@ -441,128 +439,6 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
     return .{ .text = self.renderTodos(), .is_error = false };
-}
-
-/// The "user message as a tool" half of the loop: the agent calls
-/// ask_user, we block for a typed reply, and hand it back as the tool
-/// result. Only the root agent has stdin; subagents must self-decide.
-pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
-    const in = self.in orelse return .{
-        .text = "no human is attached — make a reasonable assumption and continue",
-        .is_error = true,
-    };
-    const w = self.out.?;
-    const question = if (call.input.object.get("question")) |q| q.string else "(no question)";
-    if (main_mod.json_mode) {
-        const call_id = if (call.id.len > 0) call.id else blk: {
-            const id = try std.fmt.allocPrint(self.arena, "ask_user-{d}", .{self.next_ask_id});
-            self.next_ask_id += 1;
-            break :blk id;
-        };
-        try self.emitAskUser(call_id, question, call.input);
-        const raw = (try in.takeDelimiter('\n')) orelse return .{
-            .text = "user ended input without answering",
-            .is_error = true,
-        };
-        const parsed = std.json.parseFromSliceLeaky(Value, self.arena, std.mem.trim(u8, raw, " \t\r"), .{ .allocate = .alloc_always }) catch return .{
-            .text = "invalid answer JSON for ask_user",
-            .is_error = true,
-        };
-        const answer = parseAnswerRequest(parsed, call_id) catch |err| return .{
-            .text = answerParseError(err),
-            .is_error = true,
-        };
-        if (answer.cancelled) return .{ .text = "user cancelled the follow-up", .is_error = true };
-        return .{ .text = try self.arena.dupe(u8, answer.text), .is_error = false };
-    }
-    // Skip the re-print only when the question streamed live in full.
-    if (!self.argStreamedFully(call)) try w.print("\n❓ {s}\n", .{question});
-    if (call.input.object.get("options")) |opts| if (opts == .array) {
-        for (opts.array.items, 1..) |opt, n| try w.print("   {d}) {s}\n", .{ n, opt.string });
-    };
-    try w.writeAll("   your answer › ");
-    try w.flush();
-
-    const raw = (try in.takeDelimiter('\n')) orelse return .{
-        .text = "user ended input without answering",
-        .is_error = true,
-    };
-    const answer = std.mem.trim(u8, raw, " \t\r");
-    return .{ .text = try self.arena.dupe(u8, answer), .is_error = false };
-}
-
-pub fn emitAskUser(self: *Agent, call_id: []const u8, question: []const u8, input: Value) !void {
-    const w = self.out orelse return;
-    var s: std.json.Stringify = .{ .writer = w };
-    try s.beginObject();
-    try s.objectField("type");
-    try s.write("ask_user");
-    try s.objectField("call_id");
-    try s.write(call_id);
-    try s.objectField("question");
-    try s.write(question);
-    try s.objectField("input");
-    try s.write(input);
-    try s.endObject();
-    try w.writeByte('\n');
-    try w.flush();
-}
-
-pub fn sayToolUse(self: *Agent, call: ToolCall) !void {
-    if (main_mod.json_mode) {
-        if (std.mem.eql(u8, call.name, "ask_user")) return;
-        self.emit(.{ .type = "tool_call", .name = call.name, .input = call.input });
-        self.emit(.{ .type = "tool_call_started", .name = call.name, .input = call.input });
-        return;
-    }
-    // The ⚙ line would just repeat prose that already streamed live.
-    if (self.argStreamedFully(call)) return;
-    var aw: Io.Writer.Allocating = .init(self.gpa);
-    defer aw.deinit();
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    try s.write(call.input);
-    const full = aw.writer.buffered();
-    const shown = if (full.len > 160) full[0..160] else full;
-    try self.say("{s}⚙{s} {s}{s} {s}{s}{s}{s}\n", .{
-        style.dim,   style.reset, style.accent, call.name,
-        style.dim,   shown,
-        if (full.len > 160) "…" else "",
-        style.reset,
-    });
-}
-
-/// Compact result feedback for one finished tool call: a green ✓ / red ✗
-/// and a one-line preview of what it returned. Root only (subagents have
-/// no writer); meta tools render their own UX, so skip them.
-pub fn sayToolResult(self: *Agent, name: []const u8, r: ExecResult) void {
-    const w = self.out orelse return;
-    if (main_mod.json_mode) {
-        if (isMetaName(name) and !std.mem.eql(u8, name, "ask_user")) return;
-        self.emit(.{ .type = "tool_result", .name = name, .is_error = r.is_error, .text = r.text });
-        self.emit(.{ .type = "tool_call_finished", .name = name, .is_error = r.is_error, .ms = r.ms });
-        return;
-    }
-    if (isMetaName(name)) return;
-    const all = std.mem.trim(u8, r.text, " \t\r\n");
-    var preview = all;
-    if (std.mem.indexOfScalar(u8, preview, '\n')) |nl| preview = preview[0..nl];
-    preview = std.mem.trim(u8, preview, " \t\r");
-    const shown = if (preview.len > 100) preview[0..100] else preview;
-    const truncated = shown.len < all.len; // more content (extra lines or >100 chars)
-    const mark = if (r.is_error) "✗" else "✓";
-    const mc = if (r.is_error) style.red else style.green;
-    var tbuf: [24]u8 = undefined;
-    const timing = if (main_mod.show_timing and r.ms > 0)
-        (std.fmt.bufPrint(&tbuf, " ({d}ms)", .{r.ms}) catch "")
-    else
-        "";
-    w.print("  {s}{s}{s}{s}{s}{s} {s}{s}{s}{s}\n", .{
-        mc,          mark,  style.reset, style.dim, timing, style.reset,
-        style.dim,   shown,
-        if (truncated) "…" else "",
-        style.reset,
-    }) catch return;
-    w.flush() catch return;
 }
 
 test "firstWord: splits the command on the first whitespace" {
