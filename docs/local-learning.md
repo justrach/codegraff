@@ -35,6 +35,8 @@ protocols.
 ```text
 graff learn init --parent PATH --config PATH
 graff learn run [--candidates N] [--repetitions N] [--auto] [--lock-timeout-ms N]
+graff --learning-privacy aggregate learn run [--candidates N] [--repetitions N] --submit
+graff --learning-privacy aggregate learn submit RUN_ID [--lock-timeout-ms N]
 graff learn status [--lock-timeout-ms N]
 graff learn promote RUN_ID [--lock-timeout-ms N]
 graff learn rollback [--to GENOME_ID] [--lock-timeout-ms N]
@@ -60,6 +62,47 @@ graff learn rollback
 
 Only one learning operation runs at a time. `--lock-timeout-ms` controls how
 long a command waits for the local engine lock, up to 600,000 ms.
+
+`run --submit` performs mutation, paired primary/holdout grading, immutable
+storage, and aggregate publication in one command. `submit RUN_ID` re-verifies
+and retries an already stored run. Both use `GRAFF_SCORE_KEY_FILE`, falling back
+to `~/.simple-harness/score.key`, plus the normal OTLP endpoint configuration.
+A retry is idempotent at the collector.
+Neither form promotes the selected candidate; use the separate manual or
+two-key automatic promotion policy described above.
+
+For multiple candidates, execution is a barriered tournament:
+
+1. every mutation arm runs concurrently;
+2. every unique arm runs the same primary suite concurrently with common pair
+   seeds and one fixed evaluator cohort;
+3. ranking minimizes critical regressions, then maximizes observed correctness,
+   then minimizes measured tool calls, latency, cost, and prompt size;
+4. only that primary winner is evaluated on the holdout; and
+5. promotion remains a separate manual action unless the configured two-key
+   automatic policy is explicitly enabled and all statistical gates pass.
+
+Run records use `codegraff.learn.run.v2` and persist the primary winner even
+when evidence is underpowered. Missing tool-call instrumentation is recorded as
+unknown and cannot masquerade as zero calls. `GRAFF_NO_TELEMETRY=1` and
+`GRAFF_FLEET=off` both block explicit aggregate submission.
+
+The bundled model-backed example adapters fail safely around transient or
+malformed model output. A mutation gets one corrective turn after deterministic
+size/invariant validation; a second failure becomes an unchanged-parent
+non-contender rather than aborting other arms. An evaluation turn that ends
+without gradeable evidence gets one bounded retry in a newly initialized task
+directory, so partial file changes cannot leak into the retry.
+
+The root model also receives an approval-gated `learn_candidate` tool when it
+runs in a configured workspace. The tool bundles `run --submit` into one
+model-facing action. In Local mode it shows the aggregate payload categories
+and requires a one-shot confirmation that `--yolo` cannot bypass. It accepts
+only candidate/repetition limits, is unavailable to subagents, and exposes no
+promotion option. This consent controls learning telemetry; it does not make a
+networked mutator local. A configured model adapter may send the parent prompt
+and mutation instruction to its declared provider, which the confirmation
+discloses separately.
 
 ## Configuration
 
@@ -109,6 +152,10 @@ as immutable. Unknown JSON fields are rejected.
     "alpha_ppm": 50000,
     "minimum_delta_ppm": 50000,
     "minimum_pairs": 20,
+    "economy_gate_enabled": false,
+    "promotion_mode": "correctness",
+    "minimum_tool_reduction_ppm": 100000,
+    "minimum_economy_pairs": 8,
     "default_candidates": 1,
     "default_repetitions": 1
   },
@@ -190,6 +237,23 @@ aggregate parent and child pass counts for that case. Therefore:
 - The significance threshold is Bonferroni-corrected by the number of planned
   candidates.
 - Correctness gates run before cost is used as a tie-breaker.
+
+`promotion_mode` preregisters either `correctness` or `economy`; primary and
+holdout cannot clear different endpoints. Economy mode also requires
+`economy_gate_enabled`, zero case-level correctness losses, no mean-score
+regression, measured calls, the configured aggregate call reduction, and a
+separately Bonferroni-corrected per-case tool-call sign test.
+`minimum_economy_pairs` counts only discordant cases (wins plus losses), since
+tool-call ties provide no information to that sign test.
+Latency is reported and used only as a ranking tie-breaker; it is not promotion
+evidence because wall-clock measurements are comparatively noisy.
+
+After each run, the CLI prints a prompt-free aggregate summary for every
+candidate: parent and child pass counts, effect size, paired wins/losses/ties,
+p-value, tool-call reduction and its per-case sign test, latency, cost movement,
+prompt size, primary/holdout gate results, and the final decision.
+This lets a user or the root model distinguish a harmful candidate from a
+promising but underpowered result without weakening the promotion gate.
 
 ## Adapter protocols
 
@@ -327,11 +391,22 @@ independent gate against ordinary overfitting, not a secret from a malicious or
 colluding adapter. Do not run adapters you do not trust; use an external sandbox
 when stronger isolation is required.
 
-Learning artifacts have no upload path and remain local. Once activated, however,
-the learned prompt is used like any other agent prompt:
+Learning artifacts and prompt genomes remain local by default. Submission also
+requires an aggregate-or-higher learning ceiling, selected with
+`--learning-privacy aggregate`, `GRAFF_LEARNING_PRIVACY=aggregate`, or
+`/privacy aggregate`. The root-only `learn_candidate` tool can instead request
+one explicit bundled aggregate submission without changing the session mode. An explicit `--submit` or
+`learn submit` then publishes only the existing signed score envelope:
+short parent/child fingerprints, aggregate pass rate, run/suite/cohort metadata,
+and content-addressed evidence IDs. It does not publish prompt text, tasks,
+adapter input/output, repository data, or local traces. The collector exposes a
+retry-safe receipt at `GET /v1/learning/<RUN_ID>`.
+
+Once activated, the learned prompt is used like any other agent prompt:
 
 - it is sent to the selected model provider when that agent runs;
-- prompt fingerprints can appear in ordinary trajectory/telemetry metadata;
+- prompt fingerprints stay in local trajectories and enter learning telemetry
+  only in aggregate-or-higher mode;
 - provider/model identifiers and other ordinary telemetry follow the existing
   telemetry policy; and
 - local trace/session files retain their documented behavior.
@@ -353,9 +428,20 @@ network access:
 ```sh
 zig build
 python3 tests/learn_e2e.py --graff zig-out/bin/graff
+python3 tests/learn_tournament_e2e.py --graff zig-out/bin/graff
+python3 tests/learn_graff_adapters.py
 ```
 
-## Collective learning: design, not implemented authority
+For an explicitly consented model-backed trial,
+`examples/prepare_graff_tournament.py` creates an isolated workspace, a newly
+randomized five-case holdout, and pinned four-arm configuration. The shipped
+arm map uses `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
+`gpt-5.4-mini`; all prompts are evaluated by the same pinned cohort. The
+mutator intentionally sends the parent prompt to those providers, while inner
+agent telemetry is disabled and only the five signed aggregate tournament
+grades are submitted. The generated config keeps automatic promotion off.
+
+## Collective learning: aggregate receipts, not promotion authority
 
 A privacy-preserving collective layer should exchange verified artifacts and
 attestations, not raw repositories, prompts, tool arguments, or local traces.
@@ -386,4 +472,7 @@ A safe design has these components:
 D1 can serve as a small control plane for bundle manifests, signer keys,
 revocations, and aggregate pointers. Larger evidence/aggregation workloads
 belong behind a queue and analytical store rather than synchronous D1 writes.
-No such collective promotion authority is implemented by `graff learn` today.
+The signed aggregate score/receipt path is implemented. Prompt distribution,
+central hidden-holdout inference, and collective promotion authority are not:
+backend results remain advisory, and only the local verified promotion path can
+change the active policy.

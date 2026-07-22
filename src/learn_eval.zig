@@ -12,144 +12,41 @@ const Allocator = std.mem.Allocator;
 
 const jobs = @import("jobs.zig");
 const store_mod = @import("learn_store.zig");
+const protocol = @import("learn_eval_types.zig");
 
-pub const mutation_request_schema = "codegraff.learn.mutation.request.v1";
-pub const mutation_response_schema = "codegraff.learn.mutation.response.v1";
-pub const evaluation_request_schema = "codegraff.learn.evaluation.request.v1";
-pub const evaluation_response_schema = "codegraff.learn.evaluation.response.v1";
-pub const run_schema = "codegraff.learn.run.v1";
+pub const mutation_request_schema = protocol.mutation_request_schema;
+pub const mutation_response_schema = protocol.mutation_response_schema;
+pub const evaluation_request_schema = protocol.evaluation_request_schema;
+pub const evaluation_response_schema = protocol.evaluation_response_schema;
+pub const primary_baseline_request_schema = protocol.primary_baseline_request_schema;
+pub const primary_baseline_response_schema = protocol.primary_baseline_response_schema;
+pub const primary_evaluation_request_schema = protocol.primary_evaluation_request_schema;
+pub const primary_evaluation_response_schema = protocol.primary_evaluation_response_schema;
+pub const legacy_run_schema = protocol.legacy_run_schema;
+pub const run_schema = protocol.run_schema;
+pub const GenomeRef = protocol.GenomeRef;
+pub const MutationRequest = protocol.MutationRequest;
+pub const MutationResponse = protocol.MutationResponse;
+pub const PairRequest = protocol.PairRequest;
+pub const EvaluationRequest = protocol.EvaluationRequest;
+pub const PairResult = protocol.PairResult;
+pub const EvaluationResponse = protocol.EvaluationResponse;
+pub const BaselinePairResult = protocol.BaselinePairResult;
+pub const PrimaryBaselineRequest = protocol.PrimaryBaselineRequest;
+pub const PrimaryBaselineResponse = protocol.PrimaryBaselineResponse;
+pub const PrimaryBaselineRecord = protocol.PrimaryBaselineRecord;
+pub const PrimaryBaselineRef = protocol.PrimaryBaselineRef;
+pub const PrimaryEvaluationRequest = protocol.PrimaryEvaluationRequest;
+pub const PrimaryEvaluationResponse = protocol.PrimaryEvaluationResponse;
+pub const MutationRecord = protocol.MutationRecord;
+pub const ComparisonRecord = protocol.ComparisonRecord;
+pub const CandidateRecord = protocol.CandidateRecord;
+pub const RunRecord = protocol.RunRecord;
+pub const MutationOutcome = protocol.MutationOutcome;
 
 const file_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
 pub const executable_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o700);
 pub const dir_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700);
-
-pub const GenomeRef = struct {
-    id: []const u8,
-    path: []const u8,
-};
-
-pub const MutationRequest = struct {
-    schema: []const u8,
-    trial_id: []const u8,
-    candidate_index: usize,
-    seed: []const u8,
-    parent: GenomeRef,
-    child_path: []const u8,
-    maximum_bytes: usize,
-    instruction: []const u8,
-};
-
-pub const MutationResponse = struct {
-    schema: []const u8,
-    trial_id: []const u8,
-    candidate_index: usize,
-    parent_id: []const u8,
-    child_path: []const u8,
-    child_sha256: []const u8,
-    description: []const u8 = "",
-};
-
-pub const PairRequest = struct {
-    case_id: []const u8,
-    seed: []const u8,
-    critical: bool,
-};
-
-pub const EvaluationRequest = struct {
-    schema: []const u8,
-    trial_id: []const u8,
-    candidate_index: usize,
-    cohort_id: []const u8,
-    suite_sha256: []const u8,
-    suite_path: []const u8,
-    parent: GenomeRef,
-    child: GenomeRef,
-    repetitions: usize,
-    pairs: []const PairRequest,
-};
-
-pub const PairResult = struct {
-    case_id: []const u8,
-    seed: []const u8,
-    parent_pass: bool,
-    child_pass: bool,
-    parent_score_ppm: u32,
-    child_score_ppm: u32,
-    parent_cost_micros: u64 = 0,
-    child_cost_micros: u64 = 0,
-    parent_latency_ms: u64 = 0,
-    child_latency_ms: u64 = 0,
-};
-
-pub const EvaluationResponse = struct {
-    schema: []const u8,
-    trial_id: []const u8,
-    candidate_index: usize,
-    cohort_id: []const u8,
-    suite_sha256: []const u8,
-    parent_id: []const u8,
-    child_id: []const u8,
-    pairs: []const PairResult,
-};
-
-pub const MutationRecord = struct {
-    seed: []const u8,
-    request_evidence_id: []const u8,
-    response_evidence_id: []const u8,
-};
-
-pub const ComparisonRecord = struct {
-    suite_sha256: []const u8,
-    request_evidence_id: []const u8,
-    response_evidence_id: []const u8,
-    pairs: usize,
-    statistical_units: usize,
-    parent_passes: usize,
-    child_passes: usize,
-    wins: usize,
-    losses: usize,
-    ties: usize,
-    critical_regressions: usize,
-    delta_ppm: i64,
-    mean_score_delta_ppm: i64,
-    p_value_ppb: u64,
-    parent_cost_micros: u64,
-    child_cost_micros: u64,
-    eligible: bool,
-    reason: []const u8,
-};
-
-pub const CandidateRecord = struct {
-    genome_id: []const u8,
-    mutation: MutationRecord,
-    primary: ?ComparisonRecord,
-    holdout: ?ComparisonRecord,
-    eligible: bool,
-    reason: []const u8,
-};
-
-pub const RunRecord = struct {
-    schema: []const u8,
-    trial_id: []const u8,
-    nonce: []const u8,
-    created_unix_ms: i64,
-    harness_version: []const u8,
-    config_id: []const u8,
-    parent_genome_id: []const u8,
-    parent_generation: u64,
-    parent_transaction_id: []const u8,
-    planned_candidates: usize,
-    repetitions: usize,
-    auto_requested: bool,
-    candidates: []const CandidateRecord,
-    selected_genome_id: ?[]const u8,
-};
-
-pub const MutationOutcome = struct {
-    genome_id: [64]u8,
-    prompt: []u8,
-    record: MutationRecord,
-};
 
 pub fn candidateSeed(trial_id: []const u8, candidate_index: usize) [64]u8 {
     var buffer: [96]u8 = undefined;
@@ -172,7 +69,7 @@ pub fn cohortId(config_id: []const u8, suite_sha256: []const u8, harness_version
     return std.fmt.bytesToHex(digest, .lower);
 }
 
-pub fn pairSeed(trial_id: []const u8, suite_sha256: []const u8, candidate_index: usize, case_id: []const u8, repetition: usize) [64]u8 {
+pub fn pairSeed(trial_id: []const u8, suite_sha256: []const u8, case_id: []const u8, repetition: usize) [64]u8 {
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
     hash.update("codegraff-learn/pair-seed/v1");
     hash.update(&.{0});
@@ -182,10 +79,9 @@ pub fn pairSeed(trial_id: []const u8, suite_sha256: []const u8, candidate_index:
         hash.update(&len);
         hash.update(field);
     }
-    var ints: [16]u8 = undefined;
-    std.mem.writeInt(u64, ints[0..8], @intCast(candidate_index), .big);
-    std.mem.writeInt(u64, ints[8..16], @intCast(repetition), .big);
-    hash.update(&ints);
+    var repetition_bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &repetition_bytes, @intCast(repetition), .big);
+    hash.update(&repetition_bytes);
     var digest: [32]u8 = undefined;
     hash.final(&digest);
     return std.fmt.bytesToHex(digest, .lower);
@@ -339,9 +235,43 @@ pub fn invoke(
         // The bare error alone cost real debugging time: surface which tool
         // failed and a bounded stderr excerpt before the scratch dir (and the
         // request/response evidence in it) is deleted by the caller.
-        const excerpt = run.stderr[0..@min(run.stderr.len, 512)];
+        const excerpt = run.stderr[0..@min(run.stderr.len, 4096)];
         std.debug.print("learn: {s} failed ({any}); stderr (first {d} of {d} bytes):\n{s}\n", .{ program.program, run.term, excerpt.len, run.stderr.len, excerpt });
         return error.ProcessFailed;
+    }
+}
+
+/// Retry one failed evaluator process in the same private scratch directory.
+/// Cooperative adapters can resume from their request-bound case checkpoint,
+/// avoiding a second baseline or replay of already completed cases.
+pub fn invokeEvaluator(
+    gpa: Allocator,
+    io: Io,
+    parent_env: *const std.process.Environ.Map,
+    scratch: Io.Dir,
+    program: store_mod.Program,
+    operation: []const u8,
+    stdout_cap: usize,
+    stderr_cap: usize,
+    timeout_ms: u64,
+) !void {
+    var attempt: usize = 0;
+    while (true) : (attempt += 1) {
+        invoke(gpa, io, parent_env, scratch, program, operation, stdout_cap, stderr_cap, timeout_ms) catch |err| switch (err) {
+            error.ProcessFailed, error.ProcessTimedOut => if (attempt == 0) {
+                var program_name_buf: [64]u8 = undefined;
+                const program_name = try std.fmt.bufPrint(&program_name_buf, "program{s}", .{snapshotExtension(program.program)});
+                try scratch.deleteFile(io, program_name);
+                for (program.inputs, 0..) |input, index| {
+                    var name_buf: [96]u8 = undefined;
+                    const name = try std.fmt.bufPrint(&name_buf, "input-{d}{s}", .{ index, snapshotExtension(input.path) });
+                    try scratch.deleteFile(io, name);
+                }
+                continue;
+            } else return err,
+            else => return err,
+        };
+        return;
     }
 }
 
@@ -412,11 +342,13 @@ pub fn mutate(
             .seed = try arena.dupe(u8, &seed),
             .request_evidence_id = try arena.dupe(u8, &request_id),
             .response_evidence_id = try arena.dupe(u8, &response_id),
+            .description = try arena.dupe(u8, response.description),
+            .genome_bytes = prompt.len,
         },
     };
 }
 
-fn buildPairs(gpa: Allocator, trial_id: []const u8, suite: store_mod.Suite, manifest: store_mod.SuiteManifest, candidate_index: usize, repetitions: usize) ![]PairRequest {
+pub fn buildPairs(gpa: Allocator, trial_id: []const u8, suite: store_mod.Suite, manifest: store_mod.SuiteManifest, _: usize, repetitions: usize) ![]PairRequest {
     const count = std.math.mul(usize, manifest.cases.len, repetitions) catch return error.TooManyPairs;
     if (count == 0 or count > store_mod.max_pairs) return error.TooManyPairs;
     const pairs = try gpa.alloc(PairRequest, count);
@@ -427,7 +359,10 @@ fn buildPairs(gpa: Allocator, trial_id: []const u8, suite: store_mod.Suite, mani
     }
     for (0..repetitions) |repetition| {
         for (manifest.cases) |case| {
-            const seed = pairSeed(trial_id, suite.sha256, candidate_index, case.id, repetition);
+            // Common random numbers: every arm receives identical primary
+            // seeds for the same case/repetition, so generator identity is the
+            // only intended source of between-arm variation.
+            const seed = pairSeed(trial_id, suite.sha256, case.id, repetition);
             const seed_copy = try gpa.dupe(u8, &seed);
             pairs[initialized] = .{
                 .case_id = case.id,
@@ -440,110 +375,17 @@ fn buildPairs(gpa: Allocator, trial_id: []const u8, suite: store_mod.Suite, mani
     return pairs;
 }
 
-fn freePairs(gpa: Allocator, pairs: []PairRequest) void {
+pub fn freePairs(gpa: Allocator, pairs: []PairRequest) void {
     for (pairs) |pair| gpa.free(pair.seed);
     gpa.free(pairs);
 }
 
-// Exact paired-binomial statistics + metric guards live in learn_stats.zig
-// (600-line goal); re-exported so existing call sites are unchanged.
+// Statistics and comparison aggregation live in focused sibling modules.
 const learn_stats = @import("learn_stats.zig");
 pub const js_exact_max = learn_stats.js_exact_max;
 pub const pairedTail = learn_stats.pairedTail;
-const toPpb = learn_stats.toPpb;
-const checkedMetricAdd = learn_stats.checkedMetricAdd;
-
-pub fn computeComparison(config: store_mod.Config, suite_sha256: []const u8, request_id: []const u8, response_id: []const u8, requested: []const PairRequest, response: EvaluationResponse, planned_candidates: usize) !ComparisonRecord {
-    if (response.pairs.len != requested.len) return error.MissingPair;
-    var parent_passes: usize = 0;
-    var child_passes: usize = 0;
-    var statistical_units: usize = 0;
-    var wins: usize = 0;
-    var losses: usize = 0;
-    var critical_regressions: usize = 0;
-    var score_delta: i128 = 0;
-    var parent_cost: u64 = 0;
-    var child_cost: u64 = 0;
-    for (response.pairs, requested) |result, pair| {
-        if (!std.mem.eql(u8, result.case_id, pair.case_id) or !std.mem.eql(u8, result.seed, pair.seed)) return error.PairMismatch;
-        if (result.parent_score_ppm > 1_000_000 or result.child_score_ppm > 1_000_000) return error.InvalidScore;
-        if (result.parent_cost_micros > js_exact_max or result.child_cost_micros > js_exact_max or result.parent_latency_ms > js_exact_max or result.child_latency_ms > js_exact_max) return error.InvalidMetric;
-        if (result.parent_pass) parent_passes += 1;
-        if (result.child_pass) child_passes += 1;
-        if (result.parent_pass and !result.child_pass and pair.critical) critical_regressions += 1;
-        score_delta += @as(i128, result.child_score_ppm) - @as(i128, result.parent_score_ppm);
-        parent_cost = try checkedMetricAdd(parent_cost, result.parent_cost_micros);
-        child_cost = try checkedMetricAdd(child_cost, result.child_cost_micros);
-    }
-
-    // Repetitions are repeated measurements of one case, not independent
-    // statistical samples. Collapse each unique case to one sign-test unit by
-    // comparing its aggregate parent/child pass counts across repetitions.
-    for (requested, 0..) |pair, index| {
-        var seen = false;
-        for (requested[0..index]) |prior| {
-            if (std.mem.eql(u8, prior.case_id, pair.case_id)) {
-                seen = true;
-                break;
-            }
-        }
-        if (seen) continue;
-        statistical_units += 1;
-        var parent_case_passes: usize = 0;
-        var child_case_passes: usize = 0;
-        for (response.pairs, requested) |result, grouped_pair| {
-            if (!std.mem.eql(u8, grouped_pair.case_id, pair.case_id)) continue;
-            if (result.parent_pass) parent_case_passes += 1;
-            if (result.child_pass) child_case_passes += 1;
-        }
-        if (child_case_passes > parent_case_passes) wins += 1;
-        if (parent_case_passes > child_case_passes) losses += 1;
-    }
-
-    const pair_count = requested.len;
-    const pass_delta: i128 = @as(i128, @intCast(child_passes)) - @as(i128, @intCast(parent_passes));
-    const delta_ppm: i64 = @intCast(@divTrunc(pass_delta * 1_000_000, @as(i128, @intCast(pair_count))));
-    const mean_score_delta: i64 = @intCast(@divTrunc(score_delta, @as(i128, @intCast(pair_count))));
-    const p = pairedTail(wins, losses);
-    const alpha: f64 = @as(f64, @floatFromInt(config.gate.alpha_ppm)) / 1_000_000.0;
-    const significant = p * @as(f64, @floatFromInt(planned_candidates)) <= alpha;
-
-    var eligible = true;
-    var reason: []const u8 = "eligible";
-    if (critical_regressions > 0) {
-        eligible = false;
-        reason = "critical_regression";
-    } else if (statistical_units < config.gate.minimum_pairs) {
-        eligible = false;
-        reason = "minimum_pairs";
-    } else if (delta_ppm < config.gate.minimum_delta_ppm) {
-        eligible = false;
-        reason = "minimum_delta";
-    } else if (!significant) {
-        eligible = false;
-        reason = "not_significant";
-    }
-    return .{
-        .suite_sha256 = suite_sha256,
-        .request_evidence_id = request_id,
-        .response_evidence_id = response_id,
-        .pairs = pair_count,
-        .statistical_units = statistical_units,
-        .parent_passes = parent_passes,
-        .child_passes = child_passes,
-        .wins = wins,
-        .losses = losses,
-        .ties = statistical_units - wins - losses,
-        .critical_regressions = critical_regressions,
-        .delta_ppm = delta_ppm,
-        .mean_score_delta_ppm = mean_score_delta,
-        .p_value_ppb = toPpb(p),
-        .parent_cost_micros = parent_cost,
-        .child_cost_micros = child_cost,
-        .eligible = eligible,
-        .reason = reason,
-    };
-}
+const comparison_mod = @import("learn_comparison.zig");
+pub const computeComparison = comparison_mod.computeComparison;
 
 fn validateEvaluationEnvelope(request: EvaluationRequest, response: EvaluationResponse, trial_id: []const u8, candidate_index: usize, cohort_id: []const u8, suite: store_mod.Suite, parent_id: []const u8, child_id: []const u8, repetitions: usize) !void {
     if (!std.mem.eql(u8, request.schema, evaluation_request_schema) or
@@ -617,7 +459,7 @@ pub fn evaluate(
     const request_id = try store.writeEvidence(gpa, request_bytes);
     try writePrivate(io, scratch_created.dir, "request.json", request_bytes);
 
-    try invoke(gpa, io, parent_env, scratch_created.dir, config.evaluator, "evaluate", config.limits.stdout_bytes, config.limits.stderr_bytes, config.limits.evaluator_timeout_ms);
+    try invokeEvaluator(gpa, io, parent_env, scratch_created.dir, config.evaluator, "evaluate", config.limits.stdout_bytes, config.limits.stderr_bytes, config.limits.evaluator_timeout_ms);
     const response_bytes = try store_mod.readFileNoFollow(io, scratch_created.dir, "response.json", gpa, config.limits.response_bytes);
     defer gpa.free(response_bytes);
     const response = try std.json.parseFromSliceLeaky(EvaluationResponse, arena, response_bytes, .{});
@@ -629,15 +471,22 @@ pub fn evaluate(
     return comparison;
 }
 
-fn comparisonEqual(a: ComparisonRecord, b: ComparisonRecord) bool {
+pub fn comparisonEqual(a: ComparisonRecord, b: ComparisonRecord) bool {
     return std.mem.eql(u8, a.suite_sha256, b.suite_sha256) and
         std.mem.eql(u8, a.request_evidence_id, b.request_evidence_id) and
         std.mem.eql(u8, a.response_evidence_id, b.response_evidence_id) and
         a.pairs == b.pairs and a.statistical_units == b.statistical_units and
         a.parent_passes == b.parent_passes and a.child_passes == b.child_passes and
-        a.wins == b.wins and a.losses == b.losses and a.ties == b.ties and a.critical_regressions == b.critical_regressions and
+        a.wins == b.wins and a.losses == b.losses and a.ties == b.ties and
+        a.child_critical_failures == b.child_critical_failures and a.critical_regressions == b.critical_regressions and
         a.delta_ppm == b.delta_ppm and a.mean_score_delta_ppm == b.mean_score_delta_ppm and a.p_value_ppb == b.p_value_ppb and
         a.parent_cost_micros == b.parent_cost_micros and a.child_cost_micros == b.child_cost_micros and
+        a.tool_calls_measured == b.tool_calls_measured and
+        a.parent_tool_calls == b.parent_tool_calls and a.child_tool_calls == b.child_tool_calls and
+        a.tool_wins == b.tool_wins and a.tool_losses == b.tool_losses and a.tool_ties == b.tool_ties and
+        a.tool_delta_ppm == b.tool_delta_ppm and a.tool_p_value_ppb == b.tool_p_value_ppb and
+        a.latency_measured == b.latency_measured and a.parent_latency_ms == b.parent_latency_ms and a.child_latency_ms == b.child_latency_ms and
+        a.economy_eligible == b.economy_eligible and
         a.eligible == b.eligible and std.mem.eql(u8, a.reason, b.reason);
 }
 
@@ -676,10 +525,18 @@ pub fn verifyComparison(
 }
 
 pub fn validateRun(run: RunRecord) !void {
-    if (!std.mem.eql(u8, run.schema, run_schema) or !store_mod.validId(run.trial_id) or !store_mod.validId(run.nonce) or !store_mod.validId(run.config_id) or !store_mod.validId(run.parent_genome_id) or !store_mod.validId(run.parent_transaction_id)) return error.InvalidRun;
+    const current = std.mem.eql(u8, run.schema, run_schema);
+    const legacy = std.mem.eql(u8, run.schema, legacy_run_schema);
+    if ((!current and !legacy) or !store_mod.validId(run.trial_id) or !store_mod.validId(run.nonce) or !store_mod.validId(run.config_id) or !store_mod.validId(run.parent_genome_id) or !store_mod.validId(run.parent_transaction_id)) return error.InvalidRun;
     if (run.planned_candidates == 0 or run.planned_candidates > 16 or run.candidates.len != run.planned_candidates) return error.InvalidRun;
     if (run.repetitions == 0 or run.repetitions > 100 or run.harness_version.len == 0 or run.harness_version.len > 128) return error.InvalidRun;
+    if (run.primary_winner_genome_id) |id| if (!store_mod.validId(id)) return error.InvalidRun;
     if (run.selected_genome_id) |id| if (!store_mod.validId(id)) return error.InvalidRun;
+    if (current) {
+        if (run.primary_baseline) |baseline| {
+            if (!store_mod.validId(baseline.suite_sha256) or !store_mod.validId(baseline.request_evidence_id) or !store_mod.validId(baseline.response_evidence_id)) return error.InvalidRun;
+        }
+    } else if (run.primary_baseline != null) return error.InvalidRun;
     for (run.candidates) |candidate| {
         if (!store_mod.validId(candidate.genome_id) or !store_mod.validId(candidate.mutation.seed) or !store_mod.validId(candidate.mutation.request_evidence_id) or !store_mod.validId(candidate.mutation.response_evidence_id)) return error.InvalidRun;
         if (candidate.eligible and candidate.primary == null) return error.InvalidRun;

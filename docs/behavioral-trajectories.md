@@ -79,9 +79,10 @@ controlled classes (`shell`, `read`, `write`, `search`, `web`, `agent`, `verify`
 rather than being serialized exactly.
 
 `GRAFF_BEHAVIOR_UPLOAD` governs only this new behavioral POST; it does not
-rewrite the existing OTLP score/run/fleet contract. Existing OTLP records can
-contain prompt fingerprints, and fleet proposal records can contain prompt text
-as documented in [hyperagents.md](hyperagents.md). Disabling ordinary telemetry
+rewrite the existing OTLP score/run/fleet contract. In aggregate-or-higher
+learning mode, OTLP score/run records can contain prompt fingerprints; a fleet proposal can contain reusable prompt text
+only after the separate `/privacy templates` exact-artifact consent described
+in [learning-privacy.md](learning-privacy.md). Disabling ordinary telemetry
 disables both OTLP and behavioral upload.
 
 Metadata admission is field-based; values of allowed fields are not scanned or

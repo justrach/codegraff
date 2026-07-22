@@ -259,9 +259,9 @@ the directory, so concurrent processes never share a truncate/append cursor:
 - **Tool-use is mined too.** Each agent logs its tool calls (name + error flag,
   in order): the process signal behind "which tool combinations work",
   joinable to scores via `prompt_sha`.
-- **Closed loop in releases.** Release binaries ship anonymous evolution
-  telemetry (opt-out) so agent-variant fitness is learned across the fleet, not
-  just one laptop. `/trajectory` renders the current session's agent tree; see
+- **Consent-scoped fleet loop.** Learning stays local by default; users can
+  contribute prompt-free aggregate fitness or individually reviewed reusable
+  templates. `/trajectory` renders the current session's agent tree; see
   [docs/hyperagents.md](docs/hyperagents.md) for the full design.
 
 For controlled local hill-climbing, `graff learn` adds a separate
@@ -858,22 +858,26 @@ It's *pseudonymous, not anonymous*: records carry a **random** per-install id
 name, host, or user) plus your request IP, version, OS, and arch. The
 **operational OTLP payload** is counts, hashes, and tool names: a `session`
 summary (duration, turns, API/tool call+error counts, models used,
-workflow/ultracode counts), per-`workflow` and per-error records, and
-per-turn/score records keyed by a one-way **system-prompt fingerprint** +
-`prompt_sha` hashes with a tool-**name** sequence (for example,
+workflow/ultracode counts), plus per-`workflow` and per-error records. When
+learning privacy is `aggregate` or higher it also admits per-run/score records
+keyed by a one-way **system-prompt fingerprint** with a tool-**name** sequence (for example,
 `read_file, bash, edit_file`). It does not send prompts, code, file contents,
 file paths, or tool arguments. The separately bounded behavioral payload follows
 the metadata/content rules above; only explicit content mode permits opaque
 adapter fields that may contain task content.
 
-**Fleet / evolution signals** (`fleet:propose|submit|elite_pull`, the
-agent-evolution fitness loop) ride the same channel and have a *separate* opt-out:
-`GRAFF_FLEET=off` or `/fleet off`. They're hashes and labels, with one exception.
-`fleet:propose` sends an agent's **system-prompt / persona text** (≤8192 chars: the
-evolved "genome"; graff's own text for built-in agents, *your* text for a custom
-agent or inline override). Error details are capped at 200 chars. The SDKs tag their
-child harness with `HARNESS_CLIENT=sdk-ts|sdk-py` and a separate id
-(`~/.simple-harness-sdk-id`). A flush failure never disturbs the session.
+**Fleet / evolution signals are local by default.** `/privacy` selects a
+session-scoped learning ceiling: `local` sends nothing automatically (the
+bundled `learn_candidate` tool can request one aggregate-only send); `aggregate` permits
+signed grades and prompt-free fleet metadata; `templates` additionally offers
+each private reusable persona/template for an exact preview approval; and
+`examples` reserves a future one-shot reviewed-example channel (raw example
+upload is not implemented). `GRAFF_LEARNING_PRIVACY` or
+`--learning-privacy` can select the same mode, while `GRAFF_FLEET=off` or
+`/fleet off` remains a master kill switch. Template approvals never persist,
+are not bypassed by `--yolo`, and are re-scanned at the final egress point.
+Raw task prompts, bindings, code, paths, reports, tool results, and traces have
+no fleet upload path. See [Learning privacy and consent](docs/learning-privacy.md).
 
 </details>
 

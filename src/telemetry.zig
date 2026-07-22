@@ -25,6 +25,7 @@ const http = @import("http.zig");
 // For the session run id (score/run join key) and the propose-site
 // fingerprint check. No cycle: scoring imports only std + pricing.
 const scoring = @import("scoring.zig");
+const learning_privacy = @import("learning_privacy.zig");
 
 const root = @import("main.zig");
 const harness_version = root.harness_version;
@@ -179,7 +180,7 @@ pub const Telemetry = struct {
     /// Count a subagent spawned with a system-prompt override (an agent-type
     /// persona or an inline variant) — the swarm's prompt diversity signal.
     pub fn countVariant(self: *Telemetry) void {
-        if (!self.on()) return;
+        if (!self.on() or !learning_privacy.allowsAggregate()) return;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.prompt_variants += 1;
@@ -189,7 +190,7 @@ pub const Telemetry = struct {
     /// backend can validate that the evolution loop is actually running:
     /// one log record per score, prompt_sha + value as attributes.
     pub fn scoreEvent(self: *Telemetry, sha: []const u8, parent: []const u8, value: f64, run_id: []const u8, sig: []const u8, prov: []const u8) void {
-        if (!self.on()) return;
+        if (!self.on() or !learning_privacy.allowsAggregate()) return;
         {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
@@ -221,19 +222,20 @@ pub const Telemetry = struct {
     /// _fleet_signal so the worker counts every client identically. signal is a
     /// static literal; the rest are duped/truncated like scoreEvent.
     pub fn fleetEvent(self: *Telemetry, signal: []const u8, niche: []const u8, prompt_sha: []const u8, parent_sha: []const u8, provider_class: []const u8, eval_set_hash: []const u8, n_elites: i64, prompt_text: []const u8) void {
-        if (!self.on() or !root.g_fleet) return;
+        if (!self.on() or !root.g_fleet or !learning_privacy.allowsAggregate()) return;
+        const admitted_text = learning_privacy.templateTextForUpload(self.io, prompt_text);
         // Review F6: never ship a truncated genome — skip the propose instead
         // (the fingerprint the scores reference stays computed over the full
         // text; only the genome-send is dropped).
-        if (std.mem.eql(u8, signal, "propose") and prompt_text.len > max_propose_text) return;
+        if (std.mem.eql(u8, signal, "propose") and admitted_text.len > max_propose_text) return;
         // Propose-site integrity (issue #168 Gap 3, debug builds only): the
         // genome text must hash to the fingerprint it claims — a promoted
         // cell would otherwise serve text that never earned its scores. This
         // asserts on exactly what will be sent: oversized proposes returned
         // above, so the utf8Prefix cap below can no longer truncate a genome.
         // The backend independently recomputes and rejects mismatches.
-        if (builtin.mode == .Debug and std.mem.eql(u8, signal, "propose") and prompt_text.len > 0 and prompt_sha.len > 0) {
-            const fp = scoring.promptFingerprint(prompt_text);
+        if (builtin.mode == .Debug and std.mem.eql(u8, signal, "propose") and admitted_text.len > 0 and prompt_sha.len > 0) {
+            const fp = scoring.promptFingerprint(admitted_text);
             std.debug.assert(std.mem.eql(u8, &fp, prompt_sha));
         }
         {
@@ -247,7 +249,7 @@ pub const Telemetry = struct {
                 self.gpa.dupe(u8, std.fmt.bufPrint(&pbuf, "{s}\t{s}", .{ provider_class, eval_set_hash }) catch "") catch ""
             else
                 "";
-            const dtext = if (prompt_text.len > 0) self.gpa.dupe(u8, utf8Prefix(prompt_text, max_propose_text)) catch "" else "";
+            const dtext = if (admitted_text.len > 0) self.gpa.dupe(u8, utf8Prefix(admitted_text, max_propose_text)) catch "" else "";
             self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "fleet", .kind = signal, .detail = ddet, .extra = dnic, .run_id = dpar, .prov = provdup, .tasks = n_elites, .text = dtext });
         }
         self.maybeFlushEvents();
@@ -257,7 +259,7 @@ pub const Telemetry = struct {
     /// sequence — the process-mining signal behind "which tool combinations
     /// work". Lands as a generic body="run" record (attrs JSON) server-side.
     pub fn runEvent(self: *Telemetry, sha: []const u8, variant: bool, ok: bool, ms: i64, tools: []const u8) void {
-        if (!self.on()) return;
+        if (!self.on() or !learning_privacy.allowsAggregate()) return;
         {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);

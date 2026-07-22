@@ -31,6 +31,7 @@ const promptFingerprint = scoring.promptFingerprint;
 const providerClass = scoring.providerClass;
 const signScore = scoring.signScore;
 const fleet = @import("fleet.zig");
+const learning_privacy = @import("learning_privacy.zig");
 const agentTypePrompt = fleet.agentTypePrompt;
 const cards = @import("cards.zig");
 const trace = @import("trace.zig");
@@ -188,6 +189,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);
     if (sys_override) |so| if (telemetry.g_telem) |t| {
+        if (fleet.promptIsPublic(so)) _ = learning_privacy.approveTemplate(ctx.io, so);
         t.countVariant();
         // fleet:propose (docs §9.B) — a niche's elite was mutated into a variant.
         const child_fp = promptFingerprint(so);

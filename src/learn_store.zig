@@ -8,132 +8,33 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-
-pub const config_schema = "codegraff.learn.config.v1";
-pub const suite_schema = "codegraff.learn.suite.v1";
-pub const active_schema = "codegraff.learn.active.v1";
-pub const transaction_schema = "codegraff.learn.transaction.v1";
-pub const version_bytes = "1\n";
-
-pub const max_config_bytes: usize = 1 << 20;
-pub const max_record_bytes: usize = 8 << 20;
-pub const max_program_bytes: u64 = 128 << 20;
-pub const max_suite_bytes: usize = 8 << 20;
-pub const max_pairs: usize = 4096;
-
-pub const PinnedFile = struct {
-    path: []const u8,
-    sha256: []const u8,
-};
-
-pub const Program = struct {
-    program: []const u8,
-    sha256: []const u8,
-    args: []const []const u8 = &.{},
-    inputs: []const PinnedFile = &.{},
-    pass_env: []const []const u8 = &.{},
-};
-
-pub const Suite = struct {
-    path: []const u8,
-    sha256: []const u8,
-};
-
-pub const Limits = struct {
-    genome_bytes: usize = 1 << 20,
-    request_bytes: usize = 1 << 20,
-    response_bytes: usize = 4 << 20,
-    stdout_bytes: usize = 64 << 10,
-    stderr_bytes: usize = 64 << 10,
-    mutator_timeout_ms: u64 = 300_000,
-    evaluator_timeout_ms: u64 = 1_800_000,
-};
-
-pub const Gate = struct {
-    alpha_ppm: u32 = 50_000,
-    minimum_delta_ppm: u32 = 50_000,
-    minimum_pairs: usize = 20,
-    default_candidates: usize = 1,
-    default_repetitions: usize = 1,
-};
-
-pub const AutoPolicy = struct {
-    enabled: bool = false,
-};
-
-pub const Cohort = struct {
-    provider: []const u8,
-    model: []const u8,
-    task_family: []const u8,
-    adapter_version: []const u8,
-    verifier_version: []const u8,
-};
-
-pub const Config = struct {
-    schema: []const u8,
-    agent_name: []const u8,
-    agent_description: []const u8 = "locally learned prompt policy",
-    mutation_instruction: []const u8,
-    mutator: Program,
-    evaluator: Program,
-    evaluation_suite: Suite,
-    holdout_suite: ?Suite = null,
-    limits: Limits = .{},
-    gate: Gate = .{},
-    auto: AutoPolicy = .{},
-    cohort: Cohort,
-};
-
-pub const SuiteCase = struct {
-    id: []const u8,
-    critical: bool = false,
-    payload: std.json.Value = .null,
-};
-
-pub const SuiteManifest = struct {
-    schema: []const u8,
-    suite_id: []const u8,
-    cases: []const SuiteCase,
-};
-
-pub const ActiveRef = struct {
-    schema: []const u8,
-    config_id: []const u8,
-    generation: u64,
-    genome_id: []const u8,
-    transaction_id: []const u8,
-};
-
-pub const Transaction = struct {
-    schema: []const u8,
-    generation: u64,
-    operation: []const u8,
-    previous_genome_id: ?[]const u8,
-    next_genome_id: []const u8,
-    run_id: ?[]const u8,
-    previous_transaction_id: ?[]const u8,
-    created_unix_ms: i64,
-};
-
-pub const LoadedConfig = struct {
-    value: Config,
-    id: [64]u8,
-    bytes: []const u8,
-};
-
-pub const LoadedActive = struct {
-    ref: ActiveRef,
-    transaction: Transaction,
-    genome: []const u8,
-};
-
-pub const ActiveAgent = struct {
-    name: []const u8,
-    description: []const u8,
-    prompt: []const u8,
-    genome_id: []const u8,
-    generation: u64,
-};
+const model = @import("learn_store_types.zig");
+pub const config_schema = model.config_schema;
+pub const suite_schema = model.suite_schema;
+pub const active_schema = model.active_schema;
+pub const transaction_schema = model.transaction_schema;
+pub const version_bytes = model.version_bytes;
+pub const max_config_bytes = model.max_config_bytes;
+pub const max_record_bytes = model.max_record_bytes;
+pub const max_program_bytes = model.max_program_bytes;
+pub const max_suite_bytes = model.max_suite_bytes;
+pub const max_pairs = model.max_pairs;
+pub const PinnedFile = model.PinnedFile;
+pub const Program = model.Program;
+pub const Suite = model.Suite;
+pub const Limits = model.Limits;
+pub const Gate = model.Gate;
+pub const AutoPolicy = model.AutoPolicy;
+pub const Cohort = model.Cohort;
+pub const Config = model.Config;
+pub const SuiteCase = model.SuiteCase;
+pub const SuiteManifest = model.SuiteManifest;
+pub const ActiveRef = model.ActiveRef;
+pub const Transaction = model.Transaction;
+pub const LoadedConfig = model.LoadedConfig;
+pub const LoadedActive = model.LoadedActive;
+pub const ActiveAgent = model.ActiveAgent;
+pub var active_agent_loaded: bool = false;
 
 const dir_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700);
 const file_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
@@ -176,43 +77,12 @@ const validate_mod = @import("learn_store_validate.zig");
 pub const validId = validate_mod.validId;
 pub const validateConfig = validate_mod.validateConfig;
 const validateSuite = validate_mod.validateSuite;
-
-pub fn rawSha256(bytes: []const u8) [64]u8 {
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
-    return std.fmt.bytesToHex(digest, .lower);
-}
-
-pub fn domainId(domain: []const u8, bytes: []const u8) [64]u8 {
-    var hash = std.crypto.hash.sha2.Sha256.init(.{});
-    hash.update(domain);
-    hash.update(&.{0});
-    var len: [8]u8 = undefined;
-    std.mem.writeInt(u64, len[0..], @intCast(bytes.len), .big);
-    hash.update(&len);
-    hash.update(bytes);
-    var digest: [32]u8 = undefined;
-    hash.final(&digest);
-    return std.fmt.bytesToHex(digest, .lower);
-}
-
-pub fn jsonBytes(gpa: Allocator, value: anytype) ![]u8 {
-    var allocating: Io.Writer.Allocating = .init(gpa);
-    defer allocating.deinit();
-    var stringify: std.json.Stringify = .{ .writer = &allocating.writer };
-    try stringify.write(value);
-    try allocating.writer.writeByte('\n');
-    return gpa.dupe(u8, allocating.writer.buffered());
-}
-
-pub fn randomId(io: Io) ![64]u8 {
-    var raw: [32]u8 = undefined;
-    // Fail closed: trial nonces feed trial-ID derivation, so degrading to
-    // non-cryptographic randomness silently would weaken an integrity
-    // boundary rather than a convenience.
-    try io.randomSecure(&raw);
-    return std.fmt.bytesToHex(raw, .lower);
-}
+pub const validateTransaction = validate_mod.validateTransaction;
+const hash_mod = @import("learn_store_hash.zig");
+pub const rawSha256 = hash_mod.rawSha256;
+pub const domainId = hash_mod.domainId;
+pub const jsonBytes = hash_mod.jsonBytes;
+pub const randomId = hash_mod.randomId;
 
 pub fn readFileNoFollow(io: Io, dir: Io.Dir, path: []const u8, gpa: Allocator, max: usize) ![]u8 {
     const file = try openFileNoFollow(io, dir, path, .{});
@@ -699,27 +569,15 @@ pub const Store = struct {
     }
 };
 
-pub fn validateTransaction(tx: Transaction) !void {
-    if (!std.mem.eql(u8, tx.schema, transaction_schema)) return error.UnsupportedSchema;
-    if (!std.mem.eql(u8, tx.operation, "init") and !std.mem.eql(u8, tx.operation, "promote") and !std.mem.eql(u8, tx.operation, "rollback")) return error.InvalidOperation;
-    if (!validId(tx.next_genome_id)) return error.InvalidId;
-    if (tx.previous_genome_id) |id| if (!validId(id)) return error.InvalidId;
-    if (tx.run_id) |id| if (!validId(id)) return error.InvalidId;
-    if (tx.previous_transaction_id) |id| if (!validId(id)) return error.InvalidId;
-    if (std.mem.eql(u8, tx.operation, "init")) {
-        if (tx.generation != 0 or tx.previous_genome_id != null or tx.previous_transaction_id != null or tx.run_id != null) return error.InvalidTransaction;
-    } else if (tx.generation == 0 or tx.previous_genome_id == null or tx.previous_transaction_id == null) return error.InvalidTransaction;
-    if (std.mem.eql(u8, tx.operation, "promote") and tx.run_id == null) return error.InvalidTransaction;
-    if (std.mem.eql(u8, tx.operation, "rollback") and tx.run_id != null) return error.InvalidTransaction;
-}
-
 /// Best-effort, fail-closed bridge into the ordinary agent registry. Corrupt or
 /// incomplete learning state never becomes an executable prompt policy.
 pub fn loadActiveAgent(io: Io, arena: Allocator) ?ActiveAgent {
+    active_agent_loaded = false;
     var store = Store.openAt(io, Io.Dir.cwd()) catch return null;
     defer store.deinit();
     const config = store.loadConfig(arena) catch return null;
     const active = store.loadActive(arena, config) catch return null;
+    active_agent_loaded = true;
     return .{
         .name = config.value.agent_name,
         .description = config.value.agent_description,

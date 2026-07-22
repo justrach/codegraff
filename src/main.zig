@@ -155,20 +155,18 @@ const Tracer = trace.Tracer;
 const BehaviorTrace = trace.BehaviorTrace;
 const behavior_trace = @import("behavior_trace.zig");
 const behavior_upload = @import("behavior_upload.zig");
+const learning_privacy = @import("learning_privacy.zig");
 const Trajectory = trace.Trajectory;
 const behavior_dir = trace.behavior_dir;
 const trajectory_path = trace.trajectory_path;
 const trace_path = trace.trace_path;
-// Agent types / fleet (MAP-Elites niches): the AgentType registry, backgrounded elite pull, /agents promote, and niche/override resolvers live in fleet.zig.
+// Agent types / MAP-Elites fleet.
 const fleet = @import("fleet.zig");
 const joinElites = fleet.joinElites;
-// Prompt/provider-class fingerprinting + DGM score signing live in scoring.zig.
 const scoring = @import("scoring.zig");
-// Subagent cards (#51): the parallel-subagent launch/done cards + box helpers + the inspect-report writer live in cards.zig.
 const cards = @import("cards.zig");
-// Telemetry (OTEL): the Telemetry sink lives in telemetry.zig; the session-global pointer is reached telemetry.-qualified at call sites.
 const telemetry = @import("telemetry.zig");
-/// Federated-fleet contribution toggle (docs/hyperagents.md §9); on by default, GRAFF_FLEET=off or /fleet off disables propose/submit/elite_pull.
+/// Fleet master switch; learning privacy is the independent default-local egress gate.
 /// General usage telemetry is separate (GRAFF_NO_TELEMETRY).
 pub var g_fleet: bool = true;
 const unixMs = util.unixMs;
@@ -285,6 +283,7 @@ pub fn main(init: std.process.Init) !void {
     }
     // CLI flags: the Flags struct + parsing loop live in args.zig; downstream code reads flags.<name> in place of ~27 locals this block used to declare.
     const flags = try args.parse(init);
+    learning_privacy.init(flags.learning_privacy_flag, init.environ_map.get("GRAFF_LEARNING_PRIVACY"));
     var invocation_budget: run_budget_mod.RunBudget = .{ .max_model_calls = max_model_calls };
     boot.mark(init.io, "args");
     // GRAFF_CODEX_URL: override the codex responses endpoint (localhost mocks / integration tests). Parsed BEFORE subcommand dispatch and
@@ -375,7 +374,6 @@ pub fn main(init: std.process.Init) !void {
 
     var telem = session_start.initTelemetry(io, gpa, &client, init.environ_map, flags, default_telemetry_endpoint);
     telemetry.g_telem = &telem;
-    // Fleet contribution opt-out, independent of telemetry: GRAFF_FLEET=off|0|false|no.
     if (init.environ_map.get("GRAFF_FLEET")) |fv| {
         g_fleet = !(std.ascii.eqlIgnoreCase(fv, "off") or std.mem.eql(u8, fv, "0") or std.ascii.eqlIgnoreCase(fv, "false") or std.ascii.eqlIgnoreCase(fv, "no"));
     }

@@ -26,17 +26,10 @@ const style = &ansi.style;
 const terminal = @import("term.zig");
 const tty = terminal.tty;
 
-const mcp = @import("mcp.zig");
-
-const approvals_mod = @import("approvals.zig");
-const Approvals = approvals_mod.Approvals;
-
-const skills = @import("skills.zig");
-const companionTrusted = skills.companionTrusted;
-const companionReadOnly = skills.companionReadOnly;
-
 const schema = @import("schema.zig");
 const isMetaName = schema.isMetaName;
+pub const gateTool = @import("agent_tool_gate.zig").gateTool;
+pub const firstWord = @import("agent_tool_gate.zig").firstWord;
 
 const tools_mod = @import("tools.zig");
 const ToolCtx = tools_mod.ToolCtx;
@@ -215,145 +208,6 @@ pub fn toolDedupeKey(self: *Agent, call: ToolCall) ![]const u8 {
 pub fn emitToolRejected(self: *Agent, call: ToolCall, reason: []const u8, message: []const u8) void {
     if (!main_mod.json_mode) return;
     self.emit(.{ .type = "tool_rejected", .name = call.name, .reason = reason, .input = call.input, .message = message });
-}
-
-/// The permission gate, root side: an unapproved bash command prompts
-/// the user — yes once, always (approve the command's first word for
-/// the rest of the session), or no. Returns the denial result, or null
-/// when cleared to execute. Subagents never prompt; their gate is the
-/// allowlist check in execToolInner.
-pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
-    if (self.sub) {
-        // Destructive git is blocked for subagents outright — they have no
-        // human to confirm with. The root agent falls through to a y/n
-        // prompt below. Completes the Codex-style `.git` guard across both.
-        if (std.mem.eql(u8, call.name, "bash") and call.input == .object) {
-            if (call.input.object.get("command")) |cv| if (cv == .string and Approvals.isDestructiveGit(cv.string)) return .{
-                .text = try self.arena.dupe(u8, "destructive git is blocked for subagents (no one to confirm) — leave reset --hard / clean -f / force-push / branch -D to the root session"),
-                .is_error = true,
-            };
-        }
-        return null; // subagents: otherwise gated structurally, not by prompt
-    }
-    const approvals = self.approvals orelse return null;
-
-    // Plan mode: read-only, regardless of approvals — deny mutating tools
-    // up front (no point prompting for something the mode forbids).
-    if (main_mod.plan_mode) {
-        if (std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or
-            (mcp.Registry.isMcp(call.name) and !companionReadOnly(call.name, call.input))) return .{
-            .text = try self.arena.dupe(u8, "plan mode is on — read-only. Fold this change into the plan you present; the user applies it after approving (/plan toggles the mode off)."),
-            .is_error = true,
-        };
-        if (std.mem.eql(u8, call.name, "bash")) {
-            const cmd_val = call.input.object.get("command") orelse return null;
-            if (cmd_val != .string) return null;
-            const cmd = std.mem.trim(u8, cmd_val.string, " \t");
-            // Safe, cwd-confined read-only commands auto-run (unchanged).
-            if (Approvals.readOnlyAllowed(cmd)) return null;
-            // A read-only verb reading OUTSIDE cwd is the sibling-repo case (#64):
-            // allow once the user approves those paths this session, else prompt.
-            // Mutating verbs / metacharacter smuggling fall through to the deny.
-            if (Approvals.readOnlyExternal(cmd)) {
-                if (approvals.planReadAllowed(self.io, cmd)) return null;
-                if (self.in) |in| if (self.out) |w| {
-                    try w.print("  ⚠ plan mode — read outside the project: {s}\n  [a]llow read-only access to these paths this session · [n]o › ", .{cmd});
-                    try w.flush();
-                    const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
-                    const answer = std.mem.trim(u8, raw, " \t\r");
-                    if (answer.len > 0 and (answer[0] == 'a' or answer[0] == 'A' or answer[0] == 'y' or answer[0] == 'Y')) {
-                        try approvals.approvePlanRead(self.io, self.gpa, cmd);
-                        return null;
-                    }
-                };
-                return .{
-                    .text = try self.arena.dupe(u8, "plan mode — read-only access outside the project was declined; describe what you need read in the plan instead"),
-                    .is_error = true,
-                };
-            }
-            return .{
-                .text = try self.arena.dupe(u8, "plan mode is on — only read-only commands run (ls/cat/grep/git status…). Put this command in the plan instead."),
-                .is_error = true,
-            };
-        }
-    }
-
-    // Decide whether this call needs approval, and what the approval key
-    // and prompt line are. bash keys on the command's first word; writes
-    // and MCP tools key on the tool name.
-    var key: []const u8 = undefined;
-    var line_buf: [256]u8 = undefined;
-    var prompt_line: []const u8 = undefined;
-
-    if (std.mem.eql(u8, call.name, "bash")) {
-        const cmd_val = call.input.object.get("command") orelse return null;
-        if (cmd_val != .string) return null;
-        const cmd = std.mem.trim(u8, cmd_val.string, " \t");
-        // Destructive git (reset --hard, clean -f, branch -D, force-push…)
-        // stays gated in normal mode + for subagents, but DOES run under --yolo
-        // so the agent can't wipe the user's work or a worktree's checkpoints.
-        // It falls through to a human y/n (or a deny in non-interactive runs).
-        const destructive_git = Approvals.isDestructiveGit(cmd);
-        const gate_ok = !destructive_git or Approvals.destructiveGitAllowed(approvals.yolo, self.sub);
-        if (gate_ok and approvals.allowed(self.io, cmd)) return null;
-        key = firstWord(cmd);
-        prompt_line = if (destructive_git)
-            std.fmt.bufPrint(&line_buf, "DESTRUCTIVE git — run: {s}", .{cmd}) catch cmd
-        else
-            std.fmt.bufPrint(&line_buf, "run: {s}", .{cmd}) catch cmd;
-    } else if (std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file")) {
-        if (approvals.allowedExact(self.io, call.name)) return null;
-        key = call.name;
-        const path = if (call.input == .object)
-            (if (call.input.object.get("path")) |p| (if (p == .string) p.string else "?") else "?")
-        else
-            "?";
-        prompt_line = std.fmt.bufPrint(&line_buf, "{s} {s}", .{ call.name, path }) catch call.name;
-    } else if (mcp.Registry.isMcp(call.name)) {
-        if (companionTrusted(call.name)) return null; // the whole suite: like native tools
-        if (approvals.allowedExact(self.io, call.name)) return null;
-        key = call.name;
-        prompt_line = std.fmt.bufPrint(&line_buf, "call MCP tool {s}", .{call.name}) catch call.name;
-    } else {
-        return null; // read_file, subagent, workflow, meta: not gated
-    }
-
-    // No human to ask (one-shot -p, or stdin gone): deny instead of
-    // hanging. Pre-approve in .harness/settings.json or pass --yolo.
-    const in = self.in orelse return .{
-        .text = try self.arena.dupe(u8, "not pre-approved, and no interactive user to ask in one-shot mode — pre-approve it in .harness/settings.json, or run with --yolo"),
-        .is_error = true,
-    };
-    const w = self.out orelse return .{
-        .text = try self.arena.dupe(u8, "not pre-approved, and no interactive user to ask — pre-approve it in .harness/settings.json, or run with --yolo"),
-        .is_error = true,
-    };
-
-    try w.print("  ⚠ {s}\n  [y]es once · [a]lways allow \"{s}\" (saved to {s}) · [n]o › ", .{ prompt_line, key, Approvals.settings_path });
-    try w.flush();
-    const raw: []const u8 = (try in.takeDelimiter('\n')) orelse "";
-    const answer = std.mem.trim(u8, raw, " \t\r");
-    if (answer.len > 0) switch (answer[0]) {
-        'y', 'Y' => return null,
-        'a', 'A' => {
-            try approvals.approve(self.io, self.gpa, key);
-            if (std.mem.eql(u8, call.name, "bash") and Approvals.isInterpreter(key)) {
-                try w.print("  note: \"{s}\" can execute arbitrary code (e.g. {s} -c '…'); approving it is effectively unrestricted.\n", .{ key, key });
-                try w.flush();
-            }
-            return null;
-        },
-        else => {},
-    };
-    return .{
-        .text = try self.arena.dupe(u8, "user declined this tool call — try another approach or ask them how to proceed"),
-        .is_error = true,
-    };
-}
-
-pub fn firstWord(cmd: []const u8) []const u8 {
-    const end = std.mem.indexOfAny(u8, cmd, " \t") orelse cmd.len;
-    return cmd[0..end];
 }
 
 /// #225: clock_sleep meta tool — root-only, feature-flagged (main.zig
@@ -563,14 +417,6 @@ pub fn sayToolResult(self: *Agent, name: []const u8, r: ExecResult) void {
         style.reset,
     }) catch return;
     w.flush() catch return;
-}
-
-test "firstWord: splits the command on the first whitespace" {
-    try std.testing.expectEqualStrings("git", firstWord("git status -s"));
-    try std.testing.expectEqualStrings("ls", firstWord("ls"));
-    try std.testing.expectEqualStrings("cat", firstWord("cat\tfile")); // tab delimiter
-    try std.testing.expectEqualStrings("", firstWord(""));
-    try std.testing.expectEqualStrings("", firstWord(" leading"));
 }
 
 test "parseClockSleepMs: valid ms passes through, missing/negative/non-integer reject, over-cap clamps (#225)" {

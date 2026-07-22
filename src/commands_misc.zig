@@ -53,6 +53,8 @@ const PickItem = pickers.PickItem;
 const listPicker = pickers.listPicker;
 
 const trace = @import("trace.zig");
+const commands_privacy = @import("commands_privacy.zig");
+const learning_privacy = @import("learning_privacy.zig");
 
 fn providerModelCount(provider_id: []const u8) usize {
     var count: usize = 0;
@@ -127,6 +129,7 @@ fn showModelsHealth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer
 /// `line` doesn't match any command in this file — the caller falls through
 /// to handleRest() for the unknown-command/help terminal stage.
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
+    if (try commands_privacy.tryHandle(root, line, out)) return true;
     if (std.mem.eql(u8, line, "/todo")) {
         try out.print("{s}\n", .{root.renderTodos()});
         try out.flush();
@@ -365,10 +368,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/fleet") or std.mem.startsWith(u8, line, "/fleet ")) {
         const arg = std.mem.trim(u8, line["/fleet".len..], " \t");
         if (arg.len == 0) {
-            try out.print("fleet contribution: {s} — federated DGM (propose/submit/elite_pull). /fleet off to disable, /fleet on to enable (or GRAFF_FLEET=off).\n", .{if (main_mod.g_fleet) "ON" else "off"});
+            try out.print("fleet master switch: {s} · learning privacy: {s}. /fleet off kills contribution; /privacy controls what may leave.\n", .{ if (main_mod.g_fleet) "ON" else "off", learning_privacy.current().label() });
         } else if (std.mem.eql(u8, arg, "on")) {
             main_mod.g_fleet = true;
-            try out.writeAll("fleet ON — this session's persona variants + scores contribute to the federated grid.\n");
+            try out.writeAll("fleet master switch ON — contribution still follows /privacy (Local sends nothing).\n");
         } else if (std.mem.eql(u8, arg, "off")) {
             main_mod.g_fleet = false;
             try out.writeAll("fleet off — no propose/submit/elite_pull this session (usage telemetry unaffected; /fleet on to re-enable).\n");

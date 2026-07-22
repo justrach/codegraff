@@ -156,10 +156,14 @@ pub fn sanitizeMetaField(buf: []u8, field: []const u8) []const u8 {
     return buf[0..n];
 }
 
-/// Read the signing key from GRAFF_SCORE_KEY_FILE (a path outside cwd) into
-/// `arena`. Whitespace-trimmed; null when unset, unreadable, or empty.
+/// Read the signing key from GRAFF_SCORE_KEY_FILE, or the conventional
+/// ~/.simple-harness/score.key when no path is configured. The key stays
+/// outside cwd so learning adapters and confined subagents cannot read it.
 pub fn loadScoreKey(io: Io, arena: Allocator, environ: anytype) ?[]const u8 {
-    const path = environ.get("GRAFF_SCORE_KEY_FILE") orelse return null;
+    const path = environ.get("GRAFF_SCORE_KEY_FILE") orelse blk: {
+        const home = environ.get("HOME") orelse environ.get("USERPROFILE") orelse return null;
+        break :blk std.fmt.allocPrint(arena, "{s}/.simple-harness/score.key", .{home}) catch return null;
+    };
     const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return null;
     const trimmed = std.mem.trim(u8, data, " \t\r\n");
     return if (trimmed.len == 0) null else trimmed;

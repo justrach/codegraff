@@ -23,6 +23,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
+const learning_privacy = @import("learning_privacy.zig");
 
 /// Every CLI-flag local main() used to declare, plus the resolved
 /// positionals/subcommand-detection/one-shot-prompt outputs computed right
@@ -30,6 +31,7 @@ const main_mod = @import("main.zig");
 pub const Flags = struct {
     yolo_flag: bool = false,
     no_telemetry_flag: bool = false,
+    learning_privacy_flag: ?learning_privacy.Mode = null,
     schema_flag: bool = false,
     login_flag: bool = false,
     refresh_flag: bool = false,
@@ -99,6 +101,9 @@ pub fn parse(init: std.process.Init) !Flags {
                     flags.eval_niche_flag = it.next() orelse std.process.fatal("--niche needs a name (e.g. --niche reviewer)", .{});
                 } else if (std.mem.eql(u8, arg, "--no-telemetry")) {
                     flags.no_telemetry_flag = true;
+                } else if (std.mem.eql(u8, arg, "--learning-privacy")) {
+                    const value = it.next() orelse std.process.fatal("--learning-privacy needs local|aggregate|templates|examples", .{});
+                    flags.learning_privacy_flag = learning_privacy.parse(value) orelse std.process.fatal("invalid learning privacy mode '{s}' — use local|aggregate|templates|examples", .{value});
                 } else if (std.mem.eql(u8, arg, "--timing")) {
                     main_mod.show_timing = true;
                 } else if (std.mem.eql(u8, arg, "--cost")) {

@@ -1,21 +1,7 @@
-//! The Agent struct itself: one agent's fields (message history, streaming/
-//! markdown-render state, thinking-block state, eval-loop state, ...) plus
-//! its smallest methods (prompt/say/sayApiError/emit/systemPrompt/
-//! effortApplies/toolsJson/runTurn/renderTodos). Every other Agent method is
-//! a free `pub fn method(self: *Agent, ...)` in an agent_*.zig sibling file,
-//! member-aliased back inside this struct (`pub const method =
-//! @import("agent_x.zig").method;`) so both `self.method(...)` and static
-//! `Agent.method(...)` test calls resolve unchanged regardless of which
-//! physical file a method's body lives in. Split out of main.zig (600-line
-//! goal). Back-imports main (as main_mod, since a request()/etc. param is
-//! conventionally named `root` elsewhere and to avoid the `agent`/`Agent`
-//! self-name clash) for Provider/ReasoningEffort/the json_mode/plan_mode/
-//! show_cost/g_cwd_display/g_gui_mu live globals. Sibling-imports mcp
-//! (Registry), approvals (Approvals), trace (Tracer/ToolSink), tools
-//! (Snapshots), vision (PendingImage), prompts (the system-prompt text),
-//! schema (the per-wire-format tool JSON + providerTakesEffort), pricing
-//! (priceFor/g_cost), and ansi (the color palette) directly instead of
-//! going back through main's private aliases for them.
+//! The Agent struct, its state, and its smallest methods. Larger methods are
+//! split into `agent_*.zig` siblings and member-aliased back into the struct.
+//! Live process/session globals are reached through main_mod; focused helpers
+//! are imported directly from their owning modules.
 
 const std = @import("std");
 const Io = std.Io;
@@ -38,6 +24,7 @@ const pricing = @import("pricing.zig");
 const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
+const learning_privacy = @import("learning_privacy.zig");
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
@@ -245,6 +232,12 @@ pub const Agent = struct {
         if (main_mod.plan_mode) try writePromptBadge(w, style.yellow, "Plan");
         if (self.strict) try writePromptBadge(w, style.red, "Strict");
         if (self.ultracode_mode) try writePromptBadge(w, style.accent, "Ultracode");
+        const privacy_mode = learning_privacy.current();
+        try writePromptBadge(w, switch (privacy_mode) {
+            .local, .aggregate => style.green,
+            .templates => style.yellow,
+            .examples => style.red,
+        }, privacy_mode.badge());
         try w.print("{s} · cwd {s}{s}{s}", .{ style.dim, style.reset, main_mod.g_cwd_display, style.dim });
         const context_tokens = self.effectiveContextTokens();
         if (self.last_context_tokens > 0) {

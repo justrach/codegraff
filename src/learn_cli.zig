@@ -9,6 +9,11 @@ const build_options = @import("build_options");
 
 const store_mod = @import("learn_store.zig");
 const eval = @import("learn_eval.zig");
+const holdout = @import("learn_holdout.zig");
+const primary = @import("learn_primary.zig");
+const learn_run = @import("learn_run.zig");
+const submit = @import("learn_submit.zig");
+const tournament = @import("learn_tournament.zig");
 const util = @import("util.zig");
 
 pub const usage =
@@ -16,7 +21,8 @@ pub const usage =
     \\
     \\usage:
     \\  graff learn init --parent PATH --config PATH
-    \\  graff learn run [--candidates N] [--repetitions N] [--auto] [--lock-timeout-ms N]
+    \\  graff learn run [--candidates N] [--repetitions N] [--submit] [--auto] [--lock-timeout-ms N]
+    \\  graff learn submit RUN_ID [--lock-timeout-ms N]
     \\  graff learn status [--lock-timeout-ms N]
     \\  graff learn promote RUN_ID [--lock-timeout-ms N]
     \\  graff learn rollback [--to GENOME_ID] [--lock-timeout-ms N]
@@ -30,9 +36,10 @@ pub const usage =
 ;
 
 const InitArgs = struct { parent: []const u8, config: []const u8 };
-const RunArgs = struct { candidates: ?usize = null, repetitions: ?usize = null, auto: bool = false, lock_timeout_ms: u64 = 0 };
+const RunArgs = struct { candidates: ?usize = null, repetitions: ?usize = null, submit: bool = false, auto: bool = false, lock_timeout_ms: u64 = 0 };
 const StatusArgs = struct { lock_timeout_ms: u64 = 0 };
 const PromoteArgs = struct { run_id: []const u8, lock_timeout_ms: u64 = 0 };
+const SubmitArgs = struct { run_id: []const u8, lock_timeout_ms: u64 = 0 };
 const RollbackArgs = struct { to: ?[]const u8 = null, lock_timeout_ms: u64 = 0 };
 const HashArgs = struct { path: []const u8 };
 
@@ -41,6 +48,7 @@ pub const Parsed = union(enum) {
     init: InitArgs,
     run: RunArgs,
     status: StatusArgs,
+    submit: SubmitArgs,
     promote: PromoteArgs,
     rollback: RollbackArgs,
     verify: StatusArgs,
@@ -91,6 +99,7 @@ pub fn parse(args: []const []const u8) !Parsed {
         var seen_candidates = false;
         var seen_repetitions = false;
         var seen_auto = false;
+        var seen_submit = false;
         var seen_lock = false;
         var index: usize = 1;
         while (index < args.len) : (index += 1) {
@@ -113,6 +122,10 @@ pub fn parse(args: []const []const u8) !Parsed {
                 if (seen_auto) return error.DuplicateOption;
                 seen_auto = true;
                 result.auto = true;
+            } else if (std.mem.eql(u8, arg, "--submit")) {
+                if (seen_submit) return error.DuplicateOption;
+                seen_submit = true;
+                result.submit = true;
             } else if (!try parseLockOption(args, &index, &seen_lock, &result.lock_timeout_ms)) return error.UnknownOption;
         }
         return .{ .run = result };
@@ -131,6 +144,14 @@ pub fn parse(args: []const []const u8) !Parsed {
         var index: usize = 2;
         while (index < args.len) : (index += 1) if (!try parseLockOption(args, &index, &seen_lock, &result.lock_timeout_ms)) return error.UnknownOption;
         return .{ .promote = result };
+    }
+    if (std.mem.eql(u8, command_name, "submit")) {
+        if (args.len < 2 or !store_mod.validId(args[1])) return error.InvalidId;
+        var result: SubmitArgs = .{ .run_id = args[1] };
+        var seen_lock = false;
+        var index: usize = 2;
+        while (index < args.len) : (index += 1) if (!try parseLockOption(args, &index, &seen_lock, &result.lock_timeout_ms)) return error.UnknownOption;
+        return .{ .submit = result };
     }
     if (std.mem.eql(u8, command_name, "rollback")) {
         var result: RollbackArgs = .{};
@@ -162,48 +183,6 @@ fn verifyPins(io: Io, arena: Allocator, config: store_mod.Config) !void {
     if (config.holdout_suite) |suite| _ = try store_mod.loadSuite(io, arena, suite);
 }
 
-fn trialId(
-    config_id: []const u8,
-    parent_id: []const u8,
-    parent_generation: u64,
-    parent_transaction_id: []const u8,
-    nonce: []const u8,
-) [64]u8 {
-    var hash = std.crypto.hash.sha2.Sha256.init(.{});
-    hash.update("codegraff-learn/trial/v1");
-    hash.update(&.{0});
-    var generation_bytes: [8]u8 = undefined;
-    std.mem.writeInt(u64, generation_bytes[0..], parent_generation, .big);
-    for ([_][]const u8{ config_id, parent_id, &generation_bytes, parent_transaction_id, nonce }) |field| {
-        var len: [8]u8 = undefined;
-        std.mem.writeInt(u64, len[0..], @intCast(field.len), .big);
-        hash.update(&len);
-        hash.update(field);
-    }
-    var digest: [32]u8 = undefined;
-    hash.final(&digest);
-    return std.fmt.bytesToHex(digest, .lower);
-}
-
-fn betterCandidate(a: eval.CandidateRecord, b: eval.CandidateRecord) bool {
-    const ac = a.primary.?;
-    const bc = b.primary.?;
-    if (ac.delta_ppm != bc.delta_ppm) return ac.delta_ppm > bc.delta_ppm;
-    if (ac.p_value_ppb != bc.p_value_ppb) return ac.p_value_ppb < bc.p_value_ppb;
-    if (ac.mean_score_delta_ppm != bc.mean_score_delta_ppm) return ac.mean_score_delta_ppm > bc.mean_score_delta_ppm;
-    if (ac.child_cost_micros != bc.child_cost_micros) return ac.child_cost_micros < bc.child_cost_micros;
-    return std.mem.order(u8, a.genome_id, b.genome_id) == .lt;
-}
-
-fn selectCandidate(candidates: []const eval.CandidateRecord) ?[]const u8 {
-    var selected: ?usize = null;
-    for (candidates, 0..) |candidate, index| {
-        if (!candidate.eligible) continue;
-        if (selected == null or betterCandidate(candidate, candidates[selected.?])) selected = index;
-    }
-    return if (selected) |index| candidates[index].genome_id else null;
-}
-
 fn verifyMutationEvidence(arena: Allocator, store: *store_mod.Store, config: store_mod.Config, run: eval.RunRecord, index: usize, candidate: eval.CandidateRecord) !void {
     const expected_seed = eval.candidateSeed(run.trial_id, index);
     if (!std.mem.eql(u8, candidate.mutation.seed, &expected_seed)) return error.MutationMismatch;
@@ -220,8 +199,10 @@ fn verifyMutationEvidence(arena: Allocator, store: *store_mod.Store, config: sto
         !std.mem.eql(u8, response.trial_id, run.trial_id) or response.candidate_index != index or
         !std.mem.eql(u8, response.parent_id, run.parent_genome_id) or !std.mem.eql(u8, response.child_path, "child.genome") or
         !store_mod.validId(response.child_sha256) or response.description.len > 512 or
-        !std.unicode.utf8ValidateSlice(response.description) or std.mem.indexOfScalar(u8, response.description, 0) != null) return error.MutationMismatch;
+        !std.unicode.utf8ValidateSlice(response.description) or std.mem.indexOfScalar(u8, response.description, 0) != null or
+        !std.mem.eql(u8, response.description, candidate.mutation.description)) return error.MutationMismatch;
     const child = try store.readGenome(arena, candidate.genome_id, config.limits.genome_bytes);
+    if (candidate.mutation.genome_bytes != child.len) return error.MutationOutputMismatch;
     const child_sha256 = store_mod.rawSha256(child);
     if (!std.mem.eql(u8, response.child_sha256, &child_sha256)) return error.MutationOutputMismatch;
 }
@@ -237,7 +218,7 @@ fn verifyRun(
     const run = try std.json.parseFromSliceLeaky(eval.RunRecord, arena, bytes, .{});
     try eval.validateRun(run);
     if (!std.mem.eql(u8, run.config_id, &config.id) or !std.mem.eql(u8, run.harness_version, build_options.version)) return error.CohortMismatch;
-    const expected_trial_id = trialId(run.config_id, run.parent_genome_id, run.parent_generation, run.parent_transaction_id, run.nonce);
+    const expected_trial_id = learn_run.trialId(run.config_id, run.parent_genome_id, run.parent_generation, run.parent_transaction_id, run.nonce);
     if (!std.mem.eql(u8, run.trial_id, &expected_trial_id)) return error.TrialMismatch;
     const parent_tx_bytes = try store.readTransaction(arena, run.parent_transaction_id);
     const parent_tx = try std.json.parseFromSliceLeaky(store_mod.Transaction, arena, parent_tx_bytes, .{});
@@ -246,43 +227,90 @@ fn verifyRun(
     _ = try store.readGenome(arena, run.parent_genome_id, config.value.limits.genome_bytes);
     try verifyPins(io, arena, config.value);
 
-    for (run.candidates, 0..) |candidate, index| {
+    const current_schema = std.mem.eql(u8, run.schema, eval.run_schema);
+    var baseline_response: ?eval.PrimaryBaselineResponse = null;
+    if (current_schema) if (run.primary_baseline) |baseline| {
+        baseline_response = try primary.verifyBaseline(
+            arena,
+            io,
+            store,
+            config.value,
+            &config.id,
+            build_options.version,
+            run.trial_id,
+            run.parent_genome_id,
+            config.value.evaluation_suite,
+            run.repetitions,
+            baseline,
+        );
+    };
+
+    const computed = try arena.dupe(eval.CandidateRecord, run.candidates);
+    var primary_count: usize = 0;
+    for (run.candidates, computed, 0..) |candidate, *recomputed_candidate, index| {
         _ = try store.readGenome(arena, candidate.genome_id, config.value.limits.genome_bytes);
         try verifyMutationEvidence(arena, store, config.value, run, index, candidate);
-        // Mirror runCommand's precedence exactly: identical_parent wins and
-        // skips the prior-duplicate scan. Letting duplicate_candidate
-        // overwrite it made a run with two parent-identical candidates
-        // permanently unverifiable (writer said identical_parent, verifier
-        // demanded duplicate_candidate).
-        var duplicate_reason: ?[]const u8 = null;
+        var excluded = false;
         if (std.mem.eql(u8, candidate.genome_id, run.parent_genome_id)) {
-            duplicate_reason = "identical_parent";
+            excluded = true;
         } else for (run.candidates[0..index]) |prior| if (std.mem.eql(u8, candidate.genome_id, prior.genome_id)) {
-            duplicate_reason = "duplicate_candidate";
+            excluded = true;
             break;
         };
-        if (duplicate_reason) |reason| {
-            if (candidate.primary != null or candidate.holdout != null or candidate.eligible or !std.mem.eql(u8, candidate.reason, reason)) return error.CandidateMismatch;
+        if (excluded) {
+            if (candidate.primary != null or candidate.holdout != null or candidate.eligible) return error.CandidateMismatch;
             continue;
         }
         const primary_record = candidate.primary orelse return error.CandidateMismatch;
-        const primary = try eval.verifyComparison(arena, io, store, config.value, &config.id, build_options.version, run.trial_id, index, run.parent_genome_id, candidate.genome_id, config.value.evaluation_suite, run.repetitions, run.planned_candidates, primary_record);
-        var eligible = primary.eligible;
-        var reason = primary.reason;
-        if (primary.eligible) {
-            if (config.value.holdout_suite) |suite| {
-                const holdout_record = candidate.holdout orelse return error.CandidateMismatch;
-                const holdout = try eval.verifyComparison(arena, io, store, config.value, &config.id, build_options.version, run.trial_id, index, run.parent_genome_id, candidate.genome_id, suite, run.repetitions, run.planned_candidates, holdout_record);
-                eligible = holdout.eligible;
-                reason = if (holdout.eligible) "eligible" else "holdout_rejected";
-            } else if (candidate.holdout != null) return error.CandidateMismatch;
-        } else if (candidate.holdout != null) return error.CandidateMismatch;
-        if (candidate.eligible != eligible or !std.mem.eql(u8, candidate.reason, reason)) return error.CandidateMismatch;
+        primary_count += 1;
+        recomputed_candidate.primary = if (current_schema) try primary.verifyCandidate(
+            arena,
+            io,
+            store,
+            config.value,
+            &config.id,
+            build_options.version,
+            run.trial_id,
+            index,
+            run.parent_genome_id,
+            candidate.genome_id,
+            config.value.evaluation_suite,
+            run.repetitions,
+            run.planned_candidates,
+            run.primary_baseline orelse return error.MissingPrimaryBaseline,
+            baseline_response orelse return error.MissingPrimaryBaseline,
+            primary_record,
+        ) else try eval.verifyComparison(arena, io, store, config.value, &config.id, build_options.version, run.trial_id, index, run.parent_genome_id, candidate.genome_id, config.value.evaluation_suite, run.repetitions, run.planned_candidates, primary_record);
+        recomputed_candidate.holdout = null;
+        recomputed_candidate.eligible = false;
     }
-    const selected = selectCandidate(run.candidates);
-    if ((selected == null) != (run.selected_genome_id == null)) return error.SelectionMismatch;
-    if (selected) |id| if (!std.mem.eql(u8, id, run.selected_genome_id.?)) return error.SelectionMismatch;
-    return .{ .run = run, .selected = selected };
+    if (current_schema and ((primary_count == 0) != (run.primary_baseline == null))) return error.PrimaryBaselineTopologyMismatch;
+
+    const primary_winner_index = tournament.primaryWinnerIndex(run.parent_genome_id, computed);
+    for (run.candidates, computed, 0..) |candidate, *recomputed_candidate, index| {
+        const is_winner = primary_winner_index != null and index == primary_winner_index.?;
+        if (candidate.holdout != null and !is_winner) return error.CandidateMismatch;
+        if (is_winner) {
+            const should_have_holdout = !current_schema or recomputed_candidate.primary.?.eligible;
+            if (should_have_holdout) {
+                if (config.value.holdout_suite) |suite| {
+                    const holdout_record = candidate.holdout orelse return error.CandidateMismatch;
+                    if (current_schema) try holdout.verify(io, store.root, arena, suite.sha256, run.trial_id);
+                    recomputed_candidate.holdout = try eval.verifyComparison(arena, io, store, config.value, &config.id, build_options.version, run.trial_id, index, run.parent_genome_id, candidate.genome_id, suite, run.repetitions, 1, holdout_record);
+                } else if (candidate.holdout != null) return error.CandidateMismatch;
+            } else if (candidate.holdout != null) return error.CandidateMismatch;
+        }
+    }
+    const finalized = try tournament.finalize(run.parent_genome_id, computed, config.value.holdout_suite != null);
+    for (run.candidates, computed) |candidate, expected| {
+        if (candidate.eligible != expected.eligible or !std.mem.eql(u8, candidate.reason, expected.reason)) return error.CandidateMismatch;
+    }
+    const primary_winner = if (finalized.primary_winner_index) |index| computed[index].genome_id else null;
+    if ((primary_winner == null) != (run.primary_winner_genome_id == null)) return error.SelectionMismatch;
+    if (primary_winner) |id| if (!std.mem.eql(u8, id, run.primary_winner_genome_id.?)) return error.SelectionMismatch;
+    if ((finalized.selected_genome_id == null) != (run.selected_genome_id == null)) return error.SelectionMismatch;
+    if (finalized.selected_genome_id) |id| if (!std.mem.eql(u8, id, run.selected_genome_id.?)) return error.SelectionMismatch;
+    return .{ .run = run, .selected = finalized.selected_genome_id };
 }
 
 fn activeMatchesRun(active: store_mod.ActiveRef, run: eval.RunRecord) bool {
@@ -321,93 +349,30 @@ fn runCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.proc
     const active = try store.loadActive(arena, config);
     try verifyPins(io, arena, config.value);
 
-    const candidate_count = args.candidates orelse config.value.gate.default_candidates;
-    const repetitions = args.repetitions orelse config.value.gate.default_repetitions;
-    if (candidate_count == 0 or candidate_count > 16 or repetitions == 0 or repetitions > 100) return error.InvalidNumber;
     if (args.auto and !config.value.auto.enabled) return error.AutoNotEnabled;
     if (args.auto and config.value.holdout_suite == null) return error.AutoRequiresHoldout;
+    if (args.submit) try submit.preflight(io, arena, environ);
 
     try out.writeAll("warning: mutator and evaluator execute as your OS user; scratch isolation is not a sandbox\n");
-    const nonce = try store_mod.randomId(io);
-    const trial_id = trialId(&config.id, active.ref.genome_id, active.ref.generation, active.ref.transaction_id, &nonce);
-    const candidates = try arena.alloc(eval.CandidateRecord, candidate_count);
-
-    for (candidates, 0..) |*candidate, index| {
-        var mutation = try eval.mutate(gpa, arena, io, environ, &store, config.value, &trial_id, index, active.ref.genome_id, active.genome);
-        defer gpa.free(mutation.prompt);
-        const genome_id = try arena.dupe(u8, &mutation.genome_id);
-        candidate.* = .{
-            .genome_id = genome_id,
-            .mutation = mutation.record,
-            .primary = null,
-            .holdout = null,
-            .eligible = false,
-            .reason = "unevaluated",
-        };
-        if (std.mem.eql(u8, genome_id, active.ref.genome_id)) {
-            candidate.reason = "identical_parent";
-            continue;
-        }
-        var duplicate = false;
-        for (candidates[0..index]) |prior| if (std.mem.eql(u8, genome_id, prior.genome_id)) {
-            duplicate = true;
-            break;
-        };
-        if (duplicate) {
-            candidate.reason = "duplicate_candidate";
-            continue;
-        }
-
-        candidate.primary = try eval.evaluate(gpa, arena, io, environ, &store, config.value, &config.id, build_options.version, &trial_id, index, active.ref.genome_id, active.genome, genome_id, mutation.prompt, config.value.evaluation_suite, repetitions, candidate_count);
-        if (!candidate.primary.?.eligible) {
-            candidate.reason = candidate.primary.?.reason;
-            continue;
-        }
-        if (config.value.holdout_suite) |suite| {
-            candidate.holdout = try eval.evaluate(gpa, arena, io, environ, &store, config.value, &config.id, build_options.version, &trial_id, index, active.ref.genome_id, active.genome, genome_id, mutation.prompt, suite, repetitions, candidate_count);
-            if (!candidate.holdout.?.eligible) {
-                candidate.reason = "holdout_rejected";
-                continue;
-            }
-        }
-        candidate.eligible = true;
-        candidate.reason = "eligible";
-    }
-
-    try verifyPins(io, arena, config.value);
-    const selected = selectCandidate(candidates);
-    const record: eval.RunRecord = .{
-        .schema = eval.run_schema,
-        .trial_id = &trial_id,
-        .nonce = &nonce,
-        .created_unix_ms = util.unixMs(io),
-        .harness_version = build_options.version,
-        .config_id = &config.id,
-        .parent_genome_id = active.ref.genome_id,
-        .parent_generation = active.ref.generation,
-        .parent_transaction_id = active.ref.transaction_id,
-        .planned_candidates = candidate_count,
-        .repetitions = repetitions,
-        .auto_requested = args.auto,
-        .candidates = candidates,
-        .selected_genome_id = selected,
-    };
-    const record_bytes = try store_mod.jsonBytes(gpa, record);
-    defer gpa.free(record_bytes);
-    if (record_bytes.len > store_mod.max_record_bytes) return error.RunTooLarge;
-    const run_id = try store.writeRun(gpa, record_bytes);
-    try out.print("run {s}\n", .{run_id});
-    if (selected) |genome_id| {
+    const result = try learn_run.execute(gpa, arena, io, environ, &store, config, active, .{
+        .candidates = args.candidates,
+        .repetitions = args.repetitions,
+        .submit = args.submit,
+        .auto = args.auto,
+    }, out);
+    if (result.selected_genome_id) |genome_id| {
         try out.print("selected {s}\n", .{genome_id});
         if (args.auto) {
-            const verified = try verifyRun(arena, io, &store, config, &run_id);
+            const verified = try verifyRun(arena, io, &store, config, &result.run_id);
             if (verified.selected == null or !std.mem.eql(u8, verified.selected.?, genome_id)) return error.SelectionMismatch;
             const current = try store.loadActive(arena, config);
-            if (!activeMatchesRun(current.ref, record)) return error.ActiveParentChanged;
-            try store.activate(gpa, current.ref, &config.id, genome_id, &run_id, "promote", config.value.limits.genome_bytes, util.unixMs(io));
+            if (!activeMatchesRun(current.ref, verified.run)) return error.ActiveParentChanged;
+            try store.activate(gpa, current.ref, &config.id, genome_id, &result.run_id, "promote", config.value.limits.genome_bytes, util.unixMs(io));
             try out.writeAll("automatic promotion committed atomically\n");
-        } else try out.print("manual promotion: graff learn promote {s}\n", .{run_id});
-    } else try out.writeAll("no candidate passed all promotion gates; active genome unchanged\n");
+        } else try out.print("manual promotion: graff learn promote {s}\n", .{result.run_id});
+    } else if (result.primary_winner_genome_id != null) {
+        try out.writeAll("primary winner recorded, but it did not clear every promotion gate; active genome unchanged\n");
+    } else try out.writeAll("no unique candidate produced primary evidence; active genome unchanged\n");
 }
 
 fn statusCommand(arena: Allocator, io: Io, timeout_ms: u64, out: *Io.Writer, verify_all: bool) !void {
@@ -453,6 +418,17 @@ fn promoteCommand(gpa: Allocator, arena: Allocator, io: Io, args: PromoteArgs, o
     if (!activeMatchesRun(active.ref, verified.run)) return error.ActiveParentChanged;
     try store.activate(gpa, active.ref, &config.id, selected, args.run_id, "promote", config.value.limits.genome_bytes, util.unixMs(io));
     try out.print("promoted {s} from run {s}\n", .{ selected, args.run_id });
+}
+
+fn submitCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.process.Environ.Map, args: SubmitArgs, out: *Io.Writer) !void {
+    var store = try store_mod.Store.openAt(io, Io.Dir.cwd());
+    defer store.deinit();
+    var lock = try store.acquireLock(args.lock_timeout_ms);
+    defer lock.deinit();
+    const config = try store.loadConfig(arena);
+    const verified = try verifyRun(arena, io, &store, config, args.run_id);
+    const sent = try submit.submitVerifiedRun(io, gpa, arena, environ, config.value, args.run_id, verified.run);
+    try out.print("submitted {d} signed aggregate grade(s) for run {s}; prompt text stayed local\n", .{ sent.grades, args.run_id });
 }
 
 fn ancestorTarget(arena: Allocator, store: *store_mod.Store, active: store_mod.LoadedActive, requested: ?[]const u8) ![]const u8 {
@@ -502,6 +478,7 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init,
         .init => |args| try initCommand(gpa, arena, io, args, out),
         .run => |args| try runCommand(gpa, arena, io, init.environ_map, args, out),
         .status => |args| try statusCommand(arena, io, args.lock_timeout_ms, out, false),
+        .submit => |args| try submitCommand(gpa, arena, io, init.environ_map, args, out),
         .verify => |args| try statusCommand(arena, io, args.lock_timeout_ms, out, true),
         .promote => |args| try promoteCommand(gpa, arena, io, args, out),
         .rollback => |args| try rollbackCommand(gpa, arena, io, args, out),
@@ -514,35 +491,13 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init,
 }
 
 test "learn parser preserves strict command-local options" {
-    const parsed = try parse(&.{ "run", "--candidates", "4", "--repetitions", "2", "--auto", "--lock-timeout-ms", "50" });
+    const parsed = try parse(&.{ "run", "--candidates", "4", "--repetitions", "2", "--submit", "--auto", "--lock-timeout-ms", "50" });
     try std.testing.expectEqual(@as(usize, 4), parsed.run.candidates.?);
     try std.testing.expectEqual(@as(usize, 2), parsed.run.repetitions.?);
     try std.testing.expect(parsed.run.auto);
+    try std.testing.expect(parsed.run.submit);
     try std.testing.expectEqual(@as(u64, 50), parsed.run.lock_timeout_ms);
     try std.testing.expectError(error.DuplicateOption, parse(&.{ "run", "--auto", "--auto" }));
     try std.testing.expectError(error.UnknownOption, parse(&.{ "run", "--mystery" }));
     try std.testing.expectError(error.InvalidId, parse(&.{ "promote", "abcd" }));
-}
-
-test "trial IDs bind the exact active generation and transaction" {
-    const original = trialId("config", "parent", 7, "transaction-a", "nonce");
-    const identical = trialId("config", "parent", 7, "transaction-a", "nonce");
-    const later_generation = trialId("config", "parent", 8, "transaction-a", "nonce");
-    const later_transaction = trialId("config", "parent", 7, "transaction-b", "nonce");
-    try std.testing.expectEqualSlices(u8, &original, &identical);
-    try std.testing.expect(!std.mem.eql(u8, &original, &later_generation));
-    try std.testing.expect(!std.mem.eql(u8, &original, &later_transaction));
-}
-
-test "learning selection is deterministic and correctness-first" {
-    const mutation: eval.MutationRecord = .{ .seed = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .request_evidence_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", .response_evidence_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" };
-    const base: eval.ComparisonRecord = .{ .suite_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", .request_evidence_id = mutation.request_evidence_id, .response_evidence_id = mutation.response_evidence_id, .pairs = 20, .statistical_units = 20, .parent_passes = 10, .child_passes = 15, .wins = 5, .losses = 0, .ties = 15, .critical_regressions = 0, .delta_ppm = 250_000, .mean_score_delta_ppm = 100_000, .p_value_ppb = 10_000_000, .parent_cost_micros = 100, .child_cost_micros = 100, .eligible = true, .reason = "eligible" };
-    var candidates = [_]eval.CandidateRecord{
-        .{ .genome_id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", .mutation = mutation, .primary = base, .holdout = null, .eligible = true, .reason = "eligible" },
-        .{ .genome_id = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", .mutation = mutation, .primary = base, .holdout = null, .eligible = false, .reason = "holdout_rejected" },
-    };
-    try std.testing.expectEqualStrings(candidates[0].genome_id, selectCandidate(&candidates).?);
-    candidates[1].eligible = true;
-    candidates[1].primary.?.delta_ppm = 300_000;
-    try std.testing.expectEqualStrings(candidates[1].genome_id, selectCandidate(&candidates).?);
 }

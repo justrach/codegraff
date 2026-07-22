@@ -4,7 +4,7 @@
 //! entry points so external call sites are unchanged.
 
 const std = @import("std");
-const store = @import("learn_store.zig");
+const store = @import("learn_store_types.zig");
 
 const Config = store.Config;
 const Program = store.Program;
@@ -74,6 +74,9 @@ pub fn validateConfig(config: Config) !void {
     if (config.gate.alpha_ppm == 0 or config.gate.alpha_ppm > 500_000) return error.InvalidGate;
     if (config.gate.minimum_delta_ppm > 1_000_000) return error.InvalidGate;
     if (config.gate.minimum_pairs == 0 or config.gate.minimum_pairs > max_pairs) return error.InvalidGate;
+    if (config.gate.minimum_tool_reduction_ppm > 1_000_000) return error.InvalidGate;
+    if (config.gate.minimum_economy_pairs == 0 or config.gate.minimum_economy_pairs > max_pairs) return error.InvalidGate;
+    if (config.gate.promotion_mode == .economy and !config.gate.economy_gate_enabled) return error.InvalidGate;
     if (config.gate.default_candidates == 0 or config.gate.default_candidates > 16) return error.InvalidGate;
     if (config.gate.default_repetitions == 0 or config.gate.default_repetitions > 100) return error.InvalidGate;
     if (config.auto.enabled and config.holdout_suite == null) return error.AutoRequiresHoldout;
@@ -111,4 +114,18 @@ pub fn validateSuite(manifest: SuiteManifest) !void {
         if (!validName(case.id, 128)) return error.InvalidCaseId;
         for (manifest.cases[0..i]) |prior| if (std.mem.eql(u8, prior.id, case.id)) return error.DuplicateCaseId;
     }
+}
+
+pub fn validateTransaction(tx: store.Transaction) !void {
+    if (!std.mem.eql(u8, tx.schema, store.transaction_schema)) return error.UnsupportedSchema;
+    if (!std.mem.eql(u8, tx.operation, "init") and !std.mem.eql(u8, tx.operation, "promote") and !std.mem.eql(u8, tx.operation, "rollback")) return error.InvalidOperation;
+    if (!validId(tx.next_genome_id)) return error.InvalidId;
+    if (tx.previous_genome_id) |id| if (!validId(id)) return error.InvalidId;
+    if (tx.run_id) |id| if (!validId(id)) return error.InvalidId;
+    if (tx.previous_transaction_id) |id| if (!validId(id)) return error.InvalidId;
+    if (std.mem.eql(u8, tx.operation, "init")) {
+        if (tx.generation != 0 or tx.previous_genome_id != null or tx.previous_transaction_id != null or tx.run_id != null) return error.InvalidTransaction;
+    } else if (tx.generation == 0 or tx.previous_genome_id == null or tx.previous_transaction_id == null) return error.InvalidTransaction;
+    if (std.mem.eql(u8, tx.operation, "promote") and tx.run_id == null) return error.InvalidTransaction;
+    if (std.mem.eql(u8, tx.operation, "rollback") and tx.run_id != null) return error.InvalidTransaction;
 }

@@ -1,0 +1,58 @@
+{
+  "schema": "codegraff.learn.graff-arms.v1",
+  "template_egress": true,
+  "maximum_changed_bytes": 640,
+  "maximum_total_bytes": 4096,
+  "protected_substrings": [
+    "Do not claim a relaunch is required.",
+    "never in the current working repository's issue tracker.",
+    "do NOT override GIT_AUTHOR_*/GIT_COMMITTER_*",
+    "Co-Authored-By: Codegraff <blackfloofie@codegraff.com>",
+    "`reset --hard`, `clean -f`"
+  ],
+  "targets": {
+    "root_workflow": "Before an exact edit, read one current uncompressed target span, apply the smallest edit that preserves terminal-newline state, do not verify after success, and reread/retry only on stale source, ambiguity, or failure."
+  },
+  "arms": [
+    {
+      "index": 0,
+      "id": "sol-semantic-boundaries",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "effort": "high",
+      "target": "root_workflow",
+      "placement": "replace",
+      "focus": "Replace the target with one concise instruction: use compact reads only for broad discovery; when an edit is likely, read the exact uncompressed span once, reuse it for the edit, preserve terminal-newline state, and reread only after stale-source or edit failure."
+    },
+    {
+      "index": 1,
+      "id": "terra-edit-transaction",
+      "provider": "codex",
+      "model": "gpt-5.6-terra",
+      "effort": "high",
+      "target": "root_workflow",
+      "placement": "replace",
+      "focus": "Replace the target with one concise exact-edit transaction: one current uncompressed span read, one minimum edit preserving terminal-newline state, no verification after exact success, and reread/retry only for stale source, ambiguity, or failure."
+    },
+    {
+      "index": 2,
+      "id": "luna-dependency-dag",
+      "provider": "codex",
+      "model": "gpt-5.6-luna",
+      "effort": "medium",
+      "target": "root_workflow",
+      "placement": "replace",
+      "focus": "Replace the target with one concise dependency-aware edit instruction: batch known-independent exact reads, use each result once, preserve terminal-newline state, perform one derived mutation, and stop after exact success unless stale or ambiguous."
+    },
+    {
+      "index": 3,
+      "id": "terra-outcome-stop-medium",
+      "provider": "codex",
+      "model": "gpt-5.6-terra",
+      "effort": "medium",
+      "target": "root_workflow",
+      "placement": "replace",
+      "focus": "Replace the target with one concise outcome instruction: for an edit, read the exact current span once, preserve exact bytes and terminal-newline state, make the minimum mutation, and stop after exact success unless ambiguity, stale source, or failure is reported."
+    }
+  ]
+}

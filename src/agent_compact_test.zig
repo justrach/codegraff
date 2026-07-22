@@ -255,6 +255,34 @@ test "recentContextStart keeps a clean recent suffix and never orphans tool outp
     try std.testing.expectEqual(msgs.items[2..].len, recentContextStart(msgs.items[2..], 8_000));
 }
 
+test "recentContextStart preserves a fresh image without counting its Base64 as text" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const payload = try arena.alloc(u8, 1_600_000);
+    @memset(payload, 'A');
+    const uri = try std.fmt.allocPrint(arena, "data:image/png;base64,{s}", .{payload});
+
+    var image_url: std.json.ObjectMap = .empty;
+    try image_url.put(arena, "url", .{ .string = uri });
+    var image: std.json.ObjectMap = .empty;
+    try image.put(arena, "type", .{ .string = "image_url" });
+    try image.put(arena, "image_url", .{ .object = image_url });
+    var content = std.json.Array.init(arena);
+    try content.append(.{ .object = image });
+    var user: std.json.ObjectMap = .empty;
+    try user.put(arena, "role", .{ .string = "user" });
+    try user.put(arena, "content", .{ .array = content });
+    var messages = std.json.Array.init(arena);
+    try messages.append(.{ .object = user });
+
+    // The whole short conversation still needs summarizing when compact() is
+    // explicitly requested, but the image itself fits the recent-turn budget
+    // and can be retained when older history exists.
+    try messages.insert(0, try textMessage(arena, "user", &util.repeatBytes("x", 40_000)));
+    try std.testing.expectEqual(@as(usize, 1), recentContextStart(messages.items, 8_000));
+}
+
 test "capOversizedToolOutputs (#193): bounds an oversized output in every wire format, leaves small ones + non-tool msgs" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

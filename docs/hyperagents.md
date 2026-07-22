@@ -238,8 +238,8 @@ additionally binds `niche` and `provider_class` so a score can't be replayed
 into another MAP-Elites cell. Verifiers still accept the legacy `v1` envelope
 (the same tuple without the last two fields) during the transition window.
 
-**Key custody.** `GRAFF_SCORE_KEY_FILE` names a key file *outside* cwd. The
-env var holds only the path; the file is unreadable by the evolving
+**Key custody.** `GRAFF_SCORE_KEY_FILE` names a key file *outside* cwd and
+defaults to `~/.simple-harness/score.key`. The file is unreadable by the evolving
 variant — subagent file tools are confined to cwd, and subagent bash is
 cwd-locked with no redirection. `confinedPath` guards cwd-*escape*, but the
 archive and `main.zig` live *inside* cwd, so the key must live outside it.
@@ -268,9 +268,12 @@ actual work. Step 1 replaces it as the primary gradient:
 
 **Held-out replay eval.** `examples/replay_judge.py` runs a candidate
 genome against `examples/dgm_eval_set.jsonl` — tasks with DETERMINISTIC,
-out-of-process assertions (a shell command's exit code or a golden
-substring in the final report), each in a fresh scratch directory so file
-assertions are hermetic. The judge is dependency-free (speaks the
+out-of-process assertions (a shell command's exit code or an exact final
+answer), each in a fresh scratch directory so file assertions are hermetic.
+Exact-answer checks deliberately reject substring false positives such as
+`1391` for an expected answer of `391`. The separate
+`examples/dgm_canary_eval_set.jsonl` supplies unseen boundary variants for a
+final generalization check. The judge is dependency-free (speaks the
 `harness --json` protocol directly) so its pinned copy runs anywhere.
 
 **Custody (same model as the score key).** `--pin` installs the eval set
@@ -287,25 +290,25 @@ closed), and that hash is written into each score record's signed
 ```
 replay judge failed/missing  → 0.0               (fail closed)
 pass_rate < 1.0              → 0.8 × pass_rate   (capped at 0.8)
-all held-out tasks pass      → 0.9 + 0.1 × llm   (LLM reorders only)
+all held-out tasks pass      → 0.9 + 0.1 × efficiency
 ```
 
-`h.ask` survives only as `llm_tiebreak`, a secondary gradient that can
-reorder already-passing variants but can never admit a failing one — a
-variant that fails any deterministic check cannot reach the promotable
-band (≥ 0.9) no matter how well it charms the LLM.
+Once correctness saturates, `efficiency = tasks / (tasks + tool_calls)`
+reorders passing variants. A variant that fails any deterministic check cannot
+reach the promotable band (≥ 0.9), no matter how persuasive its report sounds.
 
 Verified (`examples/test_step1.py`): the band invariant holds for every
-pass_rate × tie-break combination; judge-missing and pin-mismatch paths
-fail closed; and live, a sabotage variant whose report *claims* success
-(h.ask rates it high) is pinned ≤ 0.8 by the failing replay suite while
+failing pass rate; exact checks reject substring false positives;
+judge-missing and pin-mismatch paths fail closed; and live, a sabotage variant
+whose report *claims* success is pinned ≤ 0.8 by the failing replay suite while
 the honest seed lands ≥ 0.9 with `eval_set_hash` populated and signed.
 
 ## 8. What's deliberately not built yet
 
-- **Eval-set breadth**: five held-out tasks prove the mechanism; a real
-  evolution run wants a corpus broad enough that overfitting the suite is
-  harder than being generally good. Growing it is data work, not code.
+- **Eval-set breadth**: the 15-case replay suite plus 10-case canary prove the
+  mechanism; a real evolution run still wants a larger private corpus broad
+  enough that overfitting is harder than being generally good. Growing it is
+  data work, not code.
 - **Parent selection**: the archive has everything the formula needs
   (scores per sha, children per node); the sampling lives in the driver —
   per the paper, even DGM-H's self-modified selection didn't beat the
@@ -326,7 +329,7 @@ DGM.
 
 The load-bearing constraint is **"let the provider be me":** every expensive
 step (mutating a prompt, running the eval) runs on *each user's own provider*,
-opt-out, during their session. Central infra (`harness-telemetry`) does only
+locally unless the user raises the learning ceiling. Central infra (`harness-telemetry`) does only
 cheap, deterministic work — HMAC-verify, artifact re-check, SQL-aggregate,
 serve elites. **No central inference → it runs at fleet scale for free.**
 
@@ -337,21 +340,24 @@ serve elites. **No central inference → it runs at fleet scale for free.**
 - **Eval: private suite, public hash.** Only `eval_set_hash` is public; the
   suite is secret and rotated, so the honest majority can't study to the
   answer. Already bound into every score signature (Step 0).
-- **Contribution: opt-out, authored personas included.** Scores *and* persona
-  genomes contribute by default; `GRAFF_FLEET=off` / `/fleet off` disables.
+- **Contribution: local by default, independently scoped.** `/privacy
+  aggregate` admits prompt-free scores/metadata. `/privacy templates` raises
+  the ceiling, but each private persona still requires exact interactive
+  approval; `GRAFF_FLEET=off` remains a master kill switch.
 - **Grid: niche × provider-class.** The elite you *receive* is the one that won
   on *your* model tier — "let the provider be me" made literal.
 
-The one hard invariant, true regardless of the opt-out toggle: **task / user
-content never leaves the machine.** Only the genome (persona prompt text), the
-score float, `eval_set_hash`, `provider_class`, and the deterministic eval
-artifact are ever transmitted.
+The hard invariant is that **raw task/user content never enters fleet egress.**
+Aggregate mode sends only scores and controlled metadata. A reusable persona
+genome can be transmitted only after the user previews and approves that exact
+version; task prompts, bindings, repository data, reports, and tool results
+remain local.
 
 ### The federated loop (A→E)
 
 | phase | who runs it | what happens |
 |---|---|---|
-| **A — Harvest** | every install (fleet on) | signed pinned-eval scores + variant fingerprints accumulate in D1 |
+| **A — Harvest** | aggregate-enabled installs | signed pinned-eval scores + variant fingerprints accumulate in D1 |
 | **B — Propose** | the user's own provider | mine local failures → mutate the niche's current elite → run the **private replay suite** → sign(score, `eval_set_hash`, `artifact_sha`, `provider_class`) → submit |
 | **C — Rank** | central worker (SQL, no inference) | per cell `(niche × provider_class × eval_set_hash)`: HMAC-verify · re-check golden artifacts · K-install floor · LCB · anomaly-eject → `harness_elites` |
 | **D — Promote** | central worker (automatic) | challenger beats the incumbent built-in by margin M over W days with ≥K distinct installs → flip `live` |
@@ -360,9 +366,9 @@ artifact are ever transmitted.
 ### Driving Propose (B) yourself
 
 Two entry points feed a niche's cell. Both tag the score with the niche so the
-worker can group it into `(niche × provider_class × eval_set_hash)`, and both
-ride the genome (the persona's `prompt_text`) over on `fleet:propose` so a
-promoted cell actually has a persona to serve:
+worker can group it into `(niche × provider_class × eval_set_hash)`. Aggregate
+mode can establish fitness without content. A promotable genome row is created
+only when the exact persona text has separately passed template consent:
 
 - **Harness eval loop.** Name the role the eval optimizes:
 
@@ -450,7 +456,7 @@ both clients, since the SDKs are generated):
 | body | kind | emitted by | attrs | meaning |
 |---|---|---|---|---|
 | `score` | — | harness (on `h.score()`) | `prompt_sha`, `value`, `parent_sha`, `provider_class`, `artifact_sha`, `eval_set_hash`, `niche`, `sig` | a signed fitness write-back (the gradient) |
-| `fleet` | `propose` | harness · SDK driver | `niche`, `prompt_sha`, `parent_sha`, `provider_class`, `prompt_text` | a variant was generated/mutated (carries the genome) |
+| `fleet` | `propose` | harness · SDK driver | `niche`, `prompt_sha`, `parent_sha`, `provider_class`; consented CLI proposals may add `prompt_text` | a variant was generated/mutated |
 | `fleet` | `submit` | harness · SDK driver | `niche`, `prompt_sha`, `provider_class`, `eval_set_hash` | a scored variant was submitted to the fleet |
 | `fleet` | `elite_pull` | SDK driver | `provider_class`, `eval_set_hash`, `n_elites` | current elites fetched from `/v1/elites` |
 | `fleet` | `promote` | worker | `niche`, `provider_class`, `prompt_sha`, `lcb`, `n_installs` | the backend flipped a new champion live |
@@ -461,11 +467,11 @@ scores submitted → cells promoted) per client, exactly as `prompt_variants` /
 `scores_recorded` did for the local loop.
 
 SDK surface (both clients): `score(promptOrSha, value, …, niche)` carries the
-signed fields and emits `fleet:submit`; when handed the full persona text plus a
-`niche` it also emits `fleet:propose` carrying the genome, so the cell it submits
-into is promotable. `pullElites(providerClass)` / `pull_elites(...)` returns the
-live champions and emits `fleet:elite_pull`. All gated by the same telemetry
-opt-out as the rest of the SDK.
+signed fields and can emit prompt-free `fleet:propose`/`fleet:submit` in
+aggregate-or-higher mode. The generated SDKs have no interactive artifact
+review UI, so their final emitter strips `prompt_text` even in template mode.
+`pullElites(providerClass)` / `pull_elites(...)` is gated by the same learning
+mode. A future SDK content API needs an explicit preview/consent primitive.
 
 ### Scaffolded vs TODO
 
@@ -474,8 +480,8 @@ opt-out as the rest of the SDK.
   fields, the SDK `fleet` signal emitters, and — as of this change — the
   **harness-side `fleet` emitters too**: `Telemetry.fleetEvent` (body `fleet`,
   matching the SDK `_fleet_signal`), `fleet:propose` at the variant spawn
-  (`runSub`) and on each eval-loop best (`runEval`, gated on `--niche`), both
-  carrying the genome `prompt_text`; the niche-tagged `fleet:submit` at the
+  (`runSub`) and on each eval-loop best (`runEval`, gated on `--niche`), with
+  genome text admitted only after exact CLI template consent; the niche-tagged `fleet:submit` at the
   `score` write-back, a `providerClass()`
   tier tag, and the graff-side startup pull (`pullElites` → `fleet:elite_pull`,
   with `loadAgentTypes`/builtins deferring to a live champion's prompt). Verified
@@ -485,5 +491,5 @@ opt-out as the rest of the SDK.
   re-verification for golden tasks, and the auto-promote margin/window rule in D
   (so `promotes` / `live_cells` move). The harness side is now complete: the
   `fleet` emitters, a curated-table + models.dev-price `providerClass()`, the
-  startup elite-pull, and the `GRAFF_FLEET` env / `/fleet` opt-out (live A/B
-  verified — `GRAFF_FLEET=off` leaves `proposes` flat while `variants` still ticks).
+  startup elite-pull, the learning-privacy gate, and the `GRAFF_FLEET` env /
+  `/fleet` master kill switch.

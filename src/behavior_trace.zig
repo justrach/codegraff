@@ -15,6 +15,7 @@ const trace = @import("trace.zig");
 
 test {
     _ = @import("behavior_trace_tests.zig");
+    _ = @import("behavior_trace_rich_tests.zig");
 }
 
 // ── Behavioral trace (one experimental event file per run) ────────────────

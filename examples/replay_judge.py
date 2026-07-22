@@ -2,9 +2,10 @@
 """replay_judge.py — Step 1: the grounded, out-of-process evolution judge.
 
 Runs a candidate system prompt (a DGM genome) against a held-out eval set of
-tasks with DETERMINISTIC assertions — a shell command's exit code or a golden
-substring in the final report — and emits a pass rate. No LLM grades anything
-here; this is the primary fitness gradient the evolving agent cannot charm.
+tasks with DETERMINISTIC assertions — a shell command's exit code, exact final
+answer, or (for intentionally partial reports) a golden substring — and emits a
+pass rate. No LLM grades anything here; this is the primary fitness gradient the
+evolving agent cannot charm.
 
 Custody model (mirrors the Step 0 score key):
   - The eval set lives OUTSIDE the editable tree, named by GRAFF_EVAL_SET_FILE.
@@ -128,7 +129,7 @@ def run_variant(system_prompt, task_text, cwd):
 
 
 def check_task(task, report, cwd):
-    """Deterministic, out-of-process assertion: exit code or golden substring."""
+    """Deterministic assertion: exit code, exact answer, or golden substring."""
     chk = task.get("check", {})
     if "cmd" in chk:
         r = subprocess.run(["sh", "-c", chk["cmd"]], cwd=cwd,
@@ -137,6 +138,9 @@ def check_task(task, report, cwd):
     if "substring" in chk:
         ok = chk["substring"] in report
         return ok, "substring " + ("found" if ok else "missing")
+    if "exact" in chk:
+        ok = report.strip() == chk["exact"]
+        return ok, "exact output " + ("matched" if ok else "mismatched")
     return False, "no check defined"
 
 

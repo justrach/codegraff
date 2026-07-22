@@ -2,10 +2,10 @@
 //! recovery when a summary request cannot run.
 
 const std = @import("std");
-const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const utf8Prefix = @import("util.zig").utf8Prefix;
+const context_tokens = @import("context_tokens.zig");
 
 const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
@@ -26,14 +26,6 @@ pub const runJudge = agent_eval.runJudge;
 
 pub const recent_context_tokens: u64 = 8_000;
 
-fn serializedTokens(value: Value) u64 {
-    var buf: [256]u8 = undefined;
-    var d: Io.Writer.Discarding = .init(&buf);
-    var s: std.json.Stringify = .{ .writer = &d.writer };
-    s.write(value) catch {};
-    return @intCast(d.fullCount() / 4);
-}
-
 /// Pick the earliest clean user-turn boundary whose suffix fits in the recent
 /// context budget. Returning items.len means "summarize everything". We never
 /// split at a tool output, so retained call/result history stays valid.
@@ -44,7 +36,7 @@ pub fn recentContextStart(items: []const Value, token_budget: u64) usize {
     var i = items.len;
     while (i > 0) {
         i -= 1;
-        total +|= serializedTokens(items[i]);
+        total +|= context_tokens.estimatedTokens(items[i]);
         if (total > token_budget) break;
         if (cleanUserTurn(items[i])) start = i;
     }

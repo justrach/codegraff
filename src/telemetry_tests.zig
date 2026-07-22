@@ -7,6 +7,9 @@ const Io = std.Io;
 const telemetry = @import("telemetry.zig");
 const Telemetry = telemetry.Telemetry;
 const Event = Telemetry.Event;
+const learning_privacy = @import("learning_privacy.zig");
+const main_mod = @import("main.zig");
+const scoring = @import("scoring.zig");
 
 test "telemetry dupDetail never yields invalid UTF-8" {
     var t: Telemetry = .{
@@ -95,4 +98,53 @@ test "telemetry writeOtlp stamps run records with run_id (issue #168 Gap 6)" {
     try std.testing.expect(std.mem.indexOf(u8, out, "run_id") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"cafef00dcafef00d\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"read,edit\"") != null); // tools
+}
+
+test "learning privacy gates fleet metadata, scores, and exact template text" {
+    const io = std.testing.io;
+    main_mod.g_fleet = true;
+    var t: Telemetry = .{
+        .io = io,
+        .gpa = std.testing.allocator,
+        .endpoint = "https://collector.invalid/v1/logs",
+        .install_id = @splat('0'),
+        .client_name = "harness",
+        .sdk_install_id = "",
+        .start = Io.Timestamp.now(io, .awake),
+        .start_unix_ms = 0,
+    };
+    defer t.deinit();
+    defer learning_privacy.setMode(io, .local);
+    const prompt = "You are an exact private reviewer template.";
+    const prompt_fp = scoring.promptFingerprint(prompt);
+
+    learning_privacy.setMode(io, .local);
+    t.fleetEvent("propose", "reviewer", &prompt_fp, "", "frontier", "", 0, prompt);
+    t.scoreEvent("abcd", "", 1.0, "run", "sig", "");
+    t.runEvent(&prompt_fp, true, true, 1, "read_file");
+    t.countVariant();
+    try std.testing.expectEqual(@as(usize, 0), t.events.items.len);
+    try std.testing.expectEqual(@as(u64, 0), t.prompt_variants);
+
+    learning_privacy.setMode(io, .aggregate);
+    t.fleetEvent("propose", "reviewer", &prompt_fp, "", "frontier", "", 0, prompt);
+    t.scoreEvent("abcd", "", 1.0, "run", "sig", "");
+    t.runEvent(&prompt_fp, true, true, 1, "read_file");
+    t.countVariant();
+    try std.testing.expectEqual(@as(usize, 3), t.events.items.len);
+    try std.testing.expectEqual(@as(u64, 1), t.prompt_variants);
+    try std.testing.expectEqualStrings("", t.events.items[0].text);
+
+    learning_privacy.setMode(io, .templates);
+    t.fleetEvent("propose", "reviewer", &prompt_fp, "", "frontier", "", 0, prompt);
+    try std.testing.expectEqualStrings("", t.events.items[3].text);
+    try std.testing.expect(learning_privacy.approveTemplate(io, prompt));
+    t.fleetEvent("propose", "reviewer", &prompt_fp, "", "frontier", "", 0, prompt);
+    try std.testing.expectEqualStrings(prompt, t.events.items[4].text);
+
+    const canary = "OPENAI_API_KEY=sk-proj-test-only";
+    const canary_fp = scoring.promptFingerprint(canary);
+    try std.testing.expect(!learning_privacy.approveTemplate(io, canary));
+    t.fleetEvent("propose", "reviewer", &canary_fp, "", "frontier", "", 0, canary);
+    try std.testing.expectEqualStrings("", t.events.items[5].text);
 }

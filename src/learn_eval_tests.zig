@@ -73,6 +73,110 @@ test "paired gate rejects critical regressions and requires corrected significan
     const critical = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 1);
     try std.testing.expect(!critical.eligible);
     try std.testing.expectEqualStrings("critical_regression", critical.reason);
+
+    results[0].parent_pass = false;
+    const jointly_failed_critical = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 1);
+    try std.testing.expect(!jointly_failed_critical.eligible);
+    try std.testing.expectEqual(@as(usize, 1), jointly_failed_critical.child_critical_failures);
+    try std.testing.expectEqual(@as(usize, 0), jointly_failed_critical.critical_regressions);
+    try std.testing.expectEqualStrings("critical_failure", jointly_failed_critical.reason);
+}
+
+test "economy gate requires corrected per-case evidence without correctness loss" {
+    const config: store_mod.Config = .{
+        .schema = store_mod.config_schema,
+        .agent_name = "test",
+        .mutation_instruction = "change",
+        .mutator = .{ .program = "/bin/a", .sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        .evaluator = .{ .program = "/bin/b", .sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+        .evaluation_suite = .{ .path = "/suite", .sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+        .gate = .{
+            .alpha_ppm = 50_000,
+            .minimum_delta_ppm = 50_000,
+            .minimum_pairs = 8,
+            .economy_gate_enabled = true,
+            .promotion_mode = .economy,
+            .minimum_tool_reduction_ppm = 100_000,
+            .minimum_economy_pairs = 6,
+        },
+        .cohort = .{ .provider = "p", .model = "m", .task_family = "t", .adapter_version = "a", .verifier_version = "v" },
+    };
+    const case_ids = [_][]const u8{ "case-0", "case-1", "case-2", "case-3", "case-4", "case-5", "case-6", "case-7" };
+    var requested: [8]PairRequest = undefined;
+    var results: [8]PairResult = undefined;
+    for (0..8) |i| {
+        requested[i] = .{ .case_id = case_ids[i], .seed = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .critical = i == 0 };
+        results[i] = .{
+            .case_id = case_ids[i],
+            .seed = requested[i].seed,
+            .parent_pass = true,
+            .child_pass = true,
+            .parent_score_ppm = 1_000_000,
+            .child_score_ppm = 1_000_000,
+            .parent_latency_ms = 5,
+            .child_latency_ms = 4,
+            .latency_measured = true,
+            .tool_calls_measured = true,
+            .parent_tool_calls = 2,
+            .child_tool_calls = 1,
+        };
+    }
+    const response: EvaluationResponse = .{ .schema = evaluation_response_schema, .trial_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .candidate_index = 0, .cohort_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", .suite_sha256 = config.evaluation_suite.sha256, .parent_id = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", .child_id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", .pairs = &results };
+    const strong = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 4);
+    try std.testing.expect(strong.eligible);
+    try std.testing.expect(strong.economy_eligible);
+    try std.testing.expectEqualStrings("economy_eligible", strong.reason);
+    try std.testing.expectEqual(@as(usize, 8), strong.tool_wins);
+    try std.testing.expectEqual(@as(u64, 40), strong.parent_latency_ms);
+    try std.testing.expectEqual(@as(u64, 32), strong.child_latency_ms);
+
+    var correctness_only = results;
+    for (&correctness_only) |*result| {
+        result.parent_pass = false;
+        result.child_pass = true;
+        result.parent_score_ppm = 0;
+        result.child_score_ppm = 1_000_000;
+        result.child_tool_calls = result.parent_tool_calls;
+    }
+    const correctness_response: EvaluationResponse = .{ .schema = evaluation_response_schema, .trial_id = response.trial_id, .candidate_index = 0, .cohort_id = response.cohort_id, .suite_sha256 = response.suite_sha256, .parent_id = response.parent_id, .child_id = response.child_id, .pairs = &correctness_only };
+    const wrong_endpoint = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, correctness_response, 4);
+    try std.testing.expect(!wrong_endpoint.eligible);
+    var correctness_config = config;
+    correctness_config.gate.promotion_mode = .correctness;
+    const registered_endpoint = try computeComparison(correctness_config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, correctness_response, 4);
+    try std.testing.expect(registered_endpoint.eligible);
+
+    // Six directional wins are not enough after correcting for four arms,
+    // even though the aggregate call reduction remains above ten percent.
+    results[6].child_tool_calls = 2;
+    results[7].child_tool_calls = 2;
+    const weak = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 4);
+    try std.testing.expect(!weak.eligible);
+    try std.testing.expectEqualStrings("economy_not_significant", weak.reason);
+
+    results[5].child_tool_calls = 2;
+    const too_few_directions = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 4);
+    try std.testing.expect(!too_few_directions.eligible);
+    try std.testing.expectEqualStrings("minimum_economy_pairs", too_few_directions.reason);
+
+    results[0].tool_calls_measured = false;
+    const unmeasured = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 4);
+    try std.testing.expect(!unmeasured.eligible);
+    try std.testing.expectEqualStrings("tool_calls_unmeasured", unmeasured.reason);
+
+    results[0].tool_calls_measured = true;
+    results[0].parent_pass = true;
+    results[0].child_pass = false;
+    results[1].parent_pass = false;
+    results[1].child_pass = true;
+    const traded_correctness = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 4);
+    try std.testing.expect(!traded_correctness.eligible);
+    try std.testing.expectEqualStrings("critical_regression", traded_correctness.reason);
+
+    requested[0].critical = false;
+    const noncritical_trade = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 4);
+    try std.testing.expect(!noncritical_trade.eligible);
+    try std.testing.expectEqualStrings("correctness_regression", noncritical_trade.reason);
 }
 
 test "tool invocation executes verified private program and input snapshots" {

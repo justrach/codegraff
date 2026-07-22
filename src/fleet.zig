@@ -20,6 +20,7 @@ const learn_store = @import("learn_store.zig");
 const root = @import("main.zig");
 const trace = @import("trace.zig");
 const telemetry_mod = @import("telemetry.zig");
+const learning_privacy = @import("learning_privacy.zig");
 const Telemetry = telemetry_mod.Telemetry;
 const http = @import("http.zig");
 
@@ -297,7 +298,7 @@ fn applyRemoteElite(arena: Allocator, types: []AgentType, name: []const u8, prom
 /// returns `types` unchanged. `endpoint` is the OTLP base (…/v1/logs); the elites
 /// live beside it at /v1/elites.
 pub fn pullElites(io: Io, arena: Allocator, client: *std.http.Client, telem: ?*Telemetry, endpoint: []const u8, provider_class: []const u8, eval_set_hash: []const u8, types: []const AgentType) []const AgentType {
-    if (endpoint.len == 0 or !root.g_fleet) return types;
+    if (endpoint.len == 0 or !root.g_fleet or !learning_privacy.allowsAggregate()) return types;
     http.waitForClientReady(io);
     var base = std.mem.trimEnd(u8, endpoint, "/");
     if (std.mem.endsWith(u8, base, "/v1/logs")) base = base[0 .. base.len - "/v1/logs".len];
@@ -395,6 +396,28 @@ pub fn resolveOverride(obj: std.json.ObjectMap) ?[]const u8 {
     return null;
 }
 
+/// The private prompt content, if this spawn would use an inline, personal,
+/// project, or locally learned persona. Builtin/remote fleet personas are
+/// already public artifacts and do not need a new publication decision.
+pub fn privateOverride(obj: std.json.ObjectMap) ?[]const u8 {
+    if (obj.get("system_prompt")) |v| {
+        if (v == .string and v.string.len > 0) return v.string;
+    }
+    if (obj.get("agent")) |v| if (v == .string) {
+        for (g_agent_types) |agent_type| {
+            if (std.mem.eql(u8, agent_type.name, v.string) and !agent_type.builtin) return agent_type.prompt;
+        }
+    };
+    return null;
+}
+
+pub fn promptIsPublic(prompt: []const u8) bool {
+    for (g_agent_types) |agent_type| {
+        if (agent_type.builtin and std.mem.eql(u8, agent_type.prompt, prompt)) return true;
+    }
+    return false;
+}
+
 /// The MAP-Elites niche name for a subagent/workflow input: the named agent
 /// type (agent: "<name>"), or "" for an inline system_prompt variant.
 pub fn resolveNiche(obj: std.json.ObjectMap) []const u8 {
@@ -418,6 +441,27 @@ test "resolveNiche: agent name is the fleet cell, inline variant is uncelled" {
     try std.testing.expectEqualStrings("", resolveNiche(obj(a, "{\"system_prompt\":\"be terse\"}")));
     // A plain task is uncelled too.
     try std.testing.expectEqualStrings("", resolveNiche(obj(a, "{\"description\":\"x\",\"prompt\":\"y\"}")));
+}
+
+test "privateOverride distinguishes authored content from builtin personas" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const saved = g_agent_types;
+    defer g_agent_types = saved;
+    const types = [_]AgentType{
+        .{ .name = "public", .desc = "public", .prompt = "public prompt", .builtin = true },
+        .{ .name = "private", .desc = "private", .prompt = "private prompt" },
+    };
+    g_agent_types = &types;
+    const public_obj = (try std.json.parseFromSliceLeaky(Value, arena, "{\"agent\":\"public\"}", .{})).object;
+    const private_obj = (try std.json.parseFromSliceLeaky(Value, arena, "{\"agent\":\"private\"}", .{})).object;
+    const inline_obj = (try std.json.parseFromSliceLeaky(Value, arena, "{\"system_prompt\":\"inline\"}", .{})).object;
+    try std.testing.expect(privateOverride(public_obj) == null);
+    try std.testing.expectEqualStrings("private prompt", privateOverride(private_obj).?);
+    try std.testing.expectEqualStrings("inline", privateOverride(inline_obj).?);
+    try std.testing.expect(promptIsPublic("public prompt"));
+    try std.testing.expect(!promptIsPublic("private prompt"));
 }
 
 test "remote elites cannot replace a verified learned policy" {

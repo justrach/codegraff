@@ -32,6 +32,36 @@ pub fn otlpLogsUrl(gpa: Allocator, endpoint: []const u8) !?[]u8 {
     return try std.fmt.allocPrint(gpa, "{s}/v1/logs{s}", .{ base, query });
 }
 
+/// Observable, bounded variant of Telemetry.sendBatchWithDeadline for
+/// explicit commands that must tell the caller whether the collector accepted
+/// the payload. Ordinary session telemetry remains best-effort and silent.
+pub fn postOtlpWithDeadline(
+    io: Io,
+    client: *std.http.Client,
+    url: []const u8,
+    payload: []const u8,
+    auth_key: []const u8,
+    deadline: Io.Duration,
+) bool {
+    const Done = union(enum) { posted: bool, deadline: void };
+    var done_buf: [2]Done = undefined;
+    var sel: Io.Select(Done) = .init(io, &done_buf);
+    sel.concurrent(.deadline, Telemetry.flushDeadline, .{ io, deadline }) catch return false;
+    sel.concurrent(.posted, Telemetry.postOtlp, .{ client, url, payload, auth_key }) catch {
+        sel.cancelDiscard();
+        return false;
+    };
+    const first = sel.await() catch {
+        sel.cancelDiscard();
+        return false;
+    };
+    sel.cancelDiscard();
+    return switch (first) {
+        .posted => |accepted| accepted,
+        .deadline => false,
+    };
+}
+
 fn stallTelemetryCollector(io: Io, server: *Io.net.Server, accepted: *std.atomic.Value(bool)) void {
     const stream = server.accept(io) catch return;
     defer stream.close(io);

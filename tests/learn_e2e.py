@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Local-only end-to-end regression test for `graff learn`.
+"""Loopback-only end-to-end regression test for `graff learn`.
 
 Build first, then run:
     python3 tests/learn_e2e.py --graff zig-out/bin/graff
 
-The fixture uses deterministic local mutator/evaluator programs and disables
-telemetry. It never contacts a network service.
+The fixture uses deterministic local mutator/evaluator programs. Ordinary
+telemetry is disabled; one explicit submit is captured by a loopback server.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import hmac
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -22,6 +24,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 from typing import Any
 
 
@@ -75,33 +78,52 @@ pathlib.Path(response_path).write_text(json.dumps(response, separators=(",", ":"
 EVALUATOR_BODY = r'''import hashlib, json, os, pathlib, sys
 assert pathlib.Path(sys.argv[0]).resolve() != pathlib.Path(os.environ["FIXTURE_EVALUATOR_SOURCE"]).resolve()
 operation, request_path, response_path = sys.argv[1:4]
-assert operation == "evaluate"
 request = json.loads(pathlib.Path(request_path).read_text())
 assert request["suite_path"] == "suite.json"
 suite_bytes = pathlib.Path(request["suite_path"]).read_bytes()
 assert hashlib.sha256(suite_bytes).hexdigest() == request["suite_sha256"]
-pairs = []
-for pair in request["pairs"]:
-    pairs.append({
-        "case_id": pair["case_id"],
-        "seed": pair["seed"],
-        "parent_pass": False,
-        "child_pass": True,
-        "parent_score_ppm": 0,
-        "child_score_ppm": 1000000,
-        "parent_cost_micros": 100,
-        "child_cost_micros": 90,
-    })
-response = {
-    "schema": "codegraff.learn.evaluation.response.v1",
-    "trial_id": request["trial_id"],
-    "candidate_index": request["candidate_index"],
-    "cohort_id": request["cohort_id"],
-    "suite_sha256": request["suite_sha256"],
-    "parent_id": request["parent"]["id"],
-    "child_id": request["child"]["id"],
-    "pairs": pairs,
-}
+if operation == "baseline":
+    pairs = [{
+        "case_id": pair["case_id"], "seed": pair["seed"],
+        "pass": False, "score_ppm": 0, "cost_micros": 100,
+    } for pair in request["pairs"]]
+    response = {
+        "schema": "codegraff.learn.primary-baseline.response.v1",
+        "trial_id": request["trial_id"], "cohort_id": request["cohort_id"],
+        "suite_sha256": request["suite_sha256"],
+        "parent_id": request["parent"]["id"], "pairs": pairs,
+    }
+elif operation == "evaluate_primary":
+    baseline = json.loads(pathlib.Path(request["baseline"]["path"]).read_text())
+    pairs = [{
+        "case_id": parent["case_id"], "seed": parent["seed"],
+        "parent_pass": parent["pass"], "child_pass": True,
+        "parent_score_ppm": parent["score_ppm"], "child_score_ppm": 1000000,
+        "parent_cost_micros": parent["cost_micros"], "child_cost_micros": 90,
+    } for parent in baseline["pairs"]]
+    response = {
+        "schema": "codegraff.learn.primary-evaluation.response.v1",
+        "trial_id": request["trial_id"], "candidate_index": request["candidate_index"],
+        "cohort_id": request["cohort_id"], "suite_sha256": request["suite_sha256"],
+        "parent_id": request["parent_id"], "child_id": request["child"]["id"],
+        "pairs": pairs,
+    }
+elif operation == "evaluate":
+    pairs = [{
+        "case_id": pair["case_id"], "seed": pair["seed"],
+        "parent_pass": False, "child_pass": True,
+        "parent_score_ppm": 0, "child_score_ppm": 1000000,
+        "parent_cost_micros": 100, "child_cost_micros": 90,
+    } for pair in request["pairs"]]
+    response = {
+        "schema": "codegraff.learn.evaluation.response.v1",
+        "trial_id": request["trial_id"], "candidate_index": request["candidate_index"],
+        "cohort_id": request["cohort_id"], "suite_sha256": request["suite_sha256"],
+        "parent_id": request["parent"]["id"], "child_id": request["child"]["id"],
+        "pairs": pairs,
+    }
+else:
+    raise AssertionError(f"unexpected operation {operation}")
 pathlib.Path(response_path).write_text(json.dumps(response, separators=(",", ":")) + "\n")
 '''
 
@@ -168,8 +190,9 @@ def write_interpreter_shim(tools: Path, name: str, python: Path, body: str) -> t
 
 
 def invoke(graff: Path, workspace: Path, env: dict[str, str], *args: str, succeeds: bool = True) -> subprocess.CompletedProcess[str]:
+    privacy_args = ["--learning-privacy", "aggregate"] if (args and (args[0] == "submit" or "--submit" in args)) else []
     result = subprocess.run(
-        [str(graff), "learn", *args],
+        [str(graff), *privacy_args, "learn", *args],
         cwd=workspace,
         env=env,
         text=True,
@@ -190,6 +213,84 @@ def run_id_from(output: str) -> str:
     if match is None:
         raise AssertionError(f"missing run id in output:\n{output}")
     return match.group(1)
+
+
+class GradeCapture(BaseHTTPRequestHandler):
+    payloads: list[dict[str, Any]] = []
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        assert self.path == "/v1/logs"
+        length = int(self.headers["content-length"])
+        self.payloads.append(json.loads(self.rfile.read(length)))
+        self.send_response(202)
+        self.send_header("content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"ok":true,"queued":true}')
+
+    def log_message(self, _format: str, *_args: Any) -> None:
+        pass
+
+
+def verify_grade_submit(graff: Path, workspace: Path, env: dict[str, str], root: Path, run_id: str) -> None:
+    """The explicit publish path sends signed aggregates and no genome text."""
+    key = b"fixture-score-key"
+    key_path = root / ".simple-harness" / "score.key"
+    key_path.parent.mkdir(mode=0o700)
+    write_private(key_path, key + b"\n")
+    GradeCapture.payloads = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), GradeCapture)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    submit_env = env.copy()
+    submit_env.pop("GRAFF_NO_TELEMETRY", None)
+    submit_env["HOME"] = str(root)
+    submit_env["GRAFF_OTEL_ENDPOINT"] = f"http://127.0.0.1:{server.server_port}"
+    submit_env.pop("GRAFF_SCORE_KEY_FILE", None)
+    try:
+        local = subprocess.run(
+            [str(graff), "learn", "submit", run_id],
+            cwd=workspace,
+            env=submit_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            check=False,
+        )
+        assert local.returncode != 0 and "LearningPrivacyLocal" in local.stderr
+        assert not GradeCapture.payloads, "local privacy must fail before network egress"
+        fleet_off_env = {**submit_env, "GRAFF_FLEET": "off"}
+        disabled = invoke(graff, workspace, fleet_off_env, "submit", run_id, succeeds=False)
+        assert "TelemetryDisabled" in disabled.stderr
+        assert not GradeCapture.payloads, "fleet master-off must block learning egress"
+        output = invoke(graff, workspace, submit_env, "submit", run_id).stdout
+        assert "submitted 2 signed aggregate grade(s)" in output
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert len(GradeCapture.payloads) == 1
+    payload = GradeCapture.payloads[0]
+    encoded = json.dumps(payload, separators=(",", ":"))
+    assert "prompt_text" not in encoded and "Learned fixture policy" not in encoded
+    resource = payload["resourceLogs"][0]
+    resource_attrs = {item["key"]: next(iter(item["value"].values())) for item in resource["resource"]["attributes"]}
+    assert resource_attrs["client.name"] == "harness-learn"
+    records = resource["scopeLogs"][0]["logRecords"]
+    assert len(records) == 2
+    for record in records:
+        assert record["body"]["stringValue"] == "score"
+        attrs = {item["key"]: next(iter(item["value"].values())) for item in record["attributes"]}
+        assert attrs["run_id"] == run_id and attrs["value"] == 1
+        message = "\n".join(
+            [
+                "v2", attrs["prompt_sha"], attrs["parent_sha"], f'{attrs["value"]:.6f}',
+                attrs["run_id"], attrs["judge_id"], attrs["artifact_sha"],
+                attrs["eval_set_hash"], attrs["niche"], attrs["provider_class"],
+            ]
+        ).encode()
+        assert attrs["sig"] == hmac.new(key, message, hashlib.sha256).hexdigest()
 
 
 def status(graff: Path, workspace: Path, env: dict[str, str]) -> dict[str, Any]:
@@ -297,6 +398,7 @@ def exercise(graff: Path, root: Path) -> None:
     learn_root = workspace / ".graff" / "learn"
     run_path = learn_root / "runs" / f"{manual_run}.json"
     original_record = json.loads(run_path.read_text())
+    verify_grade_submit(graff, workspace, env, root, manual_run)
 
     # A forged mutation response that does not bind the selected child bytes
     # must not become promotable, even if all other run evidence is copied.
@@ -348,12 +450,37 @@ def exercise(graff: Path, root: Path) -> None:
     invoke(graff, workspace, env, "promote", rebound_run, succeeds=False)
     assert status(graff, workspace, env)["generation"] == 2
 
-    automatic_output = invoke(graff, workspace, env, "run", "--auto").stdout
+    # This workspace already exposed its configured hidden suite. A later run
+    # must fail before reusing it, even for an automatic promotion request.
+    consumed = invoke(graff, workspace, env, "run", "--auto", succeeds=False)
+    assert "HoldoutConsumed" in consumed.stderr
+    assert status(graff, workspace, env)["generation"] == 2
+
+    # Automatic promotion remains covered with a fresh, independently pinned
+    # hidden suite in a separate learning store.
+    automatic_workspace = root / "workspace-auto"
+    automatic_workspace.mkdir(mode=0o700)
+    automatic_holdout = tools / "holdout-suite-auto.json"
+    automatic_manifest = copy.deepcopy(holdout_manifest)
+    automatic_manifest["suite_id"] = "fixture-holdout-auto"
+    write_private(automatic_holdout, json_bytes(automatic_manifest))
+    automatic_config = copy.deepcopy(config)
+    automatic_config["holdout_suite"] = {
+        "path": str(automatic_holdout.resolve()),
+        "sha256": raw_sha256(automatic_holdout),
+    }
+    automatic_config_path = root / "config-auto.json"
+    write_private(automatic_config_path, json_bytes(automatic_config))
+    invoke(
+        graff, automatic_workspace, env, "init",
+        "--parent", str(parent.resolve()), "--config", str(automatic_config_path.resolve()),
+    )
+    automatic_output = invoke(graff, automatic_workspace, env, "run", "--auto").stdout
     assert run_id_from(automatic_output)
-    automatic = status(graff, workspace, env)
-    assert automatic["generation"] == 3
+    automatic = status(graff, automatic_workspace, env)
+    assert automatic["generation"] == 1
     assert automatic["active_genome_id"] != initial_genome
-    verified = invoke(graff, workspace, env, "verify")
+    verified = invoke(graff, automatic_workspace, env, "verify")
     assert json.loads(verified.stdout)["integrity"] == "ok"
 
     exercise_identical_parent(graff, root, evaluator_program, holdout_suite, evaluation_suite, parent, env)
