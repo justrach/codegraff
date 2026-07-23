@@ -144,6 +144,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .depth = self.depth,
             .snapshots = self.snapshots,
             .tools_used = &self.tools_used,
+            .agent_cwd = self.agent_cwd,
         };
         // Esc while tools run: spawn a stdin watcher for the duration of
         // the join (see esc_cancel). Subagents notice the flag mid-flight;

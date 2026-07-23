@@ -97,6 +97,7 @@ pub const Agent = struct {
     last_cache_read: u64 = 0, // KV-cache read tokens from the latest response
     sys_normal: []const u8 = prompts.main_system_prompt, // root system prompt (+ project instructions)
     sys_override: ?[]const u8 = null, // subagent-only: per-child system prompt (swarm prompt variants)
+    agent_cwd: ?[]const u8 = null, // subagent-only (#276 P0-1): absolute path of this agent's isolated git worktree, threaded through ToolCtx per tool call instead of a process-wide chdir — parallel siblings each keep their own
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
     tool_calls_this_turn: u64 = 0, // root-only hard budget counter (--max-tool-calls)
     seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
@@ -591,10 +592,7 @@ pub const Agent = struct {
     pub const isTableSeparator = @import("agent_table.zig").isTableSeparator;
 };
 
-test "agent prompt helper suite" {
+test {
     _ = @import("agent_prompt.zig");
-}
-
-test "lazy root tool catalogs preserve MCP tools across provider formats" {
     try agent_tests.lazyRootTools(Agent);
 }

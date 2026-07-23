@@ -28,6 +28,7 @@ const scoreVariants = subagent.scoreVariants;
 const max_workflow_tasks = subagent.max_workflow_tasks;
 
 const fleet = @import("fleet.zig");
+const Isolation = fleet.Isolation; // #276 P0-1
 const telemetry = @import("telemetry.zig");
 
 const max_workflow_phases = 5;
@@ -74,6 +75,8 @@ const StageSpec = struct {
     prompt: []const u8, // raw; may contain {{item}} / {{prev}}
     override: ?[]const u8,
     niche: []const u8,
+    isolation: Isolation = .shared_cwd, // #276 P0-1
+    isolation_fallback: bool = false,
 };
 
 /// Replace every `needle` in `hay` with `repl` (arena-allocated); returns `hay`
@@ -116,10 +119,10 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
     var prev: []const u8 = "";
     for (stages, 1..) |st, stage_no| {
         const prompt = pipelinePrompt(arena, st.prompt, item, prev, stage_no) catch |e| return failure(gpa, e);
-        var out = runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche) catch |e| failure(gpa, e);
+        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback)) |r| r.output else |e| failure(gpa, e);
         if (out.is_error) {
             gpa.free(out.text);
-            out = runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche) catch |e| failure(gpa, e);
+            out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback)) |r| r.output else |e| failure(gpa, e);
             if (out.is_error) {
                 gpa.free(out.text);
                 return .{
@@ -168,6 +171,8 @@ fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
         sp.override = fleet.resolveOverride(so);
         const an = fleet.resolveNiche(so);
         sp.niche = if (an.len > 0) an else sp.label;
+        sp.isolation = fleet.resolveIsolation(so);
+        sp.isolation_fallback = fleet.resolveIsolationFallback(so);
     }
 
     const item_strs = try arena.alloc([]const u8, items.len);
@@ -275,13 +280,17 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         const overrides = try arena.alloc(?[]const u8, tasks.len);
         const raws = try arena.alloc([]const u8, tasks.len);
         const niches = try arena.alloc([]const u8, tasks.len);
-        for (tasks, prompts, labels, overrides, raws, niches) |task_val, *prompt, *label, *override, *rawp, *niche| {
+        const isolations = try arena.alloc(Isolation, tasks.len); // #276 P0-1
+        const isolation_fallbacks = try arena.alloc(bool, tasks.len);
+        for (tasks, prompts, labels, overrides, raws, niches, isolations, isolation_fallbacks) |task_val, *prompt, *label, *override, *rawp, *niche, *isolation, *isolation_fallback| {
             if (task_val != .object) return .{ .text = try gpa.dupe(u8, "each task must be an object"), .is_error = true };
             const task = task_val.object;
             label.* = if (task.get("description")) |d| (if (d == .string) d.string else "task") else "task";
             override.* = fleet.resolveOverride(task);
             const agent_niche = fleet.resolveNiche(task);
             niche.* = if (agent_niche.len > 0) agent_niche else title;
+            isolation.* = fleet.resolveIsolation(task);
+            isolation_fallback.* = fleet.resolveIsolationFallback(task);
             const raw = if (task.get("prompt")) |p| (if (p == .string) p.string else "") else "";
             if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each task needs a non-empty \"prompt\""), .is_error = true };
             rawp.* = raw;
@@ -301,8 +310,8 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // can never abandon running subagents or free their result slots.
         const futures = try arena.alloc(Io.Future(ToolOutput), tasks.len);
         const outputs = try arena.alloc(ToolOutput, tasks.len);
-        for (labels, prompts, overrides, niches, futures) |label, prompt, override, niche, *fut| {
-            fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche });
+        for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures) |label, prompt, override, niche, isolation, isolation_fallback, *fut| {
+            fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche, isolation, isolation_fallback });
         }
         for (futures, outputs) |*fut, *out| out.* = fut.await(ctx.io);
         defer for (outputs) |out| gpa.free(out.text);
@@ -323,7 +332,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             const refut = try arena.alloc(Io.Future(ToolOutput), nf);
             for (refut, 0..) |*rf, k| {
                 const i = fidx[k];
-                rf.* = ctx.io.async(workflowRetryTask, .{ ctx, labels[i], prompts[i], overrides[i], niches[i] });
+                rf.* = ctx.io.async(workflowRetryTask, .{ ctx, labels[i], prompts[i], overrides[i], niches[i], isolations[i], isolation_fallbacks[i] });
             }
             for (refut, 0..) |*rf, k| {
                 const retry = rf.await(ctx.io);

@@ -334,14 +334,25 @@ pub fn confinedPath(path: []const u8) bool {
 /// reject if any component is a symlink (readLink succeeds). Conservative — a
 /// symlink inside the repo becomes unreadable via the file tools — but it makes
 /// confinement structural rather than lexical. bash (gated) is unaffected.
-pub fn noSymlinkEscape(io: Io, path: []const u8) bool {
+/// `base` is the agent's isolated worktree root (#276 P0-1) when its tool
+/// calls are pinned there instead of the shared cwd — each checked prefix is
+/// then resolved under `base` (an absolute path, so `Io.Dir.cwd()` below is
+/// just the dir-fd the readLink call ignores for an absolute sub_path) rather
+/// than the process's real cwd, which a worktree-isolated agent never enters.
+/// `base == null` (the shared-cwd default) keeps the original behavior exactly.
+pub fn noSymlinkEscape(io: Io, path: []const u8, base: ?[]const u8) bool {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var join_buf: [std.fs.max_path_bytes]u8 = undefined;
     var i: usize = 0;
     while (i <= path.len) {
         const slash = std.mem.indexOfScalarPos(u8, path, i, '/') orelse path.len;
         const prefix = path[0..slash];
         if (prefix.len > 0) {
-            if (Io.Dir.cwd().readLink(io, prefix, &buf)) |_| {
+            const check_path = if (base) |b|
+                std.fmt.bufPrint(&join_buf, "{s}/{s}", .{ b, prefix }) catch return false
+            else
+                prefix;
+            if (Io.Dir.cwd().readLink(io, check_path, &buf)) |_| {
                 return false; // this component is a symlink → refuse
             } else |_| {} // not a symlink (or doesn't exist yet) → fine
         }

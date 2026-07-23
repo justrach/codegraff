@@ -83,6 +83,7 @@ export type Event =
   | {{ type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }}
   | {{ type: "tool_result"; name: string; is_error: boolean; text: string }}
   | {{ type: "tool_call_finished"; name: string; is_error: boolean; ms: number }}
+  | {{ type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }}
   | {{ type: "finalizing" }}
   | {{ type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }}
   | {{ type: "system_prompt"; ok: boolean; append: boolean; chars: number }}
@@ -519,6 +520,7 @@ export type Event =
   | {{ type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }}
   | {{ type: "tool_result"; name: string; is_error: boolean; text: string }}
   | {{ type: "tool_call_finished"; name: string; is_error: boolean; ms: number }}
+  | {{ type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }}
   | {{ type: "finalizing" }}
   | {{ type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }}
   | {{ type: "system_prompt"; ok: boolean; append: boolean; chars: number }}

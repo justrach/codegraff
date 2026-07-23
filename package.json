@@ -4,6 +4,7 @@
   "packageManager": "bun@1.3.10",
   "workspaces": [
     "gui",
-    "packages/*"
+    "packages/*",
+    "sdk/ts"
   ]
 }

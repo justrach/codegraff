@@ -37,6 +37,7 @@ const codedb_result_cap = tools.codedb_result_cap;
 
 const subagent = @import("subagent.zig");
 const execSubagent = subagent.execSubagent;
+const agentOutput = subagent.agentOutput; // #276 P0-3
 const workflow = @import("workflow.zig");
 const execWorkflow = workflow.execWorkflow;
 
@@ -47,6 +48,7 @@ const confinedPath = approvals_mod.confinedPath;
 const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
+const runCappedCwd = jobs.runCappedCwd; // #276 P0-1: bash cwd for a worktree-isolated agent
 const spawnJob = jobs.spawnJob;
 const jobOutput = jobs.jobOutput;
 const jobKill = jobs.jobKill;
@@ -208,7 +210,14 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.", .{ job.id, job.cmd, job.id }) };
         }
         const sh = shellArgv(cmd);
-        const run = try runCapped(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, if (ctx.from_sub) subagent_bash_deadline_ms else 0);
+        const deadline: u64 = if (ctx.from_sub) subagent_bash_deadline_ms else 0;
+        // #276 P0-1: a worktree-isolated agent's bash calls run pinned to its
+        // own worktree — via std.process.Child.Cwd, per spawn, never a
+        // process-wide chdir — so parallel siblings never share a cwd.
+        const run = if (ctx.agent_cwd) |cw|
+            try runCappedCwd(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline, .{ .path = cw })
+        else
+            try runCapped(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline);
         defer gpa.free(run.stdout);
         defer gpa.free(run.stderr);
 
@@ -270,7 +279,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     }
     if (std.mem.eql(u8, call.name, "read_file")) {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
-        if (!confinedPath(path) or !noSymlinkEscape(io, path)) return outsideCwd(gpa, path);
+        if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
         const start_line = intField(input, "start_line");
         const end_line = intField(input, "end_line");
         const want_compact = if (input == .object) (if (input.object.get("compact")) |v| v == .bool and v.bool else false) else false;
@@ -278,13 +287,22 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // when codedb is present and this file is indexed. Lossy (strips comments/
         // blanks, shows line numbers) so it is NEVER the default and is labeled
         // not-for-editing; any failure falls through to the native byte-exact read.
-        if (want_compact) {
+        // #276: skipped entirely for a worktree-isolated agent — codedb's index is
+        // built over the main checkout, not the scratch worktree, so a compact
+        // read there could show stale or altogether wrong content.
+        if (want_compact and ctx.agent_cwd == null) {
             if (main_mod.g_codedb_present == null) main_mod.g_codedb_present = skills.binOnPath(io, "codedb");
             if (main_mod.g_codedb_present == true and hooks.codedbFileIndexed(io, gpa, path)) {
                 if (try codedbCompactRead(gpa, io, path, start_line, end_line)) |out| return out;
             }
         }
-        const outcome = read_file.read(io, gpa, .cwd(), path, start_line, end_line) catch |err| {
+        // #276 P0-1: resolve under the agent's isolated worktree when set —
+        // path itself stays relative (that's the agent's own view, used in
+        // every message below); only the actual syscall targets the resolved
+        // absolute path.
+        const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
+        defer if (ctx.agent_cwd != null) gpa.free(resolved);
+        const outcome = read_file.read(io, gpa, .cwd(), resolved, start_line, end_line) catch |err| {
             if (fsErrorText(gpa, .read, path, err)) |t| return .{ .text = t, .is_error = true };
             return err;
         };
@@ -349,11 +367,15 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
         const old = strField(input, "old_string") orelse return missingArg(gpa, "old_string");
         const new = strField(input, "new_string") orelse return missingArg(gpa, "new_string");
-        if (!confinedPath(path) or !noSymlinkEscape(io, path)) return outsideCwd(gpa, path);
+        if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
         const all = if (input.object.get("replace_all")) |v| v == .bool and v.bool else false;
         if (old.len == 0) return .{ .text = try gpa.dupe(u8, "old_string must not be empty"), .is_error = true };
 
-        const data = Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1024 * 1024)) catch |err| {
+        // #276 P0-1: resolve under the agent's isolated worktree when set.
+        const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
+        defer if (ctx.agent_cwd != null) gpa.free(resolved);
+
+        const data = Io.Dir.cwd().readFileAlloc(io, resolved, gpa, .limited(1024 * 1024)) catch |err| {
             if (fsErrorText(gpa, .edit, path, err)) |t| return .{ .text = t, .is_error = true };
             return err;
         };
@@ -374,14 +396,16 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (ctx.snapshots) |snaps| if (!ctx.from_sub) snaps.record(path, data); // pre-edit content for /rewind
         // #179: capture the file's mode now so the atomic rewrite below can't drop
         // a 0755 executable bit down to the default 0644.
-        const prev_stat = Io.Dir.cwd().statFile(io, path, .{}) catch null;
+        const prev_stat = Io.Dir.cwd().statFile(io, resolved, .{}) catch null;
         // Premium splice: when the zigrep suite is installed, zigpatch does
         // the write — an atomic tmp+rename byte-level --all splice (our count
         // checks above already enforce the uniqueness semantics). Any
         // failure, including the tool simply not being on PATH, falls back
-        // to the native in-place write below.
+        // to the native in-place write below. zigpatch is a separate process
+        // (`.inherit` cwd, #276) so it's handed `resolved` — an absolute path
+        // when isolated — directly, rather than relying on its own cwd.
         zp: {
-            const run = runCapped(gpa, io, &.{ "zigpatch", path, "-p", old, "--all", "--content", new }, 4096, 4096, 0) catch break :zp;
+            const run = runCapped(gpa, io, &.{ "zigpatch", resolved, "-p", old, "--all", "--content", new }, 4096, 4096, 0) catch break :zp;
             defer {
                 gpa.free(run.stdout);
                 gpa.free(run.stderr);
@@ -391,36 +415,47 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                 else => false,
             };
             if (ok and std.mem.indexOf(u8, run.stdout, "\"ok\":true") != null) {
-                preserveMode(io, path, prev_stat); // #179: zigpatch renamed a fresh inode into place
+                preserveMode(io, resolved, prev_stat); // #179: zigpatch renamed a fresh inode into place
                 return .{ .text = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (zigpatch)", .{ count, path }) };
             }
         }
-        try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = replaced });
-        preserveMode(io, path, prev_stat); // #179: keep the pre-edit mode
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = resolved, .data = replaced });
+        preserveMode(io, resolved, prev_stat); // #179: keep the pre-edit mode
         return .{ .text = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s}", .{ count, path }) };
     }
     if (std.mem.eql(u8, call.name, "write_file")) {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
         const content = strField(input, "content") orelse return missingArg(gpa, "content");
-        if (!confinedPath(path) or !noSymlinkEscape(io, path)) return outsideCwd(gpa, path);
+        if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
+        // #276 P0-1: resolve under the agent's isolated worktree when set.
+        // (snapshots are root-only — `ctx.agent_cwd` is only ever set for a
+        // subagent, so the branch below never runs together with isolation.)
+        const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
+        defer if (ctx.agent_cwd != null) gpa.free(resolved);
         if (ctx.snapshots) |snaps| if (!ctx.from_sub) {
             // capture the prior content (or absence) before overwriting, for /rewind
-            const before = Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(4 * 1024 * 1024)) catch null;
+            const before = Io.Dir.cwd().readFileAlloc(io, resolved, gpa, .limited(4 * 1024 * 1024)) catch null;
             defer if (before) |b| gpa.free(b);
             snaps.record(path, before);
         };
         // #179: an existing file keeps its mode (e.g. 0755) across the overwrite;
         // a brand-new file (prev_stat == null) keeps the default.
-        const prev_stat = Io.Dir.cwd().statFile(io, path, .{}) catch null;
-        Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = content }) catch |err| {
+        const prev_stat = Io.Dir.cwd().statFile(io, resolved, .{}) catch null;
+        Io.Dir.cwd().writeFile(io, .{ .sub_path = resolved, .data = content }) catch |err| {
             if (fsErrorText(gpa, .write, path, err)) |t| return .{ .text = t, .is_error = true };
             return err;
         };
-        preserveMode(io, path, prev_stat);
+        preserveMode(io, resolved, prev_stat);
         return .{ .text = try std.fmt.allocPrint(gpa, "wrote {d} bytes to {s}", .{ content.len, path }) };
     }
     if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
+    if (std.mem.eql(u8, call.name, "agent_output")) {
+        const id = intField(input, "id") orelse return missingArg(gpa, "id");
+        const wait_ms = intField(input, "wait_ms") orelse 0;
+        if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid agent id"), .is_error = true };
+        return agentOutput(gpa, io, @intCast(id), @intCast(@max(wait_ms, 0)));
+    }
     return .{ .text = try std.fmt.allocPrint(gpa, "unknown tool: {s}", .{call.name}), .is_error = true };
 }
 
