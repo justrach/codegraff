@@ -41,6 +41,7 @@ const serde = @import("serde.zig");
 
 const mcp_cli = @import("mcp_cli.zig");
 const persistMcpServer = mcp_cli.persistMcpServer;
+const persistMcpUrl = mcp_cli.persistMcpUrl;
 
 const skills = @import("skills.zig");
 const mcp_notes = skills.mcp_notes;
@@ -186,22 +187,31 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const arg = std.mem.trim(u8, line["/mcp".len..], " \t");
         const reg = root.registry.?; // always present now
         if (std.mem.startsWith(u8, arg, "add")) {
-            // /mcp add <name> <command> [args...]
+            // /mcp add <name> <command> [args...] or <name> --url <URL>
             var it = std.mem.tokenizeAny(u8, arg["add".len..], " \t");
             const name = it.next() orelse {
-                try out.writeAll("usage: /mcp add <name> <command> [args...]   e.g. /mcp add fs npx -y @modelcontextprotocol/server-filesystem .\n");
+                try out.writeAll("usage: /mcp add <name> <command> [args...] | /mcp add <name> --url <URL>\n");
                 try out.flush();
                 return true;
             };
             const command = it.next() orelse {
-                try out.writeAll("usage: /mcp add <name> <command> [args...]\n");
+                try out.writeAll("usage: /mcp add <name> <command> [args...] | /mcp add <name> --url <URL>\n");
                 try out.flush();
                 return true;
             };
             var args: std.ArrayList([]const u8) = .empty;
             defer args.deinit(arena);
             while (it.next()) |a| try args.append(arena, a);
-            const added = reg.addServer(name, command, args.items) catch |err| {
+            const is_remote = std.mem.eql(u8, command, "--url");
+            if (is_remote and args.items.len != 1) {
+                try out.writeAll("usage: /mcp add <name> --url <URL>\n");
+                try out.flush();
+                return true;
+            }
+            const added = (if (is_remote)
+                reg.addRemoteServer(name, args.items[0], &.{})
+            else
+                reg.addServer(name, command, args.items)) catch |err| {
                 try out.print("{s}✗ failed to add MCP server '{s}': {t}{s}\n", .{ style.red, name, err, style.reset });
                 try out.flush();
                 return true;
@@ -211,7 +221,10 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             root.invalidateRootTools();
             try root.ensureRootTools(root.provider.kind);
             root.rebaseContextMeter();
-            const persisted = persistMcpServer(root.io, arena, name, command, args.items);
+            const persisted = if (is_remote)
+                persistMcpUrl(root.io, arena, name, args.items[0], &.{})
+            else
+                persistMcpServer(root.io, arena, name, command, args.items);
             var has_note = false;
             for (mcp_notes) |mn| if (std.mem.eql(u8, mn.server, name)) {
                 has_note = true;

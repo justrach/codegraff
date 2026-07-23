@@ -354,22 +354,22 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
 /// `/mcp add` still works. Moved out of main() (600-line goal). Returns the
 /// Registry by value — mcp.Registry holds no self-references (its storage
 /// is ArrayList/HashMap-backed), so returning it is safe.
-pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, use_color: bool, json_mode: bool) !mcp.Registry {
+pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, home: []const u8, use_color: bool, json_mode: bool) !mcp.Registry {
     const mcp_count = mcp_cli.countMcpServers(io, arena);
     var connect_mcp = flags.yolo_flag or mcp_count == 0;
     if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
-        try out.print("{s}⚠ this workspace's .mcp.json defines {d} MCP server(s) that run local commands. Connect them this session? [y/N] {s}", .{ ansi.style.bold, mcp_count, ansi.style.reset });
+        try out.print("{s}⚠ this workspace's .mcp.json defines {d} untrusted MCP server(s). They may run local commands or receive data over the network. Connect them this session? [y/N] {s}", .{ ansi.style.bold, mcp_count, ansi.style.reset });
         try out.flush();
         const ans = in.takeDelimiter('\n') catch null;
         connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
     }
-    return if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path) catch |err| inner: {
+    return if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, home) catch |err| inner: {
         try out.print("[mcp] init failed: {t} — continuing without MCP\n", .{err});
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;
-    }) orelse mcp.Registry.empty(gpa, io)) else outer: {
+    }) orelse mcp.Registry.emptyWithOAuthHome(gpa, io, home)) else outer: {
         if (mcp_count > 0) try out.print("{s}skipped {d} workspace MCP server(s) — /mcp trust to connect them now (or re-run with --yolo){s}\n", .{ ansi.style.dim, mcp_count, ansi.style.reset });
-        break :outer mcp.Registry.empty(gpa, io);
+        break :outer mcp.Registry.emptyWithOAuthHome(gpa, io, home);
     };
 }
 
@@ -382,7 +382,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
 /// Moved out of main() (600-line goal); mutates `registry` in place (it's
 /// already main()-owned and stable by the time this is called, so a pointer
 /// is all that's needed — no return-by-value trickery here).
-pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool) !void {
+pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, smolify_enabled: bool) !void {
     connect: {
         for (skills.companion_servers) |c| if (skills.mcpServerConnected(registry.tools, c.server)) break :connect;
         for (skills.companion_servers) |c| {
@@ -397,4 +397,14 @@ pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out:
             }
         }
     }
+
+    // Smolify is a core, hosted Streamable HTTP MCP. It can be disabled with
+    // GRAFF_NO_SMOLIFY=1 for offline or privacy-sensitive sessions.
+    if (!smolify_enabled) return;
+    _ = registry.connectSmolify() catch |err| {
+        if (!json_mode and flags.oneshot_prompt == null) {
+            try out.print("{s}[mcp:smolify] auto-connect failed ({t}) — continuing offline{s}\n", .{ ansi.style.dim, err, ansi.style.reset });
+            try out.flush();
+        }
+    };
 }

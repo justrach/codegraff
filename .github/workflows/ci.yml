@@ -28,6 +28,9 @@ jobs:
   # codebase targets.
   zig:
     runs-on: ubuntu-latest
+    env:
+      # Integration tests are deterministic/offline; hosted MCP is covered separately.
+      GRAFF_NO_SMOLIFY: "1"
     steps:
       - uses: actions/checkout@v4
 

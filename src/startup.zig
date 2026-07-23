@@ -409,9 +409,10 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
-    // `harness mcp add <name> -- <command> [args...]`: write workspace MCP config.
+    // MCP list/add only use workspace config; OAuth login validates HOME itself.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
-        try mcp_cli.mcpCommand(io, arena, flags.positionals.items[1..]);
+        const home = keys_cli.homeEnv(init.environ_map) orelse "";
+        try mcp_cli.mcpCommand(io, gpa, arena, home, flags.positionals.items[1..]);
         return true;
     }
 

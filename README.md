@@ -463,6 +463,36 @@ turns it back on, and `/goal status` shows the objective and its current state.
 blocked, cancelled, or exhausted) once the work is done, you step in, or a safety
 limit is hit, instead of pausing for confirmation between routine steps.
 
+### MCP servers
+
+Graff speaks both MCP transports directly: local stdio servers and remote
+Streamable HTTP servers. Smolify (`https://app.smol.ly/mcp`) is connected as a
+core, anonymous documentation service; it needs no Node bridge or project
+configuration. This performs discovery requests at startup and tool queries may
+be sent to the hosted service; set `GRAFF_NO_SMOLIFY=1` for offline or
+privacy-sensitive sessions. Other servers can be added from the shell or during
+a session:
+
+```sh
+graff mcp add context7 -- npx -y @upstash/context7-mcp
+graff mcp add mobbin --url https://api.mobbin.com/mcp
+graff mcp login mobbin   # OAuth discovery + browser PKCE flow
+graff mcp login smolify  # optional access to authenticated Smolify tools
+# In the REPL: /mcp add mobbin --url https://api.mobbin.com/mcp
+```
+
+The equivalent `.mcp.json` URL entry is
+`{"mcpServers":{"mobbin":{"url":"https://api.mobbin.com/mcp"}}}`. Remote
+responses may use either `application/json` or `text/event-stream`; Graff keeps
+`Mcp-Session-Id` state and sends `MCP-Protocol-Version` on requests.
+For OAuth-protected endpoints, `graff mcp login <name>` performs protected
+resource and authorization-server discovery, dynamic client registration, and
+a browser PKCE flow. Tokens are stored outside the repository under
+`~/.simple-harness-mcp` with user-only permissions and refreshed automatically.
+Static HTTP headers can alternatively be added with
+`--header 'Authorization=Bearer TOKEN'` (they are stored in `.mcp.json`, so
+prefer a restricted token and do not commit that file).
+
 The line editor supports ↑/↓ history (persisted to `~/.simple-harness-history`),
 Tab completion (commands, and model names after `/model `), and emacs-style
 editing (Ctrl-A/E/W/U/K, Option+Delete, word moves). The selected model is

@@ -25,6 +25,7 @@ pub const changelog_text =
     \\  • Local learning can race multiple prompt variants, rank correctness before tool economy, and expose only the winner to a hidden holdout
     \\  • Runs checkpoint safely, keep promotion manual by default, and can bundle an aggregate-only signed grade submission
     \\  • Aggregate receipts expire after 30 days and can be deleted remotely without deleting local evidence or requiring telemetry consent
+    \\  • Remote MCP servers now support Streamable HTTP, OAuth discovery/PKCE/refresh, and an opt-out core Smolify connection
     \\
     \\0.0.209
     \\  • Kimi Code now follows each live catalog model's native or Anthropic beta protocol, auth style, context, and thinking metadata
@@ -66,7 +67,9 @@ pub const usage_text =
     \\  graff key set <provider> <key>   store a key (macOS Keychain, else 0600 file)
     \\  graff key list                   show which providers have keys
     \\  graff models [refresh]           list the live catalog; refresh Codex + models.dev metadata
-    \\  graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
+    \\  graff mcp add <name> -- <cmd>     add a stdio MCP server to .mcp.json
+    \\  graff mcp add <name> --url <url>  add a Streamable HTTP MCP server
+    \\  graff mcp login <name>            OAuth login for a remote MCP server
     \\  graff mcp                         list configured MCP servers
     \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
     \\  graff worktree list              list the per-tab worktrees created by -w

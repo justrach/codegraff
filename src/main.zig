@@ -386,7 +386,8 @@ pub fn main(init: std.process.Init) !void {
     // MCP servers from .mcp.json. SECURITY: a workspace .mcp.json launches arbitrary local commands, so opening an untrusted repo could run them —
     // auto-connect only with --yolo (trusted) or explicit per-session consent; otherwise start with an empty (but live) registry so `/mcp add`
     // still works.
-    var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, use_color, json_mode);
+    const mcp_home = homeEnv(init.environ_map) orelse "";
+    var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, mcp_home, use_color, json_mode);
     boot.mark(io, "MCP registry");
     defer registry_storage.deinit();
     const registry: ?*mcp.Registry = &registry_storage;
@@ -403,7 +404,8 @@ pub fn main(init: std.process.Init) !void {
     };
     if (theme_setup.should_exit) return;
     boot.mark(io, "settings/theme");
-    try session_start.connectCompanion(io, &registry_storage, flags, out, json_mode);
+    const smolify_enabled = init.environ_map.get("GRAFF_NO_SMOLIFY") == null;
+    try session_start.connectCompanion(io, &registry_storage, flags, out, json_mode, smolify_enabled);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
     if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);
@@ -592,104 +594,7 @@ const workflow = @import("workflow.zig");
 const exec = @import("exec.zig");
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────
 
-test "incremental markdown streaming renders like renderMdLine" {
-    // style is the empty default in tests, so styled output == de-marked text.
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = std.testing.allocator,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = &aw.writer,
-    };
-    defer a.md_buf.deinit(std.testing.allocator);
-    defer a.md_word.deinit(std.testing.allocator);
-    defer {
-        for (a.md_table.items) |r| std.testing.allocator.free(r);
-        a.md_table.deinit(std.testing.allocator);
-    }
-
-    // Prose is visible word-by-word, before any newline arrives (the
-    // word in flight is held for wrap decisions).
-    a.streamMarkdown("Hey! I'm her");
-    try std.testing.expectEqualStrings("Hey! I'm ", aw.writer.buffered());
-    a.streamMarkdown("e and ready\n");
-    try std.testing.expectEqualStrings("Hey! I'm here and ready\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Bullets stream too: marker styled up front, text word-by-word, and a
-    // split **bold** span styles eagerly (markers dropped as in renderInline).
-    a.streamMarkdown("- has **bo");
-    try std.testing.expectEqualStrings("• has ", aw.writer.buffered());
-    a.streamMarkdown("ld** spans\n");
-    try std.testing.expectEqualStrings("• has bold spans\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Numbered/task/nested items, headings, quotes, and inline code.
-    a.streamMarkdown("12) **Immediately:** point\n## Title\nuse `zig build` here\n- [ ] ship it\n  - nested\n> warning\n");
-    try std.testing.expectEqualStrings("12) Immediately: point\n◆ Title\nuse zig build here\n☐ ship it\n  ◦ nested\n│ warning\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Fences: open/close render as labeled dim rules, body streams unprefixed.
-    a.streamMarkdown("```zig\nconst x = 1;\n```\nafter\n");
-    try std.testing.expectEqualStrings("── zig " ++ util.repeatBytes("─", 33) ++ "\nconst x = 1;\n" ++ util.repeatBytes("─", 40) ++ "\nafter\n", aw.writer.buffered());
-    try std.testing.expect(!a.md_fence);
-    aw.clearRetainingCapacity();
-
-    // Horizontal rule renders at line end.
-    a.streamMarkdown("---\n");
-    try std.testing.expectEqualStrings("────────────\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Tables buffer until the first non-row line, then render aligned:
-    // column widths from the widest cell, header above a ─┼─ rule.
-    a.streamMarkdown("| Item | Desc |\n| --- | --- |\n| 1 | Inspect files |\n");
-    try std.testing.expectEqualStrings("", aw.writer.buffered()); // still buffering
-    a.streamMarkdown("| 22 | Edit |\ndone\n");
-    try std.testing.expectEqualStrings("Item │ Desc\n" ++
-        "─────┼──────────────\n" ++
-        "1    │ Inspect files\n" ++
-        "22   │ Edit\n" ++
-        "done\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // A table pending at stream end flushes from the tail path.
-    a.streamMarkdown("| x | y |");
-    a.flushStreamTail();
-    try std.testing.expectEqualStrings("x │ y\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Stream tail: a partial prose line flushes whatever is pending.
-    a.streamMarkdown("tail without newline");
-    a.flushStreamTail();
-    try std.testing.expectEqualStrings("tail without newline", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Long lines wrap at the terminal edge on word boundaries; bullet
-    // continuations align under the text (hanging indent).
-    a.md_width = 12; // pinned for the line — mdFinishLine re-reads after
-    a.streamMarkdown("- alpha beta gamma\n");
-    try std.testing.expectEqualStrings("• alpha beta\n  gamma\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Plain prose wraps at column 0; the break replaces the joining space.
-    a.md_width = 10;
-    a.streamMarkdown("word1 word2 word3\n");
-    try std.testing.expectEqualStrings("word1 \nword2 \nword3\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // A word too wide for any line is not torn — the terminal wraps it.
-    a.md_width = 6;
-    a.streamMarkdown("abc defghijklm\n");
-    try std.testing.expectEqualStrings("abc defghijklm\n", aw.writer.buffered());
-}
-
 test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
-    _ = @import("main_tests.zig");
+    _ = @import("main_test.zig");
 }

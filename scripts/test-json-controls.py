@@ -89,6 +89,8 @@ def run():
         p = subprocess.run([BIN, "--json"], input=stdin, text=True,
                            capture_output=True, timeout=60, env=env)
         out = p.stdout
+        if p.returncode != 0:
+            print(f"graff exited {p.returncode}; stderr follows:\n{p.stderr}", file=sys.stderr)
     except subprocess.TimeoutExpired as e:
         out = (e.stdout or b"").decode("utf-8", "ignore") if isinstance(e.stdout, bytes) else (e.stdout or "")
 
