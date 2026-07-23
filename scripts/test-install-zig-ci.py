@@ -72,6 +72,18 @@ class ToolchainIntegrityTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("tree SHA-256 mismatch", reason)
 
+    def test_binary_tamper_is_rejected_without_tree_digest(self) -> None:
+        self.binary.write_bytes(b"tampered binary\n")
+        valid, reason = installer.validate_toolchain(
+            self.root,
+            "Linux",
+            installer.PINNED_VERSION,
+            self.binary_sha,
+            None,
+        )
+        self.assertFalse(valid)
+        self.assertIn("binary failed", reason)
+
     def test_invalid_cache_recovers_from_verified_archive(self) -> None:
         runner_temp = Path(self.scratch.name)
         archive_dir = runner_temp / "codegraff-zig-archives"

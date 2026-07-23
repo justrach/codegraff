@@ -137,16 +137,17 @@ def validate_toolchain(
     system: str,
     version: str,
     expected_binary_sha: str,
-    expected_tree_sha: str,
+    expected_tree_sha: str | None,
 ) -> tuple[bool, str]:
     if not install_dir.is_dir():
         return False, "toolchain directory is missing"
-    try:
-        actual_tree_sha = tree_sha256(install_dir)
-    except (OSError, RuntimeError) as error:
-        return False, f"tree validation failed: {error}"
-    if actual_tree_sha != expected_tree_sha:
-        return False, f"tree SHA-256 mismatch: got {actual_tree_sha}"
+    if expected_tree_sha is not None:
+        try:
+            actual_tree_sha = tree_sha256(install_dir)
+        except (OSError, RuntimeError) as error:
+            return False, f"tree validation failed: {error}"
+        if actual_tree_sha != expected_tree_sha:
+            return False, f"tree SHA-256 mismatch: got {actual_tree_sha}"
     binary = zig_binary(install_dir, system)
     if not binary.is_file() or sha256(binary) != expected_binary_sha:
         return False, "Zig binary failed its pinned SHA-256 check"
@@ -177,9 +178,15 @@ def main() -> int:
         parser.error("RUNNER_TEMP must name an existing directory")
     install_dir = runner_temp / f"codegraff-zig-{args.version}"
 
-    valid, result = validate_toolchain(
-        install_dir, system, args.version, expected_binary_sha, expected_tree_sha
-    )
+    # Restoring the extracted compiler tree invalidates Zig's build artifacts on
+    # Windows, so that runner keeps the faster verified-archive path.
+    reuse_cached_toolchain = system != "Windows"
+    if reuse_cached_toolchain:
+        valid, result = validate_toolchain(
+            install_dir, system, args.version, expected_binary_sha, expected_tree_sha
+        )
+    else:
+        valid, result = False, "extracted cache reuse is disabled on Windows"
     if valid:
         actual_version = result
         print(f"Verified cached Zig toolchain at {install_dir}")
@@ -194,7 +201,11 @@ def main() -> int:
             download(filename, archive, expected_sha)
         extract(archive, install_dir)
         valid, result = validate_toolchain(
-            install_dir, system, args.version, expected_binary_sha, expected_tree_sha
+            install_dir,
+            system,
+            args.version,
+            expected_binary_sha,
+            expected_tree_sha if reuse_cached_toolchain else None,
         )
         if not valid:
             shutil.rmtree(install_dir, ignore_errors=True)
