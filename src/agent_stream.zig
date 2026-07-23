@@ -63,11 +63,11 @@ pub fn spinnerTask(io: Io) void {
         }
         // Clear-then-draw each frame: animations may vary in width.
         w.interface.writeAll("\r\x1b[2K\x1b[?7l") catch return; // ?7l: autowrap off so a wide spinner truncates instead of wrapping in a narrow window (the "goes on and on" bug)
-        anim.anims[anim.g_anim_current].frame(&w.interface, i) catch return;
+        anim.currentSpinner().frame(&w.interface, i) catch return;
         w.interface.writeAll("\x1b[?7h") catch return; // restore autowrap
         w.interface.flush() catch return;
         i += 1;
-        const frame_ticks = @max(@as(usize, 1), @as(usize, anim.anims[anim.g_anim_current].frame_ms) / 20);
+        const frame_ticks = @max(@as(usize, 1), @as(usize, anim.currentSpinner().frame_ms) / 20);
         var t: usize = 0;
         while (t < frame_ticks and !Agent.g_spin_stop.load(.acquire)) : (t += 1) {
             if (main_mod.g_steer_visible.load(.acquire)) break;

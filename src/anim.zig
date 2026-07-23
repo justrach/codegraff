@@ -49,6 +49,23 @@ pub var g_anim_random = false; // the calm enso is stable by default; /animation
 pub var g_anim_off = false; // /animation off
 pub var g_anim_current: usize = 0; // what spinnerTask draws right now
 
+// Private profile-gated easter egg: it deliberately stays out of `anims`, so
+// random selection and /animation never expose it to other users.
+var g_justrach_spinner = false;
+var g_justrach_seed: u64 = 0;
+const justrach_anim: Anim = .{
+    .name = "justrach",
+    .desc = "private profile spinner",
+    .frame_ms = 140,
+    .frame = animJustrach,
+};
+const justrach_muck_colors = [_][]const u8{
+    "\x1b[38;2;166;107;55m", // muddy brown
+    "\x1b[38;2;180;160;55m", // murky yellow
+    "\x1b[38;2;116;125;62m", // swamp olive
+    "\x1b[38;2;198;127;35m", // ochre
+};
+
 // ── color themes ────────────────────────────────────────────────────────────
 // Opt-in terminal color themes (OSC 10/11/12 = fg/bg/cursor; the light theme
 // also sets the ANSI palette so graff's colored UI stays legible). Selected via
@@ -159,6 +176,39 @@ pub fn animIndex(name: []const u8) ?usize {
 
 fn animThinking(w: *Io.Writer) Io.Writer.Error!void {
     try w.print(" {s}thinking…{s}", .{ style.dim, style.reset });
+}
+
+fn justrachRandom(i: usize, salt: u64, upper: usize) usize {
+    var x = @as(u64, g_justrach_seed) +% @as(u64, @intCast(i)) *% 0x9E3779B97F4A7C15 +% salt;
+    x = (x ^ (x >> 30)) *% 0xBF58476D1CE4E5B9;
+    x = (x ^ (x >> 27)) *% 0x94D049BB133111EB;
+    return @intCast((x ^ (x >> 31)) % upper);
+}
+
+fn animJustrach(w: *Io.Writer, i: usize) Io.Writer.Error!void {
+    const poop_count = 1 + justrachRandom(i, 0x504F4F50, 3);
+    const fly_count = 1 + justrachRandom(i, 0x464C4945, 4);
+    const duplicate_at = justrachRandom(i, 0x5459504F, "thinking".len);
+
+    try w.writeAll(style.dim);
+    var n: usize = 0;
+    while (n < fly_count) : (n += 1) try w.writeAll("🪰");
+    try w.writeAll(style.reset);
+    try w.writeByte(' ');
+    n = 0;
+    while (n < poop_count) : (n += 1) {
+        const color = justrach_muck_colors[justrachRandom(i, 0x504F4F43 + n, justrach_muck_colors.len)];
+        // VS15 requests a text glyph so terminals can apply the ANSI tint.
+        try w.print("{s}{s}💩\u{fe0e}{s}", .{ style.bold, color, style.reset });
+    }
+    try w.writeByte(' ');
+    const typo_color = justrach_muck_colors[justrachRandom(i, 0x54455854, justrach_muck_colors.len)];
+    try w.writeAll(typo_color);
+    for ("thinking", 0..) |c, j| {
+        try w.writeByte(c);
+        if (j == duplicate_at) try w.writeByte(c);
+    }
+    try w.print("…{s}", .{style.reset});
 }
 
 fn animEnso(w: *Io.Writer, i: usize) Io.Writer.Error!void {
@@ -273,11 +323,43 @@ fn animStarfield(w: *Io.Writer, i: usize) Io.Writer.Error!void {
 /// caller should use the normal spinner regardless of host profile.
 var g_dev_spinner_opt_out: bool = false;
 
-fn devSpinnerOptOut(_: Io, _: Allocator) bool {
-    return g_dev_spinner_opt_out;
+const justrach_profile_aliases = [_][]const u8{ "justrach", "blackfloofie" };
+
+fn justrachProfileName(value: []const u8) bool {
+    for (justrach_profile_aliases) |alias| {
+        if (std.ascii.eqlIgnoreCase(value, alias)) return true;
+    }
+    return false;
+}
+
+fn justrachProfileValues(user: ?[]const u8, logname: ?[]const u8, home_value: ?[]const u8) bool {
+    if (user) |value| {
+        if (value.len > 0) return justrachProfileName(value);
+    }
+    if (logname) |value| {
+        if (value.len > 0) return justrachProfileName(value);
+    }
+    if (home_value) |home| {
+        const trimmed = std.mem.trim(u8, home, "/\\");
+        for (justrach_profile_aliases) |alias| {
+            if (trimmed.len < alias.len) continue;
+            const start = trimmed.len - alias.len;
+            if (std.ascii.eqlIgnoreCase(trimmed[start..], alias) and
+                (start == 0 or trimmed[start - 1] == '/' or trimmed[start - 1] == '\\')) return true;
+        }
+    }
+    return false;
+}
+
+fn justrachProfile(environ: anytype) bool {
+    const user = environ.get("USER") orelse environ.get("USERNAME");
+    const home = environ.get("HOME") orelse environ.get("USERPROFILE");
+    return justrachProfileValues(user, environ.get("LOGNAME"), home);
 }
 
 pub fn loadDevSpinnerOptOut(io: Io, arena: Allocator, environ: anytype) void {
+    g_dev_spinner_opt_out = false;
+    defer g_justrach_spinner = justrachProfile(environ) and !g_dev_spinner_opt_out;
     if (environ.get("GRAFF_DEV_SPINNER")) |v| {
         if (!std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false")) {
             g_dev_spinner_opt_out = true;
@@ -291,7 +373,7 @@ pub fn loadDevSpinnerOptOut(io: Io, arena: Allocator, environ: anytype) void {
     g_dev_spinner_opt_out = switch (ds) {
         .bool => |b| b,
         .integer => |n| n != 0,
-        .string => |s| !std.mem.eql(u8, s, "0") and !std.mem.eql(u8, s, "false"),
+        .string => |s| !std.mem.eql(u8, s, "0") and !std.ascii.eqlIgnoreCase(s, "false"),
         else => false,
     };
 }
@@ -314,13 +396,23 @@ pub fn loadAnimationSetting(io: Io, arena: Allocator) void {
     }
 }
 
-/// Pick which animation the thinking spinner shows. Sets g_anim_current.
+/// Pick which animation the thinking spinner shows. Sets g_anim_current and
+/// gives the private spinner a fresh sequence for each request.
 pub fn selectSpinner(io: Io) void {
-    if (g_anim_random) {
-        var b: [1]u8 = undefined;
-        io.random(&b);
-        g_anim_current = b[0] % anims.len;
-    } else g_anim_current = g_anim_index;
+    var entropy: [8]u8 = undefined;
+    if (g_anim_random or g_justrach_spinner) io.random(&entropy);
+    if (g_anim_random) g_anim_current = entropy[0] % anims.len else g_anim_current = g_anim_index;
+    if (g_justrach_spinner) {
+        g_justrach_seed = 0;
+        for (entropy, 0..) |byte, i| {
+            const shift: u6 = @intCast(i * 8);
+            g_justrach_seed |= @as(u64, byte) << shift;
+        }
+    }
+}
+
+pub fn currentSpinner() *const Anim {
+    return if (g_justrach_spinner) &justrach_anim else &anims[g_anim_current];
 }
 
 /// Persist the /animation choice, preserving every other settings key.
@@ -353,4 +445,87 @@ pub fn saveAnimationSetting(io: Io, gpa: Allocator, value: []const u8) bool {
     fw.interface.writeAll("\n") catch return false;
     fw.interface.flush() catch return false;
     return true;
+}
+
+fn countSubstring(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var offset: usize = 0;
+    while (std.mem.indexOf(u8, haystack[offset..], needle)) |relative| {
+        count += 1;
+        offset += relative + needle.len;
+    }
+    return count;
+}
+
+test "justrach spinner profile gate only matches recipient aliases" {
+    try std.testing.expect(justrachProfileValues("justrach", null, null));
+    try std.testing.expect(justrachProfileValues("blackfloofie", null, null));
+    try std.testing.expect(justrachProfileValues(null, "BLACKFLOOFIE", null));
+    try std.testing.expect(justrachProfileValues(null, null, "/Users/JUSTRACH/"));
+    try std.testing.expect(justrachProfileValues(null, null, "C:\\Users\\blackfloofie"));
+    try std.testing.expect(!justrachProfileValues("other", "JUSTRACH", "/Users/blackfloofie"));
+    try std.testing.expect(!justrachProfileValues("rach", null, "/Users/justrachel"));
+    try std.testing.expect(!justrachProfileValues(null, null, "/Users/blackfloofie2"));
+    try std.testing.expect(!justrachProfileValues(null, null, "/work/codegraff"));
+}
+
+test "justrach spinner stays hidden from the public animation pool" {
+    const old_enabled = g_justrach_spinner;
+    defer g_justrach_spinner = old_enabled;
+    g_justrach_spinner = false;
+    try std.testing.expectEqualStrings(anims[g_anim_current].name, currentSpinner().name);
+    try std.testing.expect(animIndex("justrach") == null);
+    g_justrach_spinner = true;
+    try std.testing.expectEqualStrings("justrach", currentSpinner().name);
+}
+
+test "justrach spinner varies poop, flies, and thinking typo" {
+    const old_seed = g_justrach_seed;
+    defer g_justrach_seed = old_seed;
+    g_justrach_seed = 23;
+
+    const typos = [_][]const u8{
+        "tthinking…",
+        "thhinking…",
+        "thiinking…",
+        "thinnking…",
+        "thinkking…",
+        "thinkiing…",
+        "thinkinng…",
+        "thinkingg…",
+    };
+    var seen_poop = [_]bool{false} ** 4;
+    var seen_flies = [_]bool{false} ** 5;
+    var seen_typos = [_]bool{false} ** typos.len;
+    var seen_colors = [_]bool{false} ** justrach_muck_colors.len;
+
+    for (0..32) |i| {
+        var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+        defer aw.deinit();
+        try animJustrach(&aw.writer, i);
+        const frame = aw.writer.buffered();
+        const poop_count = countSubstring(frame, "💩");
+        const fly_count = countSubstring(frame, "🪰");
+        try std.testing.expect(poop_count >= 1 and poop_count <= 3);
+        try std.testing.expect(fly_count >= 1 and fly_count <= 4);
+        seen_poop[poop_count] = true;
+        seen_flies[fly_count] = true;
+        for (justrach_muck_colors, 0..) |color, j| {
+            if (std.mem.indexOf(u8, frame, color) != null) seen_colors[j] = true;
+        }
+
+        var found_typo = false;
+        for (typos, 0..) |typo, j| {
+            if (std.mem.indexOf(u8, frame, typo) != null) {
+                seen_typos[j] = true;
+                found_typo = true;
+            }
+        }
+        try std.testing.expect(found_typo);
+    }
+
+    for (seen_poop[1..]) |seen| try std.testing.expect(seen);
+    for (seen_flies[1..]) |seen| try std.testing.expect(seen);
+    for (seen_typos) |seen| try std.testing.expect(seen);
+    for (seen_colors) |seen| try std.testing.expect(seen);
 }
