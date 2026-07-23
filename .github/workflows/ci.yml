@@ -10,12 +10,12 @@ jobs:
   sdk:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Python SDK import smoke
         run: python3 -c "import sys; sys.path.insert(0, 'sdk/py'); import harness_sdk; assert harness_sdk.MODELS and harness_sdk.TOOLS; print('py sdk ok:', len(harness_sdk.MODELS), 'models')"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -32,7 +32,7 @@ jobs:
       # Integration tests are deterministic/offline; hosted MCP is covered separately.
       GRAFF_NO_SMOLIFY: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -102,7 +102,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
