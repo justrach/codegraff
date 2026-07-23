@@ -183,7 +183,7 @@ fn copyMutationCandidate(arena: Allocator, outcome: eval.MutationOutcome) !eval.
 }
 
 fn progressRecord(
-    config: store_mod.LoadedConfig,
+    config_id: []const u8,
     active: store_mod.LoadedActive,
     nonce: []const u8,
     trial_id: []const u8,
@@ -199,7 +199,7 @@ fn progressRecord(
         .nonce = nonce,
         .created_unix_ms = created_unix_ms,
         .harness_version = build_options.version,
-        .config_id = &config.id,
+        .config_id = config_id,
         .parent_genome_id = active.ref.genome_id,
         .parent_generation = active.ref.generation,
         .parent_transaction_id = active.ref.transaction_id,
@@ -412,7 +412,7 @@ pub fn execute(
             candidate.reason = reason;
         };
         try checkpoint.write(gpa, store, progressRecord(
-            config,
+            &config.id,
             active,
             nonce,
             trial_id,
@@ -450,7 +450,7 @@ pub fn execute(
             config.value.evaluation_suite,
             repetitions,
         );
-        try checkpoint.write(gpa, store, progressRecord(config, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, primary_baseline, candidates));
+        try checkpoint.write(gpa, store, progressRecord(&config.id, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, primary_baseline, candidates));
     }
 
     var missing_primary: std.ArrayList(usize) = .empty;
@@ -478,7 +478,7 @@ pub fn execute(
         if (result) |completed| {
             candidates[index].primary = completed.comparison;
             candidates[index].reason = candidates[index].primary.?.reason;
-            try checkpoint.write(gpa, store, progressRecord(config, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, primary_baseline, candidates));
+            try checkpoint.write(gpa, store, progressRecord(&config.id, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, primary_baseline, candidates));
         } else |err| if (primary_failure == null) {
             primary_failure = err;
         }
@@ -510,7 +510,7 @@ pub fn execute(
                     repetitions,
                     1,
                 );
-                try checkpoint.write(gpa, store, progressRecord(config, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, primary_baseline, candidates));
+                try checkpoint.write(gpa, store, progressRecord(&config.id, active, nonce, trial_id, created_unix_ms, candidate_count, repetitions, options.auto, primary_baseline, candidates));
             }
         };
     }
