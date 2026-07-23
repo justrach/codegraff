@@ -9,6 +9,10 @@ use diesel::sql_types::{BigInt, Nullable, Text};
 use diesel::{QueryableByName, RunQueryDsl, SqliteConnection, sql_query};
 use uuid::Uuid;
 
+#[path = "project_store_support.rs"]
+mod support;
+use support::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegisteredWorkspaceKind {
     Project,
@@ -542,108 +546,6 @@ impl ProjectStore {
         let mut connection = self.open()?;
         operation(&mut connection)
     }
-}
-
-#[derive(QueryableByName)]
-struct RegisteredWorkspaceRow {
-    #[diesel(sql_type = Text)]
-    path: String,
-    #[diesel(sql_type = Text)]
-    kind: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    display_name: Option<String>,
-}
-
-#[derive(QueryableByName)]
-struct RegisteredWorkspaceRegistrationRow {
-    #[diesel(sql_type = Text)]
-    kind: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    display_name: Option<String>,
-}
-
-#[derive(QueryableByName)]
-struct ConversationLayoutRow {
-    #[diesel(sql_type = Text)]
-    layout_json: String,
-}
-
-#[derive(QueryableByName)]
-struct TableColumnRow {
-    #[diesel(sql_type = Text)]
-    name: String,
-}
-
-fn canonicalize_project_path(path: &Path) -> anyhow::Result<String> {
-    Ok(path
-        .canonicalize()
-        .with_context(|| format!("Failed to canonicalize project path {}", path.display()))?
-        .to_string_lossy()
-        .into_owned())
-}
-
-fn canonicalize_workspace_removal_path(path: &Path) -> String {
-    canonicalize_project_path(path).unwrap_or_else(|_| path.to_string_lossy().into_owned())
-}
-
-fn parse_workspace_kind(value: &str) -> RegisteredWorkspaceKind {
-    match value {
-        "managed_chat" => RegisteredWorkspaceKind::ManagedChat,
-        _ => RegisteredWorkspaceKind::Project,
-    }
-}
-
-fn normalize_display_name(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn ensure_column_exists(
-    connection: &mut SqliteConnection,
-    table: &str,
-    column: &str,
-    definition: &str,
-) -> anyhow::Result<()> {
-    let rows: Vec<TableColumnRow> =
-        sql_query(format!("SELECT name FROM pragma_table_info('{table}')")).load(connection)?;
-    if rows.iter().any(|existing| existing.name == column) {
-        return Ok(());
-    }
-
-    connection.batch_execute(&format!(
-        "ALTER TABLE {table} ADD COLUMN {column} {definition};"
-    ))?;
-    Ok(())
-}
-
-fn load_saved_workspace_record(
-    connection: &mut SqliteConnection,
-    workspace_id: &str,
-) -> anyhow::Result<SavedWorkspaceRecord> {
-    load_optional_saved_workspace_record(connection, workspace_id)?
-        .with_context(|| format!("Saved workspace not found: {workspace_id}"))
-}
-
-fn load_optional_saved_workspace_record(
-    connection: &mut SqliteConnection,
-    workspace_id: &str,
-) -> anyhow::Result<Option<SavedWorkspaceRecord>> {
-    let rows: Vec<SavedWorkspaceRecord> = sql_query(
-        "
-        SELECT sw.id, sw.name, swl.layout_json, sw.updated_at
-        FROM saved_workspaces sw
-        INNER JOIN saved_workspace_layouts swl
-          ON swl.workspace_id = sw.id
-        WHERE sw.id = ?1
-        LIMIT 1
-        ",
-    )
-    .bind::<Text, _>(workspace_id)
-    .load(connection)?;
-
-    Ok(rows.into_iter().next())
 }
 
 #[cfg(test)]
