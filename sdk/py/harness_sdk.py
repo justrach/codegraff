@@ -284,7 +284,7 @@ class Harness:
         return final
 
     def review(self, text: str) -> str:
-        """Run one bounded, read-only review turn and return its report."""
+        """Run one isolated, read-only review turn and return its report."""
         final = ""
         for ev in self.chat(text, review=True):
             if ev.get("type") == "turn":
@@ -540,7 +540,7 @@ class RemoteHarness:
         return final
 
     def review(self, text: str) -> str:
-        """Run one bounded, read-only review turn and return its report."""
+        """Run one isolated, read-only review turn and return its report."""
         final = ""
         for ev in self.chat(text, review=True):
             if ev.get("type") == "turn":

@@ -166,7 +166,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/review")) {
-        try out.writeAll("usage: /review <target or instructions> — one bounded read-only review pass.\n");
+        try out.writeAll("usage: /review <target or instructions> — one isolated read-only review pass.\n");
         try out.flush();
         return true;
     }

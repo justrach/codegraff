@@ -76,7 +76,7 @@ jobs:
       - name: JSON live-control protocol test
         run: python3 scripts/test-json-controls.py zig-out/bin/graff
 
-      - name: Bounded review mode regression
+      - name: Isolated read-only review regression
         run: python3 scripts/test-review-mode.py zig-out/bin/graff
 
       - name: Streamable HTTP MCP handshake and session regression

@@ -95,11 +95,10 @@ pub const Agent = struct {
     call_kind: run_budget_mod.CallKind = .root,
     last_cache_read: u64 = 0, // KV-cache read tokens from the latest response
     sys_normal: []const u8 = prompts.main_system_prompt, // root system prompt (+ project instructions)
-    sys_override: ?[]const u8 = null, // subagent-only: per-child system prompt (swarm prompt variants)
+    sys_override: ?[]const u8 = null, // per-child custom prompt or transient isolated-review base
     agent_cwd: ?[]const u8 = null, // subagent-only (#276 P0-1): absolute path of this agent's isolated git worktree, threaded through ToolCtx per tool call instead of a process-wide chdir — parallel siblings each keep their own
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
     tool_calls_this_turn: u64 = 0,
-    model_calls_this_turn: u32 = 0, // root-only hard per-turn budgets
     seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
     md_buf: std.ArrayList(u8) = .empty, // current incomplete streamed line (markdown rendering)
     md_fence: bool = false, // inside a ``` code fence while streaming
@@ -124,7 +123,6 @@ pub const Agent = struct {
     fallback_blocked: bool = false, // startup found a cross-provider fallback that is not allowlisted yet
     ultracode_mode: bool = false,
     review_mode: bool = false,
-    review_finalizing: bool = false, // transient bounded /review state
     show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
     ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
     goal: ?Goal = null, // structured objective + status lifecycle (/goal, #223)
@@ -273,6 +271,7 @@ pub const Agent = struct {
         w.flush() catch return;
     }
     pub fn systemPrompt(self: *const Agent) []const u8 {
+        if (self.review_mode) return self.sys_override orelse self.sys_normal;
         if (self.sub) return self.sys_override orelse prompts.sub_system_prompt;
         return if (self.strict) self.sys_strict else self.sys_normal;
     }

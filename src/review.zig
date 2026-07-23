@@ -1,4 +1,4 @@
-//! Bounded review-mode policy. A review is a separate, one-shot execution
+//! Isolated review-mode policy. A review is a separate, one-shot execution
 //! layer: report findings, never silently cross into remediation or delegation.
 
 const std = @import("std");
@@ -6,10 +6,28 @@ const ToolCall = @import("tools.zig").ToolCall;
 const ExecResult = @import("tools.zig").ExecResult;
 const Approvals = @import("approvals.zig").Approvals;
 
-pub const max_model_calls: u32 = 10;
 pub const max_tool_calls: u64 = 40;
-pub const final_note =
-    "Review exploration budget reached. Do not call tools. Return the prioritized, actionable findings you can defend from the evidence already gathered, then the overall verdict. If none qualify, say \"No findings.\"";
+
+/// Give a review a fresh model-visible history while retaining the parent
+/// transcript. The caller restores the parent after the one-shot review and
+/// records only its user request and final report there.
+pub const Context = struct {
+    parent: ?std.json.Array = null,
+
+    pub fn begin(arena: std.mem.Allocator, messages: *std.json.Array, isolate: bool) Context {
+        if (!isolate) return .{};
+        const parent = messages.*;
+        messages.* = std.json.Array.init(arena);
+        return .{ .parent = parent };
+    }
+
+    pub fn restore(self: *Context, messages: *std.json.Array) bool {
+        const parent = self.parent orelse return false;
+        messages.* = parent;
+        self.parent = null;
+        return true;
+    }
+};
 
 pub fn promptFromLine(line: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, line, "/review ")) return null;
@@ -17,11 +35,11 @@ pub fn promptFromLine(line: []const u8) ?[]const u8 {
     return if (prompt.len == 0) null else prompt;
 }
 
-pub fn steeringNote(arena: std.mem.Allocator, prompt: []const u8) ![]const u8 {
+pub fn systemPrompt(arena: std.mem.Allocator, base: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena,
         \\{s}
         \\
-        \\[review mode: Perform one read-only, defect-first review pass. Inspect
+        \\[review task: Perform one read-only, defect-first review pass. Inspect
         \\the requested target directly. Start by resolving the comparison and
         \\reading the complete git diff (including staged, unstaged, and untracked
         \\changes when applicable). Run each git command as a separate shell call;
@@ -32,13 +50,12 @@ pub fn steeringNote(arena: std.mem.Allocator, prompt: []const u8) ![]const u8 {
         \\discrete, actionable regressions the author would likely fix, findings
         \\first and ordered P0-P3 with the smallest useful file:line range. If none
         \\qualify, say "No findings." Then give a brief overall verdict and stop.]
-    , .{prompt});
+    , .{base});
 }
 
 /// Hard capability boundary for a review root. Only local reads/searches,
 /// read-only shell inspection, and explicit finalization are admitted.
-pub fn rejectTool(arena: std.mem.Allocator, call: ToolCall, finalizing: bool) !?ExecResult {
-    if (finalizing and !std.mem.eql(u8, call.name, "attempt_completion")) return denied(arena, call.name);
+pub fn rejectTool(arena: std.mem.Allocator, call: ToolCall) !?ExecResult {
     if (std.mem.eql(u8, call.name, "read_file") or
         std.mem.eql(u8, call.name, "codedb") or
         std.mem.eql(u8, call.name, "attempt_completion")) return null;
@@ -80,9 +97,22 @@ test "review tool boundary admits reads and rejects edits, delegation, and backg
         .name = "bash",
         .input = std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"command\":\"git status\",\"run_in_background\":true}", .{}) catch unreachable,
     };
-    try std.testing.expect((try rejectTool(arena, read, false)) == null);
-    try std.testing.expect((try rejectTool(arena, edit, false)).?.is_error);
-    try std.testing.expect((try rejectTool(arena, workflow, false)).?.is_error);
-    try std.testing.expect((try rejectTool(arena, background, false)).?.is_error);
-    try std.testing.expect((try rejectTool(arena, read, true)).?.is_error);
+    try std.testing.expect((try rejectTool(arena, read)) == null);
+    try std.testing.expect((try rejectTool(arena, edit)).?.is_error);
+    try std.testing.expect((try rejectTool(arena, workflow)).?.is_error);
+    try std.testing.expect((try rejectTool(arena, background)).?.is_error);
+}
+
+test "review context hides and restores parent history" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var history = std.json.Array.init(arena);
+    try history.append(.{ .string = "parent" });
+    var context = Context.begin(arena, &history, true);
+    try std.testing.expectEqual(@as(usize, 0), history.items.len);
+    try history.append(.{ .string = "review" });
+    try std.testing.expect(context.restore(&history));
+    try std.testing.expectEqualStrings("parent", history.items[0].string);
+    try std.testing.expect(!context.restore(&history));
 }

@@ -26,7 +26,6 @@ const apiErrorMessage = tools_mod.apiErrorMessage;
 const mentionsReasoningEffort = tools_mod.mentionsReasoningEffort;
 const telemetry = @import("telemetry.zig");
 const run_budget_mod = @import("run_budget.zig");
-const review = @import("review.zig");
 
 const policy = @import("agent_request_policy.zig");
 const errorCode = policy.errorCode;
@@ -76,21 +75,6 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     // Startup paints the prompt while CA loading continues. The root turn and
     // title task rendezvous here, then issue their requests concurrently.
     http.waitForClientReady(self.io);
-    var active_tools = tools;
-    if (self.review_mode) {
-        if (self.model_calls_this_turn >= review.max_model_calls) {
-            self.last_api_error = "review model-call budget exhausted after the reserved synthesis pass";
-            if (self.tracer) |tr| tr.note("budget", self.last_api_error.?);
-            return error.ReviewModelBudgetExhausted;
-        }
-        self.model_calls_this_turn += 1;
-        const global_last = if (self.run_budget) |budget| budget.remaining() <= 1 else false;
-        self.review_finalizing = self.model_calls_this_turn == review.max_model_calls or global_last;
-        if (self.review_finalizing) {
-            try self.messages.append(try messages_mod.textMessage(self.arena, "user", review.final_note));
-            active_tools = null;
-        }
-    }
     var budget_permit: ?run_budget_mod.Permit = null;
     if (self.run_budget) |budget| {
         const kind: run_budget_mod.CallKind = if (self.compaction_request) .compaction else self.call_kind;
@@ -108,7 +92,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     self.last_request_context_overflow = false;
     self.last_request_write_failed = false;
     self.last_usage_includes_output = false;
-    var force = (self.strict or self.eval_cmd != null) and active_tools != null;
+    var force = !self.review_mode and (self.strict or self.eval_cmd != null) and tools != null;
     var stream_usage = true; // openai stream_options; dropped if rejected
     var auth_refreshed = false; // #148: at most one forced token refresh + retry
     // #124: reclaim last request's transient parse garbage FIRST, so everything
@@ -162,7 +146,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
         const live = !self.sub and self.out != null and !self.stream_quiet;
         self.streamed_text = false;
         self.streamed_args = .none;
-        const body = try self.buildBody(active_tools, force, live, stream_usage);
+        const body = try self.buildBody(tools, force, live, stream_usage);
         defer self.gpa.free(body);
         const t0: Io.Timestamp = .now(self.io, .awake);
         if (main_mod.json_mode and !self.sub) self.emit(.{ .type = "model_call_started", .provider = self.provider.id, .model = self.provider.model });

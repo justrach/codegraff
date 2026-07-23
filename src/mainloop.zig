@@ -286,10 +286,12 @@ pub fn run(ctx: *Ctx) !void {
             break :blk text;
         } else line;
         ctx.root.review_mode = review_prompt != null;
-        ctx.root.review_finalizing = false;
+        const parent_system_override = ctx.root.sys_override;
+        if (ctx.root.review_mode)
+            ctx.root.sys_override = try review.systemPrompt(ctx.arena, if (ctx.root.strict) ctx.root.sys_strict else ctx.root.sys_normal);
         defer {
             ctx.root.review_mode = false;
-            ctx.root.review_finalizing = false;
+            ctx.root.sys_override = parent_system_override;
         }
 
         if (ctx.root.fallback_blocked) {
@@ -326,10 +328,7 @@ pub fn run(ctx: *Ctx) !void {
             \\[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps.]
         , .{goal_msg}) else goal_msg;
 
-        // Plan mode: steer the model to explore read-only and present a plan
-        // (the gate enforces the read-only part regardless).
-        const review_msg = if (review_prompt != null) try review.steeringNote(ctx.arena, loop_msg) else loop_msg;
-        const msg: []const u8 = if (!main_mod.plan_mode) review_msg else try std.fmt.allocPrint(ctx.arena,
+        const msg: []const u8 = if (!main_mod.plan_mode or ctx.root.review_mode) loop_msg else try std.fmt.allocPrint(ctx.arena,
             \\{s}
             \\
             \\[harness note: plan mode is ON — read-only. Explore with read-only
@@ -337,7 +336,7 @@ pub fn run(ctx: *Ctx) !void {
             \\the changes themselves, sequence, risks) and ask the user to
             \\approve it. Do not write files or run mutating commands — the
             \\gate will deny them. The user toggles execution back on with /plan.]
-        , .{review_msg});
+        , .{loop_msg});
 
         // Promote a GUI `@[image]` attachment to a native vision block when the
         // model can see (otherwise it only gets the path and resorts to OCR).
@@ -384,6 +383,9 @@ pub fn run(ctx: *Ctx) !void {
             ctx.root.tracer.?.note("ultracode", msg[0..@min(msg.len, 120)]);
             if (telemetry.g_telem) |t| t.ultracode();
         }
+        var review_context = review.Context.begin(ctx.arena, &ctx.root.messages, ctx.root.review_mode);
+        if (ctx.root.review_mode) ctx.root.rebaseContextMeter();
+        defer if (review_context.restore(&ctx.root.messages)) ctx.root.rebaseContextMeter();
         if (ctx.root.pending_image) |img| {
             try ctx.root.messages.append(try vision.imageMessage(ctx.arena, ctx.root.provider.kind, ultracode_msg.text, img));
             ctx.root.pending_image = null;
@@ -399,12 +401,8 @@ pub fn run(ctx: *Ctx) !void {
         } else 0;
         ctx.root.tools_used.clear(ctx.io); // per-turn tool log for the turn's node
         ctx.root.tool_calls_this_turn = 0;
-        ctx.root.model_calls_this_turn = 0;
         ctx.root.seen_tool_keys.clearRetainingCapacity();
         if (main_mod.json_mode) ctx.root.emit(.{ .type = "started", .provider = ctx.root.provider.id, .model = ctx.root.provider.model });
-        // Breathing room between the submitted input and the turn's first
-        // output — without it the reply starts on the very next line and
-        // reads as a continuation of what the user typed.
         if (ctx.interactive and !main_mod.json_mode) {
             try ctx.out.writeAll("\n");
             try ctx.out.flush();
@@ -415,11 +413,14 @@ pub fn run(ctx: *Ctx) !void {
         // reported inside request(); anything else is surfaced here. Either
         // way we drop back to the prompt (or emit a JSON error/turn event).
         const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys, ctx.arena, ctx.out);
-        // No successful-path history mutation occurs between the trajectory,
-        // terminal event, and compaction gate. Reuse one full-history scan for
-        // all three instead of serializing an increasingly large history 3x.
+        // Reuse one full-history scan for trace, terminal event, and compaction.
         const post_turn_context_tokens = ctx.root.effectiveContextTokens();
         mainloop_trace.record(ctx.root, ctx.io, ctx.arena, base_msg, turn_id, turn_started, turn_result, post_turn_context_tokens, turn_before, &prev_turn_id, &prev_prompt_fp);
+        const isolated_review = review_context.restore(&ctx.root.messages);
+        if (isolated_review) {
+            ctx.root.rebaseContextMeter();
+            try ctx.root.messages.append(try messages.textMessage(ctx.arena, "user", base_msg));
+        }
         const final_text = turn_result catch |err| switch (err) {
             error.Interrupted => {
                 // Esc: keep what streamed so far in history (as an assistant
@@ -515,13 +516,15 @@ pub fn run(ctx: *Ctx) !void {
                 continue;
             },
         };
+        if (isolated_review)
+            try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", final_text));
+        const session_context_tokens = if (isolated_review) ctx.root.effectiveContextTokens() else post_turn_context_tokens;
         if (main_mod.json_mode) {
             const emitted_text = if (final_text.len == 0 and ctx.root.partial_text.items.len > 0)
                 std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n")
             else
                 final_text;
             ctx.root.emit(.{ .type = "finalizing" });
-            const context_tokens = post_turn_context_tokens;
             // #124: allocator-level leak telemetry (GRAFF_MEM_DEBUG=1) — arena
             // capacity per turn separates a session-arena leak from gpa-side
             // growth, which OS-level RSS sampling can't tell apart. Emit this
@@ -532,7 +535,7 @@ pub fn run(ctx: *Ctx) !void {
                 .session_arena_kb = if (main_mod.g_session_arena) |a| a.queryCapacity() / 1024 else 0,
                 .scratch_arena_kb = if (ctx.root.scratch_arena) |a| a.queryCapacity() / 1024 else 0,
             });
-            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = !ctx.root.eval_repair_pending, .metadata_complete = context_tokens > 0 });
+            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = session_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = !ctx.root.eval_repair_pending, .metadata_complete = session_context_tokens > 0 });
         }
 
         // Apply only if already complete; poll never waits for title generation.
@@ -548,11 +551,10 @@ pub fn run(ctx: *Ctx) !void {
             }
         }
 
-        const context_tokens = post_turn_context_tokens;
-        if (context_tokens >= ctx.root.provider.compactAt()) {
+        if (session_context_tokens >= ctx.root.provider.compactAt()) {
             // Trim on failure only when we're genuinely against the window — at
             // 80–95% a transient compaction failure can recover next turn.
-            const near_cap = ctx.root.provider.nearContextLimit(context_tokens);
+            const near_cap = ctx.root.provider.nearContextLimit(session_context_tokens);
             ctx.root.compactOrRecover(near_cap);
         }
 
