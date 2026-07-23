@@ -11,36 +11,38 @@ const learning_privacy = @import("learning_privacy.zig");
 const main_mod = @import("main.zig");
 const scoring = @import("scoring.zig");
 
-test "telemetry dupDetail never yields invalid UTF-8" {
+test "telemetry error events never retain or serialize raw detail" {
     var t: Telemetry = .{
-        .io = undefined, // dupDetail only touches gpa
+        .io = std.testing.io,
         .gpa = std.testing.allocator,
         .endpoint = "x",
         .install_id = @splat('0'),
         .client_name = "harness",
         .sdk_install_id = "",
-        .start = undefined,
+        .start = Io.Timestamp.now(std.testing.io, .awake),
         .start_unix_ms = 0,
     };
-    // The 200-byte cap lands mid-codepoint: 199 ASCII bytes + 2-byte 'é'.
-    var buf: [201]u8 = undefined;
-    @memset(buf[0..199], 'a');
-    buf[199] = 0xC3;
-    buf[200] = 0xA9;
-    const cut = t.dupDetail(&buf);
-    defer std.testing.allocator.free(cut);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(cut));
-    try std.testing.expectEqual(@as(usize, 199), cut.len); // split lead byte dropped
-    // Raw invalid bytes mid-string (unparseable provider response) degrade
-    // to ASCII instead of corrupting the OTLP payload.
-    const garbage = t.dupDetail("ok\xff\xfe more text here");
-    defer std.testing.allocator.free(garbage);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(garbage));
-    try std.testing.expect(std.mem.startsWith(u8, garbage, "ok??"));
+    defer t.deinit();
+    t.errorEvent("api", "provider echoed sk-proj-private-canary and /private/source.zig");
+    try std.testing.expectEqual(@as(usize, 1), t.events.items.len);
+    try std.testing.expectEqualStrings("", t.events.items[0].detail);
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try t.writeOtlp(&aw.writer, t.events.items, false);
+    const out = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"api\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "sk-proj-private-canary") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "/private/source.zig") == null);
 }
 test "telemetry writeOtlp emits a fleet record with kind + split prov attrs" {
+    const io = std.testing.io;
+    const previous_fleet = main_mod.g_fleet;
+    main_mod.g_fleet = true;
+    learning_privacy.setMode(io, .aggregate);
+    defer main_mod.g_fleet = previous_fleet;
+    defer learning_privacy.setMode(io, .local);
     var t: Telemetry = .{
-        .io = undefined, // writeOtlp(.., include_summary=false) never touches io
+        .io = io,
         .gpa = std.testing.allocator,
         .endpoint = "x",
         .install_id = @splat('0'),
@@ -70,8 +72,14 @@ test "telemetry writeOtlp emits a fleet record with kind + split prov attrs" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"a9134381\"") != null); // eval_set_hash (split from prov)
 }
 test "telemetry writeOtlp stamps run records with run_id (issue #168 Gap 6)" {
+    const io = std.testing.io;
+    const previous_fleet = main_mod.g_fleet;
+    main_mod.g_fleet = true;
+    learning_privacy.setMode(io, .aggregate);
+    defer main_mod.g_fleet = previous_fleet;
+    defer learning_privacy.setMode(io, .local);
     var t: Telemetry = .{
-        .io = undefined, // writeOtlp(.., include_summary=false) never touches io
+        .io = io,
         .gpa = std.testing.allocator,
         .endpoint = "x",
         .install_id = @splat('0'),
@@ -98,6 +106,121 @@ test "telemetry writeOtlp stamps run records with run_id (issue #168 Gap 6)" {
     try std.testing.expect(std.mem.indexOf(u8, out, "run_id") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"cafef00dcafef00d\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"read,edit\"") != null); // tools
+}
+
+test "send-time privacy and fleet state revoke buffered learning egress" {
+    const io = std.testing.io;
+    const previous_fleet = main_mod.g_fleet;
+    main_mod.g_fleet = true;
+    defer main_mod.g_fleet = previous_fleet;
+    defer learning_privacy.setMode(io, .local);
+    var t: Telemetry = .{
+        .io = io,
+        .gpa = std.testing.allocator,
+        .endpoint = "x",
+        .install_id = @splat('0'),
+        .client_name = "harness",
+        .sdk_install_id = "",
+        .start = Io.Timestamp.now(io, .awake),
+        .start_unix_ms = 0,
+    };
+    defer t.deinit();
+    const prompt = "private approved template bytes";
+    const prompt_fp = scoring.promptFingerprint(prompt);
+    learning_privacy.setMode(io, .templates);
+    try std.testing.expect(learning_privacy.approveTemplate(io, prompt));
+    t.fleetEvent("propose", "reviewer", &prompt_fp, "", "frontier", "", 0, prompt);
+    try std.testing.expectEqualStrings(prompt, t.events.items[0].text);
+
+    learning_privacy.setMode(io, .local);
+    var local_payload: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer local_payload.deinit();
+    try t.writeOtlp(&local_payload.writer, t.events.items, false);
+    try std.testing.expect(std.mem.indexOf(u8, local_payload.written(), prompt) == null);
+    try std.testing.expect(std.mem.indexOf(u8, local_payload.written(), "\"stringValue\":\"fleet\"") == null);
+
+    learning_privacy.setMode(io, .templates); // mode change cleared exact approval
+    var revoked_payload: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer revoked_payload.deinit();
+    try t.writeOtlp(&revoked_payload.writer, t.events.items, false);
+    try std.testing.expect(std.mem.indexOf(u8, revoked_payload.written(), "\"stringValue\":\"fleet\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, revoked_payload.written(), prompt) == null);
+
+    try std.testing.expect(learning_privacy.approveTemplate(io, prompt));
+    main_mod.g_fleet = false;
+    var fleet_off_payload: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer fleet_off_payload.deinit();
+    try t.writeOtlp(&fleet_off_payload.writer, t.events.items, false);
+    try std.testing.expect(std.mem.indexOf(u8, fleet_off_payload.written(), prompt) == null);
+    try std.testing.expect(std.mem.indexOf(u8, fleet_off_payload.written(), "\"stringValue\":\"fleet\"") == null);
+}
+
+test "fleet egress projects free-form metadata and rejects unknown records" {
+    const io = std.testing.io;
+    const previous_fleet = main_mod.g_fleet;
+    main_mod.g_fleet = true;
+    learning_privacy.setMode(io, .aggregate);
+    defer main_mod.g_fleet = previous_fleet;
+    defer learning_privacy.setMode(io, .local);
+    var t: Telemetry = .{
+        .io = io,
+        .gpa = std.testing.allocator,
+        .endpoint = "x",
+        .install_id = @splat('0'),
+        .client_name = "harness",
+        .sdk_install_id = "",
+        .start = Io.Timestamp.now(io, .awake),
+        .start_unix_ms = 0,
+    };
+    defer t.deinit();
+    t.fleetEvent("submit", "client-secret-project", "private-prompt-label", "/private/parent", "private-provider", "/private/evals/customer-a.json", 0, "");
+    t.fleetEvent("private-event-kind", "reviewer", "0123456789abcdef", "", "frontier", "", 0, "");
+    var payload: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer payload.deinit();
+    try t.writeOtlp(&payload.writer, t.events.items, false);
+    const out = payload.written();
+    for ([_][]const u8{
+        "client-secret-project",
+        "private-prompt-label",
+        "/private/parent",
+        "private-provider",
+        "/private/evals/customer-a.json",
+        "private-event-kind",
+    }) |canary| try std.testing.expect(std.mem.indexOf(u8, out, canary) == null);
+    const prompt_fp = scoring.promptFingerprint("private-prompt-label");
+    const eval_fp = scoring.promptFingerprint("/private/evals/customer-a.json");
+    try std.testing.expect(std.mem.indexOf(u8, out, &prompt_fp) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, &eval_fp) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "custom-") != null);
+}
+
+test "explicit learning resource omits stable and platform identifiers" {
+    const io = std.testing.io;
+    const previous_fleet = main_mod.g_fleet;
+    main_mod.g_fleet = true;
+    learning_privacy.setMode(io, .aggregate);
+    defer main_mod.g_fleet = previous_fleet;
+    defer learning_privacy.setMode(io, .local);
+    var t: Telemetry = .{
+        .io = io,
+        .gpa = std.testing.allocator,
+        .endpoint = "x",
+        .install_id = @splat('z'),
+        .client_name = "harness-learn",
+        .sdk_install_id = "private-stable-sdk-id",
+        .start = Io.Timestamp.now(io, .awake),
+        .start_unix_ms = 0,
+    };
+    defer t.deinit();
+    t.scoreEvent("abcd", "", 1.0, "run", "sig", "");
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try t.writeOtlp(&aw.writer, t.events.items, false);
+    const out = aw.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"client.name\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"harness-learn\"") != null);
+    for ([_][]const u8{ "install.id", "sdk.install.id", "service.version", "os.type", "host.arch", "private-stable-sdk-id" }) |excluded|
+        try std.testing.expect(std.mem.indexOf(u8, out, excluded) == null);
 }
 
 test "learning privacy gates fleet metadata, scores, and exact template text" {

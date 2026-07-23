@@ -20,18 +20,24 @@ SETTINGS = ROOT / "examples" / "learn_graff_evaluator.json"
 PREPARE = ROOT / "examples" / "prepare_graff_tournament.py"
 
 FAKE_GRAFF = r'''#!/usr/bin/env python3
-import json, pathlib, sys
+import json, os, pathlib, sys
 args = sys.argv[1:]
-system = args[args.index("--system-prompt") + 1]
+if os.environ.get("HARNESS_CLIENT") == "learn-evaluator":
+    assert "--system-prompt" not in args
+system = args[args.index("--system-prompt") + 1] if "--system-prompt" in args else None
 turns = 0
 for raw in sys.stdin:
     value = json.loads(raw)
     kind = value.get("type")
-    if kind == "set_model":
+    if kind == "set_system_prompt":
+        system = value["text"]
+        event = {"type":"system_prompt","ok":True,"append":False,"chars":len(system.encode("utf-8"))}
+    elif kind == "set_model":
         event = {"type":"model","ok":True,"provider":value["provider"],"model":value["model"]}
     elif kind == "set_effort":
         event = {"type":"effort","ok":True,"level":value["level"],"applies":True}
     elif kind == "user":
+        assert system is not None
         if "concise clause" in system:
             turns += 1
             text = "invalid first attempt" if turns == 1 else json.dumps({
@@ -196,18 +202,36 @@ def run() -> None:
         assert len({case["id"] for case in holdout["cases"]}) == 40
         primary_ids = [case["id"] for case in primary["cases"]]
         holdout_ids = [case["id"] for case in holdout["cases"]]
+        unit_count = lambda cases: len({
+            case.get("statistical_unit_id", case["id"]) for case in cases
+        })
+        assert preparation["primary_units"] == unit_count(primary["cases"]) == 44
+        assert preparation["holdout_units"] == unit_count(holdout["cases"]) == 40
+        for prefix, unit in (
+            ("edit-noop-random-", "edit-noop"),
+            ("edit-filter-random-", "edit-filter"),
+            ("edit-dedupe-random-", "edit-dedupe"),
+            ("edit-copy-random-", "edit-copy"),
+        ):
+            clustered = [case for case in primary["cases"] if case["id"].startswith(prefix)]
+            assert len(clustered) == 5
+            assert {case["statistical_unit_id"] for case in clustered} == {unit}
         assert [sum(item.startswith(prefix) for item in primary_ids) for prefix in (
             "semantic-", "edit-", "dependency-", "economy-",
         )] == [10, 30, 10, 10]
         assert [sum(item.startswith(prefix) for item in holdout_ids) for prefix in (
-            "fresh-sem-", "fresh-edit-", "fresh-dep-", "fresh-econ-",
-        )] == [7, 19, 7, 7]
+            "fresh-sem-", "fresh-edit-", "fresh-dep-", "fresh-econ-", "fresh-shift-",
+        )] == [7, 11, 7, 7, 8]
         configured_target = json.loads(ARMS.read_text(encoding="utf-8"))["targets"]["root_workflow"]
         prepared_parent = (prepared / "parent.md").read_text(encoding="utf-8")
         assert prepared_parent.count(configured_target) == 1
         assert config["gate"]["default_candidates"] == 4
         assert config["gate"]["promotion_mode"] == "economy"
         assert config["gate"]["require_all_candidates"] is True
+        assert config["gate"]["minimum_pairs"] <= preparation["primary_units"]
+        assert config["gate"]["minimum_pairs"] <= preparation["holdout_units"]
+        assert config["cohort"]["adapter_version"] == "graff-eval-v7"
+        assert config["cohort"]["verifier_version"] == "clustered-exact-v6"
         assert config["auto"] == {"enabled": False}
 
         suite = root / "suite.json"

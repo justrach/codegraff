@@ -199,7 +199,8 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             try w.writeAll(
                 "  ⚠ learn_candidate will run the pinned adapters, then send signed aggregate grades once\n" ++
                     "  Adapter egress: a configured model adapter may send prompt/genome text to its model provider.\n" ++
-                    "  Sends: pass rates, prompt/parent fingerprints, run/suite/cohort and evidence IDs.\n" ++
+                    "  Sends: pass counts/deltas, significance, critical regressions, tool/cost/latency totals, gate settings, eligibility, fingerprints, and evidence IDs.\n" ++
+                    "  No stable install ID, OS, architecture, or service version is sent.\n" ++
                     "  Excludes: prompt/genome text, tasks, code, paths, evaluator input/output, and traces.\n" ++
                     "  [y] run + send once · [n] cancel › ",
             );

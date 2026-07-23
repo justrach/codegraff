@@ -17,6 +17,7 @@ fn validateRequestedPairs(actual: []const eval.PairRequest, expected: []const ev
     if (actual.len != expected.len) return error.PairMismatch;
     for (actual, expected) |got, want| {
         if (!std.mem.eql(u8, got.case_id, want.case_id) or
+            !std.mem.eql(u8, eval.statisticalUnitId(got), eval.statisticalUnitId(want)) or
             !std.mem.eql(u8, got.seed, want.seed) or got.critical != want.critical) return error.PairMismatch;
     }
 }

@@ -9,7 +9,12 @@ import json
 from pathlib import Path
 import secrets
 
-from learn_graff_suites import fresh_holdout, primary_cases, validate_case_catalog
+from learn_graff_suites import (
+    fresh_holdout,
+    primary_cases,
+    statistical_unit_count,
+    validate_case_catalog,
+)
 
 
 def digest(path: Path) -> str:
@@ -77,7 +82,11 @@ def main() -> None:
     public_cases, hidden_cases = primary_cases(), fresh_holdout()
     validate_case_catalog(public_cases, 60)
     validate_case_catalog(hidden_cases, 40)
-    write_json(primary, {"schema": "codegraff.learn.suite.v1", "suite_id": "graff-primary-v6", "cases": public_cases})
+    primary_units = statistical_unit_count(public_cases)
+    holdout_units = statistical_unit_count(hidden_cases)
+    if primary_units < 40 or holdout_units < 40:
+        raise ValueError("primary and holdout each require 40 independent statistical units")
+    write_json(primary, {"schema": "codegraff.learn.suite.v1", "suite_id": "graff-primary-v7", "cases": public_cases})
     write_json(holdout, {"schema": "codegraff.learn.suite.v1", "suite_id": "fresh-" + secrets.token_hex(8), "cases": hidden_cases})
 
     config = {
@@ -109,7 +118,7 @@ def main() -> None:
             "default_repetitions": 1,
         },
         "auto": {"enabled": False},
-        "cohort": {"provider": "codex", "model": "gpt-5.4-mini", "task_family": "coding-flow", "adapter_version": "graff-eval-v6", "verifier_version": "exact-v5"},
+        "cohort": {"provider": "codex", "model": "gpt-5.4-mini", "task_family": "coding-flow", "adapter_version": "graff-eval-v7", "verifier_version": "clustered-exact-v6"},
     }
     config_path = output / "config.json"
     write_json(config_path, config)
@@ -117,6 +126,7 @@ def main() -> None:
         "workspace": str(workspace), "parent": str(parent), "config": str(config_path),
         "primary_sha256": digest(primary), "holdout_sha256": digest(holdout),
         "primary_cases": len(public_cases), "holdout_cases": len(hidden_cases),
+        "primary_units": primary_units, "holdout_units": holdout_units,
     }, indent=2))
 
 

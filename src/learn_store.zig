@@ -76,7 +76,12 @@ fn openFileNoFollow(io: Io, dir: Io.Dir, path: []const u8, options: Io.Dir.OpenF
 const validate_mod = @import("learn_store_validate.zig");
 pub const validId = validate_mod.validId;
 pub const validateConfig = validate_mod.validateConfig;
-const validateSuite = validate_mod.validateSuite;
+pub const validateSuite = validate_mod.validateSuite;
+pub const statisticalUnitCount = validate_mod.statisticalUnitCount;
+pub const validateHoldoutIndependence = validate_mod.validateHoldoutIndependence;
+pub const validateSuitePower = validate_mod.validateSuitePower;
+pub const minimumSignificantUnits = validate_mod.minimumSignificantUnits;
+pub const validateSuiteTrialPower = validate_mod.validateSuiteTrialPower;
 pub const validateTransaction = validate_mod.validateTransaction;
 const hash_mod = @import("learn_store_hash.zig");
 pub const rawSha256 = hash_mod.rawSha256;

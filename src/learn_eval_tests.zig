@@ -14,6 +14,8 @@ const EvaluationResponse = learn_eval.EvaluationResponse;
 const ComparisonRecord = learn_eval.ComparisonRecord;
 const pairedTail = learn_eval.pairedTail;
 const computeComparison = learn_eval.computeComparison;
+const buildPairs = learn_eval.buildPairs;
+const freePairs = learn_eval.freePairs;
 const createScratch = learn_eval.createScratch;
 const writePrivate = learn_eval.writePrivate;
 const invoke = learn_eval.invoke;
@@ -82,6 +84,102 @@ test "paired gate rejects critical regressions and requires corrected significan
     try std.testing.expectEqualStrings("critical_failure", jointly_failed_critical.reason);
 }
 
+test "statistical units group repetitions and cloned case ids once" {
+    const config: store_mod.Config = .{
+        .schema = store_mod.config_schema,
+        .agent_name = "test",
+        .mutation_instruction = "change",
+        .mutator = .{ .program = "/bin/a", .sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        .evaluator = .{ .program = "/bin/b", .sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+        .evaluation_suite = .{ .path = "/suite", .sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+        .gate = .{ .minimum_pairs = 1 },
+        .cohort = .{ .provider = "p", .model = "m", .task_family = "t", .adapter_version = "a", .verifier_version = "v" },
+    };
+    const requested = [_]PairRequest{
+        .{ .case_id = "clone-a", .statistical_unit_id = "edit-filter", .seed = "seed-a1", .critical = false },
+        .{ .case_id = "clone-a", .statistical_unit_id = "edit-filter", .seed = "seed-a2", .critical = false },
+        .{ .case_id = "clone-b", .statistical_unit_id = "edit-filter", .seed = "seed-b1", .critical = false },
+        .{ .case_id = "clone-b", .statistical_unit_id = "edit-filter", .seed = "seed-b2", .critical = false },
+        .{ .case_id = "independent", .seed = "seed-i1", .critical = false },
+    };
+    const results = [_]PairResult{
+        .{ .case_id = "clone-a", .seed = "seed-a1", .parent_pass = true, .child_pass = false, .parent_score_ppm = 1_000_000, .child_score_ppm = 0, .tool_calls_measured = true, .parent_tool_calls = 3, .child_tool_calls = 2 },
+        .{ .case_id = "clone-a", .seed = "seed-a2", .parent_pass = false, .child_pass = true, .parent_score_ppm = 0, .child_score_ppm = 1_000_000, .tool_calls_measured = true, .parent_tool_calls = 3, .child_tool_calls = 2 },
+        .{ .case_id = "clone-b", .seed = "seed-b1", .parent_pass = true, .child_pass = true, .parent_score_ppm = 1_000_000, .child_score_ppm = 1_000_000, .tool_calls_measured = true, .parent_tool_calls = 3, .child_tool_calls = 2 },
+        .{ .case_id = "clone-b", .seed = "seed-b2", .parent_pass = false, .child_pass = true, .parent_score_ppm = 0, .child_score_ppm = 1_000_000, .tool_calls_measured = true, .parent_tool_calls = 3, .child_tool_calls = 2 },
+        .{ .case_id = "independent", .seed = "seed-i1", .parent_pass = true, .child_pass = true, .parent_score_ppm = 1_000_000, .child_score_ppm = 1_000_000, .tool_calls_measured = true, .parent_tool_calls = 1, .child_tool_calls = 2 },
+    };
+    const response: EvaluationResponse = .{ .schema = evaluation_response_schema, .trial_id = "trial", .candidate_index = 0, .cohort_id = "cohort", .suite_sha256 = config.evaluation_suite.sha256, .parent_id = "parent", .child_id = "child", .pairs = &results };
+    const comparison = try computeComparison(config, config.evaluation_suite.sha256, "request", "response", &requested, response, 1);
+    try std.testing.expectEqual(@as(usize, 5), comparison.pairs);
+    try std.testing.expectEqual(@as(usize, 2), comparison.statistical_units);
+    try std.testing.expectEqual(@as(usize, 1), comparison.wins);
+    try std.testing.expectEqual(@as(usize, 0), comparison.losses);
+    try std.testing.expectEqual(@as(usize, 1), comparison.ties);
+    try std.testing.expectEqual(@as(usize, 1), comparison.tool_wins);
+    try std.testing.expectEqual(@as(usize, 1), comparison.tool_losses);
+    try std.testing.expectEqual(@as(usize, 0), comparison.tool_ties);
+}
+
+test "clone rows cannot satisfy minimum statistical-unit gate" {
+    var config: store_mod.Config = .{
+        .schema = store_mod.config_schema,
+        .agent_name = "test",
+        .mutation_instruction = "change",
+        .mutator = .{ .program = "/bin/a", .sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        .evaluator = .{ .program = "/bin/b", .sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+        .evaluation_suite = .{ .path = "/suite", .sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+        .gate = .{ .minimum_pairs = 2 },
+        .cohort = .{ .provider = "p", .model = "m", .task_family = "t", .adapter_version = "a", .verifier_version = "v" },
+    };
+    const ids = [_][]const u8{ "clone-0", "clone-1", "clone-2", "clone-3", "clone-4", "clone-5", "clone-6", "clone-7", "clone-8", "clone-9" };
+    var requested: [10]PairRequest = undefined;
+    var results: [10]PairResult = undefined;
+    for (ids, 0..) |id, i| {
+        requested[i] = .{ .case_id = id, .statistical_unit_id = "one-scenario", .seed = "seed", .critical = false };
+        results[i] = .{ .case_id = id, .seed = "seed", .parent_pass = false, .child_pass = true, .parent_score_ppm = 0, .child_score_ppm = 1_000_000 };
+    }
+    const response: EvaluationResponse = .{ .schema = evaluation_response_schema, .trial_id = "trial", .candidate_index = 0, .cohort_id = "cohort", .suite_sha256 = config.evaluation_suite.sha256, .parent_id = "parent", .child_id = "child", .pairs = &results };
+    const comparison = try computeComparison(config, config.evaluation_suite.sha256, "request", "response", &requested, response, 1);
+    try std.testing.expectEqual(@as(usize, 1), comparison.statistical_units);
+    try std.testing.expect(!comparison.eligible);
+    try std.testing.expectEqualStrings("minimum_pairs", comparison.reason);
+
+    config.gate.minimum_pairs = 1;
+    config.gate.economy_gate_enabled = true;
+    config.gate.promotion_mode = .economy;
+    config.gate.minimum_economy_pairs = 2;
+    for (&results) |*result| {
+        result.parent_pass = true;
+        result.child_pass = true;
+        result.parent_score_ppm = 1_000_000;
+        result.tool_calls_measured = true;
+        result.parent_tool_calls = 2;
+        result.child_tool_calls = 1;
+    }
+    const economy = try computeComparison(config, config.evaluation_suite.sha256, "request", "response", &requested, response, 1);
+    try std.testing.expectEqualStrings("minimum_economy_pairs", economy.reason);
+}
+
+test "buildPairs preserves statistical units while repetition seeds stay distinct" {
+    const cases = [_]store_mod.SuiteCase{
+        .{ .id = "clone-a", .statistical_unit_id = "scenario" },
+        .{ .id = "clone-b", .statistical_unit_id = "scenario" },
+    };
+    const manifest: store_mod.SuiteManifest = .{
+        .schema = store_mod.suite_schema,
+        .suite_id = "suite",
+        .cases = &cases,
+    };
+    const suite: store_mod.Suite = .{ .path = "/suite", .sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" };
+    const pairs = try buildPairs(std.testing.allocator, "trial", suite, manifest, 0, 2);
+    defer freePairs(std.testing.allocator, pairs);
+    try std.testing.expectEqual(@as(usize, 4), pairs.len);
+    for (pairs) |pair| try std.testing.expectEqualStrings("scenario", learn_eval.statisticalUnitId(pair));
+    try std.testing.expect(!std.mem.eql(u8, pairs[0].seed, pairs[2].seed));
+    try std.testing.expect(!std.mem.eql(u8, pairs[1].seed, pairs[3].seed));
+}
+
 test "economy gate requires corrected per-case evidence without correctness loss" {
     const config: store_mod.Config = .{
         .schema = store_mod.config_schema,
@@ -125,6 +223,7 @@ test "economy gate requires corrected per-case evidence without correctness loss
     const strong = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 4);
     try std.testing.expect(strong.eligible);
     try std.testing.expect(strong.economy_eligible);
+    try std.testing.expectEqual(@as(usize, 0), strong.correctness_regressions);
     try std.testing.expectEqualStrings("economy_eligible", strong.reason);
     try std.testing.expectEqual(@as(usize, 8), strong.tool_wins);
     try std.testing.expectEqual(@as(u64, 40), strong.parent_latency_ms);
@@ -177,6 +276,35 @@ test "economy gate requires corrected per-case evidence without correctness loss
     const noncritical_trade = try computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 4);
     try std.testing.expect(!noncritical_trade.eligible);
     try std.testing.expectEqualStrings("correctness_regression", noncritical_trade.reason);
+
+    // A regression and improvement inside one repeated/related unit cancel in
+    // the unit-level sign test, but economy mode must still reject the raw
+    // regression rather than trading correctness for lower tool use.
+    var grouped_config = config;
+    grouped_config.gate.minimum_pairs = 7;
+    for (&requested, &results) |*pair, *result| {
+        pair.critical = false;
+        pair.statistical_unit_id = null;
+        result.parent_pass = true;
+        result.child_pass = true;
+        result.parent_score_ppm = 1_000_000;
+        result.child_score_ppm = 1_000_000;
+        result.tool_calls_measured = true;
+        result.parent_tool_calls = 2;
+        result.child_tool_calls = 1;
+    }
+    requested[0].statistical_unit_id = "traded-unit";
+    requested[1].statistical_unit_id = "traded-unit";
+    results[0].child_pass = false;
+    results[0].child_score_ppm = 0;
+    results[1].parent_pass = false;
+    results[1].parent_score_ppm = 0;
+    const hidden_trade = try computeComparison(grouped_config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 4);
+    try std.testing.expectEqual(@as(usize, 7), hidden_trade.statistical_units);
+    try std.testing.expectEqual(@as(usize, 0), hidden_trade.losses);
+    try std.testing.expectEqual(@as(usize, 1), hidden_trade.correctness_regressions);
+    try std.testing.expect(!hidden_trade.economy_eligible);
+    try std.testing.expectEqualStrings("correctness_regression", hidden_trade.reason);
 }
 
 test "tool invocation executes verified private program and input snapshots" {

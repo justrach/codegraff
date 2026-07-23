@@ -8,10 +8,14 @@ const Allocator = std.mem.Allocator;
 const build_options = @import("build_options");
 
 const store_mod = @import("learn_store.zig");
+const checkpoint = @import("learn_checkpoint.zig");
 const eval = @import("learn_eval.zig");
 const holdout = @import("learn_holdout.zig");
+const diagnostics = @import("learn_diagnostics.zig");
+const mutation_verify = @import("learn_mutation_verify.zig");
 const primary = @import("learn_primary.zig");
 const learn_run = @import("learn_run.zig");
+const learn_delete = @import("learn_delete.zig");
 const submit = @import("learn_submit.zig");
 const tournament = @import("learn_tournament.zig");
 const util = @import("util.zig");
@@ -21,8 +25,9 @@ pub const usage =
     \\
     \\usage:
     \\  graff learn init --parent PATH --config PATH
-    \\  graff learn run [--candidates N] [--repetitions N] [--submit] [--auto] [--lock-timeout-ms N]
+    \\  graff learn run [--candidates N] [--repetitions N] [--resume | --restart] [--submit] [--auto] [--show-adapter-stderr] [--lock-timeout-ms N]
     \\  graff learn submit RUN_ID [--lock-timeout-ms N]
+    \\  graff learn delete-remote RUN_ID [--lock-timeout-ms N]
     \\  graff learn status [--lock-timeout-ms N]
     \\  graff learn promote RUN_ID [--lock-timeout-ms N]
     \\  graff learn rollback [--to GENOME_ID] [--lock-timeout-ms N]
@@ -36,7 +41,16 @@ pub const usage =
 ;
 
 const InitArgs = struct { parent: []const u8, config: []const u8 };
-const RunArgs = struct { candidates: ?usize = null, repetitions: ?usize = null, submit: bool = false, auto: bool = false, lock_timeout_ms: u64 = 0 };
+const RunArgs = struct {
+    candidates: ?usize = null,
+    repetitions: ?usize = null,
+    submit: bool = false,
+    auto: bool = false,
+    resume_run: bool = false,
+    restart: bool = false,
+    show_adapter_stderr: bool = false,
+    lock_timeout_ms: u64 = 0,
+};
 const StatusArgs = struct { lock_timeout_ms: u64 = 0 };
 const PromoteArgs = struct { run_id: []const u8, lock_timeout_ms: u64 = 0 };
 const SubmitArgs = struct { run_id: []const u8, lock_timeout_ms: u64 = 0 };
@@ -49,6 +63,7 @@ pub const Parsed = union(enum) {
     run: RunArgs,
     status: StatusArgs,
     submit: SubmitArgs,
+    delete_remote: SubmitArgs,
     promote: PromoteArgs,
     rollback: RollbackArgs,
     verify: StatusArgs,
@@ -100,6 +115,9 @@ pub fn parse(args: []const []const u8) !Parsed {
         var seen_repetitions = false;
         var seen_auto = false;
         var seen_submit = false;
+        var seen_resume = false;
+        var seen_restart = false;
+        var seen_adapter_stderr = false;
         var seen_lock = false;
         var index: usize = 1;
         while (index < args.len) : (index += 1) {
@@ -126,8 +144,21 @@ pub fn parse(args: []const []const u8) !Parsed {
                 if (seen_submit) return error.DuplicateOption;
                 seen_submit = true;
                 result.submit = true;
+            } else if (std.mem.eql(u8, arg, "--resume")) {
+                if (seen_resume) return error.DuplicateOption;
+                seen_resume = true;
+                result.resume_run = true;
+            } else if (std.mem.eql(u8, arg, "--restart")) {
+                if (seen_restart) return error.DuplicateOption;
+                seen_restart = true;
+                result.restart = true;
+            } else if (std.mem.eql(u8, arg, "--show-adapter-stderr")) {
+                if (seen_adapter_stderr) return error.DuplicateOption;
+                seen_adapter_stderr = true;
+                result.show_adapter_stderr = true;
             } else if (!try parseLockOption(args, &index, &seen_lock, &result.lock_timeout_ms)) return error.UnknownOption;
         }
+        if (result.resume_run and result.restart) return error.ConflictingOptions;
         return .{ .run = result };
     }
     if (std.mem.eql(u8, command_name, "status") or std.mem.eql(u8, command_name, "verify")) {
@@ -145,13 +176,16 @@ pub fn parse(args: []const []const u8) !Parsed {
         while (index < args.len) : (index += 1) if (!try parseLockOption(args, &index, &seen_lock, &result.lock_timeout_ms)) return error.UnknownOption;
         return .{ .promote = result };
     }
-    if (std.mem.eql(u8, command_name, "submit")) {
+    if (std.mem.eql(u8, command_name, "submit") or std.mem.eql(u8, command_name, "delete-remote")) {
         if (args.len < 2 or !store_mod.validId(args[1])) return error.InvalidId;
         var result: SubmitArgs = .{ .run_id = args[1] };
         var seen_lock = false;
         var index: usize = 2;
         while (index < args.len) : (index += 1) if (!try parseLockOption(args, &index, &seen_lock, &result.lock_timeout_ms)) return error.UnknownOption;
-        return .{ .submit = result };
+        return if (std.mem.eql(u8, command_name, "submit"))
+            .{ .submit = result }
+        else
+            .{ .delete_remote = result };
     }
     if (std.mem.eql(u8, command_name, "rollback")) {
         var result: RollbackArgs = .{};
@@ -179,32 +213,18 @@ pub fn parse(args: []const []const u8) !Parsed {
 fn verifyPins(io: Io, arena: Allocator, config: store_mod.Config) !void {
     try store_mod.verifyProgram(io, config.mutator);
     try store_mod.verifyProgram(io, config.evaluator);
-    _ = try store_mod.loadSuite(io, arena, config.evaluation_suite);
-    if (config.holdout_suite) |suite| _ = try store_mod.loadSuite(io, arena, suite);
-}
-
-fn verifyMutationEvidence(arena: Allocator, store: *store_mod.Store, config: store_mod.Config, run: eval.RunRecord, index: usize, candidate: eval.CandidateRecord) !void {
-    const expected_seed = eval.candidateSeed(run.trial_id, index);
-    if (!std.mem.eql(u8, candidate.mutation.seed, &expected_seed)) return error.MutationMismatch;
-    const request_bytes = try store.readEvidence(arena, candidate.mutation.request_evidence_id, config.limits.request_bytes);
-    const response_bytes = try store.readEvidence(arena, candidate.mutation.response_evidence_id, config.limits.response_bytes);
-    const request = try std.json.parseFromSliceLeaky(eval.MutationRequest, arena, request_bytes, .{});
-    const response = try std.json.parseFromSliceLeaky(eval.MutationResponse, arena, response_bytes, .{});
-    if (!std.mem.eql(u8, request.schema, eval.mutation_request_schema) or
-        !std.mem.eql(u8, request.trial_id, run.trial_id) or request.candidate_index != index or
-        !std.mem.eql(u8, request.seed, &expected_seed) or !std.mem.eql(u8, request.parent.id, run.parent_genome_id) or
-        !std.mem.eql(u8, request.parent.path, "parent.genome") or !std.mem.eql(u8, request.child_path, "child.genome") or
-        request.maximum_bytes != config.limits.genome_bytes or !std.mem.eql(u8, request.instruction, config.mutation_instruction)) return error.MutationMismatch;
-    if (!std.mem.eql(u8, response.schema, eval.mutation_response_schema) or
-        !std.mem.eql(u8, response.trial_id, run.trial_id) or response.candidate_index != index or
-        !std.mem.eql(u8, response.parent_id, run.parent_genome_id) or !std.mem.eql(u8, response.child_path, "child.genome") or
-        !store_mod.validId(response.child_sha256) or response.description.len > 512 or
-        !std.unicode.utf8ValidateSlice(response.description) or std.mem.indexOfScalar(u8, response.description, 0) != null or
-        !std.mem.eql(u8, response.description, candidate.mutation.description)) return error.MutationMismatch;
-    const child = try store.readGenome(arena, candidate.genome_id, config.limits.genome_bytes);
-    if (candidate.mutation.genome_bytes != child.len) return error.MutationOutputMismatch;
-    const child_sha256 = store_mod.rawSha256(child);
-    if (!std.mem.eql(u8, response.child_sha256, &child_sha256)) return error.MutationOutputMismatch;
+    const primary_suite = try store_mod.loadSuite(io, arena, config.evaluation_suite);
+    try store_mod.validateSuitePower(primary_suite.manifest, config.gate);
+    if (config.holdout_suite) |suite| {
+        const holdout_suite = try store_mod.loadSuite(io, arena, suite);
+        try store_mod.validateHoldoutIndependence(
+            config.evaluation_suite.sha256,
+            primary_suite.manifest,
+            suite.sha256,
+            holdout_suite.manifest,
+        );
+        try store_mod.validateSuitePower(holdout_suite.manifest, config.gate);
+    }
 }
 
 fn verifyRun(
@@ -217,6 +237,7 @@ fn verifyRun(
     const bytes = try store.readRun(arena, run_id);
     const run = try std.json.parseFromSliceLeaky(eval.RunRecord, arena, bytes, .{});
     try eval.validateRun(run);
+    try learn_run.verifyTrialPower(io, arena, config.value, run.planned_candidates);
     if (!std.mem.eql(u8, run.config_id, &config.id) or !std.mem.eql(u8, run.harness_version, build_options.version)) return error.CohortMismatch;
     const expected_trial_id = learn_run.trialId(run.config_id, run.parent_genome_id, run.parent_generation, run.parent_transaction_id, run.nonce);
     if (!std.mem.eql(u8, run.trial_id, &expected_trial_id)) return error.TrialMismatch;
@@ -249,7 +270,7 @@ fn verifyRun(
     var primary_count: usize = 0;
     for (run.candidates, computed, 0..) |candidate, *recomputed_candidate, index| {
         _ = try store.readGenome(arena, candidate.genome_id, config.value.limits.genome_bytes);
-        try verifyMutationEvidence(arena, store, config.value, run, index, candidate);
+        try mutation_verify.verify(arena, store, config.value, run.trial_id, run.parent_genome_id, index, candidate);
         var excluded = false;
         if (std.mem.eql(u8, candidate.genome_id, run.parent_genome_id)) {
             excluded = true;
@@ -324,6 +345,7 @@ fn initCommand(gpa: Allocator, arena: Allocator, io: Io, args: InitArgs, out: *I
     const config = try std.json.parseFromSliceLeaky(store_mod.Config, arena, config_bytes, .{});
     try store_mod.validateConfig(config);
     try verifyPins(io, arena, config);
+    try learn_run.verifyTrialPower(io, arena, config, config.gate.default_candidates);
     const parent = try store_mod.readFileNoFollow(io, Io.Dir.cwd(), args.parent, arena, config.limits.genome_bytes);
     // Validate the genome BEFORE creating the store tree: a rejected parent
     // must not leave a half-initialized .graff/learn behind (which used to
@@ -341,6 +363,8 @@ fn initCommand(gpa: Allocator, arena: Allocator, io: Io, args: InitArgs, out: *I
 }
 
 fn runCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.process.Environ.Map, args: RunArgs, out: *Io.Writer) !void {
+    diagnostics.setDetailed(args.show_adapter_stderr);
+    defer diagnostics.setDetailed(false);
     var store = try store_mod.Store.openAt(io, Io.Dir.cwd());
     defer store.deinit();
     var lock = try store.acquireLock(args.lock_timeout_ms);
@@ -359,6 +383,8 @@ fn runCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.proc
         .repetitions = args.repetitions,
         .submit = args.submit,
         .auto = args.auto,
+        .resume_run = args.resume_run,
+        .restart = args.restart,
     }, out);
     if (result.selected_genome_id) |genome_id| {
         try out.print("selected {s}\n", .{genome_id});
@@ -382,7 +408,11 @@ fn statusCommand(arena: Allocator, io: Io, timeout_ms: u64, out: *Io.Writer, ver
     defer lock.deinit();
     const config = try store.loadConfig(arena);
     const active = try store.loadActive(arena, config);
-    if (verify_all) try verifyPins(io, arena, config.value);
+    const pending = try checkpoint.load(arena, &store);
+    if (verify_all) {
+        try verifyPins(io, arena, config.value);
+        if (pending) |item| _ = try learn_run.restorePending(arena, io, &store, config, active, item);
+    }
     const Status = struct {
         schema: []const u8 = "codegraff.learn.status.v1",
         integrity: []const u8 = "ok",
@@ -392,6 +422,10 @@ fn statusCommand(arena: Allocator, io: Io, timeout_ms: u64, out: *Io.Writer, ver
         transaction_id: []const u8,
         config_id: []const u8,
         pins_verified: bool,
+        pending_trial_id: ?[]const u8,
+        pending_primary_arms: usize,
+        pending_holdout_arms: usize,
+        pending_verified: bool,
     };
     const value: Status = .{
         .agent_name = config.value.agent_name,
@@ -400,10 +434,22 @@ fn statusCommand(arena: Allocator, io: Io, timeout_ms: u64, out: *Io.Writer, ver
         .transaction_id = active.ref.transaction_id,
         .config_id = &config.id,
         .pins_verified = verify_all,
+        .pending_trial_id = if (pending) |item| item.trial_id else null,
+        .pending_primary_arms = if (pending) |item| countCompleted(item.candidates, false) else 0,
+        .pending_holdout_arms = if (pending) |item| countCompleted(item.candidates, true) else 0,
+        .pending_verified = pending == null or verify_all,
     };
     var stringify: std.json.Stringify = .{ .writer = out };
     try stringify.write(value);
     try out.writeByte('\n');
+}
+
+fn countCompleted(candidates: []const eval.CandidateRecord, holdouts: bool) usize {
+    var count: usize = 0;
+    for (candidates) |candidate| if (if (holdouts) candidate.holdout != null else candidate.primary != null) {
+        count += 1;
+    };
+    return count;
 }
 
 fn promoteCommand(gpa: Allocator, arena: Allocator, io: Io, args: PromoteArgs, out: *Io.Writer) !void {
@@ -479,6 +525,7 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init,
         .run => |args| try runCommand(gpa, arena, io, init.environ_map, args, out),
         .status => |args| try statusCommand(arena, io, args.lock_timeout_ms, out, false),
         .submit => |args| try submitCommand(gpa, arena, io, init.environ_map, args, out),
+        .delete_remote => |args| try learn_delete.command(io, gpa, arena, init.environ_map, args.run_id, args.lock_timeout_ms, out),
         .verify => |args| try statusCommand(arena, io, args.lock_timeout_ms, out, true),
         .promote => |args| try promoteCommand(gpa, arena, io, args, out),
         .rollback => |args| try rollbackCommand(gpa, arena, io, args, out),
@@ -491,13 +538,17 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init,
 }
 
 test "learn parser preserves strict command-local options" {
-    const parsed = try parse(&.{ "run", "--candidates", "4", "--repetitions", "2", "--submit", "--auto", "--lock-timeout-ms", "50" });
+    const parsed = try parse(&.{ "run", "--candidates", "4", "--repetitions", "2", "--resume", "--submit", "--auto", "--show-adapter-stderr", "--lock-timeout-ms", "50" });
     try std.testing.expectEqual(@as(usize, 4), parsed.run.candidates.?);
     try std.testing.expectEqual(@as(usize, 2), parsed.run.repetitions.?);
     try std.testing.expect(parsed.run.auto);
     try std.testing.expect(parsed.run.submit);
+    try std.testing.expect(parsed.run.resume_run);
+    try std.testing.expect(parsed.run.show_adapter_stderr);
     try std.testing.expectEqual(@as(u64, 50), parsed.run.lock_timeout_ms);
     try std.testing.expectError(error.DuplicateOption, parse(&.{ "run", "--auto", "--auto" }));
+    try std.testing.expectError(error.DuplicateOption, parse(&.{ "run", "--show-adapter-stderr", "--show-adapter-stderr" }));
     try std.testing.expectError(error.UnknownOption, parse(&.{ "run", "--mystery" }));
+    try std.testing.expectError(error.ConflictingOptions, parse(&.{ "run", "--resume", "--restart" }));
     try std.testing.expectError(error.InvalidId, parse(&.{ "promote", "abcd" }));
 }

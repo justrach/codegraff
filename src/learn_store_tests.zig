@@ -19,6 +19,14 @@ const Config = store_mod.Config;
 const validId = store_mod.validId;
 const syncDirectory = store_mod.syncDirectory;
 const validateConfig = store_mod.validateConfig;
+const validateSuite = store_mod.validateSuite;
+const statisticalUnitCount = store_mod.statisticalUnitCount;
+const validateHoldoutIndependence = store_mod.validateHoldoutIndependence;
+const minimumSignificantUnits = store_mod.minimumSignificantUnits;
+const validateSuitePower = store_mod.validateSuitePower;
+const validateSuiteTrialPower = store_mod.validateSuiteTrialPower;
+const SuiteManifest = store_mod.SuiteManifest;
+const SuiteCase = store_mod.SuiteCase;
 const transaction_schema = store_mod.transaction_schema;
 
 test "learning IDs are full, domain-separated, and byte exact" {
@@ -40,6 +48,69 @@ test "learning config parser rejects unknown fields and unsafe auto" {
     try validateConfig(parsed.value);
     const unknown = good[0 .. good.len - 1] ++ ",\"surprise\":true}";
     try std.testing.expectError(error.UnknownField, std.json.parseFromSlice(Config, std.testing.allocator, unknown, .{}));
+}
+
+test "suite statistical units are additive, validated, and criticality-consistent" {
+    const legacy =
+        \\{"schema":"codegraff.learn.suite.v1","suite_id":"legacy","cases":[{"id":"one"},{"id":"two"}]}
+    ;
+    var parsed = try std.json.parseFromSlice(SuiteManifest, std.testing.allocator, legacy, .{});
+    defer parsed.deinit();
+    try validateSuite(parsed.value);
+    try std.testing.expectEqual(@as(usize, 2), statisticalUnitCount(parsed.value));
+
+    const grouped_cases = [_]SuiteCase{
+        .{ .id = "clone-a", .statistical_unit_id = "scenario", .critical = true },
+        .{ .id = "clone-b", .statistical_unit_id = "scenario", .critical = true },
+        .{ .id = "independent" },
+    };
+    const grouped: SuiteManifest = .{ .schema = store_mod.suite_schema, .suite_id = "grouped", .cases = &grouped_cases };
+    try validateSuite(grouped);
+    try std.testing.expectEqual(@as(usize, 2), statisticalUnitCount(grouped));
+
+    const invalid_cases = [_]SuiteCase{.{ .id = "clone", .statistical_unit_id = "" }};
+    const invalid: SuiteManifest = .{ .schema = store_mod.suite_schema, .suite_id = "invalid", .cases = &invalid_cases };
+    try std.testing.expectError(error.InvalidStatisticalUnitId, validateSuite(invalid));
+    const mixed_cases = [_]SuiteCase{
+        .{ .id = "safe", .statistical_unit_id = "scenario" },
+        .{ .id = "critical", .statistical_unit_id = "scenario", .critical = true },
+    };
+    const mixed: SuiteManifest = .{ .schema = store_mod.suite_schema, .suite_id = "mixed", .cases = &mixed_cases };
+    try std.testing.expectError(error.MixedStatisticalUnitCriticality, validateSuite(mixed));
+}
+
+test "holdout suites must be distinct and statistically disjoint" {
+    const primary_cases = [_]SuiteCase{
+        .{ .id = "primary-a", .statistical_unit_id = "shared-scenario" },
+        .{ .id = "primary-b" },
+    };
+    const fresh_cases = [_]SuiteCase{.{ .id = "holdout-a" }};
+    const overlap_cases = [_]SuiteCase{.{ .id = "holdout-copy", .statistical_unit_id = "shared-scenario" }};
+    const primary: SuiteManifest = .{ .schema = store_mod.suite_schema, .suite_id = "primary", .cases = &primary_cases };
+    const fresh: SuiteManifest = .{ .schema = store_mod.suite_schema, .suite_id = "holdout", .cases = &fresh_cases };
+    const same_id: SuiteManifest = .{ .schema = store_mod.suite_schema, .suite_id = "primary", .cases = &fresh_cases };
+    const overlap: SuiteManifest = .{ .schema = store_mod.suite_schema, .suite_id = "holdout", .cases = &overlap_cases };
+    const primary_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const holdout_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    try validateHoldoutIndependence(primary_sha, primary, holdout_sha, fresh);
+    try std.testing.expectError(error.HoldoutMatchesPrimary, validateHoldoutIndependence(primary_sha, primary, primary_sha, fresh));
+    try std.testing.expectError(error.HoldoutSuiteIdOverlap, validateHoldoutIndependence(primary_sha, primary, holdout_sha, same_id));
+    try std.testing.expectError(error.HoldoutStatisticalUnitOverlap, validateHoldoutIndependence(primary_sha, primary, holdout_sha, overlap));
+}
+
+test "suite power accounts for exact significance and planned arms" {
+    const cases = [_]SuiteCase{
+        .{ .id = "one" },  .{ .id = "two" },  .{ .id = "three" },
+        .{ .id = "four" }, .{ .id = "five" },
+    };
+    const manifest: SuiteManifest = .{ .schema = store_mod.suite_schema, .suite_id = "power", .cases = &cases };
+    const gate: store_mod.Gate = .{ .alpha_ppm = 50_000, .minimum_pairs = 5 };
+    try validateSuitePower(manifest, gate);
+    try std.testing.expectEqual(@as(usize, 5), try minimumSignificantUnits(gate, 1));
+    try std.testing.expectEqual(@as(usize, 7), try minimumSignificantUnits(gate, 4));
+    try validateSuiteTrialPower(manifest, gate, 1);
+    try std.testing.expectError(error.InsufficientSignificancePower, validateSuiteTrialPower(manifest, gate, 4));
 }
 
 test "directory synchronization reopens path-only handles" {

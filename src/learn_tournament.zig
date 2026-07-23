@@ -10,8 +10,8 @@ pub const Eligibility = struct {
 };
 
 pub const Finalized = struct {
-    /// Best unique, non-parent candidate with primary evidence. This candidate
-    /// advances to the holdout even when its primary gate is not yet eligible.
+    /// Best unique, non-parent candidate with primary evidence. Eligibility is
+    /// applied separately before deciding whether holdout exposure is useful.
     primary_winner_index: ?usize,
     /// Set only when that one winner passes every configured promotion gate.
     selected_genome_id: ?[]const u8,

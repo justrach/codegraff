@@ -11,6 +11,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const jobs = @import("jobs.zig");
+const diagnostics = @import("learn_diagnostics.zig");
 const store_mod = @import("learn_store.zig");
 const protocol = @import("learn_eval_types.zig");
 
@@ -28,6 +29,7 @@ pub const GenomeRef = protocol.GenomeRef;
 pub const MutationRequest = protocol.MutationRequest;
 pub const MutationResponse = protocol.MutationResponse;
 pub const PairRequest = protocol.PairRequest;
+pub const statisticalUnitId = protocol.statisticalUnitId;
 pub const EvaluationRequest = protocol.EvaluationRequest;
 pub const PairResult = protocol.PairResult;
 pub const EvaluationResponse = protocol.EvaluationResponse;
@@ -222,21 +224,18 @@ pub fn invoke(
     const run = try jobs.runCappedWithOptions(gpa, io, argv.items, stdout_cap, stderr_cap, timeout_ms, .{
         .cwd = .{ .dir = scratch },
         .environ_map = &env,
+        .kill_process_tree = true,
     });
     defer {
         gpa.free(run.stdout);
         gpa.free(run.stderr);
     }
     if (run.timed_out) {
-        std.debug.print("learn: {s} timed out after {d} ms\n", .{ program.program, timeout_ms });
+        diagnostics.reportTimeout(operation, program.program, timeout_ms, run.stderr);
         return error.ProcessTimedOut;
     }
     if (run.term != .exited or run.term.exited != 0) {
-        // The bare error alone cost real debugging time: surface which tool
-        // failed and a bounded stderr excerpt before the scratch dir (and the
-        // request/response evidence in it) is deleted by the caller.
-        const excerpt = run.stderr[0..@min(run.stderr.len, 4096)];
-        std.debug.print("learn: {s} failed ({any}); stderr (first {d} of {d} bytes):\n{s}\n", .{ program.program, run.term, excerpt.len, run.stderr.len, excerpt });
+        diagnostics.reportFailure(operation, program.program, run.term, run.stderr);
         return error.ProcessFailed;
     }
 }
@@ -359,13 +358,14 @@ pub fn buildPairs(gpa: Allocator, trial_id: []const u8, suite: store_mod.Suite, 
     }
     for (0..repetitions) |repetition| {
         for (manifest.cases) |case| {
-            // Common random numbers: every arm receives identical primary
-            // seeds for the same case/repetition, so generator identity is the
-            // only intended source of between-arm variation.
+            // Stable pair identity: every arm receives the same primary seed
+            // for a case/repetition. Seed-capable adapters may use it for
+            // sampling; others can still counterbalance execution order.
             const seed = pairSeed(trial_id, suite.sha256, case.id, repetition);
             const seed_copy = try gpa.dupe(u8, &seed);
             pairs[initialized] = .{
                 .case_id = case.id,
+                .statistical_unit_id = case.statistical_unit_id,
                 .seed = seed_copy,
                 .critical = case.critical,
             };
@@ -479,6 +479,7 @@ pub fn comparisonEqual(a: ComparisonRecord, b: ComparisonRecord) bool {
         a.parent_passes == b.parent_passes and a.child_passes == b.child_passes and
         a.wins == b.wins and a.losses == b.losses and a.ties == b.ties and
         a.child_critical_failures == b.child_critical_failures and a.critical_regressions == b.critical_regressions and
+        a.correctness_regressions == b.correctness_regressions and
         a.delta_ppm == b.delta_ppm and a.mean_score_delta_ppm == b.mean_score_delta_ppm and a.p_value_ppb == b.p_value_ppb and
         a.parent_cost_micros == b.parent_cost_micros and a.child_cost_micros == b.child_cost_micros and
         a.tool_calls_measured == b.tool_calls_measured and
@@ -517,7 +518,9 @@ pub fn verifyComparison(
     try validateEvaluationEnvelope(request, response, trial_id, candidate_index, &cohort, suite, parent_id, child_id, repetitions);
     if (request.pairs.len != expected_pairs.len) return error.PairMismatch;
     for (request.pairs, expected_pairs) |actual, expected| {
-        if (!std.mem.eql(u8, actual.case_id, expected.case_id) or !std.mem.eql(u8, actual.seed, expected.seed) or actual.critical != expected.critical) return error.PairMismatch;
+        if (!std.mem.eql(u8, actual.case_id, expected.case_id) or
+            !std.mem.eql(u8, statisticalUnitId(actual), statisticalUnitId(expected)) or
+            !std.mem.eql(u8, actual.seed, expected.seed) or actual.critical != expected.critical) return error.PairMismatch;
     }
     const recomputed = try computeComparison(config, suite.sha256, recorded.request_evidence_id, recorded.response_evidence_id, request.pairs, response, planned_candidates);
     if (!comparisonEqual(recomputed, recorded)) return error.ComparisonMismatch;

@@ -58,8 +58,8 @@ pub const Gate = struct {
     /// remain mandatory in either mode.
     promotion_mode: PromotionMode = .correctness,
     minimum_tool_reduction_ppm: u32 = 100_000,
-    /// Minimum number of case-level tool-call wins plus losses. Ties carry no
-    /// information for the exact directional economy test.
+    /// Minimum number of statistical-unit tool-call wins plus losses. Ties
+    /// carry no information for the exact directional economy test.
     minimum_economy_pairs: usize = 8,
     /// Fail the run before any evaluation unless every requested arm produced
     /// a unique genome distinct from the parent.
@@ -97,6 +97,9 @@ pub const Config = struct {
 
 pub const SuiteCase = struct {
     id: []const u8,
+    /// Optional scenario-family key. Repetitions and structurally cloned case
+    /// IDs sharing this key count as one independent statistical unit.
+    statistical_unit_id: ?[]const u8 = null,
     critical: bool = false,
     payload: std.json.Value = .null,
 };

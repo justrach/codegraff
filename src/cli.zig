@@ -21,6 +21,11 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.215
+    \\  • Local learning can race multiple prompt variants, rank correctness before tool economy, and expose only the winner to a hidden holdout
+    \\  • Runs checkpoint safely, keep promotion manual by default, and can bundle an aggregate-only signed grade submission
+    \\  • Aggregate receipts expire after 30 days and can be deleted remotely without deleting local evidence or requiring telemetry consent
+    \\
     \\0.0.209
     \\  • Kimi Code now follows each live catalog model's native or Anthropic beta protocol, auth style, context, and thinking metadata
     \\  • Native Kimi tool schemas are normalized to Moonshot's stricter validator; OAuth requests carry the current Kimi Code identity headers

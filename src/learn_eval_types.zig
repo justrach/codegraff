@@ -39,9 +39,14 @@ pub const MutationResponse = struct {
 
 pub const PairRequest = struct {
     case_id: []const u8,
+    statistical_unit_id: ?[]const u8 = null,
     seed: []const u8,
     critical: bool,
 };
+
+pub fn statisticalUnitId(pair: PairRequest) []const u8 {
+    return pair.statistical_unit_id orelse pair.case_id;
+}
 
 pub const EvaluationRequest = struct {
     schema: []const u8,
@@ -177,6 +182,9 @@ pub const ComparisonRecord = struct {
     ties: usize,
     child_critical_failures: usize = 0,
     critical_regressions: usize,
+    /// Raw parent-pass/child-fail rows before repetitions or related cases are
+    /// collapsed into statistical units. Economy promotion requires zero.
+    correctness_regressions: usize = 0,
     delta_ppm: i64,
     mean_score_delta_ppm: i64,
     p_value_ppb: u64,

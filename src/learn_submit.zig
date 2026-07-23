@@ -2,8 +2,8 @@
 //!
 //! Candidate genomes and evaluation payloads stay in the local immutable
 //! store. Only the existing signed OTLP score envelope leaves the machine:
-//! short prompt/parent fingerprints, aggregate pass rate, suite/cohort
-//! metadata, and content-addressed evidence ids.
+//! short prompt/parent fingerprints, aggregate comparison metrics, suite/cohort
+//! metadata, gate settings, and content-addressed evidence ids.
 
 const std = @import("std");
 const Io = std.Io;
@@ -15,13 +15,21 @@ const store = @import("learn_store.zig");
 const scoring = @import("scoring.zig");
 const telemetry = @import("telemetry.zig");
 const telemetry_net = @import("telemetry_net.zig");
-const keys_cli = @import("keys_cli.zig");
 const learning_privacy = @import("learning_privacy.zig");
+const receipt = @import("learn_receipt.zig");
 
 pub const SubmitResult = struct {
     grades: usize,
     endpoint: []const u8,
 };
+
+pub fn deletionEndpoint(environ: *const std.process.Environ.Map) ![]const u8 {
+    const value = environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") orelse
+        environ.get("GRAFF_OTEL_ENDPOINT") orelse
+        build_options.telemetry_endpoint;
+    if (value.len == 0) return error.TelemetryDisabled;
+    return value;
+}
 
 fn endpoint(environ: *const std.process.Environ.Map) ![]const u8 {
     if (environ.get("GRAFF_NO_TELEMETRY") != null) return error.TelemetryDisabled;
@@ -29,11 +37,7 @@ fn endpoint(environ: *const std.process.Environ.Map) ![]const u8 {
         if (std.ascii.eqlIgnoreCase(value, "off") or std.mem.eql(u8, value, "0") or std.ascii.eqlIgnoreCase(value, "false"))
             return error.TelemetryDisabled;
     }
-    const value = environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") orelse
-        environ.get("GRAFF_OTEL_ENDPOINT") orelse
-        build_options.telemetry_endpoint;
-    if (value.len == 0) return error.TelemetryDisabled;
-    return value;
+    return deletionEndpoint(environ);
 }
 
 /// Fail before an expensive learning run when an explicit submit could not
@@ -60,6 +64,8 @@ fn appendGrade(
     candidate: eval.CandidateRecord,
     comparison: eval.ComparisonRecord,
     judge_id: []const u8,
+    multiplicity: usize,
+    delete_token: []const u8,
 ) !void {
     const prompt_sha = candidate.genome_id[0..16];
     const parent_sha = run.parent_genome_id[0..16];
@@ -80,14 +86,35 @@ fn appendGrade(
         provider_class,
     );
     if (signature[0] == 0) return error.ScoreSigningKeyRequired;
-    var provenance_buf: [320]u8 = undefined;
-    const provenance = std.fmt.bufPrint(&provenance_buf, "{s}\t{s}\t{s}\t{s}\t{s}", .{
+    const grade = receipt.fromComparison(config.gate, comparison, multiplicity);
+    const grade_signature = receipt.sign(
+        prompt_sha,
+        parent_sha,
+        value,
+        run_id,
+        judge_id,
+        comparison.response_evidence_id,
+        comparison.suite_sha256,
+        niche,
+        provider_class,
+        delete_token,
+        run.created_unix_ms,
+        grade,
+    );
+    if (grade_signature[0] == 0) return error.ScoreSigningKeyRequired;
+    var provenance_buf: [2048]u8 = undefined;
+    const provenance = receipt.provenance(
+        &provenance_buf,
         judge_id,
         comparison.response_evidence_id,
         comparison.suite_sha256,
         provider_class,
         niche,
-    }) catch return error.ProvenanceTooLong;
+        &grade_signature,
+        delete_token,
+        run.created_unix_ms,
+        grade,
+    ) orelse return error.ProvenanceTooLong;
     sink.scoreEvent(prompt_sha, parent_sha, value, run_id, &signature, provenance);
 }
 
@@ -120,14 +147,15 @@ pub fn submitVerifiedRun(
     const target = try endpoint(environ);
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
-    const home = keys_cli.homeEnv(environ) orelse "";
     var sink: telemetry.Telemetry = .{
         .io = io,
         .gpa = gpa,
         .client = &client,
         .endpoint = target,
         .auth_key = telemetry.validatedAuthKey(environ.get("GRAFF_TELEMETRY_KEY")),
-        .install_id = keys_cli.loadOrCreateId(io, gpa, home, ".simple-harness-install-id"),
+        // Explicit learning receipts are deliberately unlinkable to a stable
+        // installation. writeOtlp also omits this sentinel for this client.
+        .install_id = @splat('0'),
         .client_name = "harness-learn",
         .sdk_install_id = "",
         .start = Io.Timestamp.now(io, .awake),
@@ -136,13 +164,15 @@ pub fn submitVerifiedRun(
     defer sink.deinit();
 
     var grades: usize = 0;
+    const delete_token = receipt.deletionToken(run_id, run.nonce);
+    if (delete_token[0] == 0) return error.ScoreSigningKeyRequired;
     for (run.candidates) |candidate| {
         if (candidate.primary) |comparison| {
-            try appendGrade(&sink, config, run_id, run, candidate, comparison, "learn-primary-v2");
+            try appendGrade(&sink, config, run_id, run, candidate, comparison, "learn-primary-v2", run.planned_candidates, &delete_token);
             grades += 1;
         }
         if (candidate.holdout) |comparison| {
-            try appendGrade(&sink, config, run_id, run, candidate, comparison, "learn-holdout-v2");
+            try appendGrade(&sink, config, run_id, run, candidate, comparison, "learn-holdout-v2", 1, &delete_token);
             grades += 1;
         }
     }
@@ -187,4 +217,8 @@ test "learning pass-rate grade uses repeated pair count" {
         .reason = "eligible",
     };
     try std.testing.expectApproxEqAbs(@as(f64, 0.75), try passRate(comparison), 1e-12);
+}
+
+test {
+    _ = @import("learn_receipt.zig");
 }

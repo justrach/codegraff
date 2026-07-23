@@ -34,7 +34,7 @@ protocols.
 
 ```text
 graff learn init --parent PATH --config PATH
-graff learn run [--candidates N] [--repetitions N] [--auto] [--lock-timeout-ms N]
+graff learn run [--candidates N] [--repetitions N] [--resume | --restart] [--auto] [--show-adapter-stderr] [--lock-timeout-ms N]
 graff --learning-privacy aggregate learn run [--candidates N] [--repetitions N] --submit
 graff --learning-privacy aggregate learn submit RUN_ID [--lock-timeout-ms N]
 graff learn status [--lock-timeout-ms N]
@@ -63,6 +63,30 @@ graff learn rollback
 Only one learning operation runs at a time. `--lock-timeout-ms` controls how
 long a command waits for the local engine lock, up to 600,000 ms.
 
+Expensive tournament progress is atomically checkpointed after mutation, the
+shared parent baseline, every completed primary arm, and holdout completion. If
+an adapter fails or the process exits, rerun with `learn run --resume` using the
+same candidate/repetition/automatic-promotion options. Resume re-derives the
+trial ID and re-verifies every referenced immutable genome and evidence object
+before skipping completed work. A normal `learn run` refuses to overwrite a
+recoverable checkpoint. `--restart` explicitly discards it and starts a new
+trial; it does not unconsume a hidden suite that was already exposed.
+`learn status` reports the pending trial ID plus completed primary and holdout
+arm counts without exposing prompts, cases, or adapter output. `learn verify`
+also re-verifies any pending checkpoint and reports `pending_verified: true`;
+ordinary status leaves a present checkpoint explicitly unverified.
+For a new trial, a previously consumed holdout is detected before any mutator
+or evaluator process starts; only an exact checkpoint resume may reuse its own
+reservation.
+
+Each mutation arm gets one bounded retry after a timeout or nonzero exit. The
+retry keeps the registered candidate index and seed but uses a new private
+scratch directory, so partial files from the failed process are never reused.
+Adapter stderr and executable paths are hidden by default because failures may
+contain prompts, repository text, credentials, or usernames. A human debugging
+in a local terminal can explicitly add `--show-adapter-stderr`; the
+model-facing `learn_candidate` action never exposes nested-process stderr.
+
 `run --submit` performs mutation, paired primary/holdout grading, immutable
 storage, and aggregate publication in one command. `submit RUN_ID` re-verifies
 and retries an already stored run. Both use `GRAFF_SCORE_KEY_FILE`, falling back
@@ -71,28 +95,44 @@ A retry is idempotent at the collector.
 Neither form promotes the selected candidate; use the separate manual or
 two-key automatic promotion policy described above.
 
+`delete-remote RUN_ID` removes that run's aggregate backend receipt without
+touching local genomes, evidence, or history. Its bearer capability is derived
+from the immutable run nonce and the score key; the nonce stays local and the
+collector stores only a verifier. Deletion remains available when
+`GRAFF_NO_TELEMETRY=1`, `GRAFF_FLEET=off`, or learning privacy is Local, so
+revoking consent never prevents removing data that was already submitted.
+
 For multiple candidates, execution is a barriered tournament:
 
 1. every mutation arm runs concurrently;
 2. every unique arm runs the same primary suite concurrently with common pair
    seeds and one fixed evaluator cohort;
-3. ranking minimizes critical regressions, then maximizes observed correctness,
-   then minimizes measured tool calls, latency, cost, and prompt size;
+3. ranking minimizes child critical failures and critical regressions, then
+   maximizes observed child correctness, then minimizes measured tool calls,
+   cost, and prompt size;
 4. only that primary winner is evaluated on the holdout; and
 5. promotion remains a separate manual action unless the configured two-key
    automatic policy is explicitly enabled and all statistical gates pass.
 
-Run records use `codegraff.learn.run.v2` and persist the primary winner even
-when evidence is underpowered. Missing tool-call instrumentation is recorded as
-unknown and cannot masquerade as zero calls. `GRAFF_NO_TELEMETRY=1` and
-`GRAFF_FLEET=off` both block explicit aggregate submission.
+Run records use `codegraff.learn.run.v3`, which stores one verified primary
+parent baseline shared by all candidate arms, and persist the primary winner
+even when evidence is underpowered. Missing tool-call instrumentation is
+recorded as unknown and cannot masquerade as zero calls. Latency remains in the
+report but is deliberately excluded from ranking and promotion evidence.
+`GRAFF_NO_TELEMETRY=1` and `GRAFF_FLEET=off` both block explicit aggregate
+submission; they deliberately do not block `delete-remote`.
 
 The bundled model-backed example adapters fail safely around transient or
 malformed model output. A mutation gets one corrective turn after deterministic
 size/invariant validation; a second failure becomes an unchanged-parent
 non-contender rather than aborting other arms. An evaluation turn that ends
 without gradeable evidence gets one bounded retry in a newly initialized task
-directory, so partial file changes cannot leak into the retry.
+directory, so partial file changes cannot leak into the retry. Each evaluator
+side also keeps a request-bound, prompt-free attempt journal in private scratch.
+It durably records observed latency, tool calls, and cost, plus a completed side
+result. After an evaluator crash, the retry restores that usage and does not
+repeat a completed side. The journal is cleared only after paired progress is
+durably committed.
 
 The root model also receives an approval-gated `learn_candidate` tool when it
 runs in a configured workspace. The tool bundles `run --submit` into one
@@ -215,7 +255,8 @@ A suite is pinned JSON:
   "schema": "codegraff.learn.suite.v1",
   "suite_id": "review-v1",
   "cases": [
-    {"id": "case-001", "critical": true, "payload": {"fixture": "..."}},
+    {"id": "case-001a", "statistical_unit_id": "scenario-001", "critical": true, "payload": {"fixture": "..."}},
+    {"id": "case-001b", "statistical_unit_id": "scenario-001", "critical": true, "payload": {"fixture": "..."}},
     {"id": "case-002", "payload": null}
   ]
 }
@@ -225,13 +266,27 @@ Case IDs must be unique. The evaluator receives a verified private copy as
 `suite.json`; the evaluation request never directs it back to the configured
 suite pathname.
 
-`default_repetitions` controls repeated measurements of each case. Repetitions
-are **not** independent statistical samples. For the exact one-sided paired
-sign test, all repetitions of one case are collapsed into one unit by comparing
-aggregate parent and child pass counts for that case. Therefore:
+A configured holdout must have a different content digest and `suite_id`, and
+its declared statistical-unit IDs must be disjoint from the primary suite.
+Initialization and every later verification boundary enforce this before the
+hidden suite is exposed. These checks prevent accidental reuse; authors must
+still ensure differently named units are semantically independent.
 
-- `minimum_pairs` means the minimum number of distinct suite cases.
-- Repeating one case cannot satisfy the minimum or manufacture significance.
+`default_repetitions` controls repeated measurements of each case. Repetitions
+and semantically cloned cases are **not** independent statistical samples. Set
+the optional `statistical_unit_id` to the same value for related cases. Suites
+that omit it remain compatible: the case ID becomes the effective unit ID. For
+the exact one-sided paired sign test, all rows in one effective unit are
+collapsed by comparing aggregate parent and child results. Therefore:
+
+- `minimum_pairs` means the minimum number of independent statistical units.
+- Repeating or cloning one scenario cannot satisfy the minimum or manufacture
+  significance.
+- Initialization rejects an underpowered primary or holdout suite before any
+  adapter/model call. A trial also rechecks that even an all-win result could
+  clear the exact p-value after correction for its actual candidate count;
+  otherwise it fails with `InsufficientSignificancePower`. Stored requests bind
+  every pair to its effective unit.
 - Any parent-pass/child-fail result on a critical case is a hard rejection.
 - Pass-rate and mean-score deltas still use all repeated measurements.
 - The significance threshold is Bonferroni-corrected by the number of planned
@@ -240,13 +295,14 @@ aggregate parent and child pass counts for that case. Therefore:
 
 `promotion_mode` preregisters either `correctness` or `economy`; primary and
 holdout cannot clear different endpoints. Economy mode also requires
-`economy_gate_enabled`, zero case-level correctness losses, no mean-score
+`economy_gate_enabled`, zero raw parent-pass/child-fail rows, no mean-score
 regression, measured calls, the configured aggregate call reduction, and a
 separately Bonferroni-corrected per-case tool-call sign test.
-`minimum_economy_pairs` counts only discordant cases (wins plus losses), since
-tool-call ties provide no information to that sign test.
-Latency is reported and used only as a ranking tie-breaker; it is not promotion
-evidence because wall-clock measurements are comparatively noisy.
+`minimum_economy_pairs` counts only discordant statistical units (wins plus
+losses), since tool-call ties provide no information to that sign test. The
+suite must contain at least that many possible units before evaluation starts.
+Latency is reported but is neither a ranking tie-breaker nor promotion evidence
+because wall-clock measurements are comparatively noisy.
 
 After each run, the CLI prints a prompt-free aggregate summary for every
 candidate: parent and child pass counts, effect size, paired wins/losses/ties,
@@ -267,9 +323,12 @@ Programs are invoked directly, never through a generated shell command:
 The child working directory is the private scratch directory. `HOME` and temp
 variables point inside it; the environment is replaced with a small baseline
 plus explicitly listed `pass_env` values. Standard output/error, response size,
-and direct-child execution time are bounded. These limits are not OS resource
-isolation: they do not cap CPU, memory, process count, or reliably terminate
-descendants started by an adapter.
+and execution time are bounded. Learning adapters run in an owned POSIX process
+group or Windows Job Object, so ordinary descendants are terminated on timeout,
+orchestrator error, and parent exit. This is process-lifecycle containment, not
+OS resource isolation: it does not cap CPU, memory, or process count, prevent a
+process from deliberately escaping the owned tree, or revoke remote provider
+work that was already accepted.
 
 ### Mutation
 
@@ -305,16 +364,20 @@ The mutator writes `child.genome` and responds with
 
 The engine rejects the response unless `child_sha256` matches the exact bytes it
 stores as the candidate genome. Promotion rechecks that binding from immutable
-evidence.
+evidence. `description` is retained only in that local evidence for debugging;
+because it is adapter-controlled and may contain sensitive or adversarial text,
+aggregate summaries and the model-facing `learn_candidate` result never render
+it.
 
 ### Paired evaluation
 
 The request uses `codegraff.learn.evaluation.request.v1` and includes the trial,
 candidate, exact cohort ID, suite hash, `suite_path: "suite.json"`, parent and
-child IDs/relative files, repetition count, and ordered pairs:
+child IDs/relative files, repetition count, and ordered pairs. The optional
+statistical-unit field is omitted for legacy one-case-per-unit suites:
 
 ```json
-{"case_id": "case-001", "seed": "<deterministic id>", "critical": true}
+{"case_id": "case-001a", "statistical_unit_id": "scenario-001", "seed": "<deterministic id>", "critical": true}
 ```
 
 The response uses `codegraff.learn.evaluation.response.v1`, repeats the envelope
@@ -334,6 +397,13 @@ IDs, and returns exactly one ordered result per requested pair:
   "child_latency_ms": 9
 }
 ```
+
+The pair seed is a deterministic evidence identity shared across arms. An
+adapter backed by a seed-capable model API may also use it to control sampling.
+The bundled Codex Responses evaluator cannot: the Responses API has no sampling
+seed parameter, so it uses the value for parent/child order counterbalancing and
+treats model generations as stochastic repetitions. Those repetitions remain
+inside their case's statistical unit and never increase independent power.
 
 Costs and latencies are optional and default to zero. The Zig engine validates
 the envelope, ordering, bounds, deterministic seeds, trial derivation, and every
@@ -355,6 +425,7 @@ evidence/        immutable adapter requests/responses
 runs/            immutable verified run records
 transactions/    immutable activation history
 refs/active.json mutable atomic active ref
+refs/pending.json mutable atomic in-flight tournament checkpoint
 locks/engine.lock
 tmp/             per-invocation private scratch
 ```
@@ -365,6 +436,14 @@ share an ID. Immutable writes use exclusive atomic publication. On POSIX,
 promotion writes and synchronizes the transaction first, then atomically
 replaces `refs/active.json` and synchronizes its directory; synchronization
 errors fail the command.
+
+The pending ref is recovery state, not promotion authority. It contains only
+lineage, immutable object IDs, and aggregate comparisons. Resume validates the
+active parent/configuration, deterministic trial derivation, mutation evidence,
+shared baseline projection, every completed primary comparison, sole winner,
+and any holdout reservation/comparison. A holdout reservation can be reused
+only by its exact original trial, so recovery cannot switch candidates or start
+a new tournament against the same exposed suite.
 
 Windows synchronizes file contents and uses atomic replacement, but the Zig I/O
 API does not portably flush directory handles. Graff therefore skips the
@@ -396,11 +475,28 @@ requires an aggregate-or-higher learning ceiling, selected with
 `--learning-privacy aggregate`, `GRAFF_LEARNING_PRIVACY=aggregate`, or
 `/privacy aggregate`. The root-only `learn_candidate` tool can instead request
 one explicit bundled aggregate submission without changing the session mode. An explicit `--submit` or
-`learn submit` then publishes only the existing signed score envelope:
-short parent/child fingerprints, aggregate pass rate, run/suite/cohort metadata,
-and content-addressed evidence IDs. It does not publish prompt text, tasks,
-adapter input/output, repository data, or local traces. The collector exposes a
-retry-safe receipt at `GET /v1/learning/<RUN_ID>`.
+`learn submit` publishes the existing signed score plus a separately signed
+`codegraff.learn.grade.v1` receipt: fixed aggregate pass/delta/significance,
+regression, tool/cost/latency, gate (including economy-gate enablement), and
+eligibility fields; short parent/child fingerprints; run/suite/cohort metadata;
+and content-addressed evidence IDs. It
+does not publish prompt text, tasks, adapter input/output, repository data, raw
+error details, paths, or local traces.
+It also omits the ordinary telemetry installation identifier and platform
+metadata, so separate explicit submissions cannot be linked through a stable
+client identity. The collector ignores legacy learning install identifiers.
+Buffered learning events recheck the current privacy mode and fleet kill switch
+at send time, so lowering consent suppresses already queued events. SDK clients
+apply the same policy to each harness instance, honor `--no-telemetry` and
+`GRAFF_FLEET=off`, allowlist fixed event kinds/provider classes, and fingerprint
+unexpected free-form labels before egress. The collector independently validates
+field ranges and cross-field invariants after both signatures, stores learning
+comparisons outside fleet fitness, and exposes them at the retry-safe
+`GET /v1/learning/<RUN_ID>` receipt endpoint.
+
+The bundled evaluator transfers parent and child prompts to its local Graff
+process through the JSON stdin control channel, not command-line arguments, so
+the full prompt is not exposed by ordinary process listings.
 
 Once activated, the learned prompt is used like any other agent prompt:
 
@@ -434,11 +530,12 @@ python3 tests/learn_graff_adapters.py
 
 For an explicitly consented model-backed trial,
 `examples/prepare_graff_tournament.py` creates an isolated workspace, a newly
-randomized five-case holdout, and pinned four-arm configuration. The shipped
+randomized 40-case/40-unit holdout, and pinned four-arm configuration. The
+primary suite contains 60 rows representing 44 independent units. The shipped
 arm map uses `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
 `gpt-5.4-mini`; all prompts are evaluated by the same pinned cohort. The
 mutator intentionally sends the parent prompt to those providers, while inner
-agent telemetry is disabled and only the five signed aggregate tournament
+agent telemetry is disabled and only prompt-free signed aggregate tournament
 grades are submitted. The generated config keeps automatic promotion off.
 
 ## Collective learning: aggregate receipts, not promotion authority

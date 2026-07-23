@@ -8,7 +8,17 @@ const stats = @import("learn_stats.zig");
 fn reductionPpm(parent: u64, child: u64) i64 {
     if (parent == 0) return if (child == 0) 0 else -1_000_000;
     const delta = @as(i128, parent) - @as(i128, child);
-    return @intCast(@divTrunc(delta * 1_000_000, @as(i128, parent)));
+    const raw = @divTrunc(delta * 1_000_000, @as(i128, parent));
+    // Economy promotion only distinguishes reductions from non-reductions.
+    // Bound regressions at -100% so hostile-but-valid aggregate counters can
+    // neither overflow i64 nor escape the signed receipt's fixed range.
+    return @intCast(@max(-1_000_000, raw));
+}
+
+test "tool-call reduction is bounded for extreme regressions" {
+    try std.testing.expectEqual(@as(i64, -1_000_000), reductionPpm(1, std.math.maxInt(u64)));
+    try std.testing.expectEqual(@as(i64, 0), reductionPpm(0, 0));
+    try std.testing.expectEqual(@as(i64, 500_000), reductionPpm(10, 5));
 }
 
 pub fn computeComparison(
@@ -30,6 +40,7 @@ pub fn computeComparison(
     var tool_losses: usize = 0;
     var child_critical_failures: usize = 0;
     var critical_regressions: usize = 0;
+    var correctness_regressions: usize = 0;
     var score_delta: i128 = 0;
     var parent_cost: u64 = 0;
     var child_cost: u64 = 0;
@@ -46,7 +57,10 @@ pub fn computeComparison(
         if (result.parent_pass) parent_passes += 1;
         if (result.child_pass) child_passes += 1;
         if (!result.child_pass and pair.critical) child_critical_failures += 1;
-        if (result.parent_pass and !result.child_pass and pair.critical) critical_regressions += 1;
+        if (result.parent_pass and !result.child_pass) {
+            correctness_regressions += 1;
+            if (pair.critical) critical_regressions += 1;
+        }
         score_delta += @as(i128, result.child_score_ppm) - @as(i128, result.parent_score_ppm);
         parent_cost = try stats.checkedMetricAdd(parent_cost, result.parent_cost_micros);
         child_cost = try stats.checkedMetricAdd(child_cost, result.child_cost_micros);
@@ -58,11 +72,12 @@ pub fn computeComparison(
         latency_measured = latency_measured and result.latency_measured;
     }
 
-    // Repetitions of one case are one statistical unit. Aggregate correctness
-    // and calls per case before comparing directions.
+    // Repetitions and explicitly related clone IDs are one statistical unit.
+    // Aggregate correctness and calls within that unit before directions.
     for (requested, 0..) |pair, index| {
+        const unit_id = protocol.statisticalUnitId(pair);
         var seen = false;
-        for (requested[0..index]) |prior| if (std.mem.eql(u8, prior.case_id, pair.case_id)) {
+        for (requested[0..index]) |prior| if (std.mem.eql(u8, protocol.statisticalUnitId(prior), unit_id)) {
             seen = true;
             break;
         };
@@ -73,7 +88,7 @@ pub fn computeComparison(
         var parent_case_calls: u64 = 0;
         var child_case_calls: u64 = 0;
         for (response.pairs, requested) |result, grouped_pair| {
-            if (!std.mem.eql(u8, grouped_pair.case_id, pair.case_id)) continue;
+            if (!std.mem.eql(u8, protocol.statisticalUnitId(grouped_pair), unit_id)) continue;
             if (result.parent_pass) parent_case_passes += 1;
             if (result.child_pass) child_case_passes += 1;
             parent_case_calls = try stats.checkedMetricAdd(parent_case_calls, result.parent_tool_calls);
@@ -99,7 +114,8 @@ pub fn computeComparison(
     const tool_discordant = tool_wins + tool_losses;
     const economy_eligible = config.gate.economy_gate_enabled and
         child_critical_failures == 0 and statistical_units >= config.gate.minimum_pairs and
-        child_passes >= parent_passes and losses == 0 and mean_score_delta >= 0 and
+        correctness_regressions == 0 and child_passes >= parent_passes and
+        losses == 0 and mean_score_delta >= 0 and
         tool_calls_measured and
         tool_discordant >= config.gate.minimum_economy_pairs and
         tool_delta >= config.gate.minimum_tool_reduction_ppm and tool_significant;
@@ -118,7 +134,7 @@ pub fn computeComparison(
         reason = "economy_eligible";
     } else {
         eligible = false;
-        reason = if (config.gate.promotion_mode == .economy and (child_passes < parent_passes or losses > 0 or mean_score_delta < 0))
+        reason = if (config.gate.promotion_mode == .economy and (correctness_regressions > 0 or child_passes < parent_passes or losses > 0 or mean_score_delta < 0))
             "correctness_regression"
         else if (config.gate.promotion_mode == .economy and !tool_calls_measured)
             "tool_calls_unmeasured"
@@ -146,6 +162,7 @@ pub fn computeComparison(
         .ties = statistical_units - wins - losses,
         .child_critical_failures = child_critical_failures,
         .critical_regressions = critical_regressions,
+        .correctness_regressions = correctness_regressions,
         .delta_ppm = delta_ppm,
         .mean_score_delta_ppm = mean_score_delta,
         .p_value_ppb = stats.toPpb(correctness_p),

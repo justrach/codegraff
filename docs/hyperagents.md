@@ -274,7 +274,9 @@ Exact-answer checks deliberately reject substring false positives such as
 `1391` for an expected answer of `391`. The separate
 `examples/dgm_canary_eval_set.jsonl` supplies unseen boundary variants for a
 final generalization check. The judge is dependency-free (speaks the
-`harness --json` protocol directly) so its pinned copy runs anywhere.
+`harness --json` protocol directly) so its pinned copy runs anywhere. Candidate
+genomes are installed through the stdin control protocol rather than command
+arguments, keeping full prompt text out of ordinary process listings.
 
 **Custody (same model as the score key).** `--pin` installs the eval set
 and the judge itself under `~/.simple-harness/evals/` — outside the
@@ -471,7 +473,10 @@ signed fields and can emit prompt-free `fleet:propose`/`fleet:submit` in
 aggregate-or-higher mode. The generated SDKs have no interactive artifact
 review UI, so their final emitter strips `prompt_text` even in template mode.
 `pullElites(providerClass)` / `pull_elites(...)` is gated by the same learning
-mode. A future SDK content API needs an explicit preview/consent primitive.
+mode and the per-instance telemetry/fleet controls. Raw error detail is never
+serialized; event kinds and provider classes are allowlisted, while unexpected
+free-form labels are reduced to bounded fingerprints. A future SDK content API
+needs an explicit preview/consent primitive.
 
 ### Scaffolded vs TODO
 

@@ -15,6 +15,7 @@ def _case(
     setup: dict[str, str] | None = None,
     *,
     critical: bool = False,
+    statistical_unit_id: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"id": case_id, "task": task, "check": check}
     if setup is not None:
@@ -22,6 +23,8 @@ def _case(
     result: dict[str, Any] = {"id": case_id, "payload": payload}
     if critical:
         result["critical"] = True
+    if statistical_unit_id is not None:
+        result["statistical_unit_id"] = statistical_unit_id
     return result
 
 
@@ -29,8 +32,10 @@ def _exact(case_id: str, task: str, expected: str, setup: dict[str, str] | None 
     return _case(case_id, task, {"exact": expected}, setup)
 
 
-def _mutation(case_id: str, task: str, command: str, setup: dict[str, str] | None = None) -> dict[str, Any]:
-    return _case(case_id, task, {"cmd": command}, setup, critical=True)
+def _mutation(case_id: str, task: str, command: str, setup: dict[str, str] | None = None,
+              *, statistical_unit_id: str | None = None) -> dict[str, Any]:
+    return _case(case_id, task, {"cmd": command}, setup, critical=True,
+                 statistical_unit_id=statistical_unit_id)
 
 
 def primary_cases() -> list[dict[str, Any]]:
@@ -293,6 +298,7 @@ def primary_cases() -> list[dict[str, Any]]:
             f"Ensure {name} contains exactly state={token}. It already does, so leave it unchanged.",
             f"test \"$(cat {name})\" = state={token} && test \"$(wc -c < {name})\" -eq {len(token) + 7}",
             {name: f"state={token}\n"},
+            statistical_unit_id="edit-noop",
         ))
     for index in range(5):
         cases.append(_mutation(
@@ -300,6 +306,7 @@ def primary_cases() -> list[dict[str, Any]]:
             f"Remove lines beginning DROP: from filter{index}.txt without reordering the other lines.",
             f"test \"$(cat filter{index}.txt)\" = 'a{index}\nb{index}\nc{index}'",
             {f"filter{index}.txt": f"a{index}\nDROP:x\nb{index}\nDROP:y\nc{index}\n"},
+            statistical_unit_id="edit-filter",
         ))
     for index in range(5):
         cases.append(_mutation(
@@ -307,6 +314,7 @@ def primary_cases() -> list[dict[str, Any]]:
             f"Deduplicate ids{index}.txt in place, preserving first-occurrence order.",
             f"test \"$(cat ids{index}.txt)\" = 'k{index}a\nk{index}b\nk{index}c'",
             {f"ids{index}.txt": f"k{index}a\nk{index}b\nk{index}a\nk{index}c\nk{index}b\n"},
+            statistical_unit_id="edit-dedupe",
         ))
     for index in range(5):
         desired_value = secrets.randbelow(8000) + 1000
@@ -318,6 +326,7 @@ def primary_cases() -> list[dict[str, Any]]:
                 f"desired{index}.ini": f"limit={desired_value}\n",
                 f"runtime{index}.ini": f"name=worker{index}\nlimit=10\n",
             },
+            statistical_unit_id="edit-copy",
         ))
     return cases
 
@@ -361,8 +370,16 @@ def fresh_holdout() -> list[dict[str, Any]]:
         _mutation("fresh-econ-sum-write", "Sum the integers in amounts.txt and write only the total to answer.txt.", f"test \"$(cat answer.txt)\" = {sum(numbers)}", {"amounts.txt": "\n".join(map(str, numbers)) + "\n"}),
         _mutation("fresh-econ-uppercase", "Read phase.txt and write its uppercase text to loud.txt with no trailing newline.", "test \"$(cat loud.txt)\" = AURORA && test \"$(wc -c < loud.txt)\" -eq 6", {"phase.txt": "aurora\n"}),
         _mutation("fresh-econ-filter", "Write kept.txt from source.txt with lines beginning DROP: removed, preserving all others.", "test \"$(cat kept.txt)\" = 'one\ntwo\nthree'", {"source.txt": "one\nDROP:a\ntwo\nDROP:b\nthree\n"}),
+        _mutation("fresh-shift-reverse-block", "Reverse the line order in queue.txt in place.", "test \"$(cat queue.txt)\" = 'third\nsecond\nfirst'", {"queue.txt": "first\nsecond\nthird\n"}),
+        _mutation("fresh-shift-rename-key", "In theme.ini rename only the key colour to color without changing its value or any other line.", "test \"$(cat theme.ini)\" = 'name=night\ncolor=blue\nmode=calm'", {"theme.ini": "name=night\ncolour=blue\nmode=calm\n"}),
+        _mutation("fresh-shift-interleave", "Interleave same-position lines from left.txt and right.txt into woven.txt, starting with left.", "test \"$(cat woven.txt)\" = 'L1\nR1\nL2\nR2\nL3\nR3'", {"left.txt": "L1\nL2\nL3\n", "right.txt": "R1\nR2\nR3\n"}),
+        _mutation("fresh-shift-last-occurrence", "In flags.txt change only the final old line to new.", "test \"$(cat flags.txt)\" = 'old\nkeep\nold\nnew'", {"flags.txt": "old\nkeep\nold\nold\n"}),
+        _mutation("fresh-shift-extract-column", "Write ranks.txt containing the numeric second column of table.txt sorted ascending, one value per line.", "test \"$(cat ranks.txt)\" = '2\n7\n11'", {"table.txt": "oak 11\npine 2\ncedar 7\n"}),
+        _mutation("fresh-shift-section-update", "In service.ini change timeout to 45 only inside the worker section.", "test \"$(cat service.ini)\" = '[global]\ntimeout=10\n[worker]\ntimeout=45\nretries=2'", {"service.ini": "[global]\ntimeout=10\n[worker]\ntimeout=30\nretries=2\n"}),
+        _mutation("fresh-shift-prefix-nonblank", "Prefix every nonblank line in notes.txt with '- ' while preserving the blank line.", "test \"$(cat notes.txt)\" = '- alpha\n\n- beta'", {"notes.txt": "alpha\n\nbeta\n"}),
+        _mutation("fresh-shift-json-labels", "Read the objects in items.json and write their label values to labels.txt in array order.", "test \"$(cat labels.txt)\" = 'ember\nfrost\ngrove'", {"items.json": '[{"label":"ember"},{"label":"frost"},{"label":"grove"}]\n'}),
     ]
-    for index in range(3):
+    for index in range(1):
         fresh_token = secrets.token_hex(4)
         name = f"fresh-ready{index}.cfg"
         cases.append(_mutation(
@@ -371,21 +388,21 @@ def fresh_holdout() -> list[dict[str, Any]]:
             f"test \"$(cat {name})\" = ready={fresh_token} && test \"$(wc -c < {name})\" -eq {len(fresh_token) + 7}",
             {name: f"ready={fresh_token}\n"},
         ))
-    for index in range(3):
+    for index in range(1):
         cases.append(_mutation(
             f"fresh-edit-filter-random-{index}",
             f"Remove lines beginning OMIT: from fresh-filter{index}.txt without reordering other lines.",
             f"test \"$(cat fresh-filter{index}.txt)\" = 'p{index}\nq{index}\nr{index}'",
             {f"fresh-filter{index}.txt": f"p{index}\nOMIT:x\nq{index}\nOMIT:y\nr{index}\n"},
         ))
-    for index in range(3):
+    for index in range(1):
         cases.append(_mutation(
             f"fresh-edit-dedupe-random-{index}",
             f"Deduplicate fresh-ids{index}.txt in place while preserving first-occurrence order.",
             f"test \"$(cat fresh-ids{index}.txt)\" = 'v{index}a\nv{index}b\nv{index}c'",
             {f"fresh-ids{index}.txt": f"v{index}a\nv{index}b\nv{index}a\nv{index}c\nv{index}b\n"},
         ))
-    for index in range(3):
+    for index in range(1):
         desired_limit = secrets.randbelow(8000) + 1000
         cases.append(_mutation(
             f"fresh-edit-copy-random-{index}",
@@ -409,10 +426,24 @@ def validate_case_catalog(cases: list[dict[str, Any]], expected: int) -> None:
         check = payload.get("check")
         if not isinstance(check, dict) or len(check) != 1:
             raise ValueError("every case needs exactly one check")
+    criticality: dict[str, bool] = {}
+    for case in cases:
+        unit = case.get("statistical_unit_id", case["id"])
+        critical = bool(case.get("critical", False))
+        if unit in criticality and criticality[unit] != critical:
+            raise ValueError("one statistical unit cannot mix criticality")
+        criticality[unit] = critical
+
+
+def statistical_unit_count(cases: list[dict[str, Any]]) -> int:
+    return len({case.get("statistical_unit_id", case["id"]) for case in cases})
 
 
 if __name__ == "__main__":
     primary, holdout = primary_cases(), fresh_holdout()
     validate_case_catalog(primary, 60)
     validate_case_catalog(holdout, 40)
-    print(json.dumps({"primary": len(primary), "holdout": len(holdout)}))
+    print(json.dumps({
+        "primary": len(primary), "primary_units": statistical_unit_count(primary),
+        "holdout": len(holdout), "holdout_units": statistical_unit_count(holdout),
+    }))

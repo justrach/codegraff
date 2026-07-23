@@ -112,8 +112,79 @@ pub fn validateSuite(manifest: SuiteManifest) !void {
     if (manifest.cases.len == 0 or manifest.cases.len > max_pairs) return error.InvalidSuiteCases;
     for (manifest.cases, 0..) |case, i| {
         if (!validName(case.id, 128)) return error.InvalidCaseId;
+        if (case.statistical_unit_id) |unit| if (!validName(unit, 128)) return error.InvalidStatisticalUnitId;
         for (manifest.cases[0..i]) |prior| if (std.mem.eql(u8, prior.id, case.id)) return error.DuplicateCaseId;
+        const unit = case.statistical_unit_id orelse case.id;
+        for (manifest.cases[0..i]) |prior| {
+            const prior_unit = prior.statistical_unit_id orelse prior.id;
+            if (std.mem.eql(u8, prior_unit, unit) and prior.critical != case.critical)
+                return error.MixedStatisticalUnitCriticality;
+        }
     }
+}
+
+pub fn statisticalUnitCount(manifest: SuiteManifest) usize {
+    var count: usize = 0;
+    for (manifest.cases, 0..) |case, index| {
+        const unit = case.statistical_unit_id orelse case.id;
+        var seen = false;
+        for (manifest.cases[0..index]) |prior| {
+            const prior_unit = prior.statistical_unit_id orelse prior.id;
+            if (std.mem.eql(u8, prior_unit, unit)) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) count += 1;
+    }
+    return count;
+}
+
+/// A holdout is confirmation evidence only when it is declared as a distinct
+/// suite and none of its independent statistical units appeared in primary
+/// selection. Different JSON bytes alone are insufficient: an edited copy of
+/// the primary cases would otherwise look like fresh evidence.
+pub fn validateHoldoutIndependence(
+    primary_sha256: []const u8,
+    primary: SuiteManifest,
+    holdout_sha256: []const u8,
+    holdout: SuiteManifest,
+) !void {
+    if (std.mem.eql(u8, primary_sha256, holdout_sha256)) return error.HoldoutMatchesPrimary;
+    if (std.mem.eql(u8, primary.suite_id, holdout.suite_id)) return error.HoldoutSuiteIdOverlap;
+    for (primary.cases) |primary_case| {
+        const primary_unit = primary_case.statistical_unit_id orelse primary_case.id;
+        for (holdout.cases) |holdout_case| {
+            const holdout_unit = holdout_case.statistical_unit_id orelse holdout_case.id;
+            if (std.mem.eql(u8, primary_unit, holdout_unit))
+                return error.HoldoutStatisticalUnitOverlap;
+        }
+    }
+}
+
+pub fn validateSuitePower(manifest: SuiteManifest, gate: store.Gate) !void {
+    const units = statisticalUnitCount(manifest);
+    if (units < gate.minimum_pairs) return error.UnderpoweredSuite;
+    if (gate.promotion_mode == .economy and units < gate.minimum_economy_pairs)
+        return error.UnderpoweredSuite;
+}
+
+/// Fewest all-win independent units whose exact one-sided p-value can survive
+/// the configured Bonferroni correction. With no losses, p = 2^-units.
+pub fn minimumSignificantUnits(gate: store.Gate, planned_candidates: usize) !usize {
+    if (planned_candidates == 0 or planned_candidates > 16) return error.InvalidNumber;
+    const target = @as(u64, @intCast(planned_candidates)) * 1_000_000;
+    var corrected_alpha: u64 = gate.alpha_ppm;
+    var units: usize = 0;
+    while (corrected_alpha < target) : (units += 1)
+        corrected_alpha = try std.math.mul(u64, corrected_alpha, 2);
+    return units;
+}
+
+pub fn validateSuiteTrialPower(manifest: SuiteManifest, gate: store.Gate, planned_candidates: usize) !void {
+    try validateSuitePower(manifest, gate);
+    if (statisticalUnitCount(manifest) < try minimumSignificantUnits(gate, planned_candidates))
+        return error.InsufficientSignificancePower;
 }
 
 pub fn validateTransaction(tx: store.Transaction) !void {

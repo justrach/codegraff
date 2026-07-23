@@ -1,8 +1,8 @@
 //! One-use reservations for hidden learning suites.
 //!
 //! The marker is created before evaluator invocation. A crash after exposure
-//! therefore leaves the suite consumed, which is safer than silently reusing a
-//! holdout until it passes.
+//! may resume only the same checkpointed trial; every different trial sees the
+//! suite as consumed.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -53,6 +53,22 @@ pub fn reserve(io: Io, root: Io.Dir, suite_sha256: []const u8, trial_id: []const
     try store.syncDirectory(io, root);
 }
 
+/// New trials fail before invoking a mutator or evaluator when their hidden
+/// suite was already exposed. The engine lock makes this check race-free with
+/// reserve() inside one learning store. Resumes deliberately skip it and
+/// verify the existing reservation against their original trial instead.
+pub fn ensureUnused(io: Io, root: Io.Dir, suite_sha256: []const u8) !void {
+    var name_buffer: [69]u8 = undefined;
+    const name = try markerName(suite_sha256, &name_buffer);
+    const reservations = try openReservations(io, root);
+    defer reservations.close(io);
+    reservations.access(io, name, .{}) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    return error.HoldoutConsumed;
+}
+
 pub fn verify(io: Io, root: Io.Dir, allocator: Allocator, suite_sha256: []const u8, trial_id: []const u8) !void {
     if (!store.validId(trial_id)) return error.InvalidId;
     var name_buffer: [69]u8 = undefined;
@@ -65,14 +81,30 @@ pub fn verify(io: Io, root: Io.Dir, allocator: Allocator, suite_sha256: []const 
         return error.HoldoutReservationMismatch;
 }
 
+/// Resume may revisit an already exposed holdout only for the exact trial that
+/// created its durable reservation. A different trial still fails closed.
+pub fn reserveOrVerify(io: Io, root: Io.Dir, allocator: Allocator, suite_sha256: []const u8, trial_id: []const u8) !void {
+    reserve(io, root, suite_sha256, trial_id) catch |err| switch (err) {
+        error.HoldoutConsumed => verify(io, root, allocator, suite_sha256, trial_id) catch |verify_err| switch (verify_err) {
+            error.HoldoutReservationMismatch => return error.HoldoutConsumed,
+            else => return verify_err,
+        },
+        else => return err,
+    };
+}
+
 test "hidden suite reservations are durable and one-use" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const suite = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const trial = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    try ensureUnused(io, tmp.dir, suite);
     try reserve(io, tmp.dir, suite, trial);
+    try std.testing.expectError(error.HoldoutConsumed, ensureUnused(io, tmp.dir, suite));
     try verify(io, tmp.dir, std.testing.allocator, suite, trial);
+    try reserveOrVerify(io, tmp.dir, std.testing.allocator, suite, trial);
     try std.testing.expectError(error.HoldoutConsumed, reserve(io, tmp.dir, suite, trial));
+    try std.testing.expectError(error.HoldoutConsumed, reserveOrVerify(io, tmp.dir, std.testing.allocator, suite, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"));
     try std.testing.expectError(error.HoldoutReservationMismatch, verify(io, tmp.dir, std.testing.allocator, suite, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"));
 }

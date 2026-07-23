@@ -7,10 +7,12 @@ const eval = @import("learn_eval.zig");
 
 fn writeComparison(out: *Io.Writer, label: []const u8, comparison: eval.ComparisonRecord) !void {
     try out.print(
-        "  {s}: pass {d}/{d} -> {d}/{d}; delta {d} ppm; " ++
-            "wins/losses/ties {d}/{d}/{d}; p {d} ppb; ",
+        "  {s}: {d} pairs; {d} independent units; pass {d}/{d} -> {d}/{d}; delta {d} ppm; " ++
+            "wins/losses/ties {d}/{d}/{d}; regressions {d}; p {d} ppb; ",
         .{
             label,
+            comparison.pairs,
+            comparison.statistical_units,
             comparison.parent_passes,
             comparison.pairs,
             comparison.child_passes,
@@ -19,6 +21,7 @@ fn writeComparison(out: *Io.Writer, label: []const u8, comparison: eval.Comparis
             comparison.wins,
             comparison.losses,
             comparison.ties,
+            comparison.correctness_regressions,
             comparison.p_value_ppb,
         },
     );
@@ -48,7 +51,6 @@ fn writeComparison(out: *Io.Writer, label: []const u8, comparison: eval.Comparis
 pub fn writeCandidateSummary(out: *Io.Writer, candidates: []const eval.CandidateRecord) !void {
     for (candidates, 0..) |candidate, index| {
         try out.print("candidate {d} {s}", .{ index + 1, candidate.genome_id });
-        if (candidate.mutation.description.len > 0) try out.print(" ({s})", .{candidate.mutation.description});
         if (candidate.mutation.genome_bytes > 0) try out.print(" [{d} bytes]", .{candidate.mutation.genome_bytes});
         try out.writeByte('\n');
         if (candidate.primary) |primary|
@@ -76,6 +78,7 @@ test "candidate summary reports actionable aggregate evidence without content" {
         .losses = 0,
         .ties = 14,
         .critical_regressions = 0,
+        .correctness_regressions = 1,
         .delta_ppm = 66_666,
         .mean_score_delta_ppm = 66_666,
         .p_value_ppb = 500_000_000,
@@ -97,7 +100,12 @@ test "candidate summary reports actionable aggregate evidence without content" {
     };
     const candidates = [_]eval.CandidateRecord{.{
         .genome_id = "child-fingerprint",
-        .mutation = .{ .seed = "seed", .request_evidence_id = "mutation-request", .response_evidence_id = "mutation-response" },
+        .mutation = .{
+            .seed = "seed",
+            .request_evidence_id = "mutation-request",
+            .response_evidence_id = "mutation-response",
+            .description = "PRIVATE_MUTATOR_OUTPUT_DO_NOT_RENDER",
+        },
         .primary = comparison,
         .holdout = null,
         .eligible = false,
@@ -107,10 +115,13 @@ test "candidate summary reports actionable aggregate evidence without content" {
     defer allocating.deinit();
     try writeCandidateSummary(&allocating.writer, &candidates);
     const rendered = allocating.written();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "15 pairs; 15 independent units") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "pass 14/15 -> 15/15") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "wins/losses/ties 1/0/14") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "regressions 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "calls 23 -> 29") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "latency 100 -> 80 ms") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "decision: not_significant") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "suite") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "PRIVATE_MUTATOR_OUTPUT_DO_NOT_RENDER") == null);
 }

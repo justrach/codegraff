@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Loopback-only end-to-end regression test for `graff learn`.
-
-Build first, then run:
-    python3 tests/learn_e2e.py --graff zig-out/bin/graff
-
-The fixture uses deterministic local mutator/evaluator programs. Ordinary
-telemetry is disabled; one explicit submit is captured by a loopback server.
-"""
+"""Loopback E2E for local learning plus one explicit captured submission."""
 
 from __future__ import annotations
 
@@ -26,6 +19,8 @@ import sys
 import tempfile
 import threading
 from typing import Any
+
+from learning_receipt_assertions import assert_learning_records
 
 
 def raw_sha256(path: Path) -> str:
@@ -217,6 +212,7 @@ def run_id_from(output: str) -> str:
 
 class GradeCapture(BaseHTTPRequestHandler):
     payloads: list[dict[str, Any]] = []
+    deletions: list[tuple[str, str | None]] = []
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         assert self.path == "/v1/logs"
@@ -226,6 +222,11 @@ class GradeCapture(BaseHTTPRequestHandler):
         self.send_header("content-type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"ok":true,"queued":true}')
+
+    def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self.deletions.append((self.path, self.headers.get("x-learning-delete-token")))
+        self.send_response(204)
+        self.end_headers()
 
     def log_message(self, _format: str, *_args: Any) -> None:
         pass
@@ -238,6 +239,7 @@ def verify_grade_submit(graff: Path, workspace: Path, env: dict[str, str], root:
     key_path.parent.mkdir(mode=0o700)
     write_private(key_path, key + b"\n")
     GradeCapture.payloads = []
+    GradeCapture.deletions = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), GradeCapture)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -265,32 +267,29 @@ def verify_grade_submit(graff: Path, workspace: Path, env: dict[str, str], root:
         assert not GradeCapture.payloads, "fleet master-off must block learning egress"
         output = invoke(graff, workspace, submit_env, "submit", run_id).stdout
         assert "submitted 2 signed aggregate grade(s)" in output
+        delete_env = {**submit_env, "GRAFF_NO_TELEMETRY": "1", "GRAFF_FLEET": "off"}
+        deleted = invoke(graff, workspace, delete_env, "delete-remote", run_id).stdout
+        assert "local evidence was not changed" in deleted
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
 
     assert len(GradeCapture.payloads) == 1
+    run = json.loads((workspace / ".graff" / "learn" / "runs" / f"{run_id}.json").read_text())
+    delete_message = f"codegraff.learn.delete.v1\n{run_id}\n{run['nonce']}".encode()
+    expected_delete_token = hmac.new(key, delete_message, hashlib.sha256).hexdigest()
+    assert GradeCapture.deletions == [(f"/v1/learning/{run_id}", expected_delete_token)]
     payload = GradeCapture.payloads[0]
     encoded = json.dumps(payload, separators=(",", ":"))
     assert "prompt_text" not in encoded and "Learned fixture policy" not in encoded
     resource = payload["resourceLogs"][0]
     resource_attrs = {item["key"]: next(iter(item["value"].values())) for item in resource["resource"]["attributes"]}
-    assert resource_attrs["client.name"] == "harness-learn"
+    assert resource_attrs == {"client.name": "harness-learn"}
+    assert not (root / ".simple-harness-install-id").exists()
     records = resource["scopeLogs"][0]["logRecords"]
     assert len(records) == 2
-    for record in records:
-        assert record["body"]["stringValue"] == "score"
-        attrs = {item["key"]: next(iter(item["value"].values())) for item in record["attributes"]}
-        assert attrs["run_id"] == run_id and attrs["value"] == 1
-        message = "\n".join(
-            [
-                "v2", attrs["prompt_sha"], attrs["parent_sha"], f'{attrs["value"]:.6f}',
-                attrs["run_id"], attrs["judge_id"], attrs["artifact_sha"],
-                attrs["eval_set_hash"], attrs["niche"], attrs["provider_class"],
-            ]
-        ).encode()
-        assert attrs["sig"] == hmac.new(key, message, hashlib.sha256).hexdigest()
+    assert_learning_records(records, run_id, key, 1, expected_delete_token)
 
 
 def status(graff: Path, workspace: Path, env: dict[str, str]) -> dict[str, Any]:

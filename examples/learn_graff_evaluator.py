@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 
 REQUEST_SCHEMA = "codegraff.learn.evaluation.request.v1"
@@ -23,6 +23,9 @@ BASELINE_RESPONSE_SCHEMA = "codegraff.learn.primary-baseline.response.v1"
 PRIMARY_REQUEST_SCHEMA = "codegraff.learn.primary-evaluation.request.v1"
 PRIMARY_RESPONSE_SCHEMA = "codegraff.learn.primary-evaluation.response.v1"
 PROGRESS_SCHEMA = "codegraff.learn.evaluator-progress.v1"
+ATTEMPT_SCHEMA = "codegraff.learn.evaluator-attempt.v1"
+METRIC_FIELDS = ("latency_ms", "tool_calls", "cost_micros")
+MAX_EXACT_INTEGER = 9_007_199_254_740_991
 
 
 class EvaluationAttemptError(Exception):
@@ -83,14 +86,99 @@ def load_progress(
     return request_sha256, results
 
 
-def save_progress(path: Path, request_sha256: str, results: list[dict[str, Any]]) -> None:
+def save_json_atomic(path: Path, value: Any) -> None:
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps({
+    with temporary.open("w", encoding="utf-8") as output:
+        output.write(json.dumps(value, separators=(",", ":")) + "\n")
+        output.flush()
+        os.fsync(output.fileno())
+    temporary.replace(path)
+    if hasattr(os, "O_DIRECTORY"):
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
+def save_progress(path: Path, request_sha256: str, results: list[dict[str, Any]]) -> None:
+    save_json_atomic(path, {
         "schema": PROGRESS_SCHEMA,
         "request_sha256": request_sha256,
         "results": results,
-    }, separators=(",", ":")) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    })
+
+
+def zero_metrics() -> dict[str, int]:
+    return {field: 0 for field in METRIC_FIELDS}
+
+
+def add_metrics(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
+    return {
+        field: min(MAX_EXACT_INTEGER, max(0, left[field]) + max(0, right[field]))
+        for field in METRIC_FIELDS
+    }
+
+
+def attempt_key(
+    request_sha256: str,
+    pair: dict[str, Any],
+    label: str,
+    prompt: str,
+) -> str:
+    framed = json.dumps([
+        request_sha256,
+        pair.get("case_id"),
+        pair.get("seed"),
+        label,
+        hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+    ], separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(b"codegraff-learn/attempt/v1\0" + framed).hexdigest()
+
+
+def load_attempt(path: Path, key: str) -> tuple[dict[str, int], dict[str, Any] | None]:
+    if not path.exists():
+        return zero_metrics(), None
+    value = load_json(path)
+    if not isinstance(value, dict) or value.get("schema") != ATTEMPT_SCHEMA:
+        fail("invalid evaluator attempt journal")
+    if value.get("key") != key:
+        return zero_metrics(), None
+    metrics = value.get("metrics")
+    if (not isinstance(metrics, dict)
+            or any(not isinstance(metrics.get(field), int)
+                   or not 0 <= metrics[field] <= MAX_EXACT_INTEGER
+                   for field in METRIC_FIELDS)):
+        fail("invalid evaluator attempt metrics")
+    normalized = {field: metrics[field] for field in METRIC_FIELDS}
+    if value.get("complete") is not True:
+        return normalized, None
+    result = value.get("result")
+    if (not isinstance(result, dict) or not isinstance(result.get("pass"), bool)
+            or not isinstance(result.get("score_ppm"), int)
+            or not 0 <= result["score_ppm"] <= 1_000_000
+            or any(result.get(field) != normalized[field] for field in METRIC_FIELDS)):
+        fail("invalid completed evaluator attempt")
+    return normalized, dict(result)
+
+
+def save_attempt(
+    path: Path,
+    key: str,
+    metrics: dict[str, int],
+    result: dict[str, Any] | None = None,
+) -> None:
+    save_json_atomic(path, {
+        "schema": ATTEMPT_SCHEMA,
+        "key": key,
+        "complete": result is not None,
+        "metrics": metrics,
+        "result": result,
+    })
+
+
+def clear_attempt(path: Path) -> None:
+    path.unlink(missing_ok=True)
 
 
 def validate_settings(value: Any) -> dict[str, Any]:
@@ -180,6 +268,7 @@ def run_variant(
     prompt: str,
     case: dict[str, Any],
     cwd: Path,
+    observe: Callable[[dict[str, int]], None] | None = None,
 ) -> dict[str, Any]:
     env = os.environ.copy()
     env["GRAFF_NO_TELEMETRY"] = "1"
@@ -191,7 +280,6 @@ def run_variant(
         str(graff), "--json", "--model", "codex", "--no-resume", "--no-telemetry", "--yolo",
         "--max-model-calls", str(settings["max_model_calls"]),
         "--max-tool-calls", str(settings["max_tool_calls"]),
-        "--system-prompt", prompt,
     ]
     started = time.monotonic()
     proc = subprocess.Popen(
@@ -205,6 +293,9 @@ def run_variant(
     attempt_error: str | None = None
     cost_micros = 0
     try:
+        prompt_event = send(proc, {"type": "set_system_prompt", "text": prompt}, "system_prompt")
+        if prompt_event.get("ok") is not True or prompt_event.get("chars") != len(prompt.encode("utf-8")):
+            fail("evaluator system prompt was not honored")
         model = send(proc, {
             "type": "set_model", "provider": settings["provider"], "model": settings["model"],
         }, "model")
@@ -227,7 +318,13 @@ def run_variant(
                 cost_micros = reported_cost_micros(event)
             if event.get("type") == "tool_call":
                 tool_calls += 1
-            elif event.get("type") == "error":
+            if observe is not None:
+                observe({
+                    "latency_ms": max(0, round((time.monotonic() - started) * 1000)),
+                    "tool_calls": tool_calls,
+                    "cost_micros": cost_micros,
+                })
+            if event.get("type") == "error":
                 attempt_error = f"evaluation turn failed: {event.get('message', 'unknown')}"
                 break
             elif event.get("type") == "turn":
@@ -246,6 +343,12 @@ def run_variant(
             proc.kill()
             proc.wait()
     latency_ms = max(0, round((time.monotonic() - started) * 1000))
+    if observe is not None:
+        observe({
+            "latency_ms": latency_ms,
+            "tool_calls": tool_calls,
+            "cost_micros": cost_micros,
+        })
     if attempt_error is not None:
         raise EvaluationAttemptError(
             attempt_error,
@@ -276,22 +379,35 @@ def run_with_retries(
     prompt: str,
     case: dict[str, Any],
     label: str,
+    key: str,
+    journal_path: Path,
 ) -> dict[str, Any]:
-    prior = {"latency_ms": 0, "tool_calls": 0, "cost_micros": 0}
+    prior, completed = load_attempt(journal_path, key)
+    if completed is not None:
+        return completed
     last_error: EvaluationAttemptError | None = None
     for _attempt in range(settings["max_attempts"]):
         scratch = Path(tempfile.mkdtemp(prefix=f"learn-{label}-", dir="."))
         try:
             safe_setup(scratch, case.get("setup_files"))
-            run = run_variant(graff, settings, prompt, case, scratch)
-            for metric in prior:
-                run[metric] += prior[metric]
+
+            def observe(attempt: dict[str, int]) -> None:
+                save_attempt(journal_path, key, add_metrics(prior, attempt))
+
+            run = run_variant(graff, settings, prompt, case, scratch, observe)
+            total = add_metrics(prior, {field: run[field] for field in METRIC_FIELDS})
+            for field in METRIC_FIELDS:
+                run[field] = total[field]
+            save_attempt(journal_path, key, total, run)
             return run
         except EvaluationAttemptError as exc:
             last_error = exc
-            prior["latency_ms"] += exc.latency_ms
-            prior["tool_calls"] += exc.tool_calls
-            prior["cost_micros"] += exc.cost_micros
+            prior = add_metrics(prior, {
+                "latency_ms": exc.latency_ms,
+                "tool_calls": exc.tool_calls,
+                "cost_micros": exc.cost_micros,
+            })
+            save_attempt(journal_path, key, prior)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
     fail(f"evaluation failed after bounded retries: {last_error}")
@@ -336,7 +452,11 @@ def evaluate(settings_path: Path, graff: Path, request_path: Path, response_path
         if int(str(pair.get("seed", "0"))[-1], 16) % 2:
             order = tuple(reversed(order))
         for label, prompt in order:
-            runs[label] = run_with_retries(graff_executable, settings, prompt, case, label)
+            journal = Path(f".attempt-{label}.json")
+            runs[label] = run_with_retries(
+                graff_executable, settings, prompt, case, label,
+                attempt_key(request_sha256, pair, label, prompt), journal,
+            )
         parent_run = runs["parent"]
         child_run = runs["child"]
         results.append({
@@ -350,6 +470,8 @@ def evaluate(settings_path: Path, graff: Path, request_path: Path, response_path
             "parent_tool_calls": parent_run["tool_calls"], "child_tool_calls": child_run["tool_calls"],
         })
         save_progress(progress_path, request_sha256, results)
+        clear_attempt(Path(".attempt-parent.json"))
+        clear_attempt(Path(".attempt-child.json"))
     response = {
         "schema": RESPONSE_SCHEMA,
         "trial_id": request.get("trial_id"),
@@ -373,7 +495,11 @@ def evaluate_baseline(settings_path: Path, graff: Path, request_path: Path, resp
     request_sha256, results = load_progress(progress_path, request_path, pairs)
     for pair in pairs[len(results):]:
         case = case_for_pair(pair, case_map)
-        run = run_with_retries(graff_executable, settings, parent, case, "baseline")
+        journal = Path(".attempt-baseline.json")
+        run = run_with_retries(
+            graff_executable, settings, parent, case, "baseline",
+            attempt_key(request_sha256, pair, "baseline", parent), journal,
+        )
         results.append({
             "case_id": pair["case_id"], "seed": pair["seed"],
             "pass": run["pass"], "score_ppm": run["score_ppm"],
@@ -382,6 +508,7 @@ def evaluate_baseline(settings_path: Path, graff: Path, request_path: Path, resp
             "tool_calls": run["tool_calls"],
         })
         save_progress(progress_path, request_sha256, results)
+        clear_attempt(journal)
     response = {
         "schema": BASELINE_RESPONSE_SCHEMA,
         "trial_id": request.get("trial_id"),
@@ -413,7 +540,11 @@ def evaluate_primary(settings_path: Path, graff: Path, request_path: Path, respo
                 or parent_run.get("case_id") != pair.get("case_id")
                 or parent_run.get("seed") != pair.get("seed")):
             fail("primary baseline pair mismatch")
-        child_run = run_with_retries(graff_executable, settings, child, case, "child")
+        journal = Path(".attempt-child.json")
+        child_run = run_with_retries(
+            graff_executable, settings, child, case, "child",
+            attempt_key(request_sha256, pair, "child", child), journal,
+        )
         results.append({
             "case_id": pair["case_id"], "seed": pair["seed"],
             "parent_pass": parent_run.get("pass"), "child_pass": child_run["pass"],
@@ -425,6 +556,7 @@ def evaluate_primary(settings_path: Path, graff: Path, request_path: Path, respo
             "parent_tool_calls": parent_run.get("tool_calls", 0), "child_tool_calls": child_run["tool_calls"],
         })
         save_progress(progress_path, request_sha256, results)
+        clear_attempt(journal)
     response = {
         "schema": PRIMARY_RESPONSE_SCHEMA,
         "trial_id": request.get("trial_id"),
