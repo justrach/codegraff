@@ -476,8 +476,8 @@ requires an aggregate-or-higher learning ceiling, selected with
 `/privacy aggregate`. The root-only `learn_candidate` tool can instead request
 one explicit bundled aggregate submission without changing the session mode. An explicit `--submit` or
 `learn submit` publishes the existing signed score plus a separately signed
-`codegraff.learn.grade.v1` receipt: fixed aggregate pass/delta/significance,
-regression, tool/cost/latency, gate (including economy-gate enablement), and
+`codegraff.learn.grade.v3` receipt: fixed aggregate pass/delta/significance,
+regression, tool/cost/latency, recomputed behavioral score, gate (including economy-gate enablement), and
 eligibility fields; short parent/child fingerprints; run/suite/cohort metadata;
 and content-addressed evidence IDs. It
 does not publish prompt text, tasks, adapter input/output, repository data, raw
@@ -497,6 +497,18 @@ comparisons outside fleet fitness, and exposes them at the retry-safe
 The bundled evaluator transfers parent and child prompts to its local Graff
 process through the JSON stdin control channel, not command-line arguments, so
 the full prompt is not exposed by ordinary process listings.
+
+Each inner evaluation enables a rich behavioral trace only inside its disposable
+private scratch workspace while disabling network telemetry. After a terminal
+turn, the pinned stdlib scorer audits sequence integrity and clean closure,
+recomputes the tool-call count from paired tool events, and requires it to match
+the evaluator protocol count. It also derives a bounded successful-tool-
+completion score from those events. The recomputed count is the first
+tool-economy input after correctness ties; the behavioral score is the next
+tie-break and appears in local candidate summaries. An absent, incomplete,
+invalid, or disagreeing stream fails the bounded attempt instead of silently
+trusting the process counter; the scratch workspace and content-bearing trace
+are then removed.
 
 Once activated, the learned prompt is used like any other agent prompt:
 
@@ -536,7 +548,9 @@ arm map uses `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
 `gpt-5.4-mini`; all prompts are evaluated by the same pinned cohort. The
 mutator intentionally sends the parent prompt to those providers, while inner
 agent telemetry is disabled and only prompt-free signed aggregate tournament
-grades are submitted. The generated config keeps automatic promotion off.
+grades are submitted. The generated config pins both the behavioral auditor and
+its scorer as evaluator inputs. The generated config keeps automatic promotion
+off.
 
 ## Collective learning: aggregate receipts, not promotion authority
 

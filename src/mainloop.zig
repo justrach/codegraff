@@ -23,6 +23,7 @@ const fleet = @import("fleet.zig");
 const jobs = @import("jobs.zig");
 const session = @import("session.zig");
 const repl_glue = @import("repl_glue.zig");
+const eval_memory = @import("eval_memory.zig");
 const mainloop_score = @import("mainloop_score.zig");
 const mainloop_trace = @import("mainloop_trace.zig");
 const scoring = @import("scoring.zig");
@@ -296,7 +297,15 @@ pub fn run(ctx: *Ctx) !void {
         // resumes the plan instead of re-deriving it (assembled by goalSteeringNote).
         const todos_render: []const u8 = if (ctx.root.todos.items.len > 0) ctx.root.renderTodos() else "";
         const goal_note = try repl_glue.goalSteeringNote(ctx.arena, ctx.root.goal, todos_render);
-        const eval_note = try repl_glue.evalSteeringNote(ctx.arena, ctx.root.eval_cmd, ctx.root.eval_target, ctx.root.eval_judge != null);
+        const eval_note = try repl_glue.evalSteeringNote(
+            ctx.arena,
+            ctx.root.eval_cmd,
+            ctx.root.eval_target,
+            ctx.root.eval_judge != null,
+            ctx.root.eval_verified,
+            ctx.root.eval_repair_pending,
+            eval_memory.load(ctx.root),
+        );
         var goal_msg: []const u8 = base_msg;
         if (goal_note.len > 0) goal_msg = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ goal_msg, goal_note });
         if (eval_note.len > 0) goal_msg = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ goal_msg, eval_note });
@@ -509,7 +518,7 @@ pub fn run(ctx: *Ctx) !void {
                 .session_arena_kb = if (main_mod.g_session_arena) |a| a.queryCapacity() / 1024 else 0,
                 .scratch_arena_kb = if (ctx.root.scratch_arena) |a| a.queryCapacity() / 1024 else 0,
             });
-            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = true, .metadata_complete = context_tokens > 0 });
+            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = !ctx.root.eval_repair_pending, .metadata_complete = context_tokens > 0 });
         }
 
         // Apply only if already complete; poll never waits for title generation.

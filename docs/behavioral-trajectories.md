@@ -5,9 +5,10 @@ schema-harness traces discussed in [issue #246](https://github.com/justrach/code
 It establishes an ordered per-run envelope and explicit APIs for caller-asserted
 commitments and mispredictions. Here, a **run** means an initialized agent
 session; utility invocations such as help, version, and `graff title` return
-before behavioral tracing starts. Phase 1 does **not** yet implement the complete
-generic predict → act → verify → repair loop, replayable task state, behavioral
-scoring, or fleet/DGM selection from those scores.
+before behavioral tracing starts. The configured eval loop now implements one
+enforceable predict → act → verify → repair producer. The broader stream does
+**not** yet provide replayable task state, a generic verifier for every task
+adapter, or fleet/DGM selection from general behavioral scores.
 
 ## Three different local streams
 
@@ -26,6 +27,23 @@ is the first production caller of the commitment and misprediction APIs
 exits nonzero or the parsed score misses `--until`. Every other invocation path
 still contains lifecycle events only. Adapter rows in the example below are
 illustrative.
+
+For an eval-driven session, `eval` is a verifier boundary and must be the only
+tool in its batch. A red result marks the current expectation as contradicted,
+drops the remaining plan, and ends that model turn. The next turn is a repair
+turn. A green result permits completion only while the workspace remains
+unchanged; any subsequent workspace-changing tool makes the result stale and
+requires another eval. Read-only tools do not stale it.
+
+The loop maintains bounded task-class memory at
+`.graff/eval-notes/<run_id>.md`. The task class is `--niche` when configured and
+`general` otherwise. Its CONFIRMED, GUESSES, HYPOTHESES TO TEST, FACTS, and
+verifier-history template is re-injected every turn, including after context
+compaction. Eval `note` values can carry labeled belief updates. The directory
+and file use private POSIX permissions, no-follow directory/file opens, bounded
+reads, and atomic replacement. This file is not uploaded by the behavioral or
+learning telemetry mechanisms. It *is* prompt context, so its contents are sent
+to the selected model provider on each eval-driven turn.
 
 ## Behavioral network upload
 
@@ -88,13 +106,12 @@ disables both OTLP and behavioral upload.
 Metadata admission is field-based; values of allowed fields are not scanned or
 redacted. In particular, initial provider and model identifiers are transmitted
 exactly as configured and can themselves contain private labels or path/repository
-fragments. The schema has no dedicated fields for user/system prompts, generated
-model text or hidden reasoning, source, diffs, filesystem paths or repository
-names, tool arguments or results, shell commands, arbitrary environment values,
-credentials, headers, identity, prompt fingerprints, or free-text adapter
-content. Content mode changes typed adapter events: it may include
-`commitment_id`, `action`, `expect`, `reason`, `predicted`, `actual`, and `detail`
-exactly as supplied. There
+fragments. Lifecycle metadata has no dedicated fields for prompts, generated
+text, source, paths, arguments/results, commands, credentials, identity, prompt
+fingerprints, or adapter free text. Rich metadata adds only broad tool class,
+call IDs, byte/duration/error counters, and truncation flags. Content mode may
+add `commitment_id`, `action`, `expect`, `reason`, `predicted`, `actual`,
+`detail`, exact tool names/arguments, and bounded assistant text. There
 is no redactor, sanitizer, or secret scanner. The eval-driven loop is the only
 built-in production adapter that currently supplies those fields, and it
 supplies only static/opaque values (`{kind:"eval"}`, `{pass:<bool>}`,
@@ -106,7 +123,10 @@ endpoint; its public stats expose aggregate totals only. Content-opt-in fields
 are isolated from event metadata and expire after 30 days. Metadata rows do not
 currently have an automatic expiry. The separately transmitted signed score
 signal can carry the same `run_id` for trusted correlation, but uploaded
-behavioral events are not themselves scores and do not enter fleet selection.
+behavioral events are not themselves scores or remote promotion authority. A
+local tournament can submit only its separately signed recomputed aggregates.
+Eval-note memory is a separate local prompt-context file and is never part of
+this behavioral batch.
 
 ## File and ordering contract
 
@@ -248,8 +268,9 @@ observation contradicted a prediction:
 The typed call serializes opaque values synchronously rather than borrowing
 caller memory. The local file retains their serialized form; explicit content
 upload can retain a second copy under the 30-day policy above. Codegraff does not
-check semantic equivalence, prove that a verifier is correct, maintain a
-commitment registry, cancel a plan, or initiate a repair turn.
+check semantic equivalence or prove that a verifier is correct. The eval producer
+binds commitments to verifier outcomes and enforces stop-on-red repair; other
+task adapters must define their own semantics.
 
 ### Opt-in rich capture (`GRAFF_BEHAVIOR_TRACE=full`)
 
@@ -259,11 +280,9 @@ opted into with `GRAFF_BEHAVIOR_TRACE=full`. The default lifecycle-only
 posture (any other enabling value, including unset) never emits them — do not
 interpret their absence as an empty tool/action history.
 
-**These four kinds are local-file only.** The Phase 1 collector rejects
-unrecognized kinds for the whole batch, not just one event, so `BehaviorTrace`
-never offers them to the uploader regardless of `GRAFF_BEHAVIOR_UPLOAD` mode.
-This is a documented exclusion, not a drop: it is not counted in
-`dropped_events`, and `local_sink`/`local_dropped` accounting is unaffected.
+The versioned collector accepts all four kinds. Metadata mode receives only the
+content-free projection described above; exact names/arguments/text require the
+separate `GRAFF_BEHAVIOR_UPLOAD=content` opt-in and expire after 30 days.
 
 #### `tool_started`
 
@@ -310,15 +329,15 @@ once per root turn rather than once per intermediate segment. Fields:
 - `text` — the text, capped at 2,048 bytes.
 - `text_truncated` — `true` when the text exceeded the cap.
 
-#### Local privacy posture in full mode
+#### Privacy posture in full mode
 
 In lifecycle-only mode (the default), automatic events never include tool
 arguments or model text, as described below. `GRAFF_BEHAVIOR_TRACE=full`
-changes that for the **local plaintext file only**: tool names and arguments,
+changes that for the local plaintext file: tool names and arguments,
 and completed assistant text, land there in cleartext, subject only to the
 4,096/2,048-byte caps above. There is no redaction or secret scanning. Rich
-capture never changes what is uploaded — the four kinds stay local-only
-regardless of `GRAFF_BEHAVIOR_UPLOAD`.
+capture also enables typed upload projections: metadata stays content-free,
+while exact content requires the second explicit opt-in.
 
 ## Local retention and privacy
 
@@ -348,9 +367,10 @@ explicit content upload scans or sanitizes any of this.
   `.graff/behavior/` when they are no longer needed. Git ignore rules do not
   prevent backups, artifact collectors, support bundles, workspace-capable
   agent tools, or manual uploads from reading or copying them.
-- Behavioral events are not consumed for fleet/DGM selection in Phase 1.
-  Public collector visibility is aggregate-only, but the collector retains
-  private metadata rows and retains explicit content for up to 30 days.
+- The local tournament consumes only recomputed aggregate tool/behavior scores
+  and keeps manual promotion as the default. Public collector visibility is
+  aggregate-only; private metadata remains, while explicit content expires
+  after 30 days.
 
 ## Example
 
@@ -384,7 +404,7 @@ the converted stream reproduces its published 100.0 RHAE exactly (the issue
 #246 validation criterion). CI runs a hermetic version of the same round trip
 plus the live-session audit in `scripts/test-behavior-trace.py`.
 
-## Deferred work for the full issue
+## Remaining extensions
 
 A complete predict–verify implementation still needs:
 
@@ -395,10 +415,13 @@ A complete predict–verify implementation still needs:
    still only fires once per root turn (the one choke point common to every
    provider streaming path), not once per intermediate assistant text
    segment — a real per-segment hook remains open work.
-3. Explicit expectation binding, verification, surprise interruption, and
-   repair behavior wired to a production producer.
-4. Versioned Zig-side behavioral score events plus recipe/eval identity and
-   trace-integrity metadata (the stdlib auditor above recomputes metrics and
-   replay scores, but no built-in run emits a score-bearing outcome yet).
-5. Admission of only trusted recomputed scores into eval, fleet, MAP-Elites,
-   and DGM selection.
+3. The eval producer now has explicit expectation binding, verification,
+   stop-on-red interruption, task-class notes, repair resumption, and a
+   completion gate. Equivalent semantics for non-eval task adapters remain
+   open.
+4. The bundled prompt tournament now recomputes and audits tool-call counts
+   and a bounded successful-tool-completion score from each closed rich
+   behavioral stream. Tool economy remains the first tie-break after
+   correctness; the behavioral score is the next tie-break and is surfaced in
+   local aggregate evidence and the signed aggregate receipt. General
+   task-specific behavioral scores still need trusted task adapters.

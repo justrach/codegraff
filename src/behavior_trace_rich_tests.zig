@@ -141,7 +141,7 @@ test "BehaviorTrace: rich caps truncate args and text without corrupting JSON (#
     try std.testing.expect(lines.next() == null);
 }
 
-test "BehaviorTrace: rich kinds never reach the uploader (#255)" {
+test "BehaviorTrace: rich metadata reaches uploader without content (#246)" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var local: Io.Writer.Allocating = .init(gpa);
@@ -155,7 +155,7 @@ test "BehaviorTrace: rich kinds never reach the uploader (#255)" {
         .client_name = "harness",
         .service_version = "test",
         .run_id = "0123456789abcdef",
-        .mode = .content, // the most permissive collector mode
+        .mode = .metadata,
     };
     defer upload.deinit();
     var behavior: BehaviorTrace = .{
@@ -168,7 +168,6 @@ test "BehaviorTrace: rich kinds never reach the uploader (#255)" {
     };
     behavior.start("test", 1);
     try std.testing.expectEqual(@as(u64, 1), behavior.beginTurn(0));
-    // run_started + turn_started are upload-eligible.
     try std.testing.expectEqual(@as(usize, 2), upload.events.items.len);
 
     const call_id = behavior.reserveCallId();
@@ -177,11 +176,17 @@ test "BehaviorTrace: rich kinds never reach the uploader (#255)" {
     behavior.actionTaken(1, call_id, "bash", false);
     behavior.textDelta(1, "hello");
 
-    // The local file grew by four lines, but the uploader saw nothing new,
-    // and none of it counted as a drop — a documented exclusion, not a loss.
-    try std.testing.expectEqual(@as(usize, 2), upload.events.items.len);
+    try std.testing.expectEqual(@as(usize, 6), upload.events.items.len);
     try std.testing.expectEqual(@as(u64, 0), upload.dropped_events);
     try std.testing.expectEqual(@as(u64, 6), behavior.seq);
+    const payload = upload.events.items[2];
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"tool_class\":\"shell\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"args_bytes\":16") != null);
+    for (upload.events.items[2..]) |event| {
+        try std.testing.expect(std.mem.indexOf(u8, event, "\"name\"") == null);
+        try std.testing.expect(std.mem.indexOf(u8, event, "\"command\"") == null);
+        try std.testing.expect(std.mem.indexOf(u8, event, "hello") == null);
+    }
 }
 
 test "BehaviorTrace.reserveCallId: monotonic per run, independent of lifecycle state (#255)" {

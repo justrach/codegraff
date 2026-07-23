@@ -51,6 +51,8 @@ fn validateBaselinePairs(response: eval.PrimaryBaselineResponse, requested: []co
     for (response.pairs, requested) |result, pair| {
         if (!std.mem.eql(u8, result.case_id, pair.case_id) or !std.mem.eql(u8, result.seed, pair.seed)) return error.PairMismatch;
         if (result.score_ppm > 1_000_000) return error.InvalidScore;
+        if (result.behavior_score_ppm > 1_000_000) return error.InvalidScore;
+        if (!result.behavior_measured and result.behavior_score_ppm != 0) return error.InvalidMetric;
         if (result.cost_micros > eval.js_exact_max or result.latency_ms > eval.js_exact_max or result.tool_calls > eval.js_exact_max) return error.InvalidMetric;
     }
 }
@@ -98,7 +100,9 @@ fn validateParentProjection(baseline: eval.PrimaryBaselineResponse, response: ev
             pair.parent_latency_ms != parent.latency_ms or
             pair.latency_measured != parent.latency_measured or
             pair.parent_tool_calls != parent.tool_calls or
-            pair.tool_calls_measured != parent.tool_calls_measured) return error.BaselineProjectionMismatch;
+            pair.tool_calls_measured != parent.tool_calls_measured or
+            pair.parent_behavior_score_ppm != parent.behavior_score_ppm or
+            pair.behavior_measured != parent.behavior_measured) return error.BaselineProjectionMismatch;
     }
 }
 

@@ -37,6 +37,13 @@ fn writeComparison(out: *Io.Writer, label: []const u8, comparison: eval.Comparis
         })
     else
         try out.writeAll("calls unmeasured; ");
+    if (comparison.behavior_measured)
+        try out.print("behavior {d} -> {d} ppm; ", .{
+            comparison.parent_behavior_score_ppm,
+            comparison.child_behavior_score_ppm,
+        })
+    else
+        try out.writeAll("behavior unmeasured; ");
     if (comparison.latency_measured)
         try out.print("latency {d} -> {d} ms; ", .{ comparison.parent_latency_ms, comparison.child_latency_ms })
     else
@@ -87,6 +94,9 @@ test "candidate summary reports actionable aggregate evidence without content" {
         .tool_calls_measured = true,
         .parent_tool_calls = 23,
         .child_tool_calls = 29,
+        .behavior_measured = true,
+        .parent_behavior_score_ppm = 1_000_000,
+        .child_behavior_score_ppm = 750_000,
         .tool_wins = 2,
         .tool_losses = 1,
         .tool_ties = 12,
@@ -120,6 +130,7 @@ test "candidate summary reports actionable aggregate evidence without content" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "wins/losses/ties 1/0/14") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "regressions 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "calls 23 -> 29") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "behavior 1000000 -> 750000 ppm") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "latency 100 -> 80 ms") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "decision: not_significant") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "suite") == null);

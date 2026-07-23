@@ -7,7 +7,7 @@ const eval = @import("learn_eval.zig");
 const scoring = @import("scoring.zig");
 const store = @import("learn_store.zig");
 
-pub const schema = "codegraff.learn.grade.v2";
+pub const schema = "codegraff.learn.grade.v3";
 pub const delete_token_domain = "codegraff.learn.delete.v1\n";
 
 pub const Grade = struct {
@@ -24,6 +24,9 @@ pub const Grade = struct {
     tool_calls_measured: bool,
     parent_tool_calls: u64,
     child_tool_calls: u64,
+    behavior_measured: bool,
+    parent_behavior_score_ppm: u32,
+    child_behavior_score_ppm: u32,
     tool_wins: usize,
     tool_losses: usize,
     tool_ties: usize,
@@ -62,6 +65,9 @@ pub fn fromComparison(gate: store.Gate, comparison: eval.ComparisonRecord, multi
         .tool_calls_measured = comparison.tool_calls_measured,
         .parent_tool_calls = comparison.parent_tool_calls,
         .child_tool_calls = comparison.child_tool_calls,
+        .behavior_measured = comparison.behavior_measured,
+        .parent_behavior_score_ppm = comparison.parent_behavior_score_ppm,
+        .child_behavior_score_ppm = comparison.child_behavior_score_ppm,
         .tool_wins = comparison.tool_wins,
         .tool_losses = comparison.tool_losses,
         .tool_ties = comparison.tool_ties,
@@ -124,6 +130,9 @@ fn format(
         @intFromBool(grade.tool_calls_measured),
         @intCast(grade.parent_tool_calls),
         @intCast(grade.child_tool_calls),
+        @intFromBool(grade.behavior_measured),
+        grade.parent_behavior_score_ppm,
+        grade.child_behavior_score_ppm,
         @intCast(grade.tool_wins),
         @intCast(grade.tool_losses),
         @intCast(grade.tool_ties),
@@ -204,6 +213,9 @@ test "learning grade message is deterministic and prompt-free" {
         .tool_calls_measured = true,
         .parent_tool_calls = 100,
         .child_tool_calls = 80,
+        .behavior_measured = true,
+        .parent_behavior_score_ppm = 1_000_000,
+        .child_behavior_score_ppm = 900_000,
         .tool_wins = 8,
         .tool_losses = 1,
         .tool_ties = 11,
@@ -242,7 +254,7 @@ test "learning grade message is deterministic and prompt-free" {
     defer scoring.g_score_key = saved_key;
     scoring.g_score_key = "test-key";
     const signature = sign(prompt, parent, 0.75, run, "learn-primary-v2", artifact, suite, niche, "frontier", delete_token, created_unix_ms, grade);
-    try std.testing.expectEqualStrings("e4d78b0a0236fb9719272a016f41685a10d93a4f488cb704e0f7f8c963b546bb", &signature);
+    try std.testing.expectEqualStrings("9ec3275573e1e3f661c73ab6a54a3e499baf1b9686583ceab92509cfc21e96c7", &signature);
 
     const token = deletionToken(run, "2222222222222222222222222222222222222222222222222222222222222222");
     try std.testing.expectEqualStrings("5abd1867608b678b6679e00f24f7f457eccef7977a4df149f03c002a1885f5d9", &token);

@@ -46,13 +46,18 @@ pub fn computeComparison(
     var child_cost: u64 = 0;
     var parent_tool_calls: u64 = 0;
     var child_tool_calls: u64 = 0;
+    var parent_behavior_score: u64 = 0;
+    var child_behavior_score: u64 = 0;
     var parent_latency: u64 = 0;
     var child_latency: u64 = 0;
     var tool_calls_measured = true;
+    var behavior_measured = true;
     var latency_measured = true;
     for (response.pairs, requested) |result, pair| {
         if (!std.mem.eql(u8, result.case_id, pair.case_id) or !std.mem.eql(u8, result.seed, pair.seed)) return error.PairMismatch;
         if (result.parent_score_ppm > 1_000_000 or result.child_score_ppm > 1_000_000) return error.InvalidScore;
+        if (result.parent_behavior_score_ppm > 1_000_000 or result.child_behavior_score_ppm > 1_000_000) return error.InvalidScore;
+        if (!result.behavior_measured and (result.parent_behavior_score_ppm != 0 or result.child_behavior_score_ppm != 0)) return error.InvalidMetric;
         if (result.parent_cost_micros > stats.js_exact_max or result.child_cost_micros > stats.js_exact_max or result.parent_latency_ms > stats.js_exact_max or result.child_latency_ms > stats.js_exact_max or result.parent_tool_calls > stats.js_exact_max or result.child_tool_calls > stats.js_exact_max) return error.InvalidMetric;
         if (result.parent_pass) parent_passes += 1;
         if (result.child_pass) child_passes += 1;
@@ -66,9 +71,12 @@ pub fn computeComparison(
         child_cost = try stats.checkedMetricAdd(child_cost, result.child_cost_micros);
         parent_tool_calls = try stats.checkedMetricAdd(parent_tool_calls, result.parent_tool_calls);
         child_tool_calls = try stats.checkedMetricAdd(child_tool_calls, result.child_tool_calls);
+        parent_behavior_score = try stats.checkedMetricAdd(parent_behavior_score, result.parent_behavior_score_ppm);
+        child_behavior_score = try stats.checkedMetricAdd(child_behavior_score, result.child_behavior_score_ppm);
         parent_latency = try stats.checkedMetricAdd(parent_latency, result.parent_latency_ms);
         child_latency = try stats.checkedMetricAdd(child_latency, result.child_latency_ms);
         tool_calls_measured = tool_calls_measured and result.tool_calls_measured;
+        behavior_measured = behavior_measured and result.behavior_measured;
         latency_measured = latency_measured and result.latency_measured;
     }
 
@@ -111,6 +119,8 @@ pub fn computeComparison(
     const correctness_significant = correctness_p * correction <= alpha;
     const tool_significant = tool_p * correction <= alpha;
     const tool_delta = reductionPpm(parent_tool_calls, child_tool_calls);
+    const parent_behavior_mean: u32 = if (behavior_measured) @intCast(parent_behavior_score / pair_count) else 0;
+    const child_behavior_mean: u32 = if (behavior_measured) @intCast(child_behavior_score / pair_count) else 0;
     const tool_discordant = tool_wins + tool_losses;
     const economy_eligible = config.gate.economy_gate_enabled and
         child_critical_failures == 0 and statistical_units >= config.gate.minimum_pairs and
@@ -171,6 +181,9 @@ pub fn computeComparison(
         .tool_calls_measured = tool_calls_measured,
         .parent_tool_calls = parent_tool_calls,
         .child_tool_calls = child_tool_calls,
+        .behavior_measured = behavior_measured,
+        .parent_behavior_score_ppm = parent_behavior_mean,
+        .child_behavior_score_ppm = child_behavior_mean,
         .tool_wins = tool_wins,
         .tool_losses = tool_losses,
         .tool_ties = if (tool_calls_measured) statistical_units - tool_wins - tool_losses else 0,

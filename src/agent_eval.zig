@@ -19,6 +19,7 @@ const signScore = scoring.signScore;
 const telemetry = @import("telemetry.zig");
 const runCapped = @import("jobs.zig").runCapped;
 const judgeTask = @import("subagent.zig").judgeTask;
+const eval_memory = @import("eval_memory.zig");
 
 test {
     _ = @import("agent_eval_tests.zig");
@@ -53,6 +54,9 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
         // leaving a dangling turn_committed that a scorer would misread as
         // an unresolved success.
         if (behavior) |bt| bt.recordMisprediction(eval_turn, commitment_id, .{ .pass = true }, .{ .pass = false, .exit = @as(i32, -1) }, "eval command could not run");
+        self.eval_verified = false;
+        self.eval_repair_pending = true;
+        eval_memory.record(self, note, null, -1, false);
         return .{ .text = try std.fmt.allocPrint(self.arena, "eval command could not run: {t}", .{e}), .is_error = true };
     };
     defer self.gpa.free(run.stdout);
@@ -83,6 +87,8 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
         if (self.eval_best < 0 or s > self.eval_best) self.eval_best = s;
     }
     const met = if (combined) |s| s >= target_f else false;
+    self.eval_repair_pending = exit_code != 0 or !met;
+    self.eval_verified = !self.eval_repair_pending;
     // Resolve the commitment made above: a nonzero exit or an unmet/unparsed
     // target contradicts "this command will meet the target", so it is a
     // misprediction. Meeting the target leaves the commitment unresolved by
@@ -91,6 +97,7 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
     if (behavior) |bt| if (exit_code != 0 or !met)
         bt.recordMisprediction(eval_turn, commitment_id, .{ .pass = true }, .{ .pass = false, .exit = exit_code }, "target not met");
     self.appendEvalLog(note, det, judge, combined, exit_code, met) catch {};
+    eval_memory.record(self, note, combined, exit_code, met);
 
     // Feed the eval-driven score into the fleet (docs/hyperagents.md §9.B):
     // on a NEW BEST, submit the genome (this agent's persona) with its achieved
@@ -162,11 +169,11 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
             try w.print("eval #{d}: score {d:.1}/100 (best {d:.1}, target {d}). ", .{ self.eval_iter, s, self.eval_best, self.eval_target });
         }
         if (met)
-            try w.writeAll("TARGET MET - finish and report the final scores.")
+            try w.writeAll("TARGET MET - verifier gate is green; finish only if no workspace-changing tool runs after this eval.")
         else if (improved)
-            try w.writeAll("Improved - keep going: fix the next biggest failure with one focused change.")
+            try w.writeAll("Improved, but still red - the prior plan is dropped. Make one focused repair, then run eval again; completion is blocked.")
         else
-            try w.writeAll("No gain over the best - try a different change; do not build on a regression.");
+            try w.writeAll("No gain - the prior plan is dropped. Repair from current evidence and re-run eval; completion is blocked.");
     } else if (self.eval_judge != null and det != null and judge == null) {
         try w.print("eval #{d}: deterministic score {d:.1}/100, but the judge returned no parseable score (it may have errored). Re-run after checking the rubric. ", .{ self.eval_iter, det.? });
     } else {

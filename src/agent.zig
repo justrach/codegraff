@@ -138,6 +138,8 @@ pub const Agent = struct {
     eval_judge: ?[]const u8 = null, // --judge: LLM-as-judge rubric, min()-blended with the --eval score (runJudge). Dormant until a CLI flag sets it.
     eval_iter: u32 = 0, // eval-loop iteration counter (scores log)
     eval_best: f64 = -1, // best score seen this session (-1 = none yet)
+    eval_verified: bool = false, // latest workspace state has a target-meeting verifier result
+    eval_repair_pending: bool = false, // a contradiction blocks completion until a fresh green eval
     strict: bool = false,
     completed: ?[]const u8 = null,
     last_context_tokens: u64 = 0,

@@ -61,6 +61,14 @@ test "paired gate rejects critical regressions and requires corrected significan
     results[0].parent_cost_micros = 0;
     results[1].parent_cost_micros = 0;
 
+    results[0].parent_behavior_score_ppm = 1;
+    try std.testing.expectError(error.InvalidMetric, computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 1));
+    results[0].behavior_measured = true;
+    results[0].parent_behavior_score_ppm = 1_000_001;
+    try std.testing.expectError(error.InvalidScore, computeComparison(config, config.evaluation_suite.sha256, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "1111111111111111111111111111111111111111111111111111111111111111", &requested, response, 1));
+    results[0].behavior_measured = false;
+    results[0].parent_behavior_score_ppm = 0;
+
     for (0..10) |i| {
         requested[i].case_id = "repeated-case";
         results[i].case_id = "repeated-case";

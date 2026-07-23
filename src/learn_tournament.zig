@@ -46,6 +46,9 @@ pub fn primaryOutranks(a: eval.CandidateRecord, b: eval.CandidateRecord) bool {
     // only compare exact call counts when both adapters supplied them.
     if (ac.tool_calls_measured != bc.tool_calls_measured) return ac.tool_calls_measured;
     if (ac.tool_calls_measured and ac.child_tool_calls != bc.child_tool_calls) return ac.child_tool_calls < bc.child_tool_calls;
+    if (ac.behavior_measured != bc.behavior_measured) return ac.behavior_measured;
+    if (ac.behavior_measured and ac.child_behavior_score_ppm != bc.child_behavior_score_ppm)
+        return ac.child_behavior_score_ppm > bc.child_behavior_score_ppm;
     if (ac.child_cost_micros != bc.child_cost_micros) return ac.child_cost_micros < bc.child_cost_micros;
     if (a.mutation.genome_bytes != 0 and b.mutation.genome_bytes != 0 and a.mutation.genome_bytes != b.mutation.genome_bytes)
         return a.mutation.genome_bytes < b.mutation.genome_bytes;
@@ -155,6 +158,9 @@ fn fakeComparison(delta: i64, score_delta: i64, p: u64, cost: u64, eligible: boo
         .tool_calls_measured = true,
         .parent_tool_calls = 10,
         .child_tool_calls = 10,
+        .behavior_measured = true,
+        .parent_behavior_score_ppm = 1_000_000,
+        .child_behavior_score_ppm = 1_000_000,
         .latency_measured = true,
         .parent_latency_ms = 100,
         .child_latency_ms = 100,
@@ -174,7 +180,7 @@ fn fakeCandidate(id: []const u8, primary: ?eval.ComparisonRecord) eval.Candidate
     };
 }
 
-test "primary winner is correctness-first then tool calls, cost, and genome ID" {
+test "primary winner is correctness-first then tools, behavior, cost, and genome ID" {
     var candidates = [_]eval.CandidateRecord{
         fakeCandidate("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", fakeComparison(20, 10, 5, 1, true, "eligible")),
         fakeCandidate("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", fakeComparison(30, 10, 5, 100, false, "not_significant")),
@@ -191,6 +197,11 @@ test "primary winner is correctness-first then tool calls, cost, and genome ID" 
     try std.testing.expectEqual(@as(?usize, 1), primaryWinnerIndex("parent", &candidates));
 
     candidates[0].primary.?.child_tool_calls = 8;
+    candidates[0].primary.?.child_behavior_score_ppm = 900_000;
+    candidates[1].primary.?.child_behavior_score_ppm = 1_000_000;
+    try std.testing.expectEqual(@as(?usize, 1), primaryWinnerIndex("parent", &candidates));
+
+    candidates[0].primary.?.child_behavior_score_ppm = 1_000_000;
     candidates[1].primary.?.child_cost_micros = 50;
     try std.testing.expectEqual(@as(?usize, 1), primaryWinnerIndex("parent", &candidates));
 

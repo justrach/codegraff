@@ -173,7 +173,7 @@ const meta_specs = [_]ToolSpec{
     },
     .{
         .name = "eval",
-        .desc = "Run the configured scoring command (graff --eval) on the current output and record the result. The HARNESS runs it and logs the score to .graff/eval-log.tsv - do not run the eval command yourself via bash. Returns the score (0-100), best so far, target, and whether the target is met. Call after each focused change in an eval-driven loop. Pass `note` describing what you just changed.",
+        .desc = "Run the configured scoring command (graff --eval) alone and record the result. The HARNESS runs it and logs the score to .graff/eval-log.tsv - do not run it via bash. Returns score, best, target, and gate state. Red drops the current plan and ends the turn; repair next turn and re-evaluate. In `note`, describe the focused change and label new CONFIRMED/GUESS/HYPOTHESIS/FACT beliefs.",
         .schema =
         \\{"type": "object", "properties": {"note": {"type": "string", "description": "What you changed since the last eval"}}}
         ,

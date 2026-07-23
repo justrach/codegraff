@@ -162,6 +162,15 @@ fn isMetadataField(comptime name: []const u8) bool {
         std.mem.eql(u8, name, "parent_turn") or
         std.mem.eql(u8, name, "trajectory_node") or
         std.mem.eql(u8, name, "commitment_ref") or
+        std.mem.eql(u8, name, "call_id") or
+        std.mem.eql(u8, name, "tool_class") or
+        std.mem.eql(u8, name, "args_bytes") or
+        std.mem.eql(u8, name, "args_truncated") or
+        std.mem.eql(u8, name, "ms") or
+        std.mem.eql(u8, name, "is_error") or
+        std.mem.eql(u8, name, "result_bytes") or
+        std.mem.eql(u8, name, "text_bytes") or
+        std.mem.eql(u8, name, "text_truncated") or
         std.mem.eql(u8, name, "status") or
         // Sink-health diagnostics: whether the local JSONL opened at run start
         // and how many events it dropped before write. Counters and booleans

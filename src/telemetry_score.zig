@@ -30,14 +30,15 @@ fn attr(s: *std.json.Stringify, key: []const u8, value: AttrVal) !void {
 }
 
 const metric_names = [_][]const u8{
-    "pairs",                   "statistical_units",          "parent_passes",           "child_passes",
-    "child_critical_failures", "critical_regressions",       "correctness_regressions", "delta_ppm",
-    "mean_score_delta_ppm",    "p_value_ppb",                "tool_calls_measured",     "parent_tool_calls",
-    "child_tool_calls",        "tool_wins",                  "tool_losses",             "tool_ties",
-    "tool_delta_ppm",          "tool_p_value_ppb",           "parent_cost_micros",      "child_cost_micros",
-    "latency_measured",        "parent_latency_ms",          "child_latency_ms",        "economy_eligible",
-    "eligible",                "economy_gate_enabled",       "alpha_ppm",               "minimum_delta_ppm",
-    "minimum_pairs",           "minimum_tool_reduction_ppm", "minimum_economy_pairs",   "multiplicity",
+    "pairs",                      "statistical_units",     "parent_passes",             "child_passes",
+    "child_critical_failures",    "critical_regressions",  "correctness_regressions",   "delta_ppm",
+    "mean_score_delta_ppm",       "p_value_ppb",           "tool_calls_measured",       "parent_tool_calls",
+    "child_tool_calls",           "behavior_measured",     "parent_behavior_score_ppm", "child_behavior_score_ppm",
+    "tool_wins",                  "tool_losses",           "tool_ties",                 "tool_delta_ppm",
+    "tool_p_value_ppb",           "parent_cost_micros",    "child_cost_micros",         "latency_measured",
+    "parent_latency_ms",          "child_latency_ms",      "economy_eligible",          "eligible",
+    "economy_gate_enabled",       "alpha_ppm",             "minimum_delta_ppm",         "minimum_pairs",
+    "minimum_tool_reduction_ppm", "minimum_economy_pairs", "multiplicity",
 };
 
 pub fn write(s: *std.json.Stringify, event: anytype) !void {
@@ -58,7 +59,9 @@ pub fn write(s: *std.json.Stringify, event: anytype) !void {
     const grade_sig = parts.next() orelse return error.InvalidScoreProvenance;
     var delete_token: []const u8 = "";
     var run_created_unix_ms: ?i64 = null;
-    if (std.mem.eql(u8, grade_schema, "codegraff.learn.grade.v2")) {
+    if (std.mem.eql(u8, grade_schema, "codegraff.learn.grade.v2") or
+        std.mem.eql(u8, grade_schema, "codegraff.learn.grade.v3"))
+    {
         delete_token = parts.next() orelse return error.InvalidScoreProvenance;
         const raw_created = parts.next() orelse return error.InvalidScoreProvenance;
         run_created_unix_ms = std.fmt.parseInt(i64, raw_created, 10) catch return error.InvalidScoreProvenance;

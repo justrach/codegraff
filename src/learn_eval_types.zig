@@ -78,6 +78,11 @@ pub const PairResult = struct {
     tool_calls_measured: bool = false,
     parent_tool_calls: u64 = 0,
     child_tool_calls: u64 = 0,
+    /// Trusted evaluator score derived from a closed behavioral stream:
+    /// successful tool completions divided by completed tool calls.
+    behavior_measured: bool = false,
+    parent_behavior_score_ppm: u32 = 0,
+    child_behavior_score_ppm: u32 = 0,
 };
 
 pub const EvaluationResponse = struct {
@@ -101,6 +106,8 @@ pub const BaselinePairResult = struct {
     latency_measured: bool = false,
     tool_calls_measured: bool = false,
     tool_calls: u64 = 0,
+    behavior_measured: bool = false,
+    behavior_score_ppm: u32 = 0,
 };
 
 pub const PrimaryBaselineRequest = struct {
@@ -193,6 +200,9 @@ pub const ComparisonRecord = struct {
     tool_calls_measured: bool = false,
     parent_tool_calls: u64 = 0,
     child_tool_calls: u64 = 0,
+    behavior_measured: bool = false,
+    parent_behavior_score_ppm: u32 = 0,
+    child_behavior_score_ppm: u32 = 0,
     tool_wins: usize = 0,
     tool_losses: usize = 0,
     tool_ties: usize = 0,

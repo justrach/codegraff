@@ -58,6 +58,12 @@ jobs:
       - name: Local learning lifecycle and security regression
         run: python3 tests/learn_e2e.py --graff zig-out/bin/graff
 
+      - name: Evolutionary tournament and behavioral metric regression
+        run: |
+          python3 tests/learn_tournament_e2e.py --graff zig-out/bin/graff
+          python3 tests/learn_graff_adapters.py
+          python3 tests/learn_graff_evaluator_retries.py
+
       - name: Behavioral trace stream, re-scorer, and replay round trip
         run: python3 scripts/test-behavior-trace.py zig-out/bin/graff
 

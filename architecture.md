@@ -457,13 +457,20 @@ is omitted from every network projection because low-entropy prompt variants can
 be enumerated. With ordinary telemetry enabled,
 the upload defaults to a fixed-field allowlisted metadata projection, including
 only a controlled client class rather than arbitrary `HARNESS_CLIENT` content;
-only an explicit content opt-in can serialize opaque fields supplied through the
-typed commitment/misprediction APIs. Provider/tool plumbing does not infer dedicated
+rich-event metadata is limited to correlation, controlled tool class,
+byte/duration/error counters, and truncation flags. Only an explicit content
+opt-in can serialize opaque fields supplied through the typed
+commitment/misprediction APIs or exact rich tool/text fields. Provider/tool
+plumbing does not infer dedicated
 prompt-text, generated-output, hidden-reasoning, source, path, argument, result,
 or task-state fields. Initial provider and model identifiers are serialized
-exactly as configured and are not inspected or value-redacted. No built-in
-production adapter invokes the typed APIs yet, and automatic
-verification, behavioral scoring, repair, and fleet consumption remain deferred.
+exactly as configured and are not inspected or value-redacted. The eval-driven
+loop is the first production producer of typed commitment/misprediction events:
+it stops on red, preserves an incomplete repair state, and requires a fresh
+green verifier result before completion. The local tournament recomputes a
+bounded behavior score from closed rich traces. General task adapters,
+automatic semantic verification, and fleet-wide behavioral consumption remain
+deferred.
 The pre-existing append-only `Trajectory` DGM ledger and its record shapes remain
 unchanged. See
 [`docs/behavioral-trajectories.md`](docs/behavioral-trajectories.md).

@@ -48,6 +48,7 @@ const title_mod = @import("title.zig");
 const repl = @import("repl.zig");
 const pickers = @import("pickers.zig");
 const repl_glue = @import("repl_glue.zig");
+const eval_memory = @import("eval_memory.zig");
 const providers = @import("providers.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
@@ -117,7 +118,15 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
         if (telemetry.g_telem) |t| t.ultracode();
     }
     const goal_note = try repl_glue.goalSteeringNote(arena, root.goal, if (root.todos.items.len > 0) root.renderTodos() else "");
-    const eval_note = try repl_glue.evalSteeringNote(arena, root.eval_cmd, root.eval_target, root.eval_judge != null);
+    const eval_note = try repl_glue.evalSteeringNote(
+        arena,
+        root.eval_cmd,
+        root.eval_target,
+        root.eval_judge != null,
+        root.eval_verified,
+        root.eval_repair_pending,
+        eval_memory.load(root),
+    );
     var oneshot_user = if (goal_note.len > 0) try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ ultracode_msg.text, goal_note }) else ultracode_msg.text;
     if (eval_note.len > 0) oneshot_user = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ oneshot_user, eval_note });
     try root.messages.append(try messages_mod.textMessage(arena, "user", oneshot_user));

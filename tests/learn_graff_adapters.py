@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import runpy
 import subprocess
@@ -15,6 +16,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 MUTATOR = ROOT / "examples" / "learn_graff_mutator.py"
 EVALUATOR = ROOT / "examples" / "learn_graff_evaluator.py"
+BEHAVIOR_METRICS = ROOT / "examples" / "learn_behavior_metrics.py"
+CASE_SUPPORT = ROOT / "examples" / "learn_graff_case.py"
 ARMS = ROOT / "examples" / "learn_graff_arms.json"
 SETTINGS = ROOT / "examples" / "learn_graff_evaluator.json"
 PREPARE = ROOT / "examples" / "prepare_graff_tournament.py"
@@ -102,8 +105,58 @@ def assert_patch_boundaries() -> None:
         assert any(expected in violation for violation in violations)
 
 
+def assert_behavior_metrics() -> None:
+    metrics = runpy.run_path(str(BEHAVIOR_METRICS))
+    audited_tool_calls = metrics["audited_tool_calls"]
+    audited_behavior_metrics = metrics["audited_behavior_metrics"]
+    with tempfile.TemporaryDirectory(prefix="learn-behavior-") as raw:
+        root = Path(raw)
+        behavior = root / ".graff" / "behavior"
+        behavior.mkdir(parents=True)
+        envelope = lambda kind, seq: {
+            "kind": kind, "seq": seq, "ts": float(seq),
+            "run_id": "0123456789abcdef", "schema": "codegraff.behavior.v1",
+        }
+        events = [
+            envelope("run_started", 1),
+            {**envelope("turn_started", 2), "turn": 1, "parent_turn": 0},
+            {**envelope("tool_started", 3), "turn": 1, "call_id": 1},
+            {**envelope("tool_finished", 4), "turn": 1, "call_id": 1, "is_error": False},
+            {**envelope("run_finished", 5), "status": "closed", "local_dropped": 0},
+        ]
+        (behavior / "run.jsonl").write_text(
+            "".join(json.dumps(event, separators=(",", ":")) + "\n" for event in events),
+            encoding="utf-8",
+        )
+        prior = os.environ.get("GRAFF_LEARN_INPUT_3")
+        os.environ["GRAFF_LEARN_INPUT_3"] = str(ROOT / "scripts" / "score_run.py")
+        try:
+            assert audited_tool_calls(root, 1) == 1
+            assert audited_behavior_metrics(root, 1) == {
+                "measured": True, "tool_calls": 1, "score_ppm": 1_000_000,
+            }
+            events[3]["is_error"] = True
+            (behavior / "run.jsonl").write_text(
+                "".join(json.dumps(event, separators=(",", ":")) + "\n" for event in events),
+                encoding="utf-8",
+            )
+            assert audited_behavior_metrics(root, 1)["score_ppm"] == 0
+            try:
+                audited_tool_calls(root, 2)
+            except RuntimeError as exc:
+                assert "disagree" in str(exc)
+            else:
+                raise AssertionError("tool-count disagreement was accepted")
+        finally:
+            if prior is None:
+                os.environ.pop("GRAFF_LEARN_INPUT_3", None)
+            else:
+                os.environ["GRAFF_LEARN_INPUT_3"] = prior
+
+
 def run() -> None:
     assert_patch_boundaries()
+    assert_behavior_metrics()
     with tempfile.TemporaryDirectory(prefix="learn-adapters-") as raw:
         root = Path(raw)
         fake = root / "graff"
@@ -230,8 +283,12 @@ def run() -> None:
         assert config["gate"]["require_all_candidates"] is True
         assert config["gate"]["minimum_pairs"] <= preparation["primary_units"]
         assert config["gate"]["minimum_pairs"] <= preparation["holdout_units"]
-        assert config["cohort"]["adapter_version"] == "graff-eval-v7"
-        assert config["cohort"]["verifier_version"] == "clustered-exact-v6"
+        assert config["cohort"]["adapter_version"] == "graff-eval-v8"
+        assert config["cohort"]["verifier_version"] == "behavior-audited-v7"
+        assert [item["path"] for item in config["evaluator"]["inputs"]][-3:] == [
+            str(BEHAVIOR_METRICS.resolve()), str((ROOT / "scripts" / "score_run.py").resolve()),
+            str(CASE_SUPPORT.resolve()),
+        ]
         assert config["auto"] == {"enabled": False}
 
         suite = root / "suite.json"
@@ -266,6 +323,8 @@ def run() -> None:
         assert result["tool_calls_measured"] is True
         assert result["latency_measured"] is True
         assert result["parent_tool_calls"] == result["child_tool_calls"] == 1
+        assert result["behavior_measured"] is False
+        assert result["parent_behavior_score_ppm"] == result["child_behavior_score_ppm"] == 0
         assert result["parent_cost_micros"] == result["child_cost_micros"] == 2000
 
         baseline_request = root / "baseline-request.json"
@@ -292,6 +351,7 @@ def run() -> None:
             "pass": True, "score_ppm": 1_000_000,
             "cost_micros": 2000, "latency_ms": baseline["pairs"][0]["latency_ms"],
             "latency_measured": True, "tool_calls_measured": True, "tool_calls": 1,
+            "behavior_measured": False, "behavior_score_ppm": 0,
         }]
 
         primary_request = root / "primary-request.json"
@@ -324,6 +384,7 @@ def run() -> None:
         assert primary_result["parent_cost_micros"] == baseline_result["cost_micros"]
         assert primary_result["parent_latency_ms"] == baseline_result["latency_ms"]
         assert primary_result["parent_tool_calls"] == baseline_result["tool_calls"]
+        assert primary_result["parent_behavior_score_ppm"] == baseline_result["behavior_score_ppm"]
         assert primary_result["child_pass"] is True
 
 

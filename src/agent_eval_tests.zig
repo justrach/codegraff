@@ -74,11 +74,23 @@ test "runEval: commits before the command runs, mispredicts on a missed target, 
     const failure = try agent.runEval("");
     try std.testing.expect(!failure.is_error);
     try std.testing.expectEqual(@as(u32, 1), agent.eval_iter);
+    try std.testing.expect(!agent.eval_verified);
+    try std.testing.expect(agent.eval_repair_pending);
+    try std.testing.expect(agent.completed == null);
 
     agent.eval_cmd = "printf 'score: 100\\n'";
     const success = try agent.runEval("");
     try std.testing.expect(!success.is_error);
     try std.testing.expectEqual(@as(u32, 2), agent.eval_iter);
+    try std.testing.expect(agent.eval_verified);
+    try std.testing.expect(!agent.eval_repair_pending);
+    try std.testing.expect(agent.completed == null);
+    const notes = try Io.Dir.cwd().readFileAlloc(io, ".graff/eval-notes/session.md", gpa, .limited(16 * 1024));
+    defer gpa.free(notes);
+    try std.testing.expect(std.mem.indexOf(u8, notes, "eval #1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notes, "met=no") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notes, "eval #2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notes, "met=yes") != null);
 
     const out = aw.writer.buffered();
     var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out, "\n"), '\n');

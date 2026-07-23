@@ -92,7 +92,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     self.last_request_context_overflow = false;
     self.last_request_write_failed = false;
     self.last_usage_includes_output = false;
-    var force = self.strict and tools != null;
+    var force = (self.strict or self.eval_cmd != null) and tools != null;
     var stream_usage = true; // openai stream_options; dropped if rejected
     var auth_refreshed = false; // #148: at most one forced token refresh + retry
     // #124: reclaim last request's transient parse garbage FIRST, so everything

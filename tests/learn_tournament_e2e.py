@@ -19,6 +19,7 @@ import threading
 import time
 
 from learning_receipt_assertions import assert_learning_records
+from learn_tournament_fixtures import MUTATOR
 
 from learn_e2e import (
     GradeCapture,
@@ -32,44 +33,6 @@ from learn_e2e import (
     write_posix_shebang,
     write_private,
 )
-
-
-MUTATOR = r'''import hashlib, json, os, pathlib, sys, time
-operation, request_path, response_path = sys.argv[1:4]
-assert operation == "mutate"
-request = json.loads(pathlib.Path(request_path).read_text())
-index = request["candidate_index"]
-barrier = pathlib.Path(os.environ["TOURNAMENT_BARRIER"])
-(barrier / f"mutation-{index}").write_text("started")
-deadline = time.monotonic() + 10
-while len(list(barrier.glob("mutation-*"))) != 4:
-    assert time.monotonic() < deadline, "mutations did not run concurrently"
-    time.sleep(0.01)
-attempt_path = barrier / f"mutator-attempts-{index}"
-attempts = int(attempt_path.read_text()) if attempt_path.exists() else 0
-attempt_path.write_text(str(attempts + 1))
-retry_marker = barrier / f"mutator-retried-{index}"
-if index == 0 and not retry_marker.exists():
-    retry_marker.write_text("retry")
-    raise SystemExit(19)
-if (barrier / f"fail-mutator-{index}").exists():
-    print("PRIVATE_ADAPTER_CANARY_DO_NOT_EXPOSE /Users/private/repository", file=sys.stderr)
-    raise SystemExit(31)
-parent = pathlib.Path(request["parent"]["path"]).read_text()
-child = parent.rstrip() + f"\n\nTournament variant {index}.\n"
-child_bytes = child.encode()
-pathlib.Path(request["child_path"]).write_bytes(child_bytes)
-response = {
-    "schema": "codegraff.learn.mutation.response.v1",
-    "trial_id": request["trial_id"],
-    "candidate_index": index,
-    "parent_id": request["parent"]["id"],
-    "child_path": request["child_path"],
-    "child_sha256": hashlib.sha256(child_bytes).hexdigest(),
-    "description": f"PRIVATE_MUTATION_DESCRIPTION_{index}_DO_NOT_RENDER",
-}
-pathlib.Path(response_path).write_text(json.dumps(response, separators=(",", ":")) + "\n")
-'''
 
 
 EVALUATOR = r'''import hashlib, json, os, pathlib, sys, time
@@ -87,6 +50,7 @@ if operation == "baseline":
         "case_id": pair["case_id"], "seed": pair["seed"],
         "pass": False, "score_ppm": 0, "cost_micros": 100,
         "tool_calls_measured": True, "tool_calls": 10,
+        "behavior_measured": True, "behavior_score_ppm": 500000,
     } for pair in request["pairs"]]
     response = {
         "schema": "codegraff.learn.primary-baseline.response.v1",
@@ -115,6 +79,7 @@ elif operation == "evaluate_primary":
         retry_marker.write_text("retry")
         raise SystemExit(17)
     calls = [9, 7, 3, 5][index]
+    behavior_score = [900000, 950000, 800000, 1000000][index]
     assert [(p["case_id"], p["seed"]) for p in baseline["pairs"]] == [
         (p["case_id"], p["seed"]) for p in request["pairs"]
     ]
@@ -125,6 +90,9 @@ elif operation == "evaluate_primary":
         "parent_cost_micros": parent["cost_micros"], "child_cost_micros": calls,
         "tool_calls_measured": parent["tool_calls_measured"],
         "parent_tool_calls": parent["tool_calls"], "child_tool_calls": calls,
+        "behavior_measured": parent["behavior_measured"],
+        "parent_behavior_score_ppm": parent["behavior_score_ppm"],
+        "child_behavior_score_ppm": behavior_score,
     } for parent in baseline["pairs"]]
     response = {
         "schema": "codegraff.learn.primary-evaluation.response.v1",
@@ -149,12 +117,15 @@ elif operation == "evaluate":
     if (barrier / "fail-holdout").exists():
         raise SystemExit(23)
     calls = [9, 7, 3, 5][index]
+    behavior_score = [900000, 950000, 800000, 1000000][index]
     pairs = [{
         "case_id": pair["case_id"], "seed": pair["seed"],
         "parent_pass": False, "child_pass": True,
         "parent_score_ppm": 0, "child_score_ppm": 1000000,
         "parent_cost_micros": 100, "child_cost_micros": calls,
         "tool_calls_measured": True, "parent_tool_calls": 10, "child_tool_calls": calls,
+        "behavior_measured": True,
+        "parent_behavior_score_ppm": 500000, "child_behavior_score_ppm": behavior_score,
     } for pair in request["pairs"]]
     response = {
         "schema": "codegraff.learn.evaluation.response.v1",
@@ -265,6 +236,8 @@ def exercise(graff: Path, root: Path) -> None:
     assert sum(candidate["holdout"] is not None for candidate in record["candidates"]) == 1
     winner = next(candidate for candidate in record["candidates"] if candidate["holdout"] is not None)
     assert winner["primary"]["child_tool_calls"] == 24
+    assert winner["primary"]["child_behavior_score_ppm"] == 800000
+    assert max(candidate["primary"]["child_behavior_score_ppm"] for candidate in record["candidates"]) == 1000000
     assert all(
         candidate["primary"]["correctness_regressions"] == 0
         for candidate in record["candidates"]
@@ -274,10 +247,11 @@ def exercise(graff: Path, root: Path) -> None:
             candidate["primary"]["parent_passes"],
             candidate["primary"]["parent_tool_calls"],
             candidate["primary"]["parent_cost_micros"],
+            candidate["primary"]["parent_behavior_score_ppm"],
         )
         for candidate in record["candidates"]
     }
-    assert parent_projections == {(0, 80, 800)}
+    assert parent_projections == {(0, 80, 800, 500000)}
     assert winner["genome_id"] == record["primary_winner_genome_id"] == record["selected_genome_id"]
     assert "manual promotion:" in output
     assert "PRIVATE_MUTATION_DESCRIPTION" not in output

@@ -141,13 +141,33 @@ fn normalizeScore(v: f64) f64 {
 /// Steering injected each turn when --eval is set: the eval-driven loop
 /// discipline (score -> one focused change -> re-score -> log -> stop at
 /// target). Returns "" when no eval command is configured.
-pub fn evalSteeringNote(arena: Allocator, eval_cmd: ?[]const u8, target: u8, has_judge: bool) ![]const u8 {
+pub fn evalSteeringNote(
+    arena: Allocator,
+    eval_cmd: ?[]const u8,
+    target: u8,
+    has_judge: bool,
+    verified: bool,
+    repair_pending: bool,
+    notes: []const u8,
+) ![]const u8 {
     if (eval_cmd == null) return "";
     const gate = if (has_judge)
         " An LLM judge is also configured, so the target is met only when BOTH the deterministic score AND the judge score reach it - read both numbers the `eval` tool reports."
     else
         "";
-    return std.fmt.allocPrint(arena, "[eval-driven loop active. A scoring command is configured. Work it as a scored improvement loop: (1) call the `eval` tool to score the current state - the harness runs the command and logs to .graff/eval-log.tsv, so do NOT run it yourself via bash; (2) read the score, best-so-far, and output; (3) find the SINGLE biggest failure (inspect any artifacts or images directly); (4) make ONE focused change targeting it; (5) call `eval` again. Continue until `eval` reports the target ({d}/100) is met.{s} Do not stop at the first passing result, and do not revert unless `eval` shows a clear regression. After each `eval`, briefly note what you changed.]", .{ target, gate });
+    const state = if (repair_pending)
+        "RED: the last committed expectation was contradicted. The prior plan is dropped; make one repair and re-run eval. attempt_completion is blocked."
+    else if (verified)
+        "GREEN: the latest workspace state met the target. Any workspace-changing tool makes this state stale and requires another eval."
+    else
+        "UNVERIFIED: establish or refresh the verifier baseline before completion.";
+    return std.fmt.allocPrint(arena,
+        \\[eval-driven loop active. A scoring command is configured. Verifier state: {s}
+        \\Work it as a predict→act→verify→repair loop: (1) call `eval` to score the current state—the harness runs the command and logs it, so do NOT run it via bash; (2) state one hypothesis; (3) make ONE focused change; (4) call `eval` again. Continue until the latest eval reaches {d}/100.{s} A failed eval drops the prior plan. Use the eval `note` field to append CONFIRMED/GUESS/HYPOTHESIS/FACT belief updates; this task-class memory is re-injected after compaction.
+        \\
+        \\Local run-scoped notes (never uploaded by this mechanism):
+        \\{s}]
+    , .{ state, target, gate, notes });
 }
 
 test "goalSteeringNote: active-only gate + checklist assembly, no (no todos) leak" {

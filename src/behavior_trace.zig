@@ -9,6 +9,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const behavior_upload = @import("behavior_upload.zig");
+const types = @import("behavior_trace_types.zig");
 const session_start = @import("session_start.zig");
 const scoring = @import("scoring.zig");
 const trace = @import("trace.zig");
@@ -29,30 +30,12 @@ test {
 pub const behavior_dir = ".graff/behavior";
 pub const behavior_schema = "codegraff.behavior.v1";
 
-/// Task-agnostic behavioral records. Per-kind fields stay flat, matching the
-/// schema-harness event shape; state/action/expect values remain opaque JSON.
-pub const BehaviorKind = enum {
-    run_started,
-    turn_started,
-    text_delta,
-    tool_started,
-    tool_finished,
-    turn_committed,
-    action_taken,
-    model_mispredicted,
-    run_finished,
-};
-
-/// Kinds the deployed collector accepts (Phase 1 contract). The four rich
-/// opt-in kinds (#255, GRAFF_BEHAVIOR_TRACE=full) are local-file only:
-/// offering an unrecognized kind fails the whole upload batch, not just one
-/// event, so this gate runs before eventLocked ever calls the uploader.
-fn uploadEligible(kind: BehaviorKind) bool {
-    return switch (kind) {
-        .run_started, .turn_started, .turn_committed, .model_mispredicted, .run_finished => true,
-        .text_delta, .tool_started, .tool_finished, .action_taken => false,
-    };
-}
+pub const BehaviorKind = types.BehaviorKind;
+pub const BehaviorRunStatus = types.BehaviorRunStatus;
+pub const LineResult = types.LineResult;
+pub const max_local_behavior_event_bytes = types.max_local_behavior_event_bytes;
+pub const max_tool_args_bytes = types.max_tool_args_bytes;
+pub const max_text_delta_bytes = types.max_text_delta_bytes;
 
 /// Byte-cap a string without splitting a multi-byte UTF-8 sequence, so a
 /// truncated payload can never desync the JSON string encoder mid-codepoint
@@ -65,28 +48,13 @@ fn utf8SafeClip(text: []const u8, max_len: usize) []const u8 {
     return t;
 }
 
-/// Typed lifecycle status; `.failed` is serialized as the JSON value `error`.
-pub const BehaviorRunStatus = enum {
-    closed,
-    failed,
-};
+fn jsonSafeCount(value: usize) u64 {
+    return @intCast(@min(@as(u128, value), @as(u128, behavior_upload.max_safe_json_integer)));
+}
 
-pub const max_local_behavior_event_bytes = 64 * 1024;
-
-/// Opt-in rich capture caps (#255). A tool's arguments and a completed text
-/// segment are the two content-bearing rich fields; both are bounded so one
-/// huge adapter payload cannot dominate the local file the way
-/// max_local_behavior_event_bytes already bounds a whole line.
-pub const max_tool_args_bytes = 4096;
-pub const max_text_delta_bytes = 2048;
-
-/// How one local write attempt ended. `dropped` failures happen before any
-/// byte reaches the file (allocation, serialization, or the size cap), so the
-/// stream stays healthy and later events may follow; the drop is counted and
-/// declared on `run_finished` as `local_dropped`. `sink_failed` means the
-/// file write itself failed and a partial tail may exist, so the caller must
-/// stop using the sink.
-pub const LineResult = enum { written, dropped, sink_failed };
+fn jsonSafeMillis(value: i64) u64 {
+    return @intCast(@min(@as(u128, @intCast(@max(value, 0))), @as(u128, behavior_upload.max_safe_json_integer)));
+}
 
 /// Serialize a behavioral event as one flat JSON object. `fields` must be a
 /// struct; its fields are appended after the common envelope. Building the
@@ -194,10 +162,7 @@ pub const BehaviorTrace = struct {
     /// describe a batch whose terminal event was dropped during admission.
     fn eventLocked(self: *BehaviorTrace, kind: BehaviorKind, local_fields: anytype, metadata_fields: anytype, content_fields: anytype) bool {
         if (self.closed or self.seq == std.math.maxInt(u64)) return false;
-        // Rich kinds (#255) never reach the uploader (see uploadEligible), so
-        // an upload-only sink with no local file is not a viable sink for them.
-        const upload_eligible = uploadEligible(kind);
-        const uploader_active = if (self.upload) |uploader| (upload_eligible and uploader.active()) else false;
+        const uploader_active = if (self.upload) |uploader| uploader.active() else false;
         if (self.out == null and !uploader_active) return false;
 
         // This is the logical source sequence, reserved before either
@@ -219,10 +184,8 @@ pub const BehaviorTrace = struct {
                 .sink_failed => self.out = null,
             }
         }
-        if (upload_eligible) {
-            if (self.upload) |uploader| {
-                return uploader.appendEvent(@tagName(kind), next, ts, metadata_fields, content_fields);
-            }
+        if (self.upload) |uploader| {
+            return uploader.appendEvent(@tagName(kind), next, ts, metadata_fields, content_fields);
         }
         return false;
     }
@@ -389,7 +352,14 @@ pub const BehaviorTrace = struct {
             .args = args_value,
             .args_truncated = truncated,
         };
-        _ = self.eventLocked(.tool_started, fields, .{}, .{});
+        const clipped_args = utf8SafeClip(args_json, max_tool_args_bytes);
+        _ = self.eventLocked(.tool_started, fields, .{
+            .turn = turn,
+            .call_id = call_id,
+            .tool_class = @tagName(behavior_upload.toolClass(name)),
+            .args_bytes = clipped_args.len,
+            .args_truncated = truncated,
+        }, fields);
     }
 
     /// Record a tool's outcome (#255, opt-in rich capture only). Only
@@ -407,7 +377,14 @@ pub const BehaviorTrace = struct {
             .is_error = is_error,
             .result_bytes = result_bytes,
         };
-        _ = self.eventLocked(.tool_finished, fields, .{}, .{});
+        _ = self.eventLocked(.tool_finished, fields, .{
+            .turn = turn,
+            .call_id = call_id,
+            .tool_class = @tagName(behavior_upload.toolClass(name)),
+            .ms = jsonSafeMillis(ms),
+            .is_error = is_error,
+            .result_bytes = jsonSafeCount(result_bytes),
+        }, fields);
     }
 
     /// The generic coding-task action mapping (#255): a state mutation after
@@ -423,7 +400,12 @@ pub const BehaviorTrace = struct {
             else => return,
         }
         const fields = .{ .turn = turn, .call_id = call_id, .name = name, .is_error = is_error };
-        _ = self.eventLocked(.action_taken, fields, .{}, .{});
+        _ = self.eventLocked(.action_taken, fields, .{
+            .turn = turn,
+            .call_id = call_id,
+            .tool_class = @tagName(behavior_upload.toolClass(name)),
+            .is_error = is_error,
+        }, fields);
     }
 
     /// Record one completed assistant text segment (#255, opt-in rich
@@ -434,12 +416,17 @@ pub const BehaviorTrace = struct {
         defer self.mutex.unlock(self.io);
         if (!self.rich or !self.started or self.closed or !self.turn_active or turn == 0 or turn != self.current_turn or text.len == 0) return;
         const truncated = text.len > max_text_delta_bytes;
+        const clipped = utf8SafeClip(text, max_text_delta_bytes);
         const fields = .{
             .turn = turn,
-            .text = utf8SafeClip(text, max_text_delta_bytes),
+            .text = clipped,
             .text_truncated = truncated,
         };
-        _ = self.eventLocked(.text_delta, fields, .{}, .{});
+        _ = self.eventLocked(.text_delta, fields, .{
+            .turn = turn,
+            .text_bytes = clipped.len,
+            .text_truncated = truncated,
+        }, fields);
     }
 
     /// Attach content-free operational aggregates to the active root turn.

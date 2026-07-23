@@ -7,12 +7,14 @@ import hmac
 import re
 from typing import Any
 
-SCHEMA = "codegraff.learn.grade.v2"
+SCHEMA = "codegraff.learn.grade.v3"
 INTEGER_FIELDS = (
     "pairs", "statistical_units", "parent_passes", "child_passes",
     "child_critical_failures", "critical_regressions", "correctness_regressions",
     "delta_ppm", "mean_score_delta_ppm", "p_value_ppb", "tool_calls_measured",
-    "parent_tool_calls", "child_tool_calls", "tool_wins", "tool_losses", "tool_ties",
+    "parent_tool_calls", "child_tool_calls",
+    "behavior_measured", "parent_behavior_score_ppm", "child_behavior_score_ppm",
+    "tool_wins", "tool_losses", "tool_ties",
     "tool_delta_ppm", "tool_p_value_ppb", "parent_cost_micros", "child_cost_micros",
     "latency_measured", "parent_latency_ms", "child_latency_ms", "economy_eligible",
     "eligible", "economy_gate_enabled", "alpha_ppm", "minimum_delta_ppm", "minimum_pairs",
@@ -124,6 +126,11 @@ def assert_learning_records(
             assert values["tool_wins"] + values["tool_losses"] + values["tool_ties"] == values["statistical_units"]
         else:
             assert values["tool_wins"] == values["tool_losses"] == values["tool_ties"] == 0
+        assert values["behavior_measured"] in (0, 1)
+        for field in ("parent_behavior_score_ppm", "child_behavior_score_ppm"):
+            assert 0 <= values[field] <= 1_000_000
+        if not values["behavior_measured"]:
+            assert values["parent_behavior_score_ppm"] == values["child_behavior_score_ppm"] == 0
         _assert_decision(values)
 
         score_lines = [

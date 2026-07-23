@@ -70,7 +70,10 @@ def main() -> None:
     arms = (repo / "examples" / "learn_graff_arms.json").resolve()
     evaluator = (repo / "examples" / "learn_graff_evaluator.py").resolve()
     evaluator_settings = (repo / "examples" / "learn_graff_evaluator.json").resolve()
-    for path in (graff, mutator, arms, evaluator, evaluator_settings):
+    behavior_metrics = (repo / "examples" / "learn_behavior_metrics.py").resolve()
+    behavior_scorer = (repo / "scripts" / "score_run.py").resolve()
+    case_support = (repo / "examples" / "learn_graff_case.py").resolve()
+    for path in (graff, mutator, arms, evaluator, evaluator_settings, behavior_metrics, behavior_scorer, case_support):
         if not path.is_file():
             raise FileNotFoundError(path)
 
@@ -100,7 +103,8 @@ def main() -> None:
         },
         "evaluator": {
             **program_pin(evaluator), "args": [str(evaluator_settings), str(graff)],
-            "inputs": [pin(evaluator_settings), pin(graff)], "pass_env": ["CODEX_HOME"],
+            "inputs": [pin(evaluator_settings), pin(graff), pin(behavior_metrics), pin(behavior_scorer), pin(case_support)],
+            "pass_env": ["CODEX_HOME"],
         },
         "evaluation_suite": pin(primary),
         "holdout_suite": pin(holdout),
@@ -118,7 +122,7 @@ def main() -> None:
             "default_repetitions": 1,
         },
         "auto": {"enabled": False},
-        "cohort": {"provider": "codex", "model": "gpt-5.4-mini", "task_family": "coding-flow", "adapter_version": "graff-eval-v7", "verifier_version": "clustered-exact-v6"},
+        "cohort": {"provider": "codex", "model": "gpt-5.4-mini", "task_family": "coding-flow", "adapter_version": "graff-eval-v8", "verifier_version": "behavior-audited-v7"},
     }
     config_path = output / "config.json"
     write_json(config_path, config)

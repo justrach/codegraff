@@ -840,8 +840,10 @@ agent session can write an exclusively-created
 envelope. The local JSONL is never uploaded wholesale. Local capture defaults on
 and is independently disabled with `GRAFF_BEHAVIOR_TRACE=off`. Set
 `GRAFF_BEHAVIOR_TRACE=full` to additionally record tool names/arguments and
-completed assistant text in that local file (opt-in, capped, and never
-uploaded).
+completed assistant text in that local file (opt-in and capped). That plaintext
+file is never uploaded wholesale. Metadata upload still receives only a
+separately built, content-free projection; exact rich fields require the
+additional `GRAFF_BEHAVIOR_UPLOAD=content` opt-in.
 
 When ordinary telemetry is enabled, Codegraff also defaults to one bounded,
 end-of-run **field-allowlisted metadata** POST. A terminal `/v1/logs` path is
@@ -855,6 +857,9 @@ bounded `x-harness-key` token to both OTLP and behavioral requests. Metadata mod
 includes lifecycle/correlation fields, a controlled client class (`harness`,
 `sdk-ts`, or `sdk-py`), an initial run-start provider/model/effort snapshot,
 drop/completeness status, and content-free per-turn API/tool-category aggregates.
+When rich capture is enabled, that allowlist can also carry rich-event
+correlation, broad tool class, byte/duration/error counters, and truncation
+flags—never exact tool names, arguments, results, or assistant text.
 The local prompt fingerprint is omitted from default metadata because a
 low-entropy prompt can be recovered by enumeration. It has no dedicated fields for prompts, generated text or hidden
 reasoning, source code or diffs, filesystem paths or repository names, tool
@@ -862,8 +867,10 @@ arguments/results, commands, arbitrary environment values, or exact private MCP
 names. Provider and model identifiers are included exactly as configured; Phase
 1 does not inspect, classify, or redact those identifier values.
 
-Most Phase 1 runs contain lifecycle events only (plus tool/action/text
-events with `GRAFF_BEHAVIOR_TRACE=full`, local-only in every upload mode).
+Most Phase 1 runs contain lifecycle events only. With
+`GRAFF_BEHAVIOR_TRACE=full`, tool/action/text events are added locally and their
+content-free projections become eligible for metadata upload; their exact
+names, arguments, and text are sent only in explicit content mode.
 The eval-driven loop (`--eval`/`--until`) is the first built-in caller of the
 typed commitment/misprediction APIs, committing to a target before running
 the scoring command and recording a misprediction only on a nonzero exit or a

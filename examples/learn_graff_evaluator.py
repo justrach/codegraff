@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,6 @@ import tempfile
 import threading
 import time
 from typing import Any, Callable
-
 
 REQUEST_SCHEMA = "codegraff.learn.evaluation.request.v1"
 RESPONSE_SCHEMA = "codegraff.learn.evaluation.response.v1"
@@ -26,7 +26,6 @@ PROGRESS_SCHEMA = "codegraff.learn.evaluator-progress.v1"
 ATTEMPT_SCHEMA = "codegraff.learn.evaluator-attempt.v1"
 METRIC_FIELDS = ("latency_ms", "tool_calls", "cost_micros")
 MAX_EXACT_INTEGER = 9_007_199_254_740_991
-
 
 class EvaluationAttemptError(Exception):
     """A bounded model turn failed before producing gradeable evidence."""
@@ -44,11 +43,9 @@ class EvaluationAttemptError(Exception):
         self.tool_calls = max(0, tool_calls)
         self.cost_micros = max(0, cost_micros)
 
-
 def fail(message: str) -> "NoReturn":
     print(f"learn_graff_evaluator: {message}", file=sys.stderr)
     raise SystemExit(2)
-
 
 def load_json(path: Path) -> Any:
     try:
@@ -56,13 +53,11 @@ def load_json(path: Path) -> Any:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         fail(f"cannot read {path}: {exc}")
 
-
 def request_pairs(request: dict[str, Any]) -> list[dict[str, Any]]:
     pairs = request.get("pairs")
     if not isinstance(pairs, list) or any(not isinstance(pair, dict) for pair in pairs):
         fail("request pairs must be an object array")
     return pairs
-
 
 def load_progress(
     path: Path,
@@ -85,7 +80,6 @@ def load_progress(
             fail("evaluator progress is not a valid pair prefix")
     return request_sha256, results
 
-
 def save_json_atomic(path: Path, value: Any) -> None:
     temporary = path.with_name(path.name + ".tmp")
     with temporary.open("w", encoding="utf-8") as output:
@@ -100,7 +94,6 @@ def save_json_atomic(path: Path, value: Any) -> None:
         finally:
             os.close(directory)
 
-
 def save_progress(path: Path, request_sha256: str, results: list[dict[str, Any]]) -> None:
     save_json_atomic(path, {
         "schema": PROGRESS_SCHEMA,
@@ -108,17 +101,14 @@ def save_progress(path: Path, request_sha256: str, results: list[dict[str, Any]]
         "results": results,
     })
 
-
 def zero_metrics() -> dict[str, int]:
     return {field: 0 for field in METRIC_FIELDS}
-
 
 def add_metrics(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
     return {
         field: min(MAX_EXACT_INTEGER, max(0, left[field]) + max(0, right[field]))
         for field in METRIC_FIELDS
     }
-
 
 def attempt_key(
     request_sha256: str,
@@ -134,7 +124,6 @@ def attempt_key(
         hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
     ], separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(b"codegraff-learn/attempt/v1\0" + framed).hexdigest()
-
 
 def load_attempt(path: Path, key: str) -> tuple[dict[str, int], dict[str, Any] | None]:
     if not path.exists():
@@ -161,7 +150,6 @@ def load_attempt(path: Path, key: str) -> tuple[dict[str, int], dict[str, Any] |
         fail("invalid completed evaluator attempt")
     return normalized, dict(result)
 
-
 def save_attempt(
     path: Path,
     key: str,
@@ -176,10 +164,8 @@ def save_attempt(
         "result": result,
     })
 
-
 def clear_attempt(path: Path) -> None:
     path.unlink(missing_ok=True)
-
 
 def validate_settings(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("schema") != "codegraff.learn.graff-evaluator.v1":
@@ -194,7 +180,6 @@ def validate_settings(value: Any) -> dict[str, Any]:
     if value["max_attempts"] > 3:
         fail("max_attempts must be at most 3")
     return value
-
 
 def send(proc: subprocess.Popen[str], value: dict[str, Any], expected: str) -> dict[str, Any]:
     assert proc.stdin is not None and proc.stdout is not None
@@ -212,7 +197,6 @@ def send(proc: subprocess.Popen[str], value: dict[str, Any], expected: str) -> d
         if event.get("type") == expected:
             return event
     fail(f"Graff exited before {expected}")
-
 
 def safe_setup(root: Path, files: Any) -> None:
     if files is None:
@@ -238,30 +222,6 @@ def executable_snapshot(source: Path) -> Path:
     return target
 
 
-def check_case(case: dict[str, Any], text: str, cwd: Path) -> bool:
-    check = case.get("check")
-    if not isinstance(check, dict):
-        fail("case check must be an object")
-    if isinstance(check.get("exact"), str):
-        return text.strip() == check["exact"]
-    if isinstance(check.get("substring"), str):
-        return check["substring"] in text
-    if isinstance(check.get("cmd"), str):
-        completed = subprocess.run(
-            ["sh", "-c", check["cmd"]], cwd=cwd,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False,
-        )
-        return completed.returncode == 0
-    fail("case has no supported check")
-
-
-def reported_cost_micros(event: dict[str, Any]) -> int:
-    try:
-        return max(0, round(float(event.get("cost_usd", 0.0) or 0.0) * 1_000_000))
-    except (TypeError, ValueError, OverflowError):
-        return 0
-
-
 def run_variant(
     graff: Path,
     settings: dict[str, Any],
@@ -270,9 +230,11 @@ def run_variant(
     cwd: Path,
     observe: Callable[[dict[str, int]], None] | None = None,
 ) -> dict[str, Any]:
+    support_path = os.environ.get("GRAFF_LEARN_INPUT_4")
+    support = runpy.run_path(support_path or str(Path(__file__).with_name("learn_graff_case.py")))
     env = os.environ.copy()
     env["GRAFF_NO_TELEMETRY"] = "1"
-    env["GRAFF_BEHAVIOR_TRACE"] = "0"
+    env["GRAFF_BEHAVIOR_TRACE"] = "full"
     env["HARNESS_CLIENT"] = "learn-evaluator"
     env.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
     env.pop("GRAFF_OTEL_ENDPOINT", None)
@@ -315,7 +277,7 @@ def run_variant(
             if not isinstance(event, dict):
                 continue
             if "cost_usd" in event:
-                cost_micros = reported_cost_micros(event)
+                cost_micros = support["reported_cost_micros"](event)
             if event.get("type") == "tool_call":
                 tool_calls += 1
             if observe is not None:
@@ -363,13 +325,29 @@ def run_variant(
             tool_calls=tool_calls,
             cost_micros=cost_micros,
         )
-    passed = check_case(case, str(final.get("text", "")), cwd)
+    behavior = {"measured": False, "score_ppm": 0}
+    metrics_module = os.environ.get("GRAFF_LEARN_INPUT_2")
+    if metrics_module:
+        try:
+            behavior = runpy.run_path(metrics_module)["audited_behavior_metrics"](cwd, tool_calls)
+            tool_calls = behavior["tool_calls"]
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            raise EvaluationAttemptError(
+                f"behavioral metric audit failed: {exc}",
+                latency_ms=latency_ms, tool_calls=tool_calls, cost_micros=cost_micros,
+            ) from exc
+    try:
+        passed = support["check_case"](case, str(final.get("text", "")), cwd)
+    except ValueError as exc:
+        fail(str(exc))
     return {
         "pass": passed,
         "score_ppm": 1_000_000 if passed else 0,
         "cost_micros": cost_micros,
         "latency_ms": latency_ms,
         "tool_calls": tool_calls,
+        "behavior_measured": behavior["measured"],
+        "behavior_score_ppm": behavior["score_ppm"],
     }
 
 
@@ -468,6 +446,8 @@ def evaluate(settings_path: Path, graff: Path, request_path: Path, response_path
             "latency_measured": True,
             "tool_calls_measured": True,
             "parent_tool_calls": parent_run["tool_calls"], "child_tool_calls": child_run["tool_calls"],
+            "behavior_measured": bool(parent_run.get("behavior_measured")) and bool(child_run.get("behavior_measured")),
+            "parent_behavior_score_ppm": parent_run.get("behavior_score_ppm", 0), "child_behavior_score_ppm": child_run.get("behavior_score_ppm", 0),
         })
         save_progress(progress_path, request_sha256, results)
         clear_attempt(Path(".attempt-parent.json"))
@@ -506,6 +486,7 @@ def evaluate_baseline(settings_path: Path, graff: Path, request_path: Path, resp
             "cost_micros": run["cost_micros"], "latency_ms": run["latency_ms"],
             "latency_measured": True, "tool_calls_measured": True,
             "tool_calls": run["tool_calls"],
+            "behavior_measured": bool(run.get("behavior_measured")), "behavior_score_ppm": run.get("behavior_score_ppm", 0),
         })
         save_progress(progress_path, request_sha256, results)
         clear_attempt(journal)
@@ -554,6 +535,8 @@ def evaluate_primary(settings_path: Path, graff: Path, request_path: Path, respo
             "latency_measured": bool(parent_run.get("latency_measured")),
             "tool_calls_measured": bool(parent_run.get("tool_calls_measured")),
             "parent_tool_calls": parent_run.get("tool_calls", 0), "child_tool_calls": child_run["tool_calls"],
+            "behavior_measured": bool(parent_run.get("behavior_measured")) and bool(child_run.get("behavior_measured")),
+            "parent_behavior_score_ppm": parent_run.get("behavior_score_ppm", 0), "child_behavior_score_ppm": child_run.get("behavior_score_ppm", 0),
         })
         save_progress(progress_path, request_sha256, results)
         clear_attempt(journal)

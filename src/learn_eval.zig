@@ -484,6 +484,9 @@ pub fn comparisonEqual(a: ComparisonRecord, b: ComparisonRecord) bool {
         a.parent_cost_micros == b.parent_cost_micros and a.child_cost_micros == b.child_cost_micros and
         a.tool_calls_measured == b.tool_calls_measured and
         a.parent_tool_calls == b.parent_tool_calls and a.child_tool_calls == b.child_tool_calls and
+        a.behavior_measured == b.behavior_measured and
+        a.parent_behavior_score_ppm == b.parent_behavior_score_ppm and
+        a.child_behavior_score_ppm == b.child_behavior_score_ppm and
         a.tool_wins == b.tool_wins and a.tool_losses == b.tool_losses and a.tool_ties == b.tool_ties and
         a.tool_delta_ppm == b.tool_delta_ppm and a.tool_p_value_ppb == b.tool_p_value_ppb and
         a.latency_measured == b.latency_measured and a.parent_latency_ms == b.parent_latency_ms and a.child_latency_ms == b.child_latency_ms and

@@ -28,6 +28,8 @@ const tty = terminal.tty;
 
 const schema = @import("schema.zig");
 const isMetaName = schema.isMetaName;
+const eval_control = @import("agent_eval_control.zig");
+pub const toolInvalidatesEval = eval_control.toolInvalidatesEval;
 pub const gateTool = @import("agent_tool_gate.zig").gateTool;
 pub const firstWord = @import("agent_tool_gate.zig").firstWord;
 
@@ -43,6 +45,10 @@ const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupt
 const tool_results_dir = ".graff/tool-results";
 pub const tool_preview_chars: usize = 2_000;
 var tool_result_seq: std.atomic.Value(u64) = .init(0);
+
+test {
+    _ = @import("agent_eval_control_tests.zig");
+}
 
 pub fn toolPreviewText(arena: std.mem.Allocator, text: []const u8, path: ?[]const u8) ![]const u8 {
     if (text.len <= tool_preview_chars) return arena.dupe(u8, text);
@@ -81,11 +87,30 @@ const rawNonblockStdin = Agent.rawNonblockStdin;
 /// are returned in call order, arena-owned.
 pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     const results = try self.arena.alloc(ExecResult, calls.len);
+    const eval_index = eval_control.evalCallIndex(calls);
+    var batch_may_change_workspace = false;
+    for (calls) |call| {
+        if (toolInvalidatesEval(call)) {
+            batch_may_change_workspace = true;
+            break;
+        }
+    }
 
     // Collect the indices of external (non-meta) calls for parallel exec.
     var ext_idx: std.ArrayList(usize) = .empty;
     defer ext_idx.deinit(self.gpa);
     for (calls, 0..) |call, i| {
+        if (eval_index) |verifier| if (i != verifier) {
+            self.emitToolRejected(call, "verifier_boundary", eval_control.verifier_boundary);
+            results[i] = .{ .text = eval_control.verifier_boundary, .is_error = true };
+            continue;
+        };
+        if (batch_may_change_workspace and std.mem.eql(u8, call.name, "attempt_completion")) {
+            const message = "attempt_completion must be a separate post-verification action; this batch also contains a workspace-changing tool";
+            self.emitToolRejected(call, "eval_stale", message);
+            results[i] = .{ .text = message, .is_error = true };
+            continue;
+        }
         if (try self.rejectToolCall(call)) |denied| {
             results[i] = denied;
             continue;
@@ -150,6 +175,10 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             // inspectable on disk and the short preview carries its pointer.
             const detail = persistToolResult(self, output.text);
             results[i] = .{ .text = try toolPreviewText(self.arena, output.text, detail), .is_error = output.is_error, .ms = output.ms };
+            if (self.eval_cmd != null and toolInvalidatesEval(calls[i])) {
+                self.eval_verified = false;
+                self.eval_repair_pending = false;
+            }
         }
     }
     // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
@@ -244,6 +273,13 @@ fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const
 /// Handle a meta tool inline on the agent's own thread.
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
+        if (self.eval_cmd != null and (!self.eval_verified or self.eval_repair_pending)) {
+            const message = if (self.eval_repair_pending)
+                "completion blocked: the latest verifier contradicted the plan; repair the failure and run eval until it meets the target"
+            else
+                "completion blocked: workspace state is not verified; run eval and meet the target after the final change";
+            return .{ .text = message, .is_error = true };
+        }
         const result = if (call.input.object.get("result")) |r| r.string else "";
         self.completed = try self.arena.dupe(u8, result);
         // Skip the re-print only when the result streamed live in full.
