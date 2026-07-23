@@ -9,7 +9,15 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Restore verified Zig toolchain
+      id: toolchain-cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/codegraff-zig-${{ inputs.version }}
+        key: codegraff-zig-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}
+
     - name: Restore verified Zig archive
+      if: steps.toolchain-cache.outputs.cache-hit != 'true'
       uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/codegraff-zig-archives

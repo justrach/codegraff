@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Pinned Zig installer integrity tests
+        run: python3 scripts/test-install-zig-ci.py
+
       - name: Python SDK import smoke
         run: python3 -c "import sys; sys.path.insert(0, 'sdk/py'); import harness_sdk; assert harness_sdk.MODELS and harness_sdk.TOOLS; print('py sdk ok:', len(harness_sdk.MODELS), 'models')"
 
