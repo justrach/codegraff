@@ -188,6 +188,47 @@ pub const AgentUsage = struct {
     cache_read_tokens: u64 = 0,
 };
 
+/// #276 P0-2: the wire shape of a subagent completion's usage event, emitted
+/// on every runSub return (see the guiEmit call site below). A named struct
+/// + pure constructor — not an inline anonymous literal — so the
+/// id/ok/AgentUsage → wire-field mapping is unit-testable without needing
+/// json_mode/g_out plumbing (same rationale as agentStatusText below).
+const AgentUsageEvent = struct {
+    type: []const u8 = "agent_usage",
+    id: []const u8,
+    ok: bool,
+    duration_ms: u64,
+    tool_calls: u32,
+    context_tokens: u64,
+    cache_read_tokens: u64,
+};
+
+fn agentUsageEvent(sub_id: []const u8, ok: bool, usage: AgentUsage) AgentUsageEvent {
+    return .{
+        .id = sub_id,
+        .ok = ok,
+        .duration_ms = usage.duration_ms,
+        .tool_calls = usage.tool_calls,
+        .context_tokens = usage.context_tokens,
+        .cache_read_tokens = usage.cache_read_tokens,
+    };
+}
+
+test "agentUsageEvent: maps AgentUsage fields onto the wire event without transposition (#276 P0-2)" {
+    const ev = agentUsageEvent("sa-007-abcd", true, .{ .duration_ms = 4110, .tool_calls = 6, .context_tokens = 1820, .cache_read_tokens = 340 });
+    try std.testing.expectEqualStrings("agent_usage", ev.type);
+    try std.testing.expectEqualStrings("sa-007-abcd", ev.id);
+    try std.testing.expect(ev.ok);
+    try std.testing.expectEqual(@as(u64, 4110), ev.duration_ms);
+    try std.testing.expectEqual(@as(u32, 6), ev.tool_calls);
+    try std.testing.expectEqual(@as(u64, 1820), ev.context_tokens);
+    try std.testing.expectEqual(@as(u64, 340), ev.cache_read_tokens);
+
+    const failed = agentUsageEvent("sa-008-efgh", false, .{});
+    try std.testing.expect(!failed.ok);
+    try std.testing.expectEqual(@as(u64, 0), failed.duration_ms);
+}
+
 /// runSub's result: the tool-facing output plus the usage summary above.
 /// Every direct caller (execSubagent, workflowTask, workflowRetryTask,
 /// judgeTask, workflow.zig's pipelineChain) only ever wanted `.output`
@@ -307,6 +348,14 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         .context_tokens = agent.effectiveContextTokens(),
         .cache_read_tokens = agent.last_cache_read,
     };
+    // #276 P0-2: every runSub completion — the synchronous execSubagent path
+    // included, which historically discarded `usage` entirely (only a
+    // background job's polled agent_output ever saw it) — now also emits a
+    // structured completion event over the --json stream, so an SDK driving
+    // the protocol programmatically can see real per-call token/duration
+    // usage without needing run_in_background+agent_output for the common
+    // synchronous case. No-ops outside --json mode (guiEmit).
+    guiEmit(ctx.io, agentUsageEvent(sub_id, run_ok, usage));
     const fp = promptFingerprint(agent.systemPrompt());
     if (trace.g_traj) |tj| {
         tj.capturePrompt(fp, agent.systemPrompt());

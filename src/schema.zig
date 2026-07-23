@@ -39,6 +39,7 @@ const schema_protocol_json =
     \\    {"type": "ask_user", "call_id": "...", "question": "...", "input": {"question": "...", "options": ["..."]}},
     \\    {"type": "tool_result", "name": "tool", "is_error": false, "text": "..."},
     \\    {"type": "tool_call_finished", "name": "tool", "is_error": false, "ms": 0},
+    \\    {"type": "agent_usage", "id": "sa-...", "ok": true, "duration_ms": 0, "tool_calls": 0, "context_tokens": 0, "cache_read_tokens": 0},
     \\    {"type": "finalizing"},
     \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0, "complete": true, "metadata_complete": true},
     \\    {"type": "system_prompt", "ok": true, "append": false, "chars": 0},
