@@ -237,8 +237,10 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     // Dynamic Codex discovery is observable only when startup may select
     // Codex. Explicit/saved non-Codex launches defer the version subprocess,
     // native-cache parse, and possible refresh until a model surface needs it.
+    // Codex-observable launches accept the local snapshot (even stale) without
+    // network I/O; model surfaces go online via ensure() when they need it.
     if (catalog_selection.startupMayUse(keys, "codex", model_flag, saved_model))
-        model_catalog.ensure(io, gpa, arena, home, keys.get("codex") orelse "", keys.codex_account);
+        model_catalog.ensureCached(io, gpa, arena, home, keys.get("codex") orelse "", keys.codex_account);
     if (catalog_selection.startupMayUse(keys, "kimi", model_flag, saved_model))
         kimi_catalog.ensure(io, gpa, arena, home, keys.get("kimi") orelse "");
     router_catalog.ensureForStartup(io, gpa, arena, home, keys, model_flag, saved_model);
@@ -547,6 +549,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             if (codex_auth) |auth| auth.token else "",
             if (codex_auth) |auth| auth.account else "",
             refreshing,
+            true,
         );
         const kimi_token = init.environ_map.get("KIMI_API_KEY") orelse oauth.loadKimiOAuth(io, gpa, arena, home, false, null) orelse "";
         _ = kimi_catalog.load(io, gpa, arena, home, kimi_token);

@@ -1,26 +1,10 @@
 //! `graff models` — the model-catalog CLI and the models.dev refresh cache.
 //!
-//! Non-Codex routing starts from pricing.model_table. Codex model names and
-//! windows are account-scoped and discovered from the same authenticated
-//! `/models?client_version=…` endpoint and 5-minute cache design as openai/codex;
-//! the baked Codex rows are only an offline fallback. Separately, models.dev
-//! keeps context/price METADATA fresh for the non-Codex catalog:
-//!
-//!   * `graff models`          — print the effective catalog (baked + overlay)
-//!   * `graff models refresh`  — force the Codex account catalog refresh, then
-//!                               refresh known window/price rows from models.dev
-//!
-//! At startup resolveKeys() first calls loadCodexCatalog(), then loadOverlay().
-//! Codex discovery swaps only the Codex rows in pricing.active_model_table.
-//! loadOverlay() reads the small models.dev cache
-//! (NOT the 3 MB models.dev doc — startup stays instant) into two runtime
-//! overlays in pricing.zig that priceFor()/contextFor() consult before the
-//! baked table. No cache / offline / fresh install → the baked table is the
-//! sole source, so nothing here can break a run. The models.dev overlay only
-//! refreshes numbers for names the active table already routes.
-//!
-//! Cache path: ~/.codegraff/models.json, falling back to ~/.codegraff-models.json;
-//! the flat form also matches the existing ~/.simple-harness-*.json layout.
+//! Codex account models use an authenticated five-minute cache. Startup accepts
+//! the local snapshot without network I/O; explicit model surfaces refresh it.
+//! `graff models` prints the effective catalog and `graff models refresh`
+//! refreshes Codex plus models.dev metadata. Missing caches use baked rows.
+//! Cache: ~/.codegraff/models.json, falling back to ~/.codegraff-models.json.
 
 const std = @import("std");
 const Io = std.Io;
@@ -45,22 +29,25 @@ const codex_cache_ttl_ms: i64 = 5 * 60 * 1000;
 const codex_client_version_floor = "0.144.1";
 pub var codex_catalog_source: []const u8 = "baked offline fallback";
 
-/// Session-owned demand loader. Non-Codex launches keep the baked rows until
-/// a picker, switch, resume, or fallback can actually observe Codex models.
-/// The loader is invalidated after an in-session Codex login so the new
-/// account receives its own catalog before selection.
+/// Session-owned cache-first loader, invalidated after in-session login.
 pub const LazyCodexCatalog = struct {
     codex_home: []const u8,
     loaded: bool = false,
-
-    pub noinline fn ensure(self: *LazyCodexCatalog, io: Io, gpa: Allocator, arena: Allocator, home: []const u8, token: []const u8, account: []const u8) void {
+    online_loaded: bool = false,
+    pub fn ensureCached(self: *LazyCodexCatalog, io: Io, gpa: Allocator, arena: Allocator, home: []const u8, token: []const u8, account: []const u8) void {
         if (self.loaded) return;
-        loadCodexCatalog(io, gpa, arena, home, self.codex_home, token, account, false);
+        loadCodexCatalog(io, gpa, arena, home, self.codex_home, token, account, false, false);
         self.loaded = true;
     }
-
+    pub noinline fn ensure(self: *LazyCodexCatalog, io: Io, gpa: Allocator, arena: Allocator, home: []const u8, token: []const u8, account: []const u8) void {
+        if (self.online_loaded) return;
+        loadCodexCatalog(io, gpa, arena, home, self.codex_home, token, account, false, true);
+        self.loaded = true;
+        self.online_loaded = true;
+    }
     pub fn invalidate(self: *LazyCodexCatalog) void {
         self.loaded = false;
+        self.online_loaded = false;
     }
 };
 
@@ -290,7 +277,7 @@ fn writeCodexCache(io: Io, arena: Allocator, home: []const u8, version: []const 
 /// Graff identifies with its own supported Codex protocol version; compatible
 /// stale/native caches may cover a network failure, while older caches never
 /// replace the baked rows. Tokens are never persisted.
-pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, codex_home: []const u8, token: []const u8, account: []const u8, force_refresh: bool) void {
+pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, codex_home: []const u8, token: []const u8, account: []const u8, force_refresh: bool, allow_network: bool) void {
     // Account catalogs are meaningful only with the account that produced
     // them. Logged-out sessions use the current baked picker instead of an
     // arbitrary prior account's stale catalog.
@@ -300,7 +287,6 @@ pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const 
     }
     const native_data = readSmall(io, arena, nativeCodexPath(arena, codex_home));
     const native = if (native_data) |data| parseCodexSnapshot(arena, data) else null;
-    const version = effectiveCodexVersion(installedCodexVersion(io, arena), native);
     // GRAFF_CODEX_URL runs are hermetic w.r.t. the shared per-HOME cache in
     // BOTH directions: a fresh real-origin cache must not shadow the override
     // (read skip here), and an override-origin snapshot is never written back
@@ -308,22 +294,29 @@ pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const 
     // caller controls that path explicitly.
     const cached_data = if (provider.g_codex_url_override != null) null else readSmall(io, arena, codexDirPath(arena, home)) orelse readSmall(io, arena, codexFlatPath(arena, home));
     const cached = if (cached_data) |data| parseCodexSnapshot(arena, data) else null;
+    const version = if (allow_network)
+        effectiveCodexVersion(installedCodexVersion(io, arena), native)
+    else if (cached) |snapshot|
+        newerCodexVersion(snapshot.client_version, codex_client_version_floor)
+    else
+        effectiveCodexVersion(null, native);
     const now = util.unixMs(io);
     if (!force_refresh) if (cached) |snapshot| {
         const age = now - snapshot.fetched_at_ms;
-        if (snapshotMatchesVersion(snapshot, version) and age >= 0 and age <= codex_cache_ttl_ms) {
-            if (pricing.activateCodexModels(arena, snapshot.models)) codex_catalog_source = "dynamic cache";
+        if (snapshotMatchesVersion(snapshot, version) and (!allow_network or (age >= 0 and age <= codex_cache_ttl_ms))) {
+            if (pricing.activateCodexModels(arena, snapshot.models))
+                codex_catalog_source = if (age >= 0 and age <= codex_cache_ttl_ms) "dynamic cache" else "stale dynamic cache";
             return;
         }
     };
-    if (fetchCodexSnapshot(io, gpa, arena, token, account, version)) |snapshot| {
-        if (pricing.activateCodexModels(arena, snapshot.models)) {
-            codex_catalog_source = "live account catalog";
-            // Never persist an override-origin snapshot: a later default run
-            // would activate a mock's rows as a genuine chatgpt.com catalog
-            // (the cache is unkeyed by origin and stamped with the real URL).
-            if (provider.g_codex_url_override == null) writeCodexCache(io, arena, home, version, snapshot.models);
-            return;
+    if (allow_network) {
+        if (fetchCodexSnapshot(io, gpa, arena, token, account, version)) |snapshot| {
+            if (pricing.activateCodexModels(arena, snapshot.models)) {
+                codex_catalog_source = "live account catalog";
+                // Never persist an override-origin snapshot into the real cache.
+                if (provider.g_codex_url_override == null) writeCodexCache(io, arena, home, version, snapshot.models);
+                return;
+            }
         }
     }
     if (cached) |snapshot| if (snapshotMatchesVersion(snapshot, version) and pricing.activateCodexModels(arena, snapshot.models)) {
