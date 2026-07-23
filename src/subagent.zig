@@ -34,6 +34,8 @@ const signScore = scoring.signScore;
 const fleet = @import("fleet.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const agentTypePrompt = fleet.agentTypePrompt;
+const Isolation = fleet.Isolation;
+const jobs = @import("jobs.zig"); // #276 P0-1: agentWorktreeCreate/agentWorktreeFinish/isolationFailureText
 const cards = @import("cards.zig");
 const trace = @import("trace.zig");
 const messages_mod = @import("messages.zig");
@@ -51,7 +53,7 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     const prompt = if (input.object.get("prompt")) |p| (if (p == .string) p.string else "") else "";
     if (prompt.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
     const sys_override = fleet.resolveOverride(input.object);
-    return runSub(ctx, "subagent", label, prompt, sys_override, fleet.resolveNiche(input.object));
+    return runSub(ctx, "subagent", label, prompt, sys_override, fleet.resolveNiche(input.object), fleet.resolveIsolation(input.object), fleet.resolveIsolationFallback(input.object));
 }
 
 /// Surface a workflow subagent as a synthetic `tool_call` / `tool_result` on the
@@ -170,7 +172,7 @@ test "child model pin crosses the current root provider only with consent" {
 /// lean default system prompt for a per-child variant (swarm prompt
 /// evolution); either way the run is recorded as a trajectory node under
 /// the turn that spawned it, with the prompt's fingerprint.
-pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) !ToolOutput {
+pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) !ToolOutput {
     const gpa = ctx.gpa;
     if (ctx.run_budget) |budget| if (ctx.depth >= budget.max_depth) return .{
         .text = try gpa.dupe(u8, "agent depth limit reached (max depth 1) — do this work in the current agent"),
@@ -229,6 +231,26 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     const sub_id = cards.subagentId(&id_buf, ordinal, label, prompt);
     const sprite = cards.subagentSprite(ordinal);
     cards.subagentLaunchCard(arena, sub_id, sprite, label, kind, prompt);
+
+    // #276 P0-1: opt-in per-agent git-worktree isolation, threaded through as
+    // this child's own `agent.agent_cwd` (never a process-wide chdir), so
+    // parallel siblings fanned out from the same turn each keep their own
+    // working tree — see jobs.zig's "Per-agent worktree isolation" section.
+    // Creation failure fails the spawn outright unless the caller explicitly
+    // allowed falling back to the shared cwd (design point 4 — a silent
+    // fallback would reintroduce the very race isolation exists to prevent).
+    var wt: ?jobs.AgentWorktree = null;
+    var isolation_note: []const u8 = "";
+    if (isolation == .worktree) {
+        if (jobs.agentWorktreeCreate(gpa, ctx.io, arena, sub_id)) |created| {
+            wt = created;
+        } else |err| {
+            if (!isolation_fallback) return .{ .text = try gpa.dupe(u8, jobs.isolationFailureText(err)), .is_error = true };
+            isolation_note = "\n\n[note: isolation:\"worktree\" failed and fell back to the shared working tree — isolation_fallback:true allowed it]";
+        }
+    }
+    agent.agent_cwd = if (wt) |w| w.path else null;
+
     // Live agent tree: surface workflow_task children as their own GUI rows.
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label } });
@@ -266,40 +288,67 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     // surface the child's own diagnostic (provider status/message + a coarse
     // category + retry guidance) as an is_error result, duped into gpa before
     // the child arena that owns last_api_error is freed on return.
-    const text = report catch |err|
-        return subagentFailure(gpa, sub_id, err, agent.last_api_error);
+    const text = report catch |err| {
+        // #276 P0-1: a crashed child leaves its worktree exactly as-is — never
+        // silently cleaned up, since we can't safely tell "no changes yet"
+        // from "changes we're about to lose" once the run failed abnormally.
+        var out = subagentFailure(gpa, sub_id, err, agent.last_api_error);
+        if (wt) |w| {
+            const combined = std.fmt.allocPrint(gpa, "{s}\n\n[worktree left in place after failure — path: {s}, branch: {s}]", .{ out.text, w.path, w.branch }) catch return out;
+            gpa.free(out.text);
+            out.text = combined;
+        }
+        return out;
+    };
     const empty = text.len == 0;
     const report_body = if (empty) "subagent finished without a report" else text;
     // Persist the full report + metadata so it can be inspected from the
     // terminal, then render the completion card with the inspect: path.
     const detail = cards.writeSubagentDetail(ctx.io, arena, sub_id, label, kind, prompt, report_body, !empty, run_ms, used_tools);
     cards.subagentDoneCard(arena, sub_id, sprite, label, !empty, run_ms, used_tools, detail);
-    if (empty) return .{ .text = try gpa.dupe(u8, report_body), .is_error = true };
+
+    // #276 P0-1: the child completed normally — finish an isolated worktree
+    // now (an unchanged one is removed with its branch, silently; a changed
+    // one is kept and its path/branch ride along in the result so the
+    // orchestrator can inspect/land it), or carry the isolation_fallback note.
+    var extra: []const u8 = isolation_note;
+    var extra_owned = false;
+    if (wt) |w| {
+        const outcome = jobs.agentWorktreeFinish(gpa, ctx.io, w);
+        if (outcome.kept) {
+            extra = std.fmt.allocPrint(gpa, "\n\n[worktree kept (has changes) — path: {s}, branch: {s}]", .{ w.path, w.branch }) catch "";
+            extra_owned = extra.len > 0;
+        }
+    }
+    defer if (extra_owned) gpa.free(extra);
+
+    if (empty) return .{ .text = try std.fmt.allocPrint(gpa, "{s}{s}", .{ report_body, extra }), .is_error = true };
     // Append the inspect: path so the orchestrator can cite the detail file.
     if (detail) |p|
-        return .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[subagent {s} · inspect: {s}]", .{ text, sub_id, p }) };
-    return .{ .text = try gpa.dupe(u8, text) };
+        return .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[subagent {s} · inspect: {s}]{s}", .{ text, sub_id, p, extra }) };
+    return .{ .text = try std.fmt.allocPrint(gpa, "{s}{s}", .{ text, extra }) };
 }
 
 /// One task inside a workflow phase; never throws, suitable for io.async.
 /// `niche` is the task's MAP-Elites cell, threaded through so runSub's
 /// fleet:propose — and scoreVariants' submit — tag the variant's genome.
-pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) ToolOutput {
-    return runSub(ctx, "workflow_task", label, prompt, sys_override, niche) catch |err| failure(ctx.gpa, err);
+pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) ToolOutput {
+    return runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback) catch |err| failure(ctx.gpa, err);
 }
 
 /// A second workflow attempt has its own explicit budget kind. It still shares
 /// the same invocation-wide atomic ceiling and concurrency limiter.
-pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) ToolOutput {
-    return runSub(ctx, "workflow_retry", label, prompt, sys_override, niche) catch |err| failure(ctx.gpa, err);
+pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) ToolOutput {
+    return runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback) catch |err| failure(ctx.gpa, err);
 }
 
 /// The --judge LLM-as-judge run (see runEval in main): an isolated subagent
 /// scores the work against the rubric and ends with a `score:` line. Mirrors
 /// workflowTask — a thin runSub wrapper — so the eval handler can io.async it
-/// on a pool thread.
+/// on a pool thread. Never worktree-isolated: a judge only reads/reasons over
+/// text handed to it, never the filesystem, so there's nothing to isolate.
 pub fn judgeTask(ctx: ToolCtx, prompt: []const u8) ToolOutput {
-    return runSub(ctx, "judge_task", "judge", prompt, null, "") catch |err| failure(ctx.gpa, err);
+    return runSub(ctx, "judge_task", "judge", prompt, null, "", .shared_cwd, false) catch |err| failure(ctx.gpa, err);
 }
 
 /// Build the judge prompt that scores one workflow variant's output against its
