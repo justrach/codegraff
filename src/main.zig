@@ -380,15 +380,11 @@ pub fn main(init: std.process.Init) !void {
     boot.mark(io, "MCP registry");
     defer registry_storage.deinit();
     const registry: ?*mcp.Registry = &registry_storage;
-    // Per-skill/companion opt-outs, animation/theme settings, and the --selftest-spinner headless render live in session_start.zig. The theme/
-    // limyuxi-glam reset `defer`s stay HERE (registered in main()'s own frame) so they fire when main() returns, not when the helper does.
-    const theme_setup = try session_run.setupSkillsAndTheme(io, arena, init.environ_map, out, flags, use_color, json_mode, g_cwd_display);
+    // Per-skill/companion opt-outs, animation/theme settings, and PTY self-test rendering live in session_start.zig. The theme
+    // reset `defer` stays HERE (registered in main()'s own frame) so it fires when main() returns, not when the helper does.
+    const theme_setup = try session_run.setupSkillsAndTheme(io, arena, init.environ_map, out, flags, use_color, json_mode);
     defer if (theme_setup.theme_on) {
         out.writeAll(anim.theme_reset) catch {};
-        out.flush() catch {};
-    };
-    defer if (theme_setup.limyuxi_glam) {
-        out.writeAll(anim.limyuxi_reset) catch {};
         out.flush() catch {};
     };
     if (theme_setup.should_exit) return;

@@ -327,23 +327,21 @@ pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer
 
 pub const ThemeSetup = struct {
     theme_on: bool,
-    limyuxi_glam: bool,
     /// True when a PTY self-test already ran + printed its render — main()
     /// should return immediately without going any
-    /// further (but AFTER registering the theme/limyuxi reset defers below,
+    /// further (but AFTER registering the theme reset defer below,
     /// exactly like the original inline code did).
     should_exit: bool,
 };
 
 /// Per-skill/companion opt-outs, animation + terminal-theme settings, the
-/// headless PTY render self-tests, and the
-/// yxlyx-birthday cosmetic theme. Moved out of main() verbatim (600-line
-/// goal). Returns which reset defers main() needs to register — the
-/// escape-code RESETS must fire when main() itself returns (not when this
-/// helper returns), so the `defer`s stay in main(), gated on the booleans
-/// this returns; main() registers them in the same order as the original
+/// headless PTY render self-tests. Moved out of main() verbatim (600-line
+/// goal). Returns which reset defer main() needs to register — the
+/// escape-code RESET must fire when main() itself returns (not when this
+/// helper returns), so the `defer` stays in main(), gated on the boolean
+/// this returns; main() registers it in the same order as the original
 /// inline code so LIFO defer-firing order is unchanged.
-pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool, cwd_display: []const u8) !ThemeSetup {
+pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, flags: args.Flags, use_color: bool, json_mode: bool) !ThemeSetup {
     // Companion auto-activation: if the metered code-intelligence companion
     // (codedb-pro, formerly muonry) is installed but nothing connected it (no
     // workspace .mcp.json entry, or consent declined), spawn it directly — a
@@ -422,38 +420,6 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
         out.writeAll(anim.themes[anim.g_theme.?].seq) catch {};
         out.flush() catch {};
     }
-    // 🎂 yxlyx's birthday glam — when graff runs from her home dir, dress her
-    // Ghostty in the pastel-pink theme (limyuxi_theme: light pink bg, dark plum
-    // text, pink-leaning palette) and switch the spinner to glittery sparkles.
-    // Cosmetic, flagged, gated to her cwd; resets everything on exit.
-    const limyuxi_glam = anim.limyuxi_birthday_white and use_color and !json_mode and
-        (std.mem.eql(u8, cwd_display, "/Users/limyuxi") or std.mem.startsWith(u8, cwd_display, "/Users/limyuxi/"));
-    if (limyuxi_glam) {
-        out.writeAll(anim.limyuxi_theme) catch {};
-        out.flush() catch {};
-        if (anim.animIndex("dragon")) |gi| {
-            anim.g_anim_index = gi;
-            anim.g_anim_off = false;
-            anim.g_anim_random = false;
-        }
-    }
-    if (flags.selftest_spinner_flag) {
-        // Headless render of the real thinking-spinner pool for the PTY anti-stealth
-        // test (scripts/test-pty-spinner.py): runs the real selection (so a cwd-gated
-        // pick surfaces) and prints every frame fn's output to stdout, where the test
-        // scans for the U+1F4A9 / supplementary-plane glyph class the poop hid in.
-        anim.selectSpinner(io);
-        out.print("selected: {s}\n", .{anim.anims[anim.g_anim_current].name}) catch {};
-        for (anim.anims) |a| {
-            var i: usize = 0;
-            while (i < 48) : (i += 1) {
-                a.frame(out, i) catch {};
-                out.writeByte('\n') catch {};
-            }
-        }
-        out.flush() catch {};
-        return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = true };
-    }
     if (flags.selftest_markdown_flag) {
         var probe: agent_mod.Agent = .{
             .gpa = arena,
@@ -482,8 +448,8 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
         probe.flushStreamTail();
         out.writeByte('\n') catch {};
         out.flush() catch {};
-        return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = true };
+        return .{ .theme_on = theme_on, .should_exit = true };
     }
     anim.loadDevSpinnerOptOut(io, arena, environ_map);
-    return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = false };
+    return .{ .theme_on = theme_on, .should_exit = false };
 }

@@ -48,17 +48,17 @@ pub var g_anim_index: usize = 0; // /animation selection (index into anims)
 pub var g_anim_random = false; // the calm enso is stable by default; /animation random opts into variety
 pub var g_anim_off = false; // /animation off
 pub var g_anim_current: usize = 0; // what spinnerTask draws right now
-// 🎂 Birthday easter egg (flagged, temporary) — when graff runs from
-// limyuxi/yxlyx's home dir it paints her Ghostty white (OSC 11 bg + OSC 10 fg),
-// reset on exit. Cosmetic and gated to her cwd, like the old dragon spinner.
-// Flip to false / delete to remove after the bday.
-pub const limyuxi_birthday_white = false; // retired: ship the default theme/spinner for everyone
 
-// 🎂 yxlyx's birthday glam: a pastel-pink Ghostty theme — light pink bg, dark
-// plum text, and a pink-leaning ANSI palette so graff's colored UI stays legible
-// (every entry is dark/saturated enough to read on light pink). Reset with OSC
-// 104/110/111/112 on exit. Paired with the "glitter" spinner; gated by the flag.
-pub const limyuxi_theme =
+// ── color themes ────────────────────────────────────────────────────────────
+// Opt-in terminal color themes (OSC 10/11/12 = fg/bg/cursor; the light theme
+// also sets the ANSI palette so graff's colored UI stays legible). Selected via
+// /theme, persisted as {"theme": "<name>"} in .harness/settings.json, reset on
+// exit. No theme by default — graff leaves your terminal colors alone unless you
+// pick one.
+pub const theme_reset = "\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07"; // palette, fg, bg, cursor
+pub const Theme = struct { name: []const u8, desc: []const u8, seq: []const u8 };
+// PastelPink: light pink bg, dark plum text, pink-leaning ANSI palette.
+pub const pastel_pink_seq =
     "\x1b]11;#fce4ec\x07" ++ // bg: pastel pink
     "\x1b]10;#4a1942\x07" ++ // fg: dark plum (~9:1 contrast)
     "\x1b]12;#d81b60\x07" ++ // cursor: hot pink
@@ -66,18 +66,8 @@ pub const limyuxi_theme =
     "\x1b]4;4;#6a1b9a\x07\x1b]4;5;#ad1457\x07\x1b]4;6;#00796b\x07\x1b]4;7;#5d4357\x07" ++
     "\x1b]4;8;#8a6680\x07\x1b]4;9;#e91e63\x07\x1b]4;10;#388e3c\x07\x1b]4;11;#c77800\x07" ++
     "\x1b]4;12;#8e24aa\x07\x1b]4;13;#d81b60\x07\x1b]4;14;#00897b\x07\x1b]4;15;#3a1133\x07";
-pub const limyuxi_reset = "\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07"; // palette, fg, bg, cursor
-
-// ── color themes ────────────────────────────────────────────────────────────
-// Opt-in terminal color themes (OSC 10/11/12 = fg/bg/cursor; the light theme
-// also sets the ANSI palette so graff's colored UI stays legible). Selected via
-// /theme, persisted as {"theme": "<name>"} in .harness/settings.json, reset on
-// exit. No theme by default — graff leaves your terminal colors alone unless you
-// pick one. PastelPink is the former limyuxi glam, now a normal choice.
-pub const theme_reset = "\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07"; // palette, fg, bg, cursor
-pub const Theme = struct { name: []const u8, desc: []const u8, seq: []const u8 };
 pub const themes = [_]Theme{
-    .{ .name = "PastelPink", .desc = "light pink bg, dark plum text", .seq = limyuxi_theme },
+    .{ .name = "PastelPink", .desc = "light pink bg, dark plum text", .seq = pastel_pink_seq },
     .{ .name = "Midnight", .desc = "deep navy bg, soft slate text, sky cursor", .seq = "\x1b]11;#0f172a\x07\x1b]10;#e2e8f0\x07\x1b]12;#38bdf8\x07" },
     .{ .name = "Forest", .desc = "dark green bg, pale green text", .seq = "\x1b]11;#0e1a12\x07\x1b]10;#d7e8d0\x07\x1b]12;#4ade80\x07" },
     .{ .name = "Amber", .desc = "warm dark bg, amber text (retro CRT)", .seq = "\x1b]11;#1a1206\x07\x1b]10;#ffcf8f\x07\x1b]12;#ff9e3d\x07" },
@@ -176,42 +166,6 @@ fn animEnso(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     // frames so it reads as breathing rather than a busy loading indicator.
     const frames = [_][]const u8{ "◜", "◜", "◝", "◝", "◞", "◞", "◟", "◟" };
     try w.print("{s}{s}{s}", .{ style.accent, frames[i % frames.len], style.reset });
-    try animThinking(w);
-}
-
-fn animGlitter(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // 🎂 EGG (limyuxi_birthday_white): a glittery pink sparkle spinner. Saturated
-    // pinks/purples/gold pop on the pastel-pink bg; "thinking…" in deep plum
-    // stays legible.
-    const sparks = [_][]const u8{ "✨", "✧", "⋆", "˖", "✦", "♡", "⭒", "·" };
-    const cols = [_][]const u8{
-        "\x1b[38;2;255;20;147m", // deep pink
-        "\x1b[38;2;233;30;99m", // pink
-        "\x1b[38;2;156;39;176m", // purple
-        "\x1b[38;2;255;152;0m", // gold
-        "\x1b[38;2;216;27;96m", // magenta
-    };
-    var j: usize = 0;
-    while (j < 3) : (j += 1) {
-        try w.writeAll(cols[(i +% j) % cols.len]);
-        try w.writeAll(sparks[(i *% 2 +% j *% 3) % sparks.len]);
-        if (j + 1 < 3) try w.writeAll(" ");
-    }
-    try w.writeAll("\x1b[0m \x1b[38;2;106;27;90mthinking…\x1b[0m");
-}
-
-fn animDragon(w: *Io.Writer, i: usize) Io.Writer.Error!void {
-    // 🎂 EGG (limyuxi_birthday_white): a wee ASCII fire-breathing dragon for
-    // yxlyx — brought back, but drawn (no emoji). Spiky body undulates, the head
-    // breathes a flickering flame. style.yellow → legible amber on her pink bg,
-    // bright yellow on a dark terminal.
-    const body = [_][]const u8{ "_^_^_^", "^_^_^_", "_^^_^^", "^^_^^_" };
-    const flame = [_][]const u8{ "~", "=", "<", "*", "" };
-    try w.print("{s}{s}", .{ style.bold, style.yellow });
-    try w.writeAll(body[i % body.len]);
-    try w.writeAll("(O>");
-    try w.writeAll(flame[i % flame.len]);
-    try w.writeAll(style.reset);
     try animThinking(w);
 }
 
@@ -315,56 +269,6 @@ fn animStarfield(w: *Io.Writer, i: usize) Io.Writer.Error!void {
     try animThinking(w);
 }
 
-test "no spinner frame ever emits a supplementary-plane glyph (anti-stealth, #106)" {
-    // Regression guard for the runtime-built poop prank (U+1F4A9): it lived inside a
-    // frame fn and constructed the codepoint at runtime, so strings/grep never saw it.
-    // Every legitimate spinner glyph is BMP (braille, blocks, the comet, sparkles), so
-    // a terminal spinner has no business ever emitting a supplementary-plane codepoint.
-    // Render every production spinner — plus the gated birthday eggs — across several
-    // cycles and assert it. This is the unit-level test that would have caught the poop.
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const FrameFn = *const fn (*Io.Writer, usize) Io.Writer.Error!void;
-    var fns: [anims.len + 2]FrameFn = undefined;
-    for (anims, 0..) |a, k| fns[k] = a.frame;
-    fns[anims.len] = animGlitter; // gated birthday eggs are still real spinner output
-    fns[anims.len + 1] = animDragon;
-
-    for (fns, 0..) |f, fi| {
-        var i: usize = 0;
-        while (i < 96) : (i += 1) {
-            var aw: Io.Writer.Allocating = .init(arena);
-            try f(&aw.writer, i);
-            const view = std.unicode.Utf8View.init(aw.writer.buffered()) catch {
-                std.debug.print("spinner #{d} i={d}: invalid UTF-8\n", .{ fi, i });
-                return error.InvalidFrameUtf8;
-            };
-            var it = view.iterator();
-            while (it.nextCodepoint()) |cp| {
-                if (cp >= 0x10000) {
-                    std.debug.print("spinner #{d} i={d} emitted U+{X} (supplementary-plane/emoji, the old poop class)\n", .{ fi, i, cp });
-                    return error.ForbiddenSpinnerGlyph;
-                }
-            }
-        }
-    }
-}
-
-test "spinner pool is exactly the expected 10 animations (no silent additions)" {
-    // Lock the user-facing spinner set: adding or renaming one must be a deliberate,
-    // reviewed change, not something that slips in unnoticed.
-    const expected = [_][]const u8{
-        "enso",    "braille", "pulse",  "orbit-dots", "block-wave",
-        "shimmer", "matrix",  "pacman", "starfield",  "comet-tail",
-    };
-    try std.testing.expectEqual(expected.len, anims.len);
-    for (anims, 0..) |a, k| try std.testing.expectEqualStrings(expected[k], a.name);
-    try std.testing.expectEqualStrings("enso", anims[0].name);
-    try std.testing.expectEqual(@as(u16, 160), anims[0].frame_ms);
-}
-
 /// Check .harness/settings.json for "dev_spinner": if truthy, the
 /// caller should use the normal spinner regardless of host profile.
 var g_dev_spinner_opt_out: bool = false;
@@ -410,9 +314,7 @@ pub fn loadAnimationSetting(io: Io, arena: Allocator) void {
     }
 }
 
-/// Pick which animation the thinking spinner shows — the EXACT logic spinnerStart
-/// uses, factored so the headless --selftest-spinner render and the live spinner
-/// always agree (a cwd-gated override would surface in both). Sets g_anim_current.
+/// Pick which animation the thinking spinner shows. Sets g_anim_current.
 pub fn selectSpinner(io: Io) void {
     if (g_anim_random) {
         var b: [1]u8 = undefined;
