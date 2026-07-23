@@ -29,6 +29,7 @@ const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
 const jobs = @import("jobs.zig");
+const subagent = @import("subagent.zig"); // #276 P0-3: g_agent_jobs, for /jobs
 
 const pricing = @import("pricing.zig");
 const default_context = pricing.default_context;
@@ -138,29 +139,53 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (std.mem.eql(u8, line, "/jobs")) {
         jobs.g_jobs.mutex.lockUncancelable(root.io);
-        defer jobs.g_jobs.mutex.unlock(root.io);
         if (jobs.g_jobs.list.items.len == 0) {
-            try out.writeAll("no background jobs — the model starts one with bash {run_in_background: true}\n");
-            try out.flush();
-            return true;
+            try out.writeAll("no background bash jobs — the model starts one with bash {run_in_background: true}\n");
+        } else {
+            try out.print("{s}background jobs{s}\n", .{ style.bold, style.reset });
+            for (jobs.g_jobs.list.items) |job| {
+                var sbuf: [32]u8 = undefined;
+                const status: []const u8 = if (!job.done)
+                    "running"
+                else if (job.killed)
+                    "killed"
+                else if (job.exit_code) |c|
+                    (std.fmt.bufPrint(&sbuf, "exit {d}", .{c}) catch "exited")
+                else
+                    "abnormal";
+                try out.print("  {s}{d:>3}{s}  {s}{s:<8}{s} {d:>7} unread B  {s}\n", .{
+                    style.accent,                             job.id,                  style.reset,
+                    if (job.done) style.dim else style.green, status,                  style.reset,
+                    job.buf.items.len - job.cursor,           utf8Prefix(job.cmd, 60),
+                });
+            }
         }
-        try out.print("{s}background jobs{s}\n", .{ style.bold, style.reset });
-        for (jobs.g_jobs.list.items) |job| {
-            var sbuf: [32]u8 = undefined;
-            const status: []const u8 = if (!job.done)
-                "running"
-            else if (job.killed)
-                "killed"
-            else if (job.exit_code) |c|
-                (std.fmt.bufPrint(&sbuf, "exit {d}", .{c}) catch "exited")
-            else
-                "abnormal";
-            try out.print("  {s}{d:>3}{s}  {s}{s:<8}{s} {d:>7} unread B  {s}\n", .{
-                style.accent,                             job.id,                  style.reset,
-                if (job.done) style.dim else style.green, status,                  style.reset,
-                job.buf.items.len - job.cursor,           utf8Prefix(job.cmd, 60),
-            });
+        jobs.g_jobs.mutex.unlock(root.io);
+
+        // #276 P0-3: background subagents (subagent {run_in_background:true}),
+        // same listing shape as bash jobs above.
+        subagent.g_agent_jobs.mutex.lockUncancelable(root.io);
+        if (subagent.g_agent_jobs.list.items.len == 0) {
+            try out.writeAll("no background agents — the model starts one with subagent {run_in_background: true}\n");
+        } else {
+            try out.print("{s}background agents{s}\n", .{ style.bold, style.reset });
+            for (subagent.g_agent_jobs.list.items) |job| {
+                const status: []const u8 = if (!job.admitted)
+                    "queued"
+                else if (!job.done)
+                    "running"
+                else if (job.is_error)
+                    "failed"
+                else
+                    "done";
+                try out.print("  {s}{d:>3}{s}  {s}{s:<8}{s} {d:>7}ms  {s}\n", .{
+                    style.accent,                              job.id,                style.reset,
+                    if (job.done) style.dim else style.green,  status,                style.reset,
+                    job.usage.duration_ms,                     utf8Prefix(job.label, 60),
+                });
+            }
         }
+        subagent.g_agent_jobs.mutex.unlock(root.io);
         try out.flush();
         return true;
     }

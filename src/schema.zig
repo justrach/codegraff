@@ -204,9 +204,17 @@ const meta_specs = [_]ToolSpec{
 
 const subagent_spec = ToolSpec{
     .name = "subagent",
-    .desc = "Delegate a self-contained task to a subagent. It has bash, read_file, edit_file, write_file, and codedb (code search); it cannot spawn further subagents and does NOT share your context — the prompt must be self-contained. Returns the subagent final report. Call several times in one response to run tasks in parallel. Pick a persona with agent (builtins: reviewer, researcher, implementer, skeptic — plus any in .harness/agents/), or give the child a custom system_prompt; the trajectory log records the lineage either way.",
+    .desc = "Delegate a self-contained task to a subagent. It has bash, read_file, edit_file, write_file, and codedb (code search); it cannot spawn further subagents and does NOT share your context — the prompt must be self-contained. Returns the subagent final report. Call several times in one response to run tasks in parallel. Pick a persona with agent (builtins: reviewer, researcher, implementer, skeptic — plus any in .harness/agents/), or give the child a custom system_prompt; the trajectory log records the lineage either way. Set run_in_background true to launch it asynchronously instead: you get the agent id back immediately and keep working, then fetch the result with agent_output.",
     .schema =
-    \\{"type": "object", "properties": {"description": {"type": "string", "description": "Short label for logs, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task description"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name) whose persona the child runs with"}, "system_prompt": {"type": "string", "description": "Optional: replace the child's system prompt with a custom one (overrides agent)"}, "isolation": {"type": "string", "enum": ["shared_cwd", "worktree"], "description": "Optional: \"worktree\" gives this child its own scratch git worktree (auto-removed if it finishes with no changes, kept + reported if it has any) instead of the shared working tree — use for parallel agents that edit files. Default shared_cwd (today's behavior), unless the chosen agent persona sets its own default."}, "isolation_fallback": {"type": "boolean", "description": "Optional: if isolation:\"worktree\" fails to set up (not a git repo, git error), run in the shared working tree instead of failing the spawn. Default false (fails the spawn on setup failure)."}}, "required": ["description", "prompt"]}
+    \\{"type": "object", "properties": {"description": {"type": "string", "description": "Short label for logs, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task description"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name) whose persona the child runs with"}, "system_prompt": {"type": "string", "description": "Optional: replace the child's system prompt with a custom one (overrides agent)"}, "isolation": {"type": "string", "enum": ["shared_cwd", "worktree"], "description": "Optional: \"worktree\" gives this child its own scratch git worktree (auto-removed if it finishes with no changes, kept + reported if it has any) instead of the shared working tree — use for parallel agents that edit files. Default shared_cwd (today's behavior), unless the chosen agent persona sets its own default."}, "isolation_fallback": {"type": "boolean", "description": "Optional: if isolation:\"worktree\" fails to set up (not a git repo, git error), run in the shared working tree instead of failing the spawn. Default false (fails the spawn on setup failure)."}, "run_in_background": {"type": "boolean", "description": "Optional: start this subagent asynchronously and return its agent id immediately instead of waiting for it to finish (default false). Poll status/result with agent_output (id, optional wait_ms). A spawn beyond the concurrency cap is queued, never failed."}}, "required": ["description", "prompt"]}
+    ,
+};
+
+const agent_output_spec = ToolSpec{
+    .name = "agent_output",
+    .desc = "Fetch a background subagent's status/result (one started with subagent run_in_background:true). Running: a brief status line. Completed: the full report — the same text a synchronous subagent call would have returned, including any kept-worktree note — plus a usage summary (duration, tool-call count, context tokens, cache-read tokens). Failed: an is_error result explaining why; failures are always reported, never silent. Set wait_ms to block while still running. Calling again after completion re-returns the same result — nothing is consumed.",
+    .schema =
+    \\{"type": "object", "properties": {"id": {"type": "integer", "description": "Agent id returned by subagent with run_in_background:true"}, "wait_ms": {"type": "integer", "description": "Max milliseconds to wait while still running (0-30000, default 0)"}}, "required": ["id"]}
     ,
 };
 
@@ -226,7 +234,7 @@ const learn_candidate_spec = ToolSpec{
     ,
 };
 
-pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec, learn_candidate_spec };
+pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec, agent_output_spec, learn_candidate_spec };
 
 // The common catalog (clock_sleep off) is static too. Previously every root
 // startup allocated and filled a filtered ToolSpec array before rendering even
@@ -403,7 +411,7 @@ fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const u8,
 /// a per-commit git describe) — bump this only when the schema or JSONL
 /// protocol changes shape, so SDK regeneration stays byte-stable across
 /// commits.
-pub const schema_version = "0.7"; // #276 P0-1: subagent/workflow-task schemas gained isolation/isolation_fallback
+pub const schema_version = "0.8"; // #276 P0-3: subagent gained run_in_background; new agent_output tool
 
 /// Emit the machine-readable interface description for `harness --schema`:
 /// providers, models, built-in tools (name/description/parameters), and the
@@ -598,3 +606,26 @@ test "providerTakesEffort: effort-honoring providers, but never for grok models"
     // grok via the codegraff gateway must NOT get reasoning_effort (grok rejects it)
     try std.testing.expect(!providerTakesEffort(.openai, "codegraff", "grok-build"));
 }
+test "agent_output: root-only (subagent/workflow's run_in_background has nothing to poll from inside a child), never doubles as a meta tool" {
+    var found_root = false;
+    for (root_specs) |t| if (std.mem.eql(u8, t.name, "agent_output")) {
+        found_root = true;
+    };
+    try std.testing.expect(found_root);
+    try std.testing.expect(!isMetaName("agent_output")); // dispatched like bash_output, not handled inline
+
+    // Subagents can't spawn subagents (execSubagent's from_sub gate), so they
+    // can never mint an agent id to poll — keep it out of their own catalog
+    // (tools_anthropic_sub is built from base_specs only).
+    try std.testing.expect(std.mem.indexOf(u8, tools_anthropic_sub, "agent_output") == null);
+    try std.testing.expect(std.mem.indexOf(u8, tools_anthropic_sub, "subagent") == null);
+}
+
+test "subagent_spec: run_in_background is a boolean, optional (not in required), valid JSON alongside the rest of the schema" {
+    try std.testing.expect(std.mem.indexOf(u8, subagent_spec.schema, "\"run_in_background\": {\"type\": \"boolean\"") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, subagent_spec.schema, .{});
+    defer parsed.deinit();
+    const required = parsed.value.object.get("required").?.array.items;
+    for (required) |r| try std.testing.expect(!std.mem.eql(u8, r.string, "run_in_background"));
+}
+

@@ -37,6 +37,7 @@ const codedb_result_cap = tools.codedb_result_cap;
 
 const subagent = @import("subagent.zig");
 const execSubagent = subagent.execSubagent;
+const agentOutput = subagent.agentOutput; // #276 P0-3
 const workflow = @import("workflow.zig");
 const execWorkflow = workflow.execWorkflow;
 
@@ -449,6 +450,12 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     }
     if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
+    if (std.mem.eql(u8, call.name, "agent_output")) {
+        const id = intField(input, "id") orelse return missingArg(gpa, "id");
+        const wait_ms = intField(input, "wait_ms") orelse 0;
+        if (id < 0 or id > std.math.maxInt(u32)) return .{ .text = try gpa.dupe(u8, "invalid agent id"), .is_error = true };
+        return agentOutput(gpa, io, @intCast(id), @intCast(@max(wait_ms, 0)));
+    }
     return .{ .text = try std.fmt.allocPrint(gpa, "unknown tool: {s}", .{call.name}), .is_error = true };
 }
 

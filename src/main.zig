@@ -443,6 +443,11 @@ pub fn main(init: std.process.Init) !void {
     // A later guarded defer moves normal reaping ahead of terminal upload.
     var jobs_reaped = false;
     defer if (!jobs_reaped) jobsReap(gpa, io);
+    // Background subagents (#276 P0-3) die with the session too, though not
+    // killed the same way — see agentJobsReap's doc comment for why. Mirrors
+    // jobsReap's early-fallback/later-guarded-defer pattern immediately above.
+    var agent_jobs_reaped = false;
+    defer if (!agent_jobs_reaped) agentJobsReap(gpa, io);
     // Root Agent construction + post-construction config (session name, persisted thinking/goal/eval settings, session-start trace note) + the
     // backgrounded fleet-champion pull live in session_start.zig. `root`'s pointer fields (snapshots/client/tracer/approvals/registry) all reference
     // already-stable main()-owned storage passed in by address, so returning the constructed Agent by value here is safe.
@@ -473,12 +478,17 @@ pub fn main(init: std.process.Init) !void {
     // first; finish() is idempotent and keeps that status terminal.
     errdefer behavior_boot.behavior.finish(.failed);
 
-    // LIFO teardown: joinElites, then background bash pumps, then emit/send
-    // run_finished, then close/deinit the two behavioral sinks. The earlier
-    // fallback remains for failures that occur before this defer is registered.
+    // LIFO teardown: joinElites, then background bash + subagent pumps, then
+    // emit/send run_finished, then close/deinit the two behavioral sinks. The
+    // earlier fallbacks remain for failures that occur before these defers
+    // are registered.
     defer if (!jobs_reaped) {
         jobsReap(gpa, io);
         jobs_reaped = true;
+    };
+    defer if (!agent_jobs_reaped) {
+        agentJobsReap(gpa, io);
+        agent_jobs_reaped = true;
     };
     defer joinElites(io); // reap if the session quits before any turn joins it
 
@@ -590,6 +600,7 @@ const jobsReap = jobs.jobsReap;
 const tools_mod = @import("tools.zig");
 const Snapshots = tools_mod.Snapshots;
 const subagent = @import("subagent.zig");
+const agentJobsReap = subagent.agentJobsReap; // #276 P0-3: background subagents die with the session, mirroring jobsReap
 const workflow = @import("workflow.zig");
 const exec = @import("exec.zig");
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────

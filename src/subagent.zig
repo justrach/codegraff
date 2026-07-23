@@ -36,6 +36,7 @@ const learning_privacy = @import("learning_privacy.zig");
 const agentTypePrompt = fleet.agentTypePrompt;
 const Isolation = fleet.Isolation;
 const jobs = @import("jobs.zig"); // #276 P0-1: agentWorktreeCreate/agentWorktreeFinish/isolationFailureText
+const run_budget = @import("run_budget.zig"); // #276 P0-3: default_max_concurrency, reused as the background-agent cap's default value
 const cards = @import("cards.zig");
 const trace = @import("trace.zig");
 const messages_mod = @import("messages.zig");
@@ -43,7 +44,9 @@ const textMessage = messages_mod.textMessage;
 
 /// Spawn a one-level-deep subagent: fresh arena, fresh history, same shared
 /// http client and provider. Runs entirely on this pool thread; its own tool
-/// calls fan out further via io.async.
+/// calls fan out further via io.async. `run_in_background:true` (#276 P0-3)
+/// instead registers the spawn and returns immediately — see
+/// spawnSubBackground below.
 pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     if (ctx.from_sub) return .{
         .text = try ctx.gpa.dupe(u8, "subagents cannot spawn subagents — do this work yourself"),
@@ -53,8 +56,15 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     const prompt = if (input.object.get("prompt")) |p| (if (p == .string) p.string else "") else "";
     if (prompt.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
     const sys_override = fleet.resolveOverride(input.object);
-    return runSub(ctx, "subagent", label, prompt, sys_override, fleet.resolveNiche(input.object), fleet.resolveIsolation(input.object), fleet.resolveIsolationFallback(input.object));
+    const niche = fleet.resolveNiche(input.object);
+    const isolation = fleet.resolveIsolation(input.object);
+    const isolation_fallback = fleet.resolveIsolationFallback(input.object);
+    const background = if (input.object.get("run_in_background")) |v| v == .bool and v.bool else false;
+    if (background) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback);
+    const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback);
+    return run.output;
 }
+
 
 /// Surface a workflow subagent as a synthetic `tool_call` / `tool_result` on the
 /// --json GUI stream so each parallel worker shows as its own live row — the
@@ -166,17 +176,39 @@ test "child model pin crosses the current root provider only with consent" {
     try std.testing.expectEqualStrings("gpt-5.6-terra", childProvider(anthropic_root, terra, true).model);
 }
 
+/// Duration/tool-call/context usage for one subagent run — the numbers
+/// runSub already computes for the trajectory node, now also handed back to
+/// the caller so a background completion event (#276 P0-3) can carry them.
+/// Zero-valued when the child never ran at all (an early rejection before
+/// `agent.runTurn()`, e.g. depth limit or isolation setup failure).
+pub const AgentUsage = struct {
+    duration_ms: u64 = 0,
+    tool_calls: u32 = 0,
+    context_tokens: u64 = 0,
+    cache_read_tokens: u64 = 0,
+};
+
+/// runSub's result: the tool-facing output plus the usage summary above.
+/// Every direct caller (execSubagent, workflowTask, workflowRetryTask,
+/// judgeTask, workflow.zig's pipelineChain) only ever wanted `.output`
+/// before #276 P0-3; `spawnSubBackground`'s pump is the one caller that
+/// also reads `.usage`.
+pub const SubRun = struct { output: ToolOutput, usage: AgentUsage };
+
 /// Run one isolated subagent to completion: fresh arena, fresh history,
 /// same shared http client and the configured child provider (or the root
 /// provider when no child model is pinned). `sys_override` swaps the
 /// lean default system prompt for a per-child variant (swarm prompt
 /// evolution); either way the run is recorded as a trajectory node under
 /// the turn that spawned it, with the prompt's fingerprint.
-pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) !ToolOutput {
+pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) !SubRun {
     const gpa = ctx.gpa;
     if (ctx.run_budget) |budget| if (ctx.depth >= budget.max_depth) return .{
-        .text = try gpa.dupe(u8, "agent depth limit reached (max depth 1) — do this work in the current agent"),
-        .is_error = true,
+        .output = .{
+            .text = try gpa.dupe(u8, "agent depth limit reached (max depth 1) — do this work in the current agent"),
+            .is_error = true,
+        },
+        .usage = .{},
     };
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -245,7 +277,10 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         if (jobs.agentWorktreeCreate(gpa, ctx.io, arena, sub_id)) |created| {
             wt = created;
         } else |err| {
-            if (!isolation_fallback) return .{ .text = try gpa.dupe(u8, jobs.isolationFailureText(err)), .is_error = true };
+            if (!isolation_fallback) return .{
+                .output = .{ .text = try gpa.dupe(u8, jobs.isolationFailureText(err)), .is_error = true },
+                .usage = .{},
+            };
             isolation_note = "\n\n[note: isolation:\"worktree\" failed and fell back to the shared working tree — isolation_fallback:true allowed it]";
         }
     }
@@ -261,6 +296,17 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     const run_ok = if (report) |r| r.len > 0 else |_| false;
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_result", .name = "subagent", .is_error = !run_ok });
     const used_tools = agent.tools_used.render(arena);
+    // #276 P0-3: usage summary for a background completion event, captured
+    // once here (right after the child's turn tree is fully joined) and
+    // threaded through every remaining return point below, success or
+    // failure alike — the two early returns above happen before the child
+    // ever runs, so they carry the zero value instead.
+    const usage: AgentUsage = .{
+        .duration_ms = @intCast(run_ms),
+        .tool_calls = @intCast(agent.tools_used.count()),
+        .context_tokens = agent.effectiveContextTokens(),
+        .cache_read_tokens = agent.last_cache_read,
+    };
     const fp = promptFingerprint(agent.systemPrompt());
     if (trace.g_traj) |tj| {
         tj.capturePrompt(fp, agent.systemPrompt());
@@ -294,11 +340,11 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         // from "changes we're about to lose" once the run failed abnormally.
         var out = subagentFailure(gpa, sub_id, err, agent.last_api_error);
         if (wt) |w| {
-            const combined = std.fmt.allocPrint(gpa, "{s}\n\n[worktree left in place after failure — path: {s}, branch: {s}]", .{ out.text, w.path, w.branch }) catch return out;
+            const combined = std.fmt.allocPrint(gpa, "{s}\n\n[worktree left in place after failure — path: {s}, branch: {s}]", .{ out.text, w.path, w.branch }) catch return .{ .output = out, .usage = usage };
             gpa.free(out.text);
             out.text = combined;
         }
-        return out;
+        return .{ .output = out, .usage = usage };
     };
     const empty = text.len == 0;
     const report_body = if (empty) "subagent finished without a report" else text;
@@ -322,24 +368,352 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     }
     defer if (extra_owned) gpa.free(extra);
 
-    if (empty) return .{ .text = try std.fmt.allocPrint(gpa, "{s}{s}", .{ report_body, extra }), .is_error = true };
+    if (empty) return .{
+        .output = .{ .text = try std.fmt.allocPrint(gpa, "{s}{s}", .{ report_body, extra }), .is_error = true },
+        .usage = usage,
+    };
     // Append the inspect: path so the orchestrator can cite the detail file.
     if (detail) |p|
-        return .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[subagent {s} · inspect: {s}]{s}", .{ text, sub_id, p, extra }) };
-    return .{ .text = try std.fmt.allocPrint(gpa, "{s}{s}", .{ text, extra }) };
+        return .{
+            .output = .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[subagent {s} · inspect: {s}]{s}", .{ text, sub_id, p, extra }) },
+            .usage = usage,
+        };
+    return .{ .output = .{ .text = try std.fmt.allocPrint(gpa, "{s}{s}", .{ text, extra }) }, .usage = usage };
 }
+
+// ── Async, fire-and-forget background subagents (#276 P0-3) ────────────────
+// Extends jobs.zig's background-bash-job pattern (Job/g_jobs/spawnJob/
+// jobOutput/jobKill — stable incrementing ids, a session-global mutex-guarded
+// registry, non-blocking spawn) to subagent spawns: `run_in_background:true`
+// on `subagent` returns a stable agent id immediately (spawnSubBackground);
+// the child runs on io.concurrent, never io.async — io.async may run inline
+// and block the spawning call forever on a long-lived child, same reason
+// spawnJob avoids it for bash. Completion is polled non-destructively via
+// the new `agent_output` tool (agentOutput), mirroring bash_output's
+// id/wait_ms shape and its 30s wait cap — except a subagent's report is a
+// one-shot value, not a stream, so a completed fetch always replays the
+// FULL result rather than consuming a cursor (design point 4).
+
+/// Concurrency ceiling on background subagents actually RUNNING (i.e. past
+/// admission, inside their own runSub call) at once. Deliberately a counter
+/// of its own, not a reuse of RunBudget.active/acquireConcurrency: a
+/// background job's admission slot would otherwise have to stay held for its
+/// entire — possibly minutes-long — lifetime, while its OWN internal turns
+/// separately acquire per-model-call permits from that very same pool; once
+/// enough jobs queued up, every held outer slot would starve the inner
+/// acquires each job needs to ever finish and release it — a deadlock. Same
+/// admission SHAPE as RunBudget.acquireConcurrency (spin-wait, no failure on
+/// saturation) and the same default value, but an independent resource.
+const max_concurrent_background_agents: u32 = run_budget.default_max_concurrency;
+
+/// One background subagent spawn: the runSub arguments (gpa-owned copies —
+/// the caller's ToolCtx.arena-backed strings do not outlive this tool call's
+/// return, the whole point of fire-and-forget) plus its outcome once done.
+/// `admitted` is false while queued behind max_concurrent_background_agents;
+/// jobs.zig's Job mirrors this shape closely (id/cmd there ~ id/label+prompt
+/// here).
+const AgentJob = struct {
+    id: u32,
+    label: []u8,
+    prompt: []u8,
+    sys_override: ?[]u8 = null,
+    niche: []u8,
+    isolation: Isolation,
+    isolation_fallback: bool,
+    ctx: ToolCtx,
+    admitted: bool = false,
+    done: bool = false,
+    is_error: bool = false,
+    result: []u8 = &.{}, // gpa-owned once done
+    usage: AgentUsage = .{},
+    future: Io.Future(void) = undefined, // pump; awaited only by agentJobsReap
+};
+
+const AgentJobs = struct {
+    mutex: Io.Mutex = .init,
+    list: std.ArrayList(*AgentJob) = .empty,
+    active: u32 = 0, // admitted and not yet done
+    next_id: u32 = 1,
+
+    fn find(self: *AgentJobs, id: u32) ?*AgentJob {
+        for (self.list.items) |j| if (j.id == id) return j;
+        return null;
+    }
+};
+
+pub var g_agent_jobs: AgentJobs = .{};
+
+/// Pure admission step: pop the oldest not-yet-admitted job and mark it
+/// admitted (bumping `active`), or return null when the cap is full or
+/// nothing is queued. No Io — callers hold AgentJobs.mutex around it; kept
+/// separate so the queue-not-fail contract (design point 6) is unit-testable
+/// without a real Io/thread pool.
+fn admitOneLocked(registry: *AgentJobs) ?*AgentJob {
+    if (registry.active >= max_concurrent_background_agents) return null;
+    for (registry.list.items) |j| {
+        if (!j.admitted) {
+            j.admitted = true;
+            registry.active += 1;
+            return j;
+        }
+    }
+    return null;
+}
+
+/// Drain admittable jobs, launching each via io.concurrent. Called right
+/// after a spawn (start immediately if there's room) and at the end of
+/// every job's pump (drain the next queued one) — a small self-perpetuating
+/// worker chain, no separate ticker task needed. Never called with the
+/// mutex held.
+fn admitNext(gpa: Allocator, io: Io) void {
+    while (true) {
+        g_agent_jobs.mutex.lockUncancelable(io);
+        const job = admitOneLocked(&g_agent_jobs);
+        g_agent_jobs.mutex.unlock(io);
+        const j = job orelse return;
+        j.future = io.concurrent(agentJobPump, .{ j, gpa, io }) catch {
+            // Pool has no spare concurrency right now — un-admit and stop;
+            // the next spawn or completion retries (#276 P0-3 design point
+            // 6: queue rather than fail — never surfaced to the model).
+            g_agent_jobs.mutex.lockUncancelable(io);
+            j.admitted = false;
+            g_agent_jobs.active -= 1;
+            g_agent_jobs.mutex.unlock(io);
+            return;
+        };
+    }
+}
+
+/// The background pump: runs the child to completion off the calling turn,
+/// records the structured completion (status/result/usage — never silent,
+/// even on failure), then drains the next queued spawn. Mirrors jobPump's
+/// shape in jobs.zig.
+fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
+    const t0: Io.Timestamp = .now(io, .awake);
+    const run = runSub(job.ctx, "subagent", job.label, job.prompt, job.sys_override, job.niche, job.isolation, job.isolation_fallback) catch |err| SubRun{
+        .output = failure(gpa, err),
+        .usage = .{ .duration_ms = @intCast(@max(0, t0.untilNow(io, .awake).toMilliseconds())) },
+    };
+    g_agent_jobs.mutex.lockUncancelable(io);
+    job.result = run.output.text;
+    job.is_error = run.output.is_error;
+    job.usage = run.usage;
+    job.done = true;
+    g_agent_jobs.active -= 1;
+    g_agent_jobs.mutex.unlock(io);
+    admitNext(gpa, io);
+}
+
+/// `run_in_background:true` path for `subagent` (execSubagent): register the
+/// job and return immediately with its id; the child runs on the pool.
+/// Never blocks on a free concurrency slot — a spawn beyond the cap is
+/// queued, not failed; admitNext drains it once room frees up.
+fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) !ToolOutput {
+    const gpa = ctx.gpa;
+    const label_c = try gpa.dupe(u8, label);
+    errdefer gpa.free(label_c);
+    const prompt_c = try gpa.dupe(u8, prompt);
+    errdefer gpa.free(prompt_c);
+    const sys_c: ?[]u8 = if (sys_override) |s| try gpa.dupe(u8, s) else null;
+    errdefer if (sys_c) |s| gpa.free(s);
+    const niche_c = try gpa.dupe(u8, niche);
+    errdefer gpa.free(niche_c);
+
+    const job = try gpa.create(AgentJob);
+    job.* = .{
+        .id = 0,
+        .label = label_c,
+        .prompt = prompt_c,
+        .sys_override = sys_c,
+        .niche = niche_c,
+        .isolation = isolation,
+        .isolation_fallback = isolation_fallback,
+        .ctx = ctx,
+    };
+
+    g_agent_jobs.mutex.lockUncancelable(ctx.io);
+    job.id = g_agent_jobs.next_id;
+    g_agent_jobs.next_id += 1;
+    const appended = blk: {
+        g_agent_jobs.list.append(gpa, job) catch break :blk false;
+        break :blk true;
+    };
+    g_agent_jobs.mutex.unlock(ctx.io);
+    if (!appended) {
+        gpa.free(label_c);
+        gpa.free(prompt_c);
+        if (sys_c) |s| gpa.free(s);
+        gpa.free(niche_c);
+        gpa.destroy(job);
+        return error.OutOfMemory;
+    }
+    admitNext(gpa, ctx.io);
+    return .{ .text = try std.fmt.allocPrint(
+        gpa,
+        "[agent {d} started: {s}]\nIt runs in the background across turns. Poll status/result with agent_output (id {d}, optional wait_ms); once it completes, agent_output keeps returning the same result — nothing is consumed.",
+        .{ job.id, job.label, job.id },
+    ) };
+}
+
+/// Pure formatting for agent_output's status line: the "structured
+/// completion event" shape (#276 P0-3 design point 3) — running / completed
+/// / failed, plus the usage summary, plus the full result once done.
+/// Factored out of agentOutput so it's unit-testable without a real Io.
+fn agentStatusText(gpa: Allocator, id: u32, done: bool, is_error: bool, usage: AgentUsage, result: []const u8) ![]u8 {
+    if (!done) return std.fmt.allocPrint(gpa, "[agent {d}: running]", .{id});
+    return std.fmt.allocPrint(
+        gpa,
+        "[agent {d}: {s} in {d}ms · {d} tool call(s) · ~{d} context token(s) · {d} cache-read token(s)]\n\n{s}",
+        .{ id, if (is_error) "failed" else "completed", usage.duration_ms, usage.tool_calls, usage.context_tokens, usage.cache_read_tokens, result },
+    );
+}
+
+/// Same wait cap as jobs.zig's bash_output (job_wait_cap_ms) — kept as its
+/// own constant rather than made pub there, since it's one shared value, not
+/// shared state.
+const agent_wait_cap_ms: u64 = 30_000;
+
+/// agent_output: fetch a background subagent's status/result. Non-
+/// destructive — a completed fetch always replays the full result (unlike
+/// bash_output's cursor, a subagent's report is one-shot, not a stream).
+/// wait_ms > 0 polls (capped at 30s, like bash_output) while still running.
+pub fn agentOutput(gpa: Allocator, io: Io, id: u32, wait_ms: u64) !ToolOutput {
+    const deadline = @min(wait_ms, agent_wait_cap_ms);
+    var waited: u64 = 0;
+    while (true) {
+        g_agent_jobs.mutex.lockUncancelable(io);
+        const job = g_agent_jobs.find(id) orelse {
+            g_agent_jobs.mutex.unlock(io);
+            return .{ .text = try std.fmt.allocPrint(gpa, "no background agent {d} — it may never have started; subagent with run_in_background:true returns the id when it launches", .{id}), .is_error = true };
+        };
+        if (job.done or waited >= deadline) {
+            const text = try agentStatusText(gpa, id, job.done, job.is_error, job.usage, job.result);
+            const is_err = job.done and job.is_error;
+            g_agent_jobs.mutex.unlock(io);
+            return .{ .text = text, .is_error = is_err };
+        }
+        g_agent_jobs.mutex.unlock(io);
+        if (Agent.esc_cancel.load(.acquire)) {
+            waited = deadline; // render current state on the next pass
+            continue;
+        }
+        io.sleep(.fromMilliseconds(100), .awake) catch {
+            waited = deadline;
+            continue;
+        };
+        waited += 100;
+    }
+}
+
+/// Session end: let every still-running background agent finish naturally —
+/// unlike a bash child process (jobs.zig's jobsReap, which flags
+/// kill_requested and the pump kills the child within ~200ms), there is no
+/// cheap way to abort an in-flight agent turn mid-request, so this mirrors
+/// jobsReap's SHAPE (drain the registry, await every pump, free everything
+/// before the process exits) but not its KILL semantics — see this feature's
+/// commit body for the full rationale. A job still queued (never admitted)
+/// at shutdown never started, so it's simply dropped: nothing ran, nothing
+/// to lose.
+pub fn agentJobsReap(gpa: Allocator, io: Io) void {
+    g_agent_jobs.mutex.lockUncancelable(io);
+    const list = g_agent_jobs.list.toOwnedSlice(gpa) catch {
+        g_agent_jobs.mutex.unlock(io);
+        return;
+    };
+    g_agent_jobs.mutex.unlock(io);
+    for (list) |job| {
+        if (job.admitted) job.future.await(io);
+        gpa.free(job.label);
+        gpa.free(job.prompt);
+        if (job.sys_override) |s| gpa.free(s);
+        gpa.free(job.niche);
+        gpa.free(job.result);
+        gpa.destroy(job);
+    }
+    gpa.free(list);
+}
+
+test "admitOneLocked: admits up to the cap, queues the rest, FIFO order (#276 P0-3 design point 6)" {
+    const gpa = std.testing.allocator;
+    var registry: AgentJobs = .{};
+    defer registry.list.deinit(gpa);
+
+    var stub_jobs: [max_concurrent_background_agents + 3]AgentJob = undefined;
+    for (&stub_jobs, 0..) |*j, i| j.* = .{
+        .id = @intCast(i + 1),
+        .label = @constCast(""),
+        .prompt = @constCast(""),
+        .niche = @constCast(""),
+        .isolation = .shared_cwd,
+        .isolation_fallback = false,
+        .ctx = undefined,
+    };
+    for (&stub_jobs) |*j| try registry.list.append(gpa, j);
+
+    var admitted_order: [stub_jobs.len]u32 = undefined;
+    var n: usize = 0;
+    while (admitOneLocked(&registry)) |j| : (n += 1) admitted_order[n] = j.id;
+
+    try std.testing.expectEqual(@as(usize, max_concurrent_background_agents), n); // only the cap gets admitted immediately
+    try std.testing.expectEqual(max_concurrent_background_agents, registry.active);
+    for (admitted_order[0..n], 1..) |id, expect| try std.testing.expectEqual(@as(u32, @intCast(expect)), id); // FIFO
+
+    var still_queued: usize = 0;
+    for (stub_jobs) |j| if (!j.admitted) {
+        still_queued += 1;
+    };
+    try std.testing.expectEqual(stub_jobs.len - n, still_queued); // the remainder stay queued, not failed
+
+    // A finished job frees its slot; the next queued one is then admittable.
+    registry.active -= 1;
+    const next = admitOneLocked(&registry).?;
+    try std.testing.expectEqual(@as(u32, max_concurrent_background_agents + 1), next.id);
+}
+
+test "agentStatusText: running/completed/failed shapes carry the usage summary, and a failure is never silent (#276 P0-3)" {
+    const gpa = std.testing.allocator;
+
+    const running = try agentStatusText(gpa, 7, false, false, .{}, "");
+    defer gpa.free(running);
+    try std.testing.expectEqualStrings("[agent 7: running]", running);
+
+    const ok = try agentStatusText(gpa, 7, true, false, .{ .duration_ms = 1200, .tool_calls = 3, .context_tokens = 4500, .cache_read_tokens = 100 }, "final report");
+    defer gpa.free(ok);
+    try std.testing.expect(std.mem.indexOf(u8, ok, "completed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ok, "1200ms") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ok, "3 tool call") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ok, "final report") != null);
+
+    const failed_text = "subagent sa-014-abcd failed before producing a report: connection reset [transport failure]. retry is likely safe";
+    const failed = try agentStatusText(gpa, 9, true, true, .{ .duration_ms = 300 }, failed_text);
+    defer gpa.free(failed);
+    try std.testing.expect(std.mem.indexOf(u8, failed, "failed") != null); // status names the failure — never silent
+    try std.testing.expect(std.mem.indexOf(u8, failed, failed_text) != null); // the child's own diagnostic rides along verbatim
+}
+
+test "agentStatusText: composes with isolation:\"worktree\" — a kept-worktree note in the result survives verbatim (#276 P0-3 design point 5)" {
+    const gpa = std.testing.allocator;
+    const result_with_worktree = "final report text\n\n[worktree kept (has changes) — path: .graff/worktrees/agent-sa-001-aa11, branch: graff/agents/sa-001-aa11]";
+    const out = try agentStatusText(gpa, 3, true, false, .{ .duration_ms = 500 }, result_with_worktree);
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "[worktree kept (has changes) — path:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "branch: graff/agents/sa-001-aa11") != null);
+}
+
 
 /// One task inside a workflow phase; never throws, suitable for io.async.
 /// `niche` is the task's MAP-Elites cell, threaded through so runSub's
 /// fleet:propose — and scoreVariants' submit — tag the variant's genome.
 pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) ToolOutput {
-    return runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback) catch |err| failure(ctx.gpa, err);
+    const run = runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback) catch |err| return failure(ctx.gpa, err);
+    return run.output;
 }
 
 /// A second workflow attempt has its own explicit budget kind. It still shares
 /// the same invocation-wide atomic ceiling and concurrency limiter.
 pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) ToolOutput {
-    return runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback) catch |err| failure(ctx.gpa, err);
+    const run = runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback) catch |err| return failure(ctx.gpa, err);
+    return run.output;
 }
 
 /// The --judge LLM-as-judge run (see runEval in main): an isolated subagent
@@ -348,8 +722,10 @@ pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sy
 /// on a pool thread. Never worktree-isolated: a judge only reads/reasons over
 /// text handed to it, never the filesystem, so there's nothing to isolate.
 pub fn judgeTask(ctx: ToolCtx, prompt: []const u8) ToolOutput {
-    return runSub(ctx, "judge_task", "judge", prompt, null, "", .shared_cwd, false) catch |err| failure(ctx.gpa, err);
+    const run = runSub(ctx, "judge_task", "judge", prompt, null, "", .shared_cwd, false) catch |err| return failure(ctx.gpa, err);
+    return run.output;
 }
+
 
 /// Build the judge prompt that scores one workflow variant's output against its
 /// task on a 0-100 scale (see scoreVariants). Bounded: the task spec and output

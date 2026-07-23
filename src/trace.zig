@@ -415,6 +415,12 @@ pub const ToolSink = struct {
         return total;
     }
 
+    /// Number of recorded calls (successful + failed) — the tool_calls count
+    /// in a background subagent's completion usage summary (#276 P0-3).
+    pub fn count(self: *const ToolSink) u64 {
+        return self.entries.items.len;
+    }
+
     pub fn clear(self: *ToolSink, io: Io) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -426,6 +432,16 @@ pub const ToolSink = struct {
     }
 };
 
+test "ToolSink.count: total calls independent of render()'s joined-string shape, including failures (#276 P0-3)" {
+    var sink: ToolSink = .{};
+    defer sink.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u64, 0), sink.count());
+    sink.add(std.testing.io, std.testing.allocator, "read_file", false);
+    sink.add(std.testing.io, std.testing.allocator, "edit_file", true);
+    sink.add(std.testing.io, std.testing.allocator, "bash", false);
+    try std.testing.expectEqual(@as(u64, 3), sink.count());
+    try std.testing.expectEqual(@as(u64, 1), sink.errorCount()); // count() isn't just errorCount()
+}
 test "writeJsonLine: one complete newline-terminated JSON record per call" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
