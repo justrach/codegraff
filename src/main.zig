@@ -4,27 +4,9 @@
 //! run-exclusive JSONL tracing under `.graff/traces`.
 const std = @import("std");
 const Io = std.Io;
-
-/// #131: pre-load the shared HTTP client's CA bundle single-threaded, so the
-/// parallel subagents that share this client (on pool threads) never race the
-/// lazy CA-bundle rescan on their first concurrent HTTPS connect. Zig std flags
-/// that race itself ("TODO data race here on ca_bundle"): when two threads both
-/// rescan+swap+deinit the bundle, a handshake reading it mid-swap fails instantly
-/// with error.TlsInitializationFailed (ms=0, resp_bytes=0 — see #131). Warming it
-/// here sets client.now, so every later connect skips the rescan entirely.
-pub fn prewarmCaBundle(client: *std.http.Client, gpa: std.mem.Allocator, io: Io) void {
-    const now = Io.Clock.real.now(io);
-    client.ca_bundle.rescan(gpa, io, now) catch return;
-    client.now = now;
-}
-
-/// Warm the shared client's CA bundle off the launch critical path. Outbound
-/// users wait on `http.g_client_ready`, so the prompt can paint during this
-/// scan without reintroducing the concurrent first-connect race above.
-fn prewarmCaBundleTask(client: *std.http.Client, gpa: std.mem.Allocator, io: Io, ready: *Io.Event) void {
-    defer ready.set(io);
-    prewarmCaBundle(client, gpa, io);
-}
+const http_warm = @import("http_warm.zig");
+pub const prewarmCaBundle = http_warm.prewarmCaBundle;
+const prewarmCaBundleTask = http_warm.prewarmCaBundleTask;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");

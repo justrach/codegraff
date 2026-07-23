@@ -179,9 +179,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 else
                     "done";
                 try out.print("  {s}{d:>3}{s}  {s}{s:<8}{s} {d:>7}ms  {s}\n", .{
-                    style.accent,                              job.id,                style.reset,
-                    if (job.done) style.dim else style.green,  status,                style.reset,
-                    job.usage.duration_ms,                     utf8Prefix(job.label, 60),
+                    style.accent,                             job.id,                    style.reset,
+                    if (job.done) style.dim else style.green, status,                    style.reset,
+                    job.usage.duration_ms,                    utf8Prefix(job.label, 60),
                 });
             }
         }

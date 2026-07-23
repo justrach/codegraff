@@ -592,10 +592,7 @@ pub const Agent = struct {
     pub const isTableSeparator = @import("agent_table.zig").isTableSeparator;
 };
 
-test "agent prompt helper suite" {
+test {
     _ = @import("agent_prompt.zig");
-}
-
-test "lazy root tool catalogs preserve MCP tools across provider formats" {
     try agent_tests.lazyRootTools(Agent);
 }
