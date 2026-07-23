@@ -106,9 +106,10 @@ export function MermaidDiagram({ code }: { code: string }) {
     status: "ready" | "failed";
     svg: string | null;
   } | null>(null);
-  const [zoomed, setZoomed] = useState(false);
+  const [zoomedRenderKey, setZoomedRenderKey] = useState<string | null>(null);
   const currentResult =
     renderResult?.key === renderKey ? renderResult : null;
+  const zoomed = zoomedRenderKey === renderKey;
 
   useEffect(() => {
     let cancelled = false;
@@ -165,11 +166,11 @@ export function MermaidDiagram({ code }: { code: string }) {
         role="button"
         tabIndex={0}
         title="Click to zoom"
-        onClick={() => setZoomed(true)}
+        onClick={() => setZoomedRenderKey(renderKey)}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            setZoomed(true);
+            setZoomedRenderKey(renderKey);
           }
         }}
         className="cg-mermaid group relative cursor-zoom-in rounded-md border border-border/70 bg-card/40"
@@ -185,7 +186,7 @@ export function MermaidDiagram({ code }: { code: string }) {
       {zoomed ? (
         <MermaidZoom
           svg={currentResult.svg}
-          onClose={() => setZoomed(false)}
+          onClose={() => setZoomedRenderKey(null)}
         />
       ) : null}
     </>

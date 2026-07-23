@@ -1,7 +1,7 @@
 import * as desktopClient from "../services/desktop/client";
 import type { RuntimeStatus } from "../services/desktop/types/contracts";
 
-import { sessionStore } from "./sessionStore";
+import { getWorkspaceMetaStoreKey, sessionStore } from "./sessionStore";
 import type {
   FollowupResponseInput,
   WorkspacePromptSettingsUpdateInput,
@@ -81,5 +81,28 @@ export async function updateWorkspacePromptSettings(
     return promptSettings;
   } catch {
     return null;
+  }
+}
+
+export async function updateWorkspaceFastMode(
+  workspacePath: string | null,
+  enabled: boolean,
+) {
+  try {
+    await desktopClient.setFast(enabled, workspacePath);
+    const state = sessionStore.getState();
+    const workspaceMetaKey = getWorkspaceMetaStoreKey(workspacePath);
+    const promptSettings =
+      state.workspaceMetaByKey[workspaceMetaKey]?.promptSettings ?? null;
+
+    if (promptSettings != null) {
+      state.setWorkspacePromptSettings(workspacePath, {
+        ...promptSettings,
+        fastEnabled: enabled,
+      });
+    }
+    return true;
+  } catch {
+    return false;
   }
 }

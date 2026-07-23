@@ -40,6 +40,10 @@ import { classifyUnknownToolName } from "./utils/classifyActivityResult";
 import { ChatInlineText } from "./ChatInlineText";
 import { ChatStatusLabel } from "./ChatStatusLabel";
 import { ActivityResultRenderer } from "./activity-results/ActivityResultRenderer";
+import {
+  createActivityDisclosureState,
+  reconcileActivityDisclosure,
+} from "./utils/chatActivityDisclosure";
 import { getActivityResultModel } from "./utils/getActivityResultModel";
 
 const activityTriggerClassName = cn(
@@ -190,20 +194,16 @@ function ActivityOperationRow({
 }
 
 export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
-  const [disclosure, setDisclosure] = useState({
-    isOpen: item.isThinking || item.isRunning || item.hasError,
-    observedRunning: item.isRunning,
-  });
+  const [disclosure, setDisclosure] = useState(() =>
+    createActivityDisclosureState(item),
+  );
 
   // Reconcile the stream transition before rendering children. This preserves
   // the user's open state when work completes, auto-opens newly running work,
   // and keeps failures visible without scheduling an extra effect render.
-  if (!item.isThinking && disclosure.observedRunning !== item.isRunning) {
-    setDisclosure({
-      isOpen:
-        item.isRunning || item.hasError ? true : disclosure.isOpen,
-      observedRunning: item.isRunning,
-    });
+  const reconciledDisclosure = reconcileActivityDisclosure(disclosure, item);
+  if (reconciledDisclosure !== disclosure) {
+    setDisclosure(reconciledDisclosure);
   }
 
   const open = disclosure.isOpen;

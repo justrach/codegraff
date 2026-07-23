@@ -22,7 +22,8 @@ import { useAttachments } from "@/hooks/useSession";
 import { useCommandAutocomplete } from "@/hooks/useCommandAutocomplete";
 import { useDropZone } from "@/hooks/useFileDrop";
 import { usePromptModelPicker } from "@/hooks/usePromptModelPicker";
-import { savePastedImage, setFast } from "@/services/desktop/client";
+import { updateWorkspaceFastMode } from "@/app/sessionClientActions";
+import { savePastedImage } from "@/services/desktop/client";
 import { cn } from "@/utils/cn";
 import {
   getPromptHistoryNavigationResult,
@@ -147,7 +148,7 @@ export function PromptInputCard({
     if (!fastApplies) return;
     const next = !fastEnabled;
     setFastOverride({ source: authoritativeFastEnabled, value: next });
-    void setFast(next, workspacePath).catch(() => {
+    void updateWorkspaceFastMode(workspacePath ?? null, next).then(() => {
       setFastOverride(null);
     });
   }

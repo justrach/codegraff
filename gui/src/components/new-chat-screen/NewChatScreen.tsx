@@ -192,6 +192,9 @@ function NewChatScreenContent({
   const hasCommandResults = commandResults.length > 0;
   const hasProvider = hasConfiguredProvider(providerSetup.providers);
   const onboardingCompletedBySetup = hasProvider && hasCurrentWorkspace;
+  if (!onboardingCompleted && onboardingCompletedBySetup) {
+    setOnboardingCompleted(true);
+  }
   const showOnboarding =
     !hasCommandResults &&
     shouldShowOnboardingPanel({
@@ -201,14 +204,14 @@ function NewChatScreenContent({
     });
 
   useEffect(() => {
-    if (onboardingCompleted || !onboardingCompletedBySetup) {
+    if (!onboardingCompletedBySetup) {
       return;
     }
 
     writeOnboardingCompleted(
       typeof window === "undefined" ? null : window.localStorage,
     );
-  }, [onboardingCompleted, onboardingCompletedBySetup]);
+  }, [onboardingCompletedBySetup]);
 
   function completeOnboarding() {
     setOnboardingCompleted(true);

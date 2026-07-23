@@ -9,6 +9,10 @@ import type {
 let runtimeStatusCallCount = 0;
 let promptSettingsCallCount = 0;
 let conversationViewCallCount = 0;
+let setFastCall:
+  | { enabled: boolean; workspacePath: string | null | undefined }
+  | null = null;
+let setFastImpl: () => Promise<void>;
 let runtimeStatusImpl: (workspacePath: string | null) => Promise<RuntimeStatus | null>;
 let promptSettingsImpl: (
   workspacePath: string | null,
@@ -99,7 +103,13 @@ function createSnapshot(
 }
 
 mock.module("../services/desktop/client", () => ({
-  setFast: async () => {},
+  setFast: async (
+    enabled: boolean,
+    workspacePath?: string | null,
+  ) => {
+    setFastCall = { enabled, workspacePath };
+    await setFastImpl();
+  },
   savePastedImage: async () => "/tmp/pasted-image.png",
   imageThumbnail: async () => "data:image/jpeg;base64,",
   openExternalUrl: async () => {},
@@ -130,16 +140,49 @@ const {
   resetSessionStore,
   sessionStore,
 } = await import("./sessionStore");
+const { updateWorkspaceFastMode } = await import("./sessionClientActions");
 
 describe("sessionStore", () => {
   beforeEach(() => {
     conversationViewCallCount = 0;
     runtimeStatusCallCount = 0;
     promptSettingsCallCount = 0;
+    setFastCall = null;
+    setFastImpl = async () => {};
     conversationViewImpl = async () => createSnapshot();
     runtimeStatusImpl = async () => runtimeStatusFixture;
     promptSettingsImpl = async () => promptSettingsFixture;
     resetSessionStore();
+  });
+
+  test("successful fast-mode updates synchronize shared prompt settings", async () => {
+    const workspacePath = "/workspace/codegraff-gui";
+    sessionStore
+      .getState()
+      .setWorkspacePromptSettings(workspacePath, promptSettingsFixture);
+
+    expect(await updateWorkspaceFastMode(workspacePath, true)).toBe(true);
+    expect(setFastCall).toEqual({ enabled: true, workspacePath });
+    expect(
+      sessionStore.getState().workspaceMetaByKey[workspacePath]?.promptSettings
+        ?.fastEnabled,
+    ).toBe(true);
+  });
+
+  test("failed fast-mode updates preserve authoritative prompt settings", async () => {
+    const workspacePath = "/workspace/codegraff-gui";
+    sessionStore
+      .getState()
+      .setWorkspacePromptSettings(workspacePath, promptSettingsFixture);
+    setFastImpl = async () => {
+      throw new Error("backend unavailable");
+    };
+
+    expect(await updateWorkspaceFastMode(workspacePath, true)).toBe(false);
+    expect(
+      sessionStore.getState().workspaceMetaByKey[workspacePath]?.promptSettings
+        ?.fastEnabled,
+    ).toBe(false);
   });
 
   test("applySessionSnapshot derives views, request agents, and request timings", () => {

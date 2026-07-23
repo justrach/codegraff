@@ -26,6 +26,13 @@ export function ThinkingGlyph({ className }: { className?: string }) {
   useEffect(() => {
     const effect = new BrailleWave();
     const reduceMotion = prefersReducedMotion();
+    let freed = false;
+    const freeEffect = () => {
+      if (!freed) {
+        effect.free();
+        freed = true;
+      }
+    };
     let last = 0;
     let raf = 0;
     const tick = (time: number) => {
@@ -34,7 +41,7 @@ export function ThinkingGlyph({ className }: { className?: string }) {
         last = time;
       }
       if (reduceMotion) {
-        effect.free();
+        freeEffect();
       } else {
         raf = requestAnimationFrame(tick);
       }
@@ -43,9 +50,7 @@ export function ThinkingGlyph({ className }: { className?: string }) {
 
     return () => {
       cancelAnimationFrame(raf);
-      if (!reduceMotion) {
-        effect.free();
-      }
+      freeEffect();
     };
   }, []);
 
