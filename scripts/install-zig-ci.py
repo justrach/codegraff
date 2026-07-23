@@ -147,6 +147,16 @@ def main() -> int:
         parser.error("GITHUB_PATH is required on a GitHub Actions runner")
     with Path(github_path).open("a", encoding="utf-8") as path_file:
         path_file.write(str(install_dir) + os.linesep)
+
+    github_env = os.environ.get("GITHUB_ENV")
+    github_workspace = os.environ.get("GITHUB_WORKSPACE")
+    if not github_env or not github_workspace:
+        parser.error("GITHUB_ENV and GITHUB_WORKSPACE are required on a GitHub Actions runner")
+    global_cache = Path(github_workspace).resolve() / ".zig-global-cache"
+    if "\n" in str(global_cache) or "\r" in str(global_cache):
+        parser.error("GITHUB_WORKSPACE may not contain newlines")
+    with Path(github_env).open("a", encoding="utf-8") as env_file:
+        env_file.write(f"ZIG_GLOBAL_CACHE_DIR={global_cache}{os.linesep}")
     print(f"Installed Zig {actual_version} at {install_dir}")
     return 0
 
