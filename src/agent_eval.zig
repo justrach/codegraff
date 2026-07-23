@@ -218,6 +218,7 @@ pub fn runJudge(self: *Agent, rubric: []const u8, eval_output: []const u8, note:
         .io = self.io,
         .client = self.client,
         .provider = self.provider,
+        .subagent_provider = self.subagent_provider,
         .registry = if (self.sub) null else self.registry,
         .from_sub = self.sub,
         .approvals = self.approvals,

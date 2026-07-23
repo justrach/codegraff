@@ -150,8 +150,8 @@ fn subagentFailure(gpa: Allocator, sub_id: []const u8, err: anyerror, detail: ?[
 }
 
 /// Run one isolated subagent to completion: fresh arena, fresh history,
-/// same shared http client and provider. Runs entirely on this pool thread;
-/// its own tool calls fan out further via io.async. `sys_override` swaps the
+/// same shared http client and the configured child provider (or the root
+/// provider when no child model is pinned). `sys_override` swaps the
 /// lean default system prompt for a per-child variant (swarm prompt
 /// evolution); either way the run is recorded as a trajectory node under
 /// the turn that spawned it, with the prompt's fingerprint.
@@ -164,13 +164,14 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    const child_provider = ctx.subagent_provider orelse ctx.provider;
 
     var agent: Agent = .{
         .gpa = gpa,
         .arena = arena,
         .io = ctx.io,
         .client = ctx.client,
-        .provider = ctx.provider,
+        .provider = child_provider,
         .messages = std.json.Array.init(arena),
         .sub = true,
         .label = label,
@@ -204,7 +205,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         // be dropped there anyway — and the fingerprint the scores reference
         // stays computed over the full text.
         if (so.len <= telemetry.Telemetry.max_propose_text)
-            t.fleetEvent("propose", niche, &child_fp, parent_sha, providerClass(ctx.provider.model), "", 0, so)
+            t.fleetEvent("propose", niche, &child_fp, parent_sha, providerClass(agent.provider.model), "", 0, so)
         else if (ctx.tracer) |tr| tr.note("fleet", "propose skipped: genome > 64KB");
     };
     // Stable id + sprite for this child's card and its inspectable detail file.
@@ -231,6 +232,8 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             .parent = tj.currentTurn(),
             .kind = kind,
             .label = label,
+            .provider = agent.provider.id,
+            .model = agent.provider.model,
             .t = tj.elapsedMs(),
             .ms = run_ms,
             .prompt_sha = &fp,
@@ -354,7 +357,7 @@ pub fn scoreVariants(
     const jfuts = arena.alloc(Io.Future(ToolOutput), vn) catch return;
     for (jfuts, jprompts) |*jf, jp| jf.* = ctx.io.async(judgeTask, .{ ctx, jp });
 
-    const pclass = providerClass(ctx.provider.model);
+    const pclass = providerClass((ctx.subagent_provider orelse ctx.provider).model);
     const run_id: []const u8 = &scoring.g_run_id;
     for (jfuts, 0..) |*jf, k| {
         const i = vidx[k];

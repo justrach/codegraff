@@ -365,19 +365,20 @@ usage:
   graff --schema                   print the machine-readable interface (SDK codegen)
 
 flags:
-  --model <name>   start on this model (same fuzzy resolution as /model)
-  --yolo           skip all permission prompts for the session
-  -p, --print      one-shot print mode (answer on stdout, tool progress on stderr)
-  --timing         show per-tool wall-clock on result lines (✓ (312ms) …)
-  --cost           show running session spend in the prompt ([model · 12k tok · $0.0042])
-  --json           structured stdio protocol (JSON in, JSONL events out, SDK transport)
+  --model <name>            start on this model (same fuzzy resolution as /model)
+  --subagent-model <name>   pin children/workflows/judges to this model on the root provider
+  --yolo                    skip all permission prompts for the session
+  -p, --print               one-shot print mode (answer on stdout, tool progress on stderr)
+  --timing                  show per-tool wall-clock on result lines (✓ (312ms) …)
+  --cost                    show running session spend in the prompt ([model · 12k tok · $0.0042])
+  --json                    structured stdio protocol (JSON in, JSONL events out, SDK transport)
   --max-model-calls N  cap provider calls across root, children, retries, titles, compaction, and judges (default 256)
   -h, --help       usage
   -V, --version    version
 ```
 
-Unknown flags are an error (with a pointer to `--help`), a missing `--model`
-value is an error, and `--help`/`--version` are handled before subcommand
+Unknown flags are an error (with a pointer to `--help`), missing model-flag
+values are errors, and `--help`/`--version` are handled before subcommand
 dispatch, so `graff login --help` prints usage instead of starting an OAuth
 flow. With no key configured at all, startup fails with the three quickest fixes
 spelled out rather than a bare env-var list.
@@ -738,14 +739,28 @@ history, its own arena, and a subagent-specific system prompt (`execSubagent`).
 Because tool calls already fan out via `io.async`, the model spawning three
 subagents in one response gets three agent loops running concurrently, each
 making its own HTTPS calls through the shared (thread-safe) `std.http.Client`.
-Subagents inherit the parent's provider, so deepseek subagents work the same as
-claude ones.
+Subagents inherit the parent's provider/model by default. A model shape can pin
+all direct children, workflow workers/retries, and LLM judges to another model
+on the same provider/account:
+
+```sh
+graff --model gpt-5.6-sol --subagent-model gpt-5.6-terra
+# equivalent lower-precedence worker setting:
+GRAFF_SUBAGENT_MODEL=gpt-5.6-terra graff --model gpt-5.6-sol
+```
+
+This keeps orchestration/synthesis on Sol and parallel execution on Terra
+without silently crossing credential, billing, or data-boundary domains. Put
+`ultracode` in a task (or run `/ultracode on`) when you want the root to
+actively fan work out; the model split itself does not force delegation.
 
 - Depth capped at one level: subagents don't get the `subagent` tool.
 - Subagents don't share the root agent's context, so the orchestrator must put
   everything needed into the prompt (the tool description tells it so).
 - Progress lines (`[label] ⚙ bash …`) go to stderr via `std.debug.print`, which
   locks stderr and is safe from pool threads.
+- Operational API traces and child trajectory nodes record the model that
+  actually handled each call.
 
 </details>
 

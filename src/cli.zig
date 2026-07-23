@@ -25,6 +25,7 @@ pub const changelog_text =
     \\  • Local learning can race multiple prompt variants, rank correctness before tool economy, and expose only the winner to a hidden holdout
     \\  • Runs checkpoint safely, keep promotion manual by default, and can bundle an aggregate-only signed grade submission
     \\  • Aggregate receipts expire after 30 days and can be deleted remotely without deleting local evidence or requiring telemetry consent
+    \\  • Root/subagent model shapes can keep orchestration on Sol while routing parallel workers and judges to Terra
     \\  • Remote MCP servers now support Streamable HTTP, OAuth discovery/PKCE/refresh, and an opt-out core Smolify connection
     \\
     \\0.0.209
@@ -88,6 +89,7 @@ pub const usage_text =
     \\
     \\flags:
     \\  --model <name>   start on this model (same fuzzy resolution as /model)
+    \\  --subagent-model <name>         pin children/workflows/judges on the root provider
     \\  --resume <name>  resume/autosave <name>.session.json
     \\  --new            start a fresh autosaved session (default)
     \\  --no-resume      ignore --resume and start fresh

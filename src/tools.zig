@@ -159,6 +159,7 @@ pub const ToolCtx = struct {
     io: Io,
     client: *std.http.Client,
     provider: Provider,
+    subagent_provider: ?Provider = null,
     registry: ?*mcp.Registry,
     from_sub: bool,
     approvals: ?*Approvals,

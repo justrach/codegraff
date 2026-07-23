@@ -24,6 +24,7 @@ const ServeConfig = struct {
     token: ?[]const u8,
     yolo: bool,
     model: ?[]const u8,
+    subagent_model: ?[]const u8,
     system_prompt: ?[]const u8,
     append_system_prompt: ?[]const u8,
     max_tool_calls: ?u64,
@@ -223,6 +224,7 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
         return respondJson(st, req, .payload_too_large, "{\"error\":\"body too large\"}");
 
     var model = st.cfg.model;
+    var subagent_model = st.cfg.subagent_model;
     var yolo = st.cfg.yolo;
     var sys = st.cfg.system_prompt;
     var append_sys = st.cfg.append_system_prompt;
@@ -235,6 +237,9 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
         if (v != .object) return respondJson(st, req, .bad_request, "{\"error\":\"body must be a JSON object\"}");
         if (v.object.get("model")) |m| if (m == .string) {
             model = m.string;
+        };
+        if (v.object.get("subagentModel") orelse v.object.get("subagent_model")) |m| if (m == .string) {
+            subagent_model = m.string;
         };
         if (v.object.get("yolo")) |y| if (y == .bool) {
             yolo = y.bool;
@@ -260,6 +265,7 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
     try argv.appendSlice(arena, &.{ st.exe, "--json" });
     if (yolo) try argv.append(arena, "--yolo");
     if (model) |m| try argv.appendSlice(arena, &.{ "--model", m });
+    if (subagent_model) |m| try argv.appendSlice(arena, &.{ "--subagent-model", m });
     if (max_tools) |n| try argv.appendSlice(arena, &.{ "--max-tool-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
     if (max_models) |n| try argv.appendSlice(arena, &.{ "--max-model-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
     if (dedupe_tools) try argv.append(arena, "--dedupe-tool-calls");

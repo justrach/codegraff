@@ -76,10 +76,10 @@ pub const Agent = struct {
     io: Io,
     client: *std.http.Client,
     provider: Provider,
+    subagent_provider: ?Provider = null, // optional model pin for every direct child/workflow/judge
     messages: std.json.Array,
     // Codex Responses WS delta transport: one WS held across a turn's tool loop,
-    // sending previous_response_id + only the new items instead of the full
-    // history each step. Reset per turn by runTurn via closeCodexWs.
+    // sending previous_response_id + only new items. Reset by closeCodexWs.
     codex_ws: ?*ws.WsClient = null,
     codex_prev_id: ?[]const u8 = null, // last response.id (gpa-owned); null = re-anchor with full input
     codex_sent_upto: usize = 0, // messages the server already holds; delta = messages[codex_sent_upto..]

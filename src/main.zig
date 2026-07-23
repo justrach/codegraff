@@ -300,6 +300,7 @@ pub fn main(init: std.process.Init) !void {
     boot.mark(io, "credentials/model");
     var keys = resolved_keys.keys;
     const default_provider = resolved_keys.default_provider;
+    const subagent_provider = startup.resolveSubagentProvider(keys, default_provider, flags.subagent_model_flag orelse init.environ_map.get("GRAFF_SUBAGENT_MODEL"));
     const stale_saved_model = resolved_keys.stale_saved_model;
     const preferred_provider = resolved_keys.preferred_provider;
     const codex_account = resolved_keys.codex_account;
@@ -445,7 +446,7 @@ pub fn main(init: std.process.Init) !void {
     // Root Agent construction + post-construction config (session name, persisted thinking/goal/eval settings, session-start trace note) + the
     // backgrounded fleet-champion pull live in session_start.zig. `root`'s pointer fields (snapshots/client/tracer/approvals/registry) all reference
     // already-stable main()-owned storage passed in by address, so returning the constructed Agent by value here is safe.
-    var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, sys_strict, &snaps, flags, telem.endpoint);
+    var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, subagent_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, sys_strict, &snaps, flags, telem.endpoint);
     root.run_budget = &invocation_budget;
     root.model_catalog = resolved_keys.model_catalog;
     root.stored_keys_loaded = resolved_keys.stored_keys_loaded;

@@ -134,6 +134,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .io = self.io,
             .client = self.client,
             .provider = self.provider,
+            .subagent_provider = self.subagent_provider,
             .registry = if (self.sub) null else self.registry,
             .from_sub = self.sub,
             .approvals = self.approvals,

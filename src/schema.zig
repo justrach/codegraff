@@ -64,7 +64,7 @@ const schema_serve_json =
     \\  "endpoints": [
     \\    {"method": "GET", "path": "/healthz", "description": "liveness + version, no auth"},
     \\    {"method": "GET", "path": "/v1/schema", "description": "this schema document"},
-    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"maxModelCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
+    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"subagentModel\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"maxModelCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
     \\    {"method": "POST", "path": "/v1/sessions/{id}", "description": "body is ONE stdio-protocol request object (user / set_system_prompt / set_model / compact / set_mode / set_agent / score / answer); non-answer requests stream application/x-ndjson events until the request's terminal event (turn/error, or the request-specific ack); answer requests return JSON ack while the original user stream continues; one non-answer request in flight per session at a time"},
     \\    {"method": "DELETE", "path": "/v1/sessions/{id}", "description": "graceful close: waits for any in-flight request, then EOFs the child's stdin"}
     \\  ]
@@ -76,6 +76,7 @@ const schema_serve_json =
 const schema_flags_json =
     \\[
     \\  {"flag": "--model", "arg": "name", "description": "start on this model (same fuzzy resolution as /model)"},
+    \\  {"flag": "--subagent-model", "arg": "name", "description": "pin direct subagents, workflow workers/retries, and judges to this model on the root provider; GRAFF_SUBAGENT_MODEL is the lower-precedence equivalent"},
     \\  {"flag": "--yolo", "arg": null, "description": "skip all permission prompts for the session"},
     \\  {"flag": "--system-prompt", "arg": "text", "description": "replace the built-in system prompt (cwd project-instructions file is still appended)"},
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
