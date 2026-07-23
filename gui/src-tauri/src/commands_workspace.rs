@@ -1,0 +1,426 @@
+use super::map_command_error;
+use crate::dto::{
+    CheckoutGitBranchInput, CloneRepositoryInput, CommitGitChangesInput, CreateGitBranchInput,
+    CreateSavedWorkspaceInput, QuickStartProjectInput, QuickStartVisibility, RuntimeStatusDto,
+    SaveConversationLayoutInput, SessionSnapshotDto, TerminalCloseInput, TerminalOpenInput,
+    TerminalResizeInput, TerminalSessionDto, TerminalWriteInput, UpdateSavedWorkspaceLayoutInput,
+};
+use crate::runtime::DesktopState;
+use anyhow::Context;
+use bstr::ByteSlice;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+#[tauri::command]
+pub(crate) async fn clone_repository(input: CloneRepositoryInput) -> Result<String, String> {
+    clone_repository_to_directory(input).map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn quick_start_project(input: QuickStartProjectInput) -> Result<String, String> {
+    create_github_project(input).map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn checkout_git_branch(
+    input: CheckoutGitBranchInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<RuntimeStatusDto, String> {
+    state
+        .manager
+        .checkout_git_branch(input.workspace_path, input.branch_name)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn create_git_branch(
+    input: CreateGitBranchInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<RuntimeStatusDto, String> {
+    state
+        .manager
+        .create_git_branch(input.workspace_path, input.branch_name)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn commit_git_changes(
+    input: CommitGitChangesInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<RuntimeStatusDto, String> {
+    state
+        .manager
+        .commit_git_changes(input.workspace_path, input.message)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn push_git_branch(
+    workspace_path: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<RuntimeStatusDto, String> {
+    state
+        .manager
+        .push_git_branch(workspace_path)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn open_in_target(
+    workspace_path: String,
+    target_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    state
+        .manager
+        .open_in_target(workspace_path, target_id)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn open_path_in_target(
+    workspace_path: String,
+    target_id: String,
+    path: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    state
+        .manager
+        .open_path_in_target(workspace_path, target_id, path)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn open_external_url(url: String) -> Result<(), String> {
+    crate::desktop_open::open_external_url(&url).map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn open_path_default(path: String) -> Result<(), String> {
+    crate::desktop_open::open_path_default(Path::new(&path)).map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn open_path_for_edit(path: String) -> Result<(), String> {
+    crate::desktop_open::open_path_for_edit(Path::new(&path)).map_err(map_command_error)
+}
+
+/// Reads a workspace file's current contents so the GUI can synthesize a diff
+/// for operations the harness only reports as a byte-count summary (file
+/// creates/overwrites). Confined to the workspace and capped in size; large or
+/// out-of-tree paths return an error so the caller falls back to a placeholder.
+#[tauri::command]
+pub(crate) async fn read_workspace_file(
+    workspace_path: String,
+    path: String,
+) -> Result<String, String> {
+    // Keep blocking canonicalization, metadata, and reads off the async runtime.
+    tokio::task::spawn_blocking(move || read_workspace_file_blocking(&workspace_path, &path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn read_workspace_file_blocking(workspace_path: &str, path: &str) -> Result<String, String> {
+    use std::io::Read;
+    const MAX_BYTES: u64 = 512 * 1024;
+
+    let workspace = Path::new(workspace_path);
+    // An empty root would make Path::starts_with match every candidate.
+    if workspace_path.trim().is_empty() {
+        return Err("path is outside the workspace".into());
+    }
+    // Fail closed when the trusted root cannot be canonicalized.
+    let canonical_workspace = std::fs::canonicalize(workspace)
+        .map_err(|_| "path is outside the workspace".to_string())?;
+
+    let candidate = Path::new(path);
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        canonical_workspace.join(candidate)
+    };
+
+    // Resolve traversal and symlinks before enforcing workspace containment.
+    let canonical = std::fs::canonicalize(&resolved).map_err(|error| error.to_string())?;
+    if !canonical.starts_with(&canonical_workspace) {
+        return Err("path is outside the workspace".into());
+    }
+
+    // FIFOs, sockets, and devices may report zero bytes but block indefinitely.
+    let metadata = std::fs::metadata(&canonical).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("path is not a regular file".into());
+    }
+    if metadata.len() > MAX_BYTES {
+        return Err("file too large".into());
+    }
+
+    // Keep the read bounded if the file grows after the metadata check.
+    let mut file = std::fs::File::open(&canonical).map_err(|error| error.to_string())?;
+    let mut contents = String::new();
+    file.by_ref()
+        .take(MAX_BYTES)
+        .read_to_string(&mut contents)
+        .map_err(|error| error.to_string())?;
+    Ok(contents)
+}
+
+#[tauri::command]
+pub(crate) async fn save_conversation_layout(
+    input: SaveConversationLayoutInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    state
+        .manager
+        .save_conversation_layout(input)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn get_conversation_layout(
+    conversation_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<String>, String> {
+    state
+        .manager
+        .get_conversation_layout(conversation_id)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn create_saved_workspace(
+    input: CreateSavedWorkspaceInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<crate::dto::SavedWorkspaceDetailDto, String> {
+    state
+        .manager
+        .create_saved_workspace(input)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn update_saved_workspace_layout(
+    input: UpdateSavedWorkspaceLayoutInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<crate::dto::SavedWorkspaceDetailDto, String> {
+    state
+        .manager
+        .update_saved_workspace_layout(input)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn get_saved_workspace(
+    workspace_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<crate::dto::SavedWorkspaceDetailDto>, String> {
+    state
+        .manager
+        .get_saved_workspace(workspace_id)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn rename_saved_workspace(
+    workspace_id: String,
+    name: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SessionSnapshotDto, String> {
+    state
+        .manager
+        .rename_saved_workspace(workspace_id, name)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn delete_saved_workspace(
+    workspace_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SessionSnapshotDto, String> {
+    state
+        .manager
+        .delete_saved_workspace(workspace_id)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_open(
+    input: TerminalOpenInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<TerminalSessionDto, String> {
+    state
+        .terminal_manager
+        .open(input)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_write(
+    input: TerminalWriteInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    state
+        .terminal_manager
+        .write(input)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_resize(
+    input: TerminalResizeInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    state
+        .terminal_manager
+        .resize(input)
+        .await
+        .map_err(map_command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn terminal_close(
+    input: TerminalCloseInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    state
+        .terminal_manager
+        .close(input)
+        .await
+        .map_err(map_command_error)
+}
+
+fn clone_repository_to_directory(input: CloneRepositoryInput) -> anyhow::Result<String> {
+    let repository_url = input.repository_url.trim();
+    if repository_url.is_empty() {
+        anyhow::bail!("Repository URL cannot be empty.");
+    }
+
+    let parent_directory = canonicalize_existing_directory(&input.parent_directory)?;
+    let directory_name = validate_directory_name(&input.directory_name)?;
+    let target_directory = parent_directory.join(&directory_name);
+    ensure_directory_is_available(&target_directory)?;
+
+    let mut command = Command::new("git");
+    command
+        .arg("clone")
+        .arg(repository_url)
+        .arg(&target_directory)
+        .current_dir(&parent_directory);
+    run_command(&mut command, "git clone")?;
+
+    canonicalize_output_directory(&target_directory)
+}
+
+fn create_github_project(input: QuickStartProjectInput) -> anyhow::Result<String> {
+    let parent_directory = canonicalize_existing_directory(&input.parent_directory)?;
+    let project_name = validate_directory_name(&input.project_name)?;
+    let target_directory = parent_directory.join(&project_name);
+    ensure_directory_is_available(&target_directory)?;
+
+    let visibility_flag = match input.visibility {
+        QuickStartVisibility::Public => "--public",
+        QuickStartVisibility::Private => "--private",
+    };
+
+    let mut command = Command::new("gh");
+    command
+        .arg("repo")
+        .arg("create")
+        .arg(&project_name)
+        .arg(visibility_flag)
+        .arg("--clone")
+        .arg("--add-readme")
+        .current_dir(&parent_directory);
+    run_command(&mut command, "gh repo create")?;
+
+    canonicalize_output_directory(&target_directory)
+}
+
+fn canonicalize_existing_directory(path: &str) -> anyhow::Result<PathBuf> {
+    let candidate = PathBuf::from(path.trim());
+    if path.trim().is_empty() {
+        anyhow::bail!("Directory cannot be empty.");
+    }
+
+    if !candidate.exists() {
+        anyhow::bail!("Directory does not exist: {}", candidate.display());
+    }
+
+    if !candidate.is_dir() {
+        anyhow::bail!("Expected a directory: {}", candidate.display());
+    }
+
+    candidate
+        .canonicalize()
+        .with_context(|| format!("Failed to access {}", candidate.display()))
+}
+
+fn canonicalize_output_directory(path: &Path) -> anyhow::Result<String> {
+    Ok(path
+        .canonicalize()
+        .with_context(|| format!("Failed to access {}", path.display()))?
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn validate_directory_name(value: &str) -> anyhow::Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Name cannot be empty.");
+    }
+
+    if trimmed == "." || trimmed == ".." {
+        anyhow::bail!("Choose a different name.");
+    }
+
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        anyhow::bail!("Name cannot contain path separators.");
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn ensure_directory_is_available(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        anyhow::bail!("{} already exists.", path.display());
+    }
+
+    Ok(())
+}
+
+fn run_command(command: &mut Command, description: &str) -> anyhow::Result<()> {
+    let output = command
+        .output()
+        .with_context(|| format!("Failed to launch {description}. Make sure it is installed."))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = output.stderr.as_bstr().trim().to_str_lossy().into_owned();
+    let stdout = output.stdout.as_bstr().trim().to_str_lossy().into_owned();
+    let details = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("{description} exited with status {}", output.status)
+    };
+
+    anyhow::bail!("{details}")
+}
