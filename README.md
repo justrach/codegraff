@@ -752,7 +752,9 @@ GRAFF_SUBAGENT_MODEL=gpt-5.6-terra graff --model gpt-5.6-sol
 This keeps orchestration/synthesis on Sol and parallel execution on Terra
 without silently crossing credential, billing, or data-boundary domains. Put
 `ultracode` in a task (or run `/ultracode on`) when you want the root to
-actively fan work out; the model split itself does not force delegation.
+actively fan work out; the model split itself does not force delegation. If
+`/model` later crosses to another provider, children inherit that current root
+instead of using the old pin; switching back restores the compatible pin.
 
 - Depth capped at one level: subagents don't get the `subagent` tool.
 - Subagents don't share the root agent's context, so the orchestrator must put
