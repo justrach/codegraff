@@ -11,7 +11,7 @@
 //! fields point into the HELPER's own stack frame — invalid the instant the
 //! helper returns. So that construction (and the MCP-registry/approvals/
 //! hooks/theme block, which is additionally tangled with several `defer`s
-//! and a mid-block early `return` for --selftest-spinner) is intentionally
+//! and a mid-block early `return` for PTY self-tests) is intentionally
 //! left inline in main(), per the split's own guidance: don't force an
 //! extraction that can't be done without an address-capture or defer-order
 //! hazard.

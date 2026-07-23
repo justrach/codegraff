@@ -2,7 +2,7 @@
 
 How we chase down "why is graff slow / wrong here" bugs, distilled from real sessions
 (most recently #117, the first-turn latency hunt that found *three* stacked synchronous
-calls, and the 💩-spinner hunt that exposed non-representative testing).
+calls).
 
 ## The one core lesson
 Almost every "graff feels slow" bug is the **main thread blocking on a network or model
@@ -98,14 +98,12 @@ Find the `.await(io)` / join on the critical path. Real ones found this way:
 
 ## 6. Verify like you mean it
 - **Mutation-test the guard.** Reintroduce the bug and confirm the *exact* test reddens.
-  A green suite that doesn't fail when you break the code proves nothing — that blind spot
-  is how the runtime-built 💩 spinner survived `strings`/`grep` for hours.
-- **Representative > surface.** Scan rendered bytes from a real PTY, hit a real-socket
-  mock — not `strings`, not a frame-fn called in isolation (which can't see a
-  startup-gated override).
+  A green suite that doesn't fail when you break the code proves nothing.
+- **Representative > surface.** Exercise rendered output through a real PTY and use a
+  real-socket mock rather than testing only isolated helpers.
 - Let `ci.yml` gate it: `zig build`, `zig fmt --check`, `zig build test`, the JSON
-  live-control test, the **PTY anti-stealth scan**, and **SDK-drift regen** (CI was red for
-  the whole history once because a model/tool landed without regenerating `sdk/`).
+  live-control test, and **SDK-drift regen** (CI was red for the whole history once
+  because a model/tool landed without regenerating `sdk/`).
 
 ## Traps that cost real time
 - **Prompt caching neutralizes tool-list size.** With ~99% cached input (`9216/9289 in`),

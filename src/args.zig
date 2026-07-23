@@ -40,7 +40,6 @@ pub const Flags = struct {
     version_flag: bool = false,
     print_flag: bool = false,
     update_force: bool = false, // graff update --force
-    selftest_spinner_flag: bool = false, // --selftest-spinner: headless spinner render for the PTY anti-stealth test
     selftest_markdown_flag: bool = false, // --selftest-markdown: render the real streaming markdown fixture in a PTY
     update_check: bool = false, // graff update --check
     model_flag: ?[]const u8 = null,
@@ -123,8 +122,6 @@ pub fn parse(init: std.process.Init) !Flags {
                     flags.help_flag = true;
                 } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
                     flags.version_flag = true;
-                } else if (std.mem.eql(u8, arg, "--selftest-spinner")) {
-                    flags.selftest_spinner_flag = true;
                 } else if (std.mem.eql(u8, arg, "--selftest-markdown")) {
                     flags.selftest_markdown_flag = true;
                 } else if (std.mem.eql(u8, arg, "--print") or std.mem.eql(u8, arg, "-p")) {
