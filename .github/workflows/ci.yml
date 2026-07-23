@@ -35,9 +35,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+        uses: ./.github/actions/setup-codegraff-zig
 
       - name: zig build
         run: zig build
@@ -108,9 +106,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+        uses: ./.github/actions/setup-codegraff-zig
 
       - name: zig build
         run: zig build
