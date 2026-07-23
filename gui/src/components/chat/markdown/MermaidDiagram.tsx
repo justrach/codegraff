@@ -100,13 +100,18 @@ function MermaidZoom({ svg, onClose }: { svg: string; onClose: () => void }) {
 
 export function MermaidDiagram({ code }: { code: string }) {
   const mode = useThemeStore((state) => state.mode);
-  const [svg, setSvg] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  const renderKey = `${mode}\0${code}`;
+  const [renderResult, setRenderResult] = useState<{
+    key: string;
+    status: "ready" | "failed";
+    svg: string | null;
+  } | null>(null);
   const [zoomed, setZoomed] = useState(false);
+  const currentResult =
+    renderResult?.key === renderKey ? renderResult : null;
 
   useEffect(() => {
     let cancelled = false;
-    setFailed(false);
 
     void (async () => {
       try {
@@ -120,11 +125,19 @@ export function MermaidDiagram({ code }: { code: string }) {
         const id = `cg-mermaid-${(renderSeq += 1)}`;
         const { svg: rendered } = await mermaid.render(id, code);
         if (!cancelled) {
-          setSvg(rendered);
+          setRenderResult({
+            key: renderKey,
+            status: "ready",
+            svg: rendered,
+          });
         }
       } catch {
         if (!cancelled) {
-          setFailed(true);
+          setRenderResult({
+            key: renderKey,
+            status: "failed",
+            svg: null,
+          });
         }
       }
     })();
@@ -132,13 +145,13 @@ export function MermaidDiagram({ code }: { code: string }) {
     return () => {
       cancelled = true;
     };
-  }, [code, mode]);
+  }, [code, mode, renderKey]);
 
-  if (failed) {
+  if (currentResult?.status === "failed") {
     return <CodeBlock value={code} lang="mermaid" />;
   }
 
-  if (svg == null) {
+  if (currentResult?.svg == null) {
     return (
       <div className="rounded-md border border-border/70 bg-card/40 px-3 py-2 text-xs text-muted-foreground">
         Rendering diagram…
@@ -163,13 +176,18 @@ export function MermaidDiagram({ code }: { code: string }) {
       >
         <div
           className="max-w-full overflow-x-auto p-3 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"
-          dangerouslySetInnerHTML={{ __html: svg }}
+          dangerouslySetInnerHTML={{ __html: currentResult.svg }}
         />
         <div className="pointer-events-none absolute right-2 top-2 rounded-md bg-card/70 p-1 text-muted-foreground opacity-0 transition group-hover:opacity-100">
           <Maximize2 className="size-3.5" />
         </div>
       </div>
-      {zoomed ? <MermaidZoom svg={svg} onClose={() => setZoomed(false)} /> : null}
+      {zoomed ? (
+        <MermaidZoom
+          svg={currentResult.svg}
+          onClose={() => setZoomed(false)}
+        />
+      ) : null}
     </>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Activity,
   Bot,
@@ -190,31 +190,29 @@ function ActivityOperationRow({
 }
 
 export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
-  const [open, setOpen] = useState(
-    item.isThinking ? true : item.isRunning || item.hasError,
-  );
-  const previousRunningRef = useRef(item.isRunning);
+  const [disclosure, setDisclosure] = useState({
+    isOpen: item.isThinking || item.isRunning || item.hasError,
+    observedRunning: item.isRunning,
+  });
 
-  // With stable keys (ChatWorkRow) this effect now actually fires on the
-  // running→idle transition instead of being wiped by a remount. On completion
-  // we preserve the user's view — keep the activity open (don't yank the results
-  // they were reading) and force-open on error so failures stay visible. A
-  // step starting to run auto-expands to show live progress.
-  useEffect(() => {
-    const wasRunning = previousRunningRef.current;
-    previousRunningRef.current = item.isRunning;
-    if (item.isThinking) {
-      return;
-    }
+  // Reconcile the stream transition before rendering children. This preserves
+  // the user's open state when work completes, auto-opens newly running work,
+  // and keeps failures visible without scheduling an extra effect render.
+  if (!item.isThinking && disclosure.observedRunning !== item.isRunning) {
+    setDisclosure({
+      isOpen:
+        item.isRunning || item.hasError ? true : disclosure.isOpen,
+      observedRunning: item.isRunning,
+    });
+  }
 
-    if (wasRunning && !item.isRunning) {
-      if (item.hasError) {
-        setOpen(true);
-      }
-    } else if (!wasRunning && item.isRunning) {
-      setOpen(true);
-    }
-  }, [item.hasError, item.isRunning, item.isThinking]);
+  const open = disclosure.isOpen;
+  const setOpen = (isOpen: boolean) => {
+    setDisclosure({
+      isOpen,
+      observedRunning: item.isRunning,
+    });
+  };
 
   if (item.isThinking) {
     return (

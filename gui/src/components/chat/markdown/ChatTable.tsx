@@ -2,22 +2,11 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { cn } from "@/utils/cn";
+import {
+  chatTableLayoutFor,
+  type ChatTableLayout,
+} from "./chatTableLayout";
 import type { TableAlign } from "./types";
-
-// Below this many px per column the grid form is cramped past readability —
-// the same judgement call as the TUI renderer's per-column floor.
-const MIN_COL_PX = 96;
-
-export type ChatTableLayout = "table" | "records";
-
-export function chatTableLayoutFor(
-  containerPx: number,
-  columnCount: number,
-): ChatTableLayout {
-  return containerPx > 0 && containerPx < columnCount * MIN_COL_PX
-    ? "records"
-    : "table";
-}
 
 interface ChatTableProps {
   header: ReactNode[];

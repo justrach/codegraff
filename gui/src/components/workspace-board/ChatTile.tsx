@@ -304,7 +304,7 @@ export function ChatTile({
       runOpenPaneAnimation(api, kind);
       scheduleInnerLayoutSave();
     },
-    [binding, runOpenPaneAnimation, scheduleInnerLayoutSave],
+    [runOpenPaneAnimation, scheduleInnerLayoutSave],
   );
 
   // Track which auxiliary panes are open so the header toggles can show an active
