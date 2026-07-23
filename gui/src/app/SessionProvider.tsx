@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useStore } from "zustand";
 
 import * as desktopClient from "../services/desktop/client";
@@ -35,22 +35,16 @@ import {
 import {
   getPromptDraftKey,
   getWorkspaceDraftKey,
-  LATEST_WORKSPACE_STORAGE_KEY,
 } from "./sessionSnapshot";
 import { appendAttachmentsToPrompt } from "@/components/attachments/attachmentTypes";
 import type { SessionProviderProps } from "./types/app";
 import { useSessionBootstrap } from "../hooks/useSessionBootstrap";
-
-function snapshotHasConversationView(
-  snapshot: SessionSnapshot,
-  binding: ChatBinding,
-) {
-  return snapshot.conversationViews.some(
-    (view) =>
-      view.workspacePath === binding.workspacePath &&
-      view.conversationId === binding.conversationId,
-  );
-}
+import {
+  findReusableManagedChatDraft,
+  runSnapshotCommand,
+  snapshotHasConversationView,
+} from "./sessionProviderHelpers";
+import { useWorkspaceOpenBridge } from "./useWorkspaceOpenBridge";
 
 export function SessionProvider({ children }: SessionProviderProps) {
   const activeWorkspacePath = useStore(
@@ -75,32 +69,10 @@ export function SessionProvider({ children }: SessionProviderProps) {
     [],
   );
 
-  const runSnapshotCommand = useCallback(
-    async (command: () => Promise<SessionSnapshot>) => {
-      try {
-        return await command();
-      } catch {
-        return null;
-      }
-    },
-    [],
-  );
-
   useSessionBootstrap({
     setSessionSnapshot: applySessionSnapshot,
     onReady: markSessionBootstrapped,
   });
-
-  useEffect(() => {
-    if (activeWorkspacePath == null) {
-      return;
-    }
-
-    window.localStorage.setItem(
-      LATEST_WORKSPACE_STORAGE_KEY,
-      activeWorkspacePath,
-    );
-  }, [activeWorkspacePath]);
 
   const ensureWorkspaceMeta = useCallback(
     (workspacePath: string, options?: { forceRuntimeStatus?: boolean }) => {
@@ -111,18 +83,6 @@ export function SessionProvider({ children }: SessionProviderProps) {
     },
     [],
   );
-
-  const findReusableManagedChatDraft = useCallback(() => {
-    const store = sessionStore.getState();
-    return (
-      store.workspaces.find(
-        (workspace) =>
-          workspace.kind === "managed_chat" &&
-          workspace.selectedConversationId == null &&
-          workspace.conversations.length === 0,
-      ) ?? null
-    );
-  }, []);
 
   const openWorkspaceByPath = useCallback(async (workspacePath: string) => {
     const store = sessionStore.getState();
@@ -144,38 +104,10 @@ export function SessionProvider({ children }: SessionProviderProps) {
   }, [
     applySessionSnapshot,
     ensureWorkspaceMeta,
-    runSnapshotCommand,
     syncBoardSelectionFromSnapshot,
   ]);
 
-  // `codegraff <path>` (code-style): open the path the launcher handed us —
-  // either stashed before launch (cold start) or forwarded to this running
-  // instance (single-instance). No-op in the browser/QA mock.
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-    void (async () => {
-      try {
-        const pending = await desktopClient.drainPendingOpen();
-        if (!cancelled && pending) {
-          void openWorkspaceByPath(pending);
-        }
-      } catch {
-        // No pending path (or not running under Tauri) — ignore.
-      }
-      try {
-        unlisten = await desktopClient.onOpenWorkspacePath((path) => {
-          void openWorkspaceByPath(path);
-        });
-      } catch {
-        // Event bridge unavailable (browser mode) — ignore.
-      }
-    })();
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [openWorkspaceByPath]);
+  useWorkspaceOpenBridge(activeWorkspacePath, openWorkspaceByPath);
 
   const actionState = useMemo(
     () => ({
@@ -472,7 +404,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
       startNewChat: async (workspacePath?: string) => {
         const targetWorkspacePath = workspacePath ?? null;
         if (targetWorkspacePath == null) {
-          const reusableManagedChatDraft = findReusableManagedChatDraft();
+          const reusableManagedChatDraft = findReusableManagedChatDraft(
+            sessionStore.getState().workspaces,
+          );
           if (reusableManagedChatDraft != null) {
             await openWorkspaceByPath(reusableManagedChatDraft.workspacePath);
             return null;
@@ -641,9 +575,7 @@ export function SessionProvider({ children }: SessionProviderProps) {
     [
       applySessionSnapshot,
       ensureWorkspaceMeta,
-      findReusableManagedChatDraft,
       openWorkspaceByPath,
-      runSnapshotCommand,
       syncBoardSelectionFromSnapshot,
     ],
   );
