@@ -37,7 +37,7 @@ for await (const ev of runAgent({ prompt: "summarize README.md", model: "gpt-5.5
 const harness = Harness.init({ model: "claude-opus-4-8", yolo: true });
 const session = harness.session();
 console.log(await session.ask("what files are here?")); // returns final text
-console.log(await session.review("review HEAD against main")); // bounded + read-only
+console.log(await session.review("review HEAD against main")); // isolated + read-only
 for await (const ev of session.send("ask me a follow-up before continuing")) {
   if (ev.type === "ask_user") session.answer({ text: "continue", callId: ev.call_id });
 }

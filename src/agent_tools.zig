@@ -201,7 +201,7 @@ test "toolPreviewText caps context and preserves an inspect pointer" {
 
 pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
     if (self.sub) return null;
-    if (self.review_mode) if (try review.rejectTool(self.arena, call, self.review_finalizing)) |denied| {
+    if (self.review_mode) if (try review.rejectTool(self.arena, call)) |denied| {
         self.emitToolRejected(call, "review_mode", denied.text);
         return denied;
     };

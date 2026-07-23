@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove review turns are read-only, single-agent, and model-call bounded."""
+"""Prove review turns are isolated, read-only, and naturally terminating."""
 
 from __future__ import annotations
 
@@ -15,7 +15,9 @@ from codex_ws_mock import CodexMock, RecordedRequest
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
 FINAL_REPLY = "[P1] Example finding — target.txt:1"
-BUDGET_REPLY = "No findings. Bounded review completed."
+LONG_REPLY = "No findings. Review completed after more than ten calls."
+PARENT_REPLY = "Parent context acknowledged."
+ISOLATED_REPLY = "No findings. Isolated review completed."
 
 
 def response_events(item: dict, response_id: str) -> list[dict]:
@@ -76,10 +78,24 @@ def review_events(request: RecordedRequest) -> list[dict]:
     return message(FINAL_REPLY, request.ordinal)
 
 
-def loop_events(request: RecordedRequest) -> list[dict]:
-    if not request.body.get("tools"):
-        return message(BUDGET_REPLY, request.ordinal)
+def long_review_events(request: RecordedRequest) -> list[dict]:
+    if request.ordinal > 12:
+        return message(LONG_REPLY, request.ordinal)
     return tool("read_file", {"path": "target.txt"}, request.ordinal)
+
+
+def loop_events(request: RecordedRequest) -> list[dict]:
+    return tool("read_file", {"path": "target.txt"}, request.ordinal)
+
+
+def isolation_events(request: RecordedRequest) -> list[dict]:
+    if request.ordinal == 1:
+        return message(PARENT_REPLY, request.ordinal)
+    if request.ordinal == 2:
+        return tool("read_file", {"path": "target.txt"}, request.ordinal)
+    if request.ordinal == 3:
+        return message(ISOLATED_REPLY, request.ordinal)
+    return message("Follow-up complete.", request.ordinal)
 
 
 def environment(tmp: str, port: int) -> dict[str, str]:
@@ -109,13 +125,13 @@ def environment(tmp: str, port: int) -> dict[str, str]:
     return env
 
 
-def run_review(
+def start_graff(
     tmp: str, port: int, max_model_calls: int | None = None
-) -> tuple[list[dict], subprocess.Popen[str]]:
+) -> subprocess.Popen[str]:
     argv = [GRAFF, "--model", "codex", "--json", "--no-telemetry"]
     if max_model_calls is not None:
         argv.extend(["--max-model-calls", str(max_model_calls)])
-    process = subprocess.Popen(
+    return subprocess.Popen(
         argv,
         cwd=tmp,
         env=environment(tmp, port),
@@ -125,8 +141,11 @@ def run_review(
         text=True,
         bufsize=1,
     )
+
+
+def send(process: subprocess.Popen[str], payload: dict) -> list[dict]:
     assert process.stdin is not None and process.stdout is not None
-    process.stdin.write(json.dumps({"type": "review", "text": "Review target.txt"}) + "\n")
+    process.stdin.write(json.dumps(payload) + "\n")
     process.stdin.flush()
     events: list[dict] = []
     for line in process.stdout:
@@ -134,7 +153,14 @@ def run_review(
         events.append(event)
         if event.get("type") in ("turn", "error"):
             break
-    return events, process
+    return events
+
+
+def run_review(
+    tmp: str, port: int, max_model_calls: int | None = None
+) -> tuple[list[dict], subprocess.Popen[str]]:
+    process = start_graff(tmp, port, max_model_calls)
+    return send(process, {"type": "review", "text": "Review target.txt"}), process
 
 
 def close(process: subprocess.Popen[str]) -> None:
@@ -183,18 +209,18 @@ def main() -> None:
         if len(mock.recorded_requests()) != 5:
             raise AssertionError("review did not follow the expected bounded tool loop")
 
-        budget_mock = CodexMock(events_for_request=loop_events)
-        budget_port = budget_mock.start()
+        long_mock = CodexMock(events_for_request=long_review_events)
+        long_port = long_mock.start()
         try:
-            budget_events, budget_process = run_review(tmp, budget_port)
-            close(budget_process)
+            long_events, long_process = run_review(tmp, long_port)
+            close(long_process)
         finally:
-            budget_mock.stop()
-        calls = len(budget_mock.recorded_requests())
-        if calls != 10:
-            raise AssertionError(f"review model ceiling admitted {calls} calls")
-        if budget_events[-1].get("type") != "turn" or budget_events[-1].get("text") != BUDGET_REPLY:
-            raise AssertionError(f"review synthesis did not terminate: {budget_events[-1]!r}")
+            long_mock.stop()
+        calls = len(long_mock.recorded_requests())
+        if calls != 13:
+            raise AssertionError(f"default review unexpectedly stopped after {calls} calls")
+        if long_events[-1].get("type") != "turn" or long_events[-1].get("text") != LONG_REPLY:
+            raise AssertionError(f"long review did not terminate naturally: {long_events[-1]!r}")
 
         global_mock = CodexMock(events_for_request=loop_events)
         global_port = global_mock.start()
@@ -204,11 +230,34 @@ def main() -> None:
         finally:
             global_mock.stop()
         if len(global_mock.recorded_requests()) != 3:
-            raise AssertionError("review did not reserve the final global-budget call")
-        if global_events[-1].get("type") != "turn":
-            raise AssertionError(f"global-budget synthesis failed: {global_events[-1]!r}")
+            raise AssertionError("explicit global model-call budget was not enforced")
+        if global_events[-1].get("type") != "error":
+            raise AssertionError(f"global-budget exhaustion was not surfaced: {global_events[-1]!r}")
 
-    print("ok    review rejects mutation/delegation and reserves local/global synthesis")
+        isolation_mock = CodexMock(events_for_request=isolation_events)
+        isolation_port = isolation_mock.start()
+        isolation_process = start_graff(tmp, isolation_port)
+        try:
+            send(isolation_process, {"type": "user", "text": "PARENT_SENTINEL"})
+            send(isolation_process, {"type": "review", "text": "Review target.txt"})
+            send(isolation_process, {"type": "user", "text": "FOLLOWUP_SENTINEL"})
+            close(isolation_process)
+        finally:
+            isolation_mock.stop()
+        requests = isolation_mock.recorded_requests()
+        review_input = json.dumps(requests[1].body.get("input"))
+        if "PARENT_SENTINEL" in review_input or PARENT_REPLY in review_input:
+            raise AssertionError("review inherited the parent model-visible history")
+        if "[review task:" not in requests[1].body.get("instructions", ""):
+            raise AssertionError("review rubric was not installed as base instructions")
+        followup_input = json.dumps(requests[3].body.get("input"))
+        for expected_text in ("PARENT_SENTINEL", PARENT_REPLY, "Review target.txt", ISOLATED_REPLY):
+            if expected_text not in followup_input:
+                raise AssertionError(f"parent transcript lost {expected_text!r}")
+        if "function_call" in followup_input or "call_review_2" in followup_input:
+            raise AssertionError("review-internal tool history leaked into the parent transcript")
+
+    print("ok    review is isolated/read-only, admits >10 calls, and honors opt-in budgets")
 
 
 if __name__ == "__main__":

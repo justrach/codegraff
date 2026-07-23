@@ -216,6 +216,8 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
             if (root.tracer) |tr| tr.textDelta(text);
             return text;
         } else |err| {
+            // A Codex-shaped review is an isolated one-shot, not a provider switch for its parent.
+            if (root.review_mode) return err;
             if (err != error.ApiError or root.partial_text.items.len != 0 or root.tool_calls_this_turn != 0)
                 return err;
             const detail = root.last_api_error orelse return err;

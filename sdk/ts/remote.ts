@@ -187,7 +187,7 @@ export class RemoteHarness {
     return final;
   }
 
-  /** Run one bounded, read-only review turn and return its final report. */
+  /** Run one isolated, read-only review turn and return its final report. */
   review(input: string | ChatOptions): Promise<string> {
     const prompt = typeof input === "string" ? input : input.prompt;
     return this.ask({ prompt, review: true });

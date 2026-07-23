@@ -127,7 +127,7 @@ export interface HarnessOptions {{
 export interface ChatOptions {{
   /** User prompt for this turn. */
   prompt: string;
-  /** Run this turn in bounded, read-only review mode. */
+  /** Run this turn in isolated, read-only review mode. */
   review?: boolean;
 }}
 
@@ -341,7 +341,7 @@ export class Harness {{
     return final;
   }}
 
-  /** Run one bounded, read-only review turn and return its final report. */
+  /** Run one isolated, read-only review turn and return its final report. */
   review(input: string | ChatOptions): Promise<string> {{
     const prompt = typeof input === "string" ? input : input.prompt;
     return this.ask({{ prompt, review: true }});
@@ -688,7 +688,7 @@ export class RemoteHarness {{
     return final;
   }}
 
-  /** Run one bounded, read-only review turn and return its final report. */
+  /** Run one isolated, read-only review turn and return its final report. */
   review(input: string | ChatOptions): Promise<string> {{
     const prompt = typeof input === "string" ? input : input.prompt;
     return this.ask({{ prompt, review: true }});
@@ -1054,7 +1054,7 @@ class Harness:
         return final
 
     def review(self, text: str) -> str:
-        """Run one bounded, read-only review turn and return its report."""
+        """Run one isolated, read-only review turn and return its report."""
         final = ""
         for ev in self.chat(text, review=True):
             if ev.get("type") == "turn":
@@ -1310,7 +1310,7 @@ class RemoteHarness:
         return final
 
     def review(self, text: str) -> str:
-        """Run one bounded, read-only review turn and return its report."""
+        """Run one isolated, read-only review turn and return its report."""
         final = ""
         for ev in self.chat(text, review=True):
             if ev.get("type") == "turn":
