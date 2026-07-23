@@ -246,13 +246,13 @@ class Harness:
             _report_error("spawn", f"{binary}: {e}")
             raise
 
-    def chat(self, text: str) -> Iterator[dict]:
+    def chat(self, text: str, review: bool = False) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError (after reporting to telemetry) if the
         harness process dies mid-turn instead of silently yielding nothing."""
         assert self.proc.stdin and self.proc.stdout
         try:
-            self.proc.stdin.write(json.dumps({"type": "user", "text": text}) + "\n")
+            self.proc.stdin.write(json.dumps({"type": "review" if review else "user", "text": text}) + "\n")
             self.proc.stdin.flush()
         except OSError as e:
             _report_error("died", f"harness pipe closed on send: {e}")
@@ -277,6 +277,16 @@ class Harness:
         """Run a turn and return just the final assistant text."""
         final = ""
         for ev in self.chat(text):
+            if ev.get("type") == "turn":
+                final = ev["text"]
+            elif ev.get("type") == "error":
+                raise RuntimeError(ev["message"])
+        return final
+
+    def review(self, text: str) -> str:
+        """Run one bounded, read-only review turn and return its report."""
+        final = ""
+        for ev in self.chat(text, review=True):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
@@ -506,12 +516,12 @@ class RemoteHarness:
             except json.JSONDecodeError:
                 continue
 
-    def chat(self, text: str) -> Iterator[dict]:
+    def chat(self, text: str, review: bool = False) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError if the stream ends without one (the
         session process died server-side)."""
         terminal = False
-        for ev in self._send({"type": "user", "text": text}):
+        for ev in self._send({"type": "review" if review else "user", "text": text}):
             yield ev
             if ev.get("type") in ("turn", "error"):
                 terminal = True
@@ -523,6 +533,16 @@ class RemoteHarness:
         """Run a turn and return just the final assistant text."""
         final = ""
         for ev in self.chat(text):
+            if ev.get("type") == "turn":
+                final = ev["text"]
+            elif ev.get("type") == "error":
+                raise RuntimeError(ev["message"])
+        return final
+
+    def review(self, text: str) -> str:
+        """Run one bounded, read-only review turn and return its report."""
+        final = ""
+        for ev in self.chat(text, review=True):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":

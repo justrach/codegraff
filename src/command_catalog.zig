@@ -28,6 +28,7 @@ pub const commands = [_]Item{
     .{ .name = "/rename", .usage = "/rename <title>", .desc = "set the current session title" },
     .{ .name = "/goal", .usage = "/goal [text|pause|resume|status|clear]", .desc = "set/show a standing objective (tracked as a checklist); pause/resume steering, status shows state, clear removes it" },
     .{ .name = "/loop", .usage = "/loop <prompt>", .desc = "run an autonomous plan->act->verify pass" },
+    .{ .name = "/review", .usage = "/review <target or instructions>", .desc = "run one bounded read-only review pass; no edits, delegation, or workflows" },
     .{ .name = "/plan", .desc = "toggle plan mode: read-only explore + propose; writes/edits denied" },
     .{ .name = "/ultracode", .desc = "toggle persistent workflow mode; bare opens an on/off picker, or /ultracode on|off" },
     .{ .name = "/fallback", .usage = "/fallback [allow|remove|off]", .desc = "opt-in cross-provider fallback for this workspace (same-provider rollout stays on)" },

@@ -11,6 +11,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
+const review = @import("review.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
@@ -200,8 +201,16 @@ test "toolPreviewText caps context and preserves an inspect pointer" {
 
 pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
     if (self.sub) return null;
+    if (self.review_mode) if (try review.rejectTool(self.arena, call, self.review_finalizing)) |denied| {
+        self.emitToolRejected(call, "review_mode", denied.text);
+        return denied;
+    };
     if (std.mem.eql(u8, call.name, "attempt_completion")) return null;
-    if (main_mod.max_tool_calls) |max| {
+    const effective_max: ?u64 = if (self.review_mode)
+        @min(main_mod.max_tool_calls orelse review.max_tool_calls, review.max_tool_calls)
+    else
+        main_mod.max_tool_calls;
+    if (effective_max) |max| {
         if (self.tool_calls_this_turn >= max) {
             const message = try std.fmt.allocPrint(self.arena, "tool call budget exhausted ({d}/{d}) — answer with what you have or ask for a higher --max-tool-calls", .{ self.tool_calls_this_turn, max });
             self.emitToolRejected(call, "budget", message);

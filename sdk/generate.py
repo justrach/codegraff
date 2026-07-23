@@ -127,6 +127,8 @@ export interface HarnessOptions {{
 export interface ChatOptions {{
   /** User prompt for this turn. */
   prompt: string;
+  /** Run this turn in bounded, read-only review mode. */
+  review?: boolean;
 }}
 
 export interface AnswerOptions {{
@@ -314,7 +316,8 @@ export class Harness {{
   /** Run one turn; async-iterate events up to and including `turn`/`error`. */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {{
     const prompt = typeof input === "string" ? input : input.prompt;
-    this.proc.stdin.write(JSON.stringify({{ type: "user", text: prompt }}) + "\\n");
+    const type = typeof input === "string" || !input.review ? "user" : "review";
+    this.proc.stdin.write(JSON.stringify({{ type, text: prompt }}) + "\\n");
     while (true) {{
       const ev = await this.next();
       if (ev === null) {{
@@ -336,6 +339,12 @@ export class Harness {{
       if (ev.type === "error") throw new Error(ev.message);
     }}
     return final;
+  }}
+
+  /** Run one bounded, read-only review turn and return its final report. */
+  review(input: string | ChatOptions): Promise<string> {{
+    const prompt = typeof input === "string" ? input : input.prompt;
+    return this.ask({{ prompt, review: true }});
   }}
 
   /** Answer an in-flight ask_user event. Call this while consuming chat()
@@ -452,6 +461,7 @@ export class HarnessSession {{
   /** Send a user turn; async-iterate its events. */
   send(input: string | ChatOptions): AsyncGenerator<Event> {{ return this.agent.chat(input); }}
   ask(input: string | ChatOptions): Promise<string> {{ return this.agent.ask(input); }}
+  review(input: string | ChatOptions): Promise<string> {{ return this.agent.review(input); }}
   answer(input: string | AnswerOptions): void {{ return this.agent.answer(input); }}
   setSystemPrompt(text: string, append = false): Promise<void> {{ return this.agent.setSystemPrompt(text, append); }}
   close(): void {{ this.agent.close(); }}
@@ -560,6 +570,7 @@ export interface RemoteOptions {{
 
 export interface ChatOptions {{
   prompt: string;
+  review?: boolean;
 }}
 
 export interface AnswerOptions {{
@@ -658,8 +669,9 @@ export class RemoteHarness {{
   /** Run one turn; async-iterate events up to and including `turn`/`error`. */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {{
     const prompt = typeof input === "string" ? input : input.prompt;
+    const type = typeof input === "string" || !input.review ? "user" : "review";
     let terminal = false;
-    for await (const ev of this.send({{ type: "user", text: prompt }})) {{
+    for await (const ev of this.send({{ type, text: prompt }})) {{
       yield ev;
       if (ev.type === "turn" || ev.type === "error") {{ terminal = true; break; }}
     }}
@@ -674,6 +686,12 @@ export class RemoteHarness {{
       if (ev.type === "error") throw new Error(ev.message);
     }}
     return final;
+  }}
+
+  /** Run one bounded, read-only review turn and return its final report. */
+  review(input: string | ChatOptions): Promise<string> {{
+    const prompt = typeof input === "string" ? input : input.prompt;
+    return this.ask({{ prompt, review: true }});
   }}
 
   /** Answer an in-flight ask_user event. The original chat() stream continues
@@ -998,13 +1016,13 @@ class Harness:
             _report_error("spawn", f"{{binary}}: {{e}}")
             raise
 
-    def chat(self, text: str) -> Iterator[dict]:
+    def chat(self, text: str, review: bool = False) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError (after reporting to telemetry) if the
         harness process dies mid-turn instead of silently yielding nothing."""
         assert self.proc.stdin and self.proc.stdout
         try:
-            self.proc.stdin.write(json.dumps({{"type": "user", "text": text}}) + "\\n")
+            self.proc.stdin.write(json.dumps({{"type": "review" if review else "user", "text": text}}) + "\\n")
             self.proc.stdin.flush()
         except OSError as e:
             _report_error("died", f"harness pipe closed on send: {{e}}")
@@ -1029,6 +1047,16 @@ class Harness:
         """Run a turn and return just the final assistant text."""
         final = ""
         for ev in self.chat(text):
+            if ev.get("type") == "turn":
+                final = ev["text"]
+            elif ev.get("type") == "error":
+                raise RuntimeError(ev["message"])
+        return final
+
+    def review(self, text: str) -> str:
+        """Run one bounded, read-only review turn and return its report."""
+        final = ""
+        for ev in self.chat(text, review=True):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
@@ -1258,12 +1286,12 @@ class RemoteHarness:
             except json.JSONDecodeError:
                 continue
 
-    def chat(self, text: str) -> Iterator[dict]:
+    def chat(self, text: str, review: bool = False) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError if the stream ends without one (the
         session process died server-side)."""
         terminal = False
-        for ev in self._send({{"type": "user", "text": text}}):
+        for ev in self._send({{"type": "review" if review else "user", "text": text}}):
             yield ev
             if ev.get("type") in ("turn", "error"):
                 terminal = True
@@ -1275,6 +1303,16 @@ class RemoteHarness:
         """Run a turn and return just the final assistant text."""
         final = ""
         for ev in self.chat(text):
+            if ev.get("type") == "turn":
+                final = ev["text"]
+            elif ev.get("type") == "error":
+                raise RuntimeError(ev["message"])
+        return final
+
+    def review(self, text: str) -> str:
+        """Run one bounded, read-only review turn and return its report."""
+        final = ""
+        for ev in self.chat(text, review=True):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":

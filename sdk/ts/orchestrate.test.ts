@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   agent,
+  backgroundResultRunning,
   Budget,
   DEFAULT_CONCURRENCY,
   parallel,
@@ -206,6 +207,28 @@ describe("Run budget admission", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("parallel admissions reserve the call budget before runners await", async () => {
+    const dir = tmpJournalDir();
+    try {
+      const runner = new FakeRunner(async () => {
+        await sleep(20);
+        return ok("done", 10);
+      });
+      const run = new Run({ dir, budget: { maxCalls: 2 }, runner, concurrency: 3 });
+      const results = await run.runParallel([
+        () => run.agent("task 1"),
+        () => run.agent("task 2"),
+        () => run.agent("task 3"),
+      ]);
+      expect(runner.calls.length).toBe(2);
+      expect(results.filter((r) => r && r.ok).length).toBe(2);
+      expect(results.filter((r) => r && !r.ok)[0]?.text).toMatch(/budget exhausted/i);
+      expect(run.budget.spent()).toEqual({ calls: 2, tokens: 20 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── Run: journal write/replay + prefix resume ────────────────────────────
@@ -338,5 +361,11 @@ describe("wire-format helpers", () => {
     expect(parseBackgroundId("[agent 7 started: fix the bug]\nIt runs in the background across turns...")).toBe(7);
     expect(parseBackgroundId("[agent 42 started: label]")).toBe(42);
     expect(parseBackgroundId("not an ack at all")).toBeNull();
+  });
+
+  test("background status distinguishes a pending poll from a terminal result", () => {
+    expect(backgroundResultRunning("[agent 7: running]", 7)).toBe(true);
+    expect(backgroundResultRunning("[agent 7: completed in 10ms]\n\ndone", 7)).toBe(false);
+    expect(backgroundResultRunning("[agent 8: running]", 7)).toBe(false);
   });
 });

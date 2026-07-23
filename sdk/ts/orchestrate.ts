@@ -85,6 +85,10 @@ export interface SubagentSpec {
    *  dispatching process, then poll it via `agent_output` on the same
    *  process. Default false (synchronous). */
   background?: boolean;
+  /** SDK-side deadline for a background subagent to reach a terminal result.
+   *  The harness process is closed (and force-killed after its grace period)
+   *  when this expires. Default 120 seconds. */
+  backgroundTimeoutMs?: number;
 }
 
 export interface AgentOptions extends Omit<SubagentSpec, "prompt"> {
@@ -94,7 +98,7 @@ export interface AgentOptions extends Omit<SubagentSpec, "prompt"> {
   model?: string;
   /** Passthrough to the spawned Harness. `yolo` defaults to true: these are
    *  non-interactive, fully scripted dispatches with nothing to confirm. */
-  harness?: Pick<HarnessOptions, "binary" | "cwd" | "env" | "yolo">;
+  harness?: Pick<HarnessOptions, "binary" | "cwd" | "env" | "yolo" | "maxToolCalls" | "maxModelCalls" | "dedupeToolCalls" | "args">;
   /** Injectable transport. Defaults to a shared `HarnessRunner`; tests
    *  substitute a fake so orchestration logic never needs a live binary. */
   runner?: AgentRunner;
@@ -190,8 +194,20 @@ export class HarnessRunner implements AgentRunner {
       if (id === null) {
         return { ok: false, text: first.result?.text ?? "agent(): could not read a background agent id", usage: first.usage, cached: false };
       }
-      const second = await this.drive(h, dispatchPrompt("agent_output", { id, wait_ms: 30000 }), "agent_output");
-      return second.result ?? { ok: false, text: `agent(): agent_output never returned for id ${id}`, usage: second.usage, cached: false };
+      const timeoutMs = Math.max(0, spec.backgroundTimeoutMs ?? 120_000);
+      const deadline = Date.now() + timeoutMs;
+      do {
+        const waitMs = Math.min(30_000, Math.max(0, deadline - Date.now()));
+        const poll = await this.drive(h, dispatchPrompt("agent_output", { id, wait_ms: waitMs }), "agent_output");
+        if (!poll.result) return { ok: false, text: `agent(): agent_output never returned for id ${id}`, usage: poll.usage, cached: false };
+        if (!backgroundResultRunning(poll.result.text, id)) return poll.result;
+      } while (Date.now() < deadline);
+      return {
+        ok: false,
+        text: `agent(): background agent ${id} exceeded its ${timeoutMs}ms deadline`,
+        usage: first.usage,
+        cached: false,
+      };
     } finally {
       h.close();
     }
@@ -216,6 +232,10 @@ export class HarnessRunner implements AgentRunner {
 }
 
 export const defaultRunner: AgentRunner = new HarnessRunner();
+
+export function backgroundResultRunning(text: string, id: number): boolean {
+  return text.trimStart().startsWith(`[agent ${id}: running]`);
+}
 
 // ── Budget: budget.spent()/remaining()/total, fed by real AgentUsage ────
 
@@ -265,6 +285,20 @@ export class Budget {
    *  call this; nothing else should. */
   charge(usage: AgentUsage): void {
     this._calls += 1;
+    this._tokens += usage.contextTokens;
+  }
+
+  /** Atomically reserve one SDK call before asynchronous runner work starts.
+   *  JavaScript executes this synchronously, so parallel fan-out cannot race
+   *  several calls through the same remaining slot. */
+  reserveCall(): boolean {
+    if (this.exhausted()) return false;
+    this._calls += 1;
+    return true;
+  }
+
+  /** Complete a previously reserved call with its measured token usage. */
+  chargeReserved(usage: AgentUsage): void {
     this._tokens += usage.contextTokens;
   }
 }
@@ -361,6 +395,7 @@ function toSpec(prompt: string, opts: AgentOptions): SubagentSpec {
     isolation: opts.isolation,
     isolationFallback: opts.isolationFallback,
     background: opts.background,
+    backgroundTimeoutMs: opts.backgroundTimeoutMs,
   };
 }
 
@@ -380,6 +415,7 @@ function hashOpts(spec: SubagentSpec, model: string | undefined): string {
     isolation: spec.isolation,
     isolationFallback: spec.isolationFallback,
     background: spec.background,
+    backgroundTimeoutMs: spec.backgroundTimeoutMs,
     model,
   };
   return createHash("sha256").update(stableStringify(relevant)).digest("hex").slice(0, 16);
@@ -483,13 +519,13 @@ export class Run {
       this.diverged = true;
     }
 
-    if (this.budget.exhausted()) {
+    if (!this.budget.reserveCall()) {
       return { ok: false, text: "agent(): budget exhausted, call not admitted", usage: zeroUsage, cached: false };
     }
 
     const runner = opts.runner ?? this.runner;
     const result = await runner.run(spec, { model: opts.model, harness: opts.harness });
-    this.budget.charge(result.usage);
+    this.budget.chargeReserved(result.usage);
     this.appendJournal({ key, promptHash, optsHash, ok: result.ok, text: result.text, usage: result.usage, ts: Date.now() });
     return result;
   }

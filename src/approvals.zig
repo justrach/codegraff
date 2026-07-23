@@ -138,7 +138,7 @@ pub const Approvals = struct {
     pub fn readOnlyAllowed(cmd: []const u8) bool {
         const c = std.mem.trim(u8, cmd, " \t");
         if (!isSimple(c) or escapesCwd(c)) return false;
-        for (seed) |p| if (matchesPrefix(c, p)) return true;
+        for (read_only_seed) |p| if (matchesPrefix(c, p)) return true;
         return false;
     }
 
@@ -406,6 +406,8 @@ test "Approvals.readOnlyAllowed: only simple, in-cwd, seed-listed commands pass 
     try std.testing.expect(!Approvals.readOnlyAllowed("cat /etc/passwd")); // escapes cwd
     try std.testing.expect(!Approvals.readOnlyAllowed("ls; rm x")); // not simple
     try std.testing.expect(!Approvals.readOnlyAllowed("git push")); // mutating git verb, not seeded
+    try std.testing.expect(!Approvals.readOnlyAllowed("zig build")); // build.zig can execute arbitrary code
+    try std.testing.expect(!Approvals.readOnlyAllowed("zig fmt src")); // formatter rewrites files
 }
 
 test "Approvals.readOnlyExternal: read-only verb reading outside cwd, simple only (#64)" {

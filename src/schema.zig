@@ -52,7 +52,7 @@ const schema_flags_json =
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
     \\  {"flag": "--json", "arg": null, "description": "structured stdio protocol (JSON in, JSONL events out)"},
     \\  {"flag": "--max-tool-calls", "arg": "N", "description": "hard per-turn root tool-call budget; rejected calls emit tool_rejected/tool_result"},
-    \\  {"flag": "--max-model-calls", "arg": "N", "description": "invocation-wide provider-call ceiling shared by root, subagents, retries, title, compaction, and judges; default 256"},
+    \\  {"flag": "--max-model-calls", "arg": "N", "description": "invocation-wide provider-call ceiling shared by root, subagents, retries, title, compaction, and judges; default unlimited (bounded /review has its own 10-call ceiling)"},
     \\  {"flag": "--dedupe-tool-calls", "arg": null, "description": "reject duplicate root tool name+normalized-input calls per turn"},
     \\  {"flag": "--no-telemetry", "arg": null, "description": "disable anonymous OTEL usage telemetry for this run"},
     \\  {"flag": "--learning-privacy", "arg": "local|aggregate|templates|examples", "description": "set the prompt-learning egress ceiling; default local, and template text still requires exact interactive approval"}
