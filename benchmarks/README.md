@@ -23,12 +23,14 @@ task, the model, and the network.
 | `memory.py` | Peak RSS + CPU (`/usr/bin/time -l`) | graff **~25 MB** floor vs Node **~410 MB** vs Rust **~206 MB** |
 | `latency.py` | One-shot turn latency, same gpt-5.5 endpoint, concurrent pairs | graff **4.4 s** vs codex **8.9 s** (one-shot only) |
 | `memory_session.py` | RSS-vs-turn slope plus session/scratch arena capacity for ONE persistent `--json` session (the #124 leak detector; `memory.py` is one-shot peak RSS and structurally blind to per-turn growth) | flat slope after warmup = no per-turn leak |
+| `model_shape.py` | Correctness, latency, tool/model calls, and routing for all-Sol vs Sol-root/Terra-workers | writes a local correctness-first paired report; no default promotion |
 
 ```sh
 python3 benchmarks/cost.py
 python3 benchmarks/memory.py
 python3 benchmarks/latency.py 8
 python3 benchmarks/memory_session.py 50   # N turns, one persistent session
+python3 benchmarks/model_shape.py --graff zig-out/bin/graff --repetitions 1
 ```
 
 `memory_session.py` drives and samples one turn at a time so the child remains
@@ -37,6 +39,33 @@ alive at every RSS sample. Set `GRAFF_BENCH_MODEL` to test a model other than
 arena capacities beside process RSS.
 
 Tasks live in `tasks.py` (edit to test other work).
+
+### Root/worker model shapes
+
+`model_shape.py` creates three disposable synthetic Python repositories and
+runs paired arms with the same `gpt-5.6-sol` root:
+
+- `all-sol`: both direct workers also use Sol;
+- `sol-terra`: both direct workers use `gpt-5.6-terra`.
+
+Every run must produce exactly two correctly routed child trajectory nodes.
+Visible tests provide normal agent feedback, while held-back cases grade the
+finished workspace afterward. The report selects correctness first and total
+tool economy second, but keeps promotion manual until at least 20 independent
+task pairs are present. One repetition is therefore a smoke/effect-size check;
+seven repetitions across the three fixtures provide 21 pairs:
+
+```sh
+python3 benchmarks/model_shape.py \
+  --graff zig-out/bin/graff \
+  --repetitions 7 \
+  --output-root /path/to/results
+```
+
+The runner disables external telemetry, behavioral upload, fleet sharing,
+Smolify, and optional companion tools. Only synthetic fixture content reaches
+the selected Codex account. Operational traces and the JSON report stay inside
+the output directory.
 
 ## Honest caveats (please read)
 

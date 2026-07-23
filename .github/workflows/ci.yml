@@ -18,6 +18,9 @@ jobs:
       - name: Zig source-size guard integrity tests
         run: python3 scripts/test-zig-lines.py
 
+      - name: Model-shape benchmark integrity
+        run: python3 benchmarks/test_model_shape.py
+
       - name: Python SDK import smoke
         run: python3 -c "import sys; sys.path.insert(0, 'sdk/py'); import harness_sdk; assert harness_sdk.MODELS and harness_sdk.TOOLS; print('py sdk ok:', len(harness_sdk.MODELS), 'models')"
 
