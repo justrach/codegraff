@@ -191,12 +191,22 @@ const jobs = @import("jobs.zig");
 
 /// Per-file cache for the codedb guard: `codedb outline <path>` is run once
 /// per source file to check whether codedb actually indexed it (large files
-/// are silently skipped — e.g. a 13K-line main.zig). Entries are page-alloc
-/// and never freed; the set is small (only files the agent greps). A mutex
-/// guards concurrent tool-thread access; a miss is benign (duplicate probe).
+/// are silently skipped — e.g. a 13K-line main.zig). A mutex guards concurrent
+/// tool-thread access; a miss is benign (duplicate probe).
 pub const CodedbFileCheck = struct { path: []const u8, indexed: bool };
 var g_codedb_file_checks: std.ArrayList(CodedbFileCheck) = .empty;
 var g_codedb_file_mu: Io.Mutex = .init;
+
+pub fn deinitCodedbCache(gpa: Allocator, io: Io) void {
+    g_codedb_file_mu.lockUncancelable(io);
+    const entries = g_codedb_file_checks.toOwnedSlice(gpa) catch {
+        g_codedb_file_mu.unlock(io);
+        return;
+    };
+    g_codedb_file_mu.unlock(io);
+    for (entries) |entry| gpa.free(entry.path);
+    gpa.free(entries);
+}
 
 /// True when `path` is in codedb's symbol index. Runs `codedb outline <path>`
 /// (cached): returns "not indexed: <path>" when the file is too large or

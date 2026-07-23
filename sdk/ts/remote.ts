@@ -69,6 +69,7 @@ export interface RemoteOptions {
 
 export interface ChatOptions {
   prompt: string;
+  review?: boolean;
 }
 
 export interface AnswerOptions {
@@ -167,8 +168,9 @@ export class RemoteHarness {
   /** Run one turn; async-iterate events up to and including `turn`/`error`. */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
+    const type = typeof input === "string" || !input.review ? "user" : "review";
     let terminal = false;
-    for await (const ev of this.send({ type: "user", text: prompt })) {
+    for await (const ev of this.send({ type, text: prompt })) {
       yield ev;
       if (ev.type === "turn" || ev.type === "error") { terminal = true; break; }
     }
@@ -183,6 +185,12 @@ export class RemoteHarness {
       if (ev.type === "error") throw new Error(ev.message);
     }
     return final;
+  }
+
+  /** Run one bounded, read-only review turn and return its final report. */
+  review(input: string | ChatOptions): Promise<string> {
+    const prompt = typeof input === "string" ? input : input.prompt;
+    return this.ask({ prompt, review: true });
   }
 
   /** Answer an in-flight ask_user event. The original chat() stream continues

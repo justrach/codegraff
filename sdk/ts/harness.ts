@@ -76,6 +76,8 @@ export interface HarnessOptions {
 export interface ChatOptions {
   /** User prompt for this turn. */
   prompt: string;
+  /** Run this turn in bounded, read-only review mode. */
+  review?: boolean;
 }
 
 export interface AnswerOptions {
@@ -263,7 +265,8 @@ export class Harness {
   /** Run one turn; async-iterate events up to and including `turn`/`error`. */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
-    this.proc.stdin.write(JSON.stringify({ type: "user", text: prompt }) + "\n");
+    const type = typeof input === "string" || !input.review ? "user" : "review";
+    this.proc.stdin.write(JSON.stringify({ type, text: prompt }) + "\n");
     while (true) {
       const ev = await this.next();
       if (ev === null) {
@@ -285,6 +288,12 @@ export class Harness {
       if (ev.type === "error") throw new Error(ev.message);
     }
     return final;
+  }
+
+  /** Run one bounded, read-only review turn and return its final report. */
+  review(input: string | ChatOptions): Promise<string> {
+    const prompt = typeof input === "string" ? input : input.prompt;
+    return this.ask({ prompt, review: true });
   }
 
   /** Answer an in-flight ask_user event. Call this while consuming chat()
@@ -401,6 +410,7 @@ export class HarnessSession {
   /** Send a user turn; async-iterate its events. */
   send(input: string | ChatOptions): AsyncGenerator<Event> { return this.agent.chat(input); }
   ask(input: string | ChatOptions): Promise<string> { return this.agent.ask(input); }
+  review(input: string | ChatOptions): Promise<string> { return this.agent.review(input); }
   answer(input: string | AnswerOptions): void { return this.agent.answer(input); }
   setSystemPrompt(text: string, append = false): Promise<void> { return this.agent.setSystemPrompt(text, append); }
   close(): void { this.agent.close(); }

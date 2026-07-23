@@ -6,7 +6,6 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-
 const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
 const Provider = provider_mod.Provider;
@@ -99,7 +98,8 @@ pub const Agent = struct {
     sys_override: ?[]const u8 = null, // subagent-only: per-child system prompt (swarm prompt variants)
     agent_cwd: ?[]const u8 = null, // subagent-only (#276 P0-1): absolute path of this agent's isolated git worktree, threaded through ToolCtx per tool call instead of a process-wide chdir — parallel siblings each keep their own
     tools_used: trace.ToolSink = .{}, // external tool calls this agent made (per turn for the root)
-    tool_calls_this_turn: u64 = 0, // root-only hard budget counter (--max-tool-calls)
+    tool_calls_this_turn: u64 = 0,
+    model_calls_this_turn: u32 = 0, // root-only hard per-turn budgets
     seen_tool_keys: std.ArrayList([]const u8) = .empty, // root-only per-turn dedupe keys
     md_buf: std.ArrayList(u8) = .empty, // current incomplete streamed line (markdown rendering)
     md_fence: bool = false, // inside a ``` code fence while streaming
@@ -122,7 +122,9 @@ pub const Agent = struct {
     fallback_allow: []const []const u8 = &.{}, // explicit cross-provider allowlist from .harness/settings.json
     fallback_active: bool = false, // current provider/model is a temporary fallback, not the saved preference
     fallback_blocked: bool = false, // startup found a cross-provider fallback that is not allowlisted yet
-    ultracode_mode: bool = false, // persistent ultracode (multi-agent workflow) mode (/ultracode)
+    ultracode_mode: bool = false,
+    review_mode: bool = false,
+    review_finalizing: bool = false, // transient bounded /review state
     show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
     ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
     goal: ?Goal = null, // structured objective + status lifecycle (/goal, #223)

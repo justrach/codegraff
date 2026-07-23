@@ -253,6 +253,7 @@ pub fn main(init: std.process.Init) !void {
     // reset each request() so a long REPL/--json/serve session's RSS stays flat.
     var scratch_state = std.heap.ArenaAllocator.init(gpa);
     defer scratch_state.deinit();
+    defer hooks.deinitCodedbCache(gpa, io);
     g_session_arena = init.arena;
     g_mem_debug = init.environ_map.get("GRAFF_MEM_DEBUG") != null;
     // Windows: let the console interpret ANSI/VT escapes so the harness's color and cursor sequences render instead of literal text.
