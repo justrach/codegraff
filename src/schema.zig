@@ -13,6 +13,7 @@ const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
 const pricing = @import("pricing.zig");
 const model_table = pricing.model_table;
+const learn_store = @import("learn_store.zig");
 
 const root = @import("main.zig");
 const provider_mod = @import("provider.zig");
@@ -52,7 +53,6 @@ const schema_protocol_json =
     \\  ]
     \\}
 ;
-
 /// Documentation of the `harness serve` HTTP bridge, embedded verbatim in
 /// `--schema` output. Same request/event contract as the stdio protocol —
 /// one POST = one protocol request, streamed back as NDJSON until that
@@ -63,18 +63,20 @@ const schema_serve_json =
     \\  "endpoints": [
     \\    {"method": "GET", "path": "/healthz", "description": "liveness + version, no auth"},
     \\    {"method": "GET", "path": "/v1/schema", "description": "this schema document"},
-    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"maxModelCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
+    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"subagentProvider\",\"subagentModel\",\"allowCrossProviderSubagents\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"maxModelCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
     \\    {"method": "POST", "path": "/v1/sessions/{id}", "description": "body is ONE stdio-protocol request object (user / set_system_prompt / set_model / compact / set_mode / set_agent / score / answer); non-answer requests stream application/x-ndjson events until the request's terminal event (turn/error, or the request-specific ack); answer requests return JSON ack while the original user stream continues; one non-answer request in flight per session at a time"},
     \\    {"method": "DELETE", "path": "/v1/sessions/{id}", "description": "graceful close: waits for any in-flight request, then EOFs the child's stdin"}
     \\  ]
     \\}
 ;
-
 /// Launch flags relevant to SDK clients, embedded verbatim in `--schema`
 /// output so generated clients can surface them as first-class options.
 const schema_flags_json =
     \\[
     \\  {"flag": "--model", "arg": "name", "description": "start on this model (same fuzzy resolution as /model)"},
+    \\  {"flag": "--subagent-model", "arg": "name", "description": "pin direct subagents, workflow workers/retries, and judges to this model on the root provider; GRAFF_SUBAGENT_MODEL is the lower-precedence equivalent"},
+    \\  {"flag": "--subagent-provider", "arg": "id", "description": "route pinned workers through this explicit provider; GRAFF_SUBAGENT_PROVIDER is the lower-precedence equivalent"},
+    \\  {"flag": "--allow-cross-provider-subagents", "arg": null, "description": "explicitly consent to sending worker prompts, code, and tool results to a provider different from the root"},
     \\  {"flag": "--yolo", "arg": null, "description": "skip all permission prompts for the session"},
     \\  {"flag": "--system-prompt", "arg": "text", "description": "replace the built-in system prompt (cwd project-instructions file is still appended)"},
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
@@ -82,7 +84,8 @@ const schema_flags_json =
     \\  {"flag": "--max-tool-calls", "arg": "N", "description": "hard per-turn root tool-call budget; rejected calls emit tool_rejected/tool_result"},
     \\  {"flag": "--max-model-calls", "arg": "N", "description": "invocation-wide provider-call ceiling shared by root, subagents, retries, title, compaction, and judges; default 256"},
     \\  {"flag": "--dedupe-tool-calls", "arg": null, "description": "reject duplicate root tool name+normalized-input calls per turn"},
-    \\  {"flag": "--no-telemetry", "arg": null, "description": "disable anonymous OTEL usage telemetry for this run"}
+    \\  {"flag": "--no-telemetry", "arg": null, "description": "disable anonymous OTEL usage telemetry for this run"},
+    \\  {"flag": "--learning-privacy", "arg": "local|aggregate|templates|examples", "description": "set the prompt-learning egress ceiling; default local, and template text still requires exact interactive approval"}
     \\]
 ;
 const ToolSpec = struct {
@@ -119,7 +122,7 @@ const base_specs = [_]ToolSpec{
     },
     .{
         .name = "read_file",
-        .desc = "Read a UTF-8 text file. Call this before editing any file. For a big file you only need part of, pass start_line/end_line (1-based, inclusive) to read just that span.",
+        .desc = "Read a UTF-8 text file. Call this before editing any file. Whole-file reads over 256 KiB return a short preview; pass start_line/end_line (1-based, inclusive) for a byte-exact window from any size file.",
         .schema =
         \\{"type": "object", "properties": {"path": {"type": "string", "description": "File path, relative to the working directory"}, "start_line": {"type": "integer", "description": "Optional 1-based first line to return (byte-exact slice; omit for whole file)"}, "end_line": {"type": "integer", "description": "Optional 1-based last line to return, inclusive"}, "compact": {"type": "boolean", "description": "Exploratory only: return a comment/blank-stripped view via codedb (line numbers shown). NEVER use before an edit — re-read without compact to copy exact text."}}, "required": ["path"]}
         ,
@@ -171,7 +174,7 @@ const meta_specs = [_]ToolSpec{
     },
     .{
         .name = "eval",
-        .desc = "Run the configured scoring command (graff --eval) on the current output and record the result. The HARNESS runs it and logs the score to .graff/eval-log.tsv - do not run the eval command yourself via bash. Returns the score (0-100), best so far, target, and whether the target is met. Call after each focused change in an eval-driven loop. Pass `note` describing what you just changed.",
+        .desc = "Run the configured scoring command (graff --eval) alone and record the result. The HARNESS runs it and logs the score to .graff/eval-log.tsv - do not run it via bash. Returns score, best, target, and gate state. Red drops the current plan and ends the turn; repair next turn and re-evaluate. In `note`, describe the focused change and label new CONFIRMED/GUESS/HYPOTHESIS/FACT beliefs.",
         .schema =
         \\{"type": "object", "properties": {"note": {"type": "string", "description": "What you changed since the last eval"}}}
         ,
@@ -215,7 +218,15 @@ const workflow_spec = ToolSpec{
     ,
 };
 
-pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec };
+const learn_candidate_spec = ToolSpec{
+    .name = "learn_candidate",
+    .desc = "Bundle the workspace's pinned prompt-policy mutation, paired evaluation, immutable evidence, and signed aggregate grade submission into one action. Grade telemetry excludes prompt/genome text, but configured adapters may send it to their declared model provider. In Local privacy mode this requires a separate one-shot confirmation that --yolo cannot bypass; Aggregate or higher uses normal tool approval. This never promotes or changes the active policy and is root-only.",
+    .schema =
+    \\{"type": "object", "properties": {"candidates": {"type": "integer", "minimum": 1, "maximum": 16, "description": "Optional candidate count; defaults to the learning config"}, "repetitions": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Optional repetitions per evaluation case; defaults to the learning config"}}}
+    ,
+};
+
+pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec, learn_candidate_spec };
 
 // The common catalog (clock_sleep off) is static too. Previously every root
 // startup allocated and filled a filtered ToolSpec array before rendering even
@@ -229,6 +240,30 @@ const root_specs_without_clock = blk: {
         len += 1;
     }
     if (len != out.len) @compileError("root tool catalog must contain exactly one clock_sleep entry");
+    break :blk out;
+};
+
+const root_specs_without_learning = blk: {
+    var out: [root_specs.len - 1]ToolSpec = undefined;
+    var len: usize = 0;
+    for (root_specs) |tool| {
+        if (std.mem.eql(u8, tool.name, "learn_candidate")) continue;
+        out[len] = tool;
+        len += 1;
+    }
+    if (len != out.len) @compileError("root tool catalog must contain exactly one learn_candidate entry");
+    break :blk out;
+};
+
+const root_specs_without_optional = blk: {
+    var out: [root_specs.len - 2]ToolSpec = undefined;
+    var len: usize = 0;
+    for (root_specs) |tool| {
+        if (std.mem.eql(u8, tool.name, "clock_sleep") or std.mem.eql(u8, tool.name, "learn_candidate")) continue;
+        out[len] = tool;
+        len += 1;
+    }
+    if (len != out.len) @compileError("root tool catalog optional entries changed");
     break :blk out;
 };
 
@@ -301,16 +336,12 @@ pub fn renderRootTools(
     return aw.toOwnedSlice();
 }
 
-/// Root tool catalog for the current session: drops clock_sleep unless the
-/// root-only feature flag is on (--clock-sleep / GRAFF_CLOCK_SLEEP=1, see
-/// main.zig g_clock_sleep) so the model never even sees a tool it can't
-/// call while the flag is off (#225). Subagents are unaffected — they
-/// build their tool lists from base_specs only (tools_*_sub above), which
-/// never included meta_specs/clock_sleep in the first place.
+/// Root tool catalog for the current session: optional tools are absent unless
+/// enabled and usable, avoiding schema tokens for calls that cannot succeed.
 pub fn effectiveRootSpecs(arena: Allocator) ![]const ToolSpec {
     _ = arena;
-    if (root.g_clock_sleep) return &root_specs;
-    return &root_specs_without_clock;
+    if (root.g_clock_sleep) return if (learn_store.active_agent_loaded) &root_specs else &root_specs_without_learning;
+    return if (learn_store.active_agent_loaded) &root_specs_without_clock else &root_specs_without_optional;
 }
 
 const Schema = union(enum) { raw: []const u8, value: Value };
@@ -520,7 +551,12 @@ test "effectiveRootSpecs: drops clock_sleep from the root tool catalog unless th
     defer arena_state.deinit();
     const a = arena_state.allocator();
     const saved = root.g_clock_sleep;
-    defer root.g_clock_sleep = saved;
+    const saved_learning = learn_store.active_agent_loaded;
+    defer {
+        root.g_clock_sleep = saved;
+        learn_store.active_agent_loaded = saved_learning;
+    }
+    learn_store.active_agent_loaded = true;
 
     root.g_clock_sleep = false;
     const off_specs = try effectiveRootSpecs(a);
@@ -536,6 +572,21 @@ test "effectiveRootSpecs: drops clock_sleep from the root tool catalog unless th
         if (std.mem.eql(u8, t.name, "clock_sleep")) found = true;
     }
     try std.testing.expect(found);
+
+    root.g_clock_sleep = false;
+    learn_store.active_agent_loaded = false;
+    const minimal_specs = try effectiveRootSpecs(a);
+    try std.testing.expectEqual(root_specs.len - 2, minimal_specs.len);
+    for (minimal_specs) |tool| try std.testing.expect(!std.mem.eql(u8, tool.name, "learn_candidate"));
+}
+test "learn_candidate is root-only and cannot become a subagent tool" {
+    var found = false;
+    for (root_specs) |tool| if (std.mem.eql(u8, tool.name, "learn_candidate")) {
+        found = true;
+    };
+    try std.testing.expect(found);
+    try std.testing.expect(std.mem.indexOf(u8, learn_candidate_spec.desc, "adapters may send it") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tools_openai_sub, "learn_candidate") == null);
 }
 test "providerTakesEffort: effort-honoring providers, but never for grok models" {
     try std.testing.expect(providerTakesEffort(.responses, "codex", "gpt-5.5"));

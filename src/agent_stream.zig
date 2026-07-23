@@ -20,8 +20,7 @@ const main_mod = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 
-const ansi = @import("ansi.zig");
-const style = &ansi.style;
+const style = &@import("ansi.zig").style;
 
 const anim = @import("anim.zig");
 
@@ -31,8 +30,8 @@ const termCols = terminal.termCols;
 const termRows = terminal.termRows;
 const advanceThinkingRows = terminal.advanceThinkingRows;
 
-const title_mod = @import("title.zig");
-const reasoningDelta = title_mod.reasoningDelta;
+const reasoningDelta = @import("title.zig").reasoningDelta;
+const stream_tests = @import("agent_stream_tests.zig");
 
 const http = @import("http.zig");
 const providerUserAgent = http.providerUserAgent;
@@ -528,40 +527,11 @@ pub fn isStreamEnd(arena: std.mem.Allocator, kind: anytype, raw_line: []const u8
 }
 
 test "isStreamEnd (#134): terminal events detected, content deltas never false-match" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const Kind = @import("provider.zig").Provider.Kind;
-    // OpenAI/Responses [DONE] sentinel; a content delta merely CONTAINING it must not end the stream.
-    try std.testing.expect(isStreamEnd(a, Kind.openai, "data: [DONE]"));
-    try std.testing.expect(!isStreamEnd(a, Kind.openai, "data: {\"choices\":[{\"delta\":{\"content\":\"[DONE]\"}}]}"));
-    // Anthropic: event: line and data payload both terminate; a delta with the word does not.
-    try std.testing.expect(isStreamEnd(a, Kind.anthropic, "event: message_stop"));
-    try std.testing.expect(isStreamEnd(a, Kind.anthropic, "data: {\"type\":\"message_stop\"}"));
-    try std.testing.expect(!isStreamEnd(a, Kind.anthropic, "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"message_stop\"}}"));
-    // Responses (codex/gpt-5.5): completed/incomplete terminate; an output-text delta does not.
-    try std.testing.expect(isStreamEnd(a, Kind.responses, "event: response.completed"));
-    try std.testing.expect(isStreamEnd(a, Kind.responses, "data: {\"type\":\"response.completed\"}"));
-    try std.testing.expect(isStreamEnd(a, Kind.responses, "data: {\"type\":\"response.incomplete\"}"));
-    try std.testing.expect(!isStreamEnd(a, Kind.responses, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"));
-    // #133 (openai/kimi): a non-null string finish_reason chunk is terminal (some
-    // gateways omit [DONE]); a null finish_reason or a bare reasoning/content
-    // delta is NOT — a connection drop after one of those is a StreamDropped, not
-    // a clean end.
-    try std.testing.expect(!isStreamEnd(a, Kind.openai, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}"));
-    try std.testing.expect(!isStreamEnd(a, Kind.openai, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}"));
+    try stream_tests.streamEnd(isStreamEnd);
 }
 
 test "openaiComplete (#133): finish_reason marks completion, deltas do not" {
-    // non-null finish_reason => complete (even without [DONE]).
-    try std.testing.expect(openaiComplete("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}"));
-    try std.testing.expect(openaiComplete("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}"));
-    // mid-stream: null finish_reason or a bare reasoning delta is NOT complete —
-    // a connection drop after one of these is the #133 StreamDropped case.
-    try std.testing.expect(!openaiComplete("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}"));
-    try std.testing.expect(!openaiComplete("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}"));
-    // the substring must not false-match a finish_reason that appears in escaped content.
-    try std.testing.expect(!openaiComplete("data: {\"choices\":[{\"delta\":{\"content\":\"\\\"finish_reason\\\":\\\"x\"}}]}"));
+    try stream_tests.openaiCompletion(openaiComplete);
 }
 
 /// Print the user-visible text from one SSE line, if any. Best-effort:

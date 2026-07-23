@@ -15,10 +15,12 @@ const style = &ansi.style;
 
 const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
+const learn_store = @import("learn_store.zig");
 
 const root = @import("main.zig");
 const trace = @import("trace.zig");
 const telemetry_mod = @import("telemetry.zig");
+const learning_privacy = @import("learning_privacy.zig");
 const Telemetry = telemetry_mod.Telemetry;
 const http = @import("http.zig");
 
@@ -36,6 +38,7 @@ pub const AgentType = struct {
     prompt: []const u8,
     score: ?f64 = null, // written by the evolution driver, shown in /agents
     builtin: bool = false,
+    learned: bool = false,
 };
 
 /// Preloaded niches: deliberately orthogonal *behavioral* dimensions (what
@@ -91,6 +94,26 @@ pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const Agent
         if (personal.len > 0) loadAgentDir(io, arena, &list, personal);
     }
     loadAgentDir(io, arena, &list, agents_dir);
+    // A verified learning ref is the highest-precedence project policy. The
+    // loader fails closed: incomplete/corrupt learning state contributes no
+    // agent and can be diagnosed with `graff learn verify`.
+    if (learn_store.loadActiveAgent(io, arena)) |learned| {
+        const at: AgentType = .{
+            .name = learned.name,
+            .desc = learned.description,
+            .prompt = learned.prompt,
+            .learned = true,
+        };
+        var replaced = false;
+        for (list.items) |*existing| {
+            if (std.mem.eql(u8, existing.name, at.name)) {
+                existing.* = at;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) list.append(arena, at) catch {};
+    }
     return list.items;
 }
 
@@ -256,6 +279,18 @@ pub fn agentTypePrompt(name: []const u8) ?[]const u8 {
     return null;
 }
 
+fn applyRemoteElite(arena: Allocator, types: []AgentType, name: []const u8, prompt: []const u8) bool {
+    for (types) |*agent_type| {
+        if (!std.mem.eql(u8, agent_type.name, name)) continue;
+        // A verified local learning ref is an activation authority; best-effort
+        // remote fleet data is not. Preserve unrelated remote elite updates.
+        if (agent_type.learned) return false;
+        agent_type.prompt = arena.dupe(u8, prompt) catch return false;
+        return true;
+    }
+    return false;
+}
+
 /// Distribute (docs/hyperagents.md §9.E): fetch this tier's live fleet champions
 /// from <base>/v1/elites, emit a fleet:elite_pull signal, and override matching
 /// niches with the champion prompt so the baked builtins defer to the fleet
@@ -263,7 +298,7 @@ pub fn agentTypePrompt(name: []const u8) ?[]const u8 {
 /// returns `types` unchanged. `endpoint` is the OTLP base (…/v1/logs); the elites
 /// live beside it at /v1/elites.
 pub fn pullElites(io: Io, arena: Allocator, client: *std.http.Client, telem: ?*Telemetry, endpoint: []const u8, provider_class: []const u8, eval_set_hash: []const u8, types: []const AgentType) []const AgentType {
-    if (endpoint.len == 0 or !root.g_fleet) return types;
+    if (endpoint.len == 0 or !root.g_fleet or !learning_privacy.allowsAggregate()) return types;
     http.waitForClientReady(io);
     var base = std.mem.trimEnd(u8, endpoint, "/");
     if (std.mem.endsWith(u8, base, "/v1/logs")) base = base[0 .. base.len - "/v1/logs".len];
@@ -314,10 +349,7 @@ pub fn pullElites(io: Io, arena: Allocator, client: *std.http.Client, telem: ?*T
         const nm = if (el.object.get("niche")) |x| (if (x == .string) x.string else "") else "";
         const pt = if (el.object.get("prompt_text")) |x| (if (x == .string) x.string else "") else "";
         if (nm.len == 0 or pt.len == 0) continue;
-        for (out.items) |*t| if (std.mem.eql(u8, t.name, nm)) {
-            t.prompt = arena.dupe(u8, pt) catch t.prompt;
-            break;
-        };
+        _ = applyRemoteElite(arena, out.items, nm, pt);
     }
     if (telem) |tl| tl.fleetEvent("elite_pull", "", "", "", provider_class, eval_set_hash, n, "");
     return out.items;
@@ -364,6 +396,28 @@ pub fn resolveOverride(obj: std.json.ObjectMap) ?[]const u8 {
     return null;
 }
 
+/// The private prompt content, if this spawn would use an inline, personal,
+/// project, or locally learned persona. Builtin/remote fleet personas are
+/// already public artifacts and do not need a new publication decision.
+pub fn privateOverride(obj: std.json.ObjectMap) ?[]const u8 {
+    if (obj.get("system_prompt")) |v| {
+        if (v == .string and v.string.len > 0) return v.string;
+    }
+    if (obj.get("agent")) |v| if (v == .string) {
+        for (g_agent_types) |agent_type| {
+            if (std.mem.eql(u8, agent_type.name, v.string) and !agent_type.builtin) return agent_type.prompt;
+        }
+    };
+    return null;
+}
+
+pub fn promptIsPublic(prompt: []const u8) bool {
+    for (g_agent_types) |agent_type| {
+        if (agent_type.builtin and std.mem.eql(u8, agent_type.prompt, prompt)) return true;
+    }
+    return false;
+}
+
 /// The MAP-Elites niche name for a subagent/workflow input: the named agent
 /// type (agent: "<name>"), or "" for an inline system_prompt variant.
 pub fn resolveNiche(obj: std.json.ObjectMap) []const u8 {
@@ -387,4 +441,40 @@ test "resolveNiche: agent name is the fleet cell, inline variant is uncelled" {
     try std.testing.expectEqualStrings("", resolveNiche(obj(a, "{\"system_prompt\":\"be terse\"}")));
     // A plain task is uncelled too.
     try std.testing.expectEqualStrings("", resolveNiche(obj(a, "{\"description\":\"x\",\"prompt\":\"y\"}")));
+}
+
+test "privateOverride distinguishes authored content from builtin personas" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const saved = g_agent_types;
+    defer g_agent_types = saved;
+    const types = [_]AgentType{
+        .{ .name = "public", .desc = "public", .prompt = "public prompt", .builtin = true },
+        .{ .name = "private", .desc = "private", .prompt = "private prompt" },
+    };
+    g_agent_types = &types;
+    const public_obj = (try std.json.parseFromSliceLeaky(Value, arena, "{\"agent\":\"public\"}", .{})).object;
+    const private_obj = (try std.json.parseFromSliceLeaky(Value, arena, "{\"agent\":\"private\"}", .{})).object;
+    const inline_obj = (try std.json.parseFromSliceLeaky(Value, arena, "{\"system_prompt\":\"inline\"}", .{})).object;
+    try std.testing.expect(privateOverride(public_obj) == null);
+    try std.testing.expectEqualStrings("private prompt", privateOverride(private_obj).?);
+    try std.testing.expectEqualStrings("inline", privateOverride(inline_obj).?);
+    try std.testing.expect(promptIsPublic("public prompt"));
+    try std.testing.expect(!promptIsPublic("private prompt"));
+}
+
+test "remote elites cannot replace a verified learned policy" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var types = [_]AgentType{
+        .{ .name = "learned", .desc = "local", .prompt = "verified-local", .learned = true },
+        .{ .name = "reviewer", .desc = "remote-eligible", .prompt = "old" },
+    };
+
+    try std.testing.expect(!applyRemoteElite(arena, &types, "learned", "untrusted-remote"));
+    try std.testing.expectEqualStrings("verified-local", types[0].prompt);
+    try std.testing.expect(applyRemoteElite(arena, &types, "reviewer", "new-remote"));
+    try std.testing.expectEqualStrings("new-remote", types[1].prompt);
 }

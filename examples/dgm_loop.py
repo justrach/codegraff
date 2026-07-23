@@ -216,7 +216,7 @@ def main():
               f"child={prompt_fingerprint(child)} score={s:.2f}"
               f"{' [PASSING]' if s >= 0.9 else ' [failing]'}")
     h.close()
-    print(f"archive: {ARCHIVE} — rerun to keep evolving; /trajectory to inspect")
+    print(f"archive: {ARCHIVE_DIR} — rerun to keep evolving; /trajectory to inspect")
 
 
 if __name__ == "__main__":

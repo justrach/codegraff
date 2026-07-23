@@ -1,8 +1,11 @@
-//! Session tracing + DGM trajectory archive. Every invocation writes its own
-//! `.graff/traces/<run-id>.jsonl` and `.graff/trajectories/<run-id>.jsonl`, so
-//! independent graff processes never truncate or seek/write through the same
-//! file. Every record is stamped with the run id, process id, and runtime
-//! session id before the event's own fields.
+//! Operational tracing, per-run behavioral traces, and the DGM trajectory
+//! archive. Every invocation writes its own `.graff/traces/<run-id>.jsonl`
+//! (performance telemetry) and `.graff/trajectories/<run-id>.jsonl` (DGM
+//! archive nodes plus the experimental behavioral lifecycle/belief stream),
+//! so independent graff processes never truncate or seek/write through the
+//! same file. Every record is stamped with the run id, process id, and
+//! runtime session id before the event's own fields. Also owns the per-agent
+//! ToolSink summary.
 
 const std = @import("std");
 const Io = std.Io;
@@ -11,6 +14,7 @@ const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 
 const telemetry = @import("telemetry.zig");
+const behavior_upload = @import("behavior_upload.zig");
 
 pub const traces_dir = ".graff/traces";
 pub const trajectories_dir = ".graff/trajectories";
@@ -107,12 +111,20 @@ pub const Tracer = struct {
     identity: Identity = .{},
     path: []const u8 = "",
     enabled: bool = true,
+    // Assigned once before the first root turn. Keeping this on the stable
+    // shared tracer avoids a process-global pointer race on worker callbacks.
+    behavior: ?*BehaviorTrace = null,
 
-    pub fn api(self: *Tracer, label: []const u8, model: []const u8, ms: i64, req_bytes: usize, resp_bytes: usize, context_tokens: u64, cache_read: u64, is_error: bool) void {
+    pub fn api(self: *Tracer, label: []const u8, from_subagent: bool, model: []const u8, ms: i64, req_bytes: usize, resp_bytes: usize, context_tokens: u64, cache_read: u64, is_error: bool) void {
         if (telemetry.g_telem) |t| t.countApi(model, is_error);
+        const behavior_turn = if (self.behavior) |behavior|
+            behavior.recordApiMetric(from_subagent, ms, req_bytes, resp_bytes, context_tokens, cache_read, is_error)
+        else
+            0;
         self.write(.{
             .t = self.elapsedMs(),
             .ev = "api",
+            .turn = behavior_turn,
             .agent = label,
             .model = model,
             .ms = ms,
@@ -126,15 +138,56 @@ pub const Tracer = struct {
 
     pub fn tool(self: *Tracer, name: []const u8, ms: i64, is_error: bool, result_bytes: usize, from_sub: bool) void {
         if (telemetry.g_telem) |t| t.countTool(is_error);
+        const behavior_turn = if (self.behavior) |behavior|
+            behavior.recordToolMetric(name, from_sub, ms, result_bytes, is_error)
+        else
+            0;
         self.write(.{
             .t = self.elapsedMs(),
             .ev = "tool",
+            .turn = behavior_turn,
             .name = name,
             .ms = ms,
             .result_bytes = result_bytes,
             .is_error = is_error,
             .from_sub = from_sub,
         });
+    }
+
+    /// Reserve a call_id and emit `tool_started` (#255, opt-in rich capture
+    /// only — behavior.toolStarted no-ops when rich is off). 0 means there is
+    /// no behavioral sink to attribute against; toolFinished/actionTaken
+    /// below treat that the same way turn 0 means "unattributed" elsewhere
+    /// in this file. `args` is serialized into a bounded scratch buffer —
+    /// BehaviorTrace's own max_tool_args_bytes cap does the real truncation,
+    /// this just keeps an oversized adapter payload off the stack.
+    pub fn toolStarted(self: *Tracer, name: []const u8, args: Value) u64 {
+        const behavior = self.behavior orelse return 0;
+        const call_id = behavior.reserveCallId();
+        var buf: [8192]u8 = undefined;
+        var w: Io.Writer = .fixed(&buf);
+        var s: std.json.Stringify = .{ .writer = &w };
+        s.write(args) catch {}; // a partial/overflowed buffer is fine: BehaviorTrace caps and truncates
+        behavior.toolStarted(behavior.currentTurn(), call_id, name, w.buffered());
+        return call_id;
+    }
+
+    /// Emit `tool_finished`, then `action_taken` for state-mutating tool
+    /// classes (#255). Both are no-ops when call_id is 0 (toolStarted found
+    /// no behavioral sink) or rich capture is off.
+    pub fn toolFinished(self: *Tracer, name: []const u8, call_id: u64, ms: i64, is_error: bool, result_bytes: usize) void {
+        if (call_id == 0) return;
+        const behavior = self.behavior orelse return;
+        const turn = behavior.currentTurn();
+        behavior.toolFinished(turn, call_id, name, ms, is_error, result_bytes);
+        behavior.actionTaken(turn, call_id, name, is_error);
+    }
+
+    /// Emit `text_delta` for one completed assistant text segment (#255,
+    /// opt-in rich capture only).
+    pub fn textDelta(self: *Tracer, text: []const u8) void {
+        const behavior = self.behavior orelse return;
+        behavior.textDelta(behavior.currentTurn(), text);
     }
 
     pub fn note(self: *Tracer, kind: []const u8, detail: []const u8) void {
@@ -164,6 +217,18 @@ pub const Tracer = struct {
         return self.enabled;
     }
 };
+
+// ── Behavioral trace (one experimental event file per run) ────────────────
+// Implementation lives in behavior_trace.zig (600-line goal); re-exported so
+// existing trace.X call sites are unchanged.
+
+const behavior_trace = @import("behavior_trace.zig");
+pub const behavior_dir = behavior_trace.behavior_dir;
+pub const behavior_schema = behavior_trace.behavior_schema;
+pub const BehaviorKind = behavior_trace.BehaviorKind;
+pub const BehaviorRunStatus = behavior_trace.BehaviorRunStatus;
+pub const BehaviorRunMetadata = behavior_trace.BehaviorRunMetadata;
+pub const BehaviorTrace = behavior_trace.BehaviorTrace;
 
 // ── Trajectory (DGM-style archive tree) ────────────────────────────────────
 
@@ -294,6 +359,22 @@ pub fn readTrajectoryArchive(io: Io, arena: Allocator, max_bytes: usize) []const
     return aw.toOwnedSlice() catch "";
 }
 
+/// Begin one behavioral root turn at the common provider boundary, before any
+/// model or tool work. Interactive mode may already have reserved a legacy DGM
+/// node; one-shot and zigzag REPL modes deliberately leave that ledger unchanged.
+pub fn beginRootTurn(tracer: ?*Tracer) u64 {
+    const trajectory_node = if (g_traj) |tj| tj.currentTurn() else 0;
+    const behavior = if (tracer) |tr| tr.behavior else null;
+    return if (behavior) |bt| bt.beginTurn(trajectory_node) else 0;
+}
+
+/// End only the matching root-turn scope. Keeping this at the same provider
+/// boundary prevents later administrative requests from inheriting its ID.
+pub fn endRootTurn(tracer: ?*Tracer, turn: u64) void {
+    const behavior = if (tracer) |tr| tr.behavior else null;
+    if (behavior) |bt| bt.endTurn(turn);
+}
+
 /// Per-agent record of external tool calls (name + error flag, in call
 /// order): the process signal behind "which tool combinations work" —
 /// rendered into trajectory nodes and OTLP run events, joinable to scores
@@ -344,6 +425,7 @@ pub const ToolSink = struct {
         self.entries.deinit(gpa);
     }
 };
+
 test "writeJsonLine: one complete newline-terminated JSON record per call" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();

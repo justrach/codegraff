@@ -24,6 +24,7 @@ const textMessage = messages_mod.textMessage;
 const ansi = @import("ansi.zig");
 const fallback_config = @import("fallback_config.zig");
 const util = @import("util.zig");
+const trace = @import("trace.zig");
 
 fn localProviderUrl(url: []const u8) bool {
     return std.mem.startsWith(u8, url, "http://127.0.0.1") or std.mem.startsWith(u8, url, "http://localhost") or std.mem.startsWith(u8, url, "http://[::1]");
@@ -199,6 +200,8 @@ pub fn failoverEligible(detail: []const u8) bool {
 /// fallback becomes active for this session but does not replace the saved
 /// model preference.
 pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer) anyerror![]const u8 {
+    const behavior_turn = trace.beginRootTurn(root.tracer);
+    defer trace.endRootTurn(root.tracer, behavior_turn);
     if (root.fallback_blocked) return error.FallbackConsentRequired;
     var attempted: [provider_specs.len][]const u8 = undefined;
     var attempted_len: usize = 1;
@@ -206,7 +209,13 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
     while (true) {
         root.last_api_error = null;
         const result = root.runTurn();
-        if (result) |text| return text else |err| {
+        if (result) |text| {
+            // #255: no clean per-segment choke point exists across the
+            // provider streaming paths, so the root turn's final text is
+            // recorded once here (opt-in rich capture only; no-op otherwise).
+            if (root.tracer) |tr| tr.textDelta(text);
+            return text;
+        } else |err| {
             if (err != error.ApiError or root.partial_text.items.len != 0 or root.tool_calls_this_turn != 0)
                 return err;
             const detail = root.last_api_error orelse return err;
@@ -377,6 +386,10 @@ pub fn switchProvider(root: *Agent, arena: Allocator, p: Provider, out: *Io.Writ
 }
 
 // Tests moved from main.zig alongside the functions they cover (#123 split).
+
+test {
+    _ = @import("providers_behavior_tests.zig");
+}
 
 test "failoverEligible: accepts unavailable credentials/models, rejects transient or prompt errors" {
     try std.testing.expect(failoverEligible("codex api error: Unauthorized"));

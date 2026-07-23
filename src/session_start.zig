@@ -7,9 +7,10 @@
 //! registry connect (consent prompt + companion auto-activation), and the
 //! `graff repl`/one-shot-prompt early-exit paths.
 //!
-//! Same dangling-pointer discipline as startup.zig: `openTraceFile`/
-//! `openTrajFile` return a plain (non-self-referential) File.Writer by
-//! value — main() assigns it to its OWN stable local, and only THEN takes
+//! Same dangling-pointer discipline as startup.zig: `openTraceFile`,
+//! `openBehaviorFile`, and `openTrajFile` return a plain
+//! (non-self-referential) File.Writer by value — main() assigns it to its OWN
+//! stable local, and only THEN takes
 //! `&writer.interface` for Tracer/Trajectory's `.out` pointer, so nothing
 //! points at a soon-to-be-freed stack frame. `runReplCommand`/
 //! `runOneshotPrompt` take `root: *main_mod.Agent` — by this point in
@@ -165,8 +166,9 @@ pub fn setupWorktreeAndBanner(
     }
 }
 
-/// A best-effort run-local JSONL file: the opened file handle (null on a
-/// failed open — tracing/trajectory just stays off) plus the File.Writer. The caller
+/// A best-effort log-file result shared by operational traces, behavioral
+/// traces, and the legacy trajectory archive: the opened file handle (null on
+/// a failed open) plus the File.Writer wrapping it. The caller
 /// owns `buf`'s storage (a stack array in main()) and must keep it alive as
 /// long as the returned writer is used; the writer itself is safe to copy by
 /// value (see startup.zig's header) since nothing takes `&writer.interface`
@@ -190,6 +192,111 @@ fn openRunFile(io: Io, dir_path: []const u8, path: []const u8, buf: []u8) FileWr
 /// Opens `.graff/traces/<run-id>.jsonl` exclusively.
 pub fn openTraceFile(io: Io, path: []const u8, buf: []u8) FileWriterOpen {
     return openRunFile(io, trace.traces_dir, path, buf);
+}
+
+fn validBehaviorDirComponent(component: []const u8) bool {
+    if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return false;
+    for (component) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '_' or c == '-')) return false;
+    }
+    return true;
+}
+
+/// Opens one exclusive behavioral trace file. Every directory component is
+/// created and reopened relative to a verified no-follow parent handle, so a
+/// workspace symlink cannot redirect plaintext traces outside `base`. The
+/// filename itself comes from a validated hex run ID. POSIX directories use
+/// 0700 and files request a maximum mode of 0600 because task adapters may
+/// deliberately record sensitive state.
+pub fn openBehaviorFile(io: Io, base: Io.Dir, dir: []const u8, run_id: []const u8, buf: []u8) FileWriterOpen {
+    if (run_id.len == 0 or run_id.len > 64) return .{ .file = null, .writer = undefined };
+    for (run_id) |c| if (!std.ascii.isHex(c)) return .{ .file = null, .writer = undefined };
+
+    const dir_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700);
+    var current = base;
+    var current_owned = false;
+    defer if (current_owned) current.close(io);
+    var components = std.mem.splitScalar(u8, dir, '/');
+    var saw_component = false;
+    while (components.next()) |component| {
+        if (!validBehaviorDirComponent(component)) return .{ .file = null, .writer = undefined };
+        saw_component = true;
+        current.createDir(io, component, dir_permissions) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return .{ .file = null, .writer = undefined },
+        };
+        const next = current.openDir(io, component, .{ .iterate = true, .follow_symlinks = false }) catch return .{ .file = null, .writer = undefined };
+        if (current_owned) current.close(io);
+        current = next;
+        current_owned = true;
+    }
+    if (!saw_component) return .{ .file = null, .writer = undefined };
+    if (builtin.os.tag != .windows) current.setPermissions(io, dir_permissions) catch return .{ .file = null, .writer = undefined };
+
+    var name_buf: [72]u8 = undefined;
+    const file_name = std.fmt.bufPrint(&name_buf, "{s}.jsonl", .{run_id}) catch return .{ .file = null, .writer = undefined };
+    const file_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
+    const file: ?Io.File = current.createFile(io, file_name, .{
+        .exclusive = true,
+        .permissions = file_permissions,
+    }) catch null;
+    const writer = if (file) |f| f.writer(io, buf) else undefined;
+    return .{ .file = file, .writer = writer };
+}
+
+test "openBehaviorFile: confines names, creates exclusively, and uses private POSIX modes" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var first_buf: [256]u8 = undefined;
+    const first = openBehaviorFile(io, tmp.dir, "trajectories", "0123456789abcdef", &first_buf);
+    try std.testing.expect(first.file != null);
+    defer if (first.file) |file| file.close(io);
+
+    var duplicate_buf: [256]u8 = undefined;
+    const duplicate = openBehaviorFile(io, tmp.dir, "trajectories", "0123456789abcdef", &duplicate_buf);
+    try std.testing.expect(duplicate.file == null);
+
+    var invalid_buf: [256]u8 = undefined;
+    const invalid = openBehaviorFile(io, tmp.dir, "trajectories", "../escape", &invalid_buf);
+    try std.testing.expect(invalid.file == null);
+
+    if (builtin.os.tag != .windows) {
+        const dir_stat = try tmp.dir.statFile(io, "trajectories", .{});
+        const file_stat = try tmp.dir.statFile(io, "trajectories/0123456789abcdef.jsonl", .{});
+        try std.testing.expectEqual(@as(u32, 0o700), @as(u32, @intCast(dir_stat.permissions.toMode() & 0o777)));
+        const file_mode: u32 = @intCast(file_stat.permissions.toMode() & 0o777);
+        try std.testing.expectEqual(@as(u32, 0), file_mode & 0o177);
+    }
+}
+
+test "openBehaviorFile: rejects symlinked path components" {
+    if (builtin.os.tag == .windows) return;
+    const io = std.testing.io;
+
+    {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try tmp.dir.createDir(io, "outside", .default_dir);
+        try tmp.dir.symLink(io, "outside", ".graff", .{ .is_directory = true });
+        var buf: [256]u8 = undefined;
+        const opened = openBehaviorFile(io, tmp.dir, ".graff/trajectories", "0123456789abcdef", &buf);
+        try std.testing.expect(opened.file == null);
+    }
+
+    {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try tmp.dir.createDir(io, ".graff", .default_dir);
+        try tmp.dir.createDir(io, "outside", .default_dir);
+        const graff = try tmp.dir.openDir(io, ".graff", .{});
+        defer graff.close(io);
+        try graff.symLink(io, "../outside", "trajectories", .{ .is_directory = true });
+        var buf: [256]u8 = undefined;
+        const opened = openBehaviorFile(io, tmp.dir, ".graff/trajectories", "fedcba9876543210", &buf);
+        try std.testing.expect(opened.file == null);
+    }
 }
 
 /// Opens `.graff/trajectories/<run-id>.jsonl` exclusively. The aggregate
@@ -231,6 +338,7 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
         .gpa = gpa,
         .client = client,
         .endpoint = telem_endpoint,
+        .auth_key = telemetry.validatedAuthKey(environ_map.get("GRAFF_TELEMETRY_KEY")),
         .install_id = if (telem_endpoint.len > 0) keys_cli.loadOrCreateId(io, gpa, telem_home, ".simple-harness-install-id") else @splat('0'),
         .client_name = environ_map.get("HARNESS_CLIENT") orelse "harness",
         .sdk_install_id = environ_map.get("HARNESS_SDK_INSTALL_ID") orelse "",
@@ -246,22 +354,22 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
 /// `/mcp add` still works. Moved out of main() (600-line goal). Returns the
 /// Registry by value — mcp.Registry holds no self-references (its storage
 /// is ArrayList/HashMap-backed), so returning it is safe.
-pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, use_color: bool, json_mode: bool) !mcp.Registry {
+pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, home: []const u8, use_color: bool, json_mode: bool) !mcp.Registry {
     const mcp_count = mcp_cli.countMcpServers(io, arena);
     var connect_mcp = flags.yolo_flag or mcp_count == 0;
     if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
-        try out.print("{s}⚠ this workspace's .mcp.json defines {d} MCP server(s) that run local commands. Connect them this session? [y/N] {s}", .{ ansi.style.bold, mcp_count, ansi.style.reset });
+        try out.print("{s}⚠ this workspace's .mcp.json defines {d} untrusted MCP server(s). They may run local commands or receive data over the network. Connect them this session? [y/N] {s}", .{ ansi.style.bold, mcp_count, ansi.style.reset });
         try out.flush();
         const ans = in.takeDelimiter('\n') catch null;
         connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
     }
-    return if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path) catch |err| inner: {
+    return if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, home) catch |err| inner: {
         try out.print("[mcp] init failed: {t} — continuing without MCP\n", .{err});
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;
-    }) orelse mcp.Registry.empty(gpa, io)) else outer: {
+    }) orelse mcp.Registry.emptyWithOAuthHome(gpa, io, home)) else outer: {
         if (mcp_count > 0) try out.print("{s}skipped {d} workspace MCP server(s) — /mcp trust to connect them now (or re-run with --yolo){s}\n", .{ ansi.style.dim, mcp_count, ansi.style.reset });
-        break :outer mcp.Registry.empty(gpa, io);
+        break :outer mcp.Registry.emptyWithOAuthHome(gpa, io, home);
     };
 }
 
@@ -274,7 +382,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
 /// Moved out of main() (600-line goal); mutates `registry` in place (it's
 /// already main()-owned and stable by the time this is called, so a pointer
 /// is all that's needed — no return-by-value trickery here).
-pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool) !void {
+pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, environ_map: anytype) !void {
     connect: {
         for (skills.companion_servers) |c| if (skills.mcpServerConnected(registry.tools, c.server)) break :connect;
         for (skills.companion_servers) |c| {
@@ -289,4 +397,35 @@ pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out:
             }
         }
     }
+
+    // Smolify schemas are bundled and its hosted transport stays offline until
+    // an approved call. Full/authenticated/write tools require explicit opt-in.
+    if (environ_map.get("GRAFF_NO_SMOLIFY") != null) return;
+    const access = environ_map.get("GRAFF_SMOLIFY_ACCESS") orelse "public";
+    const full_access = std.ascii.eqlIgnoreCase(access, "full") or std.ascii.eqlIgnoreCase(access, "authenticated");
+    const added = registry.connectSmolify(full_access) catch |err| {
+        if (!json_mode and flags.oneshot_prompt == null) {
+            try out.print("{s}[mcp:smolify] auto-connect failed ({t}) — continuing offline{s}\n", .{ ansi.style.dim, err, ansi.style.reset });
+            try out.flush();
+        }
+        return;
+    };
+    if (added > 0 and !json_mode and flags.oneshot_prompt == null)
+        try out.print("{s}[mcp:smolify] available on demand — {d} {s} tool(s){s}\n", .{ ansi.style.dim, added, if (full_access) "full-access" else "anonymous public-read", ansi.style.reset });
+}
+
+test "core Smolify registration is offline and lazy" {
+    var registry = mcp.Registry.empty(std.testing.allocator, std.testing.io);
+    defer registry.deinit();
+    try std.testing.expectEqual(@as(usize, 8), try registry.connectSmolify(false));
+    try std.testing.expectEqual(@as(usize, 1), registry.servers.len);
+    try std.testing.expectEqualStrings("on-demand", registry.servers[0].protocol_version);
+    try std.testing.expectEqual(@as(usize, 8), registry.tools.len);
+    try std.testing.expect(registry.servers[0].transport.http.oauth_home == null);
+    try std.testing.expectEqual(@as(usize, 0), try registry.connectSmolify(false));
+
+    var full = mcp.Registry.emptyWithOAuthHome(std.testing.allocator, std.testing.io, "/not-read-during-registration");
+    defer full.deinit();
+    try std.testing.expectEqual(@as(usize, 13), try full.connectSmolify(true));
+    try std.testing.expectEqualStrings("/not-read-during-registration", full.servers[0].transport.http.oauth_home.?);
 }

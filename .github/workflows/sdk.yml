@@ -15,10 +15,10 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # PyPI first: if its trusted publisher isn't live, npm won't have shipped.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Build + publish codegraff (PyPI, OIDC)
@@ -32,7 +32,7 @@ jobs:
           packages-dir: sdk/py/dist
           skip-existing: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"

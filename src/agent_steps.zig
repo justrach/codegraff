@@ -19,6 +19,7 @@ const ToolCall = tools_mod.ToolCall;
 
 const messages_mod = @import("messages.zig");
 const util = @import("util.zig");
+const eval_control = @import("agent_eval_control.zig");
 const toolResultMessage = messages_mod.toolResultMessage;
 
 fn surfaceUnstreamedText(self: *Agent, text: []const u8) !void {
@@ -92,6 +93,7 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
             const fco = try toolResultMessage(self.arena, .responses, call.id, r.text, r.is_error);
             try self.messages.append(fco);
         }
+        if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) return eval_control.verifier_hard_stop;
         if (self.completed) |result| return result;
         return null;
     }
@@ -147,6 +149,7 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         try user_msg.put(self.arena, "content", .{ .array = blocks });
         try self.messages.append(.{ .object = user_msg });
 
+        if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) return eval_control.verifier_hard_stop;
         if (self.completed) |result| return result;
         return null; // loop again
     }
@@ -201,6 +204,7 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
             const tool_msg = try toolResultMessage(self.arena, .openai, call.id, r.text, r.is_error);
             try self.messages.append(tool_msg);
         }
+        if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) return eval_control.verifier_hard_stop;
         if (self.completed) |result| return result;
         return null;
     }

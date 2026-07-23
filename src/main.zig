@@ -12,7 +12,7 @@ const Io = std.Io;
 /// rescan+swap+deinit the bundle, a handshake reading it mid-swap fails instantly
 /// with error.TlsInitializationFailed (ms=0, resp_bytes=0 — see #131). Warming it
 /// here sets client.now, so every later connect skips the rescan entirely.
-fn prewarmCaBundle(client: *std.http.Client, gpa: std.mem.Allocator, io: Io) void {
+pub fn prewarmCaBundle(client: *std.http.Client, gpa: std.mem.Allocator, io: Io) void {
     const now = Io.Clock.real.now(io);
     client.ca_bundle.rescan(gpa, io, now) catch return;
     client.now = now;
@@ -69,6 +69,9 @@ const pricing = @import("pricing.zig"); // model pricing/catalog + session cost 
 const models_cache = @import("models_cache.zig"); // graff models [refresh]: models.dev metadata cache + runtime overlay
 const command_catalog = @import("command_catalog.zig");
 const util = @import("util.zig"); // shared JSON ObjectMap getters (strFieldObj/intFieldObj)
+const learn_store = @import("learn_store.zig");
+const learn_eval = @import("learn_eval.zig");
+const learn_cli = @import("learn_cli.zig");
 test {
     // build.zig's unit_tests root is main.zig only — reference every split-out module so their test blocks keep running.
     _ = pricing;
@@ -76,6 +79,9 @@ test {
     _ = ansi;
     _ = serve;
     _ = util;
+    _ = learn_store;
+    _ = learn_eval;
+    _ = learn_cli;
     _ = oauth;
     _ = anim;
     _ = approvals_mod;
@@ -138,24 +144,29 @@ const schema = @import("schema.zig");
 // The provider/keys core (ProviderSpec/provider_specs, Provider, Keys) lives in provider.zig; provider_specs/Keys stay local aliases for main()'s credential setup and tests.
 const provider_mod = @import("provider.zig");
 const provider_specs = provider_mod.provider_specs;
-const Keys = provider_mod.Keys;
+pub const Keys = provider_mod.Keys;
 // Approvals (command/tool approval gate) + confinedPath/noSymlinkEscape live in approvals.zig; main() constructs one directly for the session.
 const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
-// Run-scoped session tracing + DGM trajectory files live in trace.zig.
+// Operational tracing, per-run behavioral traces, and run-scoped DGM
+// trajectory files live in trace.zig.
 const trace = @import("trace.zig");
 const Tracer = trace.Tracer;
+const BehaviorTrace = trace.BehaviorTrace;
+const behavior_trace = @import("behavior_trace.zig");
+const behavior_upload = @import("behavior_upload.zig");
+const learning_privacy = @import("learning_privacy.zig");
 const Trajectory = trace.Trajectory;
-// Agent types / fleet (MAP-Elites niches): the AgentType registry, backgrounded elite pull, /agents promote, and niche/override resolvers live in fleet.zig.
+const behavior_dir = trace.behavior_dir;
+const trajectory_path = trace.trajectory_path;
+const trace_path = trace.trace_path;
+// Agent types / MAP-Elites fleet.
 const fleet = @import("fleet.zig");
 const joinElites = fleet.joinElites;
-// Prompt/provider-class fingerprinting + DGM score signing live in scoring.zig.
 const scoring = @import("scoring.zig");
-// Subagent cards (#51): the parallel-subagent launch/done cards + box helpers + the inspect-report writer live in cards.zig.
 const cards = @import("cards.zig");
-// Telemetry (OTEL): the Telemetry sink lives in telemetry.zig; the session-global pointer is reached telemetry.-qualified at call sites.
 const telemetry = @import("telemetry.zig");
-/// Federated-fleet contribution toggle (docs/hyperagents.md §9); on by default, GRAFF_FLEET=off or /fleet off disables propose/submit/elite_pull.
+/// Fleet master switch; learning privacy is the independent default-local egress gate.
 /// General usage telemetry is separate (GRAFF_NO_TELEMETRY).
 pub var g_fleet: bool = true;
 const unixMs = util.unixMs;
@@ -272,6 +283,7 @@ pub fn main(init: std.process.Init) !void {
     }
     // CLI flags: the Flags struct + parsing loop live in args.zig; downstream code reads flags.<name> in place of ~27 locals this block used to declare.
     const flags = try args.parse(init);
+    learning_privacy.init(flags.learning_privacy_flag, init.environ_map.get("GRAFF_LEARNING_PRIVACY"));
     var invocation_budget: run_budget_mod.RunBudget = .{ .max_model_calls = max_model_calls };
     boot.mark(init.io, "args");
     // GRAFF_CODEX_URL: override the codex responses endpoint (localhost mocks / integration tests). Parsed BEFORE subcommand dispatch and
@@ -288,6 +300,7 @@ pub fn main(init: std.process.Init) !void {
     boot.mark(io, "credentials/model");
     var keys = resolved_keys.keys;
     const default_provider = resolved_keys.default_provider;
+    const subagent_provider = startup.resolveSubagentProvider(keys, default_provider, flags.subagent_provider_flag orelse init.environ_map.get("GRAFF_SUBAGENT_PROVIDER"), flags.subagent_model_flag orelse init.environ_map.get("GRAFF_SUBAGENT_MODEL"), flags.allow_cross_provider_subagents_flag);
     const stale_saved_model = resolved_keys.stale_saved_model;
     const preferred_provider = resolved_keys.preferred_provider;
     const codex_account = resolved_keys.codex_account;
@@ -362,7 +375,6 @@ pub fn main(init: std.process.Init) !void {
 
     var telem = session_start.initTelemetry(io, gpa, &client, init.environ_map, flags, default_telemetry_endpoint);
     telemetry.g_telem = &telem;
-    // Fleet contribution opt-out, independent of telemetry: GRAFF_FLEET=off|0|false|no.
     if (init.environ_map.get("GRAFF_FLEET")) |fv| {
         g_fleet = !(std.ascii.eqlIgnoreCase(fv, "off") or std.mem.eql(u8, fv, "0") or std.ascii.eqlIgnoreCase(fv, "false") or std.ascii.eqlIgnoreCase(fv, "no"));
     }
@@ -375,7 +387,8 @@ pub fn main(init: std.process.Init) !void {
     // MCP servers from .mcp.json. SECURITY: a workspace .mcp.json launches arbitrary local commands, so opening an untrusted repo could run them —
     // auto-connect only with --yolo (trusted) or explicit per-session consent; otherwise start with an empty (but live) registry so `/mcp add`
     // still works.
-    var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, use_color, json_mode);
+    const mcp_home = homeEnv(init.environ_map) orelse "";
+    var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, mcp_home, use_color, json_mode);
     boot.mark(io, "MCP registry");
     defer registry_storage.deinit();
     const registry: ?*mcp.Registry = &registry_storage;
@@ -392,7 +405,7 @@ pub fn main(init: std.process.Init) !void {
     };
     if (theme_setup.should_exit) return;
     boot.mark(io, "settings/theme");
-    try session_start.connectCompanion(io, &registry_storage, flags, out, json_mode);
+    try session_start.connectCompanion(io, &registry_storage, flags, out, json_mode, init.environ_map);
     const mcp_tools: []const mcp.Tool = registry_storage.tools;
     // If the metered companion connected, probe its license once so the note below can lean into paid tools (vs the conservative free-codedb note).
     if (mcpServerConnected(mcp_tools, "codedbpro")) g_codedbpro_licensed = probeCodedbproLicensed(gpa, io);
@@ -426,12 +439,14 @@ pub fn main(init: std.process.Init) !void {
 
     var snaps: Snapshots = .{ .gpa = gpa, .io = io };
     defer snaps.deinit();
-    // Background bash jobs die with the session: kill, await pumps, free.
-    defer jobsReap(gpa, io);
+    // Keep an early fallback for failures before behavioral tracing is set up.
+    // A later guarded defer moves normal reaping ahead of terminal upload.
+    var jobs_reaped = false;
+    defer if (!jobs_reaped) jobsReap(gpa, io);
     // Root Agent construction + post-construction config (session name, persisted thinking/goal/eval settings, session-start trace note) + the
     // backgrounded fleet-champion pull live in session_start.zig. `root`'s pointer fields (snapshots/client/tracer/approvals/registry) all reference
     // already-stable main()-owned storage passed in by address, so returning the constructed Agent by value here is safe.
-    var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, sys_strict, &snaps, flags, telem.endpoint);
+    var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, subagent_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, sys_strict, &snaps, flags, telem.endpoint);
     root.run_budget = &invocation_budget;
     root.model_catalog = resolved_keys.model_catalog;
     root.stored_keys_loaded = resolved_keys.stored_keys_loaded;
@@ -439,9 +454,46 @@ pub fn main(init: std.process.Init) !void {
     root.fallback_active = stale_saved_model != null;
     root.fallback_blocked = root.fallback_active and preferred_provider != null and !std.mem.eql(u8, preferred_provider.?, root.provider.id) and !fallback_config.contains(root.fallback_allow, root.provider.id);
     boot.mark(io, "root agent");
+
+    // Behavioral tracing starts only after the root Agent exists, so utility
+    // and self-test paths do not create zero-turn behavioral runs. The local
+    // JSONL and the privacy-projected upload are independent sinks; the Boot
+    // owns both, wired and torn down in LIFO order (behavior_trace.zig).
+    var behavior_buf: [8 * 1024]u8 = undefined;
+    var behavior_boot = behavior_trace.boot(io, gpa, &client, init.environ_map, telem.endpoint, telem.auth_key, telem.install_id, telem.client_name, harness_version, &behavior_buf);
+    behavior_boot.link(&tracer);
+    // A dead local sink must not be silent: the collision that disabled local
+    // capture in every session shipped invisibly because every failure path
+    // was a silent null (#246 review). stderr, so JSON/one-shot stdout stays
+    // protocol-clean.
+    if (behavior_boot.local_sink_failed)
+        std.debug.print("warning: behavioral trace file could not be created under {s}; local capture is off for this run\n", .{behavior_dir});
+    defer behavior_boot.finishAndClose(&tracer, .closed);
+    // Registered after the normal defer so error unwinding records `error`
+    // first; finish() is idempotent and keeps that status terminal.
+    errdefer behavior_boot.behavior.finish(.failed);
+
+    // LIFO teardown: joinElites, then background bash pumps, then emit/send
+    // run_finished, then close/deinit the two behavioral sinks. The earlier
+    // fallback remains for failures that occur before this defer is registered.
+    defer if (!jobs_reaped) {
+        jobsReap(gpa, io);
+        jobs_reaped = true;
+    };
     defer joinElites(io); // reap if the session quits before any turn joins it
 
     session_run.saveOrResumeSession(&root, &keys, arena, flags);
+    // Load restored configuration before run_started, but defer any model-backed
+    // cold-cache compaction until after lifecycle start.
+    try session_run.restoreResumedSession(arena, out, &root, &keys, flags, json_mode, g_cwd_display);
+    const behavior_prompt_sha = scoring.promptFingerprint(root.systemPrompt());
+    behavior_boot.behavior.startWithMetadata(harness_version, telem.start_unix_ms, .{
+        .provider = root.provider.id,
+        .model = root.provider.model,
+        .prompt_sha = &behavior_prompt_sha,
+        .effort = @tagName(root.reasoning),
+    });
+    session_run.compactResumedSession(&root);
 
     // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL agent loop — each prompt runs a full root turn (tools + MCP) via
     // replTurnCb, reusing the root agent's tool set + registry + system prompt. Self-contained — exits after.
@@ -468,7 +520,6 @@ pub fn main(init: std.process.Init) !void {
         root.tools_used.deinit(gpa);
     }
     const interactive = use_color and !json_mode; // stdout is a TTY → enable line editing
-    try session_run.restoreResumedSession(arena, out, &root, &keys, flags, json_mode, g_cwd_display);
 
     // The interactive-REPL / --json-protocol loop lives in mainloop.zig. main() keeps owning every piece of storage the loop touches (root, keys,
     // tracer/traj/telem via root, history, linebuf, stdin/stdout writers) — Ctx below only holds POINTERS into this stack frame, so nothing dangles
@@ -520,7 +571,7 @@ const serve = @import("serve.zig");
 pub const codegraff_device_base = "https://gateway.codegraff.com";
 // The Agent struct (fields + smallest methods) + TodoItem live in agent.zig, imported as agent_mod (not agent) since several functions here declare a local `var agent: Agent = ...` that would shadow a bare import.
 const agent_mod = @import("agent.zig");
-const Agent = agent_mod.Agent;
+pub const Agent = agent_mod.Agent;
 // Wire-format message construction lives in messages.zig, imported as messages_mod to avoid shadowing the `messages` params/fields.
 const messages_mod = @import("messages.zig");
 /// A base64-encoded image staged by `/image`, sent with the next user turn.
@@ -543,146 +594,7 @@ const workflow = @import("workflow.zig");
 const exec = @import("exec.zig");
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────
 
-test "incremental markdown streaming renders like renderMdLine" {
-    // style is the empty default in tests, so styled output == de-marked text.
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var a: Agent = .{
-        .gpa = std.testing.allocator,
-        .arena = std.testing.allocator,
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = &aw.writer,
-    };
-    defer a.md_buf.deinit(std.testing.allocator);
-    defer a.md_word.deinit(std.testing.allocator);
-    defer {
-        for (a.md_table.items) |r| std.testing.allocator.free(r);
-        a.md_table.deinit(std.testing.allocator);
-    }
-
-    // Prose is visible word-by-word, before any newline arrives (the
-    // word in flight is held for wrap decisions).
-    a.streamMarkdown("Hey! I'm her");
-    try std.testing.expectEqualStrings("Hey! I'm ", aw.writer.buffered());
-    a.streamMarkdown("e and ready\n");
-    try std.testing.expectEqualStrings("Hey! I'm here and ready\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Bullets stream too: marker styled up front, text word-by-word, and a
-    // split **bold** span styles eagerly (markers dropped as in renderInline).
-    a.streamMarkdown("- has **bo");
-    try std.testing.expectEqualStrings("• has ", aw.writer.buffered());
-    a.streamMarkdown("ld** spans\n");
-    try std.testing.expectEqualStrings("• has bold spans\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Numbered/task/nested items, headings, quotes, and inline code.
-    a.streamMarkdown("12) **Immediately:** point\n## Title\nuse `zig build` here\n- [ ] ship it\n  - nested\n> warning\n");
-    try std.testing.expectEqualStrings("12) Immediately: point\n◆ Title\nuse zig build here\n☐ ship it\n  ◦ nested\n│ warning\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Fences: open/close render as labeled dim rules, body streams unprefixed.
-    a.streamMarkdown("```zig\nconst x = 1;\n```\nafter\n");
-    try std.testing.expectEqualStrings("── zig " ++ util.repeatBytes("─", 33) ++ "\nconst x = 1;\n" ++ util.repeatBytes("─", 40) ++ "\nafter\n", aw.writer.buffered());
-    try std.testing.expect(!a.md_fence);
-    aw.clearRetainingCapacity();
-
-    // Horizontal rule renders at line end.
-    a.streamMarkdown("---\n");
-    try std.testing.expectEqualStrings("────────────\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Tables buffer until the first non-row line, then render aligned:
-    // column widths from the widest cell, header above a ─┼─ rule.
-    a.streamMarkdown("| Item | Desc |\n| --- | --- |\n| 1 | Inspect files |\n");
-    try std.testing.expectEqualStrings("", aw.writer.buffered()); // still buffering
-    a.streamMarkdown("| 22 | Edit |\ndone\n");
-    try std.testing.expectEqualStrings("Item │ Desc\n" ++
-        "─────┼──────────────\n" ++
-        "1    │ Inspect files\n" ++
-        "22   │ Edit\n" ++
-        "done\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // A table pending at stream end flushes from the tail path.
-    a.streamMarkdown("| x | y |");
-    a.flushStreamTail();
-    try std.testing.expectEqualStrings("x │ y\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Stream tail: a partial prose line flushes whatever is pending.
-    a.streamMarkdown("tail without newline");
-    a.flushStreamTail();
-    try std.testing.expectEqualStrings("tail without newline", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Long lines wrap at the terminal edge on word boundaries; bullet
-    // continuations align under the text (hanging indent).
-    a.md_width = 12; // pinned for the line — mdFinishLine re-reads after
-    a.streamMarkdown("- alpha beta gamma\n");
-    try std.testing.expectEqualStrings("• alpha beta\n  gamma\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // Plain prose wraps at column 0; the break replaces the joining space.
-    a.md_width = 10;
-    a.streamMarkdown("word1 word2 word3\n");
-    try std.testing.expectEqualStrings("word1 \nword2 \nword3\n", aw.writer.buffered());
-    aw.clearRetainingCapacity();
-
-    // A word too wide for any line is not torn — the terminal wraps it.
-    a.md_width = 6;
-    a.streamMarkdown("abc defghijklm\n");
-    try std.testing.expectEqualStrings("abc defghijklm\n", aw.writer.buffered());
-}
-
 test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
-}
-
-test "/bash slash command runs the bash tool and frees its gpa-allocated result" {
-    // Regression guard for PR #38: the /bash slash handler routes through execTool, whose result.text is gpa-owned (NOT arena-owned — every other
-    // caller frees it). Forgetting `defer root.gpa.free(result.text)` in handleCommand leaks on every /bash call; std.testing.allocator catches it here.
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    prewarmCaBundle(&client, gpa, io);
-
-    var root: Agent = .{
-        .gpa = gpa,
-        .arena = arena,
-        .io = io,
-        .client = &client,
-        .provider = .{
-            .id = "test",
-            .kind = .openai,
-            .auth = .bearer,
-            .url = "",
-            .api_key = "",
-            .model = "m",
-            .context = 100_000,
-        },
-        .messages = std.json.Array.init(arena),
-        .sub = false,
-        .label = "test",
-        .out = null,
-    };
-    var keys: Keys = .{ .values = @splat(null) };
-    var aw: Io.Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    defer root.tools_used.deinit(gpa);
-    try handleCommand(&root, &keys, arena, "/bash echo leak-guard-XYZ", &aw.writer);
-
-    const written = aw.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, written, "leak-guard-XYZ") != null);
+    _ = @import("main_test.zig");
 }

@@ -14,7 +14,7 @@ import urllib.request
 from typing import Iterator, Optional
 
 MODELS = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.3", "grok-build", "k3", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mlx-community/Qwen3.6-27B-OptiQ-4bit"]
-TOOLS = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow"]
+TOOLS = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow", "learn_candidate"]
 PROVIDERS = ["anthropic", "codegraff", "deepseek", "openai", "minimax", "xiaomi", "kimi", "moonshot", "xai", "zai", "fugu", "fireworks", "mlx", "lmstudio", "codex"]
 
 
@@ -97,18 +97,19 @@ def _report_error(kind: str, detail: str) -> None:
 
 
 def _fleet_signal(kind: str, attrs: Optional[dict] = None) -> None:
-    """Best-effort OTLP "fleet" log for the federated evolution loop (docs §9):
-    propose / submit / elite_pull signals, tagged by client so CLI/TS/Python
-    contributions stay distinguishable in /v1/stats. Same opt-out + endpoint as
-    _report_error. Fire-and-forget on a daemon thread; never raises."""
+    """Prompt-free SDK fleet signal; local is the fail-closed default."""
     if os.environ.get("GRAFF_NO_TELEMETRY"):
         return
+    privacy = os.environ.get("GRAFF_LEARNING_PRIVACY", "local")
+    if privacy not in ("aggregate", "templates", "examples"):
+        return
+    attrs = {k: v for k, v in (attrs or {}).items() if k != "prompt_text"}
     base = (os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
             or os.environ.get("GRAFF_OTEL_ENDPOINT")
             or _TELEMETRY_DEFAULT).rstrip("/")
     url = base if base.endswith("/v1/logs") else base + "/v1/logs"
     al = [{"key": "kind", "value": {"stringValue": kind}}]
-    for k, v in (attrs or {}).items():
+    for k, v in attrs.items():
         val = {"doubleValue": v} if isinstance(v, (int, float)) else {"stringValue": str(v)}
         al.append({"key": k, "value": val})
     payload = json.dumps({"resourceLogs": [{
@@ -343,8 +344,8 @@ class Harness:
         HMAC so a forged fitness row is detectable (see `verify_score`).
         `niche` (reviewer/researcher/implementer/skeptic, or a custom agent)
         files the score into that MAP-Elites cell so the fleet can promote a
-        champion for the role; with the full persona text the genome also rides
-        over on a `fleet:propose`.
+        champion for the role; full text produces only a prompt-free fingerprint
+        proposal until the SDK has an interactive review UI.
 
         Scale: the canonical wire scale is [0, 1]. Pass scale="unit" to
         assert `value` is already in [0, 1] (anything else is rejected), or
@@ -371,9 +372,7 @@ class Harness:
             req["niche"] = niche
         if scale:
             req["scale"] = scale
-        # Genome-send (docs §9.B): a cell only promotes when a score's prompt_sha
-        # joins a stored genome, so when we hold the full persona text + a niche,
-        # register it first (deduped by prompt_sha on the collector).
+        # The SDK emitter strips prompt_text until it has an interactive review UI.
         if niche and not re.fullmatch(r"[0-9a-f]{16}", prompt_or_sha):
             _fleet_signal("propose", {"niche": niche, "prompt_sha": sha,
                                       "parent_sha": req.get("parent_sha", ""),
@@ -397,10 +396,9 @@ class Harness:
         raise RuntimeError("harness closed before acking score")
 
     def pull_elites(self, provider_class: str, eval_set_hash: str = "") -> list:
-        """Pull the fleet's live champion personas for a model tier (docs §9
-        Step 2, GET /v1/elites). Emits a `fleet:elite_pull` signal and returns
-        the elites list (empty when none are promoted yet). Hits the telemetry
-        collector, not the harness subprocess."""
+        """Pull fleet champions; local mode returns without network access."""
+        if os.environ.get("GRAFF_LEARNING_PRIVACY", "local") not in ("aggregate", "templates", "examples"):
+            return []
         base = (os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
                 or os.environ.get("GRAFF_OTEL_ENDPOINT")
                 or _TELEMETRY_DEFAULT).rstrip("/")
@@ -561,7 +559,7 @@ class RemoteHarness:
               niche: str = "", scale: str = "") -> None:
         """Record an evaluation score in the server-side trajectory archive —
         same semantics (and provenance fields) as `Harness.score`, including
-        the `niche` MAP-Elites tag, genome-send, and the optional `scale`
+        prompt-free MAP-Elites lineage and the optional `scale`
         ("unit" | "percent") override of the harness's value-normalization
         heuristic."""
         sha = prompt_or_sha if re.fullmatch(r"[0-9a-f]{16}", prompt_or_sha) \
@@ -580,8 +578,7 @@ class RemoteHarness:
             req["niche"] = niche
         if scale:
             req["scale"] = scale
-        # Genome-send (docs §9.B): register the persona when we hold the full
-        # text + a niche so a promoted cell has a genome to serve.
+        # The SDK emitter strips prompt_text until it has an interactive review UI.
         if niche and not re.fullmatch(r"[0-9a-f]{16}", prompt_or_sha):
             _fleet_signal("propose", {"niche": niche, "prompt_sha": sha,
                                       "parent_sha": req.get("parent_sha", ""),

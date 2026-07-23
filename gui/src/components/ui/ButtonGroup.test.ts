@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buttonGroupVariants } from "./ButtonGroup";
+import { buttonGroupVariants } from "./buttonGroupVariants";
 
 // Regression guard for #74: a segmented group previously deleted adjacent
 // buttons' shared edge (border-l-0 / border-t-0), so those sides vanished. The

@@ -19,6 +19,7 @@ const agent_mod = @import("agent.zig");
 const util = @import("util.zig");
 const repl_glue = @import("repl_glue.zig");
 const Agent = agent_mod.Agent;
+const Provider = @import("provider.zig").Provider;
 
 const tools = @import("tools.zig");
 const ToolCtx = tools.ToolCtx;
@@ -31,6 +32,7 @@ const promptFingerprint = scoring.promptFingerprint;
 const providerClass = scoring.providerClass;
 const signScore = scoring.signScore;
 const fleet = @import("fleet.zig");
+const learning_privacy = @import("learning_privacy.zig");
 const agentTypePrompt = fleet.agentTypePrompt;
 const cards = @import("cards.zig");
 const trace = @import("trace.zig");
@@ -148,9 +150,23 @@ fn subagentFailure(gpa: Allocator, sub_id: []const u8, err: anyerror, detail: ?[
     return .{ .text = text, .is_error = true };
 }
 
+fn childProvider(root: Provider, pinned: ?Provider, allow_cross_provider: bool) Provider {
+    const child = pinned orelse return root;
+    return if (std.mem.eql(u8, child.id, root.id) or allow_cross_provider) child else root;
+}
+
+test "child model pin crosses the current root provider only with consent" {
+    const codex_root: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5.6-sol", .context = 272_000 };
+    const terra: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5.6-terra", .context = 272_000 };
+    const anthropic_root: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "", .model = "claude", .context = 200_000 };
+    try std.testing.expectEqualStrings("gpt-5.6-terra", childProvider(codex_root, terra, false).model);
+    try std.testing.expectEqualStrings("claude", childProvider(anthropic_root, terra, false).model);
+    try std.testing.expectEqualStrings("gpt-5.6-terra", childProvider(anthropic_root, terra, true).model);
+}
+
 /// Run one isolated subagent to completion: fresh arena, fresh history,
-/// same shared http client and provider. Runs entirely on this pool thread;
-/// its own tool calls fan out further via io.async. `sys_override` swaps the
+/// same shared http client and the configured child provider (or the root
+/// provider when no child model is pinned). `sys_override` swaps the
 /// lean default system prompt for a per-child variant (swarm prompt
 /// evolution); either way the run is recorded as a trajectory node under
 /// the turn that spawned it, with the prompt's fingerprint.
@@ -163,13 +179,14 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    const child_provider = childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
 
     var agent: Agent = .{
         .gpa = gpa,
         .arena = arena,
         .io = ctx.io,
         .client = ctx.client,
-        .provider = ctx.provider,
+        .provider = child_provider,
         .messages = std.json.Array.init(arena),
         .sub = true,
         .label = label,
@@ -188,6 +205,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);
     if (sys_override) |so| if (telemetry.g_telem) |t| {
+        if (fleet.promptIsPublic(so)) _ = learning_privacy.approveTemplate(ctx.io, so);
         t.countVariant();
         // fleet:propose (docs §9.B) — a niche's elite was mutated into a variant.
         const child_fp = promptFingerprint(so);
@@ -202,7 +220,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         // be dropped there anyway — and the fingerprint the scores reference
         // stays computed over the full text.
         if (so.len <= telemetry.Telemetry.max_propose_text)
-            t.fleetEvent("propose", niche, &child_fp, parent_sha, providerClass(ctx.provider.model), "", 0, so)
+            t.fleetEvent("propose", niche, &child_fp, parent_sha, providerClass(agent.provider.model), "", 0, so)
         else if (ctx.tracer) |tr| tr.note("fleet", "propose skipped: genome > 64KB");
     };
     // Stable id + sprite for this child's card and its inspectable detail file.
@@ -229,6 +247,8 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             .parent = tj.currentTurn(),
             .kind = kind,
             .label = label,
+            .provider = agent.provider.id,
+            .model = agent.provider.model,
             .t = tj.elapsedMs(),
             .ms = run_ms,
             .prompt_sha = &fp,
@@ -352,7 +372,7 @@ pub fn scoreVariants(
     const jfuts = arena.alloc(Io.Future(ToolOutput), vn) catch return;
     for (jfuts, jprompts) |*jf, jp| jf.* = ctx.io.async(judgeTask, .{ ctx, jp });
 
-    const pclass = providerClass(ctx.provider.model);
+    const pclass = providerClass(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider).model);
     const run_id: []const u8 = &scoring.g_run_id;
     for (jfuts, 0..) |*jf, k| {
         const i = vidx[k];

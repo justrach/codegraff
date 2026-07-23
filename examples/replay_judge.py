@@ -2,9 +2,10 @@
 """replay_judge.py — Step 1: the grounded, out-of-process evolution judge.
 
 Runs a candidate system prompt (a DGM genome) against a held-out eval set of
-tasks with DETERMINISTIC assertions — a shell command's exit code or a golden
-substring in the final report — and emits a pass rate. No LLM grades anything
-here; this is the primary fitness gradient the evolving agent cannot charm.
+tasks with DETERMINISTIC assertions — a shell command's exit code, exact final
+answer, or (for intentionally partial reports) a golden substring — and emits a
+pass rate. No LLM grades anything here; this is the primary fitness gradient the
+evolving agent cannot charm.
 
 Custody model (mirrors the Step 0 score key):
   - The eval set lives OUTSIDE the editable tree, named by GRAFF_EVAL_SET_FILE.
@@ -71,13 +72,30 @@ def load_eval_set():
     return tasks, digest
 
 
+def send_control(proc, value, expected):
+    proc.stdin.write(json.dumps(value, separators=(",", ":")) + "\n")
+    proc.stdin.flush()
+    for line in proc.stdout:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "error":
+            return None
+        if event.get("type") == expected:
+            return event
+    return None
+
+
 def run_variant(system_prompt, task_text, cwd):
     """One harness conversation under the candidate genome, confined to a
     scratch dir. Returns {"text", "tool_calls", "cost"}: the final assistant
     text ('' on timeout/error), how many tools it called, and the turn cost in
     USD. tool_calls/cost are the raw material for the efficiency gradient that
     discriminates genomes once they all pass (see dgm_loop.judge)."""
-    argv = [HARNESS_BIN, "--json", "--yolo", "--system-prompt", system_prompt]
+    argv = [HARNESS_BIN, "--json", "--yolo"]
     model = os.environ.get("GRAFF_EVAL_MODEL")
     if model:
         argv += ["--model", model]
@@ -92,6 +110,12 @@ def run_variant(system_prompt, task_text, cwd):
     tool_calls = 0
     cost = 0.0
     try:
+        prompt_event = send_control(proc, {
+            "type": "set_system_prompt", "text": system_prompt,
+        }, "system_prompt")
+        if (not prompt_event or prompt_event.get("ok") is not True
+                or prompt_event.get("chars") != len(system_prompt.encode("utf-8"))):
+            return {"text": "", "tool_calls": 0, "cost": 0.0}
         proc.stdin.write(json.dumps({"type": "user", "text": task_text}) + "\n")
         proc.stdin.flush()
         for line in proc.stdout:
@@ -128,7 +152,7 @@ def run_variant(system_prompt, task_text, cwd):
 
 
 def check_task(task, report, cwd):
-    """Deterministic, out-of-process assertion: exit code or golden substring."""
+    """Deterministic assertion: exit code, exact answer, or golden substring."""
     chk = task.get("check", {})
     if "cmd" in chk:
         r = subprocess.run(["sh", "-c", chk["cmd"]], cwd=cwd,
@@ -137,6 +161,9 @@ def check_task(task, report, cwd):
     if "substring" in chk:
         ok = chk["substring"] in report
         return ok, "substring " + ("found" if ok else "missing")
+    if "exact" in chk:
+        ok = report.strip() == chk["exact"]
+        return ok, "exact output " + ("matched" if ok else "mismatched")
     return False, "no check defined"
 
 

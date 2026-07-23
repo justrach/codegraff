@@ -58,27 +58,70 @@ export function isMailtoUrl(href: string): boolean {
 }
 
 function trimLinkCandidate(candidate: string): string {
-  let value = candidate.replace(TRAILING_PUNCTUATION_PATTERN, "");
+  let value = candidate;
 
-  while (value.length > 0) {
+  let trimmed = true;
+  while (trimmed && value.length > 0) {
+    trimmed = false;
+
+    const withoutPunctuation = value.replace(TRAILING_PUNCTUATION_PATTERN, "");
+    if (withoutPunctuation.length !== value.length) {
+      value = withoutPunctuation;
+      trimmed = true;
+      continue;
+    }
+
     const lastChar = value.at(-1);
-    if (lastChar == null || !TRAILING_CLOSERS.has(lastChar)) {
+    if (lastChar == null) {
       break;
     }
 
-    const opener = lastChar === ")" ? "(" : lastChar === "]" ? "[" : lastChar === "}" ? "{" : null;
-    if (opener != null) {
-      const openerCount = value.split(opener).length - 1;
-      const closerCount = value.split(lastChar).length - 1;
-      if (closerCount <= openerCount) {
-        break;
+    if (TRAILING_CLOSERS.has(lastChar)) {
+      const opener =
+        lastChar === ")" ? "(" : lastChar === "]" ? "[" : lastChar === "}" ? "{" : null;
+      if (opener != null) {
+        const openerCount = value.split(opener).length - 1;
+        const closerCount = value.split(lastChar).length - 1;
+        if (closerCount <= openerCount) {
+          break;
+        }
       }
-    }
 
-    value = value.slice(0, -1);
+      value = value.slice(0, -1);
+      trimmed = true;
+    }
   }
 
   return value;
+}
+
+function markdownClosingDelimiterBefore(text: string, start: number): string | null {
+  const opening = text.slice(0, start).match(/[~*]+$/u)?.[0];
+  if (opening == null) {
+    return null;
+  }
+
+  for (let index = 0; index < opening.length; index += 1) {
+    if (opening[index] === "*") {
+      continue;
+    }
+    if (opening[index] !== "~" || opening[index + 1] !== "~") {
+      return null;
+    }
+    index += 1;
+  }
+
+  return [...opening].reverse().join("");
+}
+
+function trimMarkdownWrappedLinkCandidate(text: string, start: number, candidate: string): string {
+  const value = trimLinkCandidate(candidate);
+  const closingDelimiter = markdownClosingDelimiterBefore(text, start);
+  if (closingDelimiter == null || !value.endsWith(closingDelimiter)) {
+    return value;
+  }
+
+  return trimLinkCandidate(value.slice(0, -closingDelimiter.length));
 }
 
 function safeDecode(value: string): string {
@@ -402,7 +445,7 @@ export function getChatLinkMatches(
   URL_PATTERN.lastIndex = 0;
   let urlMatch: RegExpExecArray | null;
   while ((urlMatch = URL_PATTERN.exec(text)) !== null) {
-    const value = trimLinkCandidate(urlMatch[0]);
+    const value = trimMarkdownWrappedLinkCandidate(text, urlMatch.index, urlMatch[0]);
     if (value.length === 0) {
       continue;
     }

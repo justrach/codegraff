@@ -23,6 +23,7 @@ const fleet = @import("fleet.zig");
 const jobs = @import("jobs.zig");
 const session = @import("session.zig");
 const repl_glue = @import("repl_glue.zig");
+const eval_memory = @import("eval_memory.zig");
 const mainloop_score = @import("mainloop_score.zig");
 const mainloop_trace = @import("mainloop_trace.zig");
 const scoring = @import("scoring.zig");
@@ -34,6 +35,7 @@ const anim = @import("anim.zig");
 const hooks = @import("hooks.zig");
 const readline = @import("readline.zig");
 const title_mod = @import("title.zig");
+const mainloop_title = @import("mainloop_title.zig");
 
 /// Borrowed pointers into main()'s stack plus immutable arena-owned prompt slices.
 pub const Ctx = struct {
@@ -51,88 +53,6 @@ pub const Ctx = struct {
     sys_strict: []const u8,
 };
 
-fn applyAiTitle(ctx: *Ctx, title: []const u8) void {
-    ctx.root.session_title = ctx.arena.dupe(u8, title) catch null;
-    if (ctx.root.session_title) |st| {
-        title_mod.setTerminalTitle(ctx.out, st, main_mod.g_cwd_display);
-        session.renameSession(ctx.root, ctx.arena, session.slugifyTitle(ctx.arena, st));
-    }
-}
-
-const TitleJob = struct {
-    future: ?Io.Future(void) = null,
-    prompt: []const u8, // gpa-owned: readline storage may be reused next turn
-    result: ?[]const u8 = null, // gpa-owned, published before done.release
-    done: std.atomic.Value(bool) = .init(false),
-    generation: u64,
-};
-
-fn detachedTitleTask(job: *TitleJob, gpa: Allocator, io: Io, client: *std.http.Client, provider: provider_mod.Provider, budget: ?*@import("run_budget.zig").RunBudget, tracer: ?*@import("trace.zig").Tracer) void {
-    job.result = title_mod.titleTask(gpa, io, client, provider, job.prompt, budget, tracer);
-    job.done.store(true, .release);
-}
-
-/// Session title tasks are polled without waiting and canceled only at close.
-const TitleJobs = struct {
-    items: std.ArrayList(*TitleJob) = .empty,
-
-    fn start(self: *TitleJobs, ctx: *Ctx, prompt: []const u8) void {
-        // An explicitly tiny budget still owes the user a real answer. Do not
-        // let cosmetic title work consume the final provider-call slot before
-        // the root request has a chance to acquire it.
-        if (ctx.root.run_budget) |budget| if (budget.remaining() <= 1) {
-            if (ctx.root.tracer) |tr| tr.note("budget", "AI title skipped to reserve the final model call for the root turn");
-            return;
-        };
-        const job = ctx.gpa.create(TitleJob) catch return;
-        const owned_prompt = ctx.gpa.dupe(u8, prompt) catch {
-            ctx.gpa.destroy(job);
-            return;
-        };
-        job.* = .{ .prompt = owned_prompt, .generation = ctx.root.title_generation };
-        const args = .{ job, ctx.gpa, ctx.io, ctx.root.client, ctx.root.provider, ctx.root.run_budget, ctx.root.tracer };
-        job.future = ctx.io.concurrent(detachedTitleTask, args) catch ctx.io.async(detachedTitleTask, args);
-        self.items.append(ctx.gpa, job) catch {
-            if (job.future) |*future| future.cancel(ctx.io);
-            if (job.result) |title| ctx.gpa.free(title);
-            ctx.gpa.free(job.prompt);
-            ctx.gpa.destroy(job);
-        };
-    }
-
-    fn poll(self: *TitleJobs, ctx: *Ctx) void {
-        var i: usize = 0;
-        while (i < self.items.items.len) {
-            const job = self.items.items[i];
-            if (!job.done.load(.acquire)) {
-                i += 1;
-                continue;
-            }
-            if (job.future) |*future| future.await(ctx.io); // done=true: never blocks
-            job.future = null;
-            if (job.result) |title| {
-                // Manual rename/session reset wins over an older detached result.
-                if (job.generation == ctx.root.title_generation and ctx.root.session_title == null)
-                    applyAiTitle(ctx, title);
-                ctx.gpa.free(title);
-            }
-            ctx.gpa.free(job.prompt);
-            _ = self.items.orderedRemove(i);
-            ctx.gpa.destroy(job);
-        }
-    }
-
-    fn deinit(self: *TitleJobs, ctx: *Ctx) void {
-        for (self.items.items) |job| {
-            if (job.future) |*future| future.cancel(ctx.io);
-            if (job.result) |title| ctx.gpa.free(title);
-            ctx.gpa.free(job.prompt);
-            ctx.gpa.destroy(job);
-        }
-        self.items.deinit(ctx.gpa);
-    }
-};
-
 /// True only when a nonempty live checklist is entirely completed (#226).
 fn allTodosDone(root: *agent_mod.Agent) bool {
     if (root.todos.items.len == 0) return false;
@@ -142,7 +62,7 @@ fn allTodosDone(root: *agent_mod.Agent) bool {
 
 /// Run turns until EOF/quit; main then performs final save/worktree cleanup.
 pub fn run(ctx: *Ctx) !void {
-    var title_jobs: TitleJobs = .{};
+    var title_jobs: mainloop_title.Jobs = .{};
     defer title_jobs.deinit(ctx);
     // Trajectory spine state: each turn's parent is the previous turn, and a
     // changed prompt fingerprint marks a set_system_prompt mutation edge.
@@ -377,7 +297,15 @@ pub fn run(ctx: *Ctx) !void {
         // resumes the plan instead of re-deriving it (assembled by goalSteeringNote).
         const todos_render: []const u8 = if (ctx.root.todos.items.len > 0) ctx.root.renderTodos() else "";
         const goal_note = try repl_glue.goalSteeringNote(ctx.arena, ctx.root.goal, todos_render);
-        const eval_note = try repl_glue.evalSteeringNote(ctx.arena, ctx.root.eval_cmd, ctx.root.eval_target, ctx.root.eval_judge != null);
+        const eval_note = try repl_glue.evalSteeringNote(
+            ctx.arena,
+            ctx.root.eval_cmd,
+            ctx.root.eval_target,
+            ctx.root.eval_judge != null,
+            ctx.root.eval_verified,
+            ctx.root.eval_repair_pending,
+            eval_memory.load(ctx.root),
+        );
         var goal_msg: []const u8 = base_msg;
         if (goal_note.len > 0) goal_msg = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ goal_msg, goal_note });
         if (eval_note.len > 0) goal_msg = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ goal_msg, eval_note });
@@ -590,7 +518,7 @@ pub fn run(ctx: *Ctx) !void {
                 .session_arena_kb = if (main_mod.g_session_arena) |a| a.queryCapacity() / 1024 else 0,
                 .scratch_arena_kb = if (ctx.root.scratch_arena) |a| a.queryCapacity() / 1024 else 0,
             });
-            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = true, .metadata_complete = context_tokens > 0 });
+            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = !ctx.root.eval_repair_pending, .metadata_complete = context_tokens > 0 });
         }
 
         // Apply only if already complete; poll never waits for title generation.

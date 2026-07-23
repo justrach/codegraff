@@ -24,6 +24,9 @@ const ServeConfig = struct {
     token: ?[]const u8,
     yolo: bool,
     model: ?[]const u8,
+    subagent_provider: ?[]const u8,
+    subagent_model: ?[]const u8,
+    allow_cross_provider_subagents: bool,
     system_prompt: ?[]const u8,
     append_system_prompt: ?[]const u8,
     max_tool_calls: ?u64,
@@ -223,6 +226,9 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
         return respondJson(st, req, .payload_too_large, "{\"error\":\"body too large\"}");
 
     var model = st.cfg.model;
+    var subagent_provider = st.cfg.subagent_provider;
+    var subagent_model = st.cfg.subagent_model;
+    var allow_cross_provider_subagents = st.cfg.allow_cross_provider_subagents;
     var yolo = st.cfg.yolo;
     var sys = st.cfg.system_prompt;
     var append_sys = st.cfg.append_system_prompt;
@@ -235,6 +241,15 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
         if (v != .object) return respondJson(st, req, .bad_request, "{\"error\":\"body must be a JSON object\"}");
         if (v.object.get("model")) |m| if (m == .string) {
             model = m.string;
+        };
+        if (v.object.get("subagentModel") orelse v.object.get("subagent_model")) |m| if (m == .string) {
+            subagent_model = m.string;
+        };
+        if (v.object.get("subagentProvider") orelse v.object.get("subagent_provider")) |p| if (p == .string) {
+            subagent_provider = p.string;
+        };
+        if (v.object.get("allowCrossProviderSubagents") orelse v.object.get("allow_cross_provider_subagents")) |a| if (a == .bool) {
+            allow_cross_provider_subagents = a.bool;
         };
         if (v.object.get("yolo")) |y| if (y == .bool) {
             yolo = y.bool;
@@ -260,6 +275,9 @@ fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
     try argv.appendSlice(arena, &.{ st.exe, "--json" });
     if (yolo) try argv.append(arena, "--yolo");
     if (model) |m| try argv.appendSlice(arena, &.{ "--model", m });
+    if (subagent_provider) |p| try argv.appendSlice(arena, &.{ "--subagent-provider", p });
+    if (subagent_model) |m| try argv.appendSlice(arena, &.{ "--subagent-model", m });
+    if (allow_cross_provider_subagents) try argv.append(arena, "--allow-cross-provider-subagents");
     if (max_tools) |n| try argv.appendSlice(arena, &.{ "--max-tool-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
     if (max_models) |n| try argv.appendSlice(arena, &.{ "--max-model-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
     if (dedupe_tools) try argv.append(arena, "--dedupe-tool-calls");

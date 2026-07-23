@@ -2,10 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import type {
-  CommandDescriptor,
-  PromptSettings,
-} from "@/services/desktop/types/contracts";
+import type { PromptSettings } from "@/services/desktop/types/contracts";
 import { PromptInputCard } from "./PromptInputCard";
 
 const longModelName =
@@ -40,7 +37,7 @@ function renderPromptInputCard(
       isUltraMode={false}
       isRequestActive={false}
       isSendingPrompt={false}
-      onCommandSelect={(_: CommandDescriptor) => {}}
+      onCommandSelect={() => {}}
       promptDraft="Describe this repo"
       promptSettings={promptSettings}
       setPlanningMode={() => {}}

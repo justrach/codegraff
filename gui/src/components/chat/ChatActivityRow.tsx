@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Activity,
   Bot,
@@ -40,6 +40,10 @@ import { classifyUnknownToolName } from "./utils/classifyActivityResult";
 import { ChatInlineText } from "./ChatInlineText";
 import { ChatStatusLabel } from "./ChatStatusLabel";
 import { ActivityResultRenderer } from "./activity-results/ActivityResultRenderer";
+import {
+  createActivityDisclosureState,
+  reconcileActivityDisclosure,
+} from "./utils/chatActivityDisclosure";
 import { getActivityResultModel } from "./utils/getActivityResultModel";
 
 const activityTriggerClassName = cn(
@@ -190,31 +194,25 @@ function ActivityOperationRow({
 }
 
 export function ChatActivityRow({ item, workspacePath }: ChatActivityRowProps) {
-  const [open, setOpen] = useState(
-    item.isThinking ? true : item.isRunning || item.hasError,
+  const [disclosure, setDisclosure] = useState(() =>
+    createActivityDisclosureState(item),
   );
-  const previousRunningRef = useRef(item.isRunning);
 
-  // With stable keys (ChatWorkRow) this effect now actually fires on the
-  // running→idle transition instead of being wiped by a remount. On completion
-  // we preserve the user's view — keep the activity open (don't yank the results
-  // they were reading) and force-open on error so failures stay visible. A
-  // step starting to run auto-expands to show live progress.
-  useEffect(() => {
-    const wasRunning = previousRunningRef.current;
-    previousRunningRef.current = item.isRunning;
-    if (item.isThinking) {
-      return;
-    }
+  // Reconcile the stream transition before rendering children. This preserves
+  // the user's open state when work completes, auto-opens newly running work,
+  // and keeps failures visible without scheduling an extra effect render.
+  const reconciledDisclosure = reconcileActivityDisclosure(disclosure, item);
+  if (reconciledDisclosure !== disclosure) {
+    setDisclosure(reconciledDisclosure);
+  }
 
-    if (wasRunning && !item.isRunning) {
-      if (item.hasError) {
-        setOpen(true);
-      }
-    } else if (!wasRunning && item.isRunning) {
-      setOpen(true);
-    }
-  }, [item.hasError, item.isRunning, item.isThinking]);
+  const open = disclosure.isOpen;
+  const setOpen = (isOpen: boolean) => {
+    setDisclosure({
+      isOpen,
+      observedRunning: item.isRunning,
+    });
+  };
 
   if (item.isThinking) {
     return (

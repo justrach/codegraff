@@ -22,6 +22,8 @@ import os
 import subprocess
 import sys
 
+import replay_judge
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -40,6 +42,8 @@ def check(name, ok, detail=""):
 
 def offline(loop):
     ok = True
+    passed, _ = replay_judge.check_task({"check": {"exact": "391"}}, "1391", HERE)
+    ok &= check("exact-answer checks reject substring false positives", not passed)
     # 1. The promotable band is unreachable while any held-out task fails.
     worst_gap = min(0.9 + 0.1 * llm - 0.8 * p
                     for p in (i / 100 for i in range(100))      # pass_rate < 1

@@ -77,6 +77,33 @@ pub const tty = struct {
     /// input-mode word on Windows.
     pub const RawState = if (is_windows) struct { in_mode: u32 } else std.posix.termios;
 
+    /// POSIX job control can move a process group out of the foreground between
+    /// a readiness check and the actual read/tcsetattr. A background terminal
+    /// read normally stops the whole group with SIGTTIN (issue #271), while a
+    /// terminal-mode change may do the same with SIGTTOU. Block only around the
+    /// syscall; POSIX then returns EIO instead of suspending Graff. The mask is
+    /// per-thread and restored immediately.
+    const JobControlGuard = if (is_windows) struct {
+        fn init(comptime _: enum { input, output }) @This() {
+            return .{};
+        }
+        fn deinit(_: *@This()) void {}
+    } else struct {
+        old: std.posix.sigset_t,
+
+        fn init(comptime operation: enum { input, output }) @This() {
+            var set = std.posix.sigemptyset();
+            std.posix.sigaddset(&set, if (operation == .input) .TTIN else .TTOU);
+            var old: std.posix.sigset_t = undefined;
+            std.posix.sigprocmask(std.posix.SIG.BLOCK, &set, &old);
+            return .{ .old = old };
+        }
+
+        fn deinit(self: *@This()) void {
+            std.posix.sigprocmask(std.posix.SIG.SETMASK, &self.old, null);
+        }
+    };
+
     /// One-time: let the Windows console interpret ANSI/VT escapes. No-op
     /// elsewhere. Call once from main before any styled output.
     pub fn enableVtOutput() void {
@@ -141,6 +168,8 @@ pub const tty = struct {
         }
         raw.cc[@intFromEnum(std.posix.V.MIN)] = if (blocking) 1 else 0;
         raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+        var job_control = JobControlGuard.init(.output);
+        defer job_control.deinit();
         std.posix.tcsetattr(fd, .NOW, raw) catch return null;
         return orig;
     }
@@ -151,6 +180,8 @@ pub const tty = struct {
             _ = win.SetConsoleMode(win.GetStdHandle(win.STD_INPUT_HANDLE), state.in_mode);
             return;
         }
+        var job_control = JobControlGuard.init(.output);
+        defer job_control.deinit();
         std.posix.tcsetattr(std.posix.STDIN_FILENO, .NOW, state) catch {};
     }
 
@@ -197,6 +228,8 @@ pub const tty = struct {
             }
             return out;
         }
+        var job_control = JobControlGuard.init(.input);
+        defer job_control.deinit();
         return std.posix.read(std.posix.STDIN_FILENO, buf) catch 0;
     }
 };

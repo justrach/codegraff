@@ -26,13 +26,11 @@ const Style = ansi.Style;
 
 const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
-const intFieldObj = util.intFieldObj;
 
-const root = @import("main.zig");
 const unixMs = util.unixMs;
-const codegraff_device_base = root.codegraff_device_base;
 const kimi_catalog = @import("kimi_catalog.zig");
 const pricing = @import("pricing.zig");
+const codegraff = @import("oauth_codegraff.zig");
 
 pub const CodexAuth = struct { token: []const u8, account: []const u8 };
 
@@ -244,7 +242,9 @@ fn writeKimiAuth(io: Io, arena: Allocator, home: []const u8, access: []const u8,
     Io.Dir.cwd().createDir(io, kimi_dir, private_dir_permissions) catch {};
     Io.Dir.cwd().createDir(io, credentials_dir, private_dir_permissions) catch {};
     for ([_][]const u8{ kimi_dir, credentials_dir }) |path| {
-        const dir = Io.Dir.cwd().openDir(io, path, .{}) catch continue;
+        // iterate=true: see kimi_catalog.secureDir — a default openDir can be
+        // O_PATH on Linux, where fchmod panics EBADF instead of erroring.
+        const dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch continue;
         defer dir.close(io);
         dir.setPermissions(io, private_dir_permissions) catch {};
     }
@@ -507,123 +507,8 @@ pub fn loadXaiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, 
     return access;
 }
 
-// Codegraff device-code login — mirrors graff's CodegraffDeviceStrategy: POST
-// /v1/device/start → show verification_uri + user_code → poll /v1/device/poll
-// until status "ok" yields the cg_sk_ key, written to ~/<codegraff_key_file>.
-const codegraff_key_file = ".simple-harness-codegraff.json";
-
-fn httpJsonPost(io: Io, gpa: Allocator, arena: Allocator, url: []const u8, body: []const u8) !std.json.ObjectMap {
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    var aw: Io.Writer.Allocating = .init(arena);
-    _ = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
-        .payload = body,
-        .response_writer = &aw.writer,
-        .headers = .{ .content_type = .{ .override = "application/json" } },
-    });
-    const v = try std.json.parseFromSliceLeaky(Value, arena, aw.writer.buffered(), .{ .allocate = .alloc_always });
-    if (v != .object) return error.BadOAuthResponse;
-    return v.object;
-}
-
-pub fn codegraffLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !void {
-    var obuf: [4096]u8 = undefined;
-    var ow = Io.File.stdout().writer(io, &obuf);
-    const out = &ow.interface;
-
-    const start_resp = httpJsonPost(io, gpa, arena, codegraff_device_base ++ "/v1/device/start", "{\"device_label\":\"simple-harness\"}") catch |err| {
-        try out.print("✗ device/start failed: {t}\n", .{err});
-        try out.flush();
-        return;
-    };
-    const device_code = strFieldObj(start_resp, "device_code") orelse {
-        try out.writeAll("✗ no device_code in start response\n");
-        try out.flush();
-        return;
-    };
-    const user_code = strFieldObj(start_resp, "user_code") orelse "";
-    const vuri = strFieldObj(start_resp, "verification_uri") orelse "https://codegraff.com/cli/auth";
-    const vuri_complete = strFieldObj(start_resp, "verification_uri_complete") orelse vuri;
-    const interval: i64 = @max(1, intFieldObj(start_resp, "interval", 2));
-    const expires: i64 = intFieldObj(start_resp, "expires_in", 600);
-
-    try out.print("\nTo authorize, open:\n\n  {s}\n\nand enter code: {s}{s}{s}\n\nwaiting for approval …\n", .{ vuri, style.bold, user_code, style.reset });
-    try out.flush();
-    openBrowser(io, vuri_complete);
-
-    const poll_body = try std.fmt.allocPrint(arena, "{{\"device_code\":\"{s}\"}}", .{device_code});
-    var waited: i64 = 0;
-    while (waited < expires) : (waited += interval) {
-        io.sleep(Io.Duration.fromSeconds(interval), .awake) catch {};
-        const poll = httpJsonPost(io, gpa, arena, codegraff_device_base ++ "/v1/device/poll", poll_body) catch continue;
-        const status = strFieldObj(poll, "status") orelse "pending";
-        if (std.mem.eql(u8, status, "ok")) {
-            const key = strFieldObj(poll, "api_key") orelse {
-                try out.writeAll("✗ approved but no api_key returned\n");
-                try out.flush();
-                return;
-            };
-            try writeCodegraffKey(io, arena, home, key);
-            try out.print("{s}✓{s} logged into codegraff — key saved to ~/{s}. /model deepseek-v4-pro\n", .{ style.green, style.reset, codegraff_key_file });
-            try out.flush();
-            return;
-        } else if (std.mem.eql(u8, status, "denied")) {
-            try out.writeAll("✗ authorization denied\n");
-            try out.flush();
-            return;
-        } else if (std.mem.eql(u8, status, "expired")) {
-            try out.writeAll("✗ code expired — run `graff login codegraff` again\n");
-            try out.flush();
-            return;
-        }
-    }
-    try out.writeAll("✗ timed out waiting for approval\n");
-    try out.flush();
-}
-
-fn writeCodegraffKey(io: Io, arena: Allocator, home: []const u8, key: []const u8) !void {
-    const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ home, codegraff_key_file });
-    var obj: std.json.ObjectMap = .empty;
-    try obj.put(arena, "api_key", .{ .string = key });
-    var aw: Io.Writer.Allocating = .init(arena);
-    var s: std.json.Stringify = .{ .writer = &aw.writer };
-    try s.write(Value{ .object = obj });
-    const f = try Io.Dir.cwd().createFile(io, path, .{});
-    defer f.close(io);
-    var wbuf: [4096]u8 = undefined;
-    var fw = f.writer(io, &wbuf);
-    try fw.interface.writeAll(aw.writer.buffered());
-    try fw.interface.flush();
-}
-
-/// Load a codegraff key without an env var: the harness's own login file
-/// (~/.simple-harness-codegraff.json) first, then graff's store
-/// (~/forge/.credentials.json: array, entry id=="codegraff", .auth_details.api_key).
-pub fn loadCodegraffKey(io: Io, arena: Allocator, home: []const u8) ?[]const u8 {
-    if (std.fmt.allocPrint(arena, "{s}/{s}", .{ home, codegraff_key_file })) |path| {
-        if (Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024))) |data| {
-            if (std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always })) |v| {
-                if (v == .object) if (v.object.get("api_key")) |k| if (k == .string and k.string.len > 0) return k.string;
-            } else |_| {}
-        } else |_| {}
-    } else |_| {}
-    if (std.fmt.allocPrint(arena, "{s}/forge/.credentials.json", .{home})) |path| {
-        if (Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(256 * 1024))) |data| {
-            if (std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always })) |v| {
-                if (v == .array) for (v.array.items) |e| {
-                    if (e != .object) continue;
-                    const id = if (e.object.get("id")) |i| (if (i == .string) i.string else "") else "";
-                    if (!std.mem.eql(u8, id, "codegraff")) continue;
-                    if (e.object.get("auth_details")) |ad| if (ad == .object)
-                        if (ad.object.get("api_key")) |k| if (k == .string and k.string.len > 0) return k.string;
-                };
-            } else |_| {}
-        } else |_| {}
-    } else |_| {}
-    return null;
-}
+pub const codegraffLogin = codegraff.login;
+pub const loadCodegraffKey = codegraff.loadKey;
 
 test "b64url: url-safe base64 without padding" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

@@ -191,24 +191,27 @@ function NewChatScreenContent({
     : "Ask anything";
   const hasCommandResults = commandResults.length > 0;
   const hasProvider = hasConfiguredProvider(providerSetup.providers);
+  const onboardingCompletedBySetup = hasProvider && hasCurrentWorkspace;
+  if (!onboardingCompleted && onboardingCompletedBySetup) {
+    setOnboardingCompleted(true);
+  }
   const showOnboarding =
     !hasCommandResults &&
     shouldShowOnboardingPanel({
-      completed: onboardingCompleted,
+      completed: onboardingCompleted || onboardingCompletedBySetup,
       hasProvider,
       hasWorkspace: hasCurrentWorkspace,
     });
 
   useEffect(() => {
-    if (onboardingCompleted || !hasProvider || !hasCurrentWorkspace) {
+    if (!onboardingCompletedBySetup) {
       return;
     }
 
-    setOnboardingCompleted(true);
     writeOnboardingCompleted(
       typeof window === "undefined" ? null : window.localStorage,
     );
-  }, [hasCurrentWorkspace, hasProvider, onboardingCompleted]);
+  }, [onboardingCompletedBySetup]);
 
   function completeOnboarding() {
     setOnboardingCompleted(true);

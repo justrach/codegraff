@@ -23,6 +23,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
+const learning_privacy = @import("learning_privacy.zig");
 
 /// Every CLI-flag local main() used to declare, plus the resolved
 /// positionals/subcommand-detection/one-shot-prompt outputs computed right
@@ -30,6 +31,7 @@ const main_mod = @import("main.zig");
 pub const Flags = struct {
     yolo_flag: bool = false,
     no_telemetry_flag: bool = false,
+    learning_privacy_flag: ?learning_privacy.Mode = null,
     schema_flag: bool = false,
     login_flag: bool = false,
     refresh_flag: bool = false,
@@ -44,6 +46,9 @@ pub const Flags = struct {
     selftest_markdown_flag: bool = false, // --selftest-markdown: render the real streaming markdown fixture in a PTY
     update_check: bool = false, // graff update --check
     model_flag: ?[]const u8 = null,
+    subagent_provider_flag: ?[]const u8 = null,
+    subagent_model_flag: ?[]const u8 = null,
+    allow_cross_provider_subagents_flag: bool = false,
     system_prompt_flag: ?[]const u8 = null,
     append_system_flag: ?[]const u8 = null,
     host_flag: []const u8 = "127.0.0.1", // harness serve
@@ -79,7 +84,9 @@ pub fn parse(init: std.process.Init) !Flags {
         defer it.deinit();
         _ = it.next(); // argv[0]
         while (it.next()) |arg| {
-            if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
+            if (flags.positionals.items.len > 0 and
+                (std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn")))
+            {
                 try flags.positionals.append(arena, try arena.dupe(u8, arg));
             } else if (std.mem.startsWith(u8, arg, "-")) {
                 if (std.mem.eql(u8, arg, "--yolo")) {
@@ -97,6 +104,9 @@ pub fn parse(init: std.process.Init) !Flags {
                     flags.eval_niche_flag = it.next() orelse std.process.fatal("--niche needs a name (e.g. --niche reviewer)", .{});
                 } else if (std.mem.eql(u8, arg, "--no-telemetry")) {
                     flags.no_telemetry_flag = true;
+                } else if (std.mem.eql(u8, arg, "--learning-privacy")) {
+                    const value = it.next() orelse std.process.fatal("--learning-privacy needs local|aggregate|templates|examples", .{});
+                    flags.learning_privacy_flag = learning_privacy.parse(value) orelse std.process.fatal("invalid learning privacy mode '{s}' — use local|aggregate|templates|examples", .{value});
                 } else if (std.mem.eql(u8, arg, "--timing")) {
                     main_mod.show_timing = true;
                 } else if (std.mem.eql(u8, arg, "--cost")) {
@@ -143,6 +153,14 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--model")) {
                     const mv = it.next() orelse std.process.fatal("--model needs a value — harness --help", .{});
                     flags.model_flag = try arena.dupe(u8, mv);
+                } else if (std.mem.eql(u8, arg, "--subagent-provider")) {
+                    const pv = it.next() orelse std.process.fatal("--subagent-provider needs a value — harness --help", .{});
+                    flags.subagent_provider_flag = try arena.dupe(u8, pv);
+                } else if (std.mem.eql(u8, arg, "--subagent-model")) {
+                    const mv = it.next() orelse std.process.fatal("--subagent-model needs a value — harness --help", .{});
+                    flags.subagent_model_flag = try arena.dupe(u8, mv);
+                } else if (std.mem.eql(u8, arg, "--allow-cross-provider-subagents")) {
+                    flags.allow_cross_provider_subagents_flag = true;
                 } else if (std.mem.eql(u8, arg, "--system-prompt")) {
                     const sv = it.next() orelse std.process.fatal("--system-prompt needs a value — harness --help", .{});
                     flags.system_prompt_flag = try arena.dupe(u8, sv);
@@ -174,7 +192,7 @@ pub fn parse(init: std.process.Init) !Flags {
     // One-shot print mode: `harness -p "prompt"` or a bare positional prompt
     // (`harness "say hi"`). Subcommands (login/key) are not prompts.
     flags.is_subcommand = flags.positionals.items.len > 0 and
-        (std.mem.eql(u8, flags.positionals.items[0], "login") or std.mem.eql(u8, flags.positionals.items[0], "key") or std.mem.eql(u8, flags.positionals.items[0], "mcp") or
+        (std.mem.eql(u8, flags.positionals.items[0], "login") or std.mem.eql(u8, flags.positionals.items[0], "key") or std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or
             std.mem.eql(u8, flags.positionals.items[0], "serve") or std.mem.eql(u8, flags.positionals.items[0], "update") or std.mem.eql(u8, flags.positionals.items[0], "title") or std.mem.eql(u8, flags.positionals.items[0], "repl") or
             std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models"));
     if (!flags.is_subcommand and flags.positionals.items.len > 0) {

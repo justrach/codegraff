@@ -1,0 +1,186 @@
+.workspace-board-dock :is(.dockview-theme-light, .dockview-theme-dark) {
+    --dv-tabs-and-actions-container-height: 2rem;
+    --dv-tabs-and-actions-container-font-size: 0.6875rem;
+    --dv-tabs-and-actions-container-background-color: transparent;
+    --dv-activegroup-visiblepanel-tab-background-color: color-mix(
+        in oklab,
+        var(--background) 72%,
+        transparent
+    );
+    --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+    --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
+    --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+    --dv-tab-divider-color: transparent;
+    --dv-drag-over-background-color: color-mix(
+        in oklab,
+        var(--foreground) 6%,
+        transparent
+    );
+    --dv-drag-over-border-color: color-mix(
+        in oklab,
+        var(--foreground) 18%,
+        transparent
+    );
+    --dv-resize-handle-background-color: transparent;
+}
+
+.workspace-board-dock.dockview-theme-light,
+.workspace-board-dock .dockview-theme-light {
+    --dv-separator-border: rgb(0 0 0 / 5%);
+}
+
+.workspace-board-dock.dockview-theme-dark,
+.workspace-board-dock .dockview-theme-dark {
+    --dv-separator-border: rgb(255 255 255 / 5%);
+}
+
+.workspace-board-dock .dv-groupview {
+    border-radius: 0;
+    background: transparent;
+    overflow: hidden;
+}
+
+.workspace-board-dock
+    .workspace-board-outer-group
+    > .dv-tabs-and-actions-container {
+    display: none !important;
+}
+
+.workspace-board-dock .dv-groupview .dv-tabs-and-actions-container {
+    padding-inline: 0.25rem;
+    backdrop-filter: none;
+    background: transparent;
+}
+
+.workspace-board-dock .dv-groupview .dv-tab {
+    border-radius: 0;
+    cursor: grab;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.workspace-board-dock .dv-groupview .dv-tab:active {
+    cursor: grabbing;
+}
+
+.workspace-board-dock .dv-groupview .dv-content-container {
+    background: transparent;
+}
+
+.workspace-board-dock .workspace-board-outer-group {
+    background: var(--pane-surface);
+}
+
+.workspace-board-dock .workspace-board-outer-group > .dv-content-container {
+    background: var(--pane-surface);
+}
+
+/* Terminal palette derived from the app's theme tokens so it tracks every preset
+   (warm-graphite/slate/nord/forest) and light/dark automatically — the frame
+   (bg/fg/cursor/neutrals) follows the active preset, while the ANSI hues map to
+   the shared syntax-highlight + semantic tokens. */
+.terminal-pane-shell .wterm {
+    --term-bg: transparent;
+    --term-fg: var(--foreground);
+    --term-cursor: var(--accent);
+    --term-font-family:
+        "Geist Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Monaco,
+        Consolas, monospace;
+    --term-font-size: 13px;
+
+    /* normal */
+    --term-color-0: color-mix(in oklab, var(--foreground) 55%, var(--background));
+    --term-color-1: var(--destructive);
+    --term-color-2: var(--success);
+    --term-color-3: var(--warn);
+    --term-color-4: var(--sh-class);
+    --term-color-5: var(--sh-entity);
+    --term-color-6: color-mix(in oklab, var(--sh-class) 60%, var(--success));
+    --term-color-7: color-mix(in oklab, var(--foreground) 78%, var(--background));
+    /* bright */
+    --term-color-8: var(--muted-foreground);
+    --term-color-9: var(--destructive);
+    --term-color-10: var(--success);
+    --term-color-11: var(--warn);
+    --term-color-12: var(--sh-class);
+    --term-color-13: var(--sh-entity);
+    --term-color-14: color-mix(in oklab, var(--sh-class) 60%, var(--success));
+    --term-color-15: var(--foreground);
+
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+.workspace-board .dv-drop-target-anchor,
+.workspace-board .dv-drop-target-selection {
+    border: 1px solid color-mix(in oklab, var(--foreground) 24%, transparent);
+    background: color-mix(in oklab, var(--foreground) 8%, transparent);
+    box-shadow: inset 0 0 0 1px
+        color-mix(in oklab, var(--background) 72%, transparent);
+}
+
+.chat-tile-inner-dock .dv-drop-target-anchor,
+.chat-tile-inner-dock .dv-drop-target-selection {
+    border: 1px solid color-mix(in oklab, var(--foreground) 24%, transparent);
+    background: color-mix(in oklab, var(--foreground) 8%, transparent);
+    box-shadow: inset 0 0 0 1px
+        color-mix(in oklab, var(--background) 72%, transparent);
+}
+
+.workspace-board-dock
+    > .dv-resize-container
+    > .dv-sash-container
+    > .dv-sash::after,
+.chat-tile-inner-dock
+    > .dv-resize-container
+    > .dv-sash-container
+    > .dv-sash::after {
+    background: color-mix(in oklab, var(--foreground) 10%, transparent);
+    border-radius: 999px;
+}
+
+.workspace-board-dock.dockview-theme-light
+    > .dv-resize-container
+    > .dv-sash-container
+    > .dv-sash::after,
+.workspace-board-dock
+    .dockview-theme-light
+    > .dv-resize-container
+    > .dv-sash-container
+    > .dv-sash::after,
+.chat-tile-inner-dock.dockview-theme-light
+    > .dv-resize-container
+    > .dv-sash-container
+    > .dv-sash::after,
+.chat-tile-inner-dock
+    .dockview-theme-light
+    > .dv-resize-container
+    > .dv-sash-container
+    > .dv-sash::after {
+    background: rgb(0 0 0 / 5%);
+}
+
+.workspace-board-dock.dockview-theme-dark
+    > .dv-resize-container
+    > .dv-sash-container
+    > .dv-sash::after,
+.workspace-board-dock
+    .dockview-theme-dark
+    > .dv-resize-container
+    > .dv-sash-container
+    > .dv-sash::after,
+.chat-tile-inner-dock.dockview-theme-dark
+    > .dv-resize-container
+    > .dv-sash-container
+    > .dv-sash::after,
+.chat-tile-inner-dock
+    .dockview-theme-dark
+    > .dv-resize-container
+    > .dv-sash-container
+    > .dv-sash::after {
+    background: rgb(255 255 255 / 5%);
+}
+

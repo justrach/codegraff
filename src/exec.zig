@@ -1,10 +1,10 @@
 //! Tool dispatch: `execTool` (the timed/traced/hooked outer wrapper) and
 //! `execToolInner` (the big per-tool-name switch — bash, bash_output,
 //! bash_kill, webfetch, read_file, codedb, edit_file, write_file, subagent,
-//! workflow). Split out of main.zig (600-line goal); LAST in the tool-exec
+//! workflow, learn_candidate). Split out of main.zig (600-line goal); LAST in the tool-exec
 //! region since it's the glue that imports tools.zig/subagent.zig/
 //! workflow.zig as siblings, plus approvals.zig/mcp.zig/jobs.zig/skills.zig/
-//! input_util.zig/telemetry.zig. Back-imports main (as `main_mod`) for
+//! telemetry.zig. Back-imports main (as `main_mod`) for
 //! `ToolCall`/`plan_mode` (pub-flipped) and `utf8Prefix`.
 
 const std = @import("std");
@@ -52,10 +52,10 @@ const jobOutput = jobs.jobOutput;
 const jobKill = jobs.jobKill;
 const shellArgv = jobs.shellArgv;
 const skills = @import("skills.zig");
-const input_util = @import("input_util.zig");
-const binaryFileExt = input_util.binaryFileExt;
+const read_file = @import("read_file.zig");
 const hooks = @import("hooks.zig");
 const telemetry = @import("telemetry.zig");
+const learning_privacy = @import("learning_privacy.zig");
 
 /// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
 /// threads with no TTY, so there is no Esc to kill a runaway command — without
@@ -64,14 +64,33 @@ const telemetry = @import("telemetry.zig");
 /// no-deadline behavior (a human is watching and may want a long build).
 const subagent_bash_deadline_ms: u64 = 120 * 1000;
 
+fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) usize {
+    var argc: usize = 0;
+    for ([_][]const u8{ exe_path, "--learning-privacy", if (contribute) "aggregate" else "local", "learn", "run" }) |arg| {
+        argv[argc] = arg;
+        argc += 1;
+    }
+    if (contribute) {
+        argv[argc] = "--submit";
+        argc += 1;
+    }
+    return argc;
+}
+
 /// Runs on a pool thread; never throws — failures become is_error results.
 /// Every execution is timed (out.ms) and traced.
 pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     const t0: Io.Timestamp = .now(ctx.io, .awake);
+    // #255: reserved before any gate/dispatch runs so tool_started/
+    // tool_finished bracket the whole call, including a gate denial below.
+    const call_id: u64 = if (ctx.tracer) |tr| tr.toolStarted(call.name, call.input) else 0;
     if (codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
-        if (ctx.tracer) |tr| tr.tool(call.name, out.ms, true, out.text.len, ctx.from_sub);
+        if (ctx.tracer) |tr| {
+            tr.tool(call.name, out.ms, true, out.text.len, ctx.from_sub);
+            tr.toolFinished(call.name, call_id, out.ms, true, out.text.len);
+        }
         if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, true);
         return out;
     }
@@ -85,7 +104,10 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
         break :blk failure(ctx.gpa, err);
     };
     out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
-    if (ctx.tracer) |tr| tr.tool(call.name, out.ms, out.is_error, out.text.len, ctx.from_sub);
+    if (ctx.tracer) |tr| {
+        tr.tool(call.name, out.ms, out.is_error, out.text.len, ctx.from_sub);
+        tr.toolFinished(call.name, call_id, out.ms, out.is_error, out.text.len);
+    }
     if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, out.is_error);
     runPostToolHooks(ctx, call, out);
     return out;
@@ -98,7 +120,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // Plan mode backstop: the root gate already denies these with a nicer
     // message; this catches subagents (which skip the gate entirely).
     if (main_mod.plan_mode) {
-        if (std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or mcp.Registry.isMcp(call.name)) return .{
+        if (std.mem.eql(u8, call.name, "learn_candidate") or std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or mcp.Registry.isMcp(call.name)) return .{
             .text = try gpa.dupe(u8, "plan mode is on — read-only; describe the change instead of making it"),
             .is_error = true,
         };
@@ -125,6 +147,45 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     }
 
     const input = call.input;
+    if (std.mem.eql(u8, call.name, "learn_candidate")) {
+        if (ctx.from_sub) return .{
+            .text = try gpa.dupe(u8, "learning is root-only — subagents cannot run mutators, evaluators, or publish grades"),
+            .is_error = true,
+        };
+        const candidates = intField(input, "candidates");
+        const repetitions = intField(input, "repetitions");
+        if (candidates) |n| if (n < 1 or n > 16) return .{ .text = try gpa.dupe(u8, "candidates must be between 1 and 16"), .is_error = true };
+        if (repetitions) |n| if (n < 1 or n > 100) return .{ .text = try gpa.dupe(u8, "repetitions must be between 1 and 100"), .is_error = true };
+        const exe_path = try std.process.executablePathAlloc(io, gpa);
+        defer gpa.free(exe_path);
+        var candidates_buf: [20]u8 = undefined;
+        var repetitions_buf: [20]u8 = undefined;
+        var argv_buf: [10][]const u8 = undefined;
+        const contribute = main_mod.g_fleet and (learning_privacy.allowsAggregate() or learning_privacy.consumeAggregateOnce(io));
+        var argc = learningArgv(&argv_buf, exe_path, contribute);
+        if (candidates) |n| {
+            argv_buf[argc] = "--candidates";
+            argv_buf[argc + 1] = try std.fmt.bufPrint(&candidates_buf, "{d}", .{n});
+            argc += 2;
+        }
+        if (repetitions) |n| {
+            argv_buf[argc] = "--repetitions";
+            argv_buf[argc + 1] = try std.fmt.bufPrint(&repetitions_buf, "{d}", .{n});
+            argc += 2;
+        }
+        const run = try runCapped(gpa, io, argv_buf[0..argc], 256 * 1024, 64 * 1024, 0);
+        defer gpa.free(run.stdout);
+        defer gpa.free(run.stderr);
+        const ok = run.term == .exited and run.term.exited == 0 and !run.timed_out;
+        var aw: Io.Writer.Allocating = .init(gpa);
+        errdefer aw.deinit();
+        if (run.stdout.len > 0) try aw.writer.writeAll(run.stdout);
+        if (run.stdout_truncated) try aw.writer.writeAll("\n[learning output truncated]");
+        if (run.stderr.len > 0) try aw.writer.print("\n[stderr]\n{s}", .{run.stderr});
+        if (run.stderr_truncated) try aw.writer.writeAll("\n[learning stderr truncated]");
+        if (run.stdout.len == 0 and run.stderr.len == 0) try aw.writer.writeAll(if (ok) "learning run completed" else "learning run failed without output");
+        return .{ .text = try aw.toOwnedSlice(), .is_error = !ok };
+    }
     if (std.mem.eql(u8, call.name, "bash")) {
         const cmd = strField(input, "command") orelse return missingArg(gpa, "command");
         // Subagents have no stdin to prompt on; their gate is the allowlist.
@@ -223,27 +284,29 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                 if (try codedbCompactRead(gpa, io, path, start_line, end_line)) |out| return out;
             }
         }
-        const data = Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(256 * 1024)) catch |err| {
+        const outcome = read_file.read(io, gpa, .cwd(), path, start_line, end_line) catch |err| {
             if (fsErrorText(gpa, .read, path, err)) |t| return .{ .text = t, .is_error = true };
             return err;
         };
-        // Binary guard: PDFs/images/archives would only poison the context
-        // with mojibake — point the model at bash converters instead.
-        if (binaryFileExt(path) or std.mem.indexOfScalar(u8, data[0..@min(data.len, 4096)], 0) != null) {
-            defer gpa.free(data);
-            return .{ .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ path, data.len }), .is_error = true };
-        }
-        // #66: byte-exact 1-based inclusive line window — still a literal substring
-        // of the file, so it stays safe to paste into an edit_file old_string.
-        if (start_line != null or end_line != null) {
-            defer gpa.free(data);
-            const win = sliceLines(data, start_line, end_line) orelse return .{
+        return switch (outcome) {
+            .text => |text| .{ .text = text },
+            .truncated => |value| blk: {
+                defer gpa.free(value.head);
+                break :blk .{ .text = try std.fmt.allocPrint(gpa, "{s}\n\n[read_file preview: {d}-byte file exceeds the {d} KiB whole-file limit; use start_line/end_line for byte-exact windows]", .{ util.utf8Prefix(value.head, value.head.len), value.total_bytes, read_file.max_bytes / 1024 }) };
+            },
+            .binary => |size| .{
+                .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ path, size }),
+                .is_error = true,
+            },
+            .range_too_large => .{
+                .text = try std.fmt.allocPrint(gpa, "read_file: requested range from {s} exceeds {d} KiB — request a narrower start_line/end_line window", .{ path, read_file.max_bytes / 1024 }),
+                .is_error = true,
+            },
+            .start_past_end => .{
                 .text = try std.fmt.allocPrint(gpa, "start_line {?d} is past the end of {s}", .{ start_line, path }),
                 .is_error = true,
-            };
-            return .{ .text = try gpa.dupe(u8, win) };
-        }
-        return .{ .text = data };
+            },
+        };
     }
     if (std.mem.eql(u8, call.name, "codedb")) {
         const cmd = strField(input, "command") orelse return missingArg(gpa, "command");
@@ -361,33 +424,6 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     return .{ .text = try std.fmt.allocPrint(gpa, "unknown tool: {s}", .{call.name}), .is_error = true };
 }
 
-/// Byte-exact 1-based inclusive line window into `data`: the sub-slice spanning
-/// the start of line `start` through the end of line `end` (incl. that line's
-/// trailing newline when present). null if `start` is past EOF. A literal
-/// substring of the file, so it stays safe to paste into edit_file (#66).
-fn sliceLines(data: []const u8, start_opt: ?i64, end_opt: ?i64) ?[]const u8 {
-    if (data.len == 0) return null;
-    const start_1: usize = if (start_opt) |s| (if (s < 1) 1 else @intCast(s)) else 1;
-    const end_1: usize = if (end_opt) |e| (if (e < 1) 1 else @intCast(e)) else std.math.maxInt(usize);
-    if (end_1 < start_1) return null;
-    var line: usize = 1;
-    var begin: ?usize = if (start_1 == 1) 0 else null;
-    var stop: usize = data.len;
-    var i: usize = 0;
-    while (i < data.len) : (i += 1) {
-        if (data[i] == '\n') {
-            line += 1;
-            if (line == start_1) begin = i + 1;
-            if (line == end_1 +| 1) { // saturating: maxInt (no end_line) never matches `line`
-                stop = i + 1;
-                break;
-            }
-        }
-    }
-    const b = begin orelse return null; // start_1 is beyond EOF
-    return data[b..stop];
-}
-
 /// Opt-in exploratory read via `codedb read <path> [-L a-b] --compact`. Lossy view
 /// for reasoning only; returns null on any codedb failure so the caller falls back
 /// to the native byte-exact read (#66).
@@ -412,17 +448,6 @@ fn codedbCompactRead(gpa: Allocator, io: Io, path: []const u8, start: ?i64, end:
     };
     if (!ok or run.stdout.len == 0) return null;
     return ToolOutput{ .text = try std.fmt.allocPrint(gpa, "{s}\n[compact view — comments/blank lines stripped, line numbers shown; re-read WITHOUT compact before building an edit_file old_string]", .{run.stdout}) };
-}
-
-test "sliceLines: byte-exact 1-based inclusive window (#66)" {
-    const data = "a\nb\nc\nd\n";
-    try std.testing.expectEqualStrings("b\nc\n", sliceLines(data, 2, 3).?);
-    try std.testing.expectEqualStrings("a\n", sliceLines(data, 1, 1).?);
-    try std.testing.expectEqualStrings("a\nb\nc\nd\n", sliceLines(data, null, null).?);
-    try std.testing.expectEqualStrings("c\nd\n", sliceLines(data, 3, 99).?); // end clamps to EOF
-    try std.testing.expect(sliceLines(data, 99, 100) == null); // start past EOF
-    try std.testing.expectEqualStrings("y", sliceLines("x\ny", 2, 2).?); // no trailing newline
-    try std.testing.expect(std.mem.indexOf(u8, data, sliceLines(data, 2, 3).?) != null); // literal substring
 }
 
 /// The three native file tools, used to shape a filesystem-error message with
@@ -498,4 +523,12 @@ test "fsErrorText names the tool, path, and failure (#183)" {
 
     // Errors outside the usual path/permission set fall through to the generic handler.
     try std.testing.expect(fsErrorText(gpa, .read, "p", error.OutOfMemory) == null);
+}
+
+test "internal learning respects the parent privacy ceiling" {
+    var argv: [10][]const u8 = undefined;
+    var len = learningArgv(&argv, "graff", false);
+    try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "local", "learn", "run" }, argv[0..len]);
+    len = learningArgv(&argv, "graff", true);
+    try std.testing.expectEqualSlices([]const u8, &.{ "graff", "--learning-privacy", "aggregate", "learn", "run", "--submit" }, argv[0..len]);
 }

@@ -1,7 +1,8 @@
 import { test, expect } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ChatTable, chatTableLayoutFor } from "./ChatTable";
+import { ChatTable } from "./ChatTable";
+import { chatTableLayoutFor } from "./chatTableLayout";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 const header = ["Impact", "Site"];

@@ -14,9 +14,7 @@ const provider_mod = @import("provider.zig");
 const agent_mod = @import("agent.zig");
 const Provider = provider_mod.Provider;
 const Agent = agent_mod.Agent;
-const anthropic_version = root.anthropic_version;
-const kimi_user_agent = root.kimi_user_agent;
-const kimi_catalog = @import("kimi_catalog.zig");
+const headers = @import("http_headers.zig");
 
 /// Launch-scoped gate installed while the shared client's CA bundle warms in
 /// the background. Null in unit tests and standalone pre-client subcommands.
@@ -26,48 +24,8 @@ pub fn waitForClientReady(io: Io) void {
     if (g_client_ready) |ready| ready.waitUncancelable(io);
 }
 
-pub fn providerUserAgent(provider: Provider) std.http.Client.Request.Headers.Value {
-    if (std.mem.eql(u8, provider.id, "kimi")) {
-        return .{ .override = kimi_user_agent };
-    }
-    return .default;
-}
-pub fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[12]std.http.Header) []const std.http.Header {
-    var n: usize = 0;
-    switch (provider.auth) {
-        .x_api_key => {
-            buf[n] = .{ .name = "x-api-key", .value = provider.api_key };
-            n += 1;
-        },
-        .bearer => {
-            buf[n] = .{ .name = "authorization", .value = bearer };
-            n += 1;
-        },
-    }
-    // Anthropic-format endpoints also get the anthropic-version header
-    // (harmless extra for compatible providers).
-    if (provider.kind == .anthropic) {
-        buf[n] = .{ .name = "anthropic-version", .value = anthropic_version };
-        n += 1;
-    }
-    if (std.mem.eql(u8, provider.id, "kimi")) {
-        const identity = kimi_catalog.identityHeaders(buf[n..]);
-        n += identity.len;
-    }
-    // Codex / ChatGPT backend: identify as the codex client and carry the
-    // ChatGPT account id + Responses beta opt-in.
-    if (provider.kind == .responses) {
-        buf[n] = .{ .name = "chatgpt-account-id", .value = provider.account };
-        n += 1;
-        buf[n] = .{ .name = "OpenAI-Beta", .value = "responses=experimental" };
-        n += 1;
-        buf[n] = .{ .name = "originator", .value = "codex_cli_rs" };
-        n += 1;
-        buf[n] = .{ .name = "session_id", .value = "00000000-0000-0000-0000-000000000001" };
-        n += 1;
-    }
-    return buf[0..n];
-}
+pub const providerUserAgent = headers.userAgent;
+pub const providerHeaders = headers.providerHeaders;
 
 /// Copy up to root.g_5xx_body_buf.len bytes of an error response body into the
 /// global buffer so request()'s retry message can surface the gateway's

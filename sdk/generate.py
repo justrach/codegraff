@@ -216,19 +216,21 @@ function reportError(kind: string, detail: string): void {{
   }} catch {{ /* fetch unavailable: drop */ }}
 }}
 
-/** Best-effort OTLP "fleet" log for the federated evolution loop (docs §9):
- *  propose / submit / elite_pull signals, tagged by client so CLI/TS/Python
- *  contributions stay distinguishable in /v1/stats. Same opt-out + endpoint as
- *  reportError. Fire-and-forget. */
+/** Prompt-free SDK fleet signal. Local is the fail-closed default; SDKs have
+ *  no interactive artifact-review UI, so prompt_text is never admitted. */
 export function fleetSignal(kind: string, attrs: Record<string, string | number> = {{}}): void {{
   if (process.env.GRAFF_NO_TELEMETRY) return;
+  const privacy = process.env.GRAFF_LEARNING_PRIVACY ?? "local";
+  if (!(["aggregate", "templates", "examples"] as string[]).includes(privacy)) return;
+  const admitted = {{ ...attrs }};
+  delete admitted.prompt_text;
   let base = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || process.env.GRAFF_OTEL_ENDPOINT || TELEMETRY_DEFAULT;
   while (base.endsWith("/")) base = base.slice(0, -1);
   const url = base.endsWith("/v1/logs") ? base : base + "/v1/logs";
   const attributes: Array<Record<string, unknown>> = [
     {{ key: "kind", value: {{ stringValue: kind }} }},
   ];
-  for (const [k, v] of Object.entries(attrs)) {{
+  for (const [k, v] of Object.entries(admitted)) {{
     attributes.push({{ key: k, value: typeof v === "number" ? {{ doubleValue: v }} : {{ stringValue: String(v) }} }});
   }}
   const payload = JSON.stringify({{ resourceLogs: [{{
@@ -377,8 +379,8 @@ export class Harness {{
    *  prompt: that genome-lineage edge is what DGM parent selection counts
    *  children with. Pass `niche` (reviewer/researcher/implementer/skeptic, or
    *  a custom agent) to file the score into that MAP-Elites cell so the fleet
-   *  can promote a champion for the role; with the full persona text the genome
-   *  also rides over on a `fleet:propose`. Scale: the canonical wire scale is
+   *  can promote a champion for the role; full text produces only a prompt-free
+   *  fingerprint proposal until the SDK has review UI. Scale: the wire scale is
    *  [0, 1]. Pass scale "unit" to assert `value` is already in [0, 1]
    *  (anything else is rejected), or "percent" to always send value/100
    *  (accepts [0, 100] — a percent-scale 0.5 means 0.005, not 0.5). Without
@@ -390,10 +392,7 @@ export class Harness {{
     const sha = /^[0-9a-f]{{16}}$/.test(promptOrSha) ? promptOrSha : promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : /^[0-9a-f]{{16}}$/.test(parent) ? parent : promptFingerprint(parent);
-    // Genome-send (docs §9.B): a cell only promotes when a score's prompt_sha
-    // joins a stored genome, so when we hold the full persona text + a niche,
-    // register it first on a `fleet:propose` (deduped by prompt_sha on the
-    // collector). This is the SDK analog of the harness eval loop's propose.
+    // The SDK emitter strips prompt_text until it has an interactive review UI.
     if (niche && !/^[0-9a-f]{{16}}$/.test(promptOrSha)) fleetSignal("propose", {{ niche, prompt_sha: sha, parent_sha: parent_sha ?? "", prompt_text: promptOrSha }});
     this.proc.stdin.write(JSON.stringify({{ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }}) + "\\n");
     // Same edge-version tolerance as setSystemPrompt: skip unknown events
@@ -406,11 +405,10 @@ export class Harness {{
     }}
   }}
 
-  /** Pull the fleet's live champion personas for a model tier (docs §9 Step 2,
-   *  GET /v1/elites). Emits a `fleet:elite_pull` signal and returns the elites
-   *  (empty when none are promoted yet). Hits the telemetry collector, not the
-   *  harness subprocess. */
+  /** Pull the fleet's live champion personas (GET /v1/elites). Local mode
+   *  returns before contacting the telemetry collector. */
   async pullElites(providerClass: string, evalSetHash?: string): Promise<Array<Record<string, unknown>>> {{
+    if (!(["aggregate", "templates", "examples"] as string[]).includes(process.env.GRAFF_LEARNING_PRIVACY ?? "local")) return [];
     let base = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || process.env.GRAFF_OTEL_ENDPOINT || TELEMETRY_DEFAULT;
     while (base.endsWith("/")) base = base.slice(0, -1);
     if (base.endsWith("/v1/logs")) base = base.slice(0, -"/v1/logs".length);
@@ -849,18 +847,19 @@ def _report_error(kind: str, detail: str) -> None:
 
 
 def _fleet_signal(kind: str, attrs: Optional[dict] = None) -> None:
-    """Best-effort OTLP "fleet" log for the federated evolution loop (docs §9):
-    propose / submit / elite_pull signals, tagged by client so CLI/TS/Python
-    contributions stay distinguishable in /v1/stats. Same opt-out + endpoint as
-    _report_error. Fire-and-forget on a daemon thread; never raises."""
+    """Prompt-free SDK fleet signal; local is the fail-closed default."""
     if os.environ.get("GRAFF_NO_TELEMETRY"):
         return
+    privacy = os.environ.get("GRAFF_LEARNING_PRIVACY", "local")
+    if privacy not in ("aggregate", "templates", "examples"):
+        return
+    attrs = {{k: v for k, v in (attrs or {{}}).items() if k != "prompt_text"}}
     base = (os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
             or os.environ.get("GRAFF_OTEL_ENDPOINT")
             or _TELEMETRY_DEFAULT).rstrip("/")
     url = base if base.endswith("/v1/logs") else base + "/v1/logs"
     al = [{{"key": "kind", "value": {{"stringValue": kind}}}}]
-    for k, v in (attrs or {{}}).items():
+    for k, v in attrs.items():
         val = {{"doubleValue": v}} if isinstance(v, (int, float)) else {{"stringValue": str(v)}}
         al.append({{"key": k, "value": val}})
     payload = json.dumps({{"resourceLogs": [{{
@@ -1095,8 +1094,8 @@ class Harness:
         HMAC so a forged fitness row is detectable (see `verify_score`).
         `niche` (reviewer/researcher/implementer/skeptic, or a custom agent)
         files the score into that MAP-Elites cell so the fleet can promote a
-        champion for the role; with the full persona text the genome also rides
-        over on a `fleet:propose`.
+        champion for the role; full text produces only a prompt-free fingerprint
+        proposal until the SDK has an interactive review UI.
 
         Scale: the canonical wire scale is [0, 1]. Pass scale="unit" to
         assert `value` is already in [0, 1] (anything else is rejected), or
@@ -1123,9 +1122,7 @@ class Harness:
             req["niche"] = niche
         if scale:
             req["scale"] = scale
-        # Genome-send (docs §9.B): a cell only promotes when a score's prompt_sha
-        # joins a stored genome, so when we hold the full persona text + a niche,
-        # register it first (deduped by prompt_sha on the collector).
+        # The SDK emitter strips prompt_text until it has an interactive review UI.
         if niche and not re.fullmatch(r"[0-9a-f]{{16}}", prompt_or_sha):
             _fleet_signal("propose", {{"niche": niche, "prompt_sha": sha,
                                       "parent_sha": req.get("parent_sha", ""),
@@ -1149,10 +1146,9 @@ class Harness:
         raise RuntimeError("harness closed before acking score")
 
     def pull_elites(self, provider_class: str, eval_set_hash: str = "") -> list:
-        """Pull the fleet's live champion personas for a model tier (docs §9
-        Step 2, GET /v1/elites). Emits a `fleet:elite_pull` signal and returns
-        the elites list (empty when none are promoted yet). Hits the telemetry
-        collector, not the harness subprocess."""
+        """Pull fleet champions; local mode returns without network access."""
+        if os.environ.get("GRAFF_LEARNING_PRIVACY", "local") not in ("aggregate", "templates", "examples"):
+            return []
         base = (os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
                 or os.environ.get("GRAFF_OTEL_ENDPOINT")
                 or _TELEMETRY_DEFAULT).rstrip("/")
@@ -1313,7 +1309,7 @@ class RemoteHarness:
               niche: str = "", scale: str = "") -> None:
         """Record an evaluation score in the server-side trajectory archive —
         same semantics (and provenance fields) as `Harness.score`, including
-        the `niche` MAP-Elites tag, genome-send, and the optional `scale`
+        prompt-free MAP-Elites lineage and the optional `scale`
         ("unit" | "percent") override of the harness's value-normalization
         heuristic."""
         sha = prompt_or_sha if re.fullmatch(r"[0-9a-f]{{16}}", prompt_or_sha) \\
@@ -1332,8 +1328,7 @@ class RemoteHarness:
             req["niche"] = niche
         if scale:
             req["scale"] = scale
-        # Genome-send (docs §9.B): register the persona when we hold the full
-        # text + a niche so a promoted cell has a genome to serve.
+        # The SDK emitter strips prompt_text until it has an interactive review UI.
         if niche and not re.fullmatch(r"[0-9a-f]{{16}}", prompt_or_sha):
             _fleet_signal("propose", {{"niche": niche, "prompt_sha": sha,
                                       "parent_sha": req.get("parent_sha", ""),

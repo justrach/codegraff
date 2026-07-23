@@ -25,11 +25,12 @@ const http = @import("http.zig");
 // For the session run id (score/run join key) and the propose-site
 // fingerprint check. No cycle: scoring imports only std + pricing.
 const scoring = @import("scoring.zig");
+const telemetry_score = @import("telemetry_score.zig");
+const learning_privacy = @import("learning_privacy.zig");
 
 const root = @import("main.zig");
 const harness_version = root.harness_version;
 
-// ── Telemetry (OTEL) ────────────────────────────────────────────────────────
 // ── Telemetry (OTEL) ────────────────────────────────────────────────────────
 
 /// Anonymous usage telemetry, exported as OTLP/HTTP JSON log records in one
@@ -41,12 +42,26 @@ const harness_version = root.harness_version;
 /// anonymous id (~/.simple-harness-install-id) identifies the install; SDKs
 /// pass their own id via HARNESS_SDK_INSTALL_ID + HARNESS_CLIENT so SDK
 /// users are counted separately. Flush failures never disturb the session.
+///
+/// Transport helpers (collector key validation, signal-URL derivation, the
+/// bounded-deadline POST path's mock collectors and tests) live in
+/// telemetry_net.zig (600-line goal).
+const telemetry_net = @import("telemetry_net.zig");
+pub const validatedAuthKey = telemetry_net.validatedAuthKey;
+const otlpLogsUrl = telemetry_net.otlpLogsUrl;
+
+test {
+    _ = telemetry_net;
+    _ = @import("telemetry_tests.zig");
+}
+
 pub const Telemetry = struct {
     mutex: Io.Mutex = .init,
     io: Io,
     gpa: Allocator,
     endpoint: []const u8, // base OTLP endpoint; "" → disabled
     client: ?*std.http.Client = null, // shared http client, set by main()
+    auth_key: ?[]const u8 = null, // optional x-harness-key; never serialized
     install_id: [32]u8, // anonymous hex id for this install
     client_name: []const u8, // "harness", or "sdk-ts"/"sdk-py" via HARNESS_CLIENT
     sdk_install_id: []const u8, // the SDK's own install id, if driving us
@@ -69,7 +84,7 @@ pub const Telemetry = struct {
     /// One buffered log record. body "error": kind/detail set. body
     /// "workflow": phases/tasks/failed/duration set. body "score":
     /// detail = prompt_sha, score = the evaluation value.
-    const Event = struct {
+    pub const Event = struct {
         t_ms: i64,
         body: []const u8, // "error" | "workflow" | "ultracode" | "score" (static)
         kind: []const u8 = "", // error source: "api" | "tool" | "turn" (static)
@@ -77,7 +92,7 @@ pub const Telemetry = struct {
         extra: []const u8 = "", // gpa-duped: score → parent_sha, run → tool sequence
         run_id: []const u8 = "", // gpa-duped: score → run_id (signed)
         sig: []const u8 = "", // gpa-duped: score → HMAC signature ("" when unsigned)
-        prov: []const u8 = "", // gpa-duped: score → "judge_id\tartifact_sha\teval_set_hash" (signed)
+        prov: []const u8 = "", // gpa-duped: score provenance + optional aggregate grade
         phases: i64 = 0,
         tasks: i64 = 0,
         failed: i64 = 0,
@@ -135,38 +150,23 @@ pub const Telemetry = struct {
     }
 
     /// Record an issue (API failure, tool failure, aborted turn) as an ERROR
-    /// log record. `kind` and the truncated `detail` become attributes.
+    /// log record. Only the fixed call-site category leaves the process: raw
+    /// provider/tool error text can echo prompts, paths, source, or secrets.
     pub fn errorEvent(self: *Telemetry, kind: []const u8, detail: []const u8) void {
         if (!self.on()) return;
+        _ = detail;
         {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
-            self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "error", .kind = kind, .detail = self.dupDetail(detail) });
+            self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "error", .kind = kind });
         }
         self.maybeFlushEvents();
-    }
-
-    /// Truncate to max_detail without splitting a UTF-8 codepoint, and force
-    /// the copy to valid UTF-8 — std.json serializes an invalid []u8 as an
-    /// ARRAY of integers, which is schema-invalid OTLP that makes a collector
-    /// reject the entire batch. detail can carry raw provider bytes (e.g.
-    /// "unparseable response: …"), so both the cut and the content matter.
-    pub fn dupDetail(self: *Telemetry, detail: []const u8) []const u8 {
-        var p = detail[0..@min(detail.len, max_detail)];
-        var strips: usize = 0; // a split codepoint needs at most 3 byte strips
-        while (strips < 3 and p.len > 0 and !std.unicode.utf8ValidateSlice(p)) : (strips += 1)
-            p = p[0 .. p.len - 1];
-        const dup = self.gpa.dupe(u8, p) catch return "";
-        if (!std.unicode.utf8ValidateSlice(dup)) for (dup) |*b| {
-            if (b.* >= 0x80) b.* = '?'; // invalid mid-string bytes: degrade to ASCII
-        };
-        return dup;
     }
 
     /// Count a subagent spawned with a system-prompt override (an agent-type
     /// persona or an inline variant) — the swarm's prompt diversity signal.
     pub fn countVariant(self: *Telemetry) void {
-        if (!self.on()) return;
+        if (!self.on() or !learning_privacy.allowsAggregate()) return;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.prompt_variants += 1;
@@ -176,7 +176,7 @@ pub const Telemetry = struct {
     /// backend can validate that the evolution loop is actually running:
     /// one log record per score, prompt_sha + value as attributes.
     pub fn scoreEvent(self: *Telemetry, sha: []const u8, parent: []const u8, value: f64, run_id: []const u8, sig: []const u8, prov: []const u8) void {
-        if (!self.on()) return;
+        if (!self.on() or !learning_privacy.allowsAggregate()) return;
         {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
@@ -185,11 +185,9 @@ pub const Telemetry = struct {
             const pdup = if (parent.len > 0) self.gpa.dupe(u8, parent[0..@min(parent.len, 32)]) catch "" else "";
             const rdup = if (run_id.len > 0) self.gpa.dupe(u8, run_id[0..@min(run_id.len, 64)]) catch "" else "";
             const sdup = if (sig.len > 0) self.gpa.dupe(u8, sig[0..@min(sig.len, 64)]) catch "" else "";
-            // 320, not 256: a max-length prov (64+64+64 signed Step-0 fields +
-            // pclass + a 64-char niche + 4 tabs = 268) must never truncate —
-            // niche/provider_class are folded into the v2 HMAC (issue #168
-            // Gap 2), so a clipped niche would break signature verification.
-            const vdup = if (prov.len > 0) self.gpa.dupe(u8, utf8Prefix(prov, 320)) catch "" else "";
+            // Learning receipts append a second signature plus fixed aggregate
+            // metrics. Never truncate signed provenance in transport.
+            const vdup = if (prov.len > 0) self.gpa.dupe(u8, utf8Prefix(prov, 2048)) catch "" else "";
             self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "score", .detail = dup, .extra = pdup, .run_id = rdup, .sig = sdup, .prov = vdup, .score = value });
         }
         self.maybeFlushEvents();
@@ -208,19 +206,20 @@ pub const Telemetry = struct {
     /// _fleet_signal so the worker counts every client identically. signal is a
     /// static literal; the rest are duped/truncated like scoreEvent.
     pub fn fleetEvent(self: *Telemetry, signal: []const u8, niche: []const u8, prompt_sha: []const u8, parent_sha: []const u8, provider_class: []const u8, eval_set_hash: []const u8, n_elites: i64, prompt_text: []const u8) void {
-        if (!self.on() or !root.g_fleet) return;
+        if (!self.on() or !root.g_fleet or !learning_privacy.allowsAggregate()) return;
+        const admitted_text = learning_privacy.templateTextForUpload(self.io, prompt_text);
         // Review F6: never ship a truncated genome — skip the propose instead
         // (the fingerprint the scores reference stays computed over the full
         // text; only the genome-send is dropped).
-        if (std.mem.eql(u8, signal, "propose") and prompt_text.len > max_propose_text) return;
+        if (std.mem.eql(u8, signal, "propose") and admitted_text.len > max_propose_text) return;
         // Propose-site integrity (issue #168 Gap 3, debug builds only): the
         // genome text must hash to the fingerprint it claims — a promoted
         // cell would otherwise serve text that never earned its scores. This
         // asserts on exactly what will be sent: oversized proposes returned
         // above, so the utf8Prefix cap below can no longer truncate a genome.
         // The backend independently recomputes and rejects mismatches.
-        if (builtin.mode == .Debug and std.mem.eql(u8, signal, "propose") and prompt_text.len > 0 and prompt_sha.len > 0) {
-            const fp = scoring.promptFingerprint(prompt_text);
+        if (builtin.mode == .Debug and std.mem.eql(u8, signal, "propose") and admitted_text.len > 0 and prompt_sha.len > 0) {
+            const fp = scoring.promptFingerprint(admitted_text);
             std.debug.assert(std.mem.eql(u8, &fp, prompt_sha));
         }
         {
@@ -234,7 +233,7 @@ pub const Telemetry = struct {
                 self.gpa.dupe(u8, std.fmt.bufPrint(&pbuf, "{s}\t{s}", .{ provider_class, eval_set_hash }) catch "") catch ""
             else
                 "";
-            const dtext = if (prompt_text.len > 0) self.gpa.dupe(u8, utf8Prefix(prompt_text, max_propose_text)) catch "" else "";
+            const dtext = if (admitted_text.len > 0) self.gpa.dupe(u8, utf8Prefix(admitted_text, max_propose_text)) catch "" else "";
             self.push(.{ .t_ms = self.elapsedMsLocked(), .body = "fleet", .kind = signal, .detail = ddet, .extra = dnic, .run_id = dpar, .prov = provdup, .tasks = n_elites, .text = dtext });
         }
         self.maybeFlushEvents();
@@ -244,7 +243,7 @@ pub const Telemetry = struct {
     /// sequence — the process-mining signal behind "which tool combinations
     /// work". Lands as a generic body="run" record (attrs JSON) server-side.
     pub fn runEvent(self: *Telemetry, sha: []const u8, variant: bool, ok: bool, ms: i64, tools: []const u8) void {
-        if (!self.on()) return;
+        if (!self.on() or !learning_privacy.allowsAggregate()) return;
         {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
@@ -345,50 +344,58 @@ pub const Telemetry = struct {
     }
 
     /// Build an OTLP/HTTP JSON payload for `events` (plus the session
-    /// summary when `include_summary`) and POST it to <endpoint>/v1/logs
-    /// (per the OTLP env spec the endpoint is a base URL; it's used verbatim
-    /// only when it already ends in /v1/logs). The POST races a 3s deadline
-    /// so a dead or wedged collector can never hang the session.
+    /// summary when `include_summary`) and POST it to <endpoint>/v1/logs.
+    /// Per the OTLP env spec the endpoint is a base URL; an existing /v1/logs
+    /// path is retained, query parameters are preserved, and fragments are
+    /// dropped. The POST races a 3s deadline so a dead or wedged collector can
+    /// never hang the session.
     /// Best-effort: any failure is swallowed.
     pub fn sendBatch(self: *Telemetry, events: []const Event, include_summary: bool) void {
+        self.sendBatchWithDeadline(events, include_summary, .fromSeconds(3));
+    }
+
+    pub fn sendBatchWithDeadline(self: *Telemetry, events: []const Event, include_summary: bool, deadline: Io.Duration) void {
         if (!self.on()) return;
         const client = self.client orelse return;
         if (events.len == 0 and !include_summary) return;
         var aw: Io.Writer.Allocating = .init(self.gpa);
         defer aw.deinit();
         self.writeOtlp(&aw.writer, events, include_summary) catch return;
-        var ubuf: [512]u8 = undefined;
-        const trimmed = std.mem.trimEnd(u8, self.endpoint, "/");
-        const url = if (std.mem.endsWith(u8, trimmed, "/v1/logs"))
-            trimmed
-        else
-            std.fmt.bufPrint(&ubuf, "{s}/v1/logs", .{trimmed}) catch return;
+        const url = (otlpLogsUrl(self.gpa, self.endpoint) catch return) orelse return;
+        defer self.gpa.free(url);
 
-        const Done = union(enum) { posted: void, deadline: void };
+        const Done = union(enum) { posted: bool, deadline: void };
         var done_buf: [2]Done = undefined;
         var sel: Io.Select(Done) = .init(self.io, &done_buf);
-        sel.concurrent(.posted, postOtlp, .{ client, url, aw.writer.buffered() }) catch return;
-        sel.concurrent(.deadline, flushDeadline, .{self.io}) catch {
-            _ = sel.await() catch {}; // no spare concurrency: wait unbounded
+        // Arm the deadline before starting network I/O. If no concurrency slot
+        // remains for the POST, canceling this timer is bounded; starting the
+        // POST first could otherwise leave teardown waiting without a bound.
+        sel.concurrent(.deadline, flushDeadline, .{ self.io, deadline }) catch return;
+        sel.concurrent(.posted, postOtlp, .{ client, url, aw.writer.buffered(), self.auth_key orelse "" }) catch {
             sel.cancelDiscard();
             return;
         };
-        _ = sel.await() catch {}; // first of POST / deadline wins
-        sel.cancelDiscard(); // cancel the loser (fetch's socket ops are cancelation points)
+        _ = sel.await() catch {};
+        sel.cancelDiscard(); // cancel and synchronously join the loser
     }
 
-    pub fn postOtlp(client: *std.http.Client, url: []const u8, payload: []const u8) void {
+    pub fn postOtlp(client: *std.http.Client, url: []const u8, payload: []const u8, auth_key: []const u8) bool {
         http.waitForClientReady(client.io);
-        _ = client.fetch(.{
+        const auth_header = [_]std.http.Header{.{ .name = "x-harness-key", .value = auth_key }};
+        const extra_headers: []const std.http.Header = if (auth_key.len > 0) &auth_header else &.{};
+        const response = client.fetch(.{
             .location = .{ .url = url },
             .method = .POST,
             .payload = payload,
             .headers = .{ .content_type = .{ .override = "application/json" } },
-        }) catch {};
+            .extra_headers = extra_headers,
+        }) catch return false;
+        const status = @intFromEnum(response.status);
+        return status >= 200 and status < 300;
     }
 
-    pub fn flushDeadline(io: Io) void {
-        io.sleep(.fromSeconds(3), .awake) catch {};
+    pub fn flushDeadline(io: Io, deadline: Io.Duration) void {
+        io.sleep(deadline, .awake) catch {};
     }
 
     const AttrVal = union(enum) { str: []const u8, int: i64, num: f64 };
@@ -425,6 +432,10 @@ pub const Telemetry = struct {
     }
 
     pub fn writeOtlp(self: *Telemetry, w: *Io.Writer, events: []const Event, include_summary: bool) !void {
+        // Consent is a live send-time decision, not only an enqueue decision.
+        // A later `/privacy local` or `/fleet off` revokes buffered learning
+        // events, and a template approval is rechecked for the exact bytes.
+        const learning_allowed = root.g_fleet and learning_privacy.allowsAggregate();
         var s: std.json.Stringify = .{ .writer = w };
         try s.beginObject();
         try s.objectField("resourceLogs");
@@ -434,13 +445,16 @@ pub const Telemetry = struct {
         try s.beginObject();
         try s.objectField("attributes");
         try s.beginArray();
-        try attr(&s, "service.name", .{ .str = "simple-harness" });
-        try attr(&s, "service.version", .{ .str = harness_version });
-        try attr(&s, "os.type", .{ .str = @tagName(builtin.os.tag) });
-        try attr(&s, "host.arch", .{ .str = @tagName(builtin.cpu.arch) });
-        try attr(&s, "install.id", .{ .str = &self.install_id });
+        const explicit_learning = std.mem.eql(u8, self.client_name, "harness-learn");
+        if (!explicit_learning) {
+            try attr(&s, "service.name", .{ .str = "simple-harness" });
+            try attr(&s, "service.version", .{ .str = harness_version });
+            try attr(&s, "os.type", .{ .str = @tagName(builtin.os.tag) });
+            try attr(&s, "host.arch", .{ .str = @tagName(builtin.cpu.arch) });
+            try attr(&s, "install.id", .{ .str = &self.install_id });
+        }
         try attr(&s, "client.name", .{ .str = self.client_name });
-        if (self.sdk_install_id.len > 0) try attr(&s, "sdk.install.id", .{ .str = self.sdk_install_id });
+        if (!explicit_learning and self.sdk_install_id.len > 0) try attr(&s, "sdk.install.id", .{ .str = self.sdk_install_id });
         try s.endArray();
         try s.endObject();
         try s.objectField("scopeLogs");
@@ -454,6 +468,12 @@ pub const Telemetry = struct {
         try s.objectField("logRecords");
         try s.beginArray();
         for (events) |e| {
+            const learning_event = std.mem.eql(u8, e.body, "score") or std.mem.eql(u8, e.body, "run") or std.mem.eql(u8, e.body, "fleet");
+            if (learning_event and !learning_allowed) continue;
+            if (std.mem.eql(u8, e.body, "fleet") and
+                !std.mem.eql(u8, e.kind, "propose") and
+                !std.mem.eql(u8, e.kind, "submit") and
+                !std.mem.eql(u8, e.kind, "elite_pull")) continue;
             try s.beginObject();
             try timeField(&s, self.start_unix_ms + e.t_ms);
             try s.objectField("severityText");
@@ -466,21 +486,7 @@ pub const Telemetry = struct {
             try s.objectField("attributes");
             try s.beginArray();
             if (std.mem.eql(u8, e.body, "score")) {
-                try attr(&s, "prompt_sha", .{ .str = e.detail });
-                try attr(&s, "value", .{ .num = e.score });
-                if (e.extra.len > 0) try attr(&s, "parent_sha", .{ .str = e.extra });
-                if (e.run_id.len > 0) try attr(&s, "run_id", .{ .str = e.run_id });
-                if (e.sig.len > 0) try attr(&s, "sig", .{ .str = e.sig });
-                if (e.prov.len > 0) {
-                    // prov = "judge_id\tartifact_sha\teval_set_hash" — split so
-                    // the worker can recompute the HMAC over the same fields.
-                    var it = std.mem.splitScalar(u8, e.prov, '\t');
-                    if (it.next()) |j| if (j.len > 0) try attr(&s, "judge_id", .{ .str = j });
-                    if (it.next()) |a| if (a.len > 0) try attr(&s, "artifact_sha", .{ .str = a });
-                    if (it.next()) |h| if (h.len > 0) try attr(&s, "eval_set_hash", .{ .str = h });
-                    if (it.next()) |pc| if (pc.len > 0) try attr(&s, "provider_class", .{ .str = pc });
-                    if (it.next()) |nc| if (nc.len > 0) try attr(&s, "niche", .{ .str = nc });
-                }
+                try telemetry_score.write(&s, e);
             } else if (std.mem.eql(u8, e.body, "run")) {
                 try attr(&s, "prompt_sha", .{ .str = e.detail });
                 try attr(&s, "variant", .{ .int = @intFromBool(std.mem.eql(u8, e.kind, "variant")) });
@@ -492,16 +498,25 @@ pub const Telemetry = struct {
                 if (e.extra.len > 0) try attr(&s, "tools", .{ .str = e.extra });
             } else if (std.mem.eql(u8, e.body, "fleet")) {
                 try attr(&s, "kind", .{ .str = e.kind });
-                if (e.extra.len > 0) try attr(&s, "niche", .{ .str = e.extra });
-                if (e.detail.len > 0) try attr(&s, "prompt_sha", .{ .str = e.detail });
-                if (e.run_id.len > 0) try attr(&s, "parent_sha", .{ .str = e.run_id });
+                var niche_buf: [23]u8 = undefined;
+                const niche = scoring.telemetryNiche(&niche_buf, e.extra);
+                if (niche.len > 0) try attr(&s, "niche", .{ .str = niche });
+                var hash_buf: [16]u8 = undefined;
+                const prompt_sha = scoring.telemetryHash(&hash_buf, e.detail, 16);
+                if (prompt_sha.len > 0) try attr(&s, "prompt_sha", .{ .str = prompt_sha });
+                const parent_sha = scoring.telemetryHash(&hash_buf, e.run_id, 16);
+                if (parent_sha.len > 0) try attr(&s, "parent_sha", .{ .str = parent_sha });
                 if (e.prov.len > 0) {
                     var fit = std.mem.splitScalar(u8, e.prov, '\t');
-                    if (fit.next()) |pc| if (pc.len > 0) try attr(&s, "provider_class", .{ .str = pc });
-                    if (fit.next()) |eh| if (eh.len > 0) try attr(&s, "eval_set_hash", .{ .str = eh });
+                    if (fit.next()) |pc| if (scoring.telemetryProviderClass(pc)) |projected| try attr(&s, "provider_class", .{ .str = projected });
+                    if (fit.next()) |eh| {
+                        const eval_hash = scoring.telemetryHash(&hash_buf, eh, 8);
+                        if (eval_hash.len > 0) try attr(&s, "eval_set_hash", .{ .str = eval_hash });
+                    }
                 }
-                if (std.mem.eql(u8, e.kind, "elite_pull")) try attr(&s, "n_elites", .{ .int = e.tasks });
-                if (e.text.len > 0) try attr(&s, "prompt_text", .{ .str = e.text });
+                if (std.mem.eql(u8, e.kind, "elite_pull")) try attr(&s, "n_elites", .{ .int = @min(@max(e.tasks, 0), 1000) });
+                const admitted_text = learning_privacy.templateTextForUpload(self.io, e.text);
+                if (admitted_text.len > 0) try attr(&s, "prompt_text", .{ .str = admitted_text });
             } else {
                 if (e.kind.len > 0) try attr(&s, "kind", .{ .str = e.kind });
                 if (e.detail.len > 0) try attr(&s, "detail", .{ .str = e.detail });
@@ -539,8 +554,8 @@ pub const Telemetry = struct {
             try attr(&s, "workflows", .{ .int = @intCast(self.workflows) });
             try attr(&s, "workflow_tasks", .{ .int = @intCast(self.workflow_tasks) });
             try attr(&s, "ultracode_turns", .{ .int = @intCast(self.ultracode_turns) });
-            try attr(&s, "prompt_variants", .{ .int = @intCast(self.prompt_variants) });
-            try attr(&s, "scores_recorded", .{ .int = @intCast(self.scores_recorded) });
+            try attr(&s, "prompt_variants", .{ .int = @intCast(if (learning_allowed) self.prompt_variants else 0) });
+            try attr(&s, "scores_recorded", .{ .int = @intCast(if (learning_allowed) self.scores_recorded else 0) });
             try attr(&s, "models", .{ .str = models_joined });
             const c = g_cost.snap(self.io);
             try attr(&s, "cost_usd", .{ .num = c.usd });
@@ -562,91 +577,3 @@ pub const Telemetry = struct {
 /// Set once in main() when telemetry is configured; Tracer and the workflow
 /// runner feed it through this. Null → every hook is a no-op.
 pub var g_telem: ?*Telemetry = null;
-test "telemetry dupDetail never yields invalid UTF-8" {
-    var t: Telemetry = .{
-        .io = undefined, // dupDetail only touches gpa
-        .gpa = std.testing.allocator,
-        .endpoint = "x",
-        .install_id = @splat('0'),
-        .client_name = "harness",
-        .sdk_install_id = "",
-        .start = undefined,
-        .start_unix_ms = 0,
-    };
-    // The 200-byte cap lands mid-codepoint: 199 ASCII bytes + 2-byte 'é'.
-    var buf: [201]u8 = undefined;
-    @memset(buf[0..199], 'a');
-    buf[199] = 0xC3;
-    buf[200] = 0xA9;
-    const cut = t.dupDetail(&buf);
-    defer std.testing.allocator.free(cut);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(cut));
-    try std.testing.expectEqual(@as(usize, 199), cut.len); // split lead byte dropped
-    // Raw invalid bytes mid-string (unparseable provider response) degrade
-    // to ASCII instead of corrupting the OTLP payload.
-    const garbage = t.dupDetail("ok\xff\xfe more text here");
-    defer std.testing.allocator.free(garbage);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(garbage));
-    try std.testing.expect(std.mem.startsWith(u8, garbage, "ok??"));
-}
-test "telemetry writeOtlp emits a fleet record with kind + split prov attrs" {
-    var t: Telemetry = .{
-        .io = undefined, // writeOtlp(.., include_summary=false) never touches io
-        .gpa = std.testing.allocator,
-        .endpoint = "x",
-        .install_id = @splat('0'),
-        .client_name = "harness",
-        .sdk_install_id = "",
-        .start = undefined,
-        .start_unix_ms = 0,
-    };
-    const events = [_]Telemetry.Event{.{
-        .t_ms = 0,
-        .body = "fleet",
-        .kind = "propose",
-        .detail = "abcd1234", // prompt_sha
-        .extra = "reviewer", // niche
-        .run_id = "deadbeef", // parent_sha
-        .prov = "frontier\ta9134381", // provider_class \t eval_set_hash
-    }};
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    try t.writeOtlp(&aw.writer, &events, false);
-    const out = aw.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"stringValue\":\"fleet\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"propose\"") != null); // kind
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"reviewer\"") != null); // niche
-    try std.testing.expect(std.mem.indexOf(u8, out, "parent_sha") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"frontier\"") != null); // provider_class (split from prov)
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"a9134381\"") != null); // eval_set_hash (split from prov)
-}
-test "telemetry writeOtlp stamps run records with run_id (issue #168 Gap 6)" {
-    var t: Telemetry = .{
-        .io = undefined, // writeOtlp(.., include_summary=false) never touches io
-        .gpa = std.testing.allocator,
-        .endpoint = "x",
-        .install_id = @splat('0'),
-        .client_name = "harness",
-        .sdk_install_id = "",
-        .start = undefined,
-        .start_unix_ms = 0,
-    };
-    const events = [_]Telemetry.Event{.{
-        .t_ms = 0,
-        .body = "run",
-        .kind = "default",
-        .detail = "abcd1234", // prompt_sha
-        .extra = "read,edit", // tools
-        .run_id = "cafef00dcafef00d",
-        .ms = 42,
-        .flag = true,
-    }};
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    try t.writeOtlp(&aw.writer, &events, false);
-    const out = aw.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"stringValue\":\"run\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "run_id") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"cafef00dcafef00d\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"read,edit\"") != null); // tools
-}

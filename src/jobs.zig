@@ -14,6 +14,12 @@ const root = @import("main.zig");
 const agent_mod = @import("agent.zig");
 const tools_mod = @import("tools.zig");
 const ToolOutput = tools_mod.ToolOutput;
+const process_runner = @import("process_runner.zig");
+pub const CappedRun = process_runner.CappedRun;
+pub const CappedRunOptions = process_runner.CappedRunOptions;
+pub const runCapped = process_runner.runCapped;
+pub const runCappedWithOptions = process_runner.runCappedWithOptions;
+const ranOk = process_runner.ranOk;
 
 /// Commit-message trailer that credits the harness assist. The commit AUTHOR
 /// stays the user's own git identity (their GitHub account) — graff never
@@ -21,97 +27,6 @@ const ToolOutput = tools_mod.ToolOutput;
 /// mirroring how Claude Code attributes commits.
 const codegraff_coauthor = "Co-Authored-By: Codegraff <blackfloofie@codegraff.com>";
 const Agent = agent_mod.Agent;
-
-const CappedRun = struct {
-    term: std.process.Child.Term,
-    stdout: []u8,
-    stderr: []u8,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
-    timed_out: bool,
-};
-
-/// Like `std.process.run`, but hitting an output cap *truncates* instead of
-/// failing the call: the first `cap` bytes are kept, the rest is discarded
-/// as it streams (retained memory never exceeds the caps), and the child
-/// still runs to completion so its exit code is real. A chatty `python`
-/// (or an accidental `cat` of something huge) costs the child's own
-/// process memory, never the harness's.
-///
-/// `deadline_ms` is a wall-clock kill switch: 0 means "no deadline" (the
-/// root's Esc is the only stop), non-zero kills the child once it has run
-/// that long and reports `timed_out`. Subagents pass a real deadline since
-/// they have no Esc (#93).
-pub fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize, stderr_cap: usize, deadline_ms: u64) !CappedRun {
-    var child = try std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .ignore,
-        .stdout = .pipe,
-        .stderr = .pipe,
-    });
-    defer child.kill(io);
-
-    var multi_reader_buffer: Io.File.MultiReader.Buffer(2) = undefined;
-    var multi_reader: Io.File.MultiReader = undefined;
-    multi_reader.init(gpa, io, multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
-    defer multi_reader.deinit();
-
-    const readers = [2]*Io.Reader{ multi_reader.reader(0), multi_reader.reader(1) };
-    const caps = [2]usize{ stdout_cap, stderr_cap };
-    var saved: [2]?[]u8 = .{ null, null };
-    errdefer for (saved) |s| if (s) |b| gpa.free(b);
-
-    // Fill in 200ms ticks so a root Esc (Agent.esc_cancel, set by the
-    // tool-join watcher) kills a long-running child instead of waiting it
-    // out — this is where a hung `sleep`-style command actually dies. A
-    // non-zero deadline_ms is the same kill switch on a wall clock, for
-    // subagents that have no Esc to press (#93).
-    var esc_killed = false;
-    var timed_out = false;
-    const t0: Io.Timestamp = .now(io, .awake);
-    loop: while (true) {
-        multi_reader.fill(64, .{ .duration = .{ .raw = .fromMilliseconds(200), .clock = .awake } }) catch |err| switch (err) {
-            error.EndOfStream => break :loop,
-            error.Timeout => {}, // poll tick: no data, just check for cancel
-            else => |e| return e,
-        };
-        for (readers, caps, &saved) |r, cap, *s| {
-            const buf = r.buffered();
-            if (s.* == null and buf.len > cap) s.* = try gpa.dupe(u8, buf[0..cap]);
-            if (s.* != null) r.toss(buf.len); // past the cap: discard as it streams
-        }
-        if (Agent.esc_cancel.load(.acquire)) {
-            esc_killed = true;
-            child.kill(io);
-            break :loop;
-        }
-        if (deadline_ms > 0 and t0.untilNow(io, .awake).toMilliseconds() >= deadline_ms) {
-            timed_out = true;
-            child.kill(io);
-            break :loop;
-        }
-    }
-    if (!esc_killed and !timed_out) try multi_reader.checkAnyError(); // killed streams error by design
-
-    // kill() already reaped the child (wait would assert on id == null).
-    const term: std.process.Child.Term = if (esc_killed or timed_out) .{ .signal = .TERM } else try child.wait(io);
-    const stdout = if (saved[0]) |b| b else try gpa.dupe(u8, readers[0].buffered());
-    errdefer gpa.free(stdout);
-    const stderr = if (saved[1]) |b| b else try gpa.dupe(u8, readers[1].buffered());
-    return .{
-        .term = term,
-        .stdout = stdout,
-        .stderr = stderr,
-        .stdout_truncated = saved[0] != null,
-        .stderr_truncated = saved[1] != null,
-        .timed_out = timed_out,
-    };
-}
-
-/// True if a CappedRun child exited cleanly (status 0).
-fn ranOk(r: CappedRun) bool {
-    return r.term == .exited and r.term.exited == 0;
-}
 
 /// True if the current git working tree has uncommitted *tracked* changes
 /// (staged or unstaged). Untracked files (`?? …`) don't count — `git reset
@@ -560,4 +475,44 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
     }
     gpa.free(jobs);
     g_jobs.list.deinit(gpa);
+}
+
+test "isolated capped runs clean descendants after timeout and normal exit" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const timed = try runCappedWithOptions(
+        std.testing.allocator,
+        io,
+        &.{ "/bin/sh", "-c", "(sleep 0.8; printf survived > timeout-marker) >/dev/null 2>&1 & sleep 30" },
+        1024,
+        1024,
+        50,
+        .{ .cwd = .{ .dir = tmp.dir }, .kill_process_tree = true },
+    );
+    defer {
+        std.testing.allocator.free(timed.stdout);
+        std.testing.allocator.free(timed.stderr);
+    }
+    try std.testing.expect(timed.timed_out);
+
+    const completed = try runCappedWithOptions(
+        std.testing.allocator,
+        io,
+        &.{ "/bin/sh", "-c", "(sleep 0.8; printf survived > completed-marker) >/dev/null 2>&1 & exit 0" },
+        1024,
+        1024,
+        2_000,
+        .{ .cwd = .{ .dir = tmp.dir }, .kill_process_tree = true },
+    );
+    defer {
+        std.testing.allocator.free(completed.stdout);
+        std.testing.allocator.free(completed.stderr);
+    }
+    try std.testing.expect(ranOk(completed));
+    io.sleep(.fromMilliseconds(1_000), .awake) catch {};
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "timeout-marker", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "completed-marker", .{}));
 }

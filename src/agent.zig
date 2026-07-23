@@ -1,21 +1,7 @@
-//! The Agent struct itself: one agent's fields (message history, streaming/
-//! markdown-render state, thinking-block state, eval-loop state, ...) plus
-//! its smallest methods (prompt/say/sayApiError/emit/systemPrompt/
-//! effortApplies/toolsJson/runTurn/renderTodos). Every other Agent method is
-//! a free `pub fn method(self: *Agent, ...)` in an agent_*.zig sibling file,
-//! member-aliased back inside this struct (`pub const method =
-//! @import("agent_x.zig").method;`) so both `self.method(...)` and static
-//! `Agent.method(...)` test calls resolve unchanged regardless of which
-//! physical file a method's body lives in. Split out of main.zig (600-line
-//! goal). Back-imports main (as main_mod, since a request()/etc. param is
-//! conventionally named `root` elsewhere and to avoid the `agent`/`Agent`
-//! self-name clash) for Provider/ReasoningEffort/the json_mode/plan_mode/
-//! show_cost/g_cwd_display/g_gui_mu live globals. Sibling-imports mcp
-//! (Registry), approvals (Approvals), trace (Tracer/ToolSink), tools
-//! (Snapshots), vision (PendingImage), prompts (the system-prompt text),
-//! schema (the per-wire-format tool JSON + providerTakesEffort), pricing
-//! (priceFor/g_cost), and ansi (the color palette) directly instead of
-//! going back through main's private aliases for them.
+//! The Agent struct, its state, and its smallest methods. Larger methods are
+//! split into `agent_*.zig` siblings and member-aliased back into the struct.
+//! Live process/session globals are reached through main_mod; focused helpers
+//! are imported directly from their owning modules.
 
 const std = @import("std");
 const Io = std.Io;
@@ -38,47 +24,18 @@ const pricing = @import("pricing.zig");
 const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
+const learning_privacy = @import("learning_privacy.zig");
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
+const prompt_ui = @import("agent_prompt.zig");
+const agent_tests = @import("agent_tests.zig");
 
-fn reasoningPromptLabel(effort: ReasoningEffort) []const u8 {
-    return switch (effort) {
-        .low => "Low",
-        .medium => "Medium",
-        .high => "High",
-        .xhigh => "Extra high",
-        .max => "Max",
-        .ultra => "Ultra",
-    };
-}
-
-fn reasoningPromptColor(effort: ReasoningEffort) []const u8 {
-    return switch (effort) {
-        .low => style.green,
-        .medium => style.accent,
-        .high => style.yellow,
-        .xhigh => style.accent,
-        .max => style.red,
-        .ultra => style.accent,
-    };
-}
-
-fn writePromptBadge(w: *Io.Writer, color: []const u8, label: []const u8) !void {
-    try w.print("{s} · {s}{s}{s}{s}", .{ style.dim, style.reset, color, label, style.reset });
-}
-
-fn compactTokenCount(buf: []u8, tokens: u64) []const u8 {
-    return if (tokens >= 1000)
-        std.fmt.bufPrint(buf, "{d}k", .{tokens / 1000}) catch "?"
-    else
-        std.fmt.bufPrint(buf, "{d}", .{tokens}) catch "?";
-}
-
-fn contextPercent(tokens: u64, window: u64) u64 {
-    if (window == 0) return 0;
-    return @min((tokens *| 100) / window, 100);
-}
+const reasoningPromptLabel = prompt_ui.reasoningLabel;
+const reasoningPromptColor = prompt_ui.reasoningColor;
+const writePromptBadge = prompt_ui.writeBadge;
+const compactTokenCount = prompt_ui.compactTokenCount;
+const contextPercent = prompt_ui.contextPercent;
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -99,7 +56,6 @@ pub const Goal = struct {
     created_ms: i64 = 0,
     updated_ms: i64 = 0,
 };
-
 /// One agent: a message history plus the POST/tool-dispatch loop. The root
 /// agent prints to stdout; subagents (sub = true) run on pool threads and
 /// log through std.debug.print, which locks stderr and is thread-safe.
@@ -119,10 +75,11 @@ pub const Agent = struct {
     io: Io,
     client: *std.http.Client,
     provider: Provider,
+    subagent_provider: ?Provider = null, // optional model pin for every direct child/workflow/judge
+    subagent_cross_provider: bool = false, // user explicitly allowed the pin to cross a provider/data boundary
     messages: std.json.Array,
     // Codex Responses WS delta transport: one WS held across a turn's tool loop,
-    // sending previous_response_id + only the new items instead of the full
-    // history each step. Reset per turn by runTurn via closeCodexWs.
+    // sending previous_response_id + only new items. Reset by closeCodexWs.
     codex_ws: ?*ws.WsClient = null,
     codex_prev_id: ?[]const u8 = null, // last response.id (gpa-owned); null = re-anchor with full input
     codex_sent_upto: usize = 0, // messages the server already holds; delta = messages[codex_sent_upto..]
@@ -181,6 +138,8 @@ pub const Agent = struct {
     eval_judge: ?[]const u8 = null, // --judge: LLM-as-judge rubric, min()-blended with the --eval score (runJudge). Dormant until a CLI flag sets it.
     eval_iter: u32 = 0, // eval-loop iteration counter (scores log)
     eval_best: f64 = -1, // best score seen this session (-1 = none yet)
+    eval_verified: bool = false, // latest workspace state has a target-meeting verifier result
+    eval_repair_pending: bool = false, // a contradiction blocks completion until a fresh green eval
     strict: bool = false,
     completed: ?[]const u8 = null,
     last_context_tokens: u64 = 0,
@@ -245,6 +204,12 @@ pub const Agent = struct {
         if (main_mod.plan_mode) try writePromptBadge(w, style.yellow, "Plan");
         if (self.strict) try writePromptBadge(w, style.red, "Strict");
         if (self.ultracode_mode) try writePromptBadge(w, style.accent, "Ultracode");
+        const privacy_mode = learning_privacy.current();
+        try writePromptBadge(w, switch (privacy_mode) {
+            .local, .aggregate => style.green,
+            .templates => style.yellow,
+            .examples => style.red,
+        }, privacy_mode.badge());
         try w.print("{s} · cwd {s}{s}{s}", .{ style.dim, style.reset, main_mod.g_cwd_display, style.dim });
         const context_tokens = self.effectiveContextTokens();
         if (self.last_context_tokens > 0) {
@@ -626,58 +591,10 @@ pub const Agent = struct {
     pub const isTableSeparator = @import("agent_table.zig").isTableSeparator;
 };
 
-test "reasoning prompt label uses picker wording" {
-    try std.testing.expectEqualStrings("Low", reasoningPromptLabel(.low));
-    try std.testing.expectEqualStrings("Medium", reasoningPromptLabel(.medium));
-    try std.testing.expectEqualStrings("High", reasoningPromptLabel(.high));
-    try std.testing.expectEqualStrings("Extra high", reasoningPromptLabel(.xhigh));
-    try std.testing.expectEqualStrings("Max", reasoningPromptLabel(.max));
-    try std.testing.expectEqualStrings("Ultra", reasoningPromptLabel(.ultra));
-}
-
-test "compact token counts keep prompt usage readable" {
-    var buf: [24]u8 = undefined;
-    try std.testing.expectEqualStrings("999", compactTokenCount(&buf, 999));
-    try std.testing.expectEqualStrings("138k", compactTokenCount(&buf, 138_082));
-}
-
-test "context percent saturates malformed or over-window server meters" {
-    try std.testing.expectEqual(@as(u64, 0), contextPercent(100, 0));
-    try std.testing.expectEqual(@as(u64, 50), contextPercent(50_000, 100_000));
-    try std.testing.expectEqual(@as(u64, 100), contextPercent(150_000, 100_000));
-    try std.testing.expectEqual(@as(u64, 100), contextPercent(std.math.maxInt(u64), 100_000));
+test "agent prompt helper suite" {
+    _ = @import("agent_prompt.zig");
 }
 
 test "lazy root tool catalogs preserve MCP tools across provider formats" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var registry = mcp.Registry.empty(std.testing.allocator, std.testing.io);
-    defer registry.deinit();
-    var connected = [_]mcp.Tool{.{
-        .server_index = 0,
-        .original_name = "search",
-        .qualified_name = "mcp__bench__search",
-        .description = "search the benchmark index",
-        .input_schema = .{ .object = .empty },
-    }};
-    registry.tools = &connected;
-
-    var agent: Agent = undefined;
-    agent.arena = arena;
-    agent.sub = false;
-    agent.registry = &registry;
-    agent.tools_anthropic = "";
-    agent.tools_openai = "";
-    agent.tools_responses = "";
-
-    try agent.ensureRootTools(.responses);
-    try std.testing.expect(std.mem.indexOf(u8, agent.tools_responses, "mcp__bench__search") != null);
-    try std.testing.expectEqual(@as(usize, 0), agent.tools_openai.len);
-    try std.testing.expectEqual(@as(usize, 0), agent.tools_anthropic.len);
-
-    agent.invalidateRootTools();
-    try agent.ensureRootTools(.anthropic);
-    try std.testing.expect(std.mem.indexOf(u8, agent.tools_anthropic, "mcp__bench__search") != null);
-    try std.testing.expectEqual(@as(usize, 0), agent.tools_responses.len);
+    try agent_tests.lazyRootTools(Agent);
 }

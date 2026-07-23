@@ -236,9 +236,9 @@ so the harness itself is the substrate for agent self-improvement. Each run
 writes a unique `.graff/trajectories/<run-id>.jsonl`; archive readers aggregate
 the directory, so concurrent processes never share a truncate/append cursor:
 
-- **A lineage tree, not a flat log.** Root turns form a spine (each turn's
-  parent is the previous one); every subagent and workflow task hangs off the
-  turn that spawned it. Each node carries a **fingerprint of the system prompt
+- **A lineage tree, not a flat log.** Interactive root turns form a spine (each
+  turn's parent is the previous one); every subagent and workflow task hangs off
+  the turn that spawned it. Each node carries a **fingerprint of the system prompt
   it ran with** (`prompt_sha` = first 8 bytes of SHA-256), so prompt mutations (
   `set_system_prompt` on the spine, per-child `system_prompt` overrides on the
   fan-out) show up as hash changes along edges. A lineage can be replayed or
@@ -259,10 +259,18 @@ the directory, so concurrent processes never share a truncate/append cursor:
 - **Tool-use is mined too.** Each agent logs its tool calls (name + error flag,
   in order): the process signal behind "which tool combinations work",
   joinable to scores via `prompt_sha`.
-- **Closed loop in releases.** Release binaries ship anonymous evolution
-  telemetry (opt-out) so agent-variant fitness is learned across the fleet, not
-  just one laptop. `/trajectory` renders the current session's agent tree; see
+- **Consent-scoped fleet loop.** Learning stays local by default; users can
+  contribute prompt-free aggregate fitness or individually reviewed reusable
+  templates. `/trajectory` renders the current session's agent tree; see
   [docs/hyperagents.md](docs/hyperagents.md) for the full design.
+
+For controlled local hill-climbing, `graff learn` adds a separate
+parent → mutate → paired-evaluate → select loop with immutable evidence, manual
+promotion by default, explicitly gated automatic promotion, atomic activation,
+and rollback. It never treats trajectories or best-effort telemetry as promotion
+authority. See [Local prompt-policy learning](docs/local-learning.md), including
+the no-sandbox trust boundary and the collective-learning design that is **not**
+yet an implemented remote authority.
 
 ---
 
@@ -353,25 +361,34 @@ usage:
   graff key list                   show which providers have keys
   graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
   graff mcp                         list configured MCP servers
+  graff learn <command>             local prompt-policy learning and rollback
   graff --schema                   print the machine-readable interface (SDK codegen)
 
 flags:
-  --model <name>   start on this model (same fuzzy resolution as /model)
-  --yolo           skip all permission prompts for the session
-  -p, --print      one-shot print mode (answer on stdout, tool progress on stderr)
-  --timing         show per-tool wall-clock on result lines (✓ (312ms) …)
-  --cost           show running session spend in the prompt ([model · 12k tok · $0.0042])
-  --json           structured stdio protocol (JSON in, JSONL events out, SDK transport)
+  --model <name>            start on this model (same fuzzy resolution as /model)
+  --subagent-model <name>   pin children/workflows/judges to this model on the root provider
+  --subagent-provider <id>  route pinned workers through this explicit provider
+  --allow-cross-provider-subagents
+                            consent to worker prompts/code going to another provider
+  --yolo                    skip all permission prompts for the session
+  -p, --print               one-shot print mode (answer on stdout, tool progress on stderr)
+  --timing                  show per-tool wall-clock on result lines (✓ (312ms) …)
+  --cost                    show running session spend in the prompt ([model · 12k tok · $0.0042])
+  --json                    structured stdio protocol (JSON in, JSONL events out, SDK transport)
   --max-model-calls N  cap provider calls across root, children, retries, titles, compaction, and judges (default 256)
   -h, --help       usage
   -V, --version    version
 ```
 
-Unknown flags are an error (with a pointer to `--help`), a missing `--model`
-value is an error, and `--help`/`--version` are handled before subcommand
+Unknown flags are an error (with a pointer to `--help`), missing model-flag
+values are errors, and `--help`/`--version` are handled before subcommand
 dispatch, so `graff login --help` prints usage instead of starting an OAuth
 flow. With no key configured at all, startup fails with the three quickest fixes
 spelled out rather than a bare env-var list.
+
+`graff learn help` lists the local learning commands. Configuration, adapter
+protocols, statistical gates, activation semantics, and security limitations are
+specified in [docs/local-learning.md](docs/local-learning.md).
 
 **One-shot mode** makes the harness scriptable without the SDK: `graff -p "how
 many TODOs in src/?"` runs a full agentic turn (tools included), prints only the
@@ -449,6 +466,40 @@ turns it back on, and `/goal status` shows the objective and its current state.
 (plan, act, verify) and stopping on its own with a named outcome (accepted,
 blocked, cancelled, or exhausted) once the work is done, you step in, or a safety
 limit is hit, instead of pausing for confirmation between routine steps.
+
+### MCP servers
+
+Graff speaks both MCP transports directly: local stdio servers and remote
+Streamable HTTP servers. Smolify (`https://app.smol.ly/mcp`) is available as a
+core documentation service; it needs no Node bridge or project configuration.
+Its public-read schemas are bundled locally, so startup makes no Smolify
+request. The anonymous transport initializes only after an approved tool call,
+and recognizable credentials in arguments are blocked locally. Set
+`GRAFF_NO_SMOLIFY=1` to remove its tool surface entirely. Authenticated and
+write-capable tools are hidden unless the session explicitly opts in with
+`GRAFF_SMOLIFY_ACCESS=full`. Other servers can be added from the shell or during
+a session:
+
+```sh
+graff mcp add context7 -- npx -y @upstash/context7-mcp
+graff mcp add mobbin --url https://api.mobbin.com/mcp
+graff mcp login mobbin   # OAuth discovery + browser PKCE flow
+graff mcp login smolify  # optional access to authenticated Smolify tools
+GRAFF_SMOLIFY_ACCESS=full graff  # expose the authenticated/full catalog
+# In the REPL: /mcp add mobbin --url https://api.mobbin.com/mcp
+```
+
+The equivalent `.mcp.json` URL entry is
+`{"mcpServers":{"mobbin":{"url":"https://api.mobbin.com/mcp"}}}`. Remote
+responses may use either `application/json` or `text/event-stream`; Graff keeps
+`Mcp-Session-Id` state and sends `MCP-Protocol-Version` on requests.
+For OAuth-protected endpoints, `graff mcp login <name>` performs protected
+resource and authorization-server discovery, dynamic client registration, and
+a browser PKCE flow. Tokens are stored outside the repository under
+`~/.simple-harness-mcp` with user-only permissions and refreshed automatically.
+Static HTTP headers can alternatively be added with
+`--header 'Authorization=Bearer TOKEN'` (they are stored in `.mcp.json`, so
+prefer a restricted token and do not commit that file).
 
 The line editor supports ↑/↓ history (persisted to `~/.simple-harness-history`),
 Tab completion (commands, and model names after `/model `), and emacs-style
@@ -691,14 +742,43 @@ history, its own arena, and a subagent-specific system prompt (`execSubagent`).
 Because tool calls already fan out via `io.async`, the model spawning three
 subagents in one response gets three agent loops running concurrently, each
 making its own HTTPS calls through the shared (thread-safe) `std.http.Client`.
-Subagents inherit the parent's provider, so deepseek subagents work the same as
-claude ones.
+Subagents inherit the parent's provider/model by default. A model shape can pin
+all direct children, workflow workers/retries, and LLM judges to another model
+on the same provider/account:
+
+```sh
+graff --model gpt-5.6-sol --subagent-model gpt-5.6-terra
+# equivalent lower-precedence worker setting:
+GRAFF_SUBAGENT_MODEL=gpt-5.6-terra graff --model gpt-5.6-sol
+```
+
+This keeps orchestration/synthesis on Sol and parallel execution on Terra
+without silently crossing credential, billing, or data-boundary domains.
+Cross-provider workers require an explicit provider and a separate consent
+flag—for example, when both Codex and Kimi are available:
+
+```sh
+graff --model gpt-5.6-sol \
+  --subagent-provider kimi --subagent-model k3 \
+  --allow-cross-provider-subagents
+```
+
+The consent matters because worker prompts, selected code, and tool results go
+to Kimi while root calls continue to go to Codex; telemetry/upload settings are
+independent of that model traffic. Omitting the consent flag fails closed. Put
+`ultracode` in a task (or run `/ultracode on`) when you want the root to
+actively fan work out; the model split itself does not force delegation. If
+`/model` later crosses to another provider, a provider-local pin follows the
+current root until it is compatible again. An explicitly consented cross-
+provider pin remains fixed.
 
 - Depth capped at one level: subagents don't get the `subagent` tool.
 - Subagents don't share the root agent's context, so the orchestrator must put
   everything needed into the prompt (the tool description tells it so).
 - Progress lines (`[label] ⚙ bash …`) go to stderr via `std.debug.print`, which
   locks stderr and is safe from pool threads.
+- Operational API traces and child trajectory nodes record the provider and
+  model that actually handled each child.
 
 </details>
 
@@ -766,7 +846,8 @@ request/response bytes, context tokens) and every tool execution (duration,
 result size, errors, root-vs-subagent) is appended as one JSON line to the
 run's unique `.graff/traces/<run-id>.jsonl`. Every line carries the run id, PID,
 and runtime session id; concurrent processes therefore remain independently
-inspectable. The system prompt tells the agent how to locate the file, so
+inspectable. API/tool rows also carry the active behavioral `turn` when one
+exists. The system prompt tells the agent how to locate the file, so
 "profile yourself" or "why was that slow?" makes it answer from data. `/trace`
 toggles tracing and prints the exact path.
 
@@ -786,33 +867,91 @@ suffix forward verbatim. A shared atomic run budget allows at most four model
 calls concurrently and one subagent level; set the total provider-call ceiling
 with `--max-model-calls N` or the lower-precedence `GRAFF_MAX_MODEL_CALLS`.
 
+**Behavioral trajectories are a separate experimental stream.** Each initialized
+agent session can write an exclusively-created
+`.graff/behavior/<run_id>.jsonl` with an ordered, attributable lifecycle
+envelope. The local JSONL is never uploaded wholesale. Local capture defaults on
+and is independently disabled with `GRAFF_BEHAVIOR_TRACE=off`. Set
+`GRAFF_BEHAVIOR_TRACE=full` to additionally record tool names/arguments and
+completed assistant text in that local file (opt-in and capped). That plaintext
+file is never uploaded wholesale. Metadata upload still receives only a
+separately built, content-free projection; exact rich fields require the
+additional `GRAFF_BEHAVIOR_UPLOAD=content` opt-in.
+
+When ordinary telemetry is enabled, Codegraff also defaults to one bounded,
+end-of-run **field-allowlisted metadata** POST. A terminal `/v1/logs` path is
+replaced with `/v1/behavior`; otherwise `/v1/behavior` is appended to the
+configured base path. Query parameters are preserved and URL fragments omitted.
+Disable it with `GRAFF_BEHAVIOR_UPLOAD=off` or either ordinary telemetry opt-out.
+Only exact lowercase `metadata` or `content` values enable an explicit upload
+mode; `content` opts into caller-supplied adapter content and unknown/case/
+whitespace variants fail closed. `GRAFF_TELEMETRY_KEY` supplies an optional
+bounded `x-harness-key` token to both OTLP and behavioral requests. Metadata mode
+includes lifecycle/correlation fields, a controlled client class (`harness`,
+`sdk-ts`, or `sdk-py`), an initial run-start provider/model/effort snapshot,
+drop/completeness status, and content-free per-turn API/tool-category aggregates.
+When rich capture is enabled, that allowlist can also carry rich-event
+correlation, broad tool class, byte/duration/error counters, and truncation
+flags—never exact tool names, arguments, results, or assistant text.
+The local prompt fingerprint is omitted from default metadata because a
+low-entropy prompt can be recovered by enumeration. It has no dedicated fields for prompts, generated text or hidden
+reasoning, source code or diffs, filesystem paths or repository names, tool
+arguments/results, commands, arbitrary environment values, or exact private MCP
+names. Provider and model identifiers are included exactly as configured; Phase
+1 does not inspect, classify, or redact those identifier values.
+
+Most Phase 1 runs contain lifecycle events only. With
+`GRAFF_BEHAVIOR_TRACE=full`, tool/action/text events are added locally and their
+content-free projections become eligible for metadata upload; their exact
+names, arguments, and text are sent only in explicit content mode.
+The eval-driven loop (`--eval`/`--until`) is the first built-in caller of the
+typed commitment/misprediction APIs, committing to a target before running
+the scoring command and recording a misprediction only on a nonzero exit or a
+missed target, with no command text, stdout, or stderr ever entering either
+field. No other built-in adapter calls them.
+Content mode adds fields supplied through those APIs, with no redactor or secret
+scanner; the local prompt fingerprint remains excluded. This is not yet a
+generic predict → act → verify → repair loop
+or a behavioral score source. Individual collector rows are not publicly exposed;
+public behavioral statistics are aggregate-only, and opted-in content rows expire
+after 30 days. See [the schema, privacy policy, and current
+limitations](docs/behavioral-trajectories.md).
+
 **Telemetry, pseudonymous, opt-out, on by default.** *Every* build (release,
 source, and dev) bakes in a default OTLP endpoint (pass `-Dtelemetry-endpoint=""`
-to disable it at build time), so by default a session ships best-effort OTLP/HTTP
-JSON POSTs to `<endpoint>/v1/logs` (at exit, plus mid-session batches). **Opt out
-any time** with `--no-telemetry` or `GRAFF_NO_TELEMETRY=1`; setting
-`OTEL_EXPORTER_OTLP_ENDPOINT` (or `GRAFF_OTEL_ENDPOINT`) redirects it to your own
-collector instead.
+to disable it at build time). A default session ships best-effort operational
+OTLP/HTTP JSON POSTs to `<endpoint>/v1/logs` (at exit, plus mid-session batches)
+and the metadata-only behavioral POST described above. **Opt out of both** with
+`--no-telemetry` or `GRAFF_NO_TELEMETRY=1`; setting
+`OTEL_EXPORTER_OTLP_ENDPOINT` (or `GRAFF_OTEL_ENDPOINT`) redirects both paths to
+your own collector instead. `GRAFF_BEHAVIOR_UPLOAD=off` disables only the
+behavioral POST.
 
 It's *pseudonymous, not anonymous*: records carry a **random** per-install id
 (`~/.simple-harness-install-id`, generated with `io.random`, not derived from your
-name, host, or user) plus your request IP, version, OS, and arch. The payload is
-**counts, hashes, and tool names**: a `session` summary (duration, turns, API/tool
-call+error counts, models used, workflow/ultracode counts), per-`workflow` and
-per-error records, and per-turn/score records keyed by a one-way **system-prompt
-fingerprint** + `prompt_sha` hashes with a tool-**name** sequence (e.g.
-`read_file, bash, edit_file`). It does **not** send your prompts, your code, file
-contents, file paths, or tool arguments. Your input is never an argument to any
-telemetry call.
+name, host, or user) plus your request IP, version, OS, and arch. The
+**operational OTLP payload** is counts, hashes, and tool names: a `session`
+summary (duration, turns, API/tool call+error counts, models used,
+workflow/ultracode counts), plus per-`workflow` and per-error records. When
+learning privacy is `aggregate` or higher it also admits per-run/score records
+keyed by a one-way **system-prompt fingerprint** with a tool-**name** sequence (for example,
+`read_file, bash, edit_file`). It does not send prompts, code, file contents,
+file paths, or tool arguments. The separately bounded behavioral payload follows
+the metadata/content rules above; only explicit content mode permits opaque
+adapter fields that may contain task content.
 
-**Fleet / evolution signals** (`fleet:propose|submit|elite_pull`, the
-agent-evolution fitness loop) ride the same channel and have a *separate* opt-out:
-`GRAFF_FLEET=off` or `/fleet off`. They're hashes and labels, with one exception.
-`fleet:propose` sends an agent's **system-prompt / persona text** (≤8192 chars: the
-evolved "genome"; graff's own text for built-in agents, *your* text for a custom
-agent or inline override). Error details are capped at 200 chars. The SDKs tag their
-child harness with `HARNESS_CLIENT=sdk-ts|sdk-py` and a separate id
-(`~/.simple-harness-sdk-id`). A flush failure never disturbs the session.
+**Fleet / evolution signals are local by default.** `/privacy` selects a
+session-scoped learning ceiling: `local` sends nothing automatically (the
+bundled `learn_candidate` tool can request one aggregate-only send); `aggregate` permits
+signed grades and prompt-free fleet metadata; `templates` additionally offers
+each private reusable persona/template for an exact preview approval; and
+`examples` reserves a future one-shot reviewed-example channel (raw example
+upload is not implemented). `GRAFF_LEARNING_PRIVACY` or
+`--learning-privacy` can select the same mode, while `GRAFF_FLEET=off` or
+`/fleet off` remains a master kill switch. Template approvals never persist,
+are not bypassed by `--yolo`, and are re-scanned at the final egress point.
+Raw task prompts, bindings, code, paths, reports, tool results, and traces have
+no fleet upload path. See [Learning privacy and consent](docs/learning-privacy.md).
 
 </details>
 

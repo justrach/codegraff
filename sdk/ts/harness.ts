@@ -11,7 +11,7 @@ import { createInterface } from "node:readline";
 export const HARNESS_VERSION = "0.6";
 
 export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5.2" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "grok-4.3" | "grok-build" | "k3" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | (string & {});
-export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "clock_sleep" | "subagent" | "workflow";
+export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "clock_sleep" | "subagent" | "workflow" | "learn_candidate";
 export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "moonshot" | "xai" | "zai" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
 
 /** Events streamed by `harness --json` (one JSON object per stdout line), each
@@ -165,19 +165,21 @@ function reportError(kind: string, detail: string): void {
   } catch { /* fetch unavailable: drop */ }
 }
 
-/** Best-effort OTLP "fleet" log for the federated evolution loop (docs §9):
- *  propose / submit / elite_pull signals, tagged by client so CLI/TS/Python
- *  contributions stay distinguishable in /v1/stats. Same opt-out + endpoint as
- *  reportError. Fire-and-forget. */
+/** Prompt-free SDK fleet signal. Local is the fail-closed default; SDKs have
+ *  no interactive artifact-review UI, so prompt_text is never admitted. */
 export function fleetSignal(kind: string, attrs: Record<string, string | number> = {}): void {
   if (process.env.GRAFF_NO_TELEMETRY) return;
+  const privacy = process.env.GRAFF_LEARNING_PRIVACY ?? "local";
+  if (!(["aggregate", "templates", "examples"] as string[]).includes(privacy)) return;
+  const admitted = { ...attrs };
+  delete admitted.prompt_text;
   let base = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || process.env.GRAFF_OTEL_ENDPOINT || TELEMETRY_DEFAULT;
   while (base.endsWith("/")) base = base.slice(0, -1);
   const url = base.endsWith("/v1/logs") ? base : base + "/v1/logs";
   const attributes: Array<Record<string, unknown>> = [
     { key: "kind", value: { stringValue: kind } },
   ];
-  for (const [k, v] of Object.entries(attrs)) {
+  for (const [k, v] of Object.entries(admitted)) {
     attributes.push({ key: k, value: typeof v === "number" ? { doubleValue: v } : { stringValue: String(v) } });
   }
   const payload = JSON.stringify({ resourceLogs: [{
@@ -326,8 +328,8 @@ export class Harness {
    *  prompt: that genome-lineage edge is what DGM parent selection counts
    *  children with. Pass `niche` (reviewer/researcher/implementer/skeptic, or
    *  a custom agent) to file the score into that MAP-Elites cell so the fleet
-   *  can promote a champion for the role; with the full persona text the genome
-   *  also rides over on a `fleet:propose`. Scale: the canonical wire scale is
+   *  can promote a champion for the role; full text produces only a prompt-free
+   *  fingerprint proposal until the SDK has review UI. Scale: the wire scale is
    *  [0, 1]. Pass scale "unit" to assert `value` is already in [0, 1]
    *  (anything else is rejected), or "percent" to always send value/100
    *  (accepts [0, 100] — a percent-scale 0.5 means 0.005, not 0.5). Without
@@ -339,10 +341,7 @@ export class Harness {
     const sha = /^[0-9a-f]{16}$/.test(promptOrSha) ? promptOrSha : promptFingerprint(promptOrSha);
     const parent_sha = parent === undefined ? undefined
       : /^[0-9a-f]{16}$/.test(parent) ? parent : promptFingerprint(parent);
-    // Genome-send (docs §9.B): a cell only promotes when a score's prompt_sha
-    // joins a stored genome, so when we hold the full persona text + a niche,
-    // register it first on a `fleet:propose` (deduped by prompt_sha on the
-    // collector). This is the SDK analog of the harness eval loop's propose.
+    // The SDK emitter strips prompt_text until it has an interactive review UI.
     if (niche && !/^[0-9a-f]{16}$/.test(promptOrSha)) fleetSignal("propose", { niche, prompt_sha: sha, parent_sha: parent_sha ?? "", prompt_text: promptOrSha });
     this.proc.stdin.write(JSON.stringify({ type: "score", prompt_sha: sha, score: value, notes, parent_sha, niche, scale }) + "\n");
     // Same edge-version tolerance as setSystemPrompt: skip unknown events
@@ -355,11 +354,10 @@ export class Harness {
     }
   }
 
-  /** Pull the fleet's live champion personas for a model tier (docs §9 Step 2,
-   *  GET /v1/elites). Emits a `fleet:elite_pull` signal and returns the elites
-   *  (empty when none are promoted yet). Hits the telemetry collector, not the
-   *  harness subprocess. */
+  /** Pull the fleet's live champion personas (GET /v1/elites). Local mode
+   *  returns before contacting the telemetry collector. */
   async pullElites(providerClass: string, evalSetHash?: string): Promise<Array<Record<string, unknown>>> {
+    if (!(["aggregate", "templates", "examples"] as string[]).includes(process.env.GRAFF_LEARNING_PRIVACY ?? "local")) return [];
     let base = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || process.env.GRAFF_OTEL_ENDPOINT || TELEMETRY_DEFAULT;
     while (base.endsWith("/")) base = base.slice(0, -1);
     if (base.endsWith("/v1/logs")) base = base.slice(0, -"/v1/logs".length);
@@ -420,4 +418,4 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<Event> {
 }
 
 export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.3", "grok-build", "k3", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mlx-community/Qwen3.6-27B-OptiQ-4bit"];
-export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow"];
+export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow", "learn_candidate"];

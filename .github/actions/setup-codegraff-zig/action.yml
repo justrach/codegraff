@@ -1,0 +1,45 @@
+name: Setup pinned Codegraff Zig
+description: Restore or install Codegraff's checksum-pinned Zig nightly without a JavaScript runtime
+
+inputs:
+  version:
+    description: Exact Zig nightly used by Codegraff
+    default: 0.17.0-dev.813+2153f8143
+
+runs:
+  using: composite
+  steps:
+    - name: Restore verified Zig toolchain
+      id: toolchain-cache
+      if: runner.os != 'Windows'
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/codegraff-zig-${{ inputs.version }}
+        key: codegraff-zig-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}
+
+    - name: Restore verified Zig archive
+      if: runner.os == 'Windows' || steps.toolchain-cache.outputs.cache-hit != 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/codegraff-zig-archives
+        key: codegraff-zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}
+
+    - name: Install pinned Zig (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: python3 "${{ github.action_path }}/../../../scripts/install-zig-ci.py" --version "${{ inputs.version }}"
+
+    - name: Install pinned Zig (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: python3 "${{ github.action_path }}/../../../scripts/install-zig-ci.py" --version "${{ inputs.version }}"
+
+    - name: Restore Zig build caches
+      uses: actions/cache@v6
+      with:
+        path: |
+          ${{ github.workspace }}/.zig-cache
+          ${{ github.workspace }}/.zig-global-cache
+        key: codegraff-zig-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ github.sha }}
+        restore-keys: |
+          codegraff-zig-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-

@@ -34,6 +34,7 @@ const oauth = @import("oauth.zig");
 const pricing = @import("pricing.zig");
 const models_cache = @import("models_cache.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
+const subagent_selection = @import("subagent_selection.zig");
 const serde = @import("serde.zig");
 const skills = @import("skills.zig");
 const prompts = @import("prompts.zig");
@@ -114,6 +115,8 @@ fn startupNeedsKimiCatalog(keys: provider_mod.Keys, model_flag: ?[]const u8, sav
     const fallback = keys.defaultProvider() catch return false;
     return std.mem.eql(u8, fallback.id, "kimi");
 }
+
+pub const resolveSubagentProvider = subagent_selection.resolveSubagentProvider;
 
 test "Codex catalog loads at startup only when selection can observe it" {
     try std.testing.expectEqualStrings("deepseek", explicitProvider("deepseek").?);
@@ -375,6 +378,7 @@ pub fn buildSystemPrompt(
 
 const args = @import("args.zig");
 const mcp_cli = @import("mcp_cli.zig");
+const learn_cli = @import("learn_cli.zig");
 const cli = @import("cli.zig");
 const jobs = @import("jobs.zig");
 const cube = @import("cube.zig");
@@ -408,9 +412,19 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
-    // `harness mcp add <name> -- <command> [args...]`: write workspace MCP config.
+    // MCP list/add only use workspace config; OAuth login validates HOME itself.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
-        try mcp_cli.mcpCommand(io, arena, flags.positionals.items[1..]);
+        const home = keys_cli.homeEnv(init.environ_map) orelse "";
+        try mcp_cli.mcpCommand(io, gpa, arena, home, flags.positionals.items[1..]);
+        return true;
+    }
+
+    // `graff learn ...`: local immutable policy learning. It runs before key
+    // resolution and normal session construction; configured child tools get
+    // only their explicitly allowlisted environment.
+    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "learn")) {
+        learn_cli.command(io, gpa, arena, init, flags.positionals.items[1..]) catch |err|
+            std.process.fatal("learn: {s}", .{@errorName(err)});
         return true;
     }
 
@@ -436,6 +450,9 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             .token = token,
             .yolo = flags.yolo_flag,
             .model = flags.model_flag,
+            .subagent_provider = flags.subagent_provider_flag,
+            .subagent_model = flags.subagent_model_flag,
+            .allow_cross_provider_subagents = flags.allow_cross_provider_subagents_flag,
             .system_prompt = flags.system_prompt_flag,
             .append_system_prompt = flags.append_system_flag,
             .max_tool_calls = main_mod.max_tool_calls,

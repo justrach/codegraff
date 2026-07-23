@@ -10,12 +10,21 @@ jobs:
   sdk:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - name: Pinned Zig installer integrity tests
+        run: python3 scripts/test-install-zig-ci.py
+
+      - name: Zig source-size guard integrity tests
+        run: python3 scripts/test-zig-lines.py
+
+      - name: Model-shape benchmark integrity
+        run: python3 benchmarks/test_model_shape.py
 
       - name: Python SDK import smoke
         run: python3 -c "import sys; sys.path.insert(0, 'sdk/py'); import harness_sdk; assert harness_sdk.MODELS and harness_sdk.TOOLS; print('py sdk ok:', len(harness_sdk.MODELS), 'models')"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -28,19 +37,20 @@ jobs:
   # codebase targets.
   zig:
     runs-on: ubuntu-latest
+    env:
+      # Integration tests are deterministic/offline; hosted MCP is covered separately.
+      GRAFF_NO_SMOLIFY: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+        uses: ./.github/actions/setup-codegraff-zig
 
       - name: zig build
         run: zig build
 
       - name: zig fmt --check
-        run: zig fmt --check src/main.zig src/mcp.zig build.zig
+        run: zig fmt --check src build.zig
 
       - name: Zig source size guard
         run: bash scripts/check-zig-lines.sh
@@ -48,14 +58,38 @@ jobs:
       - name: zig build test
         run: zig build test --summary all
 
+      - name: Local learning lifecycle and security regression
+        run: python3 tests/learn_e2e.py --graff zig-out/bin/graff
+
+      - name: Evolutionary tournament and behavioral metric regression
+        run: |
+          python3 tests/learn_tournament_e2e.py --graff zig-out/bin/graff
+          python3 tests/learn_graff_adapters.py
+          python3 tests/learn_graff_evaluator_retries.py
+
+      - name: Behavioral trace stream, re-scorer, and replay round trip
+        run: python3 scripts/test-behavior-trace.py zig-out/bin/graff
+
+      - name: Concurrent operational trace isolation and JSONL integrity
+        run: python3 scripts/test-run-isolation.py zig-out/bin/graff
+
       - name: JSON live-control protocol test
         run: python3 scripts/test-json-controls.py zig-out/bin/graff
+
+      - name: Streamable HTTP MCP handshake and session regression
+        run: python3 scripts/test-mcp-streamable-http.py --graff zig-out/bin/graff
+
+      - name: Smolify lazy public-only and secret-egress boundary
+        run: python3 scripts/test-smolify-boundary.py --graff zig-out/bin/graff
 
       - name: Live JSON stream contains no raw stdout lines
         run: python3 scripts/test-json-live.py zig-out/bin/graff
 
       - name: PTY spinner anti-stealth test
         run: python3 scripts/test-pty-spinner.py zig-out/bin/graff
+
+      - name: YOLO background-TTY job-control regression
+        run: python3 scripts/test-yolo-job-control.py zig-out/bin/graff
 
       - name: PTY REPL interaction test
         run: python3 scripts/test-pty-repl.py zig-out/bin/graff
@@ -65,6 +99,9 @@ jobs:
 
       - name: PTY model preference and fallback test
         run: python3 scripts/test-model-preference.py zig-out/bin/graff
+
+      - name: Root and subagent model-shape routing
+        run: python3 scripts/test-model-shape.py zig-out/bin/graff
 
       - name: Codex WS/SSE transport and mid-turn compaction test
         run: python3 scripts/test-pty-codex-ws.py zig-out/bin/graff
@@ -90,18 +127,19 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+        uses: ./.github/actions/setup-codegraff-zig
 
       - name: zig build
         run: zig build
 
       - name: zig build test
         run: zig build test --summary all
+
+      - name: Local learning lifecycle and security regression (Windows)
+        run: python3 tests/learn_e2e.py --graff zig-out/bin/graff.exe
 
       - name: smoke --version
         shell: cmd

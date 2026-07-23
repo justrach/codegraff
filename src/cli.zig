@@ -21,6 +21,13 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.215
+    \\  • Local learning can race multiple prompt variants, rank correctness before tool economy, and expose only the winner to a hidden holdout
+    \\  • Runs checkpoint safely, keep promotion manual by default, and can bundle an aggregate-only signed grade submission
+    \\  • Aggregate receipts expire after 30 days and can be deleted remotely without deleting local evidence or requiring telemetry consent
+    \\  • Root/subagent model shapes can keep orchestration on Sol while routing parallel workers and judges to Terra
+    \\  • Remote MCP servers now support Streamable HTTP, OAuth discovery/PKCE/refresh, and an opt-out core Smolify connection
+    \\
     \\0.0.209
     \\  • Kimi Code now follows each live catalog model's native or Anthropic beta protocol, auth style, context, and thinking metadata
     \\  • Native Kimi tool schemas are normalized to Moonshot's stricter validator; OAuth requests carry the current Kimi Code identity headers
@@ -61,8 +68,11 @@ pub const usage_text =
     \\  graff key set <provider> <key>   store a key (macOS Keychain, else 0600 file)
     \\  graff key list                   show which providers have keys
     \\  graff models [refresh]           list the live catalog; refresh Codex + models.dev metadata
-    \\  graff mcp add <name> -- <cmd>     add an MCP server to .mcp.json
+    \\  graff mcp add <name> -- <cmd>     add a stdio MCP server to .mcp.json
+    \\  graff mcp add <name> --url <url>  add a Streamable HTTP MCP server
+    \\  graff mcp login <name>            OAuth login for a remote MCP server
     \\  graff mcp                         list configured MCP servers
+    \\  graff learn [help]                local mutate/evaluate/promote/rollback engine
     \\  graff worktree list              list the per-tab worktrees created by -w
     \\  graff worktree merge <name>      squash-land worktree-<name> onto the current branch + clean up
     \\  graff worktree remove <name>     discard worktree-<name> (drops its scratch work) + delete the branch
@@ -79,6 +89,9 @@ pub const usage_text =
     \\
     \\flags:
     \\  --model <name>   start on this model (same fuzzy resolution as /model)
+    \\  --subagent-model <name>         pin children/workflows/judges on the root provider
+    \\  --subagent-provider <id>        route pinned workers through this provider
+    \\  --allow-cross-provider-subagents confirm prompts/code may go to the worker provider
     \\  --resume <name>  resume/autosave <name>.session.json
     \\  --new            start a fresh autosaved session (default)
     \\  --no-resume      ignore --resume and start fresh
@@ -99,6 +112,7 @@ pub const usage_text =
     \\  --max-model-calls N total provider calls allowed across this run (default 256; includes children/title/judges)
     \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn
     \\  --no-telemetry   disable anonymous usage telemetry for this run
+    \\  --learning-privacy <mode>       learning egress ceiling: local|aggregate|templates|examples (default local)
     \\  -h, --help       this help
     \\  -V, --version    print version
     \\
@@ -110,7 +124,10 @@ pub const usage_text =
     \\.harness/settings.json.
     \\telemetry: anonymous OTLP usage stats are sent only when
     \\OTEL_EXPORTER_OTLP_ENDPOINT (or GRAFF_OTEL_ENDPOINT) is set; opt out
-    \\with --no-telemetry or GRAFF_NO_TELEMETRY=1.
+    \\with --no-telemetry or GRAFF_NO_TELEMETRY=1. GRAFF_TELEMETRY_KEY sends
+    \\an optional x-harness-key token to the configured collector.
+    \\learning privacy: prompt-policy learning stays local by default; /privacy
+    \\changes the session ceiling. Template text still needs exact approval.
     \\
 ;
 

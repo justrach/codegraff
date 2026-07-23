@@ -14,12 +14,10 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+        uses: ./.github/actions/setup-codegraff-zig
 
       - name: Cross-compile
         run: |

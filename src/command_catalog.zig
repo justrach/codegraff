@@ -42,6 +42,7 @@ pub const commands = [_]Item{
     .{ .name = "/strict", .desc = "toggle \"every message is a tool\" mode" },
     .{ .name = "/yolo", .desc = "toggle bash auto-approval (skip permission prompts)" },
     .{ .name = "/trace", .desc = "toggle this run's JSONL event trace (and show its path)" },
+    .{ .name = "/privacy", .usage = "/privacy [local|aggregate|templates|examples]", .desc = "control prompt-learning data egress for this session" },
     .{ .name = "/trajectory", .desc = "show this session's agent tree — turns + spawned subagents" },
     .{ .name = "/agents", .desc = "list agent types — builtin personas + .harness/agents/*.md" },
     .{ .name = "/skills", .usage = "/skills [remove <name>]", .desc = "list available skills; /skills remove <name> disables one" },

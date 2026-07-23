@@ -156,10 +156,46 @@ pub fn sanitizeMetaField(buf: []u8, field: []const u8) []const u8 {
     return buf[0..n];
 }
 
-/// Read the signing key from GRAFF_SCORE_KEY_FILE (a path outside cwd) into
-/// `arena`. Whitespace-trimmed; null when unset, unreadable, or empty.
+/// Project free-form fleet metadata onto a non-sensitive wire shape. Values
+/// already shaped like hashes remain joinable; everything else becomes the
+/// same 16-hex fingerprint used for prompts, so paths and task labels cannot
+/// leave as plaintext even after aggregate telemetry is opted in.
+pub fn telemetryHash(buf: *[16]u8, value: []const u8, min_len: usize) []const u8 {
+    if (value.len == 0) return "";
+    if (value.len >= min_len and value.len <= 64) {
+        var valid = true;
+        for (value) |c| if (!std.ascii.isHex(c) or std.ascii.isUpper(c)) {
+            valid = false;
+            break;
+        };
+        if (valid) return value;
+    }
+    buf.* = promptFingerprint(value);
+    return buf;
+}
+
+pub fn telemetryNiche(buf: *[23]u8, value: []const u8) []const u8 {
+    const builtins = [_][]const u8{ "reviewer", "researcher", "implementer", "skeptic" };
+    for (builtins) |name| if (std.ascii.eqlIgnoreCase(value, name)) return name;
+    if (value.len == 0) return "";
+    const fp = promptFingerprint(value);
+    return std.fmt.bufPrint(buf, "custom-{s}", .{&fp}) catch "";
+}
+
+pub fn telemetryProviderClass(value: []const u8) ?[]const u8 {
+    for ([_][]const u8{ "frontier", "mid", "small" }) |name|
+        if (std.ascii.eqlIgnoreCase(value, name)) return name;
+    return null;
+}
+
+/// Read the signing key from GRAFF_SCORE_KEY_FILE, or the conventional
+/// ~/.simple-harness/score.key when no path is configured. The key stays
+/// outside cwd so learning adapters and confined subagents cannot read it.
 pub fn loadScoreKey(io: Io, arena: Allocator, environ: anytype) ?[]const u8 {
-    const path = environ.get("GRAFF_SCORE_KEY_FILE") orelse return null;
+    const path = environ.get("GRAFF_SCORE_KEY_FILE") orelse blk: {
+        const home = environ.get("HOME") orelse environ.get("USERPROFILE") orelse return null;
+        break :blk std.fmt.allocPrint(arena, "{s}/.simple-harness/score.key", .{home}) catch return null;
+    };
     const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return null;
     const trimmed = std.mem.trim(u8, data, " \t\r\n");
     return if (trimmed.len == 0) null else trimmed;
@@ -273,4 +309,17 @@ test "sanitizeMetaField: a niche with an embedded tab signs and round-trips iden
     const signed = signScore("a1b2", "", 0.5, "run1", "j1", "art", "evalhash", niche, "mid");
     const verified = signScore("a1b2", "", 0.5, "run1", "j1", "art", "evalhash", transported, "mid");
     try std.testing.expectEqualStrings(&signed, &verified);
+}
+
+test "telemetry metadata projection retains hashes and hides free-form labels" {
+    var hash_buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("0123456789abcdef", telemetryHash(&hash_buf, "0123456789abcdef", 16));
+    const projected = telemetryHash(&hash_buf, "/private/evals/customer-a.json", 8);
+    try std.testing.expectEqual(@as(usize, 16), projected.len);
+    try std.testing.expect(!std.mem.eql(u8, projected, "/private/evals/customer-a.json"));
+    var niche_buf: [23]u8 = undefined;
+    try std.testing.expectEqualStrings("reviewer", telemetryNiche(&niche_buf, "Reviewer"));
+    try std.testing.expect(std.mem.startsWith(u8, telemetryNiche(&niche_buf, "client-secret"), "custom-"));
+    try std.testing.expectEqualStrings("frontier", telemetryProviderClass("FRONTIER").?);
+    try std.testing.expect(telemetryProviderClass("private-provider") == null);
 }
