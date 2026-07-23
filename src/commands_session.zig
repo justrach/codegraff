@@ -353,9 +353,15 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.print("installing {s}{s}{s}: {s}{s}{s}\n", .{ style.accent, sk.name, style.reset, style.dim, sk.install, style.reset });
                 try out.flush();
                 // The user typed the install command themselves — that's the
-                // consent; the installer runs with our stdio so its progress
-                // and any sudo prompt reach the terminal directly.
-                var child = std.process.spawn(root.io, .{ .argv = &.{ "/bin/sh", "-c", sk.install } }) catch |err| {
+                // consent. Interactive sessions keep stdin for a possible sudo
+                // prompt; --yolo promised not to prompt, so its child receives
+                // the null device instead of inheriting the controlling TTY
+                // (issue #271). Progress still streams through stdout/stderr.
+                const yolo = if (root.approvals) |approvals| approvals.yolo else false;
+                var child = std.process.spawn(root.io, .{
+                    .argv = &.{ "/bin/sh", "-c", sk.install },
+                    .stdin = if (yolo) .ignore else .inherit,
+                }) catch |err| {
                     try out.print("failed to launch installer: {t}\n", .{err});
                     try out.flush();
                     return true;

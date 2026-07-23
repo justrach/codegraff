@@ -70,6 +70,9 @@ jobs:
       - name: Behavioral trace stream, re-scorer, and replay round trip
         run: python3 scripts/test-behavior-trace.py zig-out/bin/graff
 
+      - name: Concurrent operational trace isolation and JSONL integrity
+        run: python3 scripts/test-run-isolation.py zig-out/bin/graff
+
       - name: JSON live-control protocol test
         run: python3 scripts/test-json-controls.py zig-out/bin/graff
 
@@ -84,6 +87,9 @@ jobs:
 
       - name: PTY spinner anti-stealth test
         run: python3 scripts/test-pty-spinner.py zig-out/bin/graff
+
+      - name: YOLO background-TTY job-control regression
+        run: python3 scripts/test-yolo-job-control.py zig-out/bin/graff
 
       - name: PTY REPL interaction test
         run: python3 scripts/test-pty-repl.py zig-out/bin/graff

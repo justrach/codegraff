@@ -14,7 +14,7 @@ adapter, or fleet/DGM selection from general behavioral scores.
 
 | Stream | Lifetime | Purpose |
 | --- | --- | --- |
-| `harness.trace.jsonl` | Truncated at startup | Operational API/tool latency and error counters, with active behavioral-turn attribution, used to debug the harness. |
+| `.graff/traces/<run_id>.jsonl` | One exclusively created file per invocation | Operational API/tool latency and error counters, with active behavioral-turn attribution, used to debug the harness. |
 | `.graff/behavior/<run_id>.jsonl` | Up to one exclusively-created file per initialized agent session | Experimental lifecycle and caller-asserted belief events. |
 | `harness.trajectory.jsonl` | Append-only across runs | Existing DGM/MAP-Elites lineage and fitness ledger. Its record shapes are unchanged. |
 
@@ -27,6 +27,13 @@ is the first production caller of the commitment and misprediction APIs
 exits nonzero or the parsed score misses `--until`. Every other invocation path
 still contains lifecycle events only. Adapter rows in the example below are
 illustrative.
+
+The retired `harness.trace.jsonl` path is never opened, truncated, appended, or
+repaired by current releases. It may still exist as an ignored legacy artifact
+from an older installation. Current operational traces use random run IDs,
+exclusive creation, a single mutexed writer, complete in-memory JSON records,
+and stop writing after any failed file drain. This prevents a stale descriptor
+from seeking past a later truncation and creating sparse NUL gaps (#242/#272).
 
 For an eval-driven session, `eval` is a verifier boundary and must be the only
 tool in its batch. A red result marks the current expectation as contradicted,
