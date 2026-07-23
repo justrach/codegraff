@@ -466,11 +466,14 @@ limit is hit, instead of pausing for confirmation between routine steps.
 ### MCP servers
 
 Graff speaks both MCP transports directly: local stdio servers and remote
-Streamable HTTP servers. Smolify (`https://app.smol.ly/mcp`) is connected as a
-core, anonymous documentation service; it needs no Node bridge or project
-configuration. This performs discovery requests at startup and tool queries may
-be sent to the hosted service; set `GRAFF_NO_SMOLIFY=1` for offline or
-privacy-sensitive sessions. Other servers can be added from the shell or during
+Streamable HTTP servers. Smolify (`https://app.smol.ly/mcp`) is available as a
+core documentation service; it needs no Node bridge or project configuration.
+Its public-read schemas are bundled locally, so startup makes no Smolify
+request. The anonymous transport initializes only after an approved tool call,
+and recognizable credentials in arguments are blocked locally. Set
+`GRAFF_NO_SMOLIFY=1` to remove its tool surface entirely. Authenticated and
+write-capable tools are hidden unless the session explicitly opts in with
+`GRAFF_SMOLIFY_ACCESS=full`. Other servers can be added from the shell or during
 a session:
 
 ```sh
@@ -478,6 +481,7 @@ graff mcp add context7 -- npx -y @upstash/context7-mcp
 graff mcp add mobbin --url https://api.mobbin.com/mcp
 graff mcp login mobbin   # OAuth discovery + browser PKCE flow
 graff mcp login smolify  # optional access to authenticated Smolify tools
+GRAFF_SMOLIFY_ACCESS=full graff  # expose the authenticated/full catalog
 # In the REPL: /mcp add mobbin --url https://api.mobbin.com/mcp
 ```
 

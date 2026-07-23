@@ -382,7 +382,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
 /// Moved out of main() (600-line goal); mutates `registry` in place (it's
 /// already main()-owned and stable by the time this is called, so a pointer
 /// is all that's needed — no return-by-value trickery here).
-pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, smolify_enabled: bool) !void {
+pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out: *Io.Writer, json_mode: bool, environ_map: anytype) !void {
     connect: {
         for (skills.companion_servers) |c| if (skills.mcpServerConnected(registry.tools, c.server)) break :connect;
         for (skills.companion_servers) |c| {
@@ -398,13 +398,34 @@ pub fn connectCompanion(io: Io, registry: *mcp.Registry, flags: args.Flags, out:
         }
     }
 
-    // Smolify is a core, hosted Streamable HTTP MCP. It can be disabled with
-    // GRAFF_NO_SMOLIFY=1 for offline or privacy-sensitive sessions.
-    if (!smolify_enabled) return;
-    _ = registry.connectSmolify() catch |err| {
+    // Smolify schemas are bundled and its hosted transport stays offline until
+    // an approved call. Full/authenticated/write tools require explicit opt-in.
+    if (environ_map.get("GRAFF_NO_SMOLIFY") != null) return;
+    const access = environ_map.get("GRAFF_SMOLIFY_ACCESS") orelse "public";
+    const full_access = std.ascii.eqlIgnoreCase(access, "full") or std.ascii.eqlIgnoreCase(access, "authenticated");
+    const added = registry.connectSmolify(full_access) catch |err| {
         if (!json_mode and flags.oneshot_prompt == null) {
             try out.print("{s}[mcp:smolify] auto-connect failed ({t}) — continuing offline{s}\n", .{ ansi.style.dim, err, ansi.style.reset });
             try out.flush();
         }
+        return;
     };
+    if (added > 0 and !json_mode and flags.oneshot_prompt == null)
+        try out.print("{s}[mcp:smolify] available on demand — {d} {s} tool(s){s}\n", .{ ansi.style.dim, added, if (full_access) "full-access" else "anonymous public-read", ansi.style.reset });
+}
+
+test "core Smolify registration is offline and lazy" {
+    var registry = mcp.Registry.empty(std.testing.allocator, std.testing.io);
+    defer registry.deinit();
+    try std.testing.expectEqual(@as(usize, 8), try registry.connectSmolify(false));
+    try std.testing.expectEqual(@as(usize, 1), registry.servers.len);
+    try std.testing.expectEqualStrings("on-demand", registry.servers[0].protocol_version);
+    try std.testing.expectEqual(@as(usize, 8), registry.tools.len);
+    try std.testing.expect(registry.servers[0].transport.http.oauth_home == null);
+    try std.testing.expectEqual(@as(usize, 0), try registry.connectSmolify(false));
+
+    var full = mcp.Registry.emptyWithOAuthHome(std.testing.allocator, std.testing.io, "/not-read-during-registration");
+    defer full.deinit();
+    try std.testing.expectEqual(@as(usize, 13), try full.connectSmolify(true));
+    try std.testing.expectEqualStrings("/not-read-during-registration", full.servers[0].transport.http.oauth_home.?);
 }

@@ -18,6 +18,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
+const smolify_manifest = @import("smolify_manifest.zig");
 
 const main_mod = @import("main.zig");
 const approvals_mod = @import("approvals.zig");
@@ -80,7 +81,7 @@ pub const mcp_notes = [_]McpNote{
     },
     .{
         .server = "smolify",
-        .note = "The core Smolify MCP is connected (mcp__smolify__* tools). Use it to discover and search generated API documentation when a task involves an unfamiliar public project or library; prefer local repository code and its own docs when they already answer the question.",
+        .note = "The core Smolify MCP is available on demand (mcp__smolify__* tools). Its default catalog is anonymous and public-read-only; the network handshake waits for an approved call. Use it to discover/search public API documentation for unfamiliar libraries, while preferring local code and docs when they answer the question.",
     },
 };
 
@@ -126,6 +127,7 @@ pub fn companionTrusted(tool: []const u8) bool {
 /// trust notwithstanding). Mirrors the server's readOnlyHint annotations;
 /// batch is read-only iff every op inside it is.
 pub fn companionReadOnly(tool: []const u8, input: Value) bool {
+    if (smolify_manifest.isPublicReadQualified(tool)) return true;
     const t = companionToolName(tool) orelse return false;
     if (companionToolReadOnly(t)) return true;
     if (!std.mem.eql(u8, t, "batch")) return false;
@@ -306,6 +308,8 @@ test "companionReadOnly: the plan-mode classifier mirrors readOnlyHint" {
     try std.testing.expect(!companionReadOnly("mcp__codedbpro__memo", none));
     try std.testing.expect(!companionReadOnly("mcp__other__read", none)); // only the trusted server
     try std.testing.expect(!companionReadOnly("read_file", none));
+    try std.testing.expect(companionReadOnly("mcp__smolify__search_docs", none));
+    try std.testing.expect(!companionReadOnly("mcp__smolify__publish_docs", none));
     // batch: read-only iff every op is
     try std.testing.expect(companionReadOnly("mcp__codedbpro__batch", parse(a,
         \\{"ops":[{"tool":"read","args":{}},{"tool":"search","args":{}}]}

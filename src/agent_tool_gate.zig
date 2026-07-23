@@ -108,6 +108,22 @@ fn gatePrivateTemplateSharing(self: *Agent, call: ToolCall) !?ExecResult {
     };
 }
 
+/// Hosted documentation queries still cross a network boundary after the
+/// ordinary approval prompt. Reject recognizable credentials locally even
+/// under --yolo; source/docs identifiers never need to contain a secret.
+fn gateSmolifySecrets(arena: std.mem.Allocator, call: ToolCall) !?ExecResult {
+    if (!std.mem.startsWith(u8, call.name, "mcp__smolify__")) return null;
+    var encoded: std.Io.Writer.Allocating = .init(arena);
+    var stringify: std.json.Stringify = .{ .writer = &encoded.writer };
+    try stringify.write(call.input);
+    const scan = learning_privacy.scanSecrets(encoded.writer.buffered());
+    if (scan.safe()) return null;
+    return .{
+        .text = try std.fmt.allocPrint(arena, "Smolify call blocked locally: arguments resemble a {s}. Remove secrets and send only public project/documentation identifiers.", .{scan.first_kind}),
+        .is_error = true,
+    };
+}
+
 /// The permission gate, root side: an unapproved external action prompts the
 /// user. Subagents never prompt; their gate is the executor's allowlist.
 pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
@@ -124,6 +140,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         }
         return null;
     }
+    if (try gateSmolifySecrets(self.arena, call)) |blocked| return blocked;
     if (try gatePrivateTemplateSharing(self, call)) |blocked| return blocked;
     const approvals = self.approvals orelse return null;
 
@@ -223,7 +240,10 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         if (companionTrusted(call.name)) return null;
         if (approvals.allowedExact(self.io, call.name)) return null;
         key = call.name;
-        prompt_line = std.fmt.bufPrint(&line_buf, "call MCP tool {s}", .{call.name}) catch call.name;
+        prompt_line = if (std.mem.startsWith(u8, call.name, "mcp__smolify__"))
+            std.fmt.bufPrint(&line_buf, "send arguments to hosted Smolify tool {s}", .{call.name}) catch call.name
+        else
+            std.fmt.bufPrint(&line_buf, "call MCP tool {s}", .{call.name}) catch call.name;
     } else return null;
 
     const in = self.in orelse return .{
@@ -267,6 +287,19 @@ test "firstWord splits the command on the first whitespace" {
     try std.testing.expectEqualStrings("cat", firstWord("cat\tfile"));
     try std.testing.expectEqualStrings("", firstWord(""));
     try std.testing.expectEqualStrings("", firstWord(" leading"));
+}
+
+test "Smolify arguments containing recognizable secrets fail closed locally" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const secret = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"query\":\"github_token=ghp_not-for-egress\"}", .{});
+    const public = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"query\":\"Zig HTTP client\"}", .{});
+    const blocked = (try gateSmolifySecrets(arena, .{ .id = "1", .name = "mcp__smolify__search_docs", .input = secret })).?;
+    try std.testing.expect(blocked.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, blocked.text, "blocked locally") != null);
+    try std.testing.expect((try gateSmolifySecrets(arena, .{ .id = "2", .name = "mcp__smolify__search_docs", .input = public })) == null);
+    try std.testing.expect((try gateSmolifySecrets(arena, .{ .id = "3", .name = "read_file", .input = secret })) == null);
 }
 
 test "private template collector covers subagents and workflow stages" {

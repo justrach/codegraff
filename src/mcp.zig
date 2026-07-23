@@ -17,6 +17,7 @@ const Allocator = std.mem.Allocator;
 const mcp_http = @import("mcp_http.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
+const smolify_manifest = @import("smolify_manifest.zig");
 
 const latest_protocol = mcp_protocol.latest_protocol;
 const rewriteOneOf = mcp_protocol.rewriteOneOf;
@@ -47,6 +48,7 @@ const Server = struct {
     name: []const u8,
     transport: Transport,
     next_id: i64 = 1,
+    initialized: bool = true,
     /// Revision the server negotiated in its validated `initialize` response,
     /// shown in `/mcp` so version skew is visible.
     protocol_version: []const u8 = "?",
@@ -171,12 +173,37 @@ pub const Registry = struct {
         return tools.items.len - before;
     }
 
-    /// Connect Smolify's public documentation MCP as a core service. It is a
-    /// stateless Streamable HTTP endpoint, so no helper process or Node runtime
-    /// is required. Public search/read tools work anonymously.
-    pub fn connectSmolify(reg: *Registry) !usize {
+    /// Advertise bundled Smolify schemas without dialing the hosted endpoint.
+    /// The first approved tool call performs the MCP handshake. Default mode
+    /// is anonymous and public-read-only; full access also loads OAuth state.
+    pub fn connectSmolify(reg: *Registry, full_access: bool) !usize {
         for (reg.servers) |server| if (std.mem.eql(u8, server.name, "smolify")) return 0;
-        return reg.addRemoteServer("smolify", smolify_url, &.{});
+        const a = reg.arena();
+        var servers: std.ArrayList(*Server) = .empty;
+        try servers.appendSlice(a, reg.servers);
+        var tools: std.ArrayList(Tool) = .empty;
+        try tools.appendSlice(a, reg.tools);
+        const server = try a.create(Server);
+        server.* = .{
+            .name = "smolify",
+            .transport = .{ .http = .{
+                .url = smolify_url,
+                .client = .{ .allocator = reg.gpa, .io = reg.io },
+                .oauth_home = if (full_access and reg.home.len != 0) try a.dupe(u8, reg.home) else null,
+            } },
+            .initialized = false,
+            .protocol_version = "on-demand",
+        };
+        var registry_owns_server = false;
+        errdefer if (!registry_owns_server) deinitServer(server, reg.io);
+        const added = try smolify_manifest.appendTools(Tool, a, &tools, servers.items.len, full_access);
+        try servers.append(a, server);
+        const new_servers = try a.dupe(*Server, servers.items);
+        const new_tools = try a.dupe(Tool, tools.items);
+        reg.servers = new_servers;
+        reg.tools = new_tools;
+        registry_owns_server = true;
+        return added;
     }
 
     /// Connect any workspace `.mcp.json` servers not already running — the
@@ -425,6 +452,7 @@ pub const Registry = struct {
         var response_arena_state = std.heap.ArenaAllocator.init(reg.gpa);
         defer response_arena_state.deinit();
         const response_alloc = response_arena_state.allocator();
+        if (!server.initialized) try initializeServer(server, response_alloc, reg.arena());
         const resp = request(server, response_alloc, pw.writer.buffered(), "tools/call") catch |err| switch (err) {
             // Streamable HTTP servers use 404 to expire a session. Re-run the
             // MCP handshake once, then retry the call without the stale ID.
@@ -510,6 +538,7 @@ fn initializeServer(server: *Server, response_alloc: Allocator, session_alloc: A
     const protocol_version = try mcp_protocol.negotiatedProtocol(init_resp, protocol_transport);
     server.protocol_version = try session_alloc.dupe(u8, protocol_version);
     try notify(server, response_alloc, "notifications/initialized");
+    server.initialized = true;
 }
 
 /// JSON-RPC request/response over either transport. `params` is a raw JSON
