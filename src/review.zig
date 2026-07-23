@@ -6,24 +6,36 @@ const ToolCall = @import("tools.zig").ToolCall;
 const ExecResult = @import("tools.zig").ExecResult;
 const Approvals = @import("approvals.zig").Approvals;
 
-pub const max_tool_calls: u64 = 40;
-
 /// Give a review a fresh model-visible history while retaining the parent
 /// transcript. The caller restores the parent after the one-shot review and
 /// records only its user request and final report there.
 pub const Context = struct {
     parent: ?std.json.Array = null,
+    parent_context_tokens: u64 = 0,
+    parent_context_local_tokens: u64 = 0,
+    parent_usage_includes_output: bool = false,
 
-    pub fn begin(arena: std.mem.Allocator, messages: *std.json.Array, isolate: bool) Context {
+    pub fn begin(arena: std.mem.Allocator, root: anytype, isolate: bool) Context {
         if (!isolate) return .{};
-        const parent = messages.*;
-        messages.* = std.json.Array.init(arena);
-        return .{ .parent = parent };
+        const context = Context{
+            .parent = root.messages,
+            .parent_context_tokens = root.last_context_tokens,
+            .parent_context_local_tokens = root.context_local_tokens,
+            .parent_usage_includes_output = root.last_usage_includes_output,
+        };
+        root.messages = std.json.Array.init(arena);
+        root.last_context_tokens = 0;
+        root.context_local_tokens = 0;
+        root.last_usage_includes_output = false;
+        return context;
     }
 
-    pub fn restore(self: *Context, messages: *std.json.Array) bool {
+    pub fn restore(self: *Context, root: anytype) bool {
         const parent = self.parent orelse return false;
-        messages.* = parent;
+        root.messages = parent;
+        root.last_context_tokens = self.parent_context_tokens;
+        root.context_local_tokens = self.parent_context_local_tokens;
+        root.last_usage_includes_output = self.parent_usage_includes_output;
         self.parent = null;
         return true;
     }
@@ -107,12 +119,24 @@ test "review context hides and restores parent history" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    var history = std.json.Array.init(arena);
-    try history.append(.{ .string = "parent" });
-    var context = Context.begin(arena, &history, true);
-    try std.testing.expectEqual(@as(usize, 0), history.items.len);
-    try history.append(.{ .string = "review" });
-    try std.testing.expect(context.restore(&history));
-    try std.testing.expectEqualStrings("parent", history.items[0].string);
-    try std.testing.expect(!context.restore(&history));
+    const Root = struct {
+        messages: std.json.Array,
+        last_context_tokens: u64 = 900,
+        context_local_tokens: u64 = 300,
+        last_usage_includes_output: bool = true,
+    };
+    var root = Root{ .messages = std.json.Array.init(arena) };
+    try root.messages.append(.{ .string = "parent" });
+    var context = Context.begin(arena, &root, true);
+    try std.testing.expectEqual(@as(usize, 0), root.messages.items.len);
+    try std.testing.expectEqual(@as(u64, 0), root.last_context_tokens);
+    try std.testing.expectEqual(@as(u64, 0), root.context_local_tokens);
+    try std.testing.expect(!root.last_usage_includes_output);
+    try root.messages.append(.{ .string = "review" });
+    try std.testing.expect(context.restore(&root));
+    try std.testing.expectEqualStrings("parent", root.messages.items[0].string);
+    try std.testing.expectEqual(@as(u64, 900), root.last_context_tokens);
+    try std.testing.expectEqual(@as(u64, 300), root.context_local_tokens);
+    try std.testing.expect(root.last_usage_includes_output);
+    try std.testing.expect(!context.restore(&root));
 }

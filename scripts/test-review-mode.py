@@ -79,9 +79,15 @@ def review_events(request: RecordedRequest) -> list[dict]:
 
 
 def long_review_events(request: RecordedRequest) -> list[dict]:
-    if request.ordinal > 12:
+    if request.ordinal > 45:
         return message(LONG_REPLY, request.ordinal)
     return tool("read_file", {"path": "target.txt"}, request.ordinal)
+
+
+def tool_budget_events(request: RecordedRequest) -> list[dict]:
+    if request.ordinal <= 4:
+        return tool("read_file", {"path": "target.txt"}, request.ordinal)
+    return message("Explicit tool budget respected.", request.ordinal)
 
 
 def loop_events(request: RecordedRequest) -> list[dict]:
@@ -96,6 +102,12 @@ def isolation_events(request: RecordedRequest) -> list[dict]:
     if request.ordinal == 3:
         return message(ISOLATED_REPLY, request.ordinal)
     return message("Follow-up complete.", request.ordinal)
+
+
+def strict_eval_events(request: RecordedRequest) -> list[dict]:
+    if request.ordinal == 1:
+        return tool("eval", {"note": "establish a failing parent verifier"}, request.ordinal)
+    return tool("attempt_completion", {"result": "Strict review complete."}, request.ordinal)
 
 
 def environment(tmp: str, port: int) -> dict[str, str]:
@@ -126,11 +138,16 @@ def environment(tmp: str, port: int) -> dict[str, str]:
 
 
 def start_graff(
-    tmp: str, port: int, max_model_calls: int | None = None
+    tmp: str,
+    port: int,
+    max_model_calls: int | None = None,
+    extra_args: list[str] | None = None,
 ) -> subprocess.Popen[str]:
     argv = [GRAFF, "--model", "codex", "--json", "--no-telemetry"]
     if max_model_calls is not None:
         argv.extend(["--max-model-calls", str(max_model_calls)])
+    if extra_args:
+        argv.extend(extra_args)
     return subprocess.Popen(
         argv,
         cwd=tmp,
@@ -207,7 +224,7 @@ def main() -> None:
         if os.path.exists(os.path.join(tmp, "should-not-exist")):
             raise AssertionError("review ran a mutating shell command")
         if len(mock.recorded_requests()) != 5:
-            raise AssertionError("review did not follow the expected bounded tool loop")
+            raise AssertionError("review did not follow the expected policy tool loop")
 
         long_mock = CodexMock(events_for_request=long_review_events)
         long_port = long_mock.start()
@@ -217,7 +234,7 @@ def main() -> None:
         finally:
             long_mock.stop()
         calls = len(long_mock.recorded_requests())
-        if calls != 13:
+        if calls != 46:
             raise AssertionError(f"default review unexpectedly stopped after {calls} calls")
         if long_events[-1].get("type") != "turn" or long_events[-1].get("text") != LONG_REPLY:
             raise AssertionError(f"long review did not terminate naturally: {long_events[-1]!r}")
@@ -233,6 +250,40 @@ def main() -> None:
             raise AssertionError("explicit global model-call budget was not enforced")
         if global_events[-1].get("type") != "error":
             raise AssertionError(f"global-budget exhaustion was not surfaced: {global_events[-1]!r}")
+
+        tool_budget_mock = CodexMock(events_for_request=tool_budget_events)
+        tool_budget_port = tool_budget_mock.start()
+        tool_budget_process = start_graff(tmp, tool_budget_port)
+        try:
+            tool_budget_events_seen = send(
+                tool_budget_process,
+                {
+                    "type": "review",
+                    "text": "Review target.txt",
+                    "maxToolCalls": 3,
+                },
+            )
+            close(tool_budget_process)
+        finally:
+            tool_budget_mock.stop()
+        budget_rejections = [
+            event
+            for event in tool_budget_events_seen
+            if event.get("type") == "tool_rejected"
+            and event.get("reason") == "budget"
+        ]
+        if len(budget_rejections) != 1:
+            raise AssertionError(
+                f"explicit tool budget was not enforced once: {budget_rejections!r}"
+            )
+        if (
+            tool_budget_events_seen[-1].get("type") != "turn"
+            or tool_budget_events_seen[-1].get("text")
+            != "Explicit tool budget respected."
+        ):
+            raise AssertionError(
+                f"review did not recover from explicit tool budget: {tool_budget_events_seen[-1]!r}"
+            )
 
         isolation_mock = CodexMock(events_for_request=isolation_events)
         isolation_port = isolation_mock.start()
@@ -256,8 +307,65 @@ def main() -> None:
                 raise AssertionError(f"parent transcript lost {expected_text!r}")
         if "function_call" in followup_input or "call_review_2" in followup_input:
             raise AssertionError("review-internal tool history leaked into the parent transcript")
+        if "[review task:" in requests[3].body.get("instructions", ""):
+            raise AssertionError("review system prompt leaked into the parent follow-up")
 
-    print("ok    review is isolated/read-only, admits >10 calls, and honors opt-in budgets")
+        sessions = os.path.join(tmp, ".graff", "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        with open(
+            os.path.join(sessions, "strict-eval.session.json"),
+            "w",
+            encoding="utf-8",
+        ) as fh:
+            json.dump(
+                {
+                    "provider": "codex",
+                    "model": "gpt-5.6-sol",
+                    "strict": True,
+                    "messages": [],
+                },
+                fh,
+            )
+        strict_mock = CodexMock(events_for_request=strict_eval_events)
+        strict_port = strict_mock.start()
+        strict_process = start_graff(
+            tmp,
+            strict_port,
+            max_model_calls=2,
+            extra_args=["--eval", "false", "--resume", "strict-eval"],
+        )
+        try:
+            parent_eval_events = send(
+                strict_process, {"type": "user", "text": "Establish failing eval state"}
+            )
+            if (
+                parent_eval_events[-1].get("type") != "turn"
+                or parent_eval_events[-1].get("complete") is not False
+            ):
+                raise AssertionError(
+                    f"parent eval did not enter repair-pending state: {parent_eval_events[-1]!r}"
+                )
+            strict_events = send(
+                strict_process, {"type": "review", "text": "Review target.txt"}
+            )
+            close(strict_process)
+        finally:
+            strict_mock.stop()
+        if len(strict_mock.recorded_requests()) != 2:
+            raise AssertionError("strict/eval review did not finish in one additional model call")
+        instructions = strict_mock.recorded_requests()[1].body.get("instructions", "")
+        if "STRICT MODE:" in instructions:
+            raise AssertionError("review inherited the parent strict system note")
+        if (
+            strict_events[-1].get("type") != "turn"
+            or strict_events[-1].get("text") != "Strict review complete."
+            or strict_events[-1].get("complete") is not True
+        ):
+            raise AssertionError(
+                f"parent eval gate blocked review finalization: {strict_events[-1]!r}"
+            )
+
+    print("ok    review is isolated/read-only, admits >40 tools, and honors opt-in budgets")
 
 
 if __name__ == "__main__":

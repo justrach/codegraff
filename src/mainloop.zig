@@ -288,7 +288,7 @@ pub fn run(ctx: *Ctx) !void {
         ctx.root.review_mode = review_prompt != null;
         const parent_system_override = ctx.root.sys_override;
         if (ctx.root.review_mode)
-            ctx.root.sys_override = try review.systemPrompt(ctx.arena, if (ctx.root.strict) ctx.root.sys_strict else ctx.root.sys_normal);
+            ctx.root.sys_override = try review.systemPrompt(ctx.arena, ctx.root.sys_normal);
         defer {
             ctx.root.review_mode = false;
             ctx.root.sys_override = parent_system_override;
@@ -383,9 +383,9 @@ pub fn run(ctx: *Ctx) !void {
             ctx.root.tracer.?.note("ultracode", msg[0..@min(msg.len, 120)]);
             if (telemetry.g_telem) |t| t.ultracode();
         }
-        var review_context = review.Context.begin(ctx.arena, &ctx.root.messages, ctx.root.review_mode);
+        var review_context = review.Context.begin(ctx.arena, ctx.root, ctx.root.review_mode);
         if (ctx.root.review_mode) ctx.root.rebaseContextMeter();
-        defer if (review_context.restore(&ctx.root.messages)) ctx.root.rebaseContextMeter();
+        defer if (review_context.restore(ctx.root)) ctx.root.rebaseContextMeter();
         if (ctx.root.pending_image) |img| {
             try ctx.root.messages.append(try vision.imageMessage(ctx.arena, ctx.root.provider.kind, ultracode_msg.text, img));
             ctx.root.pending_image = null;
@@ -416,10 +416,12 @@ pub fn run(ctx: *Ctx) !void {
         // Reuse one full-history scan for trace, terminal event, and compaction.
         const post_turn_context_tokens = ctx.root.effectiveContextTokens();
         mainloop_trace.record(ctx.root, ctx.io, ctx.arena, base_msg, turn_id, turn_started, turn_result, post_turn_context_tokens, turn_before, &prev_turn_id, &prev_prompt_fp);
-        const isolated_review = review_context.restore(&ctx.root.messages);
+        const isolated_review = review_context.restore(ctx.root);
         if (isolated_review) {
-            ctx.root.rebaseContextMeter();
+            ctx.root.review_mode = false;
+            ctx.root.sys_override = parent_system_override;
             try ctx.root.messages.append(try messages.textMessage(ctx.arena, "user", base_msg));
+            ctx.root.rebaseContextMeter();
         }
         const final_text = turn_result catch |err| switch (err) {
             error.Interrupted => {
@@ -535,9 +537,8 @@ pub fn run(ctx: *Ctx) !void {
                 .session_arena_kb = if (main_mod.g_session_arena) |a| a.queryCapacity() / 1024 else 0,
                 .scratch_arena_kb = if (ctx.root.scratch_arena) |a| a.queryCapacity() / 1024 else 0,
             });
-            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = session_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = !ctx.root.eval_repair_pending, .metadata_complete = session_context_tokens > 0 });
+            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = session_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = isolated_review or !ctx.root.eval_repair_pending, .metadata_complete = session_context_tokens > 0 });
         }
-
         // Apply only if already complete; poll never waits for title generation.
         title_jobs.poll(ctx);
         fleet.joinElites(ctx.io); // publish backgrounded fleet champions for the next turn (no-op once joined)

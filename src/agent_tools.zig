@@ -206,11 +206,7 @@ pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
         return denied;
     };
     if (std.mem.eql(u8, call.name, "attempt_completion")) return null;
-    const effective_max: ?u64 = if (self.review_mode)
-        @min(main_mod.max_tool_calls orelse review.max_tool_calls, review.max_tool_calls)
-    else
-        main_mod.max_tool_calls;
-    if (effective_max) |max| {
+    if (main_mod.max_tool_calls) |max| {
         if (self.tool_calls_this_turn >= max) {
             const message = try std.fmt.allocPrint(self.arena, "tool call budget exhausted ({d}/{d}) — answer with what you have or ask for a higher --max-tool-calls", .{ self.tool_calls_this_turn, max });
             self.emitToolRejected(call, "budget", message);
@@ -285,7 +281,7 @@ fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const
 /// Handle a meta tool inline on the agent's own thread.
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
-        if (self.eval_cmd != null and (!self.eval_verified or self.eval_repair_pending)) {
+        if (!self.review_mode and self.eval_cmd != null and (!self.eval_verified or self.eval_repair_pending)) {
             const message = if (self.eval_repair_pending)
                 "completion blocked: the latest verifier contradicted the plan; repair the failure and run eval until it meets the target"
             else
