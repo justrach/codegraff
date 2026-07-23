@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Correctness-first benchmark for Sol-root / Terra-worker model shapes.
+"""Correctness-first benchmark for Sol-root / configurable-worker shapes.
 
-The benchmark creates fresh synthetic Python repositories, asks graff to use
-exactly two parallel direct subagents, grades the resulting code with visible
-and held-back tests, and reads run-local traces for latency/tool/model evidence.
-No source from the repository containing this script is sent to a model.
+The benchmark creates fresh synthetic repositories, asks graff to use exactly
+two parallel direct subagents, grades the result with visible and held-back
+tests, and reads run-local traces for latency/tool/model evidence. No source
+from the repository containing this script is sent to a model.
 """
 
 from __future__ import annotations
@@ -25,18 +25,41 @@ import tempfile
 import time
 from typing import Any
 
-from model_shape_tasks import TASKS, Task
+from model_shape_frontend_tasks import TASKS as FRONTEND_TASKS
+from model_shape_metrics import quality_diversity
+from model_shape_tasks import TASKS as CORE_TASKS, Task
 
 
+ROOT_PROVIDER = "codex"
 ROOT_MODEL = "gpt-5.6-sol"
 WORKER_MODEL = "gpt-5.6-terra"
 MINIMUM_PAIRS_FOR_PROMOTION = 20
+ALL_TASKS = CORE_TASKS + FRONTEND_TASKS
 
 
 @dataclass(frozen=True)
 class Arm:
     name: str
+    worker_provider: str
     worker_model: str
+    allow_cross_provider: bool
+
+
+def arm_for(spec: str) -> Arm:
+    try:
+        provider, model = spec.split(":", 1)
+    except ValueError as exc:
+        raise ValueError("worker shape must be provider:model") from exc
+    if not provider or not model:
+        raise ValueError("worker shape must be provider:model")
+    if provider == ROOT_PROVIDER and model == ROOT_MODEL:
+        name = "all-sol"
+    elif provider == ROOT_PROVIDER:
+        name = "sol-" + model.removeprefix("gpt-5.6-")
+    else:
+        safe_model = re.sub(r"[^a-z0-9]+", "-", model.lower()).strip("-")
+        name = f"sol-{provider}-{safe_model}"
+    return Arm(name, provider, model, provider != ROOT_PROVIDER)
 
 
 COMMON_REQUEST = """
@@ -154,10 +177,14 @@ def trace_metrics(root: Path, arm: Arm) -> dict[str, Any]:
     )
     api = [row for row in trace_rows if row.get("ev") == "api"]
     tools = [row for row in trace_rows if row.get("ev") == "tool"]
+    retries = [row for row in trace_rows if row.get("ev") == "retry"]
     children = [row for row in traj_rows if row.get("kind") == "subagent"]
     root_api = [row for row in api if row.get("agent") == "main"]
     worker_api = [row for row in api if row.get("agent") != "main"]
     expected_children = all(row.get("model") == arm.worker_model for row in children)
+    expected_child_providers = all(
+        row.get("provider") == arm.worker_provider for row in children
+    )
     expected_root = all(row.get("model") == ROOT_MODEL for row in root_api)
     expected_worker_api = all(
         row.get("model") == arm.worker_model for row in worker_api
@@ -177,13 +204,16 @@ def trace_metrics(root: Path, arm: Arm) -> dict[str, Any]:
         "response_bytes_sum": sum(max(0, row.get("resp_bytes", 0)) for row in api),
         "tool_calls": len(tools),
         "tool_errors": sum(bool(row.get("is_error")) for row in tools),
+        "provider_retries": len(retries),
         "root_tool_calls": sum(not bool(row.get("from_sub")) for row in tools),
         "worker_tool_calls": sum(bool(row.get("from_sub")) for row in tools),
         "child_nodes": len(children),
+        "child_providers": [row.get("provider") for row in children],
         "child_models": [row.get("model") for row in children],
         "shape_valid": (
             len(children) == 2
             and expected_children
+            and expected_child_providers
             and expected_root
             and expected_worker_api
             and len(worker_api) >= 2
@@ -220,7 +250,14 @@ def run_one(
         "--max-model-calls", "24",
         "--max-tool-calls", "48",
     ]
-    if arm.worker_model != ROOT_MODEL:
+    if arm.worker_provider != ROOT_PROVIDER:
+        command.extend(
+            [
+                "--subagent-provider", arm.worker_provider,
+                "--allow-cross-provider-subagents",
+            ]
+        )
+    if arm.worker_model != ROOT_MODEL or arm.worker_provider != ROOT_PROVIDER:
         command.extend(["--subagent-model", arm.worker_model])
     prompt = f"{COMMON_REQUEST}\n\n{task.request}"
     stdin = (
@@ -276,7 +313,9 @@ def run_one(
     return {
         "task": task.name,
         "arm": arm.name,
+        "root_provider": ROOT_PROVIDER,
         "root_model": ROOT_MODEL,
+        "worker_provider": arm.worker_provider,
         "worker_model": arm.worker_model,
         "repetition": repetition,
         "returncode": returncode,
@@ -317,6 +356,9 @@ def aggregate(rows: list[dict[str, Any]], arms: tuple[Arm, ...]) -> dict[str, An
             ),
             "median_tool_errors": statistics.median(
                 row["metrics"]["tool_errors"] for row in selected
+            ),
+            "median_provider_retries": statistics.median(
+                row["metrics"]["provider_retries"] for row in selected
             ),
             "median_context_tokens_sum": statistics.median(
                 row["metrics"]["context_tokens_sum"] for row in selected
@@ -444,7 +486,14 @@ def main() -> int:
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--seed", type=int, default=246)
     parser.add_argument("--output-root")
-    parser.add_argument("--tasks", nargs="*", choices=[task.name for task in TASKS])
+    parser.add_argument("--task-set", choices=("core", "frontend", "all"), default="core")
+    parser.add_argument("--tasks", nargs="*", choices=[task.name for task in ALL_TASKS])
+    parser.add_argument(
+        "--worker",
+        action="append",
+        metavar="PROVIDER:MODEL",
+        help="exactly two root-worker arms; defaults to Codex Sol and Terra",
+    )
     args = parser.parse_args()
     if args.repetitions < 1:
         parser.error("--repetitions must be positive")
@@ -460,13 +509,26 @@ def main() -> int:
                 prefix=f"codegraff-model-shape-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-"
             )
         )
-    tasks = tuple(
-        task for task in TASKS if not args.tasks or task.name in args.tasks
+    task_pool = {
+        "core": CORE_TASKS,
+        "frontend": FRONTEND_TASKS,
+        "all": ALL_TASKS,
+    }[args.task_set]
+    tasks = tuple(task for task in task_pool if not args.tasks or task.name in args.tasks)
+    if not tasks:
+        parser.error("selected task set is empty")
+    worker_specs = args.worker or (
+        f"{ROOT_PROVIDER}:{ROOT_MODEL}",
+        f"{ROOT_PROVIDER}:{WORKER_MODEL}",
     )
-    arms = (
-        Arm("all-sol", ROOT_MODEL),
-        Arm("sol-terra", WORKER_MODEL),
-    )
+    if len(worker_specs) != 2:
+        parser.error("--worker must be supplied exactly twice")
+    try:
+        arms = tuple(arm_for(spec) for spec in worker_specs)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if arms[0].name == arms[1].name:
+        parser.error("worker arms must be distinct")
     schedule = []
     rng = random.Random(args.seed)
     for repetition in range(1, args.repetitions + 1):
@@ -498,7 +560,9 @@ def main() -> int:
         "graff": str(graff),
         "seed": args.seed,
         "repetitions": args.repetitions,
+        "task_set": args.task_set,
         "tasks": [task.name for task in tasks],
+        "task_niches": {task.name: task.niche for task in tasks},
         "privacy": {
             "workspace": "synthetic",
             "external_telemetry": False,
@@ -507,11 +571,13 @@ def main() -> int:
         "arms": [asdict(arm) for arm in arms],
         "runs": rows,
         "aggregate": aggregate(rows, arms),
+        "quality_diversity": quality_diversity(rows, arms, tasks),
     }
     report["comparison"] = compare(rows, arms)
     report_path = output_root / "report.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print("\n" + json.dumps(report["aggregate"], indent=2))
+    print("\nquality diversity:\n" + json.dumps(report["quality_diversity"], indent=2))
     print("\ncomparison:\n" + json.dumps(report["comparison"], indent=2))
     print(f"\nreport: {report_path}")
     return 0

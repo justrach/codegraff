@@ -56,7 +56,6 @@ pub const Goal = struct {
     created_ms: i64 = 0,
     updated_ms: i64 = 0,
 };
-
 /// One agent: a message history plus the POST/tool-dispatch loop. The root
 /// agent prints to stdout; subagents (sub = true) run on pool threads and
 /// log through std.debug.print, which locks stderr and is thread-safe.
@@ -77,6 +76,7 @@ pub const Agent = struct {
     client: *std.http.Client,
     provider: Provider,
     subagent_provider: ?Provider = null, // optional model pin for every direct child/workflow/judge
+    subagent_cross_provider: bool = false, // user explicitly allowed the pin to cross a provider/data boundary
     messages: std.json.Array,
     // Codex Responses WS delta transport: one WS held across a turn's tool loop,
     // sending previous_response_id + only new items. Reset by closeCodexWs.

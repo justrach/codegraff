@@ -34,6 +34,7 @@ const oauth = @import("oauth.zig");
 const pricing = @import("pricing.zig");
 const models_cache = @import("models_cache.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
+const subagent_selection = @import("subagent_selection.zig");
 const serde = @import("serde.zig");
 const skills = @import("skills.zig");
 const prompts = @import("prompts.zig");
@@ -115,40 +116,7 @@ fn startupNeedsKimiCatalog(keys: provider_mod.Keys, model_flag: ?[]const u8, sav
     return std.mem.eql(u8, fallback.id, "kimi");
 }
 
-pub const SubagentModelError = error{ UnknownModel, ModelNotOnRootProvider, MissingKey };
-
-/// Resolve a child model within the root's provider/account. Keeping the
-/// provider fixed prevents an innocent performance split from silently crossing
-/// credential, billing, or data-boundary domains.
-pub fn subagentProvider(keys: provider_mod.Keys, root: provider_mod.Provider, query: []const u8) SubagentModelError!provider_mod.Provider {
-    const model = pricing.resolveModelName(keys, query) orelse return error.UnknownModel;
-    if (!pricing.providerModelInTable(root.id, model)) return error.ModelNotOnRootProvider;
-    return keys.providerById(root.id, model) catch error.MissingKey;
-}
-
-pub fn resolveSubagentProvider(keys: provider_mod.Keys, root: provider_mod.Provider, query: ?[]const u8) ?provider_mod.Provider {
-    const raw = query orelse return null;
-    const requested = std.mem.trim(u8, raw, " \t\r\n");
-    if (requested.len == 0) std.process.fatal("--subagent-model/GRAFF_SUBAGENT_MODEL cannot be empty", .{});
-    return subagentProvider(keys, root, requested) catch |err| switch (err) {
-        error.UnknownModel => std.process.fatal("unknown subagent model '{s}' — run `graff models refresh` or see /models", .{requested}),
-        error.ModelNotOnRootProvider => std.process.fatal("subagent model '{s}' is not available through root provider '{s}'", .{ requested, root.id }),
-        error.MissingKey => std.process.fatal("no key/login for subagent model '{s}' via '{s}'", .{ requested, root.id }),
-    };
-}
-
-test "subagent model shape pins a cheaper model within the root provider" {
-    var keys: provider_mod.Keys = .{ .values = @splat(null) };
-    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
-        if (std.mem.eql(u8, spec.id, "codex")) value.* = "test-token";
-    }
-    const root = try keys.providerById("codex", "gpt-5.6-sol");
-    const child = try subagentProvider(keys, root, "5.6-terra");
-    try std.testing.expectEqualStrings("codex", child.id);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", child.model);
-    try std.testing.expectError(error.ModelNotOnRootProvider, subagentProvider(keys, root, "gpt-5.6"));
-    try std.testing.expectError(error.UnknownModel, subagentProvider(keys, root, "not-a-real-model"));
-}
+pub const resolveSubagentProvider = subagent_selection.resolveSubagentProvider;
 
 test "Codex catalog loads at startup only when selection can observe it" {
     try std.testing.expectEqualStrings("deepseek", explicitProvider("deepseek").?);
@@ -482,7 +450,9 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             .token = token,
             .yolo = flags.yolo_flag,
             .model = flags.model_flag,
+            .subagent_provider = flags.subagent_provider_flag,
             .subagent_model = flags.subagent_model_flag,
+            .allow_cross_provider_subagents = flags.allow_cross_provider_subagents_flag,
             .system_prompt = flags.system_prompt_flag,
             .append_system_prompt = flags.append_system_flag,
             .max_tool_calls = main_mod.max_tool_calls,

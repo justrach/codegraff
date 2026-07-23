@@ -90,6 +90,8 @@ pub const usage_text =
     \\flags:
     \\  --model <name>   start on this model (same fuzzy resolution as /model)
     \\  --subagent-model <name>         pin children/workflows/judges on the root provider
+    \\  --subagent-provider <id>        route pinned workers through this provider
+    \\  --allow-cross-provider-subagents confirm prompts/code may go to the worker provider
     \\  --resume <name>  resume/autosave <name>.session.json
     \\  --new            start a fresh autosaved session (default)
     \\  --no-resume      ignore --resume and start fresh

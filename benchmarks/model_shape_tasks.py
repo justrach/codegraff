@@ -6,6 +6,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Task:
     name: str
+    niche: str
     source_name: str
     source: str
     visible_tests: str
@@ -19,6 +20,7 @@ class Task:
 TASKS = (
     Task(
         name="expiring_lru",
+        niche="cache_lifecycle",
         source_name="lease_cache.py",
         source="""\
 from collections import OrderedDict
@@ -175,6 +177,7 @@ counts only live entries. Preserve normal `KeyError(key)` behavior.
     ),
     Task(
         name="route_precedence",
+        niche="routing_rules",
         source_name="router.py",
         source="""\
 from urllib.parse import urlsplit
@@ -292,6 +295,7 @@ An explicit HEAD route wins, otherwise HEAD may fall back to GET.
     ),
     Task(
         name="atomic_inventory",
+        niche="transactional_state",
         source_name="inventory.py",
         source="""\
 class OrderConflict(Exception):
@@ -435,4 +439,3 @@ work. Caller mutations must never alter internal state; `snapshot` is a copy.
 """,
     ),
 )
-

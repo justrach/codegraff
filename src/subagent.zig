@@ -150,17 +150,18 @@ fn subagentFailure(gpa: Allocator, sub_id: []const u8, err: anyerror, detail: ?[
     return .{ .text = text, .is_error = true };
 }
 
-fn childProvider(root: Provider, pinned: ?Provider) Provider {
+fn childProvider(root: Provider, pinned: ?Provider, allow_cross_provider: bool) Provider {
     const child = pinned orelse return root;
-    return if (std.mem.eql(u8, child.id, root.id)) child else root;
+    return if (std.mem.eql(u8, child.id, root.id) or allow_cross_provider) child else root;
 }
 
-test "child model pin cannot cross the current root provider" {
+test "child model pin crosses the current root provider only with consent" {
     const codex_root: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5.6-sol", .context = 272_000 };
     const terra: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5.6-terra", .context = 272_000 };
     const anthropic_root: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "", .model = "claude", .context = 200_000 };
-    try std.testing.expectEqualStrings("gpt-5.6-terra", childProvider(codex_root, terra).model);
-    try std.testing.expectEqualStrings("claude", childProvider(anthropic_root, terra).model);
+    try std.testing.expectEqualStrings("gpt-5.6-terra", childProvider(codex_root, terra, false).model);
+    try std.testing.expectEqualStrings("claude", childProvider(anthropic_root, terra, false).model);
+    try std.testing.expectEqualStrings("gpt-5.6-terra", childProvider(anthropic_root, terra, true).model);
 }
 
 /// Run one isolated subagent to completion: fresh arena, fresh history,
@@ -178,7 +179,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const child_provider = childProvider(ctx.provider, ctx.subagent_provider);
+    const child_provider = childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
 
     var agent: Agent = .{
         .gpa = gpa,
@@ -371,7 +372,7 @@ pub fn scoreVariants(
     const jfuts = arena.alloc(Io.Future(ToolOutput), vn) catch return;
     for (jfuts, jprompts) |*jf, jp| jf.* = ctx.io.async(judgeTask, .{ ctx, jp });
 
-    const pclass = providerClass(childProvider(ctx.provider, ctx.subagent_provider).model);
+    const pclass = providerClass(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider).model);
     const run_id: []const u8 = &scoring.g_run_id;
     for (jfuts, 0..) |*jf, k| {
         const i = vidx[k];

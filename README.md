@@ -367,6 +367,9 @@ usage:
 flags:
   --model <name>            start on this model (same fuzzy resolution as /model)
   --subagent-model <name>   pin children/workflows/judges to this model on the root provider
+  --subagent-provider <id>  route pinned workers through this explicit provider
+  --allow-cross-provider-subagents
+                            consent to worker prompts/code going to another provider
   --yolo                    skip all permission prompts for the session
   -p, --print               one-shot print mode (answer on stdout, tool progress on stderr)
   --timing                  show per-tool wall-clock on result lines (✓ (312ms) …)
@@ -750,19 +753,32 @@ GRAFF_SUBAGENT_MODEL=gpt-5.6-terra graff --model gpt-5.6-sol
 ```
 
 This keeps orchestration/synthesis on Sol and parallel execution on Terra
-without silently crossing credential, billing, or data-boundary domains. Put
+without silently crossing credential, billing, or data-boundary domains.
+Cross-provider workers require an explicit provider and a separate consent
+flag—for example, when both Codex and Kimi are available:
+
+```sh
+graff --model gpt-5.6-sol \
+  --subagent-provider kimi --subagent-model k3 \
+  --allow-cross-provider-subagents
+```
+
+The consent matters because worker prompts, selected code, and tool results go
+to Kimi while root calls continue to go to Codex; telemetry/upload settings are
+independent of that model traffic. Omitting the consent flag fails closed. Put
 `ultracode` in a task (or run `/ultracode on`) when you want the root to
 actively fan work out; the model split itself does not force delegation. If
-`/model` later crosses to another provider, children inherit that current root
-instead of using the old pin; switching back restores the compatible pin.
+`/model` later crosses to another provider, a provider-local pin follows the
+current root until it is compatible again. An explicitly consented cross-
+provider pin remains fixed.
 
 - Depth capped at one level: subagents don't get the `subagent` tool.
 - Subagents don't share the root agent's context, so the orchestrator must put
   everything needed into the prompt (the tool description tells it so).
 - Progress lines (`[label] ⚙ bash …`) go to stderr via `std.debug.print`, which
   locks stderr and is safe from pool threads.
-- Operational API traces and child trajectory nodes record the model that
-  actually handled each call.
+- Operational API traces and child trajectory nodes record the provider and
+  model that actually handled each child.
 
 </details>
 

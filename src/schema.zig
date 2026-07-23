@@ -53,7 +53,6 @@ const schema_protocol_json =
     \\  ]
     \\}
 ;
-
 /// Documentation of the `harness serve` HTTP bridge, embedded verbatim in
 /// `--schema` output. Same request/event contract as the stdio protocol —
 /// one POST = one protocol request, streamed back as NDJSON until that
@@ -64,19 +63,20 @@ const schema_serve_json =
     \\  "endpoints": [
     \\    {"method": "GET", "path": "/healthz", "description": "liveness + version, no auth"},
     \\    {"method": "GET", "path": "/v1/schema", "description": "this schema document"},
-    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"subagentModel\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"maxModelCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
+    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"subagentProvider\",\"subagentModel\",\"allowCrossProviderSubagents\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"maxModelCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
     \\    {"method": "POST", "path": "/v1/sessions/{id}", "description": "body is ONE stdio-protocol request object (user / set_system_prompt / set_model / compact / set_mode / set_agent / score / answer); non-answer requests stream application/x-ndjson events until the request's terminal event (turn/error, or the request-specific ack); answer requests return JSON ack while the original user stream continues; one non-answer request in flight per session at a time"},
     \\    {"method": "DELETE", "path": "/v1/sessions/{id}", "description": "graceful close: waits for any in-flight request, then EOFs the child's stdin"}
     \\  ]
     \\}
 ;
-
 /// Launch flags relevant to SDK clients, embedded verbatim in `--schema`
 /// output so generated clients can surface them as first-class options.
 const schema_flags_json =
     \\[
     \\  {"flag": "--model", "arg": "name", "description": "start on this model (same fuzzy resolution as /model)"},
     \\  {"flag": "--subagent-model", "arg": "name", "description": "pin direct subagents, workflow workers/retries, and judges to this model on the root provider; GRAFF_SUBAGENT_MODEL is the lower-precedence equivalent"},
+    \\  {"flag": "--subagent-provider", "arg": "id", "description": "route pinned workers through this explicit provider; GRAFF_SUBAGENT_PROVIDER is the lower-precedence equivalent"},
+    \\  {"flag": "--allow-cross-provider-subagents", "arg": null, "description": "explicitly consent to sending worker prompts, code, and tool results to a provider different from the root"},
     \\  {"flag": "--yolo", "arg": null, "description": "skip all permission prompts for the session"},
     \\  {"flag": "--system-prompt", "arg": "text", "description": "replace the built-in system prompt (cwd project-instructions file is still appended)"},
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},

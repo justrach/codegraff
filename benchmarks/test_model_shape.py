@@ -10,6 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import model_shape
+from model_shape_frontend_tasks import TASKS as FRONTEND_TASKS
+from model_shape_metrics import quality_diversity
 from model_shape_tasks import TASKS
 
 
@@ -26,20 +28,26 @@ def fake_run(
         "arm": arm,
         "repetition": repetition,
         "wall_ms": wall_ms,
-        "checks": {"passed": passed},
+        "checks": {
+            "passed": passed,
+            "total": 9,
+            "fully_correct": passed == 9,
+        },
         "metrics": {
             "tool_calls": tools,
             "api_calls": 4,
             "context_tokens_sum": 100,
             "response_bytes_sum": 200,
+            "provider_retries": 0,
+            "shape_valid": True,
         },
     }
 
 
 def check_selection() -> None:
     arms = (
-        model_shape.Arm("all-sol", model_shape.ROOT_MODEL),
-        model_shape.Arm("sol-terra", model_shape.WORKER_MODEL),
+        model_shape.arm_for("codex:gpt-5.6-sol"),
+        model_shape.arm_for("codex:gpt-5.6-terra"),
     )
     rows = []
     for index in range(3):
@@ -85,10 +93,13 @@ def check_fixtures() -> None:
         "expiring_lru": 2,
         "route_precedence": 3,
         "atomic_inventory": 0,
+        "responsive_portfolio": 0,
+        "accessible_modal": 1,
+        "persistent_theme_form": 0,
     }
     with tempfile.TemporaryDirectory(prefix="shape-fixture-check-") as raw:
         base = Path(raw)
-        for task in TASKS:
+        for task in TASKS + FRONTEND_TASKS:
             root = base / task.name
             digest = model_shape.initialize_workspace(root, task)
             grade = model_shape.run_checks(task, root, digest)
@@ -98,9 +109,29 @@ def check_fixtures() -> None:
             assert grade["tests_unchanged"] is True
 
 
+def check_quality_diversity() -> None:
+    arms = (
+        model_shape.arm_for("codex:gpt-5.6-sol"),
+        model_shape.arm_for("kimi:k3"),
+    )
+    rows = []
+    for task in FRONTEND_TASKS:
+        rows.append(fake_run(task.name, "all-sol", 8, 120, 12))
+        rows.append(fake_run(task.name, "sol-kimi-k3", 9, 100, 8))
+    qd = quality_diversity(rows, arms, FRONTEND_TASKS)
+    baseline = qd["arms"]["all-sol"]
+    kimi = qd["arms"]["sol-kimi-k3"]
+    assert baseline["qualified_coverage"] == 0
+    assert round(baseline["normalized_qd_score"], 6) == round(8 / 9, 6)
+    assert kimi["qualified_coverage"] == 1
+    assert kimi["qd_score"] == 3
+    assert kimi["elite_tool_calls"] == 24
+
+
 def main() -> None:
     check_selection()
     check_fixtures()
+    check_quality_diversity()
     print("ok    model-shape selection policy and synthetic fixtures")
 
 

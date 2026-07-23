@@ -238,6 +238,7 @@ pub fn buildRootAgent(
         .client = client,
         .provider = default_provider,
         .subagent_provider = subagent_provider,
+        .subagent_cross_provider = flags.allow_cross_provider_subagents_flag,
         .home = keys_cli.homeEnv(environ_map) orelse "",
         .messages = std.json.Array.init(arena),
         .sub = false,

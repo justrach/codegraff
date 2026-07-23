@@ -46,7 +46,9 @@ pub const Flags = struct {
     selftest_markdown_flag: bool = false, // --selftest-markdown: render the real streaming markdown fixture in a PTY
     update_check: bool = false, // graff update --check
     model_flag: ?[]const u8 = null,
+    subagent_provider_flag: ?[]const u8 = null,
     subagent_model_flag: ?[]const u8 = null,
+    allow_cross_provider_subagents_flag: bool = false,
     system_prompt_flag: ?[]const u8 = null,
     append_system_flag: ?[]const u8 = null,
     host_flag: []const u8 = "127.0.0.1", // harness serve
@@ -151,9 +153,14 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--model")) {
                     const mv = it.next() orelse std.process.fatal("--model needs a value — harness --help", .{});
                     flags.model_flag = try arena.dupe(u8, mv);
+                } else if (std.mem.eql(u8, arg, "--subagent-provider")) {
+                    const pv = it.next() orelse std.process.fatal("--subagent-provider needs a value — harness --help", .{});
+                    flags.subagent_provider_flag = try arena.dupe(u8, pv);
                 } else if (std.mem.eql(u8, arg, "--subagent-model")) {
                     const mv = it.next() orelse std.process.fatal("--subagent-model needs a value — harness --help", .{});
                     flags.subagent_model_flag = try arena.dupe(u8, mv);
+                } else if (std.mem.eql(u8, arg, "--allow-cross-provider-subagents")) {
+                    flags.allow_cross_provider_subagents_flag = true;
                 } else if (std.mem.eql(u8, arg, "--system-prompt")) {
                     const sv = it.next() orelse std.process.fatal("--system-prompt needs a value — harness --help", .{});
                     flags.system_prompt_flag = try arena.dupe(u8, sv);
