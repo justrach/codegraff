@@ -470,10 +470,11 @@ limit is hit, instead of pausing for confirmation between routine steps.
 `/review <target or instructions>` is the deliberately narrower path for code
 review: it suppresses goal/eval/ultracode steering, admits only local
 read/search tools and read-only shell inspection, and runs with fresh
-model-visible history and a 40-tool ceiling. There is no review-specific model
-call limit; the ordinary invocation budget is unlimited by default, while an
-explicit `--max-model-calls` still applies. Only the request and final report
-join the parent transcript. Use a later, explicit turn to fix accepted findings.
+model-visible history. There are no implicit review-specific tool or model-call
+limits; the ordinary invocation budget is unlimited by default, while explicit
+`--max-tool-calls` and `--max-model-calls` settings still apply. Only the request
+and final report join the parent transcript. Use a later, explicit turn to fix
+accepted findings.
 
 ### MCP servers
 
