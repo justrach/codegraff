@@ -19,9 +19,8 @@
 //! sole source, so nothing here can break a run. The models.dev overlay only
 //! refreshes numbers for names the active table already routes.
 //!
-//! Cache path: ~/.codegraff/models.json, falling back to the flat dotfile
-//! ~/.codegraff-models.json when that directory doesn't exist; the flat form
-//! also matches the existing ~/.simple-harness-*.json state layout.
+//! Cache path: ~/.codegraff/models.json, falling back to ~/.codegraff-models.json;
+//! the flat form also matches the existing ~/.simple-harness-*.json layout.
 
 const std = @import("std");
 const Io = std.Io;
@@ -33,14 +32,14 @@ const util = @import("util.zig");
 const strFieldObj = util.strFieldObj;
 const provider = @import("provider.zig"); // g_codex_url_override: keep /models discovery on the same origin as the overridden responses endpoint
 const kimi_catalog = @import("kimi_catalog.zig");
+const cache_tests = @import("models_cache_tests.zig");
 
 const models_dev_url = "https://models.dev/api.json";
 const codex_models_url = "https://chatgpt.com/backend-api/codex/models";
 const codex_cache_ttl_ms: i64 = 5 * 60 * 1000;
 // The Codex backend filters /models by client_version. Official openai/codex
-// sends its own compiled package version (client_version_to_whole), not the
-// version of some other Codex installation on PATH. This is the newest Codex
-// protocol Graff has been verified against; a newer installed/native version
+// sends its compiled package version, not another Codex installation on PATH.
+// This is the newest protocol Graff has verified; a newer installed/native version
 // may raise it, but an older one must never hide models Graff supports.
 // Reference: openai/codex rust-v0.144.1, codex-rs/models-manager.
 const codex_client_version_floor = "0.144.1";
@@ -581,70 +580,21 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, sub_a
 }
 
 test "numField reads int and float JSON numbers; u64Field clamps" {
-    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer a.deinit();
-    const v = try std.json.parseFromSliceLeaky(Value, a.allocator(),
-        \\{"i": 42, "f": 2.5, "neg": -3, "s": "x"}
-    , .{ .allocate = .alloc_always });
-    try std.testing.expectEqual(@as(f64, 42), numField(v.object, "i").?);
-    try std.testing.expectEqual(@as(f64, 2.5), numField(v.object, "f").?);
-    try std.testing.expect(numField(v.object, "s") == null);
-    try std.testing.expect(numField(v.object, "missing") == null);
-    try std.testing.expectEqual(@as(u64, 42), u64Field(v.object, "i"));
-    try std.testing.expectEqual(@as(u64, 0), u64Field(v.object, "neg")); // clamped
-    try std.testing.expectEqual(@as(u64, 0), u64Field(v.object, "missing"));
+    try cache_tests.numberFields(numField, u64Field);
 }
 
 test "lazy Codex catalog can be invalidated after account changes" {
-    const previous_source = codex_catalog_source;
-    defer codex_catalog_source = previous_source;
-    var catalog: LazyCodexCatalog = .{ .codex_home = "" };
-    catalog.ensure(std.testing.io, std.testing.allocator, std.testing.allocator, "", "", "");
-    try std.testing.expect(catalog.loaded);
-    catalog.invalidate();
-    try std.testing.expect(!catalog.loaded);
+    try cache_tests.lazyCatalog(LazyCodexCatalog, &codex_catalog_source);
 }
 
 test "findModel prefers the canonical vendor over a reseller markup" {
-    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer a.deinit();
-    // gpt-5.6 listed under a reseller (higher price) AND canonical openai.
-    const v = try std.json.parseFromSliceLeaky(Value, a.allocator(),
-        \\{"reseller":{"models":{"gpt-5.6":{"limit":{"context":100},"cost":{"input":99,"output":99,"cache_read":9}}}},
-        \\ "openai":{"models":{"gpt-5.6":{"limit":{"context":1050000},"cost":{"input":5,"output":30,"cache_read":0.5}}}}}
-    , .{ .allocate = .alloc_always });
-    const m = findModel(v.object, "gpt-5.6").?;
-    try std.testing.expectEqual(@as(f64, 5), m.in); // openai, not the reseller's 99
-    try std.testing.expectEqual(@as(u64, 1_050_000), m.context);
-    // Alias match: "gpt5.6" normalizes to "gpt-5.6".
-    try std.testing.expect(findModel(v.object, "gpt5.6") != null);
-    try std.testing.expect(findModel(v.object, "no-such-model") == null);
+    try cache_tests.canonicalVendor(findModel);
 }
 
 test "Codex snapshot uses visible remote slugs and their advertised contexts" {
-    var a = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer a.deinit();
-    const snapshot = parseCodexSnapshot(a.allocator(),
-        \\{"client_version":"9.9.9","models":[
-        \\ {"slug":"future-sol","visibility":"list","context_window":372000},
-        \\ {"slug":"future-hidden","visibility":"hide","context_window":999000},
-        \\ {"slug":"future-luna","visibility":"list","context_window":128000},
-        \\ {"slug":"future-luna","visibility":"list","context_window":1}]}
-    ).?;
-    try std.testing.expectEqualStrings("9.9.9", snapshot.client_version);
-    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len);
-    try std.testing.expectEqualStrings("future-sol", snapshot.models[0].name);
-    try std.testing.expectEqual(@as(u64, 372_000), snapshot.models[0].context);
-    try std.testing.expectEqualStrings("future-luna", snapshot.models[1].name);
-    try std.testing.expectEqual(@as(u64, 128_000), snapshot.models[1].context);
+    try cache_tests.visibleSnapshots(parseCodexSnapshot);
 }
 
 test "Codex discovery never regresses below Graff's supported client version" {
-    try std.testing.expectEqualStrings(codex_client_version_floor, effectiveCodexVersion("0.130.0", null));
-    try std.testing.expectEqualStrings("0.145.0", effectiveCodexVersion("0.145.0", null));
-    try std.testing.expectEqualStrings(codex_client_version_floor, effectiveCodexVersion("invalid", null));
-    try std.testing.expect(!snapshotMatchesVersion(.{
-        .models = &.{},
-        .client_version = "0.130.0",
-    }, codex_client_version_floor));
+    try cache_tests.versionFloor(codex_client_version_floor, effectiveCodexVersion, snapshotMatchesVersion);
 }

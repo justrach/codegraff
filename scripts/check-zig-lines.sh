@@ -8,7 +8,7 @@ cd "$repo_root"
 # non-ignored files locally so a newly split module is checked before it is
 # staged; CI sees the same files once committed. Vendored sources are exempt per
 # AGENTS.md and are maintained by their upstream project.
-max_lines=699
+max_lines=600
 failed=0
 
 while IFS= read -r -d '' file; do

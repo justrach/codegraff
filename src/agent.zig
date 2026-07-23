@@ -28,44 +28,14 @@ const learning_privacy = @import("learning_privacy.zig");
 
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
+const prompt_ui = @import("agent_prompt.zig");
+const agent_tests = @import("agent_tests.zig");
 
-fn reasoningPromptLabel(effort: ReasoningEffort) []const u8 {
-    return switch (effort) {
-        .low => "Low",
-        .medium => "Medium",
-        .high => "High",
-        .xhigh => "Extra high",
-        .max => "Max",
-        .ultra => "Ultra",
-    };
-}
-
-fn reasoningPromptColor(effort: ReasoningEffort) []const u8 {
-    return switch (effort) {
-        .low => style.green,
-        .medium => style.accent,
-        .high => style.yellow,
-        .xhigh => style.accent,
-        .max => style.red,
-        .ultra => style.accent,
-    };
-}
-
-fn writePromptBadge(w: *Io.Writer, color: []const u8, label: []const u8) !void {
-    try w.print("{s} · {s}{s}{s}{s}", .{ style.dim, style.reset, color, label, style.reset });
-}
-
-fn compactTokenCount(buf: []u8, tokens: u64) []const u8 {
-    return if (tokens >= 1000)
-        std.fmt.bufPrint(buf, "{d}k", .{tokens / 1000}) catch "?"
-    else
-        std.fmt.bufPrint(buf, "{d}", .{tokens}) catch "?";
-}
-
-fn contextPercent(tokens: u64, window: u64) u64 {
-    if (window == 0) return 0;
-    return @min((tokens *| 100) / window, 100);
-}
+const reasoningPromptLabel = prompt_ui.reasoningLabel;
+const reasoningPromptColor = prompt_ui.reasoningColor;
+const writePromptBadge = prompt_ui.writeBadge;
+const compactTokenCount = prompt_ui.compactTokenCount;
+const contextPercent = prompt_ui.contextPercent;
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -619,58 +589,10 @@ pub const Agent = struct {
     pub const isTableSeparator = @import("agent_table.zig").isTableSeparator;
 };
 
-test "reasoning prompt label uses picker wording" {
-    try std.testing.expectEqualStrings("Low", reasoningPromptLabel(.low));
-    try std.testing.expectEqualStrings("Medium", reasoningPromptLabel(.medium));
-    try std.testing.expectEqualStrings("High", reasoningPromptLabel(.high));
-    try std.testing.expectEqualStrings("Extra high", reasoningPromptLabel(.xhigh));
-    try std.testing.expectEqualStrings("Max", reasoningPromptLabel(.max));
-    try std.testing.expectEqualStrings("Ultra", reasoningPromptLabel(.ultra));
-}
-
-test "compact token counts keep prompt usage readable" {
-    var buf: [24]u8 = undefined;
-    try std.testing.expectEqualStrings("999", compactTokenCount(&buf, 999));
-    try std.testing.expectEqualStrings("138k", compactTokenCount(&buf, 138_082));
-}
-
-test "context percent saturates malformed or over-window server meters" {
-    try std.testing.expectEqual(@as(u64, 0), contextPercent(100, 0));
-    try std.testing.expectEqual(@as(u64, 50), contextPercent(50_000, 100_000));
-    try std.testing.expectEqual(@as(u64, 100), contextPercent(150_000, 100_000));
-    try std.testing.expectEqual(@as(u64, 100), contextPercent(std.math.maxInt(u64), 100_000));
+test "agent prompt helper suite" {
+    _ = @import("agent_prompt.zig");
 }
 
 test "lazy root tool catalogs preserve MCP tools across provider formats" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var registry = mcp.Registry.empty(std.testing.allocator, std.testing.io);
-    defer registry.deinit();
-    var connected = [_]mcp.Tool{.{
-        .server_index = 0,
-        .original_name = "search",
-        .qualified_name = "mcp__bench__search",
-        .description = "search the benchmark index",
-        .input_schema = .{ .object = .empty },
-    }};
-    registry.tools = &connected;
-
-    var agent: Agent = undefined;
-    agent.arena = arena;
-    agent.sub = false;
-    agent.registry = &registry;
-    agent.tools_anthropic = "";
-    agent.tools_openai = "";
-    agent.tools_responses = "";
-
-    try agent.ensureRootTools(.responses);
-    try std.testing.expect(std.mem.indexOf(u8, agent.tools_responses, "mcp__bench__search") != null);
-    try std.testing.expectEqual(@as(usize, 0), agent.tools_openai.len);
-    try std.testing.expectEqual(@as(usize, 0), agent.tools_anthropic.len);
-
-    agent.invalidateRootTools();
-    try agent.ensureRootTools(.anthropic);
-    try std.testing.expect(std.mem.indexOf(u8, agent.tools_anthropic, "mcp__bench__search") != null);
-    try std.testing.expectEqual(@as(usize, 0), agent.tools_responses.len);
+    try agent_tests.lazyRootTools(Agent);
 }
