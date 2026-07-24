@@ -36,6 +36,7 @@ const hooks = @import("hooks.zig");
 const readline = @import("readline.zig");
 const title_mod = @import("title.zig");
 const mainloop_title = @import("mainloop_title.zig");
+const review = @import("review.zig");
 
 /// Borrowed pointers into main()'s stack plus immutable arena-owned prompt slices.
 pub const Ctx = struct {
@@ -114,6 +115,7 @@ pub fn run(ctx: *Ctx) !void {
             std.mem.trim(u8, line["/loop".len..], " \t")
         else
             null;
+        var review_prompt: ?[]const u8 = if (!main_mod.json_mode) review.promptFromLine(line) else null;
         // /goal <objective>: set the standing goal AND run it as the first turn
         // right away — codex/opencode both start the loop on a goal instead of
         // just recording it. Bare /goal (show) and /goal clear/off stay commands.
@@ -127,7 +129,7 @@ pub fn run(ctx: *Ctx) !void {
             if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
         }
 
-        if (!main_mod.json_mode and repl_glue.isSlashCommandLine(line) and loop_prompt == null and goal_prompt == null) {
+        if (!main_mod.json_mode and repl_glue.isSlashCommandLine(line) and loop_prompt == null and goal_prompt == null and review_prompt == null) {
             // Bare "/" on a TTY: open the filterable command menu.
             if (ctx.interactive and line.len == 1) {
                 if (pickers.listPicker(ctx.root, ctx.arena, ctx.out, "Command ›", &pickers.command_menu)) |idx| {
@@ -146,7 +148,7 @@ pub fn run(ctx: *Ctx) !void {
         // JSON lines may run a user turn, mutate the system prompt, or append a score.
         var json_request: ?std.json.Parsed(Value) = null;
         defer if (json_request) |*request| request.deinit();
-        const base_msg: []const u8 = if (loop_prompt) |lp| lp else if (goal_prompt) |gp| gp else if (main_mod.json_mode) blk: {
+        const base_msg: []const u8 = if (review_prompt) |rp| rp else if (loop_prompt) |lp| lp else if (goal_prompt) |gp| gp else if (main_mod.json_mode) blk: {
             json_request = std.json.parseFromSlice(Value, ctx.gpa, line, .{ .allocate = .alloc_if_needed }) catch {
                 ctx.root.emit(.{ .type = "error", .message = "invalid JSON (expect {\"type\":\"user\",\"text\":\"...\"})" });
                 continue;
@@ -272,6 +274,7 @@ pub fn run(ctx: *Ctx) !void {
                 ctx.root.emit(.{ .type = "system_prompt", .ok = true, .append = append, .chars = ctx.root.sys_normal.len });
                 continue;
             }
+            if (std.mem.eql(u8, rtype, "review")) review_prompt = text;
             if (parsed.object.get("maxToolCalls") orelse parsed.object.get("max_tool_calls")) |v| switch (v) {
                 .integer => |n| main_mod.max_tool_calls = if (n >= 0) @intCast(n) else null,
                 .null => main_mod.max_tool_calls = null,
@@ -282,6 +285,14 @@ pub fn run(ctx: *Ctx) !void {
             }
             break :blk text;
         } else line;
+        ctx.root.review_mode = review_prompt != null;
+        const parent_system_override = ctx.root.sys_override;
+        if (ctx.root.review_mode)
+            ctx.root.sys_override = try review.systemPrompt(ctx.arena, ctx.root.sys_normal);
+        defer {
+            ctx.root.review_mode = false;
+            ctx.root.sys_override = parent_system_override;
+        }
 
         if (ctx.root.fallback_blocked) {
             const message = try std.fmt.allocPrint(ctx.arena, "saved model unavailable; sending to {s} requires explicit consent — run /fallback allow {s} or choose /model", .{ ctx.root.provider.id, ctx.root.provider.id });
@@ -296,8 +307,8 @@ pub fn run(ctx: *Ctx) !void {
         // live todo_write checklist, with the current list appended so the model
         // resumes the plan instead of re-deriving it (assembled by goalSteeringNote).
         const todos_render: []const u8 = if (ctx.root.todos.items.len > 0) ctx.root.renderTodos() else "";
-        const goal_note = try repl_glue.goalSteeringNote(ctx.arena, ctx.root.goal, todos_render);
-        const eval_note = try repl_glue.evalSteeringNote(
+        const goal_note = if (ctx.root.review_mode) "" else try repl_glue.goalSteeringNote(ctx.arena, ctx.root.goal, todos_render);
+        const eval_note = if (ctx.root.review_mode) "" else try repl_glue.evalSteeringNote(
             ctx.arena,
             ctx.root.eval_cmd,
             ctx.root.eval_target,
@@ -317,9 +328,7 @@ pub fn run(ctx: *Ctx) !void {
             \\[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps.]
         , .{goal_msg}) else goal_msg;
 
-        // Plan mode: steer the model to explore read-only and present a plan
-        // (the gate enforces the read-only part regardless).
-        const msg: []const u8 = if (!main_mod.plan_mode) loop_msg else try std.fmt.allocPrint(ctx.arena,
+        const msg: []const u8 = if (!main_mod.plan_mode or ctx.root.review_mode) loop_msg else try std.fmt.allocPrint(ctx.arena,
             \\{s}
             \\
             \\[harness note: plan mode is ON — read-only. Explore with read-only
@@ -335,7 +344,7 @@ pub fn run(ctx: *Ctx) !void {
 
         // Generate the AI title before the root turn and publish it through the
         // session-scoped nonblocking completion queue.
-        if (!main_mod.json_mode and ctx.root.ai_title and !ctx.root.ai_title_done) {
+        if (!main_mod.json_mode and !ctx.root.review_mode and ctx.root.ai_title and !ctx.root.ai_title_done) {
             ctx.root.ai_title_done = true;
             title_jobs.start(ctx, base_msg);
         }
@@ -357,7 +366,10 @@ pub fn run(ctx: *Ctx) !void {
         }
 
         // "ultracode" codeword or persistent /ultracode mode: opt turns into multi-agent workflow mode.
-        const ultracode_msg = try pickers.applyUltracodeSteering(ctx.arena, msg, base_msg, ctx.root.ultracode_mode or ctx.root.reasoning == .ultra);
+        const ultracode_msg = if (ctx.root.review_mode)
+            pickers.UltracodeMessage{ .text = msg, .explicit = false }
+        else
+            try pickers.applyUltracodeSteering(ctx.arena, msg, base_msg, ctx.root.ultracode_mode or ctx.root.reasoning == .ultra);
         if (ultracode_msg.explicit) {
             if (!main_mod.json_mode) {
                 if (ctx.interactive) {
@@ -371,6 +383,9 @@ pub fn run(ctx: *Ctx) !void {
             ctx.root.tracer.?.note("ultracode", msg[0..@min(msg.len, 120)]);
             if (telemetry.g_telem) |t| t.ultracode();
         }
+        var review_context = review.Context.begin(ctx.arena, ctx.root, ctx.root.review_mode);
+        if (ctx.root.review_mode) ctx.root.rebaseContextMeter();
+        defer if (review_context.restore(ctx.root)) ctx.root.rebaseContextMeter();
         if (ctx.root.pending_image) |img| {
             try ctx.root.messages.append(try vision.imageMessage(ctx.arena, ctx.root.provider.kind, ultracode_msg.text, img));
             ctx.root.pending_image = null;
@@ -388,9 +403,6 @@ pub fn run(ctx: *Ctx) !void {
         ctx.root.tool_calls_this_turn = 0;
         ctx.root.seen_tool_keys.clearRetainingCapacity();
         if (main_mod.json_mode) ctx.root.emit(.{ .type = "started", .provider = ctx.root.provider.id, .model = ctx.root.provider.model });
-        // Breathing room between the submitted input and the turn's first
-        // output — without it the reply starts on the very next line and
-        // reads as a continuation of what the user typed.
         if (ctx.interactive and !main_mod.json_mode) {
             try ctx.out.writeAll("\n");
             try ctx.out.flush();
@@ -401,11 +413,16 @@ pub fn run(ctx: *Ctx) !void {
         // reported inside request(); anything else is surfaced here. Either
         // way we drop back to the prompt (or emit a JSON error/turn event).
         const turn_result = providers.runTurnWithFallback(ctx.root, ctx.keys, ctx.arena, ctx.out);
-        // No successful-path history mutation occurs between the trajectory,
-        // terminal event, and compaction gate. Reuse one full-history scan for
-        // all three instead of serializing an increasingly large history 3x.
+        // Reuse one full-history scan for trace, terminal event, and compaction.
         const post_turn_context_tokens = ctx.root.effectiveContextTokens();
         mainloop_trace.record(ctx.root, ctx.io, ctx.arena, base_msg, turn_id, turn_started, turn_result, post_turn_context_tokens, turn_before, &prev_turn_id, &prev_prompt_fp);
+        const isolated_review = review_context.restore(ctx.root);
+        if (isolated_review) {
+            ctx.root.review_mode = false;
+            ctx.root.sys_override = parent_system_override;
+            try ctx.root.messages.append(try messages.textMessage(ctx.arena, "user", base_msg));
+            ctx.root.rebaseContextMeter();
+        }
         const final_text = turn_result catch |err| switch (err) {
             error.Interrupted => {
                 // Esc: keep what streamed so far in history (as an assistant
@@ -501,13 +518,15 @@ pub fn run(ctx: *Ctx) !void {
                 continue;
             },
         };
+        if (isolated_review)
+            try ctx.root.messages.append(try messages.textMessage(ctx.arena, "assistant", final_text));
+        const session_context_tokens = if (isolated_review) ctx.root.effectiveContextTokens() else post_turn_context_tokens;
         if (main_mod.json_mode) {
             const emitted_text = if (final_text.len == 0 and ctx.root.partial_text.items.len > 0)
                 std.mem.trim(u8, ctx.root.partial_text.items, " \t\r\n")
             else
                 final_text;
             ctx.root.emit(.{ .type = "finalizing" });
-            const context_tokens = post_turn_context_tokens;
             // #124: allocator-level leak telemetry (GRAFF_MEM_DEBUG=1) — arena
             // capacity per turn separates a session-arena leak from gpa-side
             // growth, which OS-level RSS sampling can't tell apart. Emit this
@@ -518,9 +537,8 @@ pub fn run(ctx: *Ctx) !void {
                 .session_arena_kb = if (main_mod.g_session_arena) |a| a.queryCapacity() / 1024 else 0,
                 .scratch_arena_kb = if (ctx.root.scratch_arena) |a| a.queryCapacity() / 1024 else 0,
             });
-            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = !ctx.root.eval_repair_pending, .metadata_complete = context_tokens > 0 });
+            ctx.root.emit(.{ .type = "turn", .text = emitted_text, .context_tokens = session_context_tokens, .cost_usd = pricing.g_cost.snap(ctx.io).usd, .complete = isolated_review or !ctx.root.eval_repair_pending, .metadata_complete = session_context_tokens > 0 });
         }
-
         // Apply only if already complete; poll never waits for title generation.
         title_jobs.poll(ctx);
         fleet.joinElites(ctx.io); // publish backgrounded fleet champions for the next turn (no-op once joined)
@@ -534,11 +552,10 @@ pub fn run(ctx: *Ctx) !void {
             }
         }
 
-        const context_tokens = post_turn_context_tokens;
-        if (context_tokens >= ctx.root.provider.compactAt()) {
+        if (session_context_tokens >= ctx.root.provider.compactAt()) {
             // Trim on failure only when we're genuinely against the window — at
             // 80–95% a transient compaction failure can recover next turn.
-            const near_cap = ctx.root.provider.nearContextLimit(context_tokens);
+            const near_cap = ctx.root.provider.nearContextLimit(session_context_tokens);
             ctx.root.compactOrRecover(near_cap);
         }
 

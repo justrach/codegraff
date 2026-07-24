@@ -8,10 +8,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-export const HARNESS_VERSION = "0.6";
+export const HARNESS_VERSION = "0.8";
 
 export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5.2" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "grok-4.3" | "grok-build" | "k3" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | (string & {});
-export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "clock_sleep" | "subagent" | "workflow" | "learn_candidate";
+export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "clock_sleep" | "subagent" | "workflow" | "agent_output" | "learn_candidate";
 export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "moonshot" | "xai" | "zai" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
 
 /** Events streamed by `harness --json` (one JSON object per stdout line), each
@@ -32,6 +32,7 @@ export type Event =
   | { type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
   | { type: "tool_result"; name: string; is_error: boolean; text: string }
   | { type: "tool_call_finished"; name: string; is_error: boolean; ms: number }
+  | { type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }
   | { type: "finalizing" }
   | { type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }
   | { type: "system_prompt"; ok: boolean; append: boolean; chars: number }
@@ -75,6 +76,8 @@ export interface HarnessOptions {
 export interface ChatOptions {
   /** User prompt for this turn. */
   prompt: string;
+  /** Run this turn in isolated, read-only review mode. */
+  review?: boolean;
 }
 
 export interface AnswerOptions {
@@ -262,7 +265,8 @@ export class Harness {
   /** Run one turn; async-iterate events up to and including `turn`/`error`. */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
-    this.proc.stdin.write(JSON.stringify({ type: "user", text: prompt }) + "\n");
+    const type = typeof input === "string" || !input.review ? "user" : "review";
+    this.proc.stdin.write(JSON.stringify({ type, text: prompt }) + "\n");
     while (true) {
       const ev = await this.next();
       if (ev === null) {
@@ -284,6 +288,12 @@ export class Harness {
       if (ev.type === "error") throw new Error(ev.message);
     }
     return final;
+  }
+
+  /** Run one isolated, read-only review turn and return its final report. */
+  review(input: string | ChatOptions): Promise<string> {
+    const prompt = typeof input === "string" ? input : input.prompt;
+    return this.ask({ prompt, review: true });
   }
 
   /** Answer an in-flight ask_user event. Call this while consuming chat()
@@ -400,6 +410,7 @@ export class HarnessSession {
   /** Send a user turn; async-iterate its events. */
   send(input: string | ChatOptions): AsyncGenerator<Event> { return this.agent.chat(input); }
   ask(input: string | ChatOptions): Promise<string> { return this.agent.ask(input); }
+  review(input: string | ChatOptions): Promise<string> { return this.agent.review(input); }
   answer(input: string | AnswerOptions): void { return this.agent.answer(input); }
   setSystemPrompt(text: string, append = false): Promise<void> { return this.agent.setSystemPrompt(text, append); }
   close(): void { this.agent.close(); }
@@ -418,4 +429,4 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<Event> {
 }
 
 export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.3", "grok-build", "k3", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mlx-community/Qwen3.6-27B-OptiQ-4bit"];
-export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow", "learn_candidate"];
+export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow", "agent_output", "learn_candidate"];

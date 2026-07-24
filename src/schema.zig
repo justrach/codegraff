@@ -22,37 +22,7 @@ const provider_specs = provider_mod.provider_specs;
 
 /// Documentation of the `--json` stdio protocol, embedded verbatim in
 /// `--schema` output so SDK generators/users know the request/event contract.
-const schema_protocol_json =
-    \\{
-    \\  "transport": "newline-delimited JSON over stdin/stdout (--json)",
-    \\  "request": "one JSON object per line: {\"type\":\"user\",\"text\":\"...\"} sends a user turn; {\"type\":\"answer\",\"text\":\"...\",\"cancelled\":false,\"call_id\":\"optional\"} answers an active ask_user event; {\"type\":\"set_system_prompt\",\"text\":\"...\",\"append\":false} replaces (or with append=true extends) the system prompt between turns and acks with a system_prompt event; {\"type\":\"set_model\",\"model\":\"gpt-5.5\",\"provider\":\"codex\"}, {\"type\":\"compact\"}, {\"type\":\"set_mode\",\"mode\":\"plan|normal\"}, and {\"type\":\"set_agent\",\"id\":\"reviewer\"}, {\"type\":\"set_effort\",\"level\":\"low|medium|high|xhigh|max|ultra\"}, and {\"type\":\"set_fast\",\"on\":true} are live control requests acked by model/compact/mode/agent/effort/fast/ultracode events. For compatibility, set_model also accepts legacy {\"name\":\"provider model|model\"}. NOTE: the system prompt heads the KV-cached prefix, so any mutation invalidates the cache for the whole conversation (per Manus context-engineering lessons) — set it at spawn when possible and mutate only at task boundaries",
-    \\  "score_request": "{\"type\":\"score\",\"prompt_sha\":\"<16 hex>\",\"score\":0.7,\"notes\":\"...\",\"parent_sha\":\"<16 hex, optional>\"} appends an evaluation record for an agent/prompt variant to this run's file under .graff/trajectories (the aggregate append-only DGM-style archive; prompt_sha = first 8 bytes of SHA-256 of the system prompt, hex; parent_sha records which prompt this variant was mutated from — the lineage edge DGM parent selection counts children with) and acks with a score event",
-    \\  "events": [
-    \\    {"type": "text", "text": "assistant text delta"},
-    \\    {"type": "reasoning", "text": "reasoning/thinking delta (GUI shows a collapsible Thinking block)"},
-    \\    {"type": "started", "provider": "provider", "model": "model"},
-    \\    {"type": "model_call_started", "provider": "provider", "model": "model"},
-    \\    {"type": "model_call_finished", "provider": "provider", "model": "model", "ok": true, "ms": 0},
-    \\    {"type": "tool_call", "name": "tool", "input": {}},
-    \\    {"type": "tool_call_started", "name": "tool", "input": {}},
-    \\    {"type": "tool_rejected", "name": "tool", "reason": "budget|duplicate", "input": {}, "message": "..."},
-    \\    {"type": "ask_user", "call_id": "...", "question": "...", "input": {"question": "...", "options": ["..."]}},
-    \\    {"type": "tool_result", "name": "tool", "is_error": false, "text": "..."},
-    \\    {"type": "tool_call_finished", "name": "tool", "is_error": false, "ms": 0},
-    \\    {"type": "finalizing"},
-    \\    {"type": "turn", "text": "final assistant text", "context_tokens": 0, "cost_usd": 0.0, "complete": true, "metadata_complete": true},
-    \\    {"type": "system_prompt", "ok": true, "append": false, "chars": 0},
-    \\    {"type": "model", "ok": true, "provider": "provider", "model": "model", "context": 0, "note": "context kept"},
-    \\    {"type": "compact", "ok": true, "chars": 0},
-    \\    {"type": "mode", "ok": true, "mode": "plan"},
-    \\    {"type": "agent", "ok": true, "id": "reviewer", "chars": 0},
-    \\    {"type": "effort", "ok": true, "level": "medium", "applies": true},
-    \\    {"type": "fast", "ok": true, "on": true, "applies": true},
-    \\    {"type": "score", "ok": true, "prompt_sha": "..."},
-    \\    {"type": "error", "message": "..."}
-    \\  ]
-    \\}
-;
+const schema_protocol_json = @import("schema_protocol.zig").json;
 /// Documentation of the `harness serve` HTTP bridge, embedded verbatim in
 /// `--schema` output. Same request/event contract as the stdio protocol —
 /// one POST = one protocol request, streamed back as NDJSON until that
@@ -82,7 +52,7 @@ const schema_flags_json =
     \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
     \\  {"flag": "--json", "arg": null, "description": "structured stdio protocol (JSON in, JSONL events out)"},
     \\  {"flag": "--max-tool-calls", "arg": "N", "description": "hard per-turn root tool-call budget; rejected calls emit tool_rejected/tool_result"},
-    \\  {"flag": "--max-model-calls", "arg": "N", "description": "invocation-wide provider-call ceiling shared by root, subagents, retries, title, compaction, and judges; default 256"},
+    \\  {"flag": "--max-model-calls", "arg": "N", "description": "opt-in invocation-wide provider-call ceiling shared by root, review, subagents, retries, title, compaction, and judges; default unlimited"},
     \\  {"flag": "--dedupe-tool-calls", "arg": null, "description": "reject duplicate root tool name+normalized-input calls per turn"},
     \\  {"flag": "--no-telemetry", "arg": null, "description": "disable anonymous OTEL usage telemetry for this run"},
     \\  {"flag": "--learning-privacy", "arg": "local|aggregate|templates|examples", "description": "set the prompt-learning egress ceiling; default local, and template text still requires exact interactive approval"}
@@ -204,9 +174,17 @@ const meta_specs = [_]ToolSpec{
 
 const subagent_spec = ToolSpec{
     .name = "subagent",
-    .desc = "Delegate a self-contained task to a subagent. It has bash, read_file, edit_file, write_file, and codedb (code search); it cannot spawn further subagents and does NOT share your context — the prompt must be self-contained. Returns the subagent final report. Call several times in one response to run tasks in parallel. Pick a persona with agent (builtins: reviewer, researcher, implementer, skeptic — plus any in .harness/agents/), or give the child a custom system_prompt; the trajectory log records the lineage either way.",
+    .desc = "Delegate a self-contained task to a subagent. It has bash, read_file, edit_file, write_file, and codedb (code search); it cannot spawn further subagents and does NOT share your context — the prompt must be self-contained. Returns the subagent final report. Call several times in one response to run tasks in parallel. Pick a persona with agent (builtins: reviewer, researcher, implementer, skeptic — plus any in .harness/agents/), or give the child a custom system_prompt; the trajectory log records the lineage either way. Set run_in_background true to launch it asynchronously instead: you get the agent id back immediately and keep working, then fetch the result with agent_output.",
     .schema =
-    \\{"type": "object", "properties": {"description": {"type": "string", "description": "Short label for logs, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task description"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name) whose persona the child runs with"}, "system_prompt": {"type": "string", "description": "Optional: replace the child's system prompt with a custom one (overrides agent)"}}, "required": ["description", "prompt"]}
+    \\{"type": "object", "properties": {"description": {"type": "string", "description": "Short label for logs, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task description"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name) whose persona the child runs with"}, "system_prompt": {"type": "string", "description": "Optional: replace the child's system prompt with a custom one (overrides agent)"}, "isolation": {"type": "string", "enum": ["shared_cwd", "worktree"], "description": "Optional: \"worktree\" gives this child its own scratch git worktree (auto-removed if it finishes with no changes, kept + reported if it has any) instead of the shared working tree — use for parallel agents that edit files. Default shared_cwd (today's behavior), unless the chosen agent persona sets its own default."}, "isolation_fallback": {"type": "boolean", "description": "Optional: if isolation:\"worktree\" fails to set up (not a git repo, git error), run in the shared working tree instead of failing the spawn. Default false (fails the spawn on setup failure)."}, "run_in_background": {"type": "boolean", "description": "Optional: start this subagent asynchronously and return its agent id immediately instead of waiting for it to finish (default false). Poll status/result with agent_output (id, optional wait_ms). A spawn beyond the concurrency cap is queued, never failed."}}, "required": ["description", "prompt"]}
+    ,
+};
+
+const agent_output_spec = ToolSpec{
+    .name = "agent_output",
+    .desc = "Fetch a background subagent's status/result (one started with subagent run_in_background:true). Running: a brief status line. Completed: the full report — the same text a synchronous subagent call would have returned, including any kept-worktree note — plus a usage summary (duration, tool-call count, context tokens, cache-read tokens). Failed: an is_error result explaining why; failures are always reported, never silent. Set wait_ms to block while still running. Calling again after completion re-returns the same result — nothing is consumed.",
+    .schema =
+    \\{"type": "object", "properties": {"id": {"type": "integer", "description": "Agent id returned by subagent with run_in_background:true"}, "wait_ms": {"type": "integer", "description": "Max milliseconds to wait while still running (0-30000, default 0)"}}, "required": ["id"]}
     ,
 };
 
@@ -214,7 +192,7 @@ const workflow_spec = ToolSpec{
     .name = "workflow",
     .desc = "Run a workflow of parallel subagents (dynamic workflows as data). Two shapes. PHASES (fan-out + synthesis): phases run sequentially; tasks inside a phase run in parallel as isolated subagents with no shared context, so every prompt must be self-contained; from phase 2 on, {{prev}} in a task prompt is replaced with the labeled results of the previous phase (appended if omitted); a phase may carry `when` to run only if a substring appears in {{prev}} (conditional / early-exit). Returns the final phase results. Use for audits, multi-perspective review, parallel research. Tasks may carry their own system_prompt to run prompt variants side by side; when the fleet is on, a phase with 2+ variants is auto-scored by an LLM judge and each variant's fitness feeds back to the fleet (a tournament doubles as a DGM scoring round). PIPELINE (no barrier): pass {pipeline:{items,stages}} instead to map each item through the stages independently — item A can reach stage 3 while item B is still on stage 1; {{item}} is the item and {{prev}} is this item's previous-stage result. Use for per-item work like transform/verify each file.",
     .schema =
-    \\{"type": "object", "properties": {"phases": {"type": "array", "description": "Fan-out + synthesis mode (barrier between phases).", "items": {"type": "object", "properties": {"title": {"type": "string", "description": "Short phase label for logs"}, "when": {"type": "string", "description": "Optional (phase 2+): run this phase only if this substring appears (case-insensitive) in the previous phase's results — gate a synthesis/exit phase on a sentinel"}, "tasks": {"type": "array", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "Short label, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task; may contain {{prev}}"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name)"}, "system_prompt": {"type": "string", "description": "Optional: replace this task's system prompt (overrides agent)"}}, "required": ["description", "prompt"]}}}, "required": ["tasks"]}}, "pipeline": {"type": "object", "description": "No-barrier mode: map each item through the stages independently.", "properties": {"items": {"type": "array", "items": {"type": "string"}, "description": "Things to process, one independent chain each (e.g. file paths)"}, "stages": {"type": "array", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "Short stage label"}, "prompt": {"type": "string", "description": "Self-contained; {{item}} = the item, {{prev}} = this item's previous-stage result"}, "agent": {"type": "string", "description": "Optional named agent type"}, "system_prompt": {"type": "string", "description": "Optional: replace this stage's system prompt"}}, "required": ["description", "prompt"]}}}, "required": ["items", "stages"]}}}
+    \\{"type": "object", "properties": {"phases": {"type": "array", "description": "Fan-out + synthesis mode (barrier between phases).", "items": {"type": "object", "properties": {"title": {"type": "string", "description": "Short phase label for logs"}, "when": {"type": "string", "description": "Optional (phase 2+): run this phase only if this substring appears (case-insensitive) in the previous phase's results — gate a synthesis/exit phase on a sentinel"}, "tasks": {"type": "array", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "Short label, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task; may contain {{prev}}"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name)"}, "system_prompt": {"type": "string", "description": "Optional: replace this task's system prompt (overrides agent)"}, "isolation": {"type": "string", "enum": ["shared_cwd", "worktree"], "description": "Optional: \"worktree\" gives this task its own scratch git worktree (auto-removed if it finishes with no changes, kept + reported if it has any) instead of the shared working tree. Default shared_cwd, unless the chosen agent persona sets its own default."}, "isolation_fallback": {"type": "boolean", "description": "Optional: if isolation:\"worktree\" fails to set up, run in the shared working tree instead of failing this task. Default false."}}, "required": ["description", "prompt"]}}}, "required": ["tasks"]}}, "pipeline": {"type": "object", "description": "No-barrier mode: map each item through the stages independently.", "properties": {"items": {"type": "array", "items": {"type": "string"}, "description": "Things to process, one independent chain each (e.g. file paths)"}, "stages": {"type": "array", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "Short stage label"}, "prompt": {"type": "string", "description": "Self-contained; {{item}} = the item, {{prev}} = this item's previous-stage result"}, "agent": {"type": "string", "description": "Optional named agent type"}, "system_prompt": {"type": "string", "description": "Optional: replace this stage's system prompt"}, "isolation": {"type": "string", "enum": ["shared_cwd", "worktree"], "description": "Optional: \"worktree\" gives this stage its own scratch git worktree (auto-removed if it finishes with no changes, kept + reported if it has any) instead of the shared working tree. Default shared_cwd, unless the chosen agent persona sets its own default."}, "isolation_fallback": {"type": "boolean", "description": "Optional: if isolation:\"worktree\" fails to set up, run in the shared working tree instead of failing this stage. Default false."}}, "required": ["description", "prompt"]}}}, "required": ["items", "stages"]}}}
     ,
 };
 
@@ -226,7 +204,7 @@ const learn_candidate_spec = ToolSpec{
     ,
 };
 
-pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec, learn_candidate_spec };
+pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, workflow_spec, agent_output_spec, learn_candidate_spec };
 
 // The common catalog (clock_sleep off) is static too. Previously every root
 // startup allocated and filled a filtered ToolSpec array before rendering even
@@ -403,7 +381,7 @@ fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const u8,
 /// a per-commit git describe) — bump this only when the schema or JSONL
 /// protocol changes shape, so SDK regeneration stays byte-stable across
 /// commits.
-pub const schema_version = "0.6";
+pub const schema_version = "0.8"; // #276 P0-3: subagent gained run_in_background; new agent_output tool
 
 /// Emit the machine-readable interface description for `harness --schema`:
 /// providers, models, built-in tools (name/description/parameters), and the
@@ -597,4 +575,26 @@ test "providerTakesEffort: effort-honoring providers, but never for grok models"
     try std.testing.expect(!providerTakesEffort(.openai, "xai", "grok-4.3")); // xai not in the list
     // grok via the codegraff gateway must NOT get reasoning_effort (grok rejects it)
     try std.testing.expect(!providerTakesEffort(.openai, "codegraff", "grok-build"));
+}
+test "agent_output: root-only (subagent/workflow's run_in_background has nothing to poll from inside a child), never doubles as a meta tool" {
+    var found_root = false;
+    for (root_specs) |t| if (std.mem.eql(u8, t.name, "agent_output")) {
+        found_root = true;
+    };
+    try std.testing.expect(found_root);
+    try std.testing.expect(!isMetaName("agent_output")); // dispatched like bash_output, not handled inline
+
+    // Subagents can't spawn subagents (execSubagent's from_sub gate), so they
+    // can never mint an agent id to poll — keep it out of their own catalog
+    // (tools_anthropic_sub is built from base_specs only).
+    try std.testing.expect(std.mem.indexOf(u8, tools_anthropic_sub, "agent_output") == null);
+    try std.testing.expect(std.mem.indexOf(u8, tools_anthropic_sub, "subagent") == null);
+}
+
+test "subagent_spec: run_in_background is a boolean, optional (not in required), valid JSON alongside the rest of the schema" {
+    try std.testing.expect(std.mem.indexOf(u8, subagent_spec.schema, "\"run_in_background\": {\"type\": \"boolean\"") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, subagent_spec.schema, .{});
+    defer parsed.deinit();
+    const required = parsed.value.object.get("required").?.array.items;
+    for (required) |r| try std.testing.expect(!std.mem.eql(u8, r.string, "run_in_background"));
 }

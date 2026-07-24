@@ -7,10 +7,10 @@
 // `harness --json` child over there, and one POST = one protocol request,
 // streamed back as NDJSON until that request's terminal event.
 
-export const HARNESS_VERSION = "0.6";
+export const HARNESS_VERSION = "0.8";
 
 export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5.2" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "grok-4.3" | "grok-build" | "k3" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | (string & {});
-export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "clock_sleep" | "subagent" | "workflow" | "learn_candidate";
+export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "clock_sleep" | "subagent" | "workflow" | "agent_output" | "learn_candidate";
 export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "moonshot" | "xai" | "zai" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
 
 /** Events streamed by the bridge (same `--json` contract as the stdio SDK).
@@ -29,6 +29,7 @@ export type Event =
   | { type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
   | { type: "tool_result"; name: string; is_error: boolean; text: string }
   | { type: "tool_call_finished"; name: string; is_error: boolean; ms: number }
+  | { type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }
   | { type: "finalizing" }
   | { type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }
   | { type: "system_prompt"; ok: boolean; append: boolean; chars: number }
@@ -68,6 +69,7 @@ export interface RemoteOptions {
 
 export interface ChatOptions {
   prompt: string;
+  review?: boolean;
 }
 
 export interface AnswerOptions {
@@ -166,8 +168,9 @@ export class RemoteHarness {
   /** Run one turn; async-iterate events up to and including `turn`/`error`. */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
+    const type = typeof input === "string" || !input.review ? "user" : "review";
     let terminal = false;
-    for await (const ev of this.send({ type: "user", text: prompt })) {
+    for await (const ev of this.send({ type, text: prompt })) {
       yield ev;
       if (ev.type === "turn" || ev.type === "error") { terminal = true; break; }
     }
@@ -182,6 +185,12 @@ export class RemoteHarness {
       if (ev.type === "error") throw new Error(ev.message);
     }
     return final;
+  }
+
+  /** Run one isolated, read-only review turn and return its final report. */
+  review(input: string | ChatOptions): Promise<string> {
+    const prompt = typeof input === "string" ? input : input.prompt;
+    return this.ask({ prompt, review: true });
   }
 
   /** Answer an in-flight ask_user event. The original chat() stream continues
@@ -250,4 +259,4 @@ export async function* runAgentRemote(opts: RunAgentRemoteOptions): AsyncGenerat
 }
 
 export const MODELS: ModelName[] = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.3", "grok-build", "k3", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mlx-community/Qwen3.6-27B-OptiQ-4bit"];
-export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow", "learn_candidate"];
+export const TOOLS: ToolName[] = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow", "agent_output", "learn_candidate"];

@@ -28,6 +28,25 @@ const ranOk = process_runner.ranOk;
 const codegraff_coauthor = "Co-Authored-By: Codegraff <blackfloofie@codegraff.com>";
 const Agent = agent_mod.Agent;
 
+/// Same as `runCapped`, but spawns the child with an explicit working
+/// directory instead of inheriting the process's (#276 P0-1: a worktree-
+/// isolated subagent's `bash` calls need their own cwd — per-spawn, via
+/// `std.process.Child.Cwd`, never a process-wide chdir, so parallel sibling
+/// agents on the same pool each keep their own).
+pub fn runCappedCwd(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize, stderr_cap: usize, deadline_ms: u64, cwd: std.process.Child.Cwd) !CappedRun {
+    return runCappedWithOptions(gpa, io, argv, stdout_cap, stderr_cap, deadline_ms, .{ .cwd = cwd });
+}
+
+const agent_worktree = @import("agent_worktree.zig");
+pub const AgentWorktree = agent_worktree.AgentWorktree;
+pub const AgentWorktreeError = agent_worktree.AgentWorktreeError;
+pub const AgentWorktreeOutcome = agent_worktree.AgentWorktreeOutcome;
+pub const isolationFailureText = agent_worktree.isolationFailureText;
+pub const agentWorktreeNames = agent_worktree.agentWorktreeNames;
+pub const agentWorktreeCreate = agent_worktree.agentWorktreeCreate;
+pub const isWorktreeStatusDirty = agent_worktree.isWorktreeStatusDirty;
+pub const agentWorktreeFinish = agent_worktree.agentWorktreeFinish;
+
 /// True if the current git working tree has uncommitted *tracked* changes
 /// (staged or unstaged). Untracked files (`?? …`) don't count — `git reset
 /// --hard` leaves them alone, so they're safe around a worktree land.

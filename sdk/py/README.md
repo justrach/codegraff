@@ -41,6 +41,9 @@ with Harness(yolo=True, model="gpt-5.5") as h:
     for ev in h.chat("read foo.txt"):
         print(ev["type"], ev)
 
+    # isolated review: fresh context, local reads only, no edits/delegation/workflows
+    print(h.review("review HEAD against main"))
+
 # replace or extend the system prompt
 with Harness(yolo=True, system_prompt="You are a code-review bot. Only report bugs.") as bot:
     print(bot.ask("review main.py"))

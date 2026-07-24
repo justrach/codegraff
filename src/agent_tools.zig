@@ -11,6 +11,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 
 const main_mod = @import("main.zig");
+const review = @import("review.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const ToolCall = tools_mod.ToolCall;
@@ -144,6 +145,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             .depth = self.depth,
             .snapshots = self.snapshots,
             .tools_used = &self.tools_used,
+            .agent_cwd = self.agent_cwd,
         };
         // Esc while tools run: spawn a stdin watcher for the duration of
         // the join (see esc_cancel). Subagents notice the flag mid-flight;
@@ -199,6 +201,10 @@ test "toolPreviewText caps context and preserves an inspect pointer" {
 
 pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
     if (self.sub) return null;
+    if (self.review_mode) if (try review.rejectTool(self.arena, call)) |denied| {
+        self.emitToolRejected(call, "review_mode", denied.text);
+        return denied;
+    };
     if (std.mem.eql(u8, call.name, "attempt_completion")) return null;
     if (main_mod.max_tool_calls) |max| {
         if (self.tool_calls_this_turn >= max) {
@@ -275,7 +281,7 @@ fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const
 /// Handle a meta tool inline on the agent's own thread.
 pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
-        if (self.eval_cmd != null and (!self.eval_verified or self.eval_repair_pending)) {
+        if (!self.review_mode and self.eval_cmd != null and (!self.eval_verified or self.eval_repair_pending)) {
             const message = if (self.eval_repair_pending)
                 "completion blocked: the latest verifier contradicted the plan; repair the failure and run eval until it meets the target"
             else

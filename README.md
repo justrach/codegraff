@@ -442,6 +442,7 @@ other animation names remain available.
 /animation      choose a thinking animation (`/animation` lists every option)
 /goal [text]    set/show a standing objective; /goal pause|resume|status|clear
 /loop <prompt>  work autonomously toward the prompt, stopping with a named outcome when done or blocked
+/review <target> one read-only review pass; no edits, delegation, workflows, or web access
 /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
 /image <path>   attach an image to your next message (vision models only)
 /paste          attach the clipboard image (macOS); also Ctrl-V (⌘V can't be captured)
@@ -466,6 +467,14 @@ turns it back on, and `/goal status` shows the objective and its current state.
 (plan, act, verify) and stopping on its own with a named outcome (accepted,
 blocked, cancelled, or exhausted) once the work is done, you step in, or a safety
 limit is hit, instead of pausing for confirmation between routine steps.
+`/review <target or instructions>` is the deliberately narrower path for code
+review: it suppresses goal/eval/ultracode steering, admits only local
+read/search tools and read-only shell inspection, and runs with fresh
+model-visible history. There are no implicit review-specific tool or model-call
+limits; the ordinary invocation budget is unlimited by default, while explicit
+`--max-tool-calls` and `--max-model-calls` settings still apply. Only the request
+and final report join the parent transcript. Use a later, explicit turn to fix
+accepted findings.
 
 ### MCP servers
 

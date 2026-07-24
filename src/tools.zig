@@ -169,6 +169,7 @@ pub const ToolCtx = struct {
     depth: u8 = 0,
     snapshots: ?*Snapshots = null,
     tools_used: ?*ToolSink = null, // the calling agent's tool log (trajectory/process mining)
+    agent_cwd: ?[]const u8 = null, // #276 P0-1: per-agent isolated worktree (absolute path); null = shared cwd. Set from Agent.agent_cwd, never a process-wide chdir — safe across parallel sibling subagents on the same pool.
 };
 
 /// Event JSON for a tool lifecycle hook: {"event","tool","input"[,

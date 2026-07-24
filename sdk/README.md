@@ -56,6 +56,7 @@ for await (const ev of runAgent({ prompt: "summarize README.md", model: "gpt-5.5
 const harness = Harness.init({ model: "claude-opus-4-8", yolo: true });
 const session = harness.session();
 console.log(await session.ask("what files are here?"));
+console.log(await session.review("review HEAD against main")); // isolated + read-only
 for await (const ev of session.send("ask me a follow-up before continuing")) {
   if (ev.type === "ask_user") session.answer({ text: "continue", callId: ev.call_id });
 }
@@ -64,7 +65,8 @@ session.close();
 ```
 
 Options: `binary`, `cwd`, `env`, `model` (model name *or* provider id, e.g. `"codex"`),
-`yolo`, and raw `args`. `chat()`/`send()`/`ask()` accept a string or `{ prompt }`.
+`yolo`, and raw `args`. `chat()`/`send()`/`ask()` accept a string or `{ prompt }`;
+`review()` runs an isolated read-only review turn with fresh model-visible history.
 
 ## Remote (edge runtimes — no local binary)
 

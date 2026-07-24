@@ -37,13 +37,15 @@ for await (const ev of runAgent({ prompt: "summarize README.md", model: "gpt-5.5
 const harness = Harness.init({ model: "claude-opus-4-8", yolo: true });
 const session = harness.session();
 console.log(await session.ask("what files are here?")); // returns final text
+console.log(await session.review("review HEAD against main")); // isolated + read-only
 for await (const ev of session.send("ask me a follow-up before continuing")) {
   if (ev.type === "ask_user") session.answer({ text: "continue", callId: ev.call_id });
 }
 session.close();
 ```
 
-`Harness.init` accepts `{ model, yolo, cwd, env, binary, system_prompt, args }`.
+`Harness.init` accepts `{ model, yolo, cwd, env, binary, systemPrompt,
+maxToolCalls, maxModelCalls, dedupeToolCalls, args }`.
 `model` may be a model name **or** a provider id (e.g. `"codex"`, `"moonshot"`).
 Also exported: `MODELS` and `PROVIDERS`.
 
@@ -75,6 +77,54 @@ const h = RemoteHarness.init({ url: "http://127.0.0.1:8787", token, yolo: true }
 console.log(await h.ask("what files are here?"));
 await h.close();
 ```
+
+## Orchestration (#276): agent()/parallel()/pipeline(), budgets, resumable runs
+
+`@codegraff/sdk/orchestrate` is a deterministic scripting layer on top of the
+harness's `subagent`/`workflow` tools/`agent_output` — instead of asking the
+root model to decide, on its own judgement, to fan out, the SDK drives those
+tools programmatically:
+
+```ts
+import { agent, parallel, pipeline, Run } from "@codegraff/sdk/orchestrate";
+
+// one subagent call
+const r = await agent("summarize README.md", { agent: "researcher" });
+console.log(r.ok, r.text, r.usage.contextTokens);
+
+// parallel(): explicit barrier, a failed thunk resolves null (never rejects)
+const reviews = await parallel([
+  () => agent("review auth.ts for bugs", { agent: "reviewer" }),
+  () => agent("review db.ts for bugs", { agent: "reviewer" }),
+]);
+
+// pipeline(): per-item flow, no barrier between an item's stages -- one
+// slow file never blocks another file's later stages
+const results = await pipeline(
+  ["a.ts", "b.ts"],
+  async (_prev, file) => agent(`refactor ${file}`, { isolation: "worktree" }),
+  async (prev, file) => agent(`review this diff for ${file}:\n${(prev as any).text}`),
+);
+```
+
+A `Run` adds a token-aware budget and a JSONL journal + prefix-resume so a
+re-invoked script skips unchanged calls and goes live from the first
+divergence:
+
+```ts
+const run = new Run({ budget: { maxTokens: 200_000 } });
+await run.agent("step one");
+await run.agent("step two");
+console.log(run.budget.spent(), run.budget.remaining());
+
+// later / after a crash: replay unchanged calls, run only what diverged
+const resumed = new Run({ resumeFrom: run.journalPath });
+await resumed.agent("step one"); // cached, no process spawned
+```
+
+See `orchestrate.ts`'s file header for the exact journal format and the
+concurrency/determinism guarantees (and their documented edges) for
+`parallel()`/`pipeline()`.
 
 ## Links
 

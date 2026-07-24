@@ -32,6 +32,23 @@ const http = @import("http.zig");
 /// files (frontmatter: name/description/score, body: the system prompt)
 /// override or extend them — that's where an evolution driver promotes
 /// archive winners. Spawn one with subagent/workflow `agent: "<name>"`.
+/// #276 P0-1: per-agent git-worktree isolation. `.shared_cwd` (default) is
+/// today's behavior — every fanned-out subagent shares the caller's working
+/// tree. `.worktree` gives the child its own scratch `git worktree`, threaded
+/// through as its `Agent.agent_cwd` (never a process-wide chdir — see
+/// jobs.zig's "Per-agent worktree isolation" section and subagent.zig's
+/// runSub) so parallel siblings never race on the same files.
+pub const Isolation = enum {
+    shared_cwd,
+    worktree,
+
+    fn parse(s: []const u8) ?Isolation {
+        if (std.mem.eql(u8, s, "worktree")) return .worktree;
+        if (std.mem.eql(u8, s, "shared_cwd")) return .shared_cwd;
+        return null;
+    }
+};
+
 pub const AgentType = struct {
     name: []const u8,
     desc: []const u8,
@@ -39,6 +56,7 @@ pub const AgentType = struct {
     score: ?f64 = null, // written by the evolution driver, shown in /agents
     builtin: bool = false,
     learned: bool = false,
+    isolation: ?Isolation = null, // persona default (frontmatter `isolation: worktree`); null = no opinion, falls through to shared_cwd
 };
 
 /// Preloaded niches: deliberately orthogonal *behavioral* dimensions (what
@@ -146,6 +164,7 @@ fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_p
                     if (std.mem.eql(u8, key, "name") and val.len > 0) at.name = val;
                     if (std.mem.eql(u8, key, "description")) at.desc = val;
                     if (std.mem.eql(u8, key, "score")) at.score = std.fmt.parseFloat(f64, val) catch null;
+                    if (std.mem.eql(u8, key, "isolation")) at.isolation = Isolation.parse(val); // #276: e.g. an "implementer" persona opting into worktree isolation by default
                 }
                 const body_start = fm_end + "\n---".len;
                 at.prompt = std.mem.trim(u8, data[@min(body_start + 1, data.len)..], " \t\r\n");
@@ -424,6 +443,74 @@ pub fn resolveNiche(obj: std.json.ObjectMap) []const u8 {
     if (obj.get("agent")) |v| if (v == .string) return v.string;
     return "";
 }
+/// #276 P0-1: effective isolation mode for a subagent/workflow-task input.
+/// Precedence: an explicit `isolation` field on the call wins; else a named
+/// agent type's persona default (`isolation:` frontmatter); else `.shared_cwd`
+/// (today's behavior, unchanged for every call that never mentions isolation).
+/// An unrecognized `isolation` string is treated the same as omitted — falls
+/// through to the persona/default rather than failing the spawn outright.
+pub fn resolveIsolation(obj: std.json.ObjectMap) Isolation {
+    if (obj.get("isolation")) |v| if (v == .string) if (Isolation.parse(v.string)) |iso| return iso;
+    if (obj.get("agent")) |v| if (v == .string) for (g_agent_types) |t| {
+        if (std.mem.eql(u8, t.name, v.string)) return t.isolation orelse .shared_cwd;
+    };
+    return .shared_cwd;
+}
+
+/// #276 design point 4: worktree creation failure fails the spawn unless the
+/// caller explicitly allowed falling back to the shared cwd. Strict-by-default
+/// on purpose — a silent fallback would reintroduce exactly the race isolation
+/// exists to prevent.
+pub fn resolveIsolationFallback(obj: std.json.ObjectMap) bool {
+    if (obj.get("isolation_fallback")) |v| return v == .bool and v.bool;
+    return false;
+}
+
+test "resolveIsolation: explicit field wins, then the named persona's default, then shared_cwd" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const obj = struct {
+        fn p(al: Allocator, s: []const u8) std.json.ObjectMap {
+            return (std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable).object;
+        }
+    }.p;
+
+    const saved_types = g_agent_types;
+    defer g_agent_types = saved_types;
+    g_agent_types = &.{
+        .{ .name = "implementer", .desc = "", .prompt = "x", .isolation = .worktree },
+        .{ .name = "researcher", .desc = "", .prompt = "x", .isolation = .shared_cwd },
+        .{ .name = "reviewer", .desc = "", .prompt = "x" }, // no opinion
+    };
+
+    // A plain task with no isolation/agent field defaults to shared_cwd.
+    try std.testing.expectEqual(Isolation.shared_cwd, resolveIsolation(obj(a, "{\"description\":\"x\",\"prompt\":\"y\"}")));
+    // A named persona's own default applies when the call doesn't override it.
+    try std.testing.expectEqual(Isolation.worktree, resolveIsolation(obj(a, "{\"agent\":\"implementer\"}")));
+    try std.testing.expectEqual(Isolation.shared_cwd, resolveIsolation(obj(a, "{\"agent\":\"researcher\"}")));
+    try std.testing.expectEqual(Isolation.shared_cwd, resolveIsolation(obj(a, "{\"agent\":\"reviewer\"}"))); // no opinion → default
+    // An explicit isolation field overrides the persona's default either way.
+    try std.testing.expectEqual(Isolation.shared_cwd, resolveIsolation(obj(a, "{\"agent\":\"implementer\",\"isolation\":\"shared_cwd\"}")));
+    try std.testing.expectEqual(Isolation.worktree, resolveIsolation(obj(a, "{\"agent\":\"researcher\",\"isolation\":\"worktree\"}")));
+    // An unrecognized isolation string falls through rather than erroring.
+    try std.testing.expectEqual(Isolation.worktree, resolveIsolation(obj(a, "{\"agent\":\"implementer\",\"isolation\":\"bogus\"}")));
+}
+
+test "resolveIsolationFallback: defaults to strict (false), true only when the caller explicitly opts in" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const obj = struct {
+        fn p(al: Allocator, s: []const u8) std.json.ObjectMap {
+            return (std.json.parseFromSliceLeaky(Value, al, s, .{}) catch unreachable).object;
+        }
+    }.p;
+    try std.testing.expect(!resolveIsolationFallback(obj(a, "{}")));
+    try std.testing.expect(!resolveIsolationFallback(obj(a, "{\"isolation_fallback\":false}")));
+    try std.testing.expect(resolveIsolationFallback(obj(a, "{\"isolation_fallback\":true}")));
+}
+
 test "resolveNiche: agent name is the fleet cell, inline variant is uncelled" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

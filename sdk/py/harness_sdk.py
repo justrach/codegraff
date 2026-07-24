@@ -14,7 +14,7 @@ import urllib.request
 from typing import Iterator, Optional
 
 MODELS = ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k2p6", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/qwen3p7-plus", "claude-fable-5", "claude-haiku-4-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4.6", "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro", "fugu", "fugu-ultra", "fugu-ultra-20260615", "glm-4.5", "glm-4.7", "glm-5", "glm-5.2", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.3", "grok-build", "k3", "kimi-for-coding", "kimi-for-coding-highspeed", "kimi-k2.6", "kimi-latest", "lmstudio", "mimo-v2-flash", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed", "minimax-m3", "mlx-community/Qwen3.6-27B-OptiQ-4bit"]
-TOOLS = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow", "learn_candidate"]
+TOOLS = ["bash", "bash_output", "bash_kill", "read_file", "edit_file", "write_file", "webfetch", "codedb", "todo_write", "todo_read", "eval", "ask_user", "attempt_completion", "clock_sleep", "subagent", "workflow", "agent_output", "learn_candidate"]
 PROVIDERS = ["anthropic", "codegraff", "deepseek", "openai", "minimax", "xiaomi", "kimi", "moonshot", "xai", "zai", "fugu", "fireworks", "mlx", "lmstudio", "codex"]
 
 
@@ -246,13 +246,13 @@ class Harness:
             _report_error("spawn", f"{binary}: {e}")
             raise
 
-    def chat(self, text: str) -> Iterator[dict]:
+    def chat(self, text: str, review: bool = False) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError (after reporting to telemetry) if the
         harness process dies mid-turn instead of silently yielding nothing."""
         assert self.proc.stdin and self.proc.stdout
         try:
-            self.proc.stdin.write(json.dumps({"type": "user", "text": text}) + "\n")
+            self.proc.stdin.write(json.dumps({"type": "review" if review else "user", "text": text}) + "\n")
             self.proc.stdin.flush()
         except OSError as e:
             _report_error("died", f"harness pipe closed on send: {e}")
@@ -277,6 +277,16 @@ class Harness:
         """Run a turn and return just the final assistant text."""
         final = ""
         for ev in self.chat(text):
+            if ev.get("type") == "turn":
+                final = ev["text"]
+            elif ev.get("type") == "error":
+                raise RuntimeError(ev["message"])
+        return final
+
+    def review(self, text: str) -> str:
+        """Run one isolated, read-only review turn and return its report."""
+        final = ""
+        for ev in self.chat(text, review=True):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
@@ -506,12 +516,12 @@ class RemoteHarness:
             except json.JSONDecodeError:
                 continue
 
-    def chat(self, text: str) -> Iterator[dict]:
+    def chat(self, text: str, review: bool = False) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError if the stream ends without one (the
         session process died server-side)."""
         terminal = False
-        for ev in self._send({"type": "user", "text": text}):
+        for ev in self._send({"type": "review" if review else "user", "text": text}):
             yield ev
             if ev.get("type") in ("turn", "error"):
                 terminal = True
@@ -523,6 +533,16 @@ class RemoteHarness:
         """Run a turn and return just the final assistant text."""
         final = ""
         for ev in self.chat(text):
+            if ev.get("type") == "turn":
+                final = ev["text"]
+            elif ev.get("type") == "error":
+                raise RuntimeError(ev["message"])
+        return final
+
+    def review(self, text: str) -> str:
+        """Run one isolated, read-only review turn and return its report."""
+        final = ""
+        for ev in self.chat(text, review=True):
             if ev.get("type") == "turn":
                 final = ev["text"]
             elif ev.get("type") == "error":
