@@ -69,7 +69,8 @@ const subagent_run = @import("subagent_run.zig");
 pub const AgentUsage = subagent_run.AgentUsage;
 pub const SubRun = subagent_run.SubRun;
 pub const runSub = subagent_run.runSub;
-const childProvider = subagent_run.childProvider;
+const variantProviderClass = subagent_run.variantProviderClass;
+const shapes = @import("shapes.zig");
 const FailKind = subagent_run.FailKind;
 const classifyFailure = subagent_run.classifyFailure;
 
@@ -477,6 +478,17 @@ pub fn scoreVariants(
     }
     if (vn < 2) return;
 
+    // A tournament must vary exactly ONE axis: if the variants did not all run on
+    // the same capability tier, the ranking reflects the model as much as the
+    // prompt, and filing it under the prompt fingerprint writes model effects into
+    // the genome archive (#290). Bail before spawning a judge — unscoreable round.
+    for (1..vn) |k| {
+        if (!std.mem.eql(u8, variantProviderClass(ctx, vidx[0]), variantProviderClass(ctx, vidx[k]))) {
+            if (ctx.tracer) |tr| tr.note("fleet", "tournament skipped: variants span provider classes");
+            return;
+        }
+    }
+
     // All fallible work (prompt builds) before any future spawns, so an early
     // return can never abandon a running judge.
     const jprompts = arena.alloc([]const u8, vn) catch return;
@@ -487,8 +499,9 @@ pub fn scoreVariants(
     const jfuts = arena.alloc(Io.Future(ToolOutput), vn) catch return;
     for (jfuts, jprompts) |*jf, jp| jf.* = ctx.io.async(judgeTask, .{ ctx, jp });
 
-    const pclass = providerClass(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider).model);
     const run_id: []const u8 = &scoring.g_run_id;
+    // This phase's MAP-Elites slot (#290/#293); "" off-vocabulary. See telemetrySlot.
+    const slot = scoring.telemetrySlot(shapes.canonicalSlot(title));
     for (jfuts, 0..) |*jf, k| {
         const i = vidx[k];
         const jout = jf.await(ctx.io);
@@ -509,6 +522,7 @@ pub fn scoreVariants(
         // above; every score that leaves the client is [0,1], so divide at
         // the emission boundary — s01 is what gets signed and sent.
         const s01 = s / 100.0;
+        const pclass = variantProviderClass(ctx, i);
         const genome_fp = promptFingerprint(overrides[i].?);
         const esh_fp = promptFingerprint(raws[i]);
         const genome: []const u8 = &genome_fp;
@@ -521,7 +535,10 @@ pub fn scoreVariants(
         const sig = signScore(genome, "", s01, run_id, "", "", esh, niche, pclass);
         const sig_s: []const u8 = if (scoring.g_score_key != null) &sig else "";
         var provbuf: [512]u8 = undefined;
-        const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche }) catch "";
+        // Slot is APPENDED as a 6th component, so a collector indexing 0..4 is
+        // unaffected. Advisory like the rest of `prov` (signScore holds the
+        // authoritative copies); signing it would need a collector-first deploy.
+        const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche, slot }) catch "";
         // Genome-send (issue #168 Gap 5), mirroring runEval: ride the variant's
         // text over on a propose (deduped by fingerprint server-side) so the
         // scored cell has a servable genome even when runSub never proposed it.

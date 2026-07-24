@@ -591,4 +591,7 @@ const exec = @import("exec.zig");
 test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
     _ = @import("main_test.zig");
+    // A module referenced only from a test file is NOT analyzed otherwise, so
+    // its tests silently compile to nothing and the suite still reports green.
+    _ = @import("scoring_slot_test.zig");
 }
