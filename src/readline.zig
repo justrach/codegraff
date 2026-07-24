@@ -50,84 +50,7 @@ const agent_mod = @import("agent.zig");
 const session = @import("session.zig");
 const Agent = agent_mod.Agent;
 const saveSession = session.saveSession;
-
-const ClipboardPasteSource = union(enum) {
-    image: []const u8,
-    no_image,
-    no_vision,
-    unsupported_platform,
-};
-
-fn clipboardPasteSource(io: Io, supports_vision: bool, is_macos: bool, grabber: anytype) ClipboardPasteSource {
-    if (!supports_vision) return .no_vision;
-    if (!is_macos) return .unsupported_platform;
-    return .{ .image = grabber(io) orelse return .no_image };
-}
-
-/// History + unsent-draft navigation for the line editor (#101). Mirrors the
-/// GUI's promptHistoryNavigation.ts: stepping UP out of the fresh slot snapshots
-/// the half-typed draft; stepping DOWN past the newest entry restores it instead
-/// of clearing the line. `idx == history.len` is the fresh (editing) slot.
-const HistoryNav = struct {
-    idx: usize,
-    draft: ?[]const u8 = null, // owned snapshot of the unsent line; freed by the caller
-
-    fn init(history_len: usize) HistoryNav {
-        return .{ .idx = history_len };
-    }
-
-    /// UP / older. `current` is the live buffer. Returns the text the buffer
-    /// should show next, or null to leave it unchanged (already at the oldest).
-    /// Leaving the fresh slot snapshots `current` as the draft to restore later.
-    fn up(self: *HistoryNav, gpa: Allocator, history: []const []const u8, current: []const u8) ?[]const u8 {
-        if (self.idx == 0) return null;
-        if (self.idx == history.len) { // leaving the fresh slot: keep the draft
-            if (self.draft) |d| gpa.free(d);
-            self.draft = gpa.dupe(u8, current) catch null;
-        }
-        self.idx -= 1;
-        return history[self.idx];
-    }
-
-    /// DOWN / newer. Returns the text to show next, or null to leave it
-    /// unchanged (already at the fresh slot). Past the newest entry, restores the
-    /// snapshotted draft (or "" when there was none) instead of clearing it.
-    fn down(self: *HistoryNav, history: []const []const u8) ?[]const u8 {
-        if (self.idx >= history.len) return null;
-        self.idx += 1;
-        if (self.idx == history.len) return self.draft orelse "";
-        return history[self.idx];
-    }
-};
-
-test "HistoryNav: up snapshots the draft, down past newest restores it (#101)" {
-    const gpa = std.testing.allocator;
-    const history = [_][]const u8{ "first", "second" };
-    var nav: HistoryNav = .init(history.len);
-    defer if (nav.draft) |d| gpa.free(d);
-
-    // up from the fresh slot → newest entry, draft snapshotted
-    try std.testing.expectEqualStrings("second", nav.up(gpa, &history, "draft in progress").?);
-    // up again → older entry
-    try std.testing.expectEqualStrings("first", nav.up(gpa, &history, "second").?);
-    // up at the oldest → no change
-    try std.testing.expect(nav.up(gpa, &history, "first") == null);
-    // down → back to newest
-    try std.testing.expectEqualStrings("second", nav.down(&history).?);
-    // down past newest → the draft is restored, NOT cleared (the bug)
-    try std.testing.expectEqualStrings("draft in progress", nav.down(&history).?);
-    // down at the fresh slot → no change
-    try std.testing.expect(nav.down(&history) == null);
-}
-
-test "HistoryNav: no draft → fresh slot returns empty, no leak (#101)" {
-    const gpa = std.testing.allocator;
-    const history = [_][]const u8{"only"};
-    var nav: HistoryNav = .init(history.len);
-    defer if (nav.draft) |d| gpa.free(d);
-    try std.testing.expectEqualStrings("only", nav.up(gpa, &history, "").?);
-    try std.testing.expectEqualStrings("", nav.down(&history).?); // empty draft → empty line, as today
-}
+const HistoryNav = @import("readline_history.zig").HistoryNav;
 
 /// Read one input line with a tiny raw-mode editor: ↑/↓ walk history,
 /// Tab completes/cycles (models, providers, slash commands), backspace edits,
@@ -336,10 +259,7 @@ pub fn readLine(
             },
             0x16 => { // Ctrl-V: attach a clipboard image (macOS) at the cursor
                 var msg: ?[]const u8 = null;
-                switch (clipboardPasteSource(root.io, vision.visionCapable(root.provider), builtin.os.tag == .macos, grabClipboardImage)) {
-                    .no_vision => msg = "this model can't see images — /model to a vision one (claude-*, gpt-5*)",
-                    .unsupported_platform => msg = "clipboard image paste is macOS-only — use /image <path>",
-                    .no_image => msg = "no image on the clipboard — copy an image first (this is Ctrl-V; ⌘V can't be captured)",
+                switch (vision.clipboardPasteSource(root.io, vision.visionCapable(root.provider), builtin.os.tag == .macos, grabClipboardImage)) {
                     .image => |p| switch (stageImagePath(root, p)) {
                         .ok => {
                             const marker = "[Image] ";
@@ -348,9 +268,10 @@ pub fn readLine(
                             addMark(gpa, &marks, "[Image]");
                             redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                         },
-                        .no_vision => msg = "this model can't see images — /model to a vision one (claude-*, gpt-5*)",
+                        .no_vision => msg = vision.no_vision_message,
                         .read_fail => msg = "couldn't read the clipboard image",
                     },
+                    else => |s| msg = vision.pasteMessage(s),
                 }
                 if (msg) |m| { // feedback below the input, then redraw the prompt+buffer fresh
                     if (rstate.rows - 1 > rstate.crow) out.print("\x1b[{d}B", .{rstate.rows - 1 - rstate.crow}) catch {};
@@ -613,34 +534,4 @@ pub fn readLine(
         history.append(gpa, dup) catch {};
     }
     return buf.items;
-}
-
-test "clipboard paste checks vision support before clipboard access" {
-    const MockGrabber = struct {
-        var calls: usize = 0;
-        var image: ?[]const u8 = "/tmp/test.png";
-
-        fn grab(_: Io) ?[]const u8 {
-            calls += 1;
-            return image;
-        }
-    };
-    const expectTag = struct {
-        fn expect(expected: std.meta.Tag(ClipboardPasteSource), actual: ClipboardPasteSource) !void {
-            try std.testing.expectEqual(expected, std.meta.activeTag(actual));
-        }
-    }.expect;
-
-    MockGrabber.calls = 0;
-    try expectTag(.no_vision, clipboardPasteSource(std.testing.io, false, true, MockGrabber.grab));
-    try expectTag(.no_vision, clipboardPasteSource(std.testing.io, false, false, MockGrabber.grab));
-    try expectTag(.unsupported_platform, clipboardPasteSource(std.testing.io, true, false, MockGrabber.grab));
-    try std.testing.expectEqual(@as(usize, 0), MockGrabber.calls);
-
-    try expectTag(.image, clipboardPasteSource(std.testing.io, true, true, MockGrabber.grab));
-    try std.testing.expectEqual(@as(usize, 1), MockGrabber.calls);
-
-    MockGrabber.image = null;
-    try expectTag(.no_image, clipboardPasteSource(std.testing.io, true, true, MockGrabber.grab));
-    try std.testing.expectEqual(@as(usize, 2), MockGrabber.calls);
 }

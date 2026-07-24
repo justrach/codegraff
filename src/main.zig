@@ -591,4 +591,8 @@ const exec = @import("exec.zig");
 test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
     _ = @import("main_test.zig");
+    // readline.zig imports HistoryNav, but a type-only reference is not enough to
+    // pull the module's own `test {}` blocks into the binary — without this line
+    // its two tests silently compile to nothing and the suite still reports green.
+    _ = @import("readline_history.zig");
 }
