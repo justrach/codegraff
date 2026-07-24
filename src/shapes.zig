@@ -162,10 +162,16 @@ test "canonicalSlot: exact, first-word, and miss" {
 }
 
 test "canonicalSlot: a word longer than the scratch buffer cannot match or overflow" {
-    const long = "a" ** 200;
-    try std.testing.expectEqualStrings("", canonicalSlot(long));
+    // Built with @splat rather than the `"a" ** 200` repeat operator: Zig
+    // 0.17.0-dev (what CI pins) rejects that form with "binary operator '*' has
+    // whitespace on one side, but not the other", while 0.16 accepts it. @splat
+    // over an array is already used elsewhere in this tree and compiles on both.
+    const long: [200]u8 = @splat('a');
+    try std.testing.expectEqualStrings("", canonicalSlot(&long));
     // A canonical slot followed by a very long tail still matches on word one.
-    try std.testing.expectEqualStrings("find", canonicalSlot("find " ++ long));
+    var tailed: [205]u8 = @splat('a');
+    @memcpy(tailed[0..5], "find ");
+    try std.testing.expectEqualStrings("find", canonicalSlot(&tailed));
 }
 
 test "shape catalog names every canonical slot it depends on" {
