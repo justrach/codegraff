@@ -109,7 +109,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
     // ~1-2KB) are scratch (#124); only the token itself is duped to survive
     // future requests.
     if (self.provider.source == .login) {
-        if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, false)) |fresh| {
+        if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, false, null)) |fresh| {
             self.provider.api_key = self.arena.dupe(u8, fresh) catch self.provider.api_key;
         }
     }
@@ -417,7 +417,7 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
             // invalid/expired"; force a refresh and retry once (kimi-code's
             // buildAuth(true)). Give up only if the fresh token also fails.
             if (!auth_refreshed and self.provider.source == .login and isAuthError(msg)) {
-                if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, true)) |fresh| {
+                if (oauth.refreshOAuthKey(self.io, self.gpa, self.scratchAlloc(), self.home, self.provider.id, true, self.provider.api_key)) |fresh| {
                     auth_refreshed = true;
                     // #124: dupe off the scratch refresh internals — the key must
                     // survive every later request of the session.
