@@ -217,15 +217,19 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     // Kimi "login": OAuth device-flow token from `graff login kimi`
     // (~/.kimi/credentials/graff-oauth.json), refreshed in place when near
     // expiry. Same on-disk-credential pattern as codex/codegraff; env wins.
+    // #274: refreshing is a synchronous network round-trip, so an explicit
+    // provider/exact-model selection that cannot route to kimi/xai must skip
+    // it entirely rather than pay for it on every startup — same selective-
+    // scope discipline as the stored-key load a few lines below.
     if (keys_cli.homeEnv(environ_map)) |home| {
         for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
-            if (std.mem.eql(u8, spec.id, "kimi") and value.* == null) {
+            if (std.mem.eql(u8, spec.id, "kimi") and value.* == null and storedKeyMayAffectSelection(spec.id, model_flag)) {
                 if (oauth.loadKimiOAuth(io, gpa, arena, home, false)) |key| {
                     value.* = key;
                     source.* = .login;
                 }
             }
-            if (std.mem.eql(u8, spec.id, "xai") and value.* == null) {
+            if (std.mem.eql(u8, spec.id, "xai") and value.* == null and storedKeyMayAffectSelection(spec.id, model_flag)) {
                 if (oauth.loadXaiOAuth(io, gpa, arena, home, false)) |key| {
                     value.* = key;
                     source.* = .login;
