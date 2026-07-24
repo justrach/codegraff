@@ -325,14 +325,39 @@ pub fn kimiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !vo
     try out.flush();
 }
 
+/// #245 single-flight guard: has the token that just 401'd already been replaced
+/// on disk by another concurrent refresher?
+///
+/// `force` means "the access token I was holding just failed with a 401". The
+/// refresh mutex serializes concurrent refreshers but does NOT dedupe them, so a
+/// fleet of subagents that all 401 on the same expired token would each re-mint
+/// in turn. Kimi (and xAI) rotate refresh tokens and INVALIDATE the superseded
+/// access token, so refresher N+1 kills the token refresher N just adopted — the
+/// 401 cascade that wipes out a whole fleet.
+///
+/// If the on-disk token already differs from the one that failed, the 401 was
+/// about the OLD token and somebody else has already done the work: adopt theirs
+/// instead of minting another. `stale == null` keeps the previous behaviour for
+/// callers that cannot say which token failed.
+fn supersededToken(force: bool, on_disk: []const u8, stale: ?[]const u8) bool {
+    if (!force) return false;
+    const failed = stale orelse return false;
+    return !std.mem.eql(u8, on_disk, failed);
+}
+
 /// Reads the stored Kimi OAuth access token, refreshing it in place when within
 /// 60s of expiry. Returns null if not logged in. Mirrors loadCodexAuth.
-pub fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: bool) ?[]const u8 {
+/// `stale` is the token that just 401'd (null when not recovering from one) —
+/// see supersededToken.
+pub fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: bool, stale: ?[]const u8) ?[]const u8 {
     const data = Io.Dir.cwd().readFileAlloc(io, kimiAuthPath(arena, home), arena, .limited(64 * 1024)) catch return null;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
     if (v != .object) return null;
     const access = strFieldObj(v.object, "access_token") orelse return null;
     const expires_at: i64 = if (v.object.get("expires_at")) |e| (if (e == .integer) e.integer else 0) else 0;
+    // #245: another concurrent refresher may already have replaced the token that
+    // 401'd; re-minting would rotate-kill theirs. Adopt what is on disk instead.
+    if (supersededToken(force, access, stale)) return access;
     if (force or (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - oauth_refresh_margin_s)) {
         if (strFieldObj(v.object, "refresh_token")) |refresh| {
             const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ kimi_client_id, refresh }) catch return access;
@@ -354,13 +379,13 @@ pub fn loadKimiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8,
 /// e.g. after a 401). Returns null for providers with no auto-refresh flow
 /// (env keys, and the long-lived codex/codegraff tokens), so the caller keeps
 /// the key it has. Mutex-guarded so concurrent subagents don't double-refresh.
-pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider_id: []const u8, force: bool) ?[]const u8 {
+pub fn refreshOAuthKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider_id: []const u8, force: bool, stale: ?[]const u8) ?[]const u8 {
     const is_kimi = std.mem.eql(u8, provider_id, "kimi");
     const is_xai = std.mem.eql(u8, provider_id, "xai");
     if (!is_kimi and !is_xai) return null;
     oauth_refresh_mutex.lockUncancelable(io);
     defer oauth_refresh_mutex.unlock(io);
-    return if (is_kimi) loadKimiOAuth(io, gpa, arena, home, force) else loadXaiOAuth(io, gpa, arena, home, force);
+    return if (is_kimi) loadKimiOAuth(io, gpa, arena, home, force, stale) else loadXaiOAuth(io, gpa, arena, home, force, stale);
 }
 
 // xAI (Grok) OAuth — device-code flow against auth.x.ai. The OIDC discovery
@@ -486,12 +511,15 @@ pub fn xaiLogin(io: Io, gpa: Allocator, arena: Allocator, home: []const u8) !voi
 
 /// Reads the stored xAI OAuth access token, refreshing in place near expiry.
 /// Returns null if not logged in. Mirrors loadKimiOAuth.
-pub fn loadXaiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: bool) ?[]const u8 {
+pub fn loadXaiOAuth(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force: bool, stale: ?[]const u8) ?[]const u8 {
     const data = Io.Dir.cwd().readFileAlloc(io, xaiAuthPath(arena, home), arena, .limited(64 * 1024)) catch return null;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
     if (v != .object) return null;
     const access = strFieldObj(v.object, "access_token") orelse return null;
     const expires_at: i64 = if (v.object.get("expires_at")) |e| (if (e == .integer) e.integer else 0) else 0;
+    // #245: another concurrent refresher may already have replaced the token that
+    // 401'd; re-minting would rotate-kill theirs. Adopt what is on disk instead.
+    if (supersededToken(force, access, stale)) return access;
     if (force or (expires_at != 0 and @divTrunc(unixMs(io), 1000) >= expires_at - oauth_refresh_margin_s)) {
         if (strFieldObj(v.object, "refresh_token")) |refresh| {
             const body = std.fmt.allocPrint(arena, "client_id={s}&grant_type=refresh_token&refresh_token={s}", .{ xai_client_id, refresh }) catch return access;
@@ -537,4 +565,27 @@ test "accountFromIdToken: extracts chatgpt_account_id from a JWT payload" {
     try std.testing.expectEqualStrings("acc_test_123", accountFromIdToken(a, token));
     try std.testing.expectEqualStrings("", accountFromIdToken(a, "not-a-jwt")); // no payload segment
     try std.testing.expectEqualStrings("", accountFromIdToken(a, "a.b.c")); // payload not valid base64/json
+}
+
+test "supersededToken (#245): a concurrent refresher's token is adopted, not re-minted" {
+    const failed = "access-token-A";
+    const replaced = "access-token-B";
+
+    // The proactive (near-expiry) path never short-circuits — it is not recovering
+    // from a 401, so there is no "failed token" to compare against.
+    try std.testing.expect(!supersededToken(false, failed, failed));
+    try std.testing.expect(!supersededToken(false, replaced, failed));
+
+    // Recovering from a 401 while the on-disk token is STILL the one that failed:
+    // nobody else has refreshed, so this caller must do it.
+    try std.testing.expect(!supersededToken(true, failed, failed));
+
+    // Recovering from a 401 but disk already holds a DIFFERENT token: another child
+    // won the race. Re-minting here would rotate-kill their token and cascade the
+    // 401s across the fleet, which is the whole bug.
+    try std.testing.expect(supersededToken(true, replaced, failed));
+
+    // A caller that cannot say which token failed keeps the old behaviour.
+    try std.testing.expect(!supersededToken(true, replaced, null));
+    try std.testing.expect(!supersededToken(false, replaced, null));
 }

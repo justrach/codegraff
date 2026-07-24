@@ -220,13 +220,13 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     if (keys_cli.homeEnv(environ_map)) |home| {
         for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
             if (std.mem.eql(u8, spec.id, "kimi") and value.* == null) {
-                if (oauth.loadKimiOAuth(io, gpa, arena, home, false)) |key| {
+                if (oauth.loadKimiOAuth(io, gpa, arena, home, false, null)) |key| {
                     value.* = key;
                     source.* = .login;
                 }
             }
             if (std.mem.eql(u8, spec.id, "xai") and value.* == null) {
-                if (oauth.loadXaiOAuth(io, gpa, arena, home, false)) |key| {
+                if (oauth.loadXaiOAuth(io, gpa, arena, home, false, null)) |key| {
                     value.* = key;
                     source.* = .login;
                 }
@@ -537,7 +537,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
                     std.mem.eql(u8, flags.positionals.items[1], "--refresh") or
                     std.mem.eql(u8, flags.positionals.items[1], "update")),
         );
-        const kimi_token = init.environ_map.get("KIMI_API_KEY") orelse oauth.loadKimiOAuth(io, gpa, arena, home, false) orelse "";
+        const kimi_token = init.environ_map.get("KIMI_API_KEY") orelse oauth.loadKimiOAuth(io, gpa, arena, home, false, null) orelse "";
         _ = kimi_catalog.load(io, gpa, arena, home, kimi_token);
         try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]);
         return true;
