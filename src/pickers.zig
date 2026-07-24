@@ -25,6 +25,7 @@ const Keys = provider_mod.Keys;
 const command_catalog = @import("command_catalog.zig");
 const picker_auth = @import("picker_auth.zig");
 const util = @import("util.zig");
+const shapes = @import("shapes.zig");
 
 /// Case-insensitive subsequence match (fzf-style): every char of `needle`
 /// appears in `hay` in order, gaps allowed — so "gpt5.5" matches "gpt-5.5".
@@ -402,27 +403,31 @@ pub const UltracodeMessage = struct {
     explicit: bool,
 };
 
-const ultracode_explicit_note =
+const ultracode_explicit_head =
     \\[harness note: the user invoked the "ultracode" codeword, opting
     \\this turn into multi-agent orchestration. Fulfill the request with
-    \\the workflow tool: decompose it into sequential phases of parallel
-    \\subagents — fan out for coverage first, then a synthesis phase.
+    \\the workflow tool.
     \\Tell code-exploration subagents to go through the repo with the
     \\codedb tool (search / symbol / callers / outline / context) before
     \\reaching for bash grep — it is indexed and structural.
     \\Use the workflow even if you could do the work solo; skip it only
-    \\if the message needs a purely conversational reply.]
+    \\if the message needs a purely conversational reply.
 ;
 
-const ultracode_persistent_note =
+const ultracode_persistent_head =
     \\[harness note: ultracode mode is enabled for this session. Use the
-    \\workflow tool for coding tasks: decompose the work into sequential
-    \\phases with parallel subagents for exploration/review where helpful,
-    \\then synthesize and implement. Tell code-exploration subagents to go
+    \\workflow tool for coding tasks. Tell code-exploration subagents to go
     \\through the repo with the codedb tool (search / symbol / callers /
     \\outline / context) before reaching for bash grep — it is indexed and
-    \\structural.]
+    \\structural.
 ;
+
+// Both steering notes carry the shape catalog (#293), so an ultracode turn
+// instantiates one of the five known shapes under canonical slot names instead
+// of inventing a fresh structure each run — scores from differently-shaped runs
+// are not comparable, which is what kept the fleet from accruing real fitness.
+const ultracode_explicit_note = ultracode_explicit_head ++ "\n\n" ++ shapes.shape_catalog_note ++ "]";
+const ultracode_persistent_note = ultracode_persistent_head ++ "\n\n" ++ shapes.shape_catalog_note ++ "]";
 
 /// `raw` is what the user actually typed this turn; `msg` is the assembled
 /// turn message (goal/eval/loop/plan notes may already be appended). The
@@ -578,4 +583,14 @@ test "applyUltracodeSteering handles explicit and persistent modes" {
     try std.testing.expect(explicit.explicit);
     try std.testing.expect(std.mem.indexOf(u8, explicit.text, "user invoked the \"ultracode\" codeword") != null);
     try std.testing.expect(std.mem.indexOf(u8, explicit.text, "ultracode mode is enabled") == null);
+
+    // #293: BOTH steering paths must carry the shape catalog — a turn steered
+    // into orchestration without it is exactly the free-form case the catalog
+    // exists to remove. Check a slot word and the closing bracket, so a broken
+    // concatenation (dropped catalog, or a note left unterminated) fails here.
+    for ([_][]const u8{ explicit.text, persistent.text }) |steered| {
+        try std.testing.expect(std.mem.indexOf(u8, steered, "Pick ONE shape") != null);
+        try std.testing.expect(std.mem.indexOf(u8, steered, "synthesize") != null);
+        try std.testing.expect(std.mem.endsWith(u8, steered, "]"));
+    }
 }
