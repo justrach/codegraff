@@ -101,6 +101,27 @@ pub fn childProvider(root: Provider, pinned: ?Provider, allow_cross_provider: bo
     return if (std.mem.eql(u8, child.id, root.id) or allow_cross_provider) child else root;
 }
 
+/// Capability tier ("frontier" | "mid" | "small") of the model that ran variant
+/// `i` of a workflow phase — the provider-class axis of the MAP-Elites cell.
+///
+/// Today every child in a phase resolves through the same session-level
+/// subagent provider, so this returns the same value for every `i`. It is
+/// written per-variant regardless, because this is exactly the seam that
+/// per-persona / per-spawn model pins (#292) extend: with the class hoisted to
+/// a phase-level constant, the first heterogeneous fan-out would keep reporting
+/// the ROOT's class for every variant and quietly file model effects under the
+/// prompt genome. Keeping the lookup per-variant means #292 changes this one
+/// function instead of having to notice a stale constant.
+///
+/// NOTE (#291): providerClass cannot currently distinguish gpt-5.6-sol from
+/// gpt-5.6-terra/-luna — all three classify as "frontier". Until that is
+/// resolved this axis cannot separate ladder rungs, and the matched-tournament
+/// guard in scoreVariants is correspondingly blind to a rung-only difference.
+pub fn variantProviderClass(ctx: tools.ToolCtx, i: usize) []const u8 {
+    _ = i; // per-variant model pins land in #292
+    return scoring.providerClass(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider).model);
+}
+
 pub const AgentUsage = struct {
     duration_ms: u64 = 0,
     tool_calls: u32 = 0,
