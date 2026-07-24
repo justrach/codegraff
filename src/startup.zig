@@ -474,6 +474,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             .subagent_provider = flags.subagent_provider_flag,
             .subagent_model = flags.subagent_model_flag,
             .allow_cross_provider_subagents = flags.allow_cross_provider_subagents_flag,
+            .no_subagent_tier = flags.no_subagent_tier_flag,
             .system_prompt = flags.system_prompt_flag,
             .append_system_prompt = flags.append_system_flag,
             .max_tool_calls = main_mod.max_tool_calls,

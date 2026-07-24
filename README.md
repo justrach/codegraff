@@ -866,14 +866,23 @@ history, its own arena, and a subagent-specific system prompt (`execSubagent`).
 Because tool calls already fan out via `io.async`, the model spawning three
 subagents in one response gets three agent loops running concurrently, each
 making its own HTTPS calls through the shared (thread-safe) `std.http.Client`.
-Subagents inherit the parent's provider/model by default. A model shape can pin
-all direct children, workflow workers/retries, and LLM judges to another model
-on the same provider/account:
+Absent an explicit pin, subagents default onto a provider-local worker tier
+ladder one rung cheaper than the root model (codex/openai gpt-5.6 sol/flagship
+-> terra -> luna; anthropic opus -> sonnet -> haiku; deepseek pro -> flash),
+so a fan-out of file-reading researchers doesn't run on the flagship by
+default. The ladder only ever resolves within the root's own provider; a root
+model outside the ladder, or already at its cheapest rung, inherits unchanged.
+`--no-subagent-tier` (or an explicit `--subagent-model`) opts out and restores
+plain inherit-root. A model shape can also pin all direct children, workflow
+workers/retries, and LLM judges to a specific model on the same
+provider/account:
 
 ```sh
 graff --model gpt-5.6-sol --subagent-model gpt-5.6-terra
 # equivalent lower-precedence worker setting:
 GRAFF_SUBAGENT_MODEL=gpt-5.6-terra graff --model gpt-5.6-sol
+# force every worker onto the root model, ignoring the default ladder:
+graff --model gpt-5.6-sol --no-subagent-tier
 ```
 
 This keeps orchestration/synthesis on Sol and parallel execution on Terra

@@ -10,9 +10,10 @@
 pub const flags =
     \\[
     \\  {"flag": "--model", "arg": "name", "description": "start on this model (same fuzzy resolution as /model)"},
-    \\  {"flag": "--subagent-model", "arg": "name", "description": "pin direct subagents, workflow workers/retries, and judges to this model on the root provider; GRAFF_SUBAGENT_MODEL is the lower-precedence equivalent"},
+    \\  {"flag": "--subagent-model", "arg": "name", "description": "pin direct subagents, workflow workers/retries, and judges to this model on the root provider; GRAFF_SUBAGENT_MODEL is the lower-precedence equivalent; overrides the default tier ladder"},
     \\  {"flag": "--subagent-provider", "arg": "id", "description": "route pinned workers through this explicit provider; GRAFF_SUBAGENT_PROVIDER is the lower-precedence equivalent"},
     \\  {"flag": "--allow-cross-provider-subagents", "arg": null, "description": "explicitly consent to sending worker prompts, code, and tool results to a provider different from the root"},
+    \\  {"flag": "--no-subagent-tier", "arg": null, "description": "opt out of the default worker tier ladder; workers inherit the root model unless an explicit --subagent-model is given"},
     \\  {"flag": "--yolo", "arg": null, "description": "skip all permission prompts for the session"},
     \\  {"flag": "--no-local-tools", "arg": null, "description": "embedder mode: hard-disable the built-in bash/bash_output/bash_kill/read_file/edit_file/write_file/codedb tools for the whole process, so the harness can run outside the sandbox and source its coding tools from an MCP server instead; webfetch, orchestration and MCP tools are unaffected, and subagents inherit the gate. GRAFF_NO_LOCAL_TOOLS=1 is the equivalent"},
     \\  {"flag": "--system-prompt", "arg": "text", "description": "replace the built-in system prompt (cwd project-instructions file is still appended)"},

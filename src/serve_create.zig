@@ -36,6 +36,7 @@ pub fn create(st: *ServeState, req: *std.http.Server.Request) !void {
     var subagent_provider = st.cfg.subagent_provider;
     var subagent_model = st.cfg.subagent_model;
     var allow_cross_provider_subagents = st.cfg.allow_cross_provider_subagents;
+    var no_subagent_tier = st.cfg.no_subagent_tier;
     var yolo = st.cfg.yolo;
     var sys = st.cfg.system_prompt;
     var append_sys = st.cfg.append_system_prompt;
@@ -63,6 +64,9 @@ pub fn create(st: *ServeState, req: *std.http.Server.Request) !void {
         };
         if (v.object.get("allowCrossProviderSubagents") orelse v.object.get("allow_cross_provider_subagents")) |a| if (a == .bool) {
             allow_cross_provider_subagents = a.bool;
+        };
+        if (v.object.get("noSubagentTier") orelse v.object.get("no_subagent_tier")) |a| if (a == .bool) {
+            no_subagent_tier = a.bool;
         };
         if (v.object.get("yolo")) |y| if (y == .bool) {
             yolo = y.bool;
@@ -106,6 +110,7 @@ pub fn create(st: *ServeState, req: *std.http.Server.Request) !void {
     if (subagent_provider) |p| try argv.appendSlice(arena, &.{ "--subagent-provider", p });
     if (subagent_model) |m| try argv.appendSlice(arena, &.{ "--subagent-model", m });
     if (allow_cross_provider_subagents) try argv.append(arena, "--allow-cross-provider-subagents");
+    if (no_subagent_tier) try argv.append(arena, "--no-subagent-tier");
     if (max_tools) |n| try argv.appendSlice(arena, &.{ "--max-tool-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
     if (max_models) |n| try argv.appendSlice(arena, &.{ "--max-model-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
     if (dedupe_tools) try argv.append(arena, "--dedupe-tool-calls");

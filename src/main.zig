@@ -284,7 +284,7 @@ pub fn main(init: std.process.Init) !void {
     boot.mark(io, "credentials/model");
     var keys = resolved_keys.keys;
     const default_provider = resolved_keys.default_provider;
-    const subagent_provider = startup.resolveSubagentProvider(keys, default_provider, flags.subagent_provider_flag orelse init.environ_map.get("GRAFF_SUBAGENT_PROVIDER"), flags.subagent_model_flag orelse init.environ_map.get("GRAFF_SUBAGENT_MODEL"), flags.allow_cross_provider_subagents_flag);
+    const subagent_provider = startup.resolveSubagentProvider(keys, default_provider, flags.subagent_provider_flag orelse init.environ_map.get("GRAFF_SUBAGENT_PROVIDER"), flags.subagent_model_flag orelse init.environ_map.get("GRAFF_SUBAGENT_MODEL"), flags.allow_cross_provider_subagents_flag, flags.no_subagent_tier_flag);
     const stale_saved_model = resolved_keys.stale_saved_model;
     const preferred_provider = resolved_keys.preferred_provider;
     const codex_account = resolved_keys.codex_account;
