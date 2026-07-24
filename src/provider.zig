@@ -146,6 +146,22 @@ pub const Provider = struct {
     }
 };
 
+/// The catalogued provider ids that serve `model`, in spec order, written into
+/// `buf`. Lets a caller turn a bare MissingKey into a message naming the login
+/// that actually needs repair (#294) — "codex has no credential" rather than
+/// the old "see /models", which sent people looking at the wrong thing after an
+/// expired ~/.codex/auth.json silently rerouted them to the gateway.
+pub fn catalogProvidersFor(buf: [][]const u8, model: []const u8) [][]const u8 {
+    var n: usize = 0;
+    for (provider_specs) |spec| {
+        if (n >= buf.len) break;
+        if (!pricing.providerModelInTable(spec.id, model)) continue;
+        buf[n] = spec.id;
+        n += 1;
+    }
+    return buf[0..n];
+}
+
 /// One optional API key per provider_specs entry, read from the environment.
 pub const Keys = struct {
     pub const CredentialSource = enum {
@@ -218,6 +234,18 @@ pub const Keys = struct {
                 }
             }
         }
+        // #294: a model the catalog assigns to specific providers is NOT unknown.
+        // If none of those providers has a credential, the user's LOGIN is what
+        // broke — rerouting to the gateway turns "codex login expired" into a
+        // gateway error about a model codex was supposed to serve. Concretely:
+        // gpt-5.6-sol exists only under provider `codex`, so an expired
+        // ~/.codex/auth.json used to route it to gateway.codegraff.com, which
+        // answers with a 404 or an out-of-credits error — and the user sees a
+        // CodeGraff balance problem while trying to use Codex.
+        //
+        // Only genuinely uncatalogued models keep the gateway fallback below,
+        // which is what that fallback was always for ("any other unknown model").
+        if (pricing.modelInTable(model)) return error.MissingKey;
         const fallback_id: []const u8 = if (std.mem.startsWith(u8, model, "claude")) "anthropic" else "codegraff";
         for (provider_specs, keys.values) |spec, value| {
             if (!std.mem.eql(u8, spec.id, fallback_id)) continue;
@@ -275,6 +303,39 @@ test "Keys.providerFor: known model, claude/gateway fallbacks, missing key" {
     try std.testing.expectEqualStrings("codegraff", (try all.providerFor("totally-made-up-model")).id);
     try std.testing.expectEqualStrings("gpt-5.5", (try all.providerFor("gpt-5.5")).model);
     try std.testing.expectError(error.MissingKey, none.providerFor("claude-opus-4-8"));
+}
+
+test "providerFor (#294): a catalogued model with no keyed provider fails instead of routing to the gateway" {
+    // The reported symptom: an expired ~/.codex/auth.json made a Codex-only
+    // model resolve to the CodeGraff gateway, so the user saw a balance/credits
+    // error while trying to use Codex. gpt-5.6-sol is catalogued ONLY under
+    // provider `codex`, which makes it the exact reproduction.
+    try std.testing.expect(pricing.providerModelInTable("codex", "gpt-5.6-sol"));
+    try std.testing.expect(!pricing.providerModelInTable("openai", "gpt-5.6-sol"));
+    try std.testing.expect(!pricing.providerModelInTable("codegraff", "gpt-5.6-sol"));
+
+    // Everything keyed EXCEPT codex — i.e. the login expired mid-session.
+    var values: [provider_specs.len]?[]const u8 = @splat("k");
+    for (provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "codex")) values[i] = null;
+    }
+    const no_codex = Keys{ .values = values };
+    // Before the fix this returned the codegraff gateway carrying gpt-5.6-sol.
+    try std.testing.expectError(error.MissingKey, no_codex.providerFor("gpt-5.6-sol"));
+
+    // With the codex credential present it still routes to codex, unchanged.
+    const all = Keys{ .values = @splat("k") };
+    try std.testing.expectEqualStrings("codex", (try all.providerFor("gpt-5.6-sol")).id);
+
+    // A model served by several providers still falls through to whichever is
+    // keyed — losing one credential must not break a model another can serve.
+    try std.testing.expectEqualStrings("openai", (try no_codex.providerFor("gpt-5.6-terra")).id);
+
+    // The gateway fallback survives for genuinely UNCATALOGUED models, which is
+    // all it was ever meant to cover.
+    try std.testing.expect(!pricing.modelInTable("totally-made-up-model"));
+    try std.testing.expectEqualStrings("codegraff", (try no_codex.providerFor("totally-made-up-model")).id);
+    try std.testing.expectEqualStrings("anthropic", (try no_codex.providerFor("claude-does-not-exist")).id);
 }
 
 test "Keys.providerById: exact id wins, unknown id falls back to model routing" {
