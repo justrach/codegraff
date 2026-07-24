@@ -220,13 +220,13 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     if (keys_cli.homeEnv(environ_map)) |home| {
         for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
             if (std.mem.eql(u8, spec.id, "kimi") and value.* == null) {
-                if (oauth.loadKimiOAuth(io, gpa, arena, home, false)) |key| {
+                if (oauth.loadKimiOAuth(io, gpa, arena, home, false, null)) |key| {
                     value.* = key;
                     source.* = .login;
                 }
             }
             if (std.mem.eql(u8, spec.id, "xai") and value.* == null) {
-                if (oauth.loadXaiOAuth(io, gpa, arena, home, false)) |key| {
+                if (oauth.loadXaiOAuth(io, gpa, arena, home, false, null)) |key| {
                     value.* = key;
                     source.* = .login;
                 }
@@ -289,7 +289,19 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
             } else |_| std.process.fatal("no key/login for provider '{s}' (--model)", .{mname});
         };
         const nm = pricing.resolveModelName(keys, mname) orelse std.process.fatal("unknown --model '{s}' — run `graff models refresh` or see /models", .{mname});
-        default_provider = keys.providerFor(nm) catch std.process.fatal("no key/login for --model '{s}' — see /models", .{mname});
+        default_provider = keys.providerFor(nm) catch {
+            // #294: name the credential that actually needs repair. A Codex-only
+            // model with an expired ~/.codex/auth.json used to be rerouted to the
+            // gateway and surface as a CodeGraff error; now it fails here, so the
+            // message must point at the right login rather than "see /models".
+            var pbuf: [provider_mod.provider_specs.len][]const u8 = undefined;
+            const serving = provider_mod.catalogProvidersFor(&pbuf, nm);
+            if (serving.len > 0) std.process.fatal(
+                "'{s}' is served by {s}, which has no valid credential — run `graff login {s}` or `graff key set {s} <key>`",
+                .{ nm, serving[0], serving[0], serving[0] },
+            );
+            std.process.fatal("no key/login for --model '{s}' — see /models", .{mname});
+        };
     } else if (saved_model) |saved| {
         preferred_provider = saved.pid;
         // No --model flag: resume the model chosen last session only if that
@@ -525,7 +537,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
                     std.mem.eql(u8, flags.positionals.items[1], "--refresh") or
                     std.mem.eql(u8, flags.positionals.items[1], "update")),
         );
-        const kimi_token = init.environ_map.get("KIMI_API_KEY") orelse oauth.loadKimiOAuth(io, gpa, arena, home, false) orelse "";
+        const kimi_token = init.environ_map.get("KIMI_API_KEY") orelse oauth.loadKimiOAuth(io, gpa, arena, home, false, null) orelse "";
         _ = kimi_catalog.load(io, gpa, arena, home, kimi_token);
         try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]);
         return true;

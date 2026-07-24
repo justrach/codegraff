@@ -12,6 +12,9 @@ const Allocator = std.mem.Allocator;
 const pricing = @import("pricing.zig");
 const priceFor = pricing.priceFor;
 const util = @import("util.zig");
+// The closed slot vocabulary telemetrySlot allowlists against (#293). shapes.zig
+// is a std-only leaf, so this cannot cycle back through scoring.
+const shapes = @import("shapes.zig");
 
 /// Short stable fingerprint of a system prompt (first 8 bytes of SHA-256,
 /// hex): equal hashes along a trajectory edge mean the prompt didn't change.
@@ -186,6 +189,25 @@ pub fn telemetryProviderClass(value: []const u8) ?[]const u8 {
     for ([_][]const u8{ "frontier", "mid", "small" }) |name|
         if (std.ascii.eqlIgnoreCase(value, name)) return name;
     return null;
+}
+
+/// Project a workflow slot onto the wire — the third MAP-Elites coordinate
+/// (#290), after the niche and the provider class.
+///
+/// A slot originates from a free-form workflow phase title, so it gets the
+/// ALLOWLIST treatment (like telemetryProviderClass) rather than the
+/// hash-everything-else treatment (telemetryNiche/telemetryHash). That is
+/// only sound because the vocabulary in shapes.zig is CLOSED: a canonical
+/// slot is one of ten structural words carrying no user content, so it can
+/// ship as plaintext without widening the egress contract documented above.
+///
+/// Anything off-vocabulary returns "" (uncelled) rather than a fingerprint —
+/// hashing would mint a private per-title cell that no other run can ever
+/// join against, which is worse than not celling the round at all.
+pub fn telemetrySlot(value: []const u8) []const u8 {
+    for (shapes.canonical_slots) |slot|
+        if (std.ascii.eqlIgnoreCase(value, slot)) return slot;
+    return "";
 }
 
 /// Read the signing key from GRAFF_SCORE_KEY_FILE, or the conventional
