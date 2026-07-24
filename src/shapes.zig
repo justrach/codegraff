@@ -34,7 +34,13 @@ pub const canonical_slots = [_][]const u8{
     // C — design/solve
     "variants",
     "build",
-    // D — migration/mechanical
+    // D — migration/mechanical.
+    // KNOWN GAP: pipeline stages call runSub directly and never reach the
+    // variant-scoring path, so a spec-compliant `transform` stage cannot fill
+    // its cell today — it is scoreable only via an off-catalog phase of the same
+    // name. Kept in the vocabulary because it is the right name and becomes
+    // reachable the moment pipeline stages are scored; see the pipeline-scoring
+    // issue. Migration execution is unaffected — only learning/promotion is.
     "transform",
     // E — feature
     "scope",
@@ -43,10 +49,20 @@ pub const canonical_slots = [_][]const u8{
 };
 
 /// The first alphanumeric token of `label`, lowercased into `buf`.
-/// Returns an empty slice when the label has no leading word.
+/// Returns an empty slice when the label has no leading ASCII word.
+///
+/// A byte >= 0x80 during the leading skip aborts the scan. Without that, the
+/// bytes of a non-ASCII leading word are each individually non-alphanumeric and
+/// get skipped as if they were punctuation, so a LATER word becomes the apparent
+/// first word: `canonicalSlot("安全 review")` returned `review`, filing that
+/// phase's fitness into a cell it does not belong to. Non-ASCII text is not a
+/// canonical slot, so refusing to look past it is both correct and conservative
+/// — the label is simply uncelled.
 fn firstWord(buf: []u8, label: []const u8) []const u8 {
     var start: usize = 0;
-    while (start < label.len and !std.ascii.isAlphanumeric(label[start])) start += 1;
+    while (start < label.len and !std.ascii.isAlphanumeric(label[start])) : (start += 1) {
+        if (label[start] >= 0x80) return buf[0..0];
+    }
     var n: usize = 0;
     var i = start;
     while (i < label.len and std.ascii.isAlphanumeric(label[i]) and n < buf.len) : (i += 1) {
@@ -107,7 +123,14 @@ pub const shape_catalog_note =
     \\Scale to the ask: "find bugs" is 3 finders + 1 verify; "thoroughly audit" is
     \\6 finders + 3-vote adversarial verify + synthesize. Use phases only when a
     \\phase genuinely needs ALL of the previous one; per-item work belongs in
-    \\pipeline. Give file-editing tasks isolation:"worktree" so they cannot collide.
+    \\pipeline.
+    \\
+    \\isolation:"worktree" ONLY for tasks that edit files IN PARALLEL within one
+    \\phase and whose edits nothing downstream has to read. Every task gets its
+    \\OWN worktree branched from HEAD, so a later stage cannot see an earlier
+    \\stage's edits. Never set it on a dependent chain (transform then verify,
+    \\implement then review) — those stages must share the working tree or the
+    \\reviewer inspects the original file and the edits are stranded.
 ;
 
 test "canonicalSlot: exact, first-word, and miss" {
@@ -121,6 +144,16 @@ test "canonicalSlot: exact, first-word, and miss" {
     try std.testing.expectEqualStrings("sweep", canonicalSlot("  - sweep the repo"));
     // The ordering hazard a substring rule would have: this is `review`, not `find`.
     try std.testing.expectEqualStrings("review", canonicalSlot("review the findings"));
+    // A leading NON-ASCII word must not be skipped past. Each of its bytes is
+    // individually non-alphanumeric, so the old scan treated them as punctuation
+    // and promoted a later word to "first", filing the phase into a cell it does
+    // not belong to. Uncelled is the correct answer.
+    try std.testing.expectEqualStrings("", canonicalSlot("安全 review"));
+    try std.testing.expectEqualStrings("", canonicalSlot("修复 implement billing"));
+    try std.testing.expectEqualStrings("", canonicalSlot("→ verify"));
+    // Non-ASCII AFTER a valid leading ASCII word is harmless.
+    try std.testing.expectEqualStrings("review", canonicalSlot("review 安全"));
+    try std.testing.expectEqualStrings("find", canonicalSlot("find — bugs"));
     // Off-vocabulary titles are uncelled rather than minting a new cell.
     try std.testing.expectEqualStrings("", canonicalSlot("code review"));
     try std.testing.expectEqualStrings("", canonicalSlot("ponder"));
@@ -149,4 +182,17 @@ test "shape catalog covers all five shapes and stays within a sane token budget"
     }
     // It rides on every ultracode turn; keep it from silently ballooning.
     try std.testing.expect(shape_catalog_note.len < 2048);
+}
+
+test "shape catalog never tells a dependent chain to isolate into worktrees" {
+    // Regression guard for the worst bug the catalog's own first review found.
+    // It used to say "give file-editing tasks isolation:worktree so they cannot
+    // collide". Every task gets its OWN worktree branched from HEAD, so on a
+    // dependent chain (transform -> verify, implement -> review) the later stage
+    // read the ORIGINAL file: a workflow could report a successful implement +
+    // review while the edits never reached the caller's tree at all.
+    try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "IN PARALLEL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "Never set it on a dependent chain") != null);
+    // The old unconditional phrasing must not come back.
+    try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "Give file-editing tasks isolation") == null);
 }
