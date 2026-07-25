@@ -33,7 +33,7 @@ const notice_file = ".simple-harness-learning-notice";
 pub fn firstRunNotice(io: Io, arena: std.mem.Allocator, home: []const u8, out: *Io.Writer) void {
     if (home.len == 0 or !privacy.allowsAggregate()) return;
     const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, notice_file }) catch return;
-    const file = Io.Dir.cwd().createFile(io, path, .{ .exclusive = true }) catch return;
+    const file = Io.Dir.createFileAbsolute(io, path, .{ .exclusive = true }) catch return;
     file.close(io);
     out.writeAll(
         \\learning: this build contributes prompt-free aggregate grades (counts, deltas,
