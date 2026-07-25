@@ -53,6 +53,12 @@ grades when learning privacy and a local signing key both allow it. It holds
 the engine lock, so a second session cannot start a competing trial. Turn the
 trigger off with `GRAFF_LEARN_AUTO=off`.
 
+Budget it deliberately: one trial runs the parent once over the whole primary
+suite plus every candidate arm over the same suite, so the default two-arm
+configuration is roughly 180 short agent runs against the configured learning
+model. Point `learn init --provider/--model` at a cheap model, or use
+`--candidates 1`, before letting the trigger run against an expensive one.
+
 ## The learned root policy
 
 A promoted genome named `graff-root` (what `learn init` generates) becomes the
