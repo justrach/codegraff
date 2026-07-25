@@ -28,7 +28,7 @@ export function ProjectSwitcherMenu({
             size="xs"
             aria-label="Choose project"
             disabled={isBusy}
-            className="h-auto gap-1 rounded-sm px-1.5 py-0.5 text-xs leading-none font-medium text-foreground hover:text-foreground"
+            className="h-auto min-w-0 shrink gap-1 rounded-sm px-1.5 py-0.5 text-xs leading-none font-medium text-foreground hover:text-foreground"
           />
         }
       >

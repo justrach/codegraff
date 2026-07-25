@@ -103,7 +103,7 @@ export function ConversationPanelHeader({
                   <BreadcrumbSeparator className="text-muted-foreground">
                     <ChevronRight strokeWidth={2} className="size-2.5" />
                   </BreadcrumbSeparator>
-                  <BreadcrumbItem>
+                  <BreadcrumbItem className="min-w-0">
                     <BranchSwitcherMenu
                       branchName={branchName}
                       branchQuery={branchQuery}
