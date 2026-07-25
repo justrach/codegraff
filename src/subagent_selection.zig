@@ -18,10 +18,7 @@ pub const Error = error{
 };
 
 fn knownProvider(id: []const u8) bool {
-    for (provider_mod.provider_specs) |spec| {
-        if (std.mem.eql(u8, spec.id, id)) return true;
-    }
-    return false;
+    return provider_mod.specFor(id) != null;
 }
 
 fn modelForProvider(provider_id: []const u8, query: []const u8) ?[]const u8 {

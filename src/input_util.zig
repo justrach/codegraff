@@ -27,7 +27,6 @@ const util = @import("util.zig");
 const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
 const tools_mod = @import("tools.zig");
-const provider_specs = provider_mod.provider_specs;
 const repl_commands = main_mod.repl_commands;
 const bash_stdout_cap = tools_mod.bash_stdout_cap;
 
@@ -49,7 +48,10 @@ pub fn fillCompletions(gpa: Allocator, line: []const u8, out: *std.ArrayList([]c
             };
             if (!dup) out.append(gpa, m.name) catch {};
         }
-        for (provider_specs) |s| if (std.mem.startsWith(u8, s.id, partial)) out.append(gpa, s.id) catch {};
+        for (0..provider_mod.specCount()) |i| {
+            const spec = provider_mod.specAt(i).?;
+            if (std.mem.startsWith(u8, spec.id, partial)) out.append(gpa, spec.id) catch {};
+        }
         return mp.len;
     }
     if (line.len > 0 and line[0] == '/' and std.mem.indexOfScalar(u8, line, ' ') == null) {

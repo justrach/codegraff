@@ -15,6 +15,8 @@ const Value = std.json.Value;
 const pricing = @import("pricing.zig");
 const resolveModelName = pricing.resolveModelName;
 const kimi_catalog = @import("kimi_catalog.zig");
+const catalog_selection = @import("catalog_selection.zig");
+const router_catalog = @import("router_catalog.zig");
 
 const serde = @import("serde.zig");
 const saveModel = serde.saveModel;
@@ -135,15 +137,15 @@ fn triedProvider(ids: []const []const u8, id: []const u8) bool {
 /// failed provider and wrapping once. Providers without credentials and ids
 /// already attempted during this turn are skipped.
 pub fn nextFallbackProvider(keys: Keys, after_id: []const u8, tried: []const []const u8, allow: []const []const u8) ?Provider {
+    const count = provider_mod.specCount();
     var start: usize = 0;
-    for (provider_specs, 0..) |spec, i| if (std.mem.eql(u8, spec.id, after_id)) {
-        start = (i + 1) % provider_specs.len;
+    for (0..count) |i| if (std.mem.eql(u8, provider_mod.specAt(i).?.id, after_id)) {
+        start = (i + 1) % count;
         break;
     };
-    for (0..provider_specs.len) |offset| {
-        const i = (start + offset) % provider_specs.len;
-        const spec = provider_specs[i];
-        const key = keys.values[i] orelse continue;
+    for (0..count) |offset| {
+        const spec = provider_mod.specAt((start + offset) % count).?;
+        const key = keys.get(spec.id) orelse continue;
         if (triedProvider(tried, spec.id)) continue;
         if (!fallback_config.contains(allow, spec.id)) continue;
         return keys.build(spec, key, pricing.providerDefaultModel(spec.id, spec.default_model));
@@ -203,7 +205,7 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
     const behavior_turn = trace.beginRootTurn(root.tracer);
     defer trace.endRootTurn(root.tracer, behavior_turn);
     if (root.fallback_blocked) return error.FallbackConsentRequired;
-    var attempted: [provider_specs.len][]const u8 = undefined;
+    var attempted: [provider_specs.len + 1][]const u8 = undefined;
     var attempted_len: usize = 1;
     attempted[0] = root.provider.id;
     while (true) {
@@ -267,8 +269,7 @@ pub fn resolveProviderControlRequest(
     const model = std.mem.trim(u8, model_query, " \t");
 
     if (provider_id.len != 0) {
-        for (provider_specs) |spec| {
-            if (!std.mem.eql(u8, spec.id, provider_id)) continue;
+        if (provider_mod.specFor(provider_id)) |spec| {
             const selected_model = if (model.len == 0) pricing.providerDefaultModel(spec.id, spec.default_model) else try arena.dupe(u8, model);
             if (model.len != 0 and !localProviderUrl(spec.url) and !pricing.providerModelInTable(spec.id, selected_model)) return error.InvalidModel;
             return keys.providerById(spec.id, selected_model);
@@ -289,55 +290,32 @@ pub fn resolveProviderControlRequest(
 /// Explicit non-Codex providers never need the dynamic catalog; bare/fuzzy
 /// model queries do because they may name a new account rollout.
 pub fn modelQueryMayUseCodex(query: []const u8) bool {
-    const arg = std.mem.trim(u8, query, " \t");
-    if (arg.len == 0) return true;
-    const provider_end = std.mem.indexOfAny(u8, arg, " /\t") orelse arg.len;
-    const provider_id = arg[0..provider_end];
-    for (provider_specs) |spec| {
-        if (!std.mem.eql(u8, spec.id, provider_id)) continue;
-        return std.mem.eql(u8, spec.id, "codex");
-    }
-    return true;
+    return catalog_selection.queryMayUse("codex", query);
 }
 
 fn modelQueryMayUseKimi(query: []const u8) bool {
-    const arg = std.mem.trim(u8, query, " \t");
-    if (arg.len == 0) return true;
-    const provider_end = std.mem.indexOfAny(u8, arg, " /\t") orelse arg.len;
-    const provider_id = arg[0..provider_end];
-    for (provider_specs) |spec| {
-        if (!std.mem.eql(u8, spec.id, provider_id)) continue;
-        return std.mem.eql(u8, spec.id, "kimi");
-    }
-    if (pricing.modelInTable(arg)) return pricing.providerModelInTable("kimi", arg);
-    return true;
+    return catalog_selection.queryMayUse("kimi", query);
 }
 
 pub fn ensureModelQueryCatalogs(root: *Agent, keys: Keys, query: []const u8) void {
     if (modelQueryMayUseCodex(query)) root.ensureModelCatalog(keys);
     if (modelQueryMayUseKimi(query))
         kimi_catalog.ensure(root.io, root.gpa, root.arena, root.home, keys.get("kimi") orelse "");
+    router_catalog.ensureForQuery(root.io, root.gpa, root.arena, root.home, keys, query);
 }
 
 /// Structured set_model has separate provider/model fields. An explicit
 /// provider fully determines routing; a model-only request remains fuzzy.
 pub fn controlRequestMayUseCodex(provider_query: []const u8, model_query: []const u8, legacy_name: []const u8) bool {
-    const provider_id = std.mem.trim(u8, provider_query, " \t");
-    if (provider_id.len != 0) return std.mem.eql(u8, provider_id, "codex");
-    if (std.mem.trim(u8, model_query, " \t").len != 0) return true;
-    return modelQueryMayUseCodex(legacy_name);
+    return modelQueryMayUseCodex(catalog_selection.controlQuery(provider_query, model_query, legacy_name));
 }
 
 pub fn ensureControlRequestCatalogs(root: *Agent, keys: Keys, provider_query: []const u8, model_query: []const u8, legacy_name: []const u8) void {
     if (controlRequestMayUseCodex(provider_query, model_query, legacy_name)) root.ensureModelCatalog(keys);
-    const query = if (std.mem.trim(u8, provider_query, " \t").len != 0)
-        provider_query
-    else if (std.mem.trim(u8, model_query, " \t").len != 0)
-        model_query
-    else
-        legacy_name;
+    const query = catalog_selection.controlQuery(provider_query, model_query, legacy_name);
     if (modelQueryMayUseKimi(query))
         kimi_catalog.ensure(root.io, root.gpa, root.arena, root.home, keys.get("kimi") orelse "");
+    router_catalog.ensureForQuery(root.io, root.gpa, root.arena, root.home, keys, query);
 }
 
 fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Provider {
@@ -347,16 +325,15 @@ fn resolveProviderRequest(keys: *Keys, arena: Allocator, query: []const u8) !Pro
     if (std.mem.indexOfAny(u8, arg, " /\t")) |i| {
         const pid = arg[0..i];
         const mdl = std.mem.trim(u8, arg[i + 1 ..], " \t");
-        for (provider_specs) |spec| {
-            if (!std.mem.eql(u8, spec.id, pid) or mdl.len == 0) continue;
+        if (provider_mod.specFor(pid)) |spec| {
+            if (mdl.len == 0) return error.InvalidModel;
             if (!localProviderUrl(spec.url) and !pricing.providerModelInTable(pid, mdl)) return error.InvalidModel;
             const m = try arena.dupe(u8, mdl);
             return keys.providerById(pid, m);
         }
     }
 
-    for (provider_specs) |spec| {
-        if (!std.mem.eql(u8, spec.id, arg)) continue;
+    if (provider_mod.specFor(arg)) |spec| {
         return keys.providerById(spec.id, pricing.providerDefaultModel(spec.id, spec.default_model));
     }
 

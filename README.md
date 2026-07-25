@@ -277,7 +277,7 @@ yet an implemented remote authority.
 ## Providers & models
 
 Direct API-key and OAuth providers across three wire formats. A
-`ProviderSpec` table (`provider_specs` in `src/main.zig`) holds each provider's
+`ProviderSpec` table holds each built-in provider's
 endpoint, auth style, env var, and default model; base URLs and key names come
 from [models.dev](https://models.dev)'s `api.json` (snapshot 2026-06-10).
 
@@ -305,6 +305,29 @@ The same pattern works for every API-key row above: swap in the provider id
 and one of its models (`graff key set openai sk-...` → `--model gpt-...`,
 `graff key set anthropic sk-ant-...` → `--model sonnet`, and so on).
 
+To add one workspace-local OpenAI-compatible router without changing Graff,
+create `.graff/.config.router`:
+
+```json
+{
+  "id": "openrouter",
+  "name": "OpenRouter",
+  "base_url": "https://openrouter.ai/api/v1",
+  "env_key": "OPENROUTER_API_KEY",
+  "default_model": "anthropic/claude-sonnet-4"
+}
+```
+
+`name` is optional. `takes_effort: true` is also available for routers that
+accept OpenAI-style reasoning-effort requests. The file contains no secret;
+use `export OPENROUTER_API_KEY=...` or `graff key set openrouter ...`.
+Select it with `graff --model openrouter` or `/model openrouter`;
+`graff models refresh` pulls its full catalog. Graff derives
+`/chat/completions` and `/models` from `base_url`, caches that router's model
+catalog in `.graff/.models.router`, and exposes it to the CLI and GUI schema.
+Only one additional router is configured per workspace. `.graff/` is ignored
+by Git in this repository.
+
 A model is routed to the first provider (in the table order above) that both has
 a key set **and** lists the model in the active catalog. Codex names, rollout
 visibility, ordering, and context windows come from its account-scoped `/models`
@@ -319,7 +342,8 @@ the first provider with a key, on its default model. `/models` prints the full
 table: context window, compaction point, provider, and which providers you have
 keys for; `/model <name>` switches (a bare `/model` opens an interactive fuzzy
 picker). `graff models refresh` forces a fresh Codex catalog request and refreshes
-the independent models.dev price/context metadata cache.
+the Codegraff/workspace-router catalogs plus the independent models.dev
+price/context metadata cache.
 
 <details>
 <summary><strong>Codex login (ChatGPT subscription)</strong> · <strong>why no Claude login</strong></summary>
