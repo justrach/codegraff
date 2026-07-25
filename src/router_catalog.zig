@@ -139,26 +139,32 @@ fn fetch(io: Io, gpa: Allocator, arena: Allocator, spec: provider.ProviderSpec, 
     return parseModels(arena, spec.id, aw.writer.buffered());
 }
 
-fn writeCache(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, models: []const pricing.ModelInfo) void {
+fn cacheDocument(io: Io, arena: Allocator, spec: provider.ProviderSpec, models: []const pricing.ModelInfo) ?[]const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
-    aw.writer.writeAll("{\"source\":") catch return;
-    var stringify: std.json.Stringify = .{ .writer = &aw.writer };
-    stringify.write(spec.models_url) catch return;
-    aw.writer.print(",\"fetched_at_ms\":{d},\"models\":[", .{util.unixMs(io)}) catch return;
+    aw.writer.writeAll("{\"source\":") catch return null;
+    var source_stringify: std.json.Stringify = .{ .writer = &aw.writer };
+    source_stringify.write(spec.models_url) catch return null;
+    aw.writer.print(",\"fetched_at_ms\":{d},\"models\":[", .{util.unixMs(io)}) catch return null;
     for (models, 0..) |model, i| {
-        if (i > 0) aw.writer.writeByte(',') catch return;
-        aw.writer.writeAll("{\"name\":") catch return;
-        stringify.write(model.name) catch return;
-        aw.writer.print(",\"context\":{d},\"supports_reasoning\":{}}}", .{ model.context, model.supports_reasoning }) catch return;
+        if (i > 0) aw.writer.writeByte(',') catch return null;
+        aw.writer.writeAll("{\"name\":") catch return null;
+        var name_stringify: std.json.Stringify = .{ .writer = &aw.writer };
+        name_stringify.write(model.name) catch return null;
+        aw.writer.print(",\"context\":{d},\"supports_reasoning\":{}}}", .{ model.context, model.supports_reasoning }) catch return null;
     }
-    aw.writer.writeAll("]}\n") catch return;
+    aw.writer.writeAll("]}\n") catch return null;
+    return aw.writer.buffered();
+}
+
+fn writeCache(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec, models: []const pricing.ModelInfo) void {
+    const document = cacheDocument(io, arena, spec, models) orelse return;
     for ([_][]const u8{ dirPath(arena, home, spec), flatPath(arena, home, spec) }) |path| {
         if (path.len == 0) continue;
         const file = Io.Dir.cwd().createFile(io, path, .{}) catch continue;
         defer file.close(io);
         var buffer: [4096]u8 = undefined;
         var writer = file.writer(io, &buffer);
-        writer.interface.writeAll(aw.writer.buffered()) catch continue;
+        writer.interface.writeAll(document) catch continue;
         writer.interface.flush() catch continue;
         return;
     }
@@ -294,6 +300,25 @@ test "parseModels round-trips the generic cache shape" {
     try std.testing.expectEqual(@as(i64, 1_700_000_000_000), snapshot.fetched_at_ms);
     try std.testing.expectEqualStrings("router", snapshot.models[0].provider);
     try std.testing.expect(snapshot.models[0].supports_reasoning);
+}
+
+test "cache document serializes every model name as valid JSON" {
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const arena = state.allocator();
+    const spec = provider.specFor("codegraff") orelse return error.TestUnexpectedResult;
+    const models = [_]pricing.ModelInfo{
+        .{ .provider = spec.id, .name = "first", .context = 128_000 },
+        .{ .provider = spec.id, .name = "quote\"model", .context = 256_000, .supports_reasoning = true },
+    };
+    const document = cacheDocument(std.testing.io, arena, spec, &models) orelse
+        return error.TestUnexpectedResult;
+    const value = try std.json.parseFromSliceLeaky(Value, arena, document, .{});
+    const cached_models = value.object.get("models") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), cached_models.array.items.len);
+    const second = cached_models.array.items[1].object;
+    try std.testing.expectEqualStrings("quote\"model", second.get("name").?.string);
+    try std.testing.expect(second.get("supports_reasoning").?.bool);
 }
 
 test "router discovery replaces only its provider slice" {
