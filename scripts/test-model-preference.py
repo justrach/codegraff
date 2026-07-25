@@ -15,7 +15,8 @@ from pty_harness import PtySession
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else "graff"
 GRAFF = os.path.abspath(_arg) if os.sep in _arg else _arg
-PRIVACY = "Privacy:Local"
+# Aggregate is the default learning ceiling; the badge reflects it.
+PRIVACY = "Privacy:Aggregate"
 PROVIDER_KEYS = (
     "ANTHROPIC_API_KEY",
     "DEEPSEEK_API_KEY",
