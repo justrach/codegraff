@@ -148,13 +148,18 @@ test "pass_env names follow the provider's credential shape" {
 }
 
 test "only configuration-declared names are eligible for credential resolution" {
+    // Written out rather than repeated with `**`: the CI compiler rejects that
+    // operator's spacing here, and a pinned digest is a literal anyway.
+    const a_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const b_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const c_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
     const config: store_mod.Config = .{
         .schema = store_mod.config_schema,
         .agent_name = "graff-root",
         .mutation_instruction = "improve",
-        .mutator = .{ .program = "/x", .sha256 = "a" ** 64, .pass_env = &.{"CODEGRAFF_API_KEY"} },
-        .evaluator = .{ .program = "/y", .sha256 = "b" ** 64, .pass_env = &.{"CODEX_HOME"} },
-        .evaluation_suite = .{ .path = "/z", .sha256 = "c" ** 64 },
+        .mutator = .{ .program = "/x", .sha256 = a_id, .pass_env = &.{"CODEGRAFF_API_KEY"} },
+        .evaluator = .{ .program = "/y", .sha256 = b_id, .pass_env = &.{"CODEX_HOME"} },
+        .evaluation_suite = .{ .path = "/z", .sha256 = c_id },
         .cohort = .{ .provider = "codegraff", .model = "m", .task_family = "f", .adapter_version = "v", .verifier_version = "v" },
     };
     try std.testing.expect(declares(config, "CODEGRAFF_API_KEY"));
