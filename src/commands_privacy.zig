@@ -22,6 +22,29 @@ fn printStatus(out: *Io.Writer) !void {
     );
 }
 
+/// Marker for the one-time contribution disclosure. Per machine, not per
+/// workspace: the fact that learning contributes by default is a property of
+/// the install.
+const notice_file = ".simple-harness-learning-notice";
+
+/// Say it once, out loud, the first time a session could contribute: a default
+/// that ships silently is not consent. Best-effort — if the marker cannot be
+/// written the notice simply appears again next time.
+pub fn firstRunNotice(io: Io, arena: std.mem.Allocator, home: []const u8, out: *Io.Writer) void {
+    if (home.len == 0 or !privacy.allowsAggregate()) return;
+    const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, notice_file }) catch return;
+    const file = Io.Dir.cwd().createFile(io, path, .{ .exclusive = true }) catch return;
+    file.close(io);
+    out.writeAll(
+        \\learning: this build contributes prompt-free aggregate grades (counts, deltas,
+        \\significance, fingerprints) from local learning trials — never prompt text, code,
+        \\paths, or traces. Turn it off with /privacy local, GRAFF_LEARNING_PRIVACY=local,
+        \\or GRAFF_FLEET=off. Shown once.
+        \\
+    ) catch return;
+    out.flush() catch {};
+}
+
 pub fn tryHandle(root: *Agent, line: []const u8, out: *Io.Writer) !bool {
     if (!std.mem.eql(u8, line, "/privacy") and !std.mem.startsWith(u8, line, "/privacy ")) return false;
     const arg = std.mem.trim(u8, line["/privacy".len..], " \t");

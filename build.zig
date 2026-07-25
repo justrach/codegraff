@@ -78,6 +78,22 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
 
+    // Learning kit: the adapter/suite files `graff learn init` materializes
+    // into a workspace so zero-configuration learning needs no repo checkout.
+    // Embedded by name (src/learn_assets.zig `@embedFile`s these imports).
+    for ([_]struct { import: []const u8, path: []const u8 }{
+        .{ .import = "learn_kit_mutator", .path = "examples/learn_graff_mutator.py" },
+        .{ .import = "learn_kit_evaluator", .path = "examples/learn_graff_evaluator.py" },
+        .{ .import = "learn_kit_case", .path = "examples/learn_graff_case.py" },
+        .{ .import = "learn_kit_behavior", .path = "examples/learn_behavior_metrics.py" },
+        .{ .import = "learn_kit_suites", .path = "examples/learn_graff_suites.py" },
+        .{ .import = "learn_kit_generate", .path = "examples/learn_generate_suites.py" },
+        .{ .import = "learn_kit_scorer", .path = "scripts/score_run.py" },
+    }) |asset| {
+        exe.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+        unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+    }
+
     // --- spike (branch: spike/zigzag-repl): zigzag-based REPL ---
     // Also reachable as the `graff repl` subcommand of the main binary (see
     // src/main.zig). This standalone exe + `repl-test` step are kept for

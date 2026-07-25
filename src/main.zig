@@ -406,19 +406,11 @@ pub fn main(init: std.process.Init) !void {
 
     // Root system-prompt layering (base + AGENTS.md/HARNESS.md/CLAUDE.md + --append-system-prompt + active-skill lines + connected-MCP notes) lives
     // in startup.zig as buildSystemPrompt() — pure over io/arena, returns both prompt strings by value.
-    const sys_prompt = try startup.buildSystemPrompt(
-        io,
-        arena,
-        out,
-        flags.system_prompt_flag,
-        flags.append_system_flag,
-        json_mode or flags.oneshot_prompt != null,
-        mcp_tools,
-        g_codedbpro_licensed,
-    );
+    const sys_prompt = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null, mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"));
     const sys_normal = sys_prompt.sys_normal;
     const sys_strict = sys_prompt.sys_strict;
     boot.mark(io, "system prompt");
+    session_run.learningNotice(io, arena, init.environ_map, out, json_mode or flags.oneshot_prompt != null);
 
     var snaps: Snapshots = .{ .gpa = gpa, .io = io };
     defer snaps.deinit();
@@ -487,6 +479,9 @@ pub fn main(init: std.process.Init) !void {
         .effort = @tagName(root.reasoning),
     });
     session_run.compactResumedSession(&root);
+
+    // Closing the learning loop: this session counts toward the next trial.
+    defer session_run.startBackgroundLearning(gpa, arena, io, init.environ_map, &invocation_budget);
 
     // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL agent loop — each prompt runs a full root turn (tools + MCP) via
     // replTurnCb, reusing the root agent's tool set + registry + system prompt. Self-contained — exits after.

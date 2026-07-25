@@ -61,6 +61,9 @@ jobs:
       - name: Local learning lifecycle and security regression
         run: python3 tests/learn_e2e.py --graff zig-out/bin/graff
 
+      - name: Zero-configuration learning bootstrap
+        run: python3 tests/learn_bootstrap_e2e.py --graff zig-out/bin/graff
+
       - name: Evolutionary tournament and behavioral metric regression
         run: |
           python3 tests/learn_tournament_e2e.py --graff zig-out/bin/graff

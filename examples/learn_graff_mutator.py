@@ -56,17 +56,21 @@ def validate_arms(value: Any) -> tuple[list[dict[str, Any]], list[str], dict[str
            for key, text in targets.items()):
         fail("targets must map non-empty names to non-empty paragraphs")
     arms = value.get("arms")
-    if not isinstance(arms, list) or len(arms) != 4:
-        fail("exactly four arms are required")
+    if not isinstance(arms, list) or not 1 <= len(arms) <= 16:
+        fail("between one and sixteen arms are required")
     seen: set[str] = set()
     for index, arm in enumerate(arms):
         if not isinstance(arm, dict) or arm.get("index") != index:
             fail("arm indexes must be exactly 0..3")
-        required = ("id", "provider", "model", "effort", "focus", "target", "placement")
+        required = ("id", "provider", "model", "focus", "target", "placement")
         if any(not isinstance(arm.get(key), str) or not arm[key] for key in required):
             fail(f"arm {index} has missing fields")
-        if arm["id"] in seen or arm["provider"] != "codex" or arm["effort"] not in EFFORTS:
-            fail(f"arm {index} is duplicate or unsupported")
+        # An absent effort means this provider cannot pin one; a present one is
+        # still verified against the running harness below.
+        if arm.get("effort") is not None and arm["effort"] not in EFFORTS:
+            fail(f"arm {index} has an unsupported effort")
+        if arm["id"] in seen:
+            fail(f"arm {index} is a duplicate")
         if arm["placement"] not in {"append", "replace"}:
             fail(f"arm {index} has an unsupported placement")
         fixed_clause = arm.get("fixed_clause")
@@ -75,10 +79,6 @@ def validate_arms(value: Any) -> tuple[list[dict[str, Any]], list[str], dict[str
         if arm["target"] not in targets:
             fail(f"arm {index} names an unknown target")
         seen.add(arm["id"])
-    if arms[0]["model"] != "gpt-5.6-sol":
-        fail("arm 0 must be the gpt-5.6-sol quality anchor")
-    if arms[3]["model"] != "gpt-5.6-terra" or arms[3]["effort"] != "medium":
-        fail("arm 3 must be the medium-effort Terra challenger")
     return arms, protected, targets, maximum_changed, maximum_total
 
 
@@ -160,10 +160,10 @@ def mutate(arms_path: Path, graff: Path, request_path: Path, response_path: Path
     request_value = load_json(request_path)
     if not isinstance(request_value, dict) or request_value.get("schema") != REQUEST_SCHEMA:
         fail("invalid mutation request schema")
-    index = request_value.get("candidate_index")
-    if not isinstance(index, int) or not 0 <= index < 4:
-        fail("candidate_index must be 0..3")
     arms, protected, targets, maximum_changed, configured_total = validate_arms(load_json(arms_path))
+    index = request_value.get("candidate_index")
+    if not isinstance(index, int) or not 0 <= index < len(arms):
+        fail("candidate_index is outside the configured arms")
     arm = arms[index]
     parent_path = request_value.get("parent", {}).get("path")
     child_path = request_value.get("child_path")
@@ -224,7 +224,7 @@ Target paragraph:
         env.pop("GRAFF_OTEL_ENDPOINT", None)
         graff_executable = executable_snapshot(graff)
         argv = [
-            str(graff_executable), "--json", "--model", "codex", "--no-resume", "--no-telemetry",
+            str(graff_executable), "--json", "--model", arm["provider"], "--no-resume", "--no-telemetry",
             "--max-model-calls", "2", "--max-tool-calls", "0", "--system-prompt", system,
         ]
         proc = subprocess.Popen(
@@ -237,9 +237,10 @@ Target paragraph:
             }, "model")
             if model_event.get("provider") != arm["provider"] or model_event.get("model") != arm["model"]:
                 fail(f"model pin was not honored for {arm['id']}")
-            effort_event = request(proc, {"type": "set_effort", "level": arm["effort"]}, "effort")
-            if effort_event.get("level") != arm["effort"] or effort_event.get("applies") is not True:
-                fail(f"effort pin was not honored for {arm['id']}")
+            if arm.get("effort") is not None:
+                effort_event = request(proc, {"type": "set_effort", "level": arm["effort"]}, "effort")
+                if effort_event.get("level") != arm["effort"] or effort_event.get("applies") is not True:
+                    fail(f"effort pin was not honored for {arm['id']}")
             turn = request(proc, {"type": "user", "text": task}, "turn")
             child, violations = apply_patch(
                 str(turn.get("text", "")), parent, target, protected, maximum_changed, total_limit,
@@ -281,7 +282,7 @@ Target paragraph:
         "child_path": child_path,
         "child_sha256": hashlib.sha256(child_bytes).hexdigest(),
         "description": (
-            f"{arm['id']} ({arm['model']}/{arm['effort']})"
+            f"{arm['id']} ({arm['model']}/{arm.get('effort') or 'default'})"
             + ("; frozen confirmation" if fixed_clause is not None else "")
             + ("; validation fallback: parent" if validation_fallback else "")
         ),

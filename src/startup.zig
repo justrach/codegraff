@@ -41,6 +41,9 @@ const subagent_selection = @import("subagent_selection.zig");
 const serde = @import("serde.zig");
 const skills = @import("skills.zig");
 const prompts = @import("prompts.zig");
+const learn_store = @import("learn_store.zig");
+const learn_bootstrap = @import("learn_bootstrap.zig");
+const learn_auto = @import("learn_auto.zig");
 
 pub const ResolvedKeys = struct {
     keys: provider_mod.Keys,
@@ -312,6 +315,20 @@ pub const SystemPrompt = struct {
 /// to gate it: json_mode or a one-shot prompt). Carved out of main()'s
 /// former inline block verbatim — pure over io/arena, returns everything by
 /// value, so it's safe to call from outside main()'s own stack frame.
+/// The last edge of the learning loop: a genome this workspace actually
+/// promoted becomes the root prompt, not just a subagent persona. Generation 0
+/// is the unmodified snapshot of some build's own prompt, so only a promoted
+/// generation takes over — otherwise a freshly initialized store would pin an
+/// older build's wording forever. Corrupt or foreign state fails closed.
+fn learnedRootPolicy(io: Io, arena: Allocator) ?learn_store.ActiveAgent {
+    const learned = learn_store.loadActiveAgent(io, arena) orelse return null;
+    if (learned.generation == 0) return null;
+    if (!std.mem.eql(u8, learned.name, learn_bootstrap.root_policy_agent)) return null;
+    if (std.mem.trim(u8, learned.prompt, " \t\r\n").len == 0) return null;
+    if (!learn_store.validId(learned.genome_id)) return null;
+    return learned;
+}
+
 pub fn buildSystemPrompt(
     io: Io,
     arena: Allocator,
@@ -321,8 +338,16 @@ pub fn buildSystemPrompt(
     quiet: bool,
     mcp_tools: []const mcp.Tool,
     codedbpro_licensed: bool,
+    learned_policy_env: ?[]const u8,
 ) !SystemPrompt {
-    const base_prompt: []const u8 = system_prompt_flag orelse prompts.main_system_prompt;
+    // A learned policy is used unless this session opted out of it.
+    const learned: ?learn_store.ActiveAgent = if (system_prompt_flag == null and learn_auto.enabled(learned_policy_env)) learnedRootPolicy(io, arena) else null;
+    if (learned) |policy| if (!quiet) {
+        try out.print("root policy: learned generation {d} ({s})\n", .{ policy.generation, policy.genome_id[0..12] });
+        try out.flush();
+    };
+    const base_prompt: []const u8 = system_prompt_flag orelse
+        if (learned) |policy| policy.prompt else prompts.main_system_prompt;
     var sys_normal: []const u8 = base_prompt;
     for ([_][]const u8{ "AGENTS.md", "HARNESS.md", "CLAUDE.md" }) |fname| {
         const body = Io.Dir.cwd().readFileAlloc(io, fname, arena, .limited(64 * 1024)) catch continue;

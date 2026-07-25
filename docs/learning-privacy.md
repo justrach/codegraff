@@ -11,7 +11,11 @@ when the configured model provider is remote.
 
 ## Modes
 
-The default is `local`. Change the session ceiling interactively:
+The default is `aggregate`: local trials publish signed, prompt-free grades so
+the fleet loop has something to aggregate. A session says so once per machine
+before anything is sent. Nothing above that tier is automatic — reusable
+template text still needs an exact per-artifact approval. Change the session
+ceiling interactively:
 
 ```text
 /privacy
@@ -28,7 +32,14 @@ GRAFF_LEARNING_PRIVACY=aggregate graff
 ```
 
 Only exact lowercase environment values are recognized. Unknown, padded, or
-case-varied values fail closed to `local`.
+case-varied values fail closed to `local` — a garbled setting never falls back
+to the aggregate default.
+
+```sh
+graff --learning-privacy local        # this session contributes nothing
+GRAFF_LEARNING_PRIVACY=local graff
+GRAFF_FLEET=off graff                 # master kill switch, learning included
+```
 
 | Mode | Learning data admitted | Additional consent |
 | --- | --- | --- |

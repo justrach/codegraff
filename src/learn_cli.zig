@@ -18,12 +18,15 @@ const learn_run = @import("learn_run.zig");
 const learn_delete = @import("learn_delete.zig");
 const submit = @import("learn_submit.zig");
 const tournament = @import("learn_tournament.zig");
+const learn_init = @import("learn_init.zig");
+const credentials = @import("learn_credentials.zig");
 const util = @import("util.zig");
 
 pub const usage =
     \\graff learn — safe local prompt-policy learning
     \\
     \\usage:
+    \\  graff learn init [--candidates N] [--provider ID] [--model NAME]
     \\  graff learn init --parent PATH --config PATH
     \\  graff learn run [--candidates N] [--repetitions N] [--resume | --restart] [--submit] [--auto] [--show-adapter-stderr] [--lock-timeout-ms N]
     \\  graff learn submit RUN_ID [--lock-timeout-ms N]
@@ -40,7 +43,9 @@ pub const usage =
     \\
 ;
 
-const InitArgs = struct { parent: []const u8, config: []const u8 };
+/// A bare `learn init` bootstraps everything from the running binary; an
+/// explicit pair of paths keeps the hand-authored workflow unchanged.
+const InitArgs = learn_init.Args;
 const RunArgs = struct {
     candidates: ?usize = null,
     repetitions: ?usize = null,
@@ -92,6 +97,9 @@ pub fn parse(args: []const []const u8) !Parsed {
     if (std.mem.eql(u8, command_name, "init")) {
         var parent: ?[]const u8 = null;
         var config: ?[]const u8 = null;
+        var candidates: ?usize = null;
+        var provider: ?[]const u8 = null;
+        var model: ?[]const u8 = null;
         var index: usize = 1;
         while (index < args.len) : (index += 1) {
             const arg = args[index];
@@ -105,9 +113,29 @@ pub fn parse(args: []const []const u8) !Parsed {
                 index += 1;
                 if (index >= args.len) return error.MissingOptionValue;
                 config = args[index];
+            } else if (std.mem.eql(u8, arg, "--candidates")) {
+                if (candidates != null) return error.DuplicateOption;
+                index += 1;
+                if (index >= args.len) return error.MissingOptionValue;
+                candidates = try parseUnsigned(usize, args[index]);
+                if (candidates.? == 0 or candidates.? > 16) return error.InvalidNumber;
+            } else if (std.mem.eql(u8, arg, "--provider")) {
+                if (provider != null) return error.DuplicateOption;
+                index += 1;
+                if (index >= args.len) return error.MissingOptionValue;
+                provider = args[index];
+            } else if (std.mem.eql(u8, arg, "--model")) {
+                if (model != null) return error.DuplicateOption;
+                index += 1;
+                if (index >= args.len) return error.MissingOptionValue;
+                model = args[index];
             } else return error.UnknownOption;
         }
-        return .{ .init = .{ .parent = parent orelse return error.MissingOption, .config = config orelse return error.MissingOption } };
+        // A generated configuration is generated whole: mixing one hand-written
+        // half with a generated other half would silently unpin the pair.
+        if ((parent == null) != (config == null)) return error.MissingOption;
+        if (parent != null and (candidates != null or provider != null or model != null)) return error.ConflictingOptions;
+        return .{ .init = .{ .parent = parent, .config = config, .candidates = candidates, .provider = provider, .model = model } };
     }
     if (std.mem.eql(u8, command_name, "run")) {
         var result: RunArgs = .{};
@@ -210,23 +238,6 @@ pub fn parse(args: []const []const u8) !Parsed {
     return error.UnknownCommand;
 }
 
-fn verifyPins(io: Io, arena: Allocator, config: store_mod.Config) !void {
-    try store_mod.verifyProgram(io, config.mutator);
-    try store_mod.verifyProgram(io, config.evaluator);
-    const primary_suite = try store_mod.loadSuite(io, arena, config.evaluation_suite);
-    try store_mod.validateSuitePower(primary_suite.manifest, config.gate);
-    if (config.holdout_suite) |suite| {
-        const holdout_suite = try store_mod.loadSuite(io, arena, suite);
-        try store_mod.validateHoldoutIndependence(
-            config.evaluation_suite.sha256,
-            primary_suite.manifest,
-            suite.sha256,
-            holdout_suite.manifest,
-        );
-        try store_mod.validateSuitePower(holdout_suite.manifest, config.gate);
-    }
-}
-
 fn verifyRun(
     arena: Allocator,
     io: Io,
@@ -246,7 +257,7 @@ fn verifyRun(
     try store_mod.validateTransaction(parent_tx);
     if (parent_tx.generation != run.parent_generation or !std.mem.eql(u8, parent_tx.next_genome_id, run.parent_genome_id)) return error.ParentTransactionMismatch;
     _ = try store.readGenome(arena, run.parent_genome_id, config.value.limits.genome_bytes);
-    try verifyPins(io, arena, config.value);
+    try learn_init.verifyPins(io, arena, config.value);
 
     const current_schema = std.mem.eql(u8, run.schema, eval.run_schema);
     var baseline_response: ?eval.PrimaryBaselineResponse = null;
@@ -340,28 +351,6 @@ fn activeMatchesRun(active: store_mod.ActiveRef, run: eval.RunRecord) bool {
         std.mem.eql(u8, active.transaction_id, run.parent_transaction_id);
 }
 
-fn initCommand(gpa: Allocator, arena: Allocator, io: Io, args: InitArgs, out: *Io.Writer) !void {
-    const config_bytes = try store_mod.readFileNoFollow(io, Io.Dir.cwd(), args.config, arena, store_mod.max_config_bytes);
-    const config = try std.json.parseFromSliceLeaky(store_mod.Config, arena, config_bytes, .{});
-    try store_mod.validateConfig(config);
-    try verifyPins(io, arena, config);
-    try learn_run.verifyTrialPower(io, arena, config, config.gate.default_candidates);
-    const parent = try store_mod.readFileNoFollow(io, Io.Dir.cwd(), args.parent, arena, config.limits.genome_bytes);
-    // Validate the genome BEFORE creating the store tree: a rejected parent
-    // must not leave a half-initialized .graff/learn behind (which used to
-    // wedge every later init with AlreadyInitialized).
-    if (!std.unicode.utf8ValidateSlice(parent) or
-        std.mem.indexOfScalar(u8, parent, 0) != null or
-        std.mem.trim(u8, parent, " \t\r\n").len == 0) return error.InvalidParentGenome;
-
-    var store = try store_mod.Store.initAt(io, Io.Dir.cwd());
-    defer store.deinit();
-    var lock = try store.acquireLock(0);
-    defer lock.deinit();
-    const genome_id = try store.bootstrap(gpa, arena, config_bytes, parent, util.unixMs(io));
-    try out.print("initialized learned agent '{s}'\nactive genome {s}\n", .{ config.agent_name, genome_id });
-}
-
 fn runCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.process.Environ.Map, args: RunArgs, out: *Io.Writer) !void {
     diagnostics.setDetailed(args.show_adapter_stderr);
     defer diagnostics.setDetailed(false);
@@ -371,14 +360,19 @@ fn runCommand(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.proc
     defer lock.deinit();
     const config = try store.loadConfig(arena);
     const active = try store.loadActive(arena, config);
-    try verifyPins(io, arena, config.value);
+    try learn_init.verifyPins(io, arena, config.value);
 
     if (args.auto and !config.value.auto.enabled) return error.AutoNotEnabled;
     if (args.auto and config.value.holdout_suite == null) return error.AutoRequiresHoldout;
     if (args.submit) try submit.preflight(io, arena, environ);
 
+    // The adapters see a scrubbed environment, so a `graff login` credential
+    // has to be handed to the names this configuration already declares.
+    var adapter_env = try credentials.withResolvedCredentials(gpa, arena, io, environ, config.value);
+    defer adapter_env.deinit();
+
     try out.writeAll("warning: mutator and evaluator execute as your OS user; scratch isolation is not a sandbox\n");
-    const result = try learn_run.execute(gpa, arena, io, environ, &store, config, active, .{
+    const result = try learn_run.execute(gpa, arena, io, &adapter_env, &store, config, active, .{
         .candidates = args.candidates,
         .repetitions = args.repetitions,
         .submit = args.submit,
@@ -410,7 +404,7 @@ fn statusCommand(arena: Allocator, io: Io, timeout_ms: u64, out: *Io.Writer, ver
     const active = try store.loadActive(arena, config);
     const pending = try checkpoint.load(arena, &store);
     if (verify_all) {
-        try verifyPins(io, arena, config.value);
+        try learn_init.verifyPins(io, arena, config.value);
         if (pending) |item| _ = try learn_run.restorePending(arena, io, &store, config, active, item);
     }
     const Status = struct {
@@ -521,7 +515,10 @@ pub fn command(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init,
     defer out.flush() catch {};
     switch (parsed) {
         .help => try out.writeAll(usage),
-        .init => |args| try initCommand(gpa, arena, io, args, out),
+        .init => |args| if (args.config == null)
+            try learn_init.zeroConfig(gpa, arena, io, init.environ_map, args, out)
+        else
+            try learn_init.fromPaths(gpa, arena, io, args, out),
         .run => |args| try runCommand(gpa, arena, io, init.environ_map, args, out),
         .status => |args| try statusCommand(arena, io, args.lock_timeout_ms, out, false),
         .submit => |args| try submitCommand(gpa, arena, io, init.environ_map, args, out),
