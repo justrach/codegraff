@@ -144,13 +144,17 @@ pub fn selectAnchor(parent: []const u8) ![]const u8 {
     return error.NoMutationAnchor;
 }
 
-pub fn selectProtected(arena: Allocator, parent: []const u8) ![]const []const u8 {
+pub fn selectProtected(arena: Allocator, parent: []const u8, anchor: []const u8) ![]const []const u8 {
     var list: std.ArrayList([]const u8) = .empty;
+    // The anchor is itself an invariant: the adapter rejects a clause that
+    // changes a protected substring's count, and a clause that reproduced the
+    // anchor would leave the next generation with an ambiguous target.
+    try list.append(arena, anchor);
     for (protected_candidates) |candidate| {
         if (std.mem.indexOf(u8, parent, candidate) == null) continue;
         try list.append(arena, candidate);
     }
-    if (list.items.len == 0) return error.NoProtectedInvariants;
+    if (list.items.len < 2) return error.NoProtectedInvariants;
     return list.items;
 }
 
@@ -348,7 +352,7 @@ pub fn prepare(gpa: Allocator, arena: Allocator, io: Io, options: Options, pass_
     const parent = try std.fmt.allocPrint(arena, "{s}\n", .{prompts.main_system_prompt});
     try writePrivateFile(io, kit, parent_file, parent);
     const anchor = try selectAnchor(parent);
-    const protected = try selectProtected(arena, parent);
+    const protected = try selectProtected(arena, parent, anchor);
 
     const arms = try buildArms(arena, options, anchor, protected);
     const arms_bytes = try store_mod.jsonBytes(gpa, arms);
@@ -395,8 +399,9 @@ test "the mutation anchor and protected invariants come from the live root promp
 
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const protected = try selectProtected(arena_state.allocator(), parent);
-    try std.testing.expect(protected.len >= 3);
+    const protected = try selectProtected(arena_state.allocator(), parent, anchor);
+    try std.testing.expect(protected.len >= 4);
+    try std.testing.expectEqualStrings(anchor, protected[0]);
     for (protected) |item| try std.testing.expect(std.mem.indexOf(u8, parent, item) != null);
 }
 
@@ -409,7 +414,7 @@ test "generated arms stay inside the adapter's validation envelope" {
         .provider = "codegraff",
         .model = "deepseek-v4-pro",
         .candidates = 4,
-    }, try selectAnchor(parent), try selectProtected(arena, parent));
+    }, try selectAnchor(parent), try selectProtected(arena, parent, try selectAnchor(parent)));
     try std.testing.expectEqual(@as(usize, 4), arms.arms.len);
     try std.testing.expect(arms.template_egress);
     try std.testing.expect(arms.maximum_changed_bytes >= 64 and arms.maximum_changed_bytes <= 4096);
