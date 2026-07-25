@@ -81,7 +81,6 @@ function AppSidebarControl({
   isSidebarVisible,
   isSettingsViewOpen,
   onExitSettings,
-  onToggleDesktopSidebar,
 }: AppSidebarControlProps) {
   const { toggleSidebar } = useSidebar();
   const controlPositionClass = isFullscreen ? "left-3" : "left-20";
@@ -107,10 +106,7 @@ function AppSidebarControl({
       size="icon-sm"
       aria-label={isSidebarVisible ? "Hide sidebar" : "Show sidebar"}
       className={`absolute top-2 z-20 ${controlPositionClass}`}
-      onClick={() => {
-        toggleSidebar();
-        onToggleDesktopSidebar();
-      }}
+      onClick={toggleSidebar}
     >
       <PanelLeftIcon strokeWidth={2} className="size-3.5" />
       <span className="sr-only">
@@ -262,9 +258,27 @@ function AppShell() {
     );
   }
 
+  // Sidebar visibility has exactly one owner: this state. SidebarProvider is
+  // controlled by it, so ⌘B (whose handler lives inside SidebarProvider) and
+  // the toggle button both run this. They used to be two separate states that
+  // only the button's onClick kept in sync, which meant ⌘B flipped the
+  // provider's half, left the resizable panel alone, and looked like a dead
+  // shortcut — while still calling preventDefault and eating the keystroke.
+  function handleSidebarOpenChange(nextIsVisible: boolean) {
+    runSidebarToggleAnimation();
+    setIsDesktopSidebarVisible(nextIsVisible);
+    if (!nextIsVisible) {
+      setIsSettingsViewOpen(false);
+    }
+  }
+
   return (
     <TooltipProvider>
-      <SidebarProvider className="min-h-screen bg-background">
+      <SidebarProvider
+        className="min-h-screen bg-background"
+        open={isDesktopSidebarVisible}
+        onOpenChange={handleSidebarOpenChange}
+      >
         <main className="app-shell relative flex h-screen w-full overflow-hidden bg-sidebar">
           <AppThemeToggle
             isDarkTheme={isDarkTheme}
@@ -276,16 +290,6 @@ function AppShell() {
             isSettingsViewOpen={isSettingsViewOpen}
             onExitSettings={() => {
               setIsSettingsViewOpen(false);
-            }}
-            onToggleDesktopSidebar={() => {
-              runSidebarToggleAnimation();
-              setIsDesktopSidebarVisible((current) => {
-                const nextIsVisible = !current;
-                if (!nextIsVisible) {
-                  setIsSettingsViewOpen(false);
-                }
-                return nextIsVisible;
-              });
             }}
           />
           <NewChatTrigger>

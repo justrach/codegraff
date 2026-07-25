@@ -112,7 +112,21 @@ export function PromptControlBar({
                   className="h-8 bg-popover dark:bg-popover"
                   autoFocus
                   onChange={(event) => onSearchQueryChange(event.target.value)}
-                  onKeyDown={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => {
+                    // Letters must reach this input instead of the menu's
+                    // typeahead — but swallowing *every* key also ate Escape
+                    // and the arrows, so once the search box took focus (it
+                    // autoFocuses) the picker could not be closed or navigated
+                    // from the keyboard at all.
+                    if (
+                      event.key === "Escape" ||
+                      event.key === "ArrowDown" ||
+                      event.key === "ArrowUp"
+                    ) {
+                      return;
+                    }
+                    event.stopPropagation();
+                  }}
                 />
               </div>
               <DropdownMenuGroup>
