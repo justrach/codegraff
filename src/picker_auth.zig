@@ -117,11 +117,7 @@ pub fn offerProviderAuth(
     use_color: bool,
     pick: PickerFn,
 ) !void {
-    var spec_idx: ?usize = null;
-    for (provider_specs, 0..) |spec, i| if (std.mem.eql(u8, spec.id, pid)) {
-        spec_idx = i;
-    };
-    const si = spec_idx orelse {
+    const spec = provider_mod.specFor(pid) orelse {
         try out.print("unknown provider '{s}' — see /model for the list\n", .{pid});
         try out.flush();
         return;
@@ -133,7 +129,7 @@ pub fn offerProviderAuth(
         if (can_login)
             try out.print("no key for {s} — /login {s} (OAuth) or /key {s} <key>\n", .{ pid, pid, pid })
         else
-            try out.print("no key for {s} — /key {s} <key> (or set {s})\n", .{ pid, pid, provider_specs[si].env_key });
+            try out.print("no key for {s} — /key {s} <key> (or set {s})\n", .{ pid, pid, spec.env_key });
         try out.flush();
         return;
     }
@@ -203,16 +199,15 @@ pub fn offerProviderAuth(
             return;
         }
         const dup = arena.dupe(u8, key) catch key;
-        keys.values[si] = dup;
         const saved = storeKey(root.io, root.gpa, arena, root.home, pid, dup);
-        keys.sources[si] = if (saved) .stored else .session;
+        _ = keys.set(pid, dup, if (saved) .stored else .session);
         if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, root.home, dup);
         try out.print("\xe2\x9c\x93 {s} key set (live{s})\n", .{ pid, if (saved) " + Keychain" else "" });
     }
 
     // Auth done — switch now if the key/login took, else keep the current model.
     const selected_model = if (default_selection and std.mem.eql(u8, pid, "codex"))
-        pricing.providerDefaultModel(pid, provider_specs[si].default_model)
+        pricing.providerDefaultModel(pid, spec.default_model)
     else
         model;
     const provider = keys.providerById(pid, selected_model) catch {

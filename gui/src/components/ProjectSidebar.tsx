@@ -17,6 +17,7 @@ import {
 } from "../hooks/useSession";
 import { formatRelativeTimestamp } from "../utils/time";
 import { handleWindowDragStart } from "../utils/window";
+import { NewChatTrigger } from "./NewChatTrigger";
 import { ProjectSidebarActions } from "./ProjectSidebarActions";
 import { SidebarArchiveAction } from "./SidebarArchiveAction";
 import { SidebarItemActionsMenu } from "./SidebarItemActionsMenu";
@@ -251,9 +252,18 @@ export function ProjectSidebar({
 
           <SidebarGroupContent>
             {savedWorkspaces.length === 0 ? (
-              <p className="px-2 py-1 text-xs font-medium text-sidebar-foreground/60">
-                No workspaces yet
-              </p>
+              <div className="px-2 py-1">
+                <p className="text-xs font-medium text-sidebar-foreground/60">
+                  No workspaces yet
+                </p>
+                <button
+                  type="button"
+                  className="mt-1 rounded-sm text-xs font-medium text-sidebar-foreground/80 underline-offset-2 hover:text-sidebar-foreground hover:underline focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none"
+                  onClick={() => void handleOpenWorkspacePicker()}
+                >
+                  Open a project
+                </button>
+              </div>
             ) : (
               <SidebarMenu>
                 {savedWorkspaces.map((workspace) => (
@@ -300,9 +310,23 @@ export function ProjectSidebar({
 
           <SidebarGroupContent>
             {visibleManagedChats.length === 0 ? (
-              <p className="px-2 py-1 text-xs font-medium text-sidebar-foreground/60">
-                No chats yet
-              </p>
+              <div className="px-2 py-1">
+                <p className="text-xs font-medium text-sidebar-foreground/60">
+                  No chats yet
+                </p>
+                <NewChatTrigger>
+                  {({ isBusy, openNewChat }) => (
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      className="mt-1 rounded-sm text-xs font-medium text-sidebar-foreground/80 underline-offset-2 hover:text-sidebar-foreground hover:underline focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none disabled:opacity-50"
+                      onClick={openNewChat}
+                    >
+                      Start a new chat
+                    </button>
+                  )}
+                </NewChatTrigger>
+              </div>
             ) : (
               <SidebarMenu>
                 {visibleManagedChats.map((chatWorkspace) => {

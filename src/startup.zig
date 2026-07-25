@@ -34,6 +34,9 @@ const oauth = @import("oauth.zig");
 const pricing = @import("pricing.zig");
 const models_cache = @import("models_cache.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
+const catalog_selection = @import("catalog_selection.zig");
+const router_config = @import("router_config.zig");
+const router_catalog = @import("router_catalog.zig");
 const subagent_selection = @import("subagent_selection.zig");
 const serde = @import("serde.zig");
 const skills = @import("skills.zig");
@@ -50,10 +53,7 @@ pub const ResolvedKeys = struct {
 };
 
 fn explicitProvider(model_flag: ?[]const u8) ?[]const u8 {
-    const query = model_flag orelse return null;
-    for (provider_mod.provider_specs) |spec|
-        if (std.mem.eql(u8, spec.id, query)) return spec.id;
-    return null;
+    return catalog_selection.explicitProvider(model_flag orelse return null);
 }
 
 /// Whether one stored credential can affect an explicit startup selection.
@@ -74,46 +74,11 @@ fn hasSelectiveStoredKeyScope(model_flag: ?[]const u8) bool {
 
 fn startupStoredKeyScope(model_flag: ?[]const u8, selective: bool) keys_cli.StoredKeyScope {
     if (!selective) return .all;
+    if (explicitProvider(model_flag)) |id| return .{ .provider = id };
     var mask: [provider_mod.provider_specs.len]bool = @splat(false);
     for (provider_mod.provider_specs, 0..) |spec, i|
         mask[i] = storedKeyMayAffectSelection(spec.id, model_flag);
     return .{ .mask = mask };
-}
-
-fn startupNeedsCodexCatalog(keys: provider_mod.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) bool {
-    if (keys.get("codex") == null) return false;
-    if (model_flag) |query| {
-        for (provider_mod.provider_specs) |spec| if (std.mem.eql(u8, spec.id, query))
-            return std.mem.eql(u8, spec.id, "codex");
-        // A free-form query may name an account-only rollout.
-        return true;
-    }
-    if (saved) |selection| {
-        if (std.mem.eql(u8, selection.pid, "codex")) return true;
-        if (pricing.providerModelInTable(selection.pid, selection.model) and keys.get(selection.pid) != null) return false;
-        // A stale/keyless preference may fall through to Codex.
-        return true;
-    }
-    const fallback = keys.defaultProvider() catch return false;
-    return std.mem.eql(u8, fallback.id, "codex");
-}
-
-fn startupNeedsKimiCatalog(keys: provider_mod.Keys, model_flag: ?[]const u8, saved: ?serde.SavedModel) bool {
-    if (keys.get("kimi") == null) return false;
-    if (model_flag) |query| {
-        if (explicitProvider(query)) |id| return std.mem.eql(u8, id, "kimi");
-        if (pricing.modelInTable(query)) return pricing.providerModelInTable("kimi", query);
-        // A free-form query may name an account-only rollout.
-        return true;
-    }
-    if (saved) |selection| {
-        if (std.mem.eql(u8, selection.pid, "kimi")) return true;
-        if (pricing.providerModelInTable(selection.pid, selection.model) and keys.get(selection.pid) != null) return false;
-        // A stale/keyless preference may fall through to Kimi.
-        return true;
-    }
-    const fallback = keys.defaultProvider() catch return false;
-    return std.mem.eql(u8, fallback.id, "kimi");
 }
 
 pub const resolveSubagentProvider = subagent_selection.resolveSubagentProvider;
@@ -139,22 +104,22 @@ test "Codex catalog loads at startup only when selection can observe it" {
     }
     keys.codex_account = "account";
 
-    try std.testing.expect(!startupNeedsCodexCatalog(keys, "deepseek", null));
-    try std.testing.expect(startupNeedsCodexCatalog(keys, "codex", null));
-    try std.testing.expect(startupNeedsCodexCatalog(keys, "future-account-rollout", null));
-    try std.testing.expect(!startupNeedsCodexCatalog(keys, null, .{ .pid = "deepseek", .model = "deepseek-v4-pro" }));
-    try std.testing.expect(!startupNeedsCodexCatalog(keys, null, null));
+    try std.testing.expect(!catalog_selection.startupMayUse(keys, "codex", "deepseek", null));
+    try std.testing.expect(catalog_selection.startupMayUse(keys, "codex", "codex", null));
+    try std.testing.expect(catalog_selection.startupMayUse(keys, "codex", "future-account-rollout", null));
+    try std.testing.expect(!catalog_selection.startupMayUse(keys, "codex", null, .{ .pid = "deepseek", .model = "deepseek-v4-pro" }));
+    try std.testing.expect(!catalog_selection.startupMayUse(keys, "codex", null, null));
 
     for (provider_mod.provider_specs, &keys.values) |spec, *value| {
         if (std.mem.eql(u8, spec.id, "deepseek")) value.* = null;
     }
-    try std.testing.expect(startupNeedsCodexCatalog(keys, null, null));
-    try std.testing.expect(startupNeedsCodexCatalog(keys, null, .{ .pid = "deepseek", .model = "deepseek-v4-pro" }));
+    try std.testing.expect(catalog_selection.startupMayUse(keys, "codex", null, null));
+    try std.testing.expect(catalog_selection.startupMayUse(keys, "codex", null, .{ .pid = "deepseek", .model = "deepseek-v4-pro" }));
 
     for (provider_mod.provider_specs, &keys.values) |spec, *value| {
         if (std.mem.eql(u8, spec.id, "codex")) value.* = null;
     }
-    try std.testing.expect(!startupNeedsCodexCatalog(keys, "codex", null));
+    try std.testing.expect(!catalog_selection.startupMayUse(keys, "codex", "codex", null));
 }
 
 test "Kimi catalog loads at startup only when selection can observe it" {
@@ -162,12 +127,12 @@ test "Kimi catalog loads at startup only when selection can observe it" {
     for (provider_mod.provider_specs, &keys.values) |spec, *value| {
         if (std.mem.eql(u8, spec.id, "kimi") or std.mem.eql(u8, spec.id, "codegraff")) value.* = "token";
     }
-    try std.testing.expect(!startupNeedsKimiCatalog(keys, "codegraff", null));
-    try std.testing.expect(startupNeedsKimiCatalog(keys, "kimi", null));
-    try std.testing.expect(startupNeedsKimiCatalog(keys, "k3", null));
-    try std.testing.expect(startupNeedsKimiCatalog(keys, "future-kimi-rollout", null));
-    try std.testing.expect(!startupNeedsKimiCatalog(keys, null, .{ .pid = "codegraff", .model = "deepseek-v4-pro" }));
-    try std.testing.expect(startupNeedsKimiCatalog(keys, null, .{ .pid = "kimi", .model = "k3" }));
+    try std.testing.expect(!catalog_selection.startupMayUse(keys, "kimi", "codegraff", null));
+    try std.testing.expect(catalog_selection.startupMayUse(keys, "kimi", "kimi", null));
+    try std.testing.expect(catalog_selection.startupMayUse(keys, "kimi", "k3", null));
+    try std.testing.expect(catalog_selection.startupMayUse(keys, "kimi", "future-kimi-rollout", null));
+    try std.testing.expect(!catalog_selection.startupMayUse(keys, "kimi", null, .{ .pid = "codegraff", .model = "deepseek-v4-pro" }));
+    try std.testing.expect(catalog_selection.startupMayUse(keys, "kimi", null, .{ .pid = "kimi", .model = "k3" }));
 }
 
 /// Resolves API keys/credentials (env vars → codegraff/codex/kimi on-disk
@@ -182,6 +147,10 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         value.* = environ_map.get(spec.env_key);
         source.* = if (value.* != null) .environment else .none;
+    }
+    if (provider_mod.additional_router) |spec| {
+        keys.router_value = environ_map.get(spec.env_key);
+        keys.router_source = if (keys.router_value != null) .environment else .none;
     }
     // Codegraff "login": if CODEGRAFF_API_KEY isn't set, pick up a key from
     // `harness login codegraff` (~/.simple-harness-codegraff.json) or graff's
@@ -259,10 +228,11 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     // Dynamic Codex discovery is observable only when startup may select
     // Codex. Explicit/saved non-Codex launches defer the version subprocess,
     // native-cache parse, and possible refresh until a model surface needs it.
-    if (startupNeedsCodexCatalog(keys, model_flag, saved_model))
+    if (catalog_selection.startupMayUse(keys, "codex", model_flag, saved_model))
         model_catalog.ensure(io, gpa, arena, home, keys.get("codex") orelse "", keys.codex_account);
-    if (startupNeedsKimiCatalog(keys, model_flag, saved_model))
+    if (catalog_selection.startupMayUse(keys, "kimi", model_flag, saved_model))
         kimi_catalog.ensure(io, gpa, arena, home, keys.get("kimi") orelse "");
+    router_catalog.ensureForStartup(io, gpa, arena, home, keys, model_flag, saved_model);
     if (home.len != 0) {
         // Apply the independent models.dev price/context overlay after routing
         // discovery. Provider-specific Codex windows remain authoritative.
@@ -281,20 +251,20 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     var preferred_provider: ?[]const u8 = null;
     // `--model <name|provider>` pins the startup model (same resolution as /model).
     if (model_flag) |mname| pick: {
-        for (provider_mod.provider_specs) |spec| if (std.mem.eql(u8, spec.id, mname)) {
+        if (provider_mod.specFor(mname)) |spec| {
             const model = pricing.providerDefaultModel(spec.id, spec.default_model);
             if (keys.providerById(spec.id, model)) |p| {
                 default_provider = p;
                 break :pick;
             } else |_| std.process.fatal("no key/login for provider '{s}' (--model)", .{mname});
-        };
+        }
         const nm = pricing.resolveModelName(keys, mname) orelse std.process.fatal("unknown --model '{s}' — run `graff models refresh` or see /models", .{mname});
         default_provider = keys.providerFor(nm) catch {
             // #294: name the credential that actually needs repair. A Codex-only
             // model with an expired ~/.codex/auth.json used to be rerouted to the
             // gateway and surface as a CodeGraff error; now it fails here, so the
             // message must point at the right login rather than "see /models".
-            var pbuf: [provider_mod.provider_specs.len][]const u8 = undefined;
+            var pbuf: [provider_mod.provider_specs.len + 1][]const u8 = undefined;
             const serving = provider_mod.catalogProvidersFor(&pbuf, nm);
             if (serving.len > 0) std.process.fatal(
                 "'{s}' is served by {s}, which has no valid credential — run `graff login {s}` or `graff key set {s} <key>`",
@@ -318,11 +288,9 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
             // A rollout may remove only this model while the provider login is
             // still healthy. Prefer that provider's current dynamic default
             // before crossing provider/account boundaries.
-            for (provider_mod.provider_specs) |spec| {
-                if (!std.mem.eql(u8, spec.id, saved.pid)) continue;
+            if (provider_mod.specFor(saved.pid)) |spec| {
                 const replacement = pricing.providerDefaultModel(spec.id, spec.default_model);
                 if (keys.providerById(spec.id, replacement)) |p| default_provider = p else |_| {}
-                break;
             }
         }
     }
@@ -415,6 +383,8 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         try hw.interface.flush();
         return true;
     }
+    router_config.load(io, arena) catch |err|
+        std.process.fatal("invalid {s}: {s}", .{ router_config.path, @errorName(err) });
 
     // `harness key set <provider> <key>` / `harness key list`: safe key store
     // (macOS Keychain, else a 0600 file). Exits after.
@@ -524,6 +494,10 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         const codex_home = init.environ_map.get("CODEX_HOME") orelse
             (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
         const codex_auth = oauth.loadCodexAuthFrom(io, arena, codex_home);
+        const refreshing = flags.positionals.items.len > 1 and
+            (std.mem.eql(u8, flags.positionals.items[1], "refresh") or
+                std.mem.eql(u8, flags.positionals.items[1], "--refresh") or
+                std.mem.eql(u8, flags.positionals.items[1], "update"));
         models_cache.loadCodexCatalog(
             io,
             gpa,
@@ -532,20 +506,35 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             codex_home,
             if (codex_auth) |auth| auth.token else "",
             if (codex_auth) |auth| auth.account else "",
-            flags.positionals.items.len > 1 and
-                (std.mem.eql(u8, flags.positionals.items[1], "refresh") or
-                    std.mem.eql(u8, flags.positionals.items[1], "--refresh") or
-                    std.mem.eql(u8, flags.positionals.items[1], "update")),
+            refreshing,
         );
         const kimi_token = init.environ_map.get("KIMI_API_KEY") orelse oauth.loadKimiOAuth(io, gpa, arena, home, false, null) orelse "";
         _ = kimi_catalog.load(io, gpa, arena, home, kimi_token);
+        var router_keys: provider_mod.Keys = .{ .values = @splat(null) };
+        for (provider_mod.provider_specs, &router_keys.values) |spec, *value| {
+            if (spec.catalog != .openai) continue;
+            const login_key = if (spec.login == .codegraff_device) oauth.loadCodegraffKey(io, arena, home) else null;
+            value.* = init.environ_map.get(spec.env_key) orelse
+                login_key orelse keys_cli.loadStoredKey(io, arena, home, spec.id);
+        }
+        if (provider_mod.additional_router) |spec| {
+            router_keys.router_value = init.environ_map.get(spec.env_key) orelse
+                keys_cli.loadStoredKey(io, arena, home, spec.id);
+            router_keys.router_source = if (router_keys.router_value != null) .stored else .none;
+        }
+        router_catalog.loadAll(io, gpa, arena, home, router_keys, refreshing);
         try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]);
         return true;
     }
 
-    // `--schema`: print the machine-readable interface and exit. No keys,
-    // network, or MCP — so it works anywhere (CI codegen calls this).
+    // `--schema`: print the machine-readable interface and exit. Still no keys,
+    // network, or MCP — so it works anywhere (CI codegen calls this). The one
+    // reads are router catalog caches a normal run already wrote: the GUI
+    // builds its model picker from this output, so without it the picker shows
+    // a release-old snapshot of a list the gateway changes on its own schedule.
+    // No cache (CI, fresh install) → the baked table, byte-identical to before.
     if (flags.schema_flag) {
+        router_catalog.loadCachedAll(io, arena, keys_cli.homeEnv(init.environ_map) orelse "");
         var sbuf: [8 * 1024]u8 = undefined;
         var sw = Io.File.stdout().writer(io, &sbuf);
         try schema.emitSchema(&sw.interface);

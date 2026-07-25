@@ -2,7 +2,7 @@
 //! catalog, the per-provider tool-array renderers (anthropic/openai/responses),
 //! and emitSchema (the --schema / `graff serve` /v1/schema document). Split out
 //! of main.zig (#123). Back-imports main for Provider (.Kind) and the
-//! provider_specs catalog; pulls model_table straight from pricing.zig. main
+//! provider catalog and the active model table. main
 //! re-exports emitSchema + schema_version so serve.zig stays untouched.
 
 const std = @import("std");
@@ -12,13 +12,11 @@ const Allocator = std.mem.Allocator;
 
 const mcp = @import("mcp.zig");
 const pricing = @import("pricing.zig");
-const model_table = pricing.model_table;
 const learn_store = @import("learn_store.zig");
 
 const root = @import("main.zig");
 const provider_mod = @import("provider.zig");
 const Provider = provider_mod.Provider;
-const provider_specs = provider_mod.provider_specs;
 
 /// Documentation of the `--json` stdio protocol, embedded verbatim in
 /// `--schema` output so SDK generators/users know the request/event contract.
@@ -390,28 +388,14 @@ pub const schema_version = "0.8"; // #276 P0-3: subagent gained run_in_backgroun
 /// Human-facing provider name for the `--schema` providers array (consumed by
 /// the GUI settings page so its provider list stays tied to the harness).
 fn providerDisplayName(id: []const u8) []const u8 {
-    const names = .{
-        .{ "codegraff", "Codegraff" },   .{ "anthropic", "Anthropic" },
-        .{ "deepseek", "DeepSeek" },     .{ "openai", "OpenAI" },
-        .{ "minimax", "MiniMax" },       .{ "xiaomi", "Xiaomi" },
-        .{ "kimi", "Kimi" },             .{ "xai", "xAI" },
-        .{ "moonshot", "Moonshot" },     .{ "zai", "Z.AI" },
-        .{ "codex", "Codex (ChatGPT)" },
-    };
-    inline for (names) |n| {
-        if (std.mem.eql(u8, id, n[0])) return n[1];
-    }
-    return id;
+    return if (provider_mod.specFor(id)) |spec| spec.display_name else id;
 }
 
 /// How a provider's credential is acquired, for the GUI settings page:
 /// `codegraff`/`codex` use device/OAuth login flows; everything else is a
 /// drop-in API key (env var or `graff key set <id>`).
 fn providerLoginKind(id: []const u8) []const u8 {
-    if (std.mem.eql(u8, id, "codegraff")) return "codegraff_device";
-    if (std.mem.eql(u8, id, "codex")) return "codex_device";
-    if (std.mem.eql(u8, id, "kimi")) return "kimi_device";
-    return "api_key";
+    return if (provider_mod.specFor(id)) |spec| @tagName(spec.login) else "api_key";
 }
 
 /// Whether a model exposes a user-selectable reasoning effort. Kimi maps the
@@ -425,8 +409,7 @@ pub fn providerTakesEffort(kind: Provider.Kind, id: []const u8, model: []const u
     if (std.mem.startsWith(u8, model, "grok")) return false;
     return kind == .responses or
         (std.mem.eql(u8, id, "kimi") and pricing.kimiSupportsThinking(model)) or
-        std.mem.eql(u8, id, "codegraff") or
-        std.mem.eql(u8, id, "deepseek");
+        (if (provider_mod.specFor(id)) |spec| spec.takes_effort else false);
 }
 
 pub fn emitSchema(w: *Io.Writer) !void {
@@ -438,12 +421,13 @@ pub fn emitSchema(w: *Io.Writer) !void {
     try s.write(schema_version);
     try s.objectField("providers");
     try s.beginArray();
-    for (provider_specs) |p| {
+    for (0..provider_mod.specCount()) |i| {
+        const p = provider_mod.specAt(i).?;
         try s.beginObject();
         try s.objectField("id");
         try s.write(p.id);
         try s.objectField("name");
-        try s.write(providerDisplayName(p.id));
+        try s.write(p.display_name);
         try s.objectField("kind");
         try s.write(@tagName(p.kind));
         try s.objectField("auth");
@@ -451,10 +435,10 @@ pub fn emitSchema(w: *Io.Writer) !void {
         try s.objectField("env_key");
         try s.write(p.env_key);
         try s.objectField("login");
-        try s.write(providerLoginKind(p.id));
+        try s.write(@tagName(p.login));
         try s.objectField("default_model");
         try s.write(p.default_model);
-        if (std.mem.eql(u8, p.id, "kimi")) {
+        if (p.catalog == .kimi) {
             try s.objectField("protocol_source");
             try s.write("live_model_catalog");
             try s.objectField("anthropic_auth");
@@ -465,7 +449,7 @@ pub fn emitSchema(w: *Io.Writer) !void {
     try s.endArray();
     try s.objectField("models");
     try s.beginArray();
-    for (model_table) |m| {
+    for (pricing.models()) |m| {
         try s.beginObject();
         try s.objectField("provider");
         try s.write(m.provider);
@@ -478,8 +462,10 @@ pub fn emitSchema(w: *Io.Writer) !void {
     try s.endArray();
     try s.objectField("dynamic_model_providers");
     try s.beginArray();
-    try s.write("codex");
-    try s.write("kimi");
+    for (0..provider_mod.specCount()) |i| {
+        const p = provider_mod.specAt(i).?;
+        if (p.catalog != .baked) try s.write(p.id);
+    }
     try s.endArray();
     try s.objectField("tools");
     try s.beginArray();

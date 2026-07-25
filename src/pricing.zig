@@ -329,7 +329,7 @@ pub fn providerDefaultModel(provider_id: []const u8, fallback: []const u8) []con
     return fallback;
 }
 
-fn activateProviderModels(arena: std.mem.Allocator, provider_id: []const u8, discovered: []const ModelInfo) bool {
+pub fn activateProviderModels(arena: std.mem.Allocator, provider_id: []const u8, discovered: []const ModelInfo) bool {
     if (discovered.len == 0) return false;
     var retained: usize = 0;
     for (active_model_table) |m| if (!std.mem.eql(u8, m.provider, provider_id)) {
@@ -516,10 +516,8 @@ test "baked Codex catalog is an offline fallback, not rollout data" {
     try std.testing.expect(providerModelInTable("openai", "gpt-5.6"));
 }
 
-test "every provider default_model is catalog-present for that provider" {
-    // Guards the codex/openai gpt-5.6 default flip (and any future one): a
-    // provider whose default_model isn't in model_table would boot on a model
-    // contextFor()/routing can't resolve.
+test "every built-in provider default_model is catalog-present for that provider" {
+    // Workspace routers are runtime configuration and are tested separately.
     const specs = @import("provider.zig").provider_specs;
     for (specs) |spec|
         try std.testing.expect(providerModelInTable(spec.id, spec.default_model));

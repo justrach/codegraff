@@ -12,7 +12,6 @@ const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
 const agent_mod = @import("agent.zig");
 const util = @import("util.zig");
-const provider_specs = provider_mod.provider_specs;
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const utf8Prefix = util.utf8Prefix;
@@ -68,7 +67,7 @@ fn providerModelCount(provider_id: []const u8) usize {
 
 fn showModelsHealth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer) !void {
     root.ensureStoredKeys(keys);
-    root.ensureModelCatalog(keys.*);
+    providers.ensureModelQueryCatalogs(root, keys.*, "");
     const saved = serde.loadModel(root.io, arena, root.home);
     try out.print("{s}model health{s}\n", .{ style.bold, style.reset });
     try out.print("active: {s} via {s} · {d}k ctx · compact@{d}k{s}{s}\n", .{
@@ -106,7 +105,8 @@ fn showModelsHealth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer
     }
 
     try out.writeAll("providers (credential values are never shown):\n");
-    for (provider_specs) |spec| {
+    for (0..provider_mod.specCount()) |i| {
+        const spec = provider_mod.specAt(i).?;
         const available = keys.get(spec.id) != null;
         const source = keys.source(spec.id);
         try out.print("  {s} {s:<11} {s:<12} {d:>2} model(s){s}\n", .{
@@ -328,14 +328,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         // server is down. Only probe when the user actually uses lmstudio (key set
         // or it's the current provider) so we never make a stray localhost hit.
         if (keys.get("lmstudio") != null or std.mem.eql(u8, root.provider.id, "lmstudio")) lmstudio: {
-            var base: []const u8 = "";
-            for (provider_specs) |sp| {
-                if (std.mem.eql(u8, sp.id, "lmstudio")) {
-                    base = sp.url;
-                    break;
-                }
-            }
-            if (base.len == 0) break :lmstudio;
+            const base = (provider_mod.specFor("lmstudio") orelse break :lmstudio).url;
             const suffix = "/chat/completions";
             const root_url = if (std.mem.endsWith(u8, base, suffix)) base[0 .. base.len - suffix.len] else base;
             const url = std.fmt.allocPrint(arena, "{s}/models", .{root_url}) catch break :lmstudio;

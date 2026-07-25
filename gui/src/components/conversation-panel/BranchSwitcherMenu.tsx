@@ -38,7 +38,7 @@ export function BranchSwitcherMenu({
             aria-label="Choose git branch"
             disabled={isBusy}
             className={cn(
-              "-ml-2 h-auto gap-1 rounded-sm px-1.5 py-0.5 text-xs leading-none font-medium text-foreground hover:text-foreground",
+              "-ml-2 h-auto min-w-0 shrink gap-1 rounded-sm px-1.5 py-0.5 text-xs leading-none font-medium text-foreground hover:text-foreground",
               triggerClassName,
             )}
           />

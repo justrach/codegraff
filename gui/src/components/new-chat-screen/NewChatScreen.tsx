@@ -221,12 +221,12 @@ function NewChatScreenContent({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-8">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-8">
       <div
         className={
           hasCommandResults
             ? "mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col gap-5"
-            : "mx-auto flex w-full max-w-4xl flex-1 flex-col items-center justify-center gap-6"
+            : "mx-auto flex w-full max-w-4xl flex-1 flex-col items-center justify-center-safe gap-6"
         }
       >
         {!hasCommandResults ? (

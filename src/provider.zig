@@ -34,52 +34,77 @@ fn contextWindowFor(provider_id: []const u8, model: []const u8) u64 {
     return contextFor(provider_id, model);
 }
 
-/// Wire format + auth style + endpoint per provider. Base URLs and env-var
-/// names from models.dev/api.json (snapshot 2026-06-10); the anthropic and
-/// openai bases are the canonical ones (models.dev lists them as null).
-/// minimax serves the Anthropic Messages format with bearer auth. Order is
-/// the default-provider priority at startup, and the tiebreak when one model
-/// name is served by several providers.
-const ProviderSpec = struct {
+/// One built-in or workspace-configured provider. Built-ins live in
+/// provider_specs; one additional OpenAI-compatible router may be loaded from
+/// `.graff/.config.router` at startup.
+pub const ProviderSpec = struct {
+    pub const LoginKind = enum { api_key, codegraff_device, codex_device, kimi_device };
+    pub const CatalogKind = enum { baked, codex, kimi, openai };
+
     id: []const u8,
+    display_name: []const u8,
     kind: Provider.Kind, // wire format
     auth: Provider.Auth, // header style
     url: []const u8,
     env_key: []const u8,
     default_model: []const u8,
+    login: LoginKind = .api_key,
+    catalog: CatalogKind = .baked,
+    models_url: []const u8 = "",
+    takes_effort: bool = false,
 };
 
 pub const provider_specs = [_]ProviderSpec{
-    .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "https://api.anthropic.com/v1/messages", .env_key = "ANTHROPIC_API_KEY", .default_model = "claude-opus-4-8" },
-    .{ .id = "codegraff", .kind = .openai, .auth = .bearer, .url = "https://gateway.codegraff.com/v1/chat/completions", .env_key = "CODEGRAFF_API_KEY", .default_model = "deepseek-v4-pro" },
-    .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "https://api.deepseek.com/chat/completions", .env_key = "DEEPSEEK_API_KEY", .default_model = "deepseek-v4-pro" },
-    .{ .id = "openai", .kind = .openai, .auth = .bearer, .url = "https://api.openai.com/v1/chat/completions", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
-    .{ .id = "minimax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
-    .{ .id = "xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
+    .{ .id = "anthropic", .display_name = "Anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "https://api.anthropic.com/v1/messages", .env_key = "ANTHROPIC_API_KEY", .default_model = "claude-opus-4-8" },
+    .{ .id = "codegraff", .display_name = "Codegraff", .kind = .openai, .auth = .bearer, .url = "https://gateway.codegraff.com/v1/chat/completions", .env_key = "CODEGRAFF_API_KEY", .default_model = "deepseek-v4-pro", .login = .codegraff_device, .catalog = .openai, .models_url = "https://gateway.codegraff.com/v1/models", .takes_effort = true },
+    .{ .id = "deepseek", .display_name = "DeepSeek", .kind = .openai, .auth = .bearer, .url = "https://api.deepseek.com/chat/completions", .env_key = "DEEPSEEK_API_KEY", .default_model = "deepseek-v4-pro", .takes_effort = true },
+    .{ .id = "openai", .display_name = "OpenAI", .kind = .openai, .auth = .bearer, .url = "https://api.openai.com/v1/chat/completions", .env_key = "OPENAI_API_KEY", .default_model = "gpt-5.6" },
+    .{ .id = "minimax", .display_name = "MiniMax", .kind = .anthropic, .auth = .bearer, .url = "https://api.minimax.io/anthropic/v1/messages", .env_key = "MINIMAX_API_KEY", .default_model = "MiniMax-M3" },
+    .{ .id = "xiaomi", .display_name = "Xiaomi", .kind = .openai, .auth = .bearer, .url = "https://api.xiaomimimo.com/v1/chat/completions", .env_key = "XIAOMI_API_KEY", .default_model = "mimo-v2.5-pro" },
     // Kimi Code publishes the protocol per model. Missing/`kimi` is the native
     // chat-completions wire; a live `protocol: anthropic` row is switched in
     // Keys.build to the beta Messages endpoint + x-api-key, matching kimi-code.
-    .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = kimi_native_url, .env_key = "KIMI_API_KEY", .default_model = "k3" },
+    .{ .id = "kimi", .display_name = "Kimi", .kind = .openai, .auth = .bearer, .url = kimi_native_url, .env_key = "KIMI_API_KEY", .default_model = "k3", .login = .kimi_device, .catalog = .kimi },
     // moonshot: the regular Kimi Open Platform (pay-as-you-go API key, not the
     // Coding plan). OpenAI-compatible; .cn host for China. kimi-latest tracks
     // the newest Kimi. Same /v1/models discovery applies if wired later.
-    .{ .id = "moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
-    .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
-    .{ .id = "zai", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
-    .{ .id = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
-    .{ .id = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro" },
+    .{ .id = "moonshot", .display_name = "Moonshot", .kind = .openai, .auth = .bearer, .url = "https://api.moonshot.ai/v1/chat/completions", .env_key = "MOONSHOT_API_KEY", .default_model = "kimi-latest" },
+    .{ .id = "xai", .display_name = "xAI", .kind = .openai, .auth = .bearer, .url = "https://api.x.ai/v1/chat/completions", .env_key = "XAI_API_KEY", .default_model = "grok-4.3" },
+    .{ .id = "zai", .display_name = "Z.AI", .kind = .openai, .auth = .bearer, .url = "https://api.z.ai/api/paas/v4/chat/completions", .env_key = "ZAI_API_KEY", .default_model = "glm-5.2" },
+    .{ .id = "fugu", .display_name = "fugu", .kind = .openai, .auth = .bearer, .url = "https://api.sakana.ai/v1/chat/completions", .env_key = "FUGU_API_KEY", .default_model = "fugu-ultra" },
+    .{ .id = "fireworks", .display_name = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro" },
     // mlx: a local model served by mlx-lm (`mlx_lm.server`) on Apple Silicon —
     // OpenAI-compatible, no real key (MLX_API_KEY=local just clears graff's boot gate).
-    .{ .id = "mlx", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:8080/v1/chat/completions", .env_key = "MLX_API_KEY", .default_model = "mlx-community/Qwen3.6-27B-OptiQ-4bit" },
+    .{ .id = "mlx", .display_name = "mlx", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:8080/v1/chat/completions", .env_key = "MLX_API_KEY", .default_model = "mlx-community/Qwen3.6-27B-OptiQ-4bit" },
     // lm-studio: the LM Studio app's local OpenAI-compatible server (default :1234).
     // Load a model in LM Studio, then `LMSTUDIO_API_KEY=local graff --model lmstudio`.
-    .{ .id = "lmstudio", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:1234/v1/chat/completions", .env_key = "LMSTUDIO_API_KEY", .default_model = "lmstudio" },
+    .{ .id = "lmstudio", .display_name = "lmstudio", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:1234/v1/chat/completions", .env_key = "LMSTUDIO_API_KEY", .default_model = "lmstudio" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
     // — it's the OAuth access token read from CODEX_HOME/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the
     // codegraff gateway key in ~/forge/.credentials.json.
-    .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.6-sol" },
+    .{ .id = "codex", .display_name = "Codex (ChatGPT)", .kind = .responses, .auth = .bearer, .url = "https://chatgpt.com/backend-api/codex/responses", .env_key = "CODEX_DISABLED", .default_model = "gpt-5.6-sol", .login = .codex_device, .catalog = .codex },
 };
+
+/// Optional workspace-local router loaded from `.graff/.config.router`.
+/// Its strings are owned by the process arena.
+pub var additional_router: ?ProviderSpec = null;
+
+pub fn specCount() usize {
+    return provider_specs.len + @intFromBool(additional_router != null);
+}
+
+pub fn specAt(index: usize) ?ProviderSpec {
+    if (index < provider_specs.len) return provider_specs[index];
+    if (index == provider_specs.len) return additional_router;
+    return null;
+}
+
+pub fn specFor(id: []const u8) ?ProviderSpec {
+    for (provider_specs) |spec| if (std.mem.eql(u8, spec.id, id)) return spec;
+    if (additional_router) |spec| if (std.mem.eql(u8, spec.id, id)) return spec;
+    return null;
+}
 
 pub const kimi_native_url = "https://api.kimi.com/coding/v1/chat/completions";
 pub const kimi_anthropic_url = "https://api.kimi.com/coding/v1/messages?beta=true";
@@ -153,7 +178,8 @@ pub const Provider = struct {
 /// expired ~/.codex/auth.json silently rerouted them to the gateway.
 pub fn catalogProvidersFor(buf: [][]const u8, model: []const u8) [][]const u8 {
     var n: usize = 0;
-    for (provider_specs) |spec| {
+    for (0..specCount()) |i| {
+        const spec = specAt(i).?;
         if (n >= buf.len) break;
         if (!pricing.providerModelInTable(spec.id, model)) continue;
         buf[n] = spec.id;
@@ -184,12 +210,16 @@ pub const Keys = struct {
 
     values: [provider_specs.len]?[]const u8,
     sources: [provider_specs.len]CredentialSource = @splat(.none),
+    router_value: ?[]const u8 = null,
+    router_source: CredentialSource = .none,
     codex_account: []const u8 = "", // ChatGPT account id for the codex provider
 
     pub fn get(keys: Keys, provider_id: []const u8) ?[]const u8 {
         for (provider_specs, keys.values) |spec, value| {
             if (std.mem.eql(u8, spec.id, provider_id)) return value;
         }
+        if (additional_router) |spec|
+            if (std.mem.eql(u8, spec.id, provider_id)) return keys.router_value;
         return null;
     }
 
@@ -197,7 +227,26 @@ pub const Keys = struct {
         for (provider_specs, keys.sources) |spec, source_value| {
             if (std.mem.eql(u8, spec.id, provider_id)) return source_value;
         }
+        if (additional_router) |spec|
+            if (std.mem.eql(u8, spec.id, provider_id)) return keys.router_source;
         return .none;
+    }
+
+    pub fn set(keys: *Keys, provider_id: []const u8, value: []const u8, source_value: CredentialSource) bool {
+        for (provider_specs, &keys.values, &keys.sources) |spec, *slot, *source_slot| {
+            if (!std.mem.eql(u8, spec.id, provider_id)) continue;
+            slot.* = value;
+            source_slot.* = source_value;
+            return true;
+        }
+        if (additional_router) |spec| {
+            if (std.mem.eql(u8, spec.id, provider_id)) {
+                keys.router_value = value;
+                keys.router_source = source_value;
+                return true;
+            }
+        }
+        return false;
     }
 
     pub fn build(keys: Keys, spec: ProviderSpec, key: []const u8, model: []const u8) Provider {
@@ -225,8 +274,9 @@ pub const Keys = struct {
         // otherwise block models the user can serve with their own key. Pass 1
         // skips the gateway (direct keys win); pass 2 lets it back in as fallback.
         for ([_]bool{ false, true }) |allow_gateway| {
-            for (provider_specs, keys.values) |spec, value| {
-                const key = value orelse continue;
+            for (0..specCount()) |i| {
+                const spec = specAt(i).?;
+                const key = keys.get(spec.id) orelse continue;
                 if (std.mem.eql(u8, spec.id, "codegraff") != allow_gateway) continue;
                 for (pricing.models()) |m| {
                     if (std.mem.eql(u8, m.provider, spec.id) and std.mem.eql(u8, m.name, model))
@@ -247,19 +297,17 @@ pub const Keys = struct {
         // which is what that fallback was always for ("any other unknown model").
         if (pricing.modelInTable(model)) return error.MissingKey;
         const fallback_id: []const u8 = if (std.mem.startsWith(u8, model, "claude")) "anthropic" else "codegraff";
-        for (provider_specs, keys.values) |spec, value| {
-            if (!std.mem.eql(u8, spec.id, fallback_id)) continue;
-            const key = value orelse break;
-            return keys.build(spec, key, model);
-        }
-        return error.MissingKey;
+        const spec = specFor(fallback_id) orelse return error.MissingKey;
+        const key = keys.get(fallback_id) orelse return error.MissingKey;
+        return keys.build(spec, key, model);
     }
 
     /// The startup default: the first provider (in spec order) with a key,
     /// on its default model.
     pub fn defaultProvider(keys: Keys) error{MissingKey}!Provider {
-        for (provider_specs, keys.values) |spec, value| {
-            const key = value orelse continue;
+        for (0..specCount()) |i| {
+            const spec = specAt(i).?;
+            const key = keys.get(spec.id) orelse continue;
             return keys.build(spec, key, pricing.providerDefaultModel(spec.id, spec.default_model));
         }
         return error.MissingKey;
@@ -268,9 +316,8 @@ pub const Keys = struct {
     /// Rebuild a provider from a saved session's (id, model). Falls back to
     /// model-based routing if the id is unknown.
     pub fn providerById(keys: Keys, id: []const u8, model: []const u8) error{MissingKey}!Provider {
-        for (provider_specs, keys.values) |spec, value| {
-            if (!std.mem.eql(u8, spec.id, id)) continue;
-            const key = value orelse return error.MissingKey;
+        if (specFor(id)) |spec| {
+            const key = keys.get(id) orelse return error.MissingKey;
             return keys.build(spec, key, model);
         }
         return keys.providerFor(model);
@@ -354,6 +401,44 @@ test "Keys.defaultProvider: first keyed provider on its default model" {
     try std.testing.expectEqualStrings("claude-opus-4-8", p.model);
     const none = Keys{ .values = @splat(null) };
     try std.testing.expectError(error.MissingKey, none.defaultProvider());
+}
+
+test "workspace router behaves like an additional provider" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const saved_router = additional_router;
+    const saved_models = pricing.active_model_table;
+    defer {
+        additional_router = saved_router;
+        pricing.active_model_table = saved_models;
+    }
+    additional_router = .{
+        .id = "openrouter",
+        .display_name = "OpenRouter",
+        .kind = .openai,
+        .auth = .bearer,
+        .url = "https://openrouter.ai/api/v1/chat/completions",
+        .env_key = "OPENROUTER_API_KEY",
+        .default_model = "anthropic/claude-sonnet-4",
+        .catalog = .openai,
+        .models_url = "https://openrouter.ai/api/v1/models",
+    };
+    const rows = [_]pricing.ModelInfo{
+        .{ .provider = "openrouter", .name = "anthropic/claude-sonnet-4", .context = 200_000 },
+    };
+    try std.testing.expect(pricing.activateProviderModels(arena_state.allocator(), "openrouter", &rows));
+
+    var keys: Keys = .{ .values = @splat(null) };
+    try std.testing.expect(keys.set("openrouter", "token", .session));
+    try std.testing.expectEqualStrings("token", keys.get("openrouter").?);
+    try std.testing.expectEqual(Keys.CredentialSource.session, keys.source("openrouter"));
+    const explicit = try keys.providerById("openrouter", "anthropic/claude-sonnet-4");
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/chat/completions", explicit.url);
+    try std.testing.expectEqualStrings("openrouter", (try keys.providerFor("anthropic/claude-sonnet-4")).id);
+    try std.testing.expectEqualStrings("openrouter", (try keys.defaultProvider()).id);
+    var ids: [provider_specs.len + 1][]const u8 = undefined;
+    const serving = catalogProvidersFor(&ids, "anthropic/claude-sonnet-4");
+    try std.testing.expectEqualStrings("openrouter", serving[0]);
 }
 
 test "Keys.build: g_codex_url_override rewires only the codex endpoint" {

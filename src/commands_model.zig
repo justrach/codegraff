@@ -16,7 +16,6 @@ const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
-const provider_specs = provider_mod.provider_specs;
 const storeKey = keys_cli.storeKey;
 const repl_glue = @import("repl_glue.zig");
 const saveThinkingSettings = repl_glue.saveThinkingSettings;
@@ -61,8 +60,7 @@ const visionCapable = vision.visionCapable;
 const grabClipboardImage = vision.grabClipboardImage;
 
 fn providerKnown(id: []const u8) bool {
-    for (provider_specs) |spec| if (std.mem.eql(u8, spec.id, id)) return true;
-    return false;
+    return provider_mod.specFor(id) != null;
 }
 
 fn showFallback(root: *Agent, arena: Allocator, out: *Io.Writer) !void {
@@ -142,7 +140,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             }
             try out.print("current model: {s}{s}{s} via {s}\n", .{ style.accent, root.provider.model, style.reset, root.provider.id });
             try out.writeAll("switch with /model <name> or /model <provider>:\n");
-            for (provider_specs) |spec| {
+            for (0..provider_mod.specCount()) |i| {
+                const spec = provider_mod.specAt(i).?;
                 const keyed = keys.get(spec.id) != null;
                 const default_model = pricing.providerDefaultModel(spec.id, spec.default_model);
                 try out.print("  {s} {s:<10}{s}  default {s}\n", .{
@@ -162,8 +161,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (std.mem.indexOfAny(u8, arg, " /\t")) |i| {
             const pid = arg[0..i];
             const mdl = std.mem.trim(u8, arg[i + 1 ..], " \t");
-            for (provider_specs) |spec| {
-                if (!std.mem.eql(u8, spec.id, pid) or mdl.len == 0) continue;
+            if (provider_mod.specFor(pid)) |spec| {
+                if (mdl.len == 0) return true;
                 if (!isLocalUrl(spec.url) and !pricing.providerModelInTable(pid, mdl)) {
                     try out.print("unknown model '{s}' for {s} — choose /model, or run `graff models refresh` first\n", .{ mdl, pid });
                     try out.flush();
@@ -180,8 +179,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         }
         // If the query names a provider (e.g. "openai"), switch to THAT
         // provider on its default model — not the priority router's pick.
-        for (provider_specs) |spec| {
-            if (!std.mem.eql(u8, spec.id, arg)) continue;
+        if (provider_mod.specFor(arg)) |spec| {
             // Local OpenAI-compatible servers (LM Studio :1234, mlx-lm :8080) serve a
             // live, user-loaded model set — list what's actually there instead of a
             // baked default. One loaded → switch straight to it; many → list to pick.
@@ -406,7 +404,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const rest = std.mem.trim(u8, line["/key".len..], " \t");
         if (rest.len == 0) { // show key status + how to add
             try out.writeAll("API keys (✓ = set via env / Keychain / login):\n");
-            for (provider_specs) |spec| {
+            for (0..provider_mod.specCount()) |i| {
+                const spec = provider_mod.specAt(i).?;
                 try out.print("  {s} {s:<10}  {s}\n", .{ if (keys.get(spec.id) != null) "✓" else "·", spec.id, spec.env_key });
             }
             try out.print("{s}add one:  /key <provider> <key>   (used now + saved to the macOS Keychain){s}\n", .{ style.dim, style.reset });
@@ -420,11 +419,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         };
         const pid = rest[0..sp];
         const key = std.mem.trim(u8, rest[sp + 1 ..], " \t");
-        var idx: ?usize = null;
-        for (provider_specs, 0..) |spec, i| if (std.mem.eql(u8, spec.id, pid)) {
-            idx = i;
-        };
-        if (idx == null) {
+        if (provider_mod.specFor(pid) == null) {
             try out.print("unknown provider '{s}' — see /model for the list\n", .{pid});
             try out.flush();
             return true;
@@ -434,11 +429,11 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return true;
         }
-        keys.values[idx.?] = arena.dupe(u8, key) catch key; // live, usable immediately
+        const live_key = arena.dupe(u8, key) catch key;
         const home = root.home;
         const saved = storeKey(root.io, root.gpa, arena, home, pid, key); // persist
-        keys.sources[idx.?] = if (saved) .stored else .session;
-        if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, home, keys.values[idx.?].?);
+        _ = keys.set(pid, live_key, if (saved) .stored else .session);
+        if (std.mem.eql(u8, pid, "kimi")) _ = kimi_catalog.load(root.io, root.gpa, arena, home, live_key);
         try out.print("✓ {s} key set (live{s}) — now: /model {s}\n", .{ pid, if (saved) " + Keychain" else "", pid });
         try out.flush();
         return true;
@@ -510,11 +505,11 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             };
         } else {
             // A pure API-key provider, or something unrecognized.
-            for (provider_specs) |spec| if (std.mem.eql(u8, spec.id, target)) {
+            if (provider_mod.specFor(target) != null) {
                 try out.print("{s} uses an API key, not a login \xe2\x80\x94 /key {s} <key>\n", .{ target, target });
                 try out.flush();
                 return true;
-            };
+            }
             try out.print("can't log into '{s}' \xe2\x80\x94 try /login codegraff | codex | kimi | xai (others: /key <provider> <key>)\n", .{target});
             try out.flush();
             return true;

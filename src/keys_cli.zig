@@ -166,6 +166,14 @@ pub const StoredKeyScope = union(enum) {
             .mask => |mask| mask[index],
         };
     }
+
+    pub fn includesRouter(scope: StoredKeyScope, provider_id: []const u8) bool {
+        return switch (scope) {
+            .all => true,
+            .provider => |id| std.mem.eql(u8, id, provider_id),
+            .mask => false,
+        };
+    }
 };
 
 test "StoredKeyScope selects all, one provider, or an exact mask" {
@@ -207,6 +215,12 @@ pub fn loadMissingStoredKeys(io: Io, gpa: Allocator, arena: Allocator, home: []c
             gpa.free(owned);
             if (value.* != null) source.* = .stored;
         }
+        if (provider_mod.additional_router) |spec| {
+            if (keys.router_value == null and scope.includesRouter(spec.id)) {
+                keys.router_value = loadStoredKey(io, arena, home, spec.id);
+                if (keys.router_value != null) keys.router_source = .stored;
+            }
+        }
         return;
     }
 
@@ -221,10 +235,20 @@ pub fn loadMissingStoredKeys(io: Io, gpa: Allocator, arena: Allocator, home: []c
         value.* = stored.string;
         source.* = .stored;
     }
+    if (provider_mod.additional_router) |spec| {
+        if (keys.router_value == null and scope.includesRouter(spec.id)) {
+            const stored = parsed.object.get(spec.id) orelse return;
+            if (stored == .string and stored.string.len > 0) {
+                keys.router_value = stored.string;
+                keys.router_source = .stored;
+            }
+        }
+    }
 }
 
 /// `harness key set <provider> <key>` / `harness key list` — manage the safe
-/// key store. Validates the provider id against provider_specs.
+/// key store. Validates the provider id against built-ins plus the optional
+/// workspace router.
 pub fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, args: []const []const u8) !void {
     var obuf: [4096]u8 = undefined;
     var ow = Io.File.stdout().writer(io, &obuf);
@@ -234,7 +258,8 @@ pub fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, ar
         var stored_keys: provider_mod.Keys = .{ .values = @splat(null) };
         loadMissingStoredKeys(io, gpa, arena, home, &stored_keys, .all);
         try out.writeAll("provider        env var               stored\n");
-        for (provider_specs) |spec| {
+        for (0..provider_mod.specCount()) |i| {
+            const spec = provider_mod.specAt(i).?;
             const stored = stored_keys.get(spec.id) != null;
             try out.print("  {s:<14}{s:<22}{s}\n", .{ spec.id, spec.env_key, if (stored) "yes" else "—" });
         }
@@ -249,11 +274,7 @@ pub fn keyCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, ar
         }
         const provider = args[1];
         const key = args[2];
-        var known = false;
-        for (provider_specs) |spec| {
-            if (std.mem.eql(u8, spec.id, provider)) known = true;
-        }
-        if (!known) {
+        if (provider_mod.specFor(provider) == null) {
             try out.print("unknown provider '{s}' — see /models for valid ids\n", .{provider});
             try out.flush();
             return;

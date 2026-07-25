@@ -2,7 +2,11 @@ import type {
   AgentsPayload,
   CommandDescriptor,
   CommandRunResult,
+  CompleteProviderAuthInput,
+  ProviderSummary,
   PromptSettings,
+  RemoveProviderInput,
+  StartProviderAuthInput,
   RuntimeStatus,
   SendPromptInput,
   SessionSnapshot,
@@ -17,6 +21,63 @@ export const isQaMockMode =
 
 let qaActiveAgentId = "forge";
 let qaReasoningEffort: string | null = "medium";
+
+// Mirrors the shape `graff --schema` produces: a mix of configured and not,
+// one env-var-backed provider, and providers with more than one auth method.
+// Without this the providers surfaces are untestable — list_providers fell
+// through to `undefined` and the settings pane rendered a raw TypeError.
+const qaAuthSessions = new Map<string, string>();
+const qaProviders: ProviderSummary[] = [
+  {
+    id: "codegraff",
+    name: "Codegraff",
+    configured: true,
+    authMethods: [{ kind: "codegraff_device", label: "Sign in to Codegraff" }],
+    envOverride: null,
+  },
+  {
+    id: "anthropic",
+    name: "Anthropic",
+    configured: true,
+    authMethods: [{ kind: "api_key", label: "API key" }],
+    envOverride: {
+      envKey: "ANTHROPIC_API_KEY",
+      filePath: "~/.zshrc",
+      line: 42,
+    },
+  },
+  {
+    id: "codex",
+    name: "Codex / ChatGPT",
+    configured: false,
+    authMethods: [{ kind: "codex_device", label: "Sign in with ChatGPT" }],
+    envOverride: null,
+  },
+  {
+    id: "openai",
+    name: "OpenAI",
+    configured: false,
+    authMethods: [{ kind: "api_key", label: "API key" }],
+    envOverride: null,
+  },
+  {
+    id: "kimi",
+    name: "Kimi",
+    configured: false,
+    authMethods: [
+      { kind: "kimi_device", label: "Sign in to Kimi" },
+      { kind: "api_key", label: "API key" },
+    ],
+    envOverride: null,
+  },
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    configured: false,
+    authMethods: [{ kind: "api_key", label: "API key" }],
+    envOverride: null,
+  },
+];
 
 const qaCommandRows: Array<[
   string,
@@ -249,6 +310,42 @@ export function mockInvokeCommand<T>(
         { id: `${conversationId}-user`, kind: "user", requestId: `${conversationId}-request`, text: input.prompt },
         { id: `${conversationId}-assistant`, kind: "assistant", requestId: `${conversationId}-request`, text: "QA mock response with a bullet list:\n\n- Markdown bullets align correctly.\n- `inline code` stays readable.\n\n```ts\nconst theme = 'clean-modern';\n```\n\n[Codegraff](https://github.com/justrach/codegraff)" },
       ]) as T);
+    }
+    case "list_providers":
+      return Promise.resolve(qaProviders.map((p) => ({ ...p })) as T);
+    case "start_provider_auth": {
+      const input = args?.input as StartProviderAuthInput;
+      qaAuthSessions.set("qa-auth-session", input.providerId);
+      const isApiKey = input.authMethod === "api_key";
+      return Promise.resolve({
+        kind: isApiKey ? "api_key" : "device_code",
+        authSessionId: "qa-auth-session",
+        requiresApiKey: isApiKey,
+        apiKeyHint: isApiKey ? "sk-..." : null,
+        urlParameters: [],
+        verificationUri: isApiKey ? null : "https://example.invalid/device",
+        verificationUriComplete: null,
+        userCode: isApiKey ? null : "QA-CODE",
+        expiresInSeconds: null,
+        authorizationUrl: null,
+      } as T);
+    }
+    case "complete_provider_auth": {
+      const input = args?.input as CompleteProviderAuthInput;
+      const providerId = qaAuthSessions.get(input.authSessionId);
+      const provider = qaProviders.find((p) => p.id === providerId);
+      if (provider != null) {
+        provider.configured = true;
+      }
+      return Promise.resolve({ ...(provider ?? qaProviders[0]) } as T);
+    }
+    case "remove_provider": {
+      const input = args?.input as RemoveProviderInput;
+      const provider = qaProviders.find((p) => p.id === input.providerId);
+      if (provider != null) {
+        provider.configured = false;
+      }
+      return Promise.resolve({ ...(provider ?? qaProviders[0]) } as T);
     }
     case "read_workspace_file":
       return Promise.resolve("// QA mock file contents\nexport const value = 1;\n" as T);
