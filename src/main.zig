@@ -481,7 +481,7 @@ pub fn main(init: std.process.Init) !void {
     session_run.compactResumedSession(&root);
 
     // Closing the learning loop: this session counts toward the next trial.
-    defer session_run.startBackgroundLearning(gpa, arena, io, init.environ_map, &invocation_budget);
+    defer session_run.startBackgroundLearning(gpa, arena, io, init.environ_map, &invocation_budget, !flags.no_telemetry_flag);
 
     // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL agent loop — each prompt runs a full root turn (tools + MCP) via
     // replTurnCb, reusing the root agent's tool set + registry + system prompt. Self-contained — exits after.
