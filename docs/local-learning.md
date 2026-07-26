@@ -9,7 +9,27 @@ active parent → deterministic mutation seeds → paired evaluation
               → the promoted genome becomes this workspace's root prompt
 ```
 
-## Closing the loop in one command
+## Nothing to run
+
+Learning is on by default. The first session in a workspace that does real
+model work (at least 5 calls, so a one-off question never triggers it) sets the
+workspace up on its way out:
+
+```text
+↺ setting this workspace up to learn from sessions like this one
+↺ learning on for this workspace: a trial runs in the background every 5 sessions
+  and spends real model calls — `graff learn status`, off with GRAFF_LEARN_AUTO=off
+```
+
+That is the same work `graff learn init` does, so run it by hand only to choose
+a provider, model, or arm count other than the detected defaults. A workspace
+gets exactly one automatic attempt: if it fails here (no `python3`, no usable
+credential) the loop stays quiet instead of retrying at the end of every
+session, and `graff learn init` remains available to retry deliberately.
+
+`GRAFF_LEARN_AUTO=off` turns the whole thing off, setup included.
+
+## What init writes
 
 ```sh
 graff learn init            # generate the whole pinned setup for this workspace
@@ -41,7 +61,9 @@ Requirements and consequences worth knowing:
 
 Once a workspace has a store, sessions feed it. When a session that made at
 least one model call ends, graff counts it and — every 5 sessions, and at most
-once every 6 hours — starts one detached trial in the background:
+once every 6 hours — starts one detached trial in the background. The session
+that configured the store counts as the first, so the earliest a trial can run
+is the fifth working session in that workspace:
 
 ```text
 ↺ learning trial started in the background — `graff learn status`, log .graff/learn/auto.log
@@ -56,8 +78,10 @@ trigger off with `GRAFF_LEARN_AUTO=off`.
 Budget it deliberately: one trial runs the parent once over the whole primary
 suite plus every candidate arm over the same suite, so the default two-arm
 configuration is roughly 180 short agent runs against the configured learning
-model. Point `learn init --provider/--model` at a cheap model, or use
-`--candidates 1`, before letting the trigger run against an expensive one.
+model. Since setup is automatic, the way to control that is to run
+`graff learn init --provider/--model` (or `--candidates 1`) in a workspace
+*before* it accumulates enough sessions to start one, or to set
+`GRAFF_LEARN_AUTO=off` where you never want trials at all.
 
 ## The learned root policy
 

@@ -82,6 +82,9 @@ jobs:
       - name: Isolated read-only review regression
         run: python3 scripts/test-review-mode.py zig-out/bin/graff
 
+      - name: Automatic learning bootstrap and its idle-workspace guard
+        run: python3 scripts/test-learn-auto-init.py zig-out/bin/graff
+
       - name: Streamable HTTP MCP handshake and session regression
         run: python3 scripts/test-mcp-streamable-http.py --graff zig-out/bin/graff
 
