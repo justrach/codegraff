@@ -67,11 +67,13 @@ def run_session(tmp: str, port: int, prompts: int) -> str:
             session.wait_for_literal("] ›", start=cursor)
         session.send_key("ctrl-d")
         # Bootstrapping materializes a kit and generates two suites, so the
-        # exit path is slower than an ordinary session's.
-        result = session.read_until_exit(60.0)
+        # exit path is slower than an ordinary session's (siblings use 5s).
+        result = session.read_until_exit(45.0)
         if result.timed_out or result.exit_code != 0:
             raise AssertionError(
-                f"session exit={result.exit_code} timed_out={result.timed_out}"
+                f"session exit={result.exit_code} timed_out={result.timed_out} "
+                f"prompts={prompts}\n"
+                f"--- tail of the session ---\n{session.text[-4000:]}"
             )
         return session.text
 
