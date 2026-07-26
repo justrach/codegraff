@@ -170,9 +170,12 @@ def clear_attempt(path: Path) -> None:
 def validate_settings(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("schema") != "codegraff.learn.graff-evaluator.v1":
         fail("invalid evaluator settings schema")
-    if value.get("provider") != "codex" or not isinstance(value.get("model"), str):
-        fail("evaluator must pin a Codex model")
-    if value.get("effort") not in {"low", "medium", "high", "xhigh", "max", "ultra"}:
+    if not isinstance(value.get("provider"), str) or not value["provider"]:
+        fail("evaluator must pin a provider")
+    if not isinstance(value.get("model"), str) or not value["model"]:
+        fail("evaluator must pin a model")
+    # Absent effort means the pinned provider cannot apply one.
+    if value.get("effort") is not None and value["effort"] not in {"low", "medium", "high", "xhigh", "max", "ultra"}:
         fail("invalid evaluator effort")
     for field in ("max_model_calls", "max_tool_calls", "max_attempts", "task_timeout_seconds"):
         if not isinstance(value.get(field), int) or value[field] <= 0:
@@ -239,7 +242,7 @@ def run_variant(
     env.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
     env.pop("GRAFF_OTEL_ENDPOINT", None)
     argv = [
-        str(graff), "--json", "--model", "codex", "--no-resume", "--no-telemetry", "--yolo",
+        str(graff), "--json", "--model", settings["provider"], "--no-resume", "--no-telemetry", "--yolo",
         "--max-model-calls", str(settings["max_model_calls"]),
         "--max-tool-calls", str(settings["max_tool_calls"]),
     ]
@@ -263,9 +266,10 @@ def run_variant(
         }, "model")
         if model.get("provider") != settings["provider"] or model.get("model") != settings["model"]:
             fail("evaluator model pin was not honored")
-        effort = send(proc, {"type": "set_effort", "level": settings["effort"]}, "effort")
-        if effort.get("level") != settings["effort"] or effort.get("applies") is not True:
-            fail("evaluator effort pin was not honored")
+        if settings.get("effort") is not None:
+            effort = send(proc, {"type": "set_effort", "level": settings["effort"]}, "effort")
+            if effort.get("level") != settings["effort"] or effort.get("applies") is not True:
+                fail("evaluator effort pin was not honored")
         assert proc.stdin is not None and proc.stdout is not None
         proc.stdin.write(json.dumps({"type": "user", "text": case["task"]}, separators=(",", ":")) + "\n")
         proc.stdin.flush()

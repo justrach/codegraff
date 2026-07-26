@@ -6,7 +6,82 @@ agent prompt. It implements a complete local cycle:
 ```text
 active parent → deterministic mutation seeds → paired evaluation
               → Zig-side verification/aggregation → select → promote or reject
+              → the promoted genome becomes this workspace's root prompt
 ```
+
+## Closing the loop in one command
+
+```sh
+graff learn init            # generate the whole pinned setup for this workspace
+```
+
+A bare `init` writes `.graff/learn-kit`: the bundled mutation/evaluation
+adapters, a 60-case primary suite, a freshly randomized 40-case holdout, a
+parent genome snapshotted from this build's root prompt, a copy of the running
+binary, and the pinned configuration that ties them together. It then
+initializes the store exactly as a hand-written `--parent/--config` pair would.
+`--provider`/`--model` pick what the adapters drive (default: this session's
+saved model, else any provider with a credential, else the hosted default), and
+`--candidates N` sets the arms per trial.
+
+Requirements and consequences worth knowing:
+
+- `python3` must be on `PATH`; the bundled adapters are Python and the suite
+  generator runs once at init.
+- The binary is *copied* into the kit and pinned there, so `graff update` never
+  invalidates the configuration. The kit keeps evaluating that copy until you
+  re-initialize.
+- The generated configuration enables the two-key automatic promotion policy
+  (`auto.enabled`), so a trial that clears every statistical gate promotes
+  without a human step.
+- Re-running `init` in an initialized workspace fails instead of rewriting the
+  pinned files out from under the existing store.
+
+## Automatic trials
+
+Once a workspace has a store, sessions feed it. When a session that made at
+least one model call ends, graff counts it and — every 5 sessions, and at most
+once every 6 hours — starts one detached trial in the background:
+
+```text
+↺ learning trial started in the background — `graff learn status`, log .graff/learn/auto.log
+```
+
+The trial is an ordinary `graff learn run --auto`, resuming an existing
+checkpoint rather than restarting it, and publishing prompt-free aggregate
+grades when learning privacy and a local signing key both allow it. It holds
+the engine lock, so a second session cannot start a competing trial. Turn the
+trigger off with `GRAFF_LEARN_AUTO=off`.
+
+Budget it deliberately: one trial runs the parent once over the whole primary
+suite plus every candidate arm over the same suite, so the default two-arm
+configuration is roughly 180 short agent runs against the configured learning
+model. Point `learn init --provider/--model` at a cheap model, or use
+`--candidates 1`, before letting the trigger run against an expensive one.
+
+## The learned root policy
+
+A promoted genome named `graff-root` (what `learn init` generates) becomes the
+root system prompt for later sessions in that workspace, not just a subagent
+persona. Generation 0 — the untouched snapshot of some build's own prompt —
+never takes over, so an initialized-but-unpromoted store changes nothing.
+Sessions using a learned policy say so at startup:
+
+```text
+root policy: learned generation 3 (9f2c1a7b0d44)
+```
+
+`--system-prompt` still wins, `GRAFF_LEARNED_PROMPT=off` ignores the learned
+policy for one session, and `graff learn rollback` reverts the promotion
+itself.
+
+## Credentials
+
+Adapters run with a scrubbed environment and a scratch `HOME`, so a `graff
+login` credential on disk is invisible to them. `learn run` resolves the
+credential names the configuration already declares in `pass_env` from the same
+local key store the session uses, and passes only those. An undeclared name is
+never resolved, and an exported value always wins.
 
 It does **not** infer semantic success from ordinary interactive traces, and it
 does not turn behavioral telemetry into promotion authority. Mutators and
@@ -470,11 +545,15 @@ independent gate against ordinary overfitting, not a secret from a malicious or
 colluding adapter. Do not run adapters you do not trust; use an external sandbox
 when stronger isolation is required.
 
-Learning artifacts and prompt genomes remain local by default. Submission also
-requires an aggregate-or-higher learning ceiling, selected with
-`--learning-privacy aggregate`, `GRAFF_LEARNING_PRIVACY=aggregate`, or
-`/privacy aggregate`. The root-only `learn_candidate` tool can instead request
-one explicit bundled aggregate submission without changing the session mode. An explicit `--submit` or
+Prompt genomes, suites, evidence, and traces never leave the machine. Signed
+aggregate grades do: the learning ceiling defaults to aggregate, so an explicit
+`--submit`, `learn submit`, or automatic trial publishes them when a local
+signing key exists. `--learning-privacy local`, `GRAFF_LEARNING_PRIVACY=local`,
+`/privacy local`, `GRAFF_FLEET=off`, and `GRAFF_NO_TELEMETRY=1` each turn that
+off, and the first session that could contribute says so once per machine.
+
+The root-only `learn_candidate` tool can instead request one explicit bundled
+aggregate submission without changing the session mode. An explicit `--submit` or
 `learn submit` publishes the existing signed score plus a separately signed
 `codegraff.learn.grade.v3` receipt: fixed aggregate pass/delta/significance,
 regression, tool/cost/latency, recomputed behavioral score, gate (including economy-gate enablement), and

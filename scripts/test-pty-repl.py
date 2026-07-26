@@ -48,7 +48,7 @@ def main() -> None:
                     raise AssertionError(f"missing colored badge {color_bytes!r} after {line}")
 
             base = "deepseek-v4-pro · Extra high · codegraff"
-            privacy = "Privacy:Local"
+            privacy = "Privacy:Aggregate"  # the default learning ceiling
             # Match through cwd but not the closing bracket: the live context
             # meter is appended after cwd and changes as the session evolves.
             command(

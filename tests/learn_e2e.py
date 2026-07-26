@@ -249,7 +249,41 @@ def verify_grade_submit(graff: Path, workspace: Path, env: dict[str, str], root:
     submit_env["GRAFF_OTEL_ENDPOINT"] = f"http://127.0.0.1:{server.server_port}"
     submit_env.pop("GRAFF_SCORE_KEY_FILE", None)
     try:
+        # Aggregate is the default ceiling, so Local is now the *selected*
+        # state that must still fail before any network egress.
         local = subprocess.run(
+            [str(graff), "learn", "submit", run_id],
+            cwd=workspace,
+            env={**submit_env, "GRAFF_LEARNING_PRIVACY": "local"},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            check=False,
+        )
+        assert local.returncode != 0 and "LearningPrivacyLocal" in local.stderr
+        assert not GradeCapture.payloads, "local privacy must fail before network egress"
+        # A garbled ceiling must fail closed to Local rather than fall back to
+        # the aggregate default.
+        garbled = subprocess.run(
+            [str(graff), "learn", "submit", run_id],
+            cwd=workspace,
+            env={**submit_env, "GRAFF_LEARNING_PRIVACY": "AGGREGATE"},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            check=False,
+        )
+        assert garbled.returncode != 0 and "LearningPrivacyLocal" in garbled.stderr
+        assert not GradeCapture.payloads, "a garbled privacy value must not enable egress"
+        fleet_off_env = {**submit_env, "GRAFF_FLEET": "off"}
+        disabled = invoke(graff, workspace, fleet_off_env, "submit", run_id, succeeds=False)
+        assert "TelemetryDisabled" in disabled.stderr
+        assert not GradeCapture.payloads, "fleet master-off must block learning egress"
+        # No flag and no environment value: the default ceiling is Aggregate,
+        # which is the only reason an automatic trial can contribute anything.
+        default_submit = subprocess.run(
             [str(graff), "learn", "submit", run_id],
             cwd=workspace,
             env=submit_env,
@@ -259,13 +293,8 @@ def verify_grade_submit(graff: Path, workspace: Path, env: dict[str, str], root:
             timeout=60,
             check=False,
         )
-        assert local.returncode != 0 and "LearningPrivacyLocal" in local.stderr
-        assert not GradeCapture.payloads, "local privacy must fail before network egress"
-        fleet_off_env = {**submit_env, "GRAFF_FLEET": "off"}
-        disabled = invoke(graff, workspace, fleet_off_env, "submit", run_id, succeeds=False)
-        assert "TelemetryDisabled" in disabled.stderr
-        assert not GradeCapture.payloads, "fleet master-off must block learning egress"
-        output = invoke(graff, workspace, submit_env, "submit", run_id).stdout
+        assert default_submit.returncode == 0, default_submit.stderr
+        output = default_submit.stdout
         assert "submitted 2 signed aggregate grade(s)" in output
         delete_env = {**submit_env, "GRAFF_NO_TELEMETRY": "1", "GRAFF_FLEET": "off"}
         deleted = invoke(graff, workspace, delete_env, "delete-remote", run_id).stdout

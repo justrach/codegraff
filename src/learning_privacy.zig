@@ -34,7 +34,14 @@ pub const Mode = enum(u8) {
     }
 };
 
-var mode_value: std.atomic.Value(u8) = .init(@intFromEnum(Mode.local));
+/// Aggregate is the default ceiling: the fleet loop only improves anything if
+/// prompt-free signed grades actually reach it, and this tier carries counts,
+/// deltas, significance, and fingerprints — never prompt text, tasks, code,
+/// paths, or traces. Every higher tier (template/example text) still requires
+/// an explicit per-artifact approval, and `--learning-privacy local`,
+/// `GRAFF_LEARNING_PRIVACY=local`, `/privacy local`, `GRAFF_FLEET=off`, or
+/// `--no-telemetry` each turn contribution off.
+var mode_value: std.atomic.Value(u8) = .init(@intFromEnum(Mode.aggregate));
 var approvals_mu: Io.Mutex = .init;
 const max_approved_templates = 64;
 var approved_hashes: [max_approved_templates][32]u8 = undefined;
@@ -42,7 +49,9 @@ var approved_len: usize = 0;
 var aggregate_once: bool = false;
 
 /// Exact lowercase values only. Unknown, case-varied, or whitespace-padded
-/// configuration fails closed to Local when passed through init().
+/// configuration fails closed to Local when passed through init(): a garbled
+/// setting must never silently raise the ceiling, even though an absent one
+/// leaves the Aggregate default in place.
 pub fn parse(value: []const u8) ?Mode {
     if (std.mem.eql(u8, value, "local")) return .local;
     if (std.mem.eql(u8, value, "aggregate")) return .aggregate;
@@ -51,8 +60,10 @@ pub fn parse(value: []const u8) ?Mode {
     return null;
 }
 
+pub const default_mode: Mode = .aggregate;
+
 pub fn init(cli_mode: ?Mode, env_value: ?[]const u8) void {
-    const selected = cli_mode orelse if (env_value) |value| parse(value) orelse .local else .local;
+    const selected = cli_mode orelse if (env_value) |value| parse(value) orelse .local else default_mode;
     mode_value.store(@intFromEnum(selected), .release);
     // Startup is single-threaded. Artifact approvals never persist between
     // processes, and a repo-controlled file cannot silently grant them.
@@ -185,11 +196,18 @@ pub fn templateTextForUpload(io: Io, text: []const u8) []const u8 {
     return if (isTemplateApproved(io, text)) text else "";
 }
 
-test "learning privacy config fails closed and modes form a ceiling" {
+test "learning privacy defaults to aggregate, fails closed, and modes form a ceiling" {
     init(null, null);
+    try std.testing.expectEqual(Mode.aggregate, current());
+    try std.testing.expect(allowsAggregate());
+    try std.testing.expect(!allowsTemplateReview());
+    init(null, "local");
     try std.testing.expectEqual(Mode.local, current());
     try std.testing.expect(!allowsAggregate());
+    // A garbled value must not silently raise the ceiling to the default.
     init(null, "AGGREGATE");
+    try std.testing.expectEqual(Mode.local, current());
+    init(null, "aggregate ");
     try std.testing.expectEqual(Mode.local, current());
     init(.templates, "local");
     try std.testing.expectEqual(Mode.templates, current());

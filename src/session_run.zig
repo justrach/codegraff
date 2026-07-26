@@ -54,6 +54,10 @@ const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
 const fleet = @import("fleet.zig");
 const hooks = @import("hooks.zig");
+const learn_auto = @import("learn_auto.zig");
+const run_budget_mod = @import("run_budget.zig");
+const learning_privacy = @import("learning_privacy.zig");
+const commands_privacy = @import("commands_privacy.zig");
 
 /// `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL
 /// agent loop — each prompt runs a full root turn (tools + MCP) via
@@ -516,4 +520,37 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     }
     anim.loadDevSpinnerOptOut(io, arena, environ_map);
     return .{ .theme_on = theme_on, .limyuxi_glam = limyuxi_glam, .should_exit = false };
+}
+
+/// Contribution is on by default, so say it once per machine before anything
+/// can be sent. Quiet in --json/-p, where stdout is protocol output.
+pub fn learningNotice(io: Io, arena: Allocator, environ_map: anytype, out: *Io.Writer, quiet: bool) void {
+    if (quiet or !main_mod.g_fleet) return;
+    commands_privacy.firstRunNotice(io, arena, keys_cli.homeEnv(environ_map) orelse "", out);
+}
+
+/// Closing the learning loop: a session that did real model work counts toward
+/// this workspace's next trial and, on cadence, starts one in the background.
+/// Workspaces with no learning store skip silently.
+pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map, budget: *const run_budget_mod.RunBudget, telemetry_allowed: bool) void {
+    switch (learn_auto.maybeStart(gpa, arena, io, environ_map, .{
+        .model_calls = budget.used(),
+        // A session launched with --no-telemetry keeps its trial local, even
+        // though the child process would not inherit that flag.
+        .contribute = telemetry_allowed and main_mod.g_fleet and learning_privacy.allowsAggregate(),
+    })) {
+        .started => |started| std.debug.print(
+            "↺ learning trial started in the background{s}{s} — `graff learn status`, log .graff/learn/{s}\n",
+            .{
+                if (started.resumed) " (resuming a checkpoint)" else "",
+                if (started.contribute) " (contributing prompt-free aggregate grades)" else "",
+                learn_auto.log_name,
+            },
+        ),
+        .suggest => std.debug.print(
+            "↺ this workspace can learn from sessions like this one: `graff learn init`\n",
+            .{},
+        ),
+        .skipped => {},
+    }
 }
