@@ -42,6 +42,10 @@ def run_session(tmp: str, port: int, prompts: int) -> str:
         "GRAFF_CODEX_WS": "off",
         "GRAFF_FLEET": "off",
         "GRAFF_NO_TELEMETRY": "1",
+        # The ambient sweep below unsets CI's own GRAFF_NO_SMOLIFY, which would
+        # reconnect a network-backed MCP server whose teardown can stall the
+        # exit this test measures. Keep the session hermetic.
+        "GRAFF_NO_SMOLIFY": "1",
     }
     ambient = tuple(
         name
