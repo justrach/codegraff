@@ -3,12 +3,12 @@
 //! `graff learn` shipped as a complete engine that nothing ever called: every
 //! trial needed a human to type it, so no workspace ever produced a second
 //! generation. This module is the missing edge. When a session that did real
-//! model work ends in a workspace with a configured learning store, it counts
+//! model work ends, it configures the workspace's store if it has none, counts
 //! the session and — on cadence — starts one detached trial in the background.
 //!
 //! Deliberate limits, because a trial spends real model calls:
-//!   * it never runs without a configured store (`graff learn init` is the
-//!     opt-in),
+//!   * a workspace earns a store only once it has done real model work, and it
+//!     gets exactly one automatic attempt at creating one,
 //!   * automatic promotion still needs `auto.enabled` in the immutable
 //!     configuration plus every statistical gate,
 //!   * one trial per cadence window, never two at once, and
@@ -50,7 +50,8 @@ pub const Skip = enum {
     disabled,
     /// Nothing to learn from: the session made no model calls.
     idle_session,
-    /// This workspace has no learning store (`graff learn init`).
+    /// This workspace has no learning store and has not earned an automatic
+    /// one: too little model work, or its one bootstrap attempt already ran.
     unconfigured,
     /// The configuration keeps promotion manual, so a background trial would
     /// only pile up evidence nobody reads.
@@ -61,25 +62,40 @@ pub const Skip = enum {
     not_due,
 };
 
+pub const Started = struct { resumed: bool, contribute: bool };
+
 pub const Outcome = union(enum) {
     skipped: Skip,
-    started: struct { resumed: bool, contribute: bool },
-    /// This workspace does real work but has no learning store yet. Said once
-    /// per workspace — a loop nobody knows about is not on by default.
-    suggest,
+    started: Started,
+    /// This workspace does real work and has no learning store yet, so the
+    /// caller should create one now. Claimed once per workspace: a bootstrap
+    /// that cannot succeed here (no python3, no usable credential) must not
+    /// retry at the end of every session forever.
+    needs_store,
 };
 
-/// Marker for the one-time `learn init` hint.
-const hint_file = ".graff/learn-hint";
+/// Marker claiming the single automatic bootstrap this workspace gets.
+const bootstrap_marker = ".graff/learn-auto-init";
 /// Enough model calls that this is a working repository, not a one-liner.
-const hint_minimum_calls: u64 = 5;
+const bootstrap_minimum_calls: u64 = 5;
 
-fn suggestOnce(io: Io, model_calls: u64) Outcome {
-    if (model_calls < hint_minimum_calls) return .{ .skipped = .unconfigured };
-    const file = Io.Dir.cwd().createFile(io, hint_file, .{ .exclusive = true }) catch
+const dir_permissions: Io.File.Permissions =
+    if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700);
+
+/// Claim this workspace's one automatic bootstrap. The marker is created
+/// exclusively, so two sessions ending at once cannot both start materializing
+/// a kit into the same tree.
+pub fn claimBootstrap(io: Io, base: Io.Dir, model_calls: u64) Outcome {
+    if (model_calls < bootstrap_minimum_calls) return .{ .skipped = .unconfigured };
+    // A workspace that has never written a session has no .graff yet.
+    base.createDir(io, ".graff", dir_permissions) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return .{ .skipped = .unconfigured },
+    };
+    const file = base.createFile(io, bootstrap_marker, .{ .exclusive = true }) catch
         return .{ .skipped = .unconfigured };
     file.close(io);
-    return .suggest;
+    return .needs_store;
 }
 
 pub const Options = struct {
@@ -159,7 +175,8 @@ fn openLog(store: *store_mod.Store) ?Io.File {
 pub fn maybeStart(gpa: Allocator, arena: Allocator, io: Io, environ: *const std.process.Environ.Map, options: Options) Outcome {
     if (!enabled(environ.get("GRAFF_LEARN_AUTO"))) return .{ .skipped = .disabled };
     if (options.model_calls == 0) return .{ .skipped = .idle_session };
-    var store = store_mod.Store.openAt(io, Io.Dir.cwd()) catch return suggestOnce(io, options.model_calls);
+    var store = store_mod.Store.openAt(io, Io.Dir.cwd()) catch
+        return claimBootstrap(io, Io.Dir.cwd(), options.model_calls);
     defer store.deinit();
     var lock = store.acquireLock(0) catch return .{ .skipped = .busy };
     var lock_held = true;
@@ -233,6 +250,28 @@ test "cadence needs both the session count and the interval" {
     try std.testing.expect(due(.{ .sessions_since_trial = 9, .last_started_unix_ms = 90 * hour }, 100 * hour, options));
     // A backwards clock jump must not wedge the loop permanently.
     try std.testing.expect(due(.{ .sessions_since_trial = 9, .last_started_unix_ms = 200 * hour }, 100 * hour, options));
+}
+
+test "a workspace bootstraps itself once, and only after real model work" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A one-liner session is not worth an 11MB kit and a spending cadence.
+    try std.testing.expectEqual(
+        Outcome{ .skipped = .unconfigured },
+        claimBootstrap(io, tmp.dir, bootstrap_minimum_calls - 1),
+    );
+    // Real work: claimed, and .graff is created for a workspace that has none.
+    try std.testing.expectEqual(
+        Outcome.needs_store,
+        claimBootstrap(io, tmp.dir, bootstrap_minimum_calls),
+    );
+    // Claimed exactly once: a bootstrap that failed must not retry forever.
+    try std.testing.expectEqual(
+        Outcome{ .skipped = .unconfigured },
+        claimBootstrap(io, tmp.dir, 1000),
+    );
 }
 
 test "an automatic trial always carries the two-key auto flag and never restarts a checkpoint" {

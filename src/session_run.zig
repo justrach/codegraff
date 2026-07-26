@@ -55,6 +55,7 @@ const session = @import("session.zig");
 const fleet = @import("fleet.zig");
 const hooks = @import("hooks.zig");
 const learn_auto = @import("learn_auto.zig");
+const learn_init = @import("learn_init.zig");
 const run_budget_mod = @import("run_budget.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
@@ -529,28 +530,62 @@ pub fn learningNotice(io: Io, arena: Allocator, environ_map: anytype, out: *Io.W
     commands_privacy.firstRunNotice(io, arena, keys_cli.homeEnv(environ_map) orelse "", out);
 }
 
+fn reportTrialStarted(started: learn_auto.Started) void {
+    std.debug.print(
+        "↺ learning trial started in the background{s}{s} — `graff learn status`, log .graff/learn/{s}\n",
+        .{
+            if (started.resumed) " (resuming a checkpoint)" else "",
+            if (started.contribute) " (contributing prompt-free aggregate grades)" else "",
+            learn_auto.log_name,
+        },
+    );
+}
+
+/// Configure this workspace's learning store from the running binary, the same
+/// way `graff learn init` would. Best effort by design: a machine with no
+/// python3 or no usable credential simply does not learn, and the marker
+/// learn_auto already claimed keeps that from being retried every session.
+fn autoInitLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map) bool {
+    std.debug.print("↺ setting this workspace up to learn from sessions like this one\n", .{});
+    // learn init narrates its own progress; the session's closing lines below
+    // are the useful summary, so its output goes to a buffer instead.
+    var buf: [16 * 1024]u8 = undefined;
+    var sink = std.Io.Writer.fixed(&buf);
+    learn_init.zeroConfig(gpa, arena, io, environ_map, .{}, &sink) catch |err| {
+        std.debug.print(
+            "↺ learning setup skipped ({s}) — `graff learn init` to retry\n",
+            .{@errorName(err)},
+        );
+        return false;
+    };
+    std.debug.print(
+        "↺ learning on for this workspace: a trial runs in the background every {d} sessions and spends real model calls — `graff learn status`, off with GRAFF_LEARN_AUTO=off\n",
+        .{learn_auto.default_every_sessions},
+    );
+    return true;
+}
+
 /// Closing the learning loop: a session that did real model work counts toward
 /// this workspace's next trial and, on cadence, starts one in the background.
-/// Workspaces with no learning store skip silently.
+/// The first such session in a workspace also creates the store it counts into.
 pub fn startBackgroundLearning(gpa: Allocator, arena: Allocator, io: Io, environ_map: *const std.process.Environ.Map, budget: *const run_budget_mod.RunBudget, telemetry_allowed: bool) void {
-    switch (learn_auto.maybeStart(gpa, arena, io, environ_map, .{
+    const options: learn_auto.Options = .{
         .model_calls = budget.used(),
         // A session launched with --no-telemetry keeps its trial local, even
         // though the child process would not inherit that flag.
         .contribute = telemetry_allowed and main_mod.g_fleet and learning_privacy.allowsAggregate(),
-    })) {
-        .started => |started| std.debug.print(
-            "↺ learning trial started in the background{s}{s} — `graff learn status`, log .graff/learn/{s}\n",
-            .{
-                if (started.resumed) " (resuming a checkpoint)" else "",
-                if (started.contribute) " (contributing prompt-free aggregate grades)" else "",
-                learn_auto.log_name,
-            },
-        ),
-        .suggest => std.debug.print(
-            "↺ this workspace can learn from sessions like this one: `graff learn init`\n",
-            .{},
-        ),
+    };
+    switch (learn_auto.maybeStart(gpa, arena, io, environ_map, options)) {
+        .started => |started| reportTrialStarted(started),
+        // First real session here: build the store, then count this session
+        // against it so the cadence starts from this one rather than the next.
+        .needs_store => {
+            if (!autoInitLearning(gpa, arena, io, environ_map)) return;
+            switch (learn_auto.maybeStart(gpa, arena, io, environ_map, options)) {
+                .started => |started| reportTrialStarted(started),
+                else => {},
+            }
+        },
         .skipped => {},
     }
 }
