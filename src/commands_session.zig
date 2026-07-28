@@ -13,6 +13,7 @@ const provider_mod = @import("provider.zig");
 const util = @import("util.zig");
 const tools_mod = @import("tools.zig");
 const session_mod = @import("session.zig");
+const goal_state = @import("goal_state.zig");
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const ToolCall = tools_mod.ToolCall;
@@ -58,6 +59,9 @@ const setTerminalTitle = title_mod.setTerminalTitle;
 fn resetConversationSteering(root: *Agent) void {
     root.goal = null;
     root.ultracode_mode = false;
+    root.pending_goal_note = null; // a queued supersession note dies with the conversation (#318)
+    root.goal_note_fp = 0;
+    root.goal_note_age = 0;
 }
 
 test "/clear + /new reset conversation steering — goal and ultracode_mode don't survive (#178)" {
@@ -131,12 +135,20 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (text.len == 0 or std.ascii.eqlIgnoreCase(text, "status")) {
             // bare /goal or /goal status: report the objective + lifecycle state.
             if (root.goal) |g| {
-                try out.print("\xf0\x9f\x8e\xaf Goal: {s}\nStatus: {s}. Commands: /goal pause | resume | clear.\n", .{ g.objective, @tagName(g.status) });
+                const open = goal_state.openCount(root.todos.items, g.epoch);
+                try out.print("\xf0\x9f\x8e\xaf Goal: {s}\nStatus: {s}. Checklist: {d} item(s) open. Commands: /goal pause | resume | clear.\n", .{ g.objective, @tagName(g.status), open });
             } else try out.writeAll("No active goal. Set one with /goal <objective>.\n");
         } else if (std.ascii.eqlIgnoreCase(text, "clear") or std.ascii.eqlIgnoreCase(text, "off")) {
+            const open = goal_state.openCount(root.todos.items, goal_state.currentEpoch(root.goal));
             root.goal = null;
+            root.todos.clearRetainingCapacity(); // the goal's checklist closes with it (#318)
+            root.goal_note_fp = 0;
+            if (root.tracer) |t| t.note("goal", "cleared");
             saveSession(root, arena, root.session_name) catch {};
-            try out.writeAll("Goal cleared. Future turns will not get goal steering.\n");
+            if (open > 0) {
+                root.pending_goal_note = try goal_state.clearedNote(arena, open);
+                try out.print("Goal cleared \xe2\x80\x94 checklist closed ({d} unfinished item(s) parked). Future turns will not get goal steering.\n", .{open});
+            } else try out.writeAll("Goal cleared. Future turns will not get goal steering.\n");
         } else if (std.ascii.eqlIgnoreCase(text, "pause")) {
             if (root.goal) |*g| {
                 g.status = .paused;
@@ -148,12 +160,27 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             if (root.goal) |*g| {
                 g.status = .active;
                 g.updated_ms = unixMs(root.io);
+                root.goal_note_fp = 0; // re-state the note on the next turn, not a stale-suppressed repeat
                 saveSession(root, arena, root.session_name) catch {};
                 try out.print("\xf0\x9f\x8e\xaf Goal resumed: {s} - steering every turn again.\n", .{g.objective});
             } else try out.writeAll("No goal to resume. Set one with /goal <objective>.\n");
         } else {
             const now = unixMs(root.io);
-            root.goal = .{ .objective = try arena.dupe(u8, text), .status = .active, .created_ms = now, .updated_ms = now };
+            const epoch = goal_state.nextEpoch(root.goal);
+            if (root.goal) |old| {
+                // Replacement is a supersession boundary (#318): park the old
+                // checklist and queue a one-shot note so the model does not
+                // treat inherited items as authorization to keep going.
+                const parked = goal_state.parkSuperseded(&root.todos, epoch);
+                root.pending_goal_note = try goal_state.supersededNote(arena, old.objective, parked);
+                if (root.tracer) |t| t.note("goal", "replaced");
+                if (parked > 0) try out.print("(superseded \"{s}\" \xe2\x80\x94 parked {d} unfinished checklist item(s))\n", .{ old.objective, parked });
+            } else {
+                goal_state.adoptTodos(root.todos.items, epoch); // formalizing an in-flight plan keeps its checklist
+                if (root.tracer) |t| t.note("goal", "set");
+            }
+            root.goal = .{ .objective = try arena.dupe(u8, text), .status = .active, .epoch = epoch, .created_ms = now, .updated_ms = now };
+            root.goal_note_fp = 0;
             saveSession(root, arena, root.session_name) catch {};
             try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; it steers every turn until /goal pause or /goal clear).\n", .{text});
         }

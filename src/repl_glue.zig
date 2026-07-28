@@ -92,19 +92,16 @@ pub const ReplStreamSink = struct {
     }
 };
 
-/// The standing-goal steering note appended to each turn when /goal is set: the
-/// objective, an instruction to track it as a todo_write checklist, and the
-/// current checklist render when one exists. Returns "" when goal is null so the
-/// caller can skip the append. Pass todos_render="" when there are no todos — do
-/// NOT pass renderTodos()'s "(no todos)" placeholder, which would leak into the prompt.
-pub fn goalSteeringNote(arena: Allocator, goal: ?agent_mod.Goal, todos_render: []const u8) ![]const u8 {
+/// The standing-goal steering note for a turn when /goal is set. The checklist
+/// itself is deliberately NOT embedded (#318): the model already sees it in
+/// todo_write tool results, and re-pasting it every turn is how items from a
+/// dead goal kept steering later work (and how compaction memorized them).
+/// Returns "" when goal is null/inactive so the caller can skip the append;
+/// injection is diff-gated by goal_state.steeringGate.
+pub fn goalSteeringNote(arena: Allocator, goal: ?agent_mod.Goal) ![]const u8 {
     const g = goal orelse return "";
     if (g.status != .active) return ""; // paused/blocked/complete/budget_limited never steer (#223)
-    const progress: []const u8 = if (todos_render.len > 0)
-        try std.fmt.allocPrint(arena, "\n\nChecklist so far:\n{s}", .{todos_render})
-    else
-        "";
-    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a todo_write checklist and work through it, marking each item in_progress when you start and completed when done.]{s}", .{ g.objective, progress });
+    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a live todo_write checklist and work through it, marking each item in_progress when you start and completed when done. When the objective is verifiably done, call attempt_completion - that completes the goal and ends this steering.]", .{g.objective});
 }
 
 /// Extract a 0-100 score from an eval command's output: a `score` key (JSON or
@@ -170,26 +167,24 @@ pub fn evalSteeringNote(
     , .{ state, target, gate, notes });
 }
 
-test "goalSteeringNote: active-only gate + checklist assembly, no (no todos) leak" {
+test "goalSteeringNote: active-only gate, completion contract, and no embedded checklist (#318)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const ar = arena.allocator();
 
     // No goal -> empty note, caller skips the append.
-    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, null, ""));
+    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, null));
 
     // A paused (non-active) goal never steers (#223): empty note.
-    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, .{ .objective = "close all issues", .status = .paused }, ""));
+    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, .{ .objective = "close all issues", .status = .paused }));
 
-    // Active goal, no todos -> bracket note, no checklist, and never the "(no todos)" placeholder.
-    const n1 = try goalSteeringNote(ar, .{ .objective = "close all issues" }, "");
-    try std.testing.expect(std.mem.startsWith(u8, n1, "[standing goal: close all issues - track this as a todo_write checklist"));
+    // Active goal -> bracket note with the completion contract; the checklist
+    // is never embedded (it reaches the model via todo_write results).
+    const n1 = try goalSteeringNote(ar, .{ .objective = "close all issues" });
+    try std.testing.expect(std.mem.startsWith(u8, n1, "[standing goal: close all issues - track this as a live todo_write checklist"));
+    try std.testing.expect(std.mem.indexOf(u8, n1, "attempt_completion") != null);
     try std.testing.expect(std.mem.indexOf(u8, n1, "Checklist so far") == null);
     try std.testing.expect(std.mem.indexOf(u8, n1, "(no todos)") == null);
-
-    // Active goal + live todos -> the rendered checklist is appended verbatim.
-    const n2 = try goalSteeringNote(ar, .{ .objective = "ship 0.0.177" }, "[x] wire steering\n[ ] add test");
-    try std.testing.expect(std.mem.indexOf(u8, n2, "Checklist so far:\n[x] wire steering\n[ ] add test") != null);
 }
 
 /// #226 continuation gate — the outcome when a /loop turn finishes: the loop

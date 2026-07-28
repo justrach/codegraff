@@ -122,7 +122,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
         tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
         if (telemetry.g_telem) |t| t.ultracode();
     }
-    const goal_note = try repl_glue.goalSteeringNote(arena, root.goal, if (root.todos.items.len > 0) root.renderTodos() else "");
+    const goal_note = try repl_glue.goalSteeringNote(arena, root.goal);
     const eval_note = try repl_glue.evalSteeringNote(
         arena,
         root.eval_cmd,

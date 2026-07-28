@@ -30,6 +30,7 @@ const tty = terminal.tty;
 const schema = @import("schema.zig");
 const isMetaName = schema.isMetaName;
 const eval_control = @import("agent_eval_control.zig");
+const goal_state = @import("goal_state.zig");
 pub const toolInvalidatesEval = eval_control.toolInvalidatesEval;
 pub const gateTool = @import("agent_tool_gate.zig").gateTool;
 pub const firstWord = @import("agent_tool_gate.zig").firstWord;
@@ -288,8 +289,20 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
                 "completion blocked: workspace state is not verified; run eval and meet the target after the final change";
             return .{ .text = message, .is_error = true };
         }
+        const goal_active = !self.sub and self.goal != null and self.goal.?.status == .active;
+        const open = goal_state.openCount(self.todos.items, goal_state.currentEpoch(self.goal));
+        if (goal_state.completionDecision(goal_active, open, self.completion_gate_armed) == .refuse_open_checklist) {
+            self.completion_gate_armed = true; // second call this turn closes the goal anyway
+            return .{ .text = try goal_state.completionRefusalText(self.arena, open, self.renderTodos()), .is_error = true };
+        }
         const result = if (call.input.object.get("result")) |r| r.string else "";
         self.completed = try self.arena.dupe(u8, result);
+        if (goal_active) {
+            self.goal.?.status = .complete; // a normal completion ends the goal - not only /loop's controller (#318)
+            self.goal.?.updated_ms = util.unixMs(self.io);
+            if (self.tracer) |t| t.note("goal", "completed via attempt_completion");
+            try self.say("\xf0\x9f\x8e\xaf standing goal complete\n", .{});
+        }
         // Skip the re-print only when the result streamed live in full.
         if (!self.sub and !self.argStreamedFully(call)) try self.say("{s}\n", .{result});
         return .{ .text = "completion recorded", .is_error = false };
@@ -300,6 +313,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     }
     if (std.mem.eql(u8, call.name, "todo_write")) {
         self.todos.clearRetainingCapacity();
+        const epoch = goal_state.currentEpoch(self.goal); // items belong to the goal that authored them (#318)
         if (call.input.object.get("todos")) |list| if (list == .array) {
             for (list.array.items) |item| {
                 if (item != .object) continue;
@@ -309,6 +323,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
                 try self.todos.append(self.arena, .{
                     .content = try self.arena.dupe(u8, content.string),
                     .status = try self.arena.dupe(u8, status),
+                    .epoch = epoch,
                 });
             }
         };

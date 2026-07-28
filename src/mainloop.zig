@@ -23,6 +23,7 @@ const fleet = @import("fleet.zig");
 const jobs = @import("jobs.zig");
 const session = @import("session.zig");
 const repl_glue = @import("repl_glue.zig");
+const goal_state = @import("goal_state.zig");
 const eval_memory = @import("eval_memory.zig");
 const mainloop_score = @import("mainloop_score.zig");
 const mainloop_trace = @import("mainloop_trace.zig");
@@ -53,13 +54,6 @@ pub const Ctx = struct {
     sys_normal: []const u8,
     sys_strict: []const u8,
 };
-
-/// True only when a nonempty live checklist is entirely completed (#226).
-fn allTodosDone(root: *agent_mod.Agent) bool {
-    if (root.todos.items.len == 0) return false;
-    for (root.todos.items) |t| if (!std.mem.eql(u8, t.status, "completed")) return false;
-    return true;
-}
 
 /// Run turns until EOF/quit; main then performs final save/worktree cleanup.
 pub fn run(ctx: *Ctx) !void {
@@ -303,11 +297,10 @@ pub fn run(ctx: *Ctx) !void {
             continue;
         }
 
-        // Persistent goal steering: the objective plus a nudge to track it as a
-        // live todo_write checklist, with the current list appended so the model
-        // resumes the plan instead of re-deriving it (assembled by goalSteeringNote).
-        const todos_render: []const u8 = if (ctx.root.todos.items.len > 0) ctx.root.renderTodos() else "";
-        const goal_note = if (ctx.root.review_mode) "" else try repl_glue.goalSteeringNote(ctx.arena, ctx.root.goal, todos_render);
+        // Persistent goal steering (#318): the diff-gated standing-goal note
+        // plus a one-shot supersession note when /goal was replaced or cleared.
+        // The checklist is NOT re-injected - it lives in todo_write results.
+        var goal_msg: []const u8 = try goal_state.applyGoalSteering(ctx.arena, ctx.root, base_msg);
         const eval_note = if (ctx.root.review_mode) "" else try repl_glue.evalSteeringNote(
             ctx.arena,
             ctx.root.eval_cmd,
@@ -317,15 +310,13 @@ pub fn run(ctx: *Ctx) !void {
             ctx.root.eval_repair_pending,
             eval_memory.load(ctx.root),
         );
-        var goal_msg: []const u8 = base_msg;
-        if (goal_note.len > 0) goal_msg = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ goal_msg, goal_note });
         if (eval_note.len > 0) goal_msg = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ goal_msg, eval_note });
 
         // /loop asks the model to work autonomously through plan→act→verify.
         const loop_msg: []const u8 = if (loop_prompt != null) try std.fmt.allocPrint(ctx.arena,
             \\{s}
             \\
-            \\[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps.]
+            \\[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps. Track multi-step work with todo_write and finish by calling attempt_completion with the final result - that ends the loop. A turn that uses no tools also ends the loop, so if the prompt needs no tool work, just answer it.]
         , .{goal_msg}) else goal_msg;
 
         const msg: []const u8 = if (!main_mod.plan_mode or ctx.root.review_mode) loop_msg else try std.fmt.allocPrint(ctx.arena,
@@ -401,6 +392,7 @@ pub fn run(ctx: *Ctx) !void {
         } else 0;
         ctx.root.tools_used.clear(ctx.io); // per-turn tool log for the turn's node
         ctx.root.tool_calls_this_turn = 0;
+        ctx.root.completion_gate_armed = false; // the open-checklist double-check is per turn (#318)
         ctx.root.seen_tool_keys.clearRetainingCapacity();
         if (main_mod.json_mode) ctx.root.emit(.{ .type = "started", .provider = ctx.root.provider.id, .model = ctx.root.provider.model });
         if (ctx.interactive and !main_mod.json_mode) {
@@ -557,6 +549,7 @@ pub fn run(ctx: *Ctx) !void {
             // 80–95% a transient compaction failure can recover next turn.
             const near_cap = ctx.root.provider.nearContextLimit(session_context_tokens);
             ctx.root.compactOrRecover(near_cap);
+            ctx.root.goal_note_fp = 0; // history rewritten - re-state goal steering in full next turn (#318)
         }
 
         // #226: /loop controller-authorized continuation. After a cleanly-
@@ -569,7 +562,13 @@ pub fn run(ctx: *Ctx) !void {
         // never resumes the loop.
         if (loop_prompt != null and !main_mod.json_mode) {
             if (!is_loop_continuation) loop_iters_left = loop_iter_cap; // fresh /loop run: arm the bound
-            const model_done = ctx.root.completed != null or allTodosDone(ctx.root);
+            // A turn that used no tools is a natural finish (codex RegularTask
+            // semantics): without this, a /loop on a one-turn prompt burned all
+            // 25 continuations inventing follow-on work. attempt_completion is
+            // budget-exempt and does not count, so text+completion still lands here.
+            const model_done = ctx.root.completed != null or
+                goal_state.allDone(ctx.root.todos.items, goal_state.currentEpoch(ctx.root.goal)) or
+                ctx.root.tool_calls_this_turn == 0;
             const gstatus: agent_mod.GoalStatus = if (ctx.root.goal) |g| g.status else .active;
             switch (repl_glue.continuationDecision(gstatus, model_done, loop_iters_left)) {
                 .continue_turn => {
