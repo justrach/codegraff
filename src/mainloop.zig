@@ -549,7 +549,6 @@ pub fn run(ctx: *Ctx) !void {
             // 80–95% a transient compaction failure can recover next turn.
             const near_cap = ctx.root.provider.nearContextLimit(session_context_tokens);
             ctx.root.compactOrRecover(near_cap);
-            ctx.root.goal_note_fp = 0; // history rewritten - re-state goal steering in full next turn (#318)
         }
 
         // #226: /loop controller-authorized continuation. After a cleanly-
@@ -562,13 +561,14 @@ pub fn run(ctx: *Ctx) !void {
         // never resumes the loop.
         if (loop_prompt != null and !main_mod.json_mode) {
             if (!is_loop_continuation) loop_iters_left = loop_iter_cap; // fresh /loop run: arm the bound
-            // A turn that used no tools is a natural finish (codex RegularTask
-            // semantics): without this, a /loop on a one-turn prompt burned all
-            // 25 continuations inventing follow-on work. attempt_completion is
-            // budget-exempt and does not count, so text+completion still lands here.
-            const model_done = ctx.root.completed != null or
-                goal_state.allDone(ctx.root.todos.items, goal_state.currentEpoch(ctx.root.goal)) or
-                ctx.root.tool_calls_this_turn == 0;
+            // work_done: the model asserted completion or finished the checklist
+            // - the only evidence that may complete the goal below. A zero-tool
+            // turn additionally ends the LOOP (codex RegularTask semantics: no
+            // /loop should burn 25 continuations on a one-turn prompt) but it
+            // proves nothing about the goal, so it never touches goal status.
+            const work_done = ctx.root.completed != null or
+                goal_state.allDone(ctx.root.todos.items, goal_state.currentEpoch(ctx.root.goal));
+            const model_done = work_done or ctx.root.tool_calls_this_turn == 0;
             const gstatus: agent_mod.GoalStatus = if (ctx.root.goal) |g| g.status else .active;
             switch (repl_glue.continuationDecision(gstatus, model_done, loop_iters_left)) {
                 .continue_turn => {
@@ -578,7 +578,7 @@ pub fn run(ctx: *Ctx) !void {
                 .stop => |outcome| {
                     loop_iters_left = 0;
                     loop_continue_armed = false;
-                    if (outcome == .accepted) if (ctx.root.goal) |*g| {
+                    if (outcome == .accepted and work_done) if (ctx.root.goal) |*g| {
                         if (g.status == .active) g.status = .complete; // the loop drove the goal to done
                     };
                     try ctx.out.print("{s}↩ /loop stopped — {s}{s}\n", .{ style.dim, @tagName(outcome), style.reset });

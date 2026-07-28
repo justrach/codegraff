@@ -15,7 +15,6 @@ const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 
 const agent_mod = @import("agent.zig");
-const goal_state = @import("goal_state.zig");
 const provider_mod = @import("provider.zig");
 const util = @import("util.zig");
 const Agent = agent_mod.Agent;
@@ -473,9 +472,11 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.goal = goal;
     root.todos.clearRetainingCapacity(); // never inherit another conversation's checklist (#318)
     if (obj.get("todos")) |tv| try appendTodosFromValue(arena, &root.todos, tv);
-    if (root.goal) |*g| if (g.status == .active and goal_state.allDone(root.todos.items, g.epoch)) {
-        g.status = .complete; // restored active with a finished checklist -> reconcile, don't re-run it (#318)
-    };
+    // Steering gate state belongs to the previous conversation (#318): drop any
+    // queued one-shot note and force a full goal-note re-statement next turn.
+    root.pending_goal_note = null;
+    root.goal_note_fp = 0;
+    root.goal_note_age = 0;
     root.session_title = title;
     // Rebase the saved server-only delta onto today's prompt/tool-schema input.
     restoreContextMeter(root, saved_context_tokens, saved_local_tokens);

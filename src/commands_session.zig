@@ -139,6 +139,13 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.print("\xf0\x9f\x8e\xaf Goal: {s}\nStatus: {s}. Checklist: {d} item(s) open. Commands: /goal pause | resume | clear.\n", .{ g.objective, @tagName(g.status), open });
             } else try out.writeAll("No active goal. Set one with /goal <objective>.\n");
         } else if (std.ascii.eqlIgnoreCase(text, "clear") or std.ascii.eqlIgnoreCase(text, "off")) {
+            if (root.goal == null) {
+                // Nothing to clear: leave an unscoped (epoch-0) working checklist
+                // alone rather than destroying it and steering about a phantom goal.
+                try out.writeAll("No active goal. Set one with /goal <objective>.\n");
+                try out.flush();
+                return true;
+            }
             const open = goal_state.openCount(root.todos.items, goal_state.currentEpoch(root.goal));
             root.goal = null;
             root.todos.clearRetainingCapacity(); // the goal's checklist closes with it (#318)

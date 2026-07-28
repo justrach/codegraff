@@ -166,6 +166,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     self.messages = fresh;
     self.last_context_tokens = 0;
     self.context_local_tokens = 0;
+    self.goal_note_fp = 0; // the injected goal note died with the old history - re-state in full (#318)
     installed_summary = true;
     if (!main_mod.json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
     return summary.len;
@@ -390,6 +391,7 @@ pub fn emergencyTrim(self: *Agent) usize {
         var fresh = std.json.Array.init(self.arena);
         for (self.messages.items[cut..]) |m| fresh.append(m) catch return 0;
         self.messages = fresh;
+        self.goal_note_fp = 0; // trimmed history may have carried the goal note (#318)
         const after_tokens = self.fullInputEstimateTokens();
         accountForReclaimedTokens(self, before_tokens -| after_tokens);
         return cut;

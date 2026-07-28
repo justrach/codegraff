@@ -289,15 +289,13 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
                 "completion blocked: workspace state is not verified; run eval and meet the target after the final change";
             return .{ .text = message, .is_error = true };
         }
-        const goal_active = !self.sub and self.goal != null and self.goal.?.status == .active;
-        const open = goal_state.openCount(self.todos.items, goal_state.currentEpoch(self.goal));
-        if (goal_state.completionDecision(goal_active, open, self.completion_gate_armed) == .refuse_open_checklist) {
-            self.completion_gate_armed = true; // second call this turn closes the goal anyway
-            return .{ .text = try goal_state.completionRefusalText(self.arena, open, self.renderTodos()), .is_error = true };
+        if (try goal_state.completionGate(self.arena, self)) |refusal| {
+            self.completion_gate_armed = true; // an explicit second call this turn closes anyway
+            return .{ .text = refusal, .is_error = true };
         }
         const result = if (call.input.object.get("result")) |r| r.string else "";
         self.completed = try self.arena.dupe(u8, result);
-        if (goal_active) {
+        if (goal_state.goalActive(self)) {
             self.goal.?.status = .complete; // a normal completion ends the goal - not only /loop's controller (#318)
             self.goal.?.updated_ms = util.unixMs(self.io);
             if (self.tracer) |t| t.note("goal", "completed via attempt_completion");

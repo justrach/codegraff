@@ -280,6 +280,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         root.last_context_tokens = 0;
         root.context_local_tokens = 0;
         root.compact_transport_failures = 0;
+        root.goal_note_fp = 0; // the goal note may have been in the dropped turns (#318)
         // Restore files written/edited during the rewound turns, and re-point the
         // turn counter so the next prompt re-takes turn n.
         var restored: usize = 0;

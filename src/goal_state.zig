@@ -103,17 +103,36 @@ pub fn applyGoalSteering(arena: Allocator, root: *Agent, base: []const u8) ![]co
     return msg;
 }
 
-pub const CompletionAction = enum { accept, refuse_open_checklist };
-
-/// Cline-style double-check: the first attempt_completion while the standing
-/// goal's checklist still has open items is refused (with the list echoed); a
-/// second call closes the goal anyway. No goal, or a clean checklist, accepts.
-pub fn completionDecision(goal_active: bool, open_todos: usize, retry_armed: bool) CompletionAction {
-    if (!goal_active or open_todos == 0 or retry_armed) return .accept;
-    return .refuse_open_checklist;
+/// Root-only, non-review: does this agent carry an active standing goal?
+/// Review turns and subagents share the root Agent struct but not its goal,
+/// so they must never gate on it or complete it.
+pub fn goalActive(agent: *Agent) bool {
+    return !agent.sub and !agent.review_mode and agent.goal != null and agent.goal.?.status == .active;
 }
 
-/// The refusal text for completionDecision's .refuse_open_checklist arm.
+/// True when any todo belongs to `epoch` (the goal has a checklist at all).
+pub fn hasCurrent(todos: []const TodoItem, epoch: u64) bool {
+    for (todos) |t| if (t.epoch == epoch) return true;
+    return false;
+}
+
+/// Goal gate for attempt_completion (Cline-style double-check): returns refusal
+/// text when completion must be deferred - the checklist has open items, or the
+/// goal has no checklist at all so there is no evidence it is done - and null
+/// to accept. The armed flag (set by the caller on refusal, reset each turn)
+/// lets an explicit second call close the goal anyway.
+pub fn completionGate(arena: Allocator, agent: *Agent) !?[]const u8 {
+    if (!goalActive(agent)) return null;
+    if (agent.completion_gate_armed) return null;
+    const epoch = currentEpoch(agent.goal);
+    const open = openCount(agent.todos.items, epoch);
+    if (open > 0) return try completionRefusalText(arena, open, renderTodos(agent));
+    if (!hasCurrent(agent.todos.items, epoch))
+        return "completion deferred: the standing goal has no checklist yet, so there is no evidence the objective is done. If it truly is, call attempt_completion again to close the goal; otherwise write the remaining plan with todo_write and work it.";
+    return null; // nonempty checklist, every item completed
+}
+
+/// The refusal text for completionGate's open-checklist arm.
 pub fn completionRefusalText(arena: Allocator, open: usize, rendered: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "completion deferred: the standing goal still has {d} open checklist item(s):\n{s}\nFinish them, or call attempt_completion again to close the goal anyway (open items will be parked).", .{ open, rendered });
 }
@@ -214,11 +233,35 @@ test "steeringGate: inject on change, suppress repeats, refresh after the interv
     try std.testing.expect(g4.inject and g4.age == 0);
 }
 
-test "completionDecision: goal-scoped double-check (#318)" {
-    try std.testing.expectEqual(CompletionAction.accept, completionDecision(false, 3, false)); // no goal: informal todos never block
-    try std.testing.expectEqual(CompletionAction.accept, completionDecision(true, 0, false)); // clean checklist
-    try std.testing.expectEqual(CompletionAction.refuse_open_checklist, completionDecision(true, 2, false)); // first call refused
-    try std.testing.expectEqual(CompletionAction.accept, completionDecision(true, 2, true)); // explicit second call closes anyway
+test "completionGate: open list refused once, no-checklist needs confirm, done list accepts, review exempt (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root: Agent = undefined;
+    root.sub = false;
+    root.review_mode = false;
+    root.arena = ar;
+    root.todos = .empty;
+    root.completion_gate_armed = false;
+    root.goal = .{ .objective = "ship", .epoch = 1 };
+    // No checklist yet: first call must confirm; an armed second call closes.
+    const r1 = try completionGate(ar, &root);
+    try std.testing.expect(r1 != null and std.mem.indexOf(u8, r1.?, "no checklist") != null);
+    root.completion_gate_armed = true;
+    try std.testing.expect((try completionGate(ar, &root)) == null);
+    // Open current-epoch item: refused with the count.
+    root.completion_gate_armed = false;
+    try root.todos.append(ar, .{ .content = "a", .status = "pending", .epoch = 1 });
+    const r2 = try completionGate(ar, &root);
+    try std.testing.expect(r2 != null and std.mem.indexOf(u8, r2.?, "1 open") != null);
+    // Fully completed checklist: accepted immediately.
+    root.todos.items[0].status = "completed";
+    try std.testing.expect((try completionGate(ar, &root)) == null);
+    // Review turns never gate (isolated reviews share the root Agent).
+    root.review_mode = true;
+    root.todos.items[0].status = "pending";
+    try std.testing.expect((try completionGate(ar, &root)) == null);
+    try std.testing.expect(!goalActive(&root));
 }
 
 test "applyGoalSteering: injects once, suppresses repeats, consumes the one-shot note" {
