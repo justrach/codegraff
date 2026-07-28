@@ -291,11 +291,13 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         }
         if (try goal_state.completionGate(self.arena, self)) |refusal| {
             self.completion_gate_armed = true; // an explicit second call this turn closes anyway
+            if (!self.sub) try self.say("\xe2\x8f\xb8 completion deferred \xe2\x80\x94 the standing goal's checklist isn't settled\n", .{});
             return .{ .text = refusal, .is_error = true };
         }
         const result = if (call.input.object.get("result")) |r| r.string else "";
         self.completed = try self.arena.dupe(u8, result);
         if (goal_state.goalActive(self)) {
+            _ = goal_state.closeEpoch(&self.todos, self.goal.?.epoch); // completion closes the checklist (the deferral text's parking promise)
             self.goal.?.status = .complete; // a normal completion ends the goal - not only /loop's controller (#318)
             self.goal.?.updated_ms = util.unixMs(self.io);
             if (self.tracer) |t| t.note("goal", "completed via attempt_completion");

@@ -63,6 +63,21 @@ pub fn parkSuperseded(todos: *std.ArrayList(TodoItem), keep_epoch: u64) usize {
     return parked_open;
 }
 
+/// Close `epoch`'s checklist: remove all its items. A completed (or force-
+/// closed) goal takes its list with it - the deferral text promises open items
+/// are parked, and /goal status must never read "complete" with items open.
+pub fn closeEpoch(todos: *std.ArrayList(TodoItem), epoch: u64) usize {
+    var removed: usize = 0;
+    var i: usize = 0;
+    while (i < todos.items.len) {
+        if (todos.items[i].epoch == epoch) {
+            _ = todos.orderedRemove(i);
+            removed += 1;
+        } else i += 1;
+    }
+    return removed;
+}
+
 /// A fresh goal set while an unscoped (pre-goal) checklist exists adopts it:
 /// the user just formalized the objective the plan was already serving.
 pub fn adoptTodos(todos: []TodoItem, epoch: u64) void {
@@ -202,6 +217,9 @@ test "parkSuperseded drops other epochs, counts open ones, keeps the new epoch (
     try std.testing.expectEqual(@as(usize, 1), parked); // only the OPEN phase3 item counts
     try std.testing.expectEqual(@as(usize, 1), todos.items.len);
     try std.testing.expectEqualStrings("phase2 test", todos.items[0].content);
+    // Completing epoch 2 closes its checklist entirely (the parking promise).
+    try std.testing.expectEqual(@as(usize, 1), closeEpoch(&todos, 2));
+    try std.testing.expectEqual(@as(usize, 0), todos.items.len);
 }
 
 test "adoptTodos re-stamps a pre-goal checklist into the new goal's epoch" {
