@@ -17,6 +17,7 @@ const Allocator = std.mem.Allocator;
 const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
 const util = @import("util.zig");
+const goal_state = @import("goal_state.zig");
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const unixMs = util.unixMs;
@@ -294,7 +295,7 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
 /// objective + status + created/updated timestamps (an unknown/missing status
 /// falls back to .active). Pure (no Io) so it round-trips in unit tests. Returns
 /// null for an empty/absent objective.
-fn goalFromValue(v: Value, now_ms: i64) ?agent_mod.Goal {
+pub fn goalFromValue(v: Value, now_ms: i64) ?agent_mod.Goal {
     if (v == .string) {
         if (v.string.len == 0) return null;
         return .{ .objective = v.string, .status = .active, .created_ms = now_ms, .updated_ms = now_ms };
@@ -315,7 +316,7 @@ fn goalFromValue(v: Value, now_ms: i64) ?agent_mod.Goal {
 /// Parse the persisted `todos` array (#318). The caller clears the list first
 /// so nothing from a previous conversation survives a resume. Pure (no Io) so
 /// it round-trips in unit tests.
-fn appendTodosFromValue(arena: Allocator, todos: *std.ArrayList(agent_mod.TodoItem), v: Value) !void {
+pub fn appendTodosFromValue(arena: Allocator, todos: *std.ArrayList(agent_mod.TodoItem), v: Value) !void {
     if (v != .array) return;
     for (v.array.items) |item| {
         if (item != .object) continue;
@@ -472,6 +473,9 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.goal = goal;
     root.todos.clearRetainingCapacity(); // never inherit another conversation's checklist (#318)
     if (obj.get("todos")) |tv| try appendTodosFromValue(arena, &root.todos, tv);
+    root.todos_dirty = false; // restored todos are persisted state, never this-process completion evidence (#318)
+    // #318: retire a restored-active goal whose checklist is already finished.
+    if (goal_state.reconcileRestored(root)) if (root.tracer) |t| t.note("goal", "reconciled-complete");
     // Steering gate state belongs to the previous conversation (#318): drop any
     // queued one-shot note and force a full goal-note re-statement next turn.
     root.pending_goal_note = null;

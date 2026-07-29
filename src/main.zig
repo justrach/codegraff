@@ -593,4 +593,5 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = @import("scoring_slot_test.zig");
     _ = @import("readline_history.zig");
     _ = @import("goal_state.zig");
+    _ = @import("goal_persist_tests.zig");
 }
