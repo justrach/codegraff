@@ -152,7 +152,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             }
             const open = goal_state.openCount(root.todos.items, goal_state.currentEpoch(root.goal));
             root.goal = null; // the checklist PARKS with the goal (#318): items keep their epoch and stay in the session, they just stop being current
-            goal_state.rearmCompletionGate(root);
+            goal_state.resetCompletionGate(root);
             root.goal_note_fp = 0;
             if (root.tracer) |t| t.note("goal", "cleared");
             saveSession(root, arena, root.session_name) catch {};
@@ -199,7 +199,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             }
             root.goal = .{ .objective = try arena.dupe(u8, text), .status = .active, .epoch = epoch, .created_ms = now, .updated_ms = now };
             root.goal_note_fp = 0;
-            goal_state.rearmCompletionGate(root); // a new objective is new evidence for the completion double-check
+            goal_state.resetCompletionGate(root); // a new objective is new evidence for the completion double-check
             saveSession(root, arena, root.session_name) catch {};
             try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; it steers every turn until /goal pause or /goal clear).\n", .{text});
         }

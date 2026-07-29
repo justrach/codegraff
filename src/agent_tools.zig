@@ -315,7 +315,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     if (std.mem.eql(u8, call.name, "todo_write")) {
         const epoch = goal_state.currentEpoch(self.goal); // items belong to the goal that authored them (#318)
         _ = goal_state.clearEpoch(&self.todos, epoch); // replace THIS epoch's list; parked items from earlier goals survive
-        goal_state.rearmCompletionGate(self); // a new checklist is new evidence for the completion double-check
+        goal_state.resetCompletionGate(self); // a new checklist is new evidence for the completion double-check
         if (call.input.object.get("todos")) |list| if (list == .array) {
             for (list.array.items) |item| {
                 if (item != .object) continue;

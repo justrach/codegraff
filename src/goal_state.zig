@@ -111,10 +111,11 @@ pub fn noteCompletionRefused(root: *Agent) void {
     root.completion_refused = true;
 }
 
-/// Re-arm the completion double-check because the evidence changed: todo_write
+/// Reset the completion double-check because the evidence changed: todo_write
 /// wrote a new current-epoch checklist, or /goal set|replace|clear moved the
-/// objective. The next attempt_completion is checked against the new state.
-pub fn rearmCompletionGate(root: *Agent) void {
+/// objective. Clearing the arm makes the NEXT attempt_completion get checked
+/// against the new state instead of riding a refusal the model already answered.
+pub fn resetCompletionGate(root: *Agent) void {
     root.completion_gate_armed = false;
 }
 
@@ -333,8 +334,8 @@ test "the completion double-check survives the turn boundary, re-arms on change 
     try std.testing.expect(!root.completion_refused);
     try std.testing.expect(root.completion_gate_armed);
     try std.testing.expect((try completionGate(ar, &root)) == null);
-    // New evidence (todo_write, or a /goal change) re-arms the double-check.
-    rearmCompletionGate(&root);
+    // New evidence (todo_write, or a /goal change) restores the double-check.
+    resetCompletionGate(&root);
     try std.testing.expect((try completionGate(ar, &root)) != null);
 }
 
