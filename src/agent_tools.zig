@@ -290,14 +290,15 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
             return .{ .text = message, .is_error = true };
         }
         if (try goal_state.completionGate(self.arena, self)) |refusal| {
-            self.completion_gate_armed = true; // an explicit second call this turn closes anyway
+            goal_state.noteCompletionRefused(self); // arm the double-check (across turns) and mark the turn as worked (#318)
             if (!self.sub) try self.say("\xe2\x8f\xb8 completion deferred \xe2\x80\x94 the standing goal's checklist isn't settled\n", .{});
             return .{ .text = refusal, .is_error = true };
         }
         const result = if (call.input.object.get("result")) |r| r.string else "";
         self.completed = try self.arena.dupe(u8, result);
         if (goal_state.goalActive(self)) {
-            _ = goal_state.closeEpoch(&self.todos, self.goal.?.epoch); // completion closes the checklist (the deferral text's parking promise)
+            // .complete retires the epoch (goal_state.currentEpoch): the checklist
+            // parks - readable, no longer current - instead of being deleted (#318).
             self.goal.?.status = .complete; // a normal completion ends the goal - not only /loop's controller (#318)
             self.goal.?.updated_ms = util.unixMs(self.io);
             if (self.tracer) |t| t.note("goal", "completed via attempt_completion");
@@ -312,8 +313,9 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return self.runEval(note);
     }
     if (std.mem.eql(u8, call.name, "todo_write")) {
-        self.todos.clearRetainingCapacity();
         const epoch = goal_state.currentEpoch(self.goal); // items belong to the goal that authored them (#318)
+        _ = goal_state.clearEpoch(&self.todos, epoch); // replace THIS epoch's list; parked items from earlier goals survive
+        goal_state.rearmCompletionGate(self); // a new checklist is new evidence for the completion double-check
         if (call.input.object.get("todos")) |list| if (list == .array) {
             for (list.array.items) |item| {
                 if (item != .object) continue;
@@ -327,7 +329,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
                 });
             }
         };
-        const rendered = self.renderTodos();
+        const rendered = self.renderTodos(epoch);
         if (!self.sub) try self.say("{s}\n", .{rendered});
         return .{ .text = rendered, .is_error = false };
     }
@@ -353,7 +355,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     }
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
-    return .{ .text = self.renderTodos(), .is_error = false };
+    return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };
 }
 
 /// The "user message as a tool" half of the loop: the agent calls

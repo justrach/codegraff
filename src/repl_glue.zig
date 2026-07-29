@@ -192,6 +192,7 @@ test "goalSteeringNote: active-only gate, completion contract, and no embedded c
 /// the transcript so #219's ledger can later record it verbatim). Budget-free.
 pub const ContinuationOutcome = enum {
     accepted, // the goal's checklist is complete (or the goal itself is complete)
+    idle, // the turn did no tool work and asserted nothing - the loop stops, but nothing is done (#318)
     exhausted, // hit the hard per-/loop iteration bound with work still open
     blocked, // the goal is blocked and needs the user
     cancelled, // the goal was paused — the user stepped in
@@ -206,21 +207,34 @@ pub const ContinuationDecision = union(enum) {
 /// authorized by CONTROLLER STATE, never by the model merely stopping. An active
 /// goal with the checklist still open and iterations left keeps going; a
 /// completed checklist, a paused/blocked/complete goal, or a spent iteration
-/// bound each yield the matching named terminal outcome. No budgets.
+/// bound each yield the matching named terminal outcome. No budgets. `accepted`
+/// is reserved for real evidence of completion: a turn that merely did nothing
+/// stops as `idle` (#318), so the transcript label never overstates the outcome.
 pub fn continuationDecision(
     goal_status: agent_mod.GoalStatus,
-    todos_all_completed: bool,
+    work_done: bool,
+    model_stopped: bool,
     iters_left: u32,
 ) ContinuationDecision {
-    if (todos_all_completed) return .{ .stop = .accepted };
+    if (work_done) return .{ .stop = .accepted };
     switch (goal_status) {
         .paused => return .{ .stop = .cancelled },
         .blocked => return .{ .stop = .blocked },
         .complete => return .{ .stop = .accepted },
         .active => {},
     }
+    if (model_stopped) return .{ .stop = .idle };
     if (iters_left == 0) return .{ .stop = .exhausted };
     return .continue_turn;
+}
+
+/// Did this turn genuinely stop working? Zero tool calls is the model declining
+/// to act - but a REFUSED attempt_completion is exempt from the tool counter,
+/// and that is exactly a turn where the model acted and got an is_error back to
+/// react to. Reading it as silence killed the /loop on the very turn the
+/// completion gate meant to keep alive (#318).
+pub fn turnStopped(tool_calls: u64, completion_refused: bool) bool {
+    return tool_calls == 0 and !completion_refused;
 }
 
 /// The steering appended to each autonomous /loop continuation turn (the
@@ -233,18 +247,32 @@ pub fn continuationSteeringNote(arena: Allocator, todos_render: []const u8) ![]c
 }
 
 test "continuationDecision: one assertion per branch (#226)" {
-    // todos all complete -> accepted, regardless of status/iters.
-    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.active, true, 5).stop);
+    // work asserted or the checklist finished -> accepted, regardless of iters.
+    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.active, true, false, 5).stop);
     // active + open todos + iterations left -> continue.
-    try std.testing.expect(std.meta.activeTag(continuationDecision(.active, false, 5)) == .continue_turn);
+    try std.testing.expect(std.meta.activeTag(continuationDecision(.active, false, false, 5)) == .continue_turn);
     // active + open todos + iteration bound spent -> exhausted.
-    try std.testing.expectEqual(ContinuationOutcome.exhausted, continuationDecision(.active, false, 0).stop);
+    try std.testing.expectEqual(ContinuationOutcome.exhausted, continuationDecision(.active, false, false, 0).stop);
     // paused -> cancelled (the user stepped in).
-    try std.testing.expectEqual(ContinuationOutcome.cancelled, continuationDecision(.paused, false, 5).stop);
+    try std.testing.expectEqual(ContinuationOutcome.cancelled, continuationDecision(.paused, false, false, 5).stop);
     // blocked -> blocked.
-    try std.testing.expectEqual(ContinuationOutcome.blocked, continuationDecision(.blocked, false, 5).stop);
+    try std.testing.expectEqual(ContinuationOutcome.blocked, continuationDecision(.blocked, false, false, 5).stop);
     // complete -> accepted.
-    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.complete, false, 5).stop);
+    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.complete, false, false, 5).stop);
+}
+
+test "a zero-tool turn stops as idle, not accepted; a refused completion keeps the loop (#318)" {
+    // The model stopped with the checklist still open: the loop ends, but
+    // labelling that `accepted` claimed a goal was done that nobody finished.
+    try std.testing.expectEqual(ContinuationOutcome.idle, continuationDecision(.active, false, true, 5).stop);
+    // Real evidence still earns `accepted`.
+    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.active, true, true, 5).stop);
+    // A refused attempt_completion is work, so the turn is not "stopped" ...
+    try std.testing.expect(turnStopped(0, false));
+    try std.testing.expect(!turnStopped(0, true));
+    try std.testing.expect(!turnStopped(3, false));
+    // ... and the loop runs another turn so the model can react to the refusal.
+    try std.testing.expect(std.meta.activeTag(continuationDecision(.active, false, turnStopped(0, true), 5)) == .continue_turn);
 }
 
 test "continuationSteeringNote: renders checklist when present, generic otherwise (#226)" {

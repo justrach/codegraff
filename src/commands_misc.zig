@@ -27,6 +27,7 @@ const sessionAge = session.sessionAge;
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
+const goal_state = @import("goal_state.zig");
 const jobs = @import("jobs.zig");
 const subagent = @import("subagent.zig"); // #276 P0-3: g_agent_jobs, for /jobs
 
@@ -133,7 +134,10 @@ fn showModelsHealth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     if (try commands_privacy.tryHandle(root, line, out)) return true;
     if (std.mem.eql(u8, line, "/todo")) {
-        try out.print("{s}\n", .{root.renderTodos()});
+        const epoch = goal_state.currentEpoch(root.goal);
+        try out.print("{s}\n", .{root.renderTodos(epoch)});
+        const parked = goal_state.parkedOpenCount(root.todos.items, epoch);
+        if (parked > 0) try out.print("(+{d} unfinished item(s) parked from an earlier goal \xe2\x80\x94 kept in the session, not steering)\n", .{parked});
         try out.flush();
         return true;
     }

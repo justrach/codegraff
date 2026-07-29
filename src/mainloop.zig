@@ -93,7 +93,7 @@ pub fn run(ctx: *Ctx) !void {
             // here, so an interrupted/errored turn does not resume the loop.
             loop_continue_armed = false;
             is_loop_continuation = true;
-            const todos_render = if (ctx.root.todos.items.len > 0) ctx.root.renderTodos() else "";
+            const todos_render = goal_state.renderCurrent(ctx.root); // current epoch only: parked work never re-enters a /loop turn (#318)
             const note = try repl_glue.continuationSteeringNote(ctx.arena, todos_render);
             break :blk try std.fmt.allocPrint(ctx.arena, "/loop {s}", .{note});
         } else if (ctx.interactive) blk: {
@@ -392,7 +392,7 @@ pub fn run(ctx: *Ctx) !void {
         } else 0;
         ctx.root.tools_used.clear(ctx.io); // per-turn tool log for the turn's node
         ctx.root.tool_calls_this_turn = 0;
-        ctx.root.completion_gate_armed = false; // the open-checklist double-check is per turn (#318)
+        goal_state.beginTurn(ctx.root); // per-turn gate flags; the ARMED double-check is NOT one of them (#318)
         ctx.root.seen_tool_keys.clearRetainingCapacity();
         if (main_mod.json_mode) ctx.root.emit(.{ .type = "started", .provider = ctx.root.provider.id, .model = ctx.root.provider.model });
         if (ctx.interactive and !main_mod.json_mode) {
@@ -562,15 +562,15 @@ pub fn run(ctx: *Ctx) !void {
         if (loop_prompt != null and !main_mod.json_mode) {
             if (!is_loop_continuation) loop_iters_left = loop_iter_cap; // fresh /loop run: arm the bound
             // work_done: the model asserted completion or finished the checklist
-            // - the only evidence that may complete the goal below. A zero-tool
-            // turn additionally ends the LOOP (codex RegularTask semantics: no
-            // /loop should burn 25 continuations on a one-turn prompt) but it
-            // proves nothing about the goal, so it never touches goal status.
+            // - the only evidence that may complete the goal, and the only thing
+            // that earns `accepted`. A zero-tool turn ends the LOOP as `idle`
+            // (codex RegularTask semantics: no /loop burns 25 continuations on a
+            // one-turn prompt); a refused attempt_completion is work, not silence.
             const work_done = ctx.root.completed != null or
                 goal_state.allDone(ctx.root.todos.items, goal_state.currentEpoch(ctx.root.goal));
-            const model_done = work_done or ctx.root.tool_calls_this_turn == 0;
+            const model_stopped = repl_glue.turnStopped(ctx.root.tool_calls_this_turn, ctx.root.completion_refused);
             const gstatus: agent_mod.GoalStatus = if (ctx.root.goal) |g| g.status else .active;
-            switch (repl_glue.continuationDecision(gstatus, model_done, loop_iters_left)) {
+            switch (repl_glue.continuationDecision(gstatus, work_done, model_stopped, loop_iters_left)) {
                 .continue_turn => {
                     loop_iters_left -= 1; // consume one credit for the queued continuation
                     loop_continue_armed = true;
