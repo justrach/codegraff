@@ -567,7 +567,7 @@ pub fn run(ctx: *Ctx) !void {
             // (codex RegularTask semantics: no /loop burns 25 continuations on a
             // one-turn prompt); a refused attempt_completion is work, not silence.
             const work_done = ctx.root.completed != null or
-                goal_state.allDone(ctx.root.todos.items, goal_state.currentEpoch(ctx.root.goal));
+                goal_state.checklistFinished(ctx.root); // a checklist restored from disk is not evidence (#318)
             const model_stopped = repl_glue.turnStopped(ctx.root.tool_calls_this_turn, ctx.root.completion_refused);
             const gstatus: agent_mod.GoalStatus = if (ctx.root.goal) |g| g.status else .active;
             switch (repl_glue.continuationDecision(gstatus, work_done, model_stopped, loop_iters_left)) {

@@ -87,9 +87,15 @@ pub fn clearEpoch(todos: *std.ArrayList(TodoItem), epoch: u64) usize {
 /// exists adopts it: the user just formalized the objective the plan was already
 /// serving. Only `from_epoch` items move - work parked by a finished or
 /// superseded goal stays parked and is never resurrected into the new objective.
+/// Only OPEN items are adopted: a completed item is finished work, and carrying
+/// it into the new epoch made the fresh goal born "done" - openCount 0 with a
+/// checklist present, so the completion gate's confirm-once arm was skipped and
+/// the goal was completable before any of its work happened (#318). Completed
+/// items keep their old epoch, i.e. they park.
 pub fn adoptTodos(todos: []TodoItem, from_epoch: u64, to_epoch: u64) void {
     for (todos) |*t| {
-        if (t.epoch == from_epoch) t.epoch = to_epoch;
+        if (t.epoch != from_epoch or std.mem.eql(u8, t.status, "completed")) continue;
+        t.epoch = to_epoch;
     }
 }
 
@@ -109,6 +115,39 @@ pub fn beginTurn(root: *Agent) void {
 pub fn noteCompletionRefused(root: *Agent) void {
     root.completion_gate_armed = true;
     root.completion_refused = true;
+}
+
+/// Did the checklist finish in THIS process? `allDone` alone is not evidence:
+/// todos persist, so a checklist completed in a PREVIOUS session made the next
+/// /loop stop at iteration 1 as `accepted` and flipped the restored goal to
+/// complete with zero work done (#318). The freshness flag also covers the
+/// goal == null case, where an all-completed epoch-0 leftover satisfies allDone
+/// on a bare /loop. Only todo_write sets it; loadSession, /clear and /new clear it.
+pub fn checklistFinished(root: *const Agent) bool {
+    if (!root.todos_dirty) return false;
+    return allDone(root.todos.items, currentEpoch(root.goal));
+}
+
+/// todo_write just rewrote the current epoch's checklist: the completion
+/// double-check gets fresh evidence to check against, and the list becomes
+/// this-process evidence for /loop termination (#318).
+pub fn noteTodoWrite(root: *Agent) void {
+    resetCompletionGate(root);
+    root.todos_dirty = true;
+}
+
+/// Load-time reconciliation (#318): a session that finished its checklist but
+/// quit without calling attempt_completion persists {goal .active, all-[x]
+/// list} - models routinely finish work without that call. Restoring it verbatim
+/// re-steers the resumed session at work already done, which is #318's literal
+/// complaint surviving the resume boundary. Retire the goal instead. Returns
+/// true when it reconciled so the caller can note it. `allDone` is false on an
+/// empty epoch (#226), so a goal that never wrote a checklist is left alone.
+pub fn reconcileRestored(root: *Agent) bool {
+    const g = root.goal orelse return false;
+    if (g.status != .active or !allDone(root.todos.items, g.epoch)) return false;
+    root.goal.?.status = .complete;
+    return true;
 }
 
 /// Reset the completion double-check because the evidence changed: todo_write
@@ -279,7 +318,7 @@ test "parking retains: superseded items are counted and kept, never deleted (#31
     try std.testing.expectEqualStrings("phase3 audit", todos.items[0].content);
 }
 
-test "adoptTodos moves the current epoch only; parked work is never resurrected" {
+test "adoptTodos takes OPEN current-epoch items only; finished and parked work stays put" {
     var todos = [_]TodoItem{
         .{ .content = "a", .status = "pending", .epoch = 0 },
         .{ .content = "b", .status = "completed", .epoch = 0 },
@@ -287,8 +326,84 @@ test "adoptTodos moves the current epoch only; parked work is never resurrected"
     };
     adoptTodos(&todos, 0, 5);
     try std.testing.expectEqual(@as(u64, 5), todos[0].epoch);
-    try std.testing.expectEqual(@as(u64, 5), todos[1].epoch);
+    try std.testing.expectEqual(@as(u64, 0), todos[1].epoch); // finished work is not the new goal's plan
     try std.testing.expectEqual(@as(u64, 3), todos[2].epoch);
+    // The new goal inherits only real remaining work, so its accounting is honest.
+    try std.testing.expectEqual(@as(usize, 1), openCount(&todos, 5));
+    try std.testing.expect(!allDone(&todos, 5));
+}
+
+test "a goal formalized over an already-finished list adopts nothing and is not born done (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root: Agent = undefined;
+    root.sub = false;
+    root.review_mode = false;
+    root.arena = ar;
+    root.todos = .empty;
+    root.completion_gate_armed = false;
+    root.goal = null;
+    try root.todos.append(ar, .{ .content = "done before the goal", .status = "completed", .epoch = 0 });
+    adoptTodos(root.todos.items, currentEpoch(root.goal), 1);
+    root.goal = .{ .objective = "ship", .epoch = 1 };
+    try std.testing.expect(!hasCurrent(root.todos.items, 1)); // nothing adopted
+    // Without this the goal would satisfy "checklist present, 0 open" on turn 1
+    // and complete before any of its work happened; now the gate asks first.
+    const r = try completionGate(ar, &root);
+    try std.testing.expect(r != null and std.mem.indexOf(u8, r.?, "no checklist") != null);
+}
+
+test "checklistFinished demands THIS process's todo_write; a restored all-[x] list is inert (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root: Agent = undefined;
+    root.arena = ar;
+    root.todos = .empty;
+    root.goal = null;
+    root.todos_dirty = false; // exactly what loadSession leaves behind
+    try root.todos.append(ar, .{ .content = "old work", .status = "completed", .epoch = 0 });
+    // The goal == null variant: a bare /loop must not stop at iteration 1 just
+    // because a previous session left a finished epoch-0 list on disk.
+    try std.testing.expect(allDone(root.todos.items, 0));
+    try std.testing.expect(!checklistFinished(&root));
+    root.goal = .{ .objective = "ship", .epoch = 2, .status = .active };
+    try root.todos.append(ar, .{ .content = "restored item", .status = "completed", .epoch = 2 });
+    try std.testing.expect(!checklistFinished(&root)); // same for a restored goal's own list
+    // todo_write in this process is the evidence, and it clears the gate arm too.
+    root.completion_gate_armed = true;
+    noteTodoWrite(&root);
+    try std.testing.expect(root.todos_dirty and !root.completion_gate_armed);
+    try std.testing.expect(checklistFinished(&root));
+    // An open item in the current epoch still blocks it.
+    try root.todos.append(ar, .{ .content = "new work", .status = "pending", .epoch = 2 });
+    try std.testing.expect(!checklistFinished(&root));
+}
+
+test "reconcileRestored retires a restored-active goal whose checklist is already done (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root: Agent = undefined;
+    root.arena = ar;
+    root.todos = .empty;
+    root.goal = null;
+    try std.testing.expect(!reconcileRestored(&root)); // no goal
+    root.goal = .{ .objective = "ship", .epoch = 2, .status = .active };
+    try std.testing.expect(!reconcileRestored(&root)); // no checklist is not "done" (#226)
+    try root.todos.append(ar, .{ .content = "a", .status = "completed", .epoch = 2 });
+    try root.todos.append(ar, .{ .content = "b", .status = "pending", .epoch = 2 });
+    try std.testing.expect(!reconcileRestored(&root)); // still open work
+    root.todos.items[1].status = "completed";
+    try std.testing.expect(reconcileRestored(&root));
+    try std.testing.expectEqual(agent_mod.GoalStatus.complete, root.goal.?.status);
+    try std.testing.expect(!reconcileRestored(&root)); // idempotent: only an ACTIVE goal reconciles
+    // A retired goal stops steering and stops rendering its parked list.
+    try std.testing.expectEqualStrings("", renderCurrent(&root));
+    // Parked work from an earlier goal never triggers reconciliation.
+    root.goal = .{ .objective = "next", .epoch = 3, .status = .active };
+    try std.testing.expect(!reconcileRestored(&root));
 }
 
 test "renderTodos is epoch-scoped; renderCurrent goes quiet on a dead epoch (#318)" {

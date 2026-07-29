@@ -59,6 +59,7 @@ const setTerminalTitle = title_mod.setTerminalTitle;
 fn resetConversationSteering(root: *Agent) void {
     root.goal = null;
     root.completion_gate_armed = false; // a dropped goal re-arms the completion double-check (#318)
+    root.todos_dirty = false; // the conversation's checklist dies with it; nothing survives as /loop evidence (#318)
     root.ultracode_mode = false;
     root.pending_goal_note = null; // a queued supersession note dies with the conversation (#318)
     root.goal_note_fp = 0;

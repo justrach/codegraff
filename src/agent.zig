@@ -134,6 +134,7 @@ pub const Agent = struct {
     pending_goal_note: ?[]const u8 = null, // one-shot supersession note for the next turn (/goal replace|clear)
     completion_gate_armed: bool = false, // attempt_completion was refused; the promised second call closes the goal. Persists ACROSS turns (a model emits one per turn) until the checklist or goal changes (#318)
     completion_refused: bool = false, // a refused attempt_completion this turn: work the model must react to, so /loop must not read the turn as zero-tool (#318)
+    todos_dirty: bool = false, // todo_write ran in THIS process: a checklist restored from disk is persisted state, never evidence that the current prompt is done (#318)
     session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
     session_title: ?[]const u8 = null, // human-readable title/rename metadata
     sys_strict: []const u8 = prompts.main_system_prompt_strict,
