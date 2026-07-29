@@ -130,14 +130,14 @@ const base_specs = [_]ToolSpec{
 const meta_specs = [_]ToolSpec{
     .{
         .name = "todo_write",
-        .desc = "Replace your task list. Use to plan and track multi-step work. Each item has content and status (pending|in_progress|completed). The list belongs to the current standing goal; when a goal is replaced or cleared its items are parked automatically.",
+        .desc = "Replace the task list for the current standing goal (items from a replaced, cleared or completed goal are parked - kept in the session, but not part of this list and not replaced by this call). Use to plan and track multi-step work. Each item has content and status (pending|in_progress|completed).",
         .schema =
         \\{"type": "object", "properties": {"todos": {"type": "array", "items": {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}}, "required": ["content", "status"]}}}, "required": ["todos"]}
         ,
     },
     .{
         .name = "todo_read",
-        .desc = "Read your current task list.",
+        .desc = "Read your current task list (the current goal's items; work parked by an earlier goal is not included).",
         .schema = empty_schema,
     },
     .{
