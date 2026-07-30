@@ -114,23 +114,23 @@ pub fn run(ctx: *Ctx) !void {
         title_jobs.poll(ctx);
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
-        // `/loop [<n>s|m|h] <prompt>`: an unambiguous duration arms this run's wall clock; anything else is prompt.
-        const loop_budget: ?goal_pacing.LoopBudget = if (main_mod.json_mode) null else goal_pacing.loopBudgetFromLine(line);
-        const loop_prompt: ?[]const u8 = if (loop_budget) |b| b.prompt else null;
-        // A fresh line starts (or ends) a /loop run: the wall clock begins here, stale todos_dirty is
+        // `/goal [30m] <objective>` and `/loop [30m] <prompt>` are ONE autonomous run: same
+        // plan-act-verify machine, same controller, same optional wall clock. Only /goal also
+        // adopts a standing objective (goal_pacing.autonomousFromLine).
+        const goal_objective: ?[]const u8 = if (main_mod.json_mode) null else repl_glue.goalPromptFromLine(line);
+        const auto: ?goal_pacing.Autonomous = if (main_mod.json_mode) null else try goal_pacing.autonomousFromLine(ctx.arena, line, goal_objective);
+        const loop_prompt: ?[]const u8 = if (auto) |a| a.prompt else null;
+        // A fresh line starts (or ends) a run: the wall clock begins here, stale todos_dirty is
         // dropped (a checklist finished BEFORE this prompt ended the next run at iteration 1, #318),
         // and an armed budget is echoed - a silently-eaten "5m" reads exactly like a truncated prompt.
-        if (!is_loop_continuation) try goal_pacing.armAndAnnounce(&loop_clock, ctx.root, ctx.out, ctx.arena, util.unixMs(ctx.io), loop_budget);
+        if (!is_loop_continuation) try goal_pacing.armAndAnnounce(&loop_clock, ctx.root, ctx.out, ctx.arena, util.unixMs(ctx.io), if (auto) |a| a.budget() else null);
         var review_prompt: ?[]const u8 = if (!main_mod.json_mode) review.promptFromLine(line) else null;
-        // /goal <objective>: set the standing goal AND run it as the first turn right away — codex/opencode
-        // both start the loop on a goal instead of just recording it (the parse itself is in repl_glue).
-        const goal_prompt: ?[]const u8 = if (main_mod.json_mode) null else repl_glue.goalPromptFromLine(line);
         if (!main_mod.json_mode) {
             const l = if (line.len > 0 and line[0] == '/') line[1..] else line;
             if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
         }
 
-        if (!main_mod.json_mode and repl_glue.isSlashCommandLine(line) and loop_prompt == null and goal_prompt == null and review_prompt == null) {
+        if (!main_mod.json_mode and repl_glue.isSlashCommandLine(line) and auto == null and review_prompt == null) {
             // Bare "/" on a TTY: open the filterable command menu.
             if (ctx.interactive and line.len == 1) {
                 if (pickers.listPicker(ctx.root, ctx.arena, ctx.out, "Command ›", &pickers.command_menu)) |idx| {
@@ -142,14 +142,14 @@ pub fn run(ctx: *Ctx) !void {
             continue;
         }
 
-        // /goal <objective>: apply the goal (handleCommand sets root.goal, saves,
-        // and prints), then fall through to run a turn on it immediately.
-        if (goal_prompt != null) try main_mod.handleCommand(ctx.root, ctx.keys, ctx.arena, line, ctx.out);
+        // /goal <objective>: adopt the standing goal first (handleCommand sets
+        // root.goal, saves, prints), then run it on the autonomous machine below.
+        if (auto) |a| if (a.goal_line) |gl| try main_mod.handleCommand(ctx.root, ctx.keys, ctx.arena, gl, ctx.out);
 
         // JSON lines may run a user turn, mutate the system prompt, or append a score.
         var json_request: ?std.json.Parsed(Value) = null;
         defer if (json_request) |*request| request.deinit();
-        const base_msg: []const u8 = if (review_prompt) |rp| rp else if (loop_prompt) |lp| lp else if (goal_prompt) |gp| gp else if (main_mod.json_mode) blk: {
+        const base_msg: []const u8 = if (review_prompt) |rp| rp else if (loop_prompt) |lp| lp else if (main_mod.json_mode) blk: {
             json_request = std.json.parseFromSlice(Value, ctx.gpa, line, .{ .allocate = .alloc_if_needed }) catch {
                 ctx.root.emit(.{ .type = "error", .message = "invalid JSON (expect {\"type\":\"user\",\"text\":\"...\"})" });
                 continue;
@@ -319,11 +319,11 @@ pub fn run(ctx: *Ctx) !void {
         );
         if (eval_note.len > 0) goal_msg = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ goal_msg, eval_note });
 
-        // /loop asks the model to work autonomously through plan→act→verify.
+        // /goal and /loop both ask the model to work autonomously (plan→act→verify).
         const loop_msg: []const u8 = if (loop_prompt != null) try std.fmt.allocPrint(ctx.arena,
             \\{s}
             \\
-            \\[harness note: /loop was used. Work autonomously until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps. Track multi-step work with todo_write and finish by calling attempt_completion with the final result - that ends the loop. A turn that uses no tools also ends the loop, so if the prompt needs no tool work, just answer it.]
+            \\[harness note: this is an autonomous run. Work until the prompt is satisfied: make a brief plan, execute it with tools, verify the result, and only stop when you can report completion or you need a required human decision. Keep iterations tight and avoid asking for confirmation between routine steps. Track multi-step work with todo_write and finish by calling attempt_completion with the final result - that ends the run. A turn that uses no tools also ends it, so if the prompt needs no tool work, just answer it.]
         , .{goal_msg}) else goal_msg;
 
         const msg: []const u8 = if (!main_mod.plan_mode or ctx.root.review_mode) loop_msg else try std.fmt.allocPrint(ctx.arena,
@@ -582,7 +582,7 @@ pub fn run(ctx: *Ctx) !void {
                     // Only work_done reaches `accepted`, so the loop drove the
                     // goal to done; a --goal standing objective outlives it (#318).
                     if (outcome == .accepted) _ = goal_flow.acceptLoopOutcome(ctx.root);
-                    try ctx.out.print("{s}↩ /loop stopped — {s}{s}\n", .{ style.dim, @tagName(outcome), style.reset });
+                    try ctx.out.print("{s}↩ run stopped — {s}{s}\n", .{ style.dim, @tagName(outcome), style.reset });
                     try ctx.out.flush();
                 },
             }

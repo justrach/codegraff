@@ -591,6 +591,7 @@ test { // pull in tests from imported modules (mcp.zig)
     // they silently compile to nothing and the suite still reports green.
     _ = @import("scoring_slot_test.zig");
     _ = @import("readline_history.zig");
+    _ = @import("goal_pacing_autonomous_test.zig");
     _ = @import("goal_state.zig");
     _ = @import("goal_persist_tests.zig");
     _ = @import("goal_flow.zig");

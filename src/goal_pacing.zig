@@ -71,6 +71,49 @@ pub fn loopBudgetFromLine(line: []const u8) ?LoopBudget {
     return parseLoopBudget(line["/loop".len..]);
 }
 
+/// One autonomous run, however it was asked for. `/goal <objective>` and
+/// `/loop <prompt>` are the same machine: plan, act, verify, and let the
+/// controller decide whether another turn is authorized. They differ in one
+/// bit - whether the objective becomes STANDING - so they stopped being two
+/// commands and became one with a flag. Both take the same optional duration
+/// prefix (`/goal 30m ship it`).
+pub const Autonomous = struct {
+    /// The text the turn actually runs on, duration prefix removed.
+    prompt: []const u8,
+    deadline_ms_delta: ?i64 = null,
+    /// The `/goal ...` command to apply before the first turn (duration
+    /// stripped, so the objective never records "30m"). Null for `/loop`,
+    /// which runs autonomously without adopting a standing objective.
+    goal_line: ?[]const u8 = null,
+
+    /// The wall-clock half, for arming the run.
+    pub fn budget(self: Autonomous) LoopBudget {
+        return .{ .deadline_ms_delta = self.deadline_ms_delta, .prompt = self.prompt };
+    }
+};
+
+/// Parse an autonomous invocation off an input line. `/goal` with a lifecycle
+/// word (pause/resume/status/clear) or bare is NOT one - those stay commands,
+/// which is why the objective parse still lives in repl_glue.goalPromptFromLine
+/// and is passed in here as `goal_objective`.
+pub fn autonomousFromLine(arena: Allocator, line: []const u8, goal_objective: ?[]const u8) !?Autonomous {
+    if (goal_objective) |obj| {
+        const b = parseLoopBudget(obj);
+        return .{
+            .prompt = b.prompt,
+            .deadline_ms_delta = b.deadline_ms_delta,
+            // Rebuild the command only when a duration was stripped, so the
+            // common path stays allocation-free and byte-identical.
+            .goal_line = if (b.deadline_ms_delta == null)
+                line
+            else
+                try std.fmt.allocPrint(arena, "/goal {s}", .{b.prompt}),
+        };
+    }
+    const b = loopBudgetFromLine(line) orelse return null;
+    return .{ .prompt = b.prompt, .deadline_ms_delta = b.deadline_ms_delta };
+}
+
 /// The wall clock of ONE /loop run: when it started and when it must stop.
 /// Run-local like LoopListGate and never persisted - a fresh run, a user steer
 /// and a stop all reset it. The deadline is mirrored onto the Agent so a
