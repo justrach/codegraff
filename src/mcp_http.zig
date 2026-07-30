@@ -5,6 +5,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp_oauth = @import("mcp_oauth.zig");
+const mcp_protocol = @import("mcp_protocol.zig");
 
 const max_http_response = 1 << 20;
 
@@ -29,6 +30,36 @@ fn validRemoteUri(uri: std.Uri) bool {
 
 pub fn validRemoteUrl(url: []const u8) bool {
     return validRemoteUri(std.Uri.parse(url) catch return false);
+}
+
+/// Per-request header inputs, modern vs legacy. `name` is the tool name for
+/// a `tools/call` (rendered as `Mcp-Name`); leave null for `tools/list` and
+/// `server/discover`, which have none.
+pub const RequestMeta = struct {
+    protocol_version: []const u8,
+    method: []const u8,
+    name: ?[]const u8 = null,
+    modern: bool,
+};
+
+/// Build the extra headers for one Streamable HTTP POST. Modern requests get
+/// `Mcp-Method`/`Mcp-Name` and never `Mcp-Session-Id` (no session is ever
+/// minted in the stateless wire format); legacy requests get the negotiated
+/// `Mcp-Session-Id` when one exists and never `Mcp-Method`/`Mcp-Name`, so a
+/// dual-era server can't mistake a legacy request for a modern one.
+pub fn buildHeaders(a: Allocator, http: *const HttpTransport, meta: RequestMeta, bearer: ?[]const u8) ![]std.http.Header {
+    var headers: std.ArrayList(std.http.Header) = .empty;
+    try headers.appendSlice(a, http.headers);
+    if (bearer) |token| try headers.append(a, .{ .name = "authorization", .value = try std.fmt.allocPrint(a, "Bearer {s}", .{token}) });
+    try headers.append(a, .{ .name = "accept", .value = "application/json, text/event-stream" });
+    try headers.append(a, .{ .name = "mcp-protocol-version", .value = meta.protocol_version });
+    if (meta.modern) {
+        try headers.append(a, .{ .name = "mcp-method", .value = meta.method });
+        if (meta.name) |name| try headers.append(a, .{ .name = "mcp-name", .value = try mcp_protocol.headerValue(a, name) });
+    } else if (http.session_id) |session_id| {
+        try headers.append(a, .{ .name = "mcp-session-id", .value = session_id });
+    }
+    return headers.toOwnedSlice(a);
 }
 
 pub fn matchingResponse(a: Allocator, bytes: []const u8, id: i64) ?Value {
@@ -294,4 +325,65 @@ test "parseHttpResponse accepts JSON and Streamable HTTP SSE" {
     const event = parseHttpResponse(a, sse, 8).?;
     try std.testing.expectEqual(@as(i64, 8), event.object.get("id").?.integer);
     try std.testing.expect(parseHttpResponse(a, sse, 9) == null);
+}
+
+fn findHeader(headers: []const std.http.Header, name: []const u8) ?[]const u8 {
+    for (headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
+    return null;
+}
+
+test "buildHeaders: modern tools/call carries Mcp-Method/Mcp-Name, never a session id" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var http: HttpTransport = .{ .url = "https://example/mcp", .client = .{ .allocator = std.testing.allocator, .io = std.testing.io } };
+    const headers = try buildHeaders(a, &http, .{
+        .protocol_version = mcp_protocol.modern_protocol,
+        .method = "tools/call",
+        .name = "search",
+        .modern = true,
+    }, null);
+    try std.testing.expectEqualStrings("tools/call", findHeader(headers, "mcp-method").?);
+    try std.testing.expectEqualStrings("search", findHeader(headers, "mcp-name").?);
+    try std.testing.expectEqualStrings(mcp_protocol.modern_protocol, findHeader(headers, "mcp-protocol-version").?);
+    try std.testing.expectEqualStrings("application/json, text/event-stream", findHeader(headers, "accept").?);
+    try std.testing.expect(findHeader(headers, "mcp-session-id") == null);
+    // Structurally guaranteed to match modern_meta's embedded protocolVersion,
+    // asserted anyway per the migration spec's design note.
+    try std.testing.expect(std.mem.indexOf(u8, mcp_protocol.modern_meta, mcp_protocol.modern_protocol) != null);
+}
+
+test "buildHeaders: legacy carries the negotiated session id, never Mcp-Method/Mcp-Name" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var http: HttpTransport = .{
+        .url = "https://example/mcp",
+        .client = .{ .allocator = std.testing.allocator, .io = std.testing.io },
+        .session_id = "sess-123",
+    };
+    const headers = try buildHeaders(a, &http, .{
+        .protocol_version = "2025-06-18",
+        .method = "tools/call",
+        .name = "search",
+        .modern = false,
+    }, null);
+    try std.testing.expectEqualStrings("sess-123", findHeader(headers, "mcp-session-id").?);
+    try std.testing.expectEqualStrings("2025-06-18", findHeader(headers, "mcp-protocol-version").?);
+    try std.testing.expect(findHeader(headers, "mcp-method") == null);
+    try std.testing.expect(findHeader(headers, "mcp-name") == null);
+}
+
+test "buildHeaders: modern tools/list omits Mcp-Name" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var http: HttpTransport = .{ .url = "https://example/mcp", .client = .{ .allocator = std.testing.allocator, .io = std.testing.io } };
+    const headers = try buildHeaders(a, &http, .{
+        .protocol_version = mcp_protocol.modern_protocol,
+        .method = "tools/list",
+        .modern = true,
+    }, null);
+    try std.testing.expectEqualStrings("tools/list", findHeader(headers, "mcp-method").?);
+    try std.testing.expect(findHeader(headers, "mcp-name") == null);
 }
