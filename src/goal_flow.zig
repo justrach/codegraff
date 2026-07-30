@@ -9,6 +9,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const agent_mod = @import("agent.zig");
 const goal_state = @import("goal_state.zig");
+const repl_glue = @import("repl_glue.zig");
 const Agent = agent_mod.Agent;
 const TodoItem = agent_mod.TodoItem;
 
@@ -115,6 +116,24 @@ test "--goal seeded onto a resumed session lands above every restored epoch (#31
     try std.testing.expectEqual(@as(usize, 0), goal_state.openCount(root.todos.items, 4));
     try std.testing.expect(!goal_state.allDone(root.todos.items, 4)); // nothing of its own is "done"
     try std.testing.expectEqual(@as(usize, 2), root.todos.items.len); // and nothing was deleted
+}
+
+test "a leftover complete goal cannot end a fresh /loop at iteration 1 (#318)" {
+    // After a resume reconciliation - or any earlier run that retired the goal -
+    // root.goal is .complete while a NEW /loop starts. The controller read the
+    // status before the work and stopped at its first decision as `accepted`, so
+    // a run that had done nothing reported success.
+    const zero_tools = repl_glue.turnStopped(0, false);
+    try std.testing.expect(zero_tools);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, repl_glue.continuationDecision(.complete, false, zero_tools, 25).stop);
+    // Real work under the same leftover goal still earns accepted, and an
+    // ongoing run keeps its iterations - the status decides nothing either way.
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, repl_glue.continuationDecision(.complete, true, zero_tools, 25).stop);
+    try std.testing.expect(std.meta.activeTag(repl_glue.continuationDecision(.complete, false, false, 25)) == .continue_turn);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.exhausted, repl_glue.continuationDecision(.complete, false, false, 0).stop);
+    // paused/blocked are the user's business and are untouched.
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.cancelled, repl_glue.continuationDecision(.paused, false, false, 25).stop);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.blocked, repl_glue.continuationDecision(.blocked, false, false, 25).stop);
 }
 
 test "a cleared goal's finished checklist cannot be reborn as the next goal's list (#318)" {

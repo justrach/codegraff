@@ -224,10 +224,10 @@ pub const ContinuationDecision = union(enum) {
 /// Pure controller decision for /loop continuation (#226): continuation is
 /// authorized by CONTROLLER STATE, never by the model merely stopping. An active
 /// goal with the checklist still open and iterations left keeps going; a
-/// completed checklist, a paused/blocked/complete goal, or a spent iteration
-/// bound each yield the matching named terminal outcome. No budgets. `accepted`
-/// is reserved for real evidence of completion: a turn that merely did nothing
-/// stops as `idle` (#318), so the transcript label never overstates the outcome.
+/// paused or blocked goal, or a spent iteration bound, yields the matching
+/// named terminal outcome. No budgets. `accepted` is reserved for real evidence
+/// of completion: a turn that merely did nothing stops as `idle` (#318), and a
+/// goal that was already complete when the run started decides nothing at all.
 pub fn continuationDecision(
     goal_status: agent_mod.GoalStatus,
     work_done: bool,
@@ -238,8 +238,12 @@ pub fn continuationDecision(
     switch (goal_status) {
         .paused => return .{ .stop = .cancelled },
         .blocked => return .{ .stop = .blocked },
-        .complete => return .{ .stop = .accepted },
-        .active => {},
+        // A goal completed DURING this run already stopped it through work_done
+        // (attempt_completion sets root.completed) or through mainloop's
+        // flip-then-stop, so .complete here is a LEFTOVER objective from an
+        // earlier run or a resume reconciliation. It must not label a fresh
+        // /loop `accepted` at iteration 1 before anything happened (#318).
+        .complete, .active => {},
     }
     if (model_stopped) return .{ .stop = .idle };
     if (iters_left == 0) return .{ .stop = .exhausted };
@@ -275,8 +279,9 @@ test "continuationDecision: one assertion per branch (#226)" {
     try std.testing.expectEqual(ContinuationOutcome.cancelled, continuationDecision(.paused, false, false, 5).stop);
     // blocked -> blocked.
     try std.testing.expectEqual(ContinuationOutcome.blocked, continuationDecision(.blocked, false, false, 5).stop);
-    // complete -> accepted.
-    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.complete, false, false, 5).stop);
+    // a LEFTOVER complete goal governs nothing: work decides, exactly as .active.
+    try std.testing.expect(std.meta.activeTag(continuationDecision(.complete, false, false, 5)) == .continue_turn);
+    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.complete, true, false, 5).stop);
 }
 
 test "a zero-tool turn stops as idle, not accepted; a refused completion keeps the loop (#318)" {
