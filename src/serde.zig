@@ -292,6 +292,22 @@ pub fn writeKimiTools(s: *std.json.Stringify, arena: Allocator, raw: []const u8)
     try s.write(value);
 }
 
+/// Serialize one chat-completions history message. Everything is echoed
+/// verbatim except an assistant tool-call turn whose `content` is null, which
+/// several providers reject — that one is rebuilt with `content: ""`.
+///
+/// Retained reasoning (the ARC-AGI-3 setting): the rebuild copies EVERY other
+/// field through, so a streamed `reasoning_content` / `reasoning` that
+/// assembleOpenAI folded into the assistant message goes back out on the next
+/// request. That is deliberate, not incidental. DeepSeek's thinking mode makes
+/// the replay mandatory ("the reasoning_content in the thinking mode must be
+/// passed back to the API" — a 400 once the turn contained a tool call), and
+/// Moonshot/Kimi ask for the assistant message to be passed back as-is so the
+/// model can reuse its own chain. Do not add a strip here. If a provider ever
+/// rejects the field, gate the removal on that provider id rather than dropping
+/// it for everyone. (Kimi k2.6 additionally needs `thinking.keep` on the
+/// request before the server will USE the replayed reasoning; see the audit
+/// note in the ARC parity work.)
 pub fn writeOpenAIMessageNormalized(s: *std.json.Stringify, m: Value) !void {
     if (m != .object) return s.write(m);
     const role = if (m.object.get("role")) |v| (if (v == .string) v.string else "") else "";

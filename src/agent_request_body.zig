@@ -276,3 +276,202 @@ test "Kimi request body follows live native or Anthropic protocol metadata" {
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"content\":[{\"type\":\"text\",\"text\":\"hello\",\"cache_control\":{\"type\":\"ephemeral\"}}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"input_schema\":{\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\"}") != null);
 }
+
+// ── Retained-reasoning wire-format regressions ──────────────────────────────
+// OpenAI's ARC-AGI-3 result showed that keeping a model's reasoning across
+// turns (rather than dropping it once a turn ends) is worth a large capability
+// jump. graff already retains it on all three wire formats, but only as a side
+// effect of echoing provider output verbatim into history — nothing pinned that
+// behavior down, so a future normalization pass could silently drop it and no
+// test would fail. These three tests assert the retention at the point it
+// matters: the bytes that go on the wire.
+
+fn testUserMessage(arena: std.mem.Allocator, text: []const u8) !Value {
+    var m: std.json.ObjectMap = .empty;
+    try m.put(arena, "role", .{ .string = "user" });
+    try m.put(arena, "content", .{ .string = text });
+    return .{ .object = m };
+}
+
+test "retained reasoning: openai-chat history replays reasoning_content on the next turn" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var messages = std.json.Array.init(arena);
+    try messages.append(try testUserMessage(arena, "count the files"));
+
+    // Assistant turn 1: streamed reasoning plus a tool call. content is null
+    // here, which is exactly the shape writeOpenAIMessageNormalized rebuilds
+    // field-by-field — the one place a replay could lose reasoning_content.
+    var call_fn: std.json.ObjectMap = .empty;
+    try call_fn.put(arena, "name", .{ .string = "bash" });
+    try call_fn.put(arena, "arguments", .{ .string = "{}" });
+    var call: std.json.ObjectMap = .empty;
+    try call.put(arena, "id", .{ .string = "c1" });
+    try call.put(arena, "type", .{ .string = "function" });
+    try call.put(arena, "function", .{ .object = call_fn });
+    var calls = std.json.Array.init(arena);
+    try calls.append(.{ .object = call });
+    var assistant_call: std.json.ObjectMap = .empty;
+    try assistant_call.put(arena, "role", .{ .string = "assistant" });
+    try assistant_call.put(arena, "content", .null);
+    try assistant_call.put(arena, "reasoning_content", .{ .string = "plan: list the directory" });
+    try assistant_call.put(arena, "tool_calls", .{ .array = calls });
+    try messages.append(.{ .object = assistant_call });
+
+    var tool_result: std.json.ObjectMap = .empty;
+    try tool_result.put(arena, "role", .{ .string = "tool" });
+    try tool_result.put(arena, "tool_call_id", .{ .string = "c1" });
+    try tool_result.put(arena, "content", .{ .string = "3 files" });
+    try messages.append(.{ .object = tool_result });
+
+    // Assistant turn 2: reasoning plus ordinary text (the verbatim path).
+    var assistant_text: std.json.ObjectMap = .empty;
+    try assistant_text.put(arena, "role", .{ .string = "assistant" });
+    try assistant_text.put(arena, "content", .{ .string = "there are 3" });
+    try assistant_text.put(arena, "reasoning_content", .{ .string = "the tool reported 3" });
+    try messages.append(.{ .object = assistant_text });
+
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = undefined,
+        .client = undefined,
+        .provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 128_000 },
+        .messages = messages,
+        .sub = false,
+        .label = "",
+        .out = null,
+        .sys_normal = "system",
+    };
+    const body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(body);
+
+    // Both turns' reasoning must reach the wire. DeepSeek's thinking mode
+    // REQUIRES the tool-call turn's reasoning_content to be replayed on every
+    // later request; dropping it is a hard 400, not a silent quality loss.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"plan: list the directory\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"the tool reported 3\"") != null);
+    // The null-content rebuild coerces content to "" (providers reject null
+    // alongside tool_calls) and must keep every other field, reasoning included.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"content\":\"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"content\":null") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"tool_calls\"") != null);
+}
+
+test "retained reasoning: anthropic replays thinking+signature inside a multi-step tool turn" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var messages = std.json.Array.init(arena);
+    try messages.append(try testUserMessage(arena, "fix the build"));
+
+    // Assistant turn: thinking block (with its signature) followed by tool_use.
+    // Anthropic requires the thinking block to be replayed unchanged, in place,
+    // when the turn that produced it contained a tool call — editing or dropping
+    // it is a signature/ordering 400.
+    var thinking_block: std.json.ObjectMap = .empty;
+    try thinking_block.put(arena, "type", .{ .string = "thinking" });
+    try thinking_block.put(arena, "thinking", .{ .string = "the linker flag is wrong" });
+    try thinking_block.put(arena, "signature", .{ .string = "sigabc" });
+    var use_block: std.json.ObjectMap = .empty;
+    try use_block.put(arena, "type", .{ .string = "tool_use" });
+    try use_block.put(arena, "id", .{ .string = "tu_1" });
+    try use_block.put(arena, "name", .{ .string = "bash" });
+    try use_block.put(arena, "input", .{ .object = .empty });
+    var assistant_blocks = std.json.Array.init(arena);
+    try assistant_blocks.append(.{ .object = thinking_block });
+    try assistant_blocks.append(.{ .object = use_block });
+    var assistant: std.json.ObjectMap = .empty;
+    try assistant.put(arena, "role", .{ .string = "assistant" });
+    try assistant.put(arena, "content", .{ .array = assistant_blocks });
+    try messages.append(.{ .object = assistant });
+
+    var result_block: std.json.ObjectMap = .empty;
+    try result_block.put(arena, "type", .{ .string = "tool_result" });
+    try result_block.put(arena, "tool_use_id", .{ .string = "tu_1" });
+    try result_block.put(arena, "content", .{ .string = "ok" });
+    var result_blocks = std.json.Array.init(arena);
+    try result_blocks.append(.{ .object = result_block });
+    var result_msg: std.json.ObjectMap = .empty;
+    try result_msg.put(arena, "role", .{ .string = "user" });
+    try result_msg.put(arena, "content", .{ .array = result_blocks });
+    try messages.append(.{ .object = result_msg });
+
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = undefined,
+        .client = undefined,
+        .provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude", .context = 1_000_000 },
+        .messages = messages,
+        .sub = false,
+        .label = "",
+        .out = null,
+        .sys_normal = "system",
+    };
+    const tools = "[{\"name\":\"bash\",\"description\":\"\",\"input_schema\":{\"type\":\"object\"}}]";
+    const body = try agent.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(body);
+
+    // Adaptive thinking is what enables interleaved reasoning between tool
+    // calls; it needs no beta header on current models.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"thinking\":{\"type\":\"adaptive\"}") != null);
+    // The whole block, signature included, survives the cache-breakpoint rewrite.
+    try std.testing.expect(std.mem.indexOf(u8, body, "{\"type\":\"thinking\",\"thinking\":\"the linker flag is wrong\",\"signature\":\"sigabc\"}") != null);
+    // A cache breakpoint belongs on the trailing tool_result, never on a
+    // thinking block (cache_control is not a valid field there).
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"signature\":\"sigabc\",\"cache_control\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"content\":\"ok\",\"cache_control\":{\"type\":\"ephemeral\"}") != null);
+}
+
+test "retained reasoning: codex full resend keeps encrypted reasoning items and requests them" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var messages = std.json.Array.init(arena);
+    try messages.append(try testUserMessage(arena, "refactor this"));
+    var reasoning_item: std.json.ObjectMap = .empty;
+    try reasoning_item.put(arena, "type", .{ .string = "reasoning" });
+    try reasoning_item.put(arena, "id", .{ .string = "rs_1" });
+    try reasoning_item.put(arena, "encrypted_content", .{ .string = "ENCBLOB" });
+    try messages.append(.{ .object = reasoning_item });
+    var fc: std.json.ObjectMap = .empty;
+    try fc.put(arena, "type", .{ .string = "function_call" });
+    try fc.put(arena, "call_id", .{ .string = "c1" });
+    try fc.put(arena, "name", .{ .string = "bash" });
+    try fc.put(arena, "arguments", .{ .string = "{}" });
+    try messages.append(.{ .object = fc });
+    var fco: std.json.ObjectMap = .empty;
+    try fco.put(arena, "type", .{ .string = "function_call_output" });
+    try fco.put(arena, "call_id", .{ .string = "c1" });
+    try fco.put(arena, "output", .{ .string = "done" });
+    try messages.append(.{ .object = fco });
+
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = undefined,
+        .client = undefined,
+        .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 272_000 },
+        .messages = messages,
+        .sub = false,
+        .label = "",
+        .out = null,
+        .sys_normal = "system",
+    };
+    const body = try agent.buildBody("[]", false, true, true);
+    defer std.testing.allocator.free(body);
+
+    // Ask the backend to hand reasoning back encrypted...
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"include\":[\"reasoning.encrypted_content\"]") != null);
+    // ...and send the prior turn's reasoning item straight back. store:false
+    // means the server keeps nothing, so this resend IS the retention.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"encrypted_content\":\"ENCBLOB\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"store\":false") != null);
+    // No live WS session -> no chaining, so the full input must carry it.
+    try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
+}
