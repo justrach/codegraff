@@ -88,19 +88,28 @@ pub fn summaryResponseComplete(self: *Agent, root: std.json.ObjectMap) bool {
 /// actual proof that compact() is wired to call pinChildTask: delete the call
 /// below and the compactPrelude test goes red, whereas pinChildTask's own
 /// isolated tests do not notice.
-pub fn compactPrelude(self: *Agent) bool {
-    if (self.messages.items.len == 0) return false;
+/// Everything compact() must do before it touches the network, returning the
+/// token figure the caller reports. Null means there is nothing to compact.
+///
+/// It returns that figure DELIBERATELY. An earlier version returned bool and
+/// only pinned, which left the call re-inlineable: deleting one line from
+/// compact() restored a plausible-looking empty-history check and a compacting
+/// child silently lost its task prompt again, with the suite fully green. Now
+/// compact() cannot drop the call without losing the number it prints, so the
+/// pin cannot be orphaned by a tidy-up that looks harmless.
+pub fn compactPrelude(self: *Agent) ?usize {
+    if (self.messages.items.len == 0) return null;
     pinChildTask(self);
-    return true;
+    self.last_request_context_overflow = false;
+    return self.effectiveContextTokens();
 }
 
 pub fn compact(self: *Agent) anyerror!usize {
-    if (!compactPrelude(self)) {
+    const pending_tokens = compactPrelude(self) orelse {
         if (!main_mod.json_mode) try self.say("nothing to compact\n", .{});
         return 0;
-    }
-    self.last_request_context_overflow = false;
-    if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens…]\n", .{self.effectiveContextTokens()});
+    };
+    if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens…]\n", .{pending_tokens});
     // #163: reclaim room BEFORE the summarization request so it fits under the
     // model's input cap. On codex/gpt-5.x an over-cap request fails to WRITE
     // (WriteFailed) rather than returning a clean overflow, so compaction could

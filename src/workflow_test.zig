@@ -11,6 +11,7 @@ const Value = std.json.Value;
 const workflow = @import("workflow.zig");
 const subagent = @import("subagent.zig");
 const subagent_run = @import("subagent_run.zig");
+const json_args = @import("json_args.zig");
 const tools = @import("tools.zig");
 const util = @import("util.zig");
 const ToolCtx = tools.ToolCtx;
@@ -208,4 +209,20 @@ test "a 5xx outage is transient, so a fan-out keeps retrying it (U1 regression g
     // A genuinely dead model still classifies as .model and still stops retrying.
     for ([_][]const u8{ "model unavailable", "no such model", "model_not_found" }) |detail|
         try std.testing.expectEqual(subagent_run.FailKind.model, subagent_run.classifyFailure(error.Unexpected, detail));
+}
+
+test "the ROOT permission gate refuses a malformed bash call instead of dereferencing it" {
+    // gateTool is root-only (subagents take the early return at its top), so
+    // the json_args guards added across the workflow/subagent paths in v0.0.223
+    // never covered it. A model that sends bash arguments as a bare string or
+    // array reaches this gate on the ordinary single-agent path.
+    for ([_]std.json.Value{ .{ .string = "rm -rf /" }, .null, .{ .integer = 7 } }) |bad|
+        try std.testing.expect(json_args.object(bad) == null);
+    // The shape the gate actually wants still resolves, so the guard is not
+    // simply refusing everything.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const good = try std.json.parseFromSliceLeaky(Value, arena_state.allocator(), "{\"command\":\"ls\"}", .{});
+    const ok = json_args.object(good) orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqualStrings("ls", ok.get("command").?.string);
 }

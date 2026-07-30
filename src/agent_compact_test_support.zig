@@ -24,6 +24,19 @@ pub fn subAgent(a: std.mem.Allocator, sub: bool) Agent {
     agent.todos = .empty;
     agent.goal = null;
     agent.task_prompt = null;
+    // compactPrelude reports the token figure compact() prints, so the estimate
+    // path has to be reachable: system prompt, tool json, provider context and
+    // the two meter anchors it reads.
+    agent.sys_override = null;
+    agent.sys_normal = "";
+    agent.sys_strict = "";
+    agent.strict = false;
+    agent.tools_anthropic = "";
+    agent.tools_openai = "";
+    agent.tools_responses = "";
+    agent.last_context_tokens = 0;
+    agent.context_local_tokens = 0;
+    agent.provider = .{ .id = "test", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "m", .context = 100_000 };
     return agent;
 }
 
@@ -60,10 +73,13 @@ test "compactPrelude actually pins a subagent's task - the wiring compact() depe
     const a = arena_state.allocator();
     var agent = subAgent(a, true);
     agent.messages = try msg1(a, "user", "TASK X");
-    try std.testing.expect(compact.compactPrelude(&agent));
+    // The prelude returns the token figure compact() prints, so the call
+    // cannot be dropped without losing that number - which is what stops the
+    // pin being orphaned by a plausible-looking tidy-up (G2).
+    try std.testing.expect(compact.compactPrelude(&agent) != null);
     try std.testing.expectEqualStrings("TASK X", agent.task_prompt.?);
 
     var empty = subAgent(a, true);
     empty.messages = std.json.Array.init(a);
-    try std.testing.expect(!compact.compactPrelude(&empty));
+    try std.testing.expect(compact.compactPrelude(&empty) == null);
 }

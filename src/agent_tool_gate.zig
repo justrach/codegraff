@@ -9,6 +9,7 @@ const tools_mod = @import("tools.zig");
 const ToolCall = tools_mod.ToolCall;
 const ExecResult = tools_mod.ExecResult;
 const mcp = @import("mcp.zig");
+const json_args = @import("json_args.zig");
 const Approvals = @import("approvals.zig").Approvals;
 const skills = @import("skills.zig");
 const companionTrusted = skills.companionTrusted;
@@ -152,7 +153,11 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             .is_error = true,
         };
         if (std.mem.eql(u8, call.name, "bash")) {
-            const cmd_val = call.input.object.get("command") orelse return null;
+            // Model-supplied: a non-object here is UB in a ReleaseFast build,
+            // and this gate is ROOT-only, so the subagent-path guards added in
+            // v0.0.223 never covered it.
+            const args = json_args.object(call.input) orelse return null;
+            const cmd_val = args.get("command") orelse return null;
             if (cmd_val != .string) return null;
             const cmd = std.mem.trim(u8, cmd_val.string, " \t");
             if (Approvals.readOnlyAllowed(cmd)) return null;
@@ -184,7 +189,8 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     var line_buf: [256]u8 = undefined;
     var prompt_line: []const u8 = undefined;
     if (std.mem.eql(u8, call.name, "bash")) {
-        const cmd_val = call.input.object.get("command") orelse return null;
+        const args = json_args.object(call.input) orelse return null; // model-supplied; UB in ReleaseFast without the tag check
+        const cmd_val = args.get("command") orelse return null;
         if (cmd_val != .string) return null;
         const cmd = std.mem.trim(u8, cmd_val.string, " \t");
         const destructive_git = Approvals.isDestructiveGit(cmd);
