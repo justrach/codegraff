@@ -260,15 +260,6 @@ pub fn turnStopped(tool_calls: u64, completion_refused: bool) bool {
     return tool_calls == 0 and !completion_refused;
 }
 
-/// The steering appended to each autonomous /loop continuation turn (the
-/// continuation_steering_item analog): keep working the checklist, verify, and
-/// stop only when done or blocked — not a per-turn user note.
-pub fn continuationSteeringNote(arena: Allocator, todos_render: []const u8) ![]const u8 {
-    if (todos_render.len == 0)
-        return "[continuing autonomously (/loop): make the next concrete step toward the goal, then verify it. Do not ask for confirmation between routine steps. Stop only when the work is complete or you hit a blocker that needs the user.]";
-    return std.fmt.allocPrint(arena, "[continuing autonomously (/loop): keep working the checklist below — do the next incomplete item, mark it in_progress then completed, and verify. Do not ask for confirmation between routine steps. Stop only when every item is done or you are blocked.\n\nChecklist so far:\n{s}]", .{todos_render});
-}
-
 test "continuationDecision: one assertion per branch (#226)" {
     // work asserted or the checklist finished -> accepted, regardless of iters.
     try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.active, true, false, 5).stop);
@@ -297,17 +288,6 @@ test "a zero-tool turn stops as idle, not accepted; a refused completion keeps t
     try std.testing.expect(!turnStopped(3, false));
     // ... and the loop runs another turn so the model can react to the refusal.
     try std.testing.expect(std.meta.activeTag(continuationDecision(.active, false, turnStopped(0, true), 5)) == .continue_turn);
-}
-
-test "continuationSteeringNote: renders checklist when present, generic otherwise (#226)" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const ar = arena.allocator();
-    const empty = try continuationSteeringNote(ar, "");
-    try std.testing.expect(std.mem.indexOf(u8, empty, "Checklist so far") == null);
-    try std.testing.expect(std.mem.indexOf(u8, empty, "continuing autonomously") != null);
-    const withlist = try continuationSteeringNote(ar, "[ ] add test");
-    try std.testing.expect(std.mem.indexOf(u8, withlist, "Checklist so far:\n[ ] add test") != null);
 }
 
 /// repl.TurnFn — run a full ROOT agent turn (tools + MCP) for `graff repl`, so

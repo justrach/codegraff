@@ -124,6 +124,49 @@ pub fn loopTurnDecision(root: *Agent, iters_left: u32) repl_glue.ContinuationDec
     return repl_glue.continuationDecision(gstatus, work_done, model_stopped, iters_left);
 }
 
+/// The steering appended to each autonomous /loop continuation turn (the
+/// continuation_steering_item analog): keep working the checklist, verify, and
+/// stop only when done or blocked - not a per-turn user note. Moved here from
+/// repl_glue.zig, which is at the 600-line cap.
+/// `paste_list` is the diff-gate's verdict (goal_state.steeringGate over the
+/// render). It used to be unconditional, so a 25-iteration /loop wrote up to 25
+/// near-identical checklist copies into root.messages - autosaved, and fed
+/// verbatim into the next compaction's summary input. That is the exact
+/// re-pasting this branch removed from the goal note, left behind in its one
+/// remaining every-turn paster (#318). When the list has not changed the model
+/// is still pointed at it, just not handed another copy; the harness restates
+/// the full list on the first continuation after a compaction, where the old
+/// copies died with the old history.
+pub fn continuationSteeringNote(arena: Allocator, todos_render: []const u8, paste_list: bool) ![]const u8 {
+    if (todos_render.len == 0)
+        return "[continuing autonomously (/loop): make the next concrete step toward the goal, then verify it. Do not ask for confirmation between routine steps. Stop only when the work is complete or you hit a blocker that needs the user.]";
+    if (!paste_list)
+        return "[continuing autonomously (/loop): keep working the current checklist (unchanged, see your latest todo_write result, or call todo_read) - do the next incomplete item, mark it in_progress then completed, and verify. Do not ask for confirmation between routine steps. Stop only when every item is done or you are blocked.]";
+    return std.fmt.allocPrint(arena, "[continuing autonomously (/loop): keep working the checklist below — do the next incomplete item, mark it in_progress then completed, and verify. Do not ask for confirmation between routine steps. Stop only when every item is done or you are blocked.\n\nChecklist so far:\n{s}]", .{todos_render});
+}
+
+/// Loop-LOCAL diff-gate state for the checklist copy in the /loop continuation
+/// prompt (#318). Deliberately not an Agent field and never persisted: it
+/// describes what THIS run has already handed the model, so a fresh run, a
+/// user steer, a stop and a compaction all reset it.
+pub const LoopListGate = struct {
+    fp: u64 = 0,
+    age: u32 = 0,
+
+    pub fn reset(self: *LoopListGate) void {
+        self.* = .{};
+    }
+
+    /// This continuation turn's steering note, pasting the render only when the
+    /// model has not just been handed the same list.
+    pub fn note(self: *LoopListGate, arena: Allocator, todos_render: []const u8) ![]const u8 {
+        const gate = goal_state.steeringGate(todos_render, self.fp, self.age, goal_state.refresh_turns);
+        self.fp = gate.fp;
+        self.age = gate.age;
+        return continuationSteeringNote(arena, todos_render, gate.inject);
+    }
+};
+
 /// The goal-side effect of a /loop run that stopped as `accepted`: the loop
 /// drove the objective to done, so it retires. Returns true when it flipped.
 /// A standing --goal is the user's policy for the whole session and outlives
@@ -382,4 +425,52 @@ test "a compaction does not move the goal note's diff-gate fingerprint (#318)" {
         try std.testing.expect(std.mem.indexOf(u8, n, "todo_read") != null);
         try std.testing.expect(std.mem.indexOf(u8, n, "REPLACES") != null);
     }
+}
+
+test "continuationSteeringNote: checklist, generic, and the suppressed variant (#226/#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+
+    const empty = try continuationSteeringNote(ar, "", true);
+    try std.testing.expect(std.mem.indexOf(u8, empty, "Checklist so far") == null);
+    try std.testing.expect(std.mem.indexOf(u8, empty, "continuing autonomously") != null);
+    const withlist = try continuationSteeringNote(ar, "[ ] add test", true);
+    try std.testing.expect(std.mem.indexOf(u8, withlist, "Checklist so far:\n[ ] add test") != null);
+
+    // Suppressed: the model is still told to work the checklist and where to
+    // find it, but gets no second copy of a list it has not changed.
+    const quiet = try continuationSteeringNote(ar, "[ ] add test", false);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "add test") == null);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "Checklist so far") == null);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "keep working the current checklist (unchanged") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "todo_read") != null);
+}
+
+test "LoopListGate pastes the checklist once per change, not once per turn (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var gate: LoopListGate = .{};
+
+    // Turn 1 of a run carries the list; the next turns do not, so a 25-turn
+    // /loop no longer writes 25 near-identical copies into root.messages (all
+    // autosaved, and all fed verbatim into the next compaction's summary).
+    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, "[ ] a\n[ ] b"), "[ ] a") != null);
+    var i: usize = 0;
+    while (i < 3) : (i += 1)
+        try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, "[ ] a\n[ ] b"), "[ ] a") == null);
+    // A real change to the list is carried immediately.
+    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, "[x] a\n[ ] b"), "[x] a") != null);
+    // An unchanged list is re-stated after the refresh interval, in case it
+    // aged out of the model's effective attention.
+    i = 0;
+    var restated = false;
+    while (i < goal_state.refresh_turns) : (i += 1)
+        restated = restated or std.mem.indexOf(u8, try gate.note(ar, "[x] a\n[ ] b"), "[x] a") != null;
+    try std.testing.expect(restated);
+    // reset() is what a fresh run, a user steer, a stop and a compaction do:
+    // the very next continuation carries the list in full again.
+    gate.reset();
+    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, "[x] a\n[ ] b"), "[x] a") != null);
 }

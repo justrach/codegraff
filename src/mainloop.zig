@@ -69,6 +69,7 @@ pub fn run(ctx: *Ctx) !void {
     const loop_iter_cap: u32 = 25; // hard per-/loop iteration bound (never-completing-model guard)
     var loop_iters_left: u32 = 0; // continuation turns still authorized this /loop run
     var loop_continue_armed = false; // a continuation turn is queued for the next readline
+    var loop_list: goal_flow.LoopListGate = .{}; // diff-gate for the checklist copy in continuation prompts (#318)
 
     while (true) {
         // Titles can land between interactions but never join the response path.
@@ -81,6 +82,7 @@ pub fn run(ctx: *Ctx) !void {
         const raw_line: []const u8 = if (steer_entry) |e| blk: {
             loop_iters_left = 0; // #226: a user steer/force cancels the autonomous /loop run
             loop_continue_armed = false;
+            loop_list.reset();
             if (e.force) {
                 try ctx.out.print("{s}↳ force ›{s} {s}\n", .{ style.yellow, style.reset, e.text });
             } else {
@@ -95,7 +97,9 @@ pub fn run(ctx: *Ctx) !void {
             loop_continue_armed = false;
             is_loop_continuation = true;
             const todos_render = goal_state.renderCurrent(ctx.root); // current epoch only: parked work never re-enters a /loop turn (#318)
-            const note = try repl_glue.continuationSteeringNote(ctx.arena, todos_render);
+            // Gated: these prompts persist in root.messages, autosave, and are
+            // compaction input, so the list is pasted only when it changed (#318).
+            const note = try loop_list.note(ctx.arena, todos_render);
             break :blk try std.fmt.allocPrint(ctx.arena, "/loop {s}", .{note});
         } else if (ctx.interactive) blk: {
             try ctx.root.prompt();
@@ -550,18 +554,20 @@ pub fn run(ctx: *Ctx) !void {
             // 80–95% a transient compaction failure can recover next turn.
             const near_cap = ctx.root.provider.nearContextLimit(session_context_tokens);
             ctx.root.compactOrRecover(near_cap);
+            loop_list.reset(); // the pasted copies died with the old history - re-carry the list once, mirroring goal_note_fp (#318)
         }
 
         // #226: /loop controller-authorized continuation. After a cleanly-
         // completed autonomous /loop turn the CONTROLLER decides whether to run
-        // another turn — not the model merely stopping. Keep going while the goal
-        // is active and the work isn't asserted done (attempt_completion set
-        // root.completed, or the checklist is finished); otherwise stop with a
-        // NAMED terminal outcome. `loop_continue_armed` is consumed at the next
-        // readline, so an interrupted/errored turn (which `continue`s past here)
-        // never resumes the loop.
+        // another turn — not the model merely stopping; the rule itself is
+        // goal_flow.loopTurnDecision. `loop_continue_armed` is consumed at the
+        // next readline, so an interrupted/errored turn (which `continue`s past
+        // here) never resumes the loop.
         if (loop_prompt != null and !main_mod.json_mode) {
-            if (!is_loop_continuation) loop_iters_left = loop_iter_cap; // fresh /loop run: arm the bound
+            if (!is_loop_continuation) {
+                loop_iters_left = loop_iter_cap; // fresh /loop run: arm the bound
+                loop_list.reset(); // and a clean gate: its first continuation carries the list in full
+            }
             switch (goal_flow.loopTurnDecision(ctx.root, loop_iters_left)) {
                 .continue_turn => {
                     loop_iters_left -= 1; // consume one credit for the queued continuation
@@ -570,6 +576,7 @@ pub fn run(ctx: *Ctx) !void {
                 .stop => |outcome| {
                     loop_iters_left = 0;
                     loop_continue_armed = false;
+                    loop_list.reset();
                     // Only work_done reaches `accepted`, so the loop drove the
                     // goal to done; a --goal standing objective outlives it (#318).
                     if (outcome == .accepted) _ = goal_flow.acceptLoopOutcome(ctx.root);
