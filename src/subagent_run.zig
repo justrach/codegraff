@@ -74,27 +74,52 @@ pub fn classifyFailure(err: anyerror, detail: ?[]const u8) FailKind {
         else => {},
     }
     const msg = detail orelse return .unknown;
+    // 5xx before everything: a server-side outage is the most common transient
+    // failure there is, and "503 Service Unavailable" used to fall through to
+    // the .model arm on the bare word "unavailable". That was harmless while
+    // this classifier was advisory prose; once failureAllowsRetry made it
+    // control flow it meant a whole fan-out stopped retrying an outage.
+    if (containsAnyCI(msg, &.{ "500", "502", "503", "504", "service unavailable", "temporarily unavailable", "bad gateway", "gateway timeout", "internal server error", "overloaded_error" })) return .transport;
     if (containsAnyCI(msg, &.{ "network error", "stream stalled", "stream dropped", "timed out", "connection reset", "connection closed" })) return .transport;
     if (containsAnyCI(msg, &.{ "rate limit", "rate_limit", "quota", "429", "overloaded", "out of credits", "credits", "billing", "too many requests" })) return .quota;
     if (containsAnyCI(msg, &.{ "api key", "unauthorized", "expired", "authentication", "invalid_api_key", "401" })) return .auth;
-    if (containsAnyCI(msg, &.{ "does not exist", "not found", "no such model", "decommission", "no longer", "model_not_found", "unavailable", "404" })) return .model;
+    // "unavailable" must stay qualified: bare, it swallows every 5xx above.
+    if (containsAnyCI(msg, &.{ "does not exist", "not found", "no such model", "decommission", "no longer", "model_not_found", "model unavailable", "model is unavailable", "404" })) return .model;
     if (containsAnyCI(msg, &.{ "context length", "context window", "invalid", "unsupported", "not supported", "must be", "too long", "400", "parameter", "max_tokens", "bad request" })) return .invalid;
     return .unknown;
 }
 
+/// Advisory text appended to a subagentFailure message when the classified
+/// cause is transient (quota/transport/unknown) — the model sees this exact
+/// string, and failureAllowsRetry below keys off it, so keep them in sync.
+pub const retry_ok_note = "retry is likely safe — re-run the same task (after a short backoff for quota/transport)";
+/// Advisory text appended when the cause is NOT transient (model/invalid/
+/// auth) — retrying would just double the cost of a broken run for zero
+/// chance of success. failureAllowsRetry keys off this exact string.
+pub const retry_unsafe_note = "retry is NOT safe as-is — fix the cause first (switch model, correct arguments, or re-auth)";
+
 fn subagentFailure(gpa: Allocator, sub_id: []const u8, err: anyerror, detail: ?[]const u8) ToolOutput {
     const kind = classifyFailure(err, detail);
     const cause = detail orelse @errorName(err);
-    const retry = if (kind.retrySafe())
-        "retry is likely safe — re-run the same task (after a short backoff for quota/transport)"
-    else
-        "retry is NOT safe as-is — fix the cause first (switch model, correct arguments, or re-auth)";
+    const retry = if (kind.retrySafe()) retry_ok_note else retry_unsafe_note;
     const text = std.fmt.allocPrint(
         gpa,
         "subagent {s} failed before producing a report: {s} [{s} failure]. {s}",
         .{ sub_id, cause, kind.label(), retry },
     ) catch return .{ .is_error = true };
     return .{ .text = text, .is_error = true };
+}
+
+/// Whether a workflow retry site should re-run a failed task. Failures that
+/// went through subagentFailure carry retry_unsafe_note when the harness's
+/// own classification (FailKind.retrySafe) already ruled retrying out — auth
+/// or an invalid/unavailable model — so retrying the whole phase would only
+/// double the cost of a broken run for zero chance of success. Any failure
+/// text that did NOT come from subagentFailure (an empty report, an
+/// isolation-setup failure) carries no marker and keeps retrying, since those
+/// are exactly the transient cases retry exists for.
+pub fn failureAllowsRetry(text: []const u8) bool {
+    return std.mem.indexOf(u8, text, retry_unsafe_note) == null;
 }
 
 pub fn childProvider(root: Provider, pinned: ?Provider, allow_cross_provider: bool) Provider {
@@ -326,4 +351,25 @@ test "agentUsageEvent maps AgentUsage fields onto the wire event" {
     const failed = agentUsageEvent("sa-008-efgh", false, .{});
     try std.testing.expect(!failed.ok);
     try std.testing.expectEqual(@as(u64, 0), failed.duration_ms);
+}
+
+test "failureAllowsRetry keys off the harness's own retry-safety classification" {
+    const gpa = std.testing.allocator;
+
+    // A real auth failure: subagentFailure classifies it .auth (retrySafe:
+    // false) and appends retry_unsafe_note — the gate must block a retry.
+    const auth = subagentFailure(gpa, "sa-001", error.Unexpected, "401 unauthorized: invalid_api_key");
+    defer gpa.free(auth.text);
+    try std.testing.expect(!failureAllowsRetry(auth.text));
+
+    // A real transport/transient failure: classifies .transport (retrySafe:
+    // true) and appends retry_ok_note — the gate must keep allowing retries.
+    const transient = subagentFailure(gpa, "sa-002", error.StreamStalled, null);
+    defer gpa.free(transient.text);
+    try std.testing.expect(failureAllowsRetry(transient.text));
+
+    // A failure text with no subagentFailure marker at all (e.g. the
+    // empty-report path, or an isolation-setup failure) — no marker means no
+    // classification was made, so it must keep retrying like before this fix.
+    try std.testing.expect(failureAllowsRetry("subagent finished without a report"));
 }
