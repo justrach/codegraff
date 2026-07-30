@@ -33,22 +33,49 @@ const telemetry = @import("telemetry.zig");
 
 const max_workflow_phases = 5;
 
-// Per-task cap on each phase result fed into {{prev}} (#4): a wide or runaway
-// phase would otherwise push its full output into every next-phase task, so
-// phase N+1 pays N× context. Over the cap we keep the head (the substance) plus
-// a short tail — which carries the `inspect:` pointer to the full detail file —
-// with a truncation marker between, so nothing is actually lost. (A synthesis/
-// compress pass is the heavier alternative; per-task slicing is the cheap,
-// no-extra-LLM-call lever.)
-const max_prev_per_task = 6000;
+// Phase budget for {{prev}} (#4, U3): capping every task's output at a flat
+// max_prev_per_task made cost QUADRATIC in phase width — N tasks each capped
+// at the max feed N tasks in the next phase, so N² chars of substituted prev
+// text land in that next prompt (10 tasks -> 10 tasks was 60,000 chars). The
+// fix divides one fixed total budget across the phase's own task count
+// instead of capping each task flat, so a phase's total {{prev}} contribution
+// stays near phase_prev_budget however wide the phase is:
+//   per_task_cap = max(min_task_prev_cap, phase_prev_budget / n_tasks)
+// min_task_prev_cap keeps a wide fan-out (up to max_workflow_tasks, and
+// beyond if that cap ever grows) from shrinking each task's slice past
+// readability — e.g. a 50-task phase still gives each result 800 chars
+// rather than ~120. Over its cap we keep the head (the substance) plus a
+// short tail — which carries the `inspect:` pointer to the full detail
+// file — with a truncation marker between, so nothing is actually lost. (A
+// synthesis/compress pass is the heavier alternative; this slicing is the
+// cheap, no-extra-LLM-call lever.)
+const phase_prev_budget = 6000;
+const min_task_prev_cap = 800;
 const prev_tail_keep = 600;
 
-/// Bound one task's output before it enters the {{prev}} buffer (#4). Short
-/// outputs pass through untouched; over the cap, head + truncation marker + tail.
-fn cappedPrevBody(arena: Allocator, text: []const u8) []const u8 {
-    if (text.len <= max_prev_per_task) return text;
-    const head = util.utf8Prefix(text, max_prev_per_task - prev_tail_keep);
-    const tail = text[text.len - prev_tail_keep ..];
+// Flat {{prev}} cap for pipeline mode (#3): each pipeline item runs its own
+// independent stage chain, so unlike phases there's no fan-in multiplying one
+// item's previous-stage text across other items' prompts — no phase-budget
+// division needed here, a flat cap is enough.
+const pipeline_prev_cap = 6000;
+
+/// Per-task {{prev}} cap for a phase of `n_tasks` tasks (#U3): the fixed
+/// phase_prev_budget divided across the phase's width, floored at
+/// min_task_prev_cap. Pure, and kept separate from cappedPrevBody so the
+/// division arithmetic is independently testable.
+fn phaseTaskCap(n_tasks: usize) usize {
+    return @max(min_task_prev_cap, phase_prev_budget / n_tasks);
+}
+
+/// Bound one task's output before it enters the {{prev}} buffer (#4), to the
+/// given `cap`. Short outputs pass through untouched; over the cap, head +
+/// truncation marker + tail. Saturating subtraction guards a `cap` smaller
+/// than prev_tail_keep (not expected from either call site — both stay well
+/// above prev_tail_keep — but this keeps the function safe standalone).
+fn cappedPrevBody(arena: Allocator, text: []const u8, cap: usize) []const u8 {
+    if (text.len <= cap) return text;
+    const head = util.utf8Prefix(text, cap -| prev_tail_keep);
+    const tail = text[text.len -| prev_tail_keep..];
     return std.fmt.allocPrint(arena, "{s}\n\n…[{d} chars truncated — full result in the inspect file below]…\n\n{s}", .{ head, text.len - head.len - tail.len, tail }) catch text;
 }
 
@@ -93,7 +120,7 @@ fn replacePlaceholder(arena: Allocator, hay: []const u8, needle: []const u8, wit
 /// stage 2 {{prev}} = this item's bounded previous-stage result. Either is
 /// appended when its placeholder is omitted (mirrors phases-mode {{prev}}).
 fn pipelinePrompt(arena: Allocator, raw: []const u8, item: []const u8, prev: []const u8, stage_no: usize) ![]const u8 {
-    const cp = if (stage_no > 1) cappedPrevBody(arena, prev) else "";
+    const cp = if (stage_no > 1) cappedPrevBody(arena, prev, pipeline_prev_cap) else "";
     var p = raw;
     if (std.mem.indexOf(u8, p, "{{item}}") != null)
         p = try replacePlaceholder(arena, p, "{{item}}", item)
@@ -364,6 +391,11 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // open (it submits niche=""). Gated on the fleet — no judge cost otherwise.
         scoreVariants(ctx, arena, title, prompts, raws, overrides, niches, outputs);
 
+        // U3: divide the {{prev}} budget across THIS phase's own task count so
+        // a wide phase's total contribution to the next phase's prompt stays
+        // near phase_prev_budget instead of growing with tasks.len — see the
+        // phase_prev_budget doc comment above for the quadratic-cost story.
+        const per_task_cap = phaseTaskCap(tasks.len);
         var aw: Io.Writer.Allocating = .init(arena);
         for (labels, outputs) |label, out| {
             if (out.is_error) {
@@ -371,7 +403,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
                 // raw error text into {{prev}} as if it were a real result (#2).
                 try aw.writer.print("### {s} (no result — task failed)\n\n", .{label});
             } else {
-                try aw.writer.print("### {s}\n{s}\n\n", .{ label, cappedPrevBody(arena, out.text) });
+                try aw.writer.print("### {s}\n{s}\n\n", .{ label, cappedPrevBody(arena, out.text, per_task_cap) });
             }
         }
         prev_results = std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
@@ -379,23 +411,42 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
     return .{ .text = try gpa.dupe(u8, prev_results) };
 }
 
-test "cappedPrevBody bounds a wide phase output, keeps head + inspect tail (#4)" {
+test "cappedPrevBody bounds a wide phase output, keeps head + inspect tail at several caps (#4/U3)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    // A short result passes through untouched — most outputs never hit the cap.
-    try std.testing.expectEqualStrings("hi", cappedPrevBody(a, "hi"));
+    // A short result passes through untouched — most outputs never hit the
+    // cap, at any cap size.
+    try std.testing.expectEqualStrings("hi", cappedPrevBody(a, "hi", phase_prev_budget));
+    try std.testing.expectEqualStrings("hi", cappedPrevBody(a, "hi", min_task_prev_cap));
 
-    // A huge result is capped: head kept, the trailing inspect: pointer kept,
-    // a truncation marker added, and the full text never lands verbatim.
+    // A huge result is capped at several different cap sizes (the divided
+    // per-task cap varies with phase width): head kept, the trailing
+    // inspect: pointer never truncated away, a truncation marker added, and
+    // the full text never lands verbatim.
     const big = util.repeatBytes("X", 9000) ++ "\n[subagent sa-007-abcd · inspect: .graff/subagents/sa-007-abcd.md]";
-    const capped = cappedPrevBody(a, big);
-    try std.testing.expect(capped.len < big.len);
-    try std.testing.expect(capped.len <= max_prev_per_task + 200); // head + tail + marker overhead
-    try std.testing.expect(std.mem.indexOf(u8, capped, "truncated") != null);
-    try std.testing.expect(std.mem.indexOf(u8, capped, "inspect: .graff/subagents/sa-007-abcd.md") != null);
-    try std.testing.expect(std.mem.indexOf(u8, capped, big) == null);
+    for ([_]usize{ phase_prev_budget, 3000, 1500, min_task_prev_cap }) |cap| {
+        const capped = cappedPrevBody(a, big, cap);
+        try std.testing.expect(capped.len < big.len);
+        try std.testing.expect(capped.len <= cap + 200); // head + tail + marker overhead
+        try std.testing.expect(std.mem.indexOf(u8, capped, "truncated") != null);
+        try std.testing.expect(std.mem.indexOf(u8, capped, "inspect: .graff/subagents/sa-007-abcd.md") != null);
+        try std.testing.expect(std.mem.indexOf(u8, capped, big) == null);
+    }
+}
+
+test "phaseTaskCap divides the phase budget across tasks, floored at min_task_prev_cap (#U3)" {
+    // Narrow phases: budget/n_tasks comfortably clears the floor.
+    try std.testing.expectEqual(@as(usize, phase_prev_budget), phaseTaskCap(1));
+    try std.testing.expectEqual(@as(usize, phase_prev_budget / 2), phaseTaskCap(2));
+
+    // Wide phases (up to max_workflow_tasks, and beyond): the divided cap
+    // would fall below min_task_prev_cap, so the floor wins — never an
+    // unreadably tiny per-task slice.
+    try std.testing.expect(phase_prev_budget / max_workflow_tasks < min_task_prev_cap);
+    try std.testing.expectEqual(@as(usize, min_task_prev_cap), phaseTaskCap(max_workflow_tasks));
+    try std.testing.expectEqual(@as(usize, min_task_prev_cap), phaseTaskCap(50));
 }
 
 test "gateAllows: empty when always runs, else case-insensitive substring (#5)" {
