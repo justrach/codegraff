@@ -109,6 +109,45 @@ test "resume: a finished epoch-0 leftover cannot end a bare /loop (#318)" {
     try std.testing.expect(goal_state.checklistFinished(&root));
 }
 
+test "goalFromValue: epoch round-trips; legacy goals default to epoch 0 (#318)" {
+    // Moved here from session.zig, which is at the 600-line cap.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"objective\":\"x\",\"status\":\"active\",\"epoch\":3}", .{});
+    try std.testing.expectEqual(@as(u64, 3), session.goalFromValue(v, 1).?.epoch);
+    const legacy = try std.json.parseFromSliceLeaky(std.json.Value, a, "\"just a string\"", .{});
+    try std.testing.expectEqual(@as(u64, 0), session.goalFromValue(legacy, 1).?.epoch);
+}
+
+test "resume: a standing --goal round-trips and stays the user's policy (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    // The shape saveSession writes for a --goal session: `standing` alongside
+    // the epoch. Resume honors it, so the objective survives its own finished
+    // checklist instead of being reconciled away on the first resumed turn.
+    try resumeSession(ar, &root,
+        \\{"goal":{"objective":"keep the tree green","status":"active","epoch":2,"standing":true,"created_ms":1,"updated_ms":2},
+        \\ "todos":[{"content":"first task","status":"completed","epoch":2}]}
+    );
+    try std.testing.expect(root.goal.?.standing);
+    try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status);
+    try std.testing.expect(goal_state.goalActive(&root));
+    try std.testing.expectEqualStrings("[x] first task", goal_state.renderCurrent(&root));
+    try std.testing.expect((try goal_state.completionGate(ar, &root)) == null); // never gated
+    // Sessions written before the field (and every /goal objective) have no
+    // standing flag, so they keep the model-retirable behavior exactly.
+    var legacy = blankRoot(ar);
+    try resumeSession(ar, &legacy,
+        \\{"goal":{"objective":"ship phase 2","status":"active","epoch":2,"created_ms":1,"updated_ms":2},
+        \\ "todos":[{"content":"first task","status":"completed","epoch":2}]}
+    );
+    try std.testing.expect(!legacy.goal.?.standing);
+    try std.testing.expectEqual(agent_mod.GoalStatus.complete, legacy.goal.?.status);
+}
+
 test "resume: a /goal set after restoring parked items lands above them (#318)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

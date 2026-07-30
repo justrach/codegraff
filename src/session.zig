@@ -238,6 +238,8 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
         try s.write(@tagName(g.status));
         try s.objectField("epoch");
         try s.write(g.epoch);
+        try s.objectField("standing"); // a --goal objective resumes as one: the model still cannot retire it (#318)
+        try s.write(g.standing);
         try s.objectField("created_ms");
         try s.write(g.created_ms);
         try s.objectField("updated_ms");
@@ -308,7 +310,8 @@ pub fn goalFromValue(v: Value, now_ms: i64) ?agent_mod.Goal {
         const ep: u64 = if (go.get("epoch")) |e| (if (e == .integer and e.integer >= 0) @intCast(e.integer) else 0) else 0;
         const cms: i64 = if (go.get("created_ms")) |c| (if (c == .integer) c.integer else 0) else 0;
         const ums: i64 = if (go.get("updated_ms")) |u| (if (u == .integer) u.integer else 0) else 0;
-        return .{ .objective = objective, .status = st, .epoch = ep, .created_ms = cms, .updated_ms = ums };
+        const standing = if (go.get("standing")) |b| (b == .bool and b.bool) else false; // absent in legacy sessions: a /goal objective the model may retire (#318)
+        return .{ .objective = objective, .status = st, .epoch = ep, .standing = standing, .created_ms = cms, .updated_ms = ums };
     }
     return null;
 }
@@ -344,16 +347,6 @@ test "todos round-trip: appendTodosFromValue parses content/status/epoch, skips 
     // Legacy sessions (no todos field / wrong type): nothing appended.
     try appendTodosFromValue(a, &todos, .null);
     try std.testing.expectEqual(@as(usize, 2), todos.items.len);
-}
-
-test "goalFromValue: epoch round-trips; legacy goals default to epoch 0 (#318)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const v = try std.json.parseFromSliceLeaky(Value, a, "{\"objective\":\"x\",\"status\":\"active\",\"epoch\":3}", .{});
-    try std.testing.expectEqual(@as(u64, 3), goalFromValue(v, 1).?.epoch);
-    const legacy = try std.json.parseFromSliceLeaky(Value, a, "\"just a string\"", .{});
-    try std.testing.expectEqual(@as(u64, 0), goalFromValue(legacy, 1).?.epoch);
 }
 
 test "goalFromValue: legacy string -> active; object round-trips; paused stays paused (#223)" {

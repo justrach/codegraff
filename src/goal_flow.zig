@@ -12,6 +12,24 @@ const goal_state = @import("goal_state.zig");
 const Agent = agent_mod.Agent;
 const TodoItem = agent_mod.TodoItem;
 
+/// The Goal `--goal <text>` seeds: a STANDING objective (the flag's documented
+/// contract is "every turn, incl. --json/-p/SDK"), stamped above every epoch
+/// already present in `todos` so a resumed session's parked checklist can never
+/// become its work, and so it never aliases the epoch-0 no-goal bucket (#318).
+/// `objective` must already be owned by the session arena. Also used to
+/// RE-apply the flag after a resume: loadSession overwrites root.goal with the
+/// goal from disk, so `graff -r <session> --goal X` silently dropped X.
+pub fn standingGoalFromFlag(objective: []const u8, todos: []const TodoItem, now_ms: i64) agent_mod.Goal {
+    return .{
+        .objective = objective,
+        .status = .active,
+        .standing = true,
+        .epoch = goal_state.nextEpoch(null, todos),
+        .created_ms = now_ms,
+        .updated_ms = now_ms,
+    };
+}
+
 /// A root agent in the shape the goal helpers read; no live turn behind it.
 fn flowRoot(arena: Allocator) Agent {
     var root: Agent = undefined;
@@ -23,7 +41,80 @@ fn flowRoot(arena: Allocator) Agent {
     root.todos_dirty = false;
     root.completion_gate_armed = false;
     root.completion_refused = false;
+    root.completed = null;
     return root;
+}
+
+test "a --goal standing objective outlives the model's own completion (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = flowRoot(ar);
+    root.goal = standingGoalFromFlag("keep the tree green", root.todos.items, 7);
+    try std.testing.expect(root.goal.?.standing);
+    try std.testing.expectEqual(@as(u64, 1), root.goal.?.epoch); // never epoch 0: that bucket is the no-goal one
+
+    // The gate never fires for it: there is no close event to double-check, so
+    // the arm never arms and open work never produces a refusal either.
+    try std.testing.expect((try goal_state.completionGate(ar, &root)) == null);
+    try root.todos.append(ar, .{ .content = "an open item", .status = "pending", .epoch = 1 });
+    try std.testing.expect((try goal_state.completionGate(ar, &root)) == null);
+    try std.testing.expect(!root.completion_gate_armed);
+
+    // attempt_completion: the result is recorded (the handler does that above
+    // the branch), but the objective stays active and keeps steering. Before
+    // this, one attempt_completion left every later turn of a headless/SDK
+    // session unsteered - and the note itself coached the model into making it.
+    root.completed = "shipped the first task";
+    try std.testing.expect(!goal_state.retireOnCompletion(&root, 99));
+    try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status);
+    try std.testing.expect(root.completed != null);
+    try std.testing.expect(goal_state.goalActive(&root));
+
+    // A /goal-typed objective is unchanged: it still retires on completion.
+    root.goal = .{ .objective = "ship phase 2", .epoch = 1 };
+    try std.testing.expect(goal_state.retireOnCompletion(&root, 99));
+    try std.testing.expectEqual(agent_mod.GoalStatus.complete, root.goal.?.status);
+    try std.testing.expectEqual(@as(i64, 99), root.goal.?.updated_ms);
+}
+
+test "resume never auto-retires a standing goal over a finished checklist (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = flowRoot(ar);
+    // A restored session whose --goal checklist is all done. reconcileRestored
+    // retires a /goal objective here (the model finished and quit), but a
+    // standing one is the user's policy for the session, not a task that ended.
+    root.goal = standingGoalFromFlag("keep the tree green", root.todos.items, 7);
+    try root.todos.append(ar, .{ .content = "done", .status = "completed", .epoch = 1 });
+    try std.testing.expect(goal_state.allDone(root.todos.items, 1));
+    try std.testing.expect(!goal_state.reconcileRestored(&root));
+    try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status);
+    try std.testing.expectEqualStrings("[x] done", goal_state.renderCurrent(&root)); // still current, still steering
+    // The same list under a /goal objective does retire it.
+    root.goal.?.standing = false;
+    try std.testing.expect(goal_state.reconcileRestored(&root));
+}
+
+test "--goal seeded onto a resumed session lands above every restored epoch (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = flowRoot(ar);
+    // What `graff -r <session> --goal X` finds after loadSession: an unscoped
+    // finished list plus a parked epoch. Seeding the flag goal at the default
+    // epoch 0 aliased the no-goal bucket, so the restored all-[x] items were
+    // instantly its "finished checklist" and completion was free.
+    try root.todos.append(ar, .{ .content = "old unscoped work", .status = "completed", .epoch = 0 });
+    try root.todos.append(ar, .{ .content = "parked", .status = "pending", .epoch = 3 });
+    root.goal = standingGoalFromFlag("keep the tree green", root.todos.items, 7);
+    try std.testing.expectEqual(@as(u64, 4), root.goal.?.epoch);
+    try std.testing.expectEqual(@as(u64, 4), goal_state.currentEpoch(root.goal));
+    try std.testing.expect(!goal_state.hasCurrent(root.todos.items, 4));
+    try std.testing.expectEqual(@as(usize, 0), goal_state.openCount(root.todos.items, 4));
+    try std.testing.expect(!goal_state.allDone(root.todos.items, 4)); // nothing of its own is "done"
+    try std.testing.expectEqual(@as(usize, 2), root.todos.items.len); // and nothing was deleted
 }
 
 test "a cleared goal's finished checklist cannot be reborn as the next goal's list (#318)" {

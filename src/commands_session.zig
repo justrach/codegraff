@@ -140,7 +140,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 const open = goal_state.openCount(root.todos.items, g.epoch);
                 const parked = goal_state.parkedOpenCount(root.todos.items, g.epoch);
                 const state = if (g.status == .complete) "parked unfinished" else "open"; // a retired goal has no open work, only parked work (#318)
-                try out.print("\xf0\x9f\x8e\xaf Goal: {s}\nStatus: {s}. Checklist: {d} item(s) {s}. Commands: /goal pause | resume | clear.\n", .{ g.objective, @tagName(g.status), open, state });
+                const standing = if (g.standing) " (standing)" else ""; // seeded by --goal: only the user retires it (#318)
+                try out.print("\xf0\x9f\x8e\xaf Goal: {s}{s}\nStatus: {s}. Checklist: {d} item(s) {s}. Commands: /goal pause | resume | clear.\n", .{ g.objective, standing, @tagName(g.status), open, state });
                 if (parked > 0) try out.print("(+{d} unfinished item(s) parked from earlier goals \xe2\x80\x94 kept in the session, not steering)\n", .{parked});
             } else try out.writeAll("No active goal. Set one with /goal <objective>.\n");
         } else if (std.ascii.eqlIgnoreCase(text, "clear") or std.ascii.eqlIgnoreCase(text, "off")) {

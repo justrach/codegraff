@@ -155,8 +155,23 @@ pub fn noteTodoWrite(root: *Agent) void {
 /// empty epoch (#226), so a goal that never wrote a checklist is left alone.
 pub fn reconcileRestored(root: *Agent) bool {
     const g = root.goal orelse return false;
+    if (g.standing) return false; // --goal is the user's policy for the session; a finished checklist is not their permission to drop it (#318)
     if (g.status != .active or !allDone(root.todos.items, g.epoch)) return false;
     root.goal.?.status = .complete;
+    return true;
+}
+
+/// An accepted attempt_completion retires the goal - unless it is standing.
+/// Returns true when it retired, so the caller can print/trace the difference;
+/// the completion itself is recorded either way. A --goal objective is the
+/// user's policy for the whole session (--json/-p/SDK included), so the model
+/// finishing one task must not end the steering; only /goal clear|pause|<new>
+/// can (#318). Pure (no Io) so the rule is unit-tested; the caller passes the
+/// clock reading.
+pub fn retireOnCompletion(root: *Agent, now_ms: i64) bool {
+    if (!goalActive(root) or root.goal.?.standing) return false;
+    root.goal.?.status = .complete;
+    root.goal.?.updated_ms = now_ms;
     return true;
 }
 
@@ -224,6 +239,7 @@ pub fn hasCurrent(todos: []const TodoItem, epoch: u64) bool {
 /// ever can, since one attempt_completion per turn is all a model emits.
 pub fn completionGate(arena: Allocator, agent: *Agent) !?[]const u8 {
     if (!goalActive(agent)) return null;
+    if (agent.goal.?.standing) return null; // a standing --goal has no close event to gate: the arm never arms for it (#318)
     if (agent.completion_gate_armed) return null;
     const epoch = currentEpoch(agent.goal);
     const open = openCount(agent.todos.items, epoch);

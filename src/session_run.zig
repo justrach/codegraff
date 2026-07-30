@@ -52,6 +52,7 @@ const eval_memory = @import("eval_memory.zig");
 const providers = @import("providers.zig");
 const messages_mod = @import("messages.zig");
 const session = @import("session.zig");
+const goal_flow = @import("goal_flow.zig");
 const fleet = @import("fleet.zig");
 const hooks = @import("hooks.zig");
 const learn_auto = @import("learn_auto.zig");
@@ -265,7 +266,7 @@ pub fn buildRootAgent(
     const fresh_session_name = try std.fmt.allocPrint(arena, "session-{d}", .{util.unixMs(io)});
     root.session_name = if (flags.resume_flag) |name| (if (!flags.new_session_flag and !flags.no_resume_flag) name else fresh_session_name) else fresh_session_name;
     repl_glue.loadThinkingSettings(io, arena, &root); // {"effort":...,"fast":...} persisted by /effort and /fast
-    if (flags.goal_flag) |g| root.goal = .{ .objective = try arena.dupe(u8, g), .status = .active, .created_ms = util.unixMs(io), .updated_ms = util.unixMs(io) }; // --goal applies to every turn (incl. --json/-p/SDK)
+    if (flags.goal_flag) |g| root.goal = goal_flow.standingGoalFromFlag(try arena.dupe(u8, g), root.todos.items, util.unixMs(io)); // --goal is STANDING (#318): it applies to every turn (incl. --json/-p/SDK) and the model can never retire it
     if (flags.eval_cmd_flag) |c| root.eval_cmd = try arena.dupe(u8, c);
     if (flags.eval_target_flag) |t| root.eval_target = t;
     if (flags.eval_niche_flag) |n| root.eval_niche = try arena.dupe(u8, n);
@@ -294,6 +295,9 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, are
     if (!will_resume) session.saveSession(root, arena, root.session_name) catch {};
     if (flags.oneshot_prompt != null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag) {
         session.loadSession(root, keys, arena, root.session_name) catch {};
+        // loadSession overwrites root.goal with the goal from disk, so `-r <s> --goal X`
+        // silently dropped X. The flag wins, on an epoch above every restored one (#318).
+        if (flags.goal_flag) |g| root.goal = goal_flow.standingGoalFromFlag(arena.dupe(u8, g) catch g, root.todos.items, util.unixMs(root.io));
     }
 }
 
@@ -306,6 +310,8 @@ pub fn saveOrResumeSession(root: *agent_mod.Agent, keys: *provider_mod.Keys, are
 pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, keys: *provider_mod.Keys, flags: args.Flags, json_mode: bool, cwd_display: []const u8) !void {
     if (!(flags.oneshot_prompt == null and flags.resume_flag != null and !flags.new_session_flag and !flags.no_resume_flag)) return;
     if (session.loadSession(root, keys, arena, root.session_name)) |_| {
+        // --goal outranks the restored goal here too (see saveOrResumeSession, #318).
+        if (flags.goal_flag) |g| root.goal = goal_flow.standingGoalFromFlag(try arena.dupe(u8, g), root.todos.items, util.unixMs(root.io));
         if (root.messages.items.len > 0) {
             if (!json_mode) {
                 // Prefer the saved AI summary; fall back to the first user

@@ -296,13 +296,13 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         }
         const result = if (call.input.object.get("result")) |r| r.string else "";
         self.completed = try self.arena.dupe(u8, result);
-        if (goal_state.goalActive(self)) {
-            // .complete retires the epoch (goal_state.currentEpoch): the checklist
-            // parks - readable, no longer current - instead of being deleted (#318).
-            self.goal.?.status = .complete; // a normal completion ends the goal - not only /loop's controller (#318)
-            self.goal.?.updated_ms = util.unixMs(self.io);
+        // .complete retires the epoch (goal_state.currentEpoch) and the checklist parks - readable, no longer current, never deleted (#318).
+        // A --goal standing objective is exempt: the completion is recorded above, the steering stays, and only /goal clear|pause|<new> retires it.
+        if (goal_state.retireOnCompletion(self, util.unixMs(self.io))) {
             if (self.tracer) |t| t.note("goal", "completed via attempt_completion");
             try self.say("\xf0\x9f\x8e\xaf standing goal complete\n", .{});
+        } else if (goal_state.goalActive(self)) {
+            if (self.tracer) |t| t.note("goal", "completion; standing goal retained");
         }
         // Skip the re-print only when the result streamed live in full.
         if (!self.sub and !self.argStreamedFully(call)) try self.say("{s}\n", .{result});

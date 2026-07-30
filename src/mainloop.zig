@@ -579,7 +579,7 @@ pub fn run(ctx: *Ctx) !void {
                     loop_iters_left = 0;
                     loop_continue_armed = false;
                     if (outcome == .accepted and work_done) if (ctx.root.goal) |*g| {
-                        if (g.status == .active) g.status = .complete; // the loop drove the goal to done
+                        if (g.status == .active and !g.standing) g.status = .complete; // the loop drove the goal to done; a --goal standing objective outlives it (#318)
                     };
                     try ctx.out.print("{s}↩ /loop stopped — {s}{s}\n", .{ style.dim, @tagName(outcome), style.reset });
                     try ctx.out.flush();

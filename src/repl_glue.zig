@@ -101,6 +101,12 @@ pub const ReplStreamSink = struct {
 pub fn goalSteeringNote(arena: Allocator, goal: ?agent_mod.Goal) ![]const u8 {
     const g = goal orelse return "";
     if (g.status != .active) return ""; // paused/blocked/complete/budget_limited never steer (#223)
+    // A --goal objective is the user's policy for the session, so its note must
+    // not coach the model into ending it: the old text told every turn to call
+    // attempt_completion "to end this steering", and one such call left the rest
+    // of a headless/SDK session running unsteered (#318).
+    if (g.standing)
+        return std.fmt.allocPrint(arena, "[standing goal: {s} - keep this objective in view on every task; track multi-step work as a live todo_write checklist, marking each item in_progress when you start and completed when done. This steering persists for the whole session.]", .{g.objective});
     return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a live todo_write checklist and work through it, marking each item in_progress when you start and completed when done. When the objective is verifiably done, call attempt_completion - that completes the goal and ends this steering.]", .{g.objective});
 }
 
@@ -185,6 +191,18 @@ test "goalSteeringNote: active-only gate, completion contract, and no embedded c
     try std.testing.expect(std.mem.indexOf(u8, n1, "attempt_completion") != null);
     try std.testing.expect(std.mem.indexOf(u8, n1, "Checklist so far") == null);
     try std.testing.expect(std.mem.indexOf(u8, n1, "(no todos)") == null);
+
+    // A --goal standing objective keeps the checklist guidance but drops the
+    // self-termination clause: the model cannot retire it, so telling it to
+    // "call attempt_completion and end this steering" was a lie that cost every
+    // later turn of a headless/SDK session its goal (#318).
+    const n2 = try goalSteeringNote(ar, .{ .objective = "close all issues", .standing = true });
+    try std.testing.expect(std.mem.startsWith(u8, n2, "[standing goal: close all issues - keep this objective in view"));
+    try std.testing.expect(std.mem.indexOf(u8, n2, "todo_write checklist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, n2, "attempt_completion") == null);
+    try std.testing.expect(std.mem.indexOf(u8, n2, "persists for the whole session") != null);
+    // Still gated on .active: /goal pause silences a standing goal too.
+    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, .{ .objective = "x", .standing = true, .status = .paused }));
 }
 
 /// #226 continuation gate — the outcome when a /loop turn finishes: the loop

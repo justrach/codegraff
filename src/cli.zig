@@ -97,7 +97,7 @@ pub const usage_text =
     \\  --no-resume      ignore --resume and start fresh
     \\  --system-prompt <text>          replace the built-in system prompt
     \\  --append-system-prompt <text>   append extra text to the system prompt
-    \\  --goal <text>                   seed a standing objective (tracked as a todo checklist) for every turn
+    \\  --goal <text>                   seed a standing objective (tracked as a todo checklist) for every turn; persists across completions
     \\  --eval <cmd>                    scoring command for an eval-driven loop (the `eval` tool runs it)
     \\  --until <0-100>                 eval-loop target score; stop when reached (default 90)
     \\  --niche <name>                  fleet niche this eval optimizes (reviewer/researcher/implementer/skeptic or a custom agent); tags submitted scores so the DGM can promote a champion for that role

@@ -55,6 +55,7 @@ pub const Goal = struct {
     objective: []const u8,
     status: GoalStatus = .active,
     epoch: u64 = 0, // monotonic per session; todos are stamped with it so a replaced goal cannot bequeath its checklist (#318)
+    standing: bool = false, // seeded by --goal: steering policy for the WHOLE session that the model can never retire; only the user can, with /goal clear|pause|<new> (#318)
     created_ms: i64 = 0,
     updated_ms: i64 = 0,
 };
