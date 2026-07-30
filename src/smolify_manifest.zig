@@ -9,7 +9,7 @@ const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
 const manifest_json = @embedFile("smolify-tools.json");
 
-pub const bundled_protocol = mcp_protocol.latest_protocol;
+pub const bundled_protocol = mcp_protocol.legacy_protocol;
 
 const public_read_tools = [_][]const u8{
     "discover_public_projects",

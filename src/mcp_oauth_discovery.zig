@@ -156,14 +156,18 @@ pub fn probe(io: Io, gpa: Allocator, arena: Allocator, resource_url: []const u8)
     try requireHttps(resource_url);
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
+    // Pinned to the legacy revision on purpose: this probe exists only to
+    // elicit a 401 WWW-Authenticate challenge for `graff mcp login`, and a
+    // modern (2026-07-28) request against a legacy auth server would turn
+    // that 401 into a 400 (see mcp_protocol.zig's era-detection doc).
     const body =
         \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"
-    ++ mcp_protocol.latest_protocol ++
+    ++ mcp_protocol.legacy_protocol ++
         \\","capabilities":{},"clientInfo":{"name":"codegraff-mcp-login","version":"1"}}}
     ;
     const extra_headers = [_]std.http.Header{
         .{ .name = "accept", .value = "application/json, text/event-stream" },
-        .{ .name = "mcp-protocol-version", .value = mcp_protocol.latest_protocol },
+        .{ .name = "mcp-protocol-version", .value = mcp_protocol.legacy_protocol },
     };
     var request = try client.request(.POST, try std.Uri.parse(resource_url), .{
         .redirect_behavior = .unhandled,

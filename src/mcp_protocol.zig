@@ -27,13 +27,20 @@ pub fn rewriteOneOf(a: Allocator, v: *Value) Allocator.Error!void {
     }
 }
 
-/// Latest MCP revision advertised during initialization.
-pub const latest_protocol = "2025-11-25";
+/// The one modern (stateless, per-request `_meta`) revision graff speaks.
+/// Never sent in a legacy `initialize` handshake — see `supported_protocols`.
+pub const modern_protocol = "2026-07-28";
+
+/// What graff offers in a legacy `initialize` handshake, and the newest
+/// revision `negotiatedProtocol` will accept back from a server.
+pub const legacy_protocol = "2025-11-25";
 
 /// Revisions whose initialize, tools, and content schemas are compatible with
-/// the subset implemented by this client.
+/// the legacy subset implemented by this client. Deliberately excludes
+/// `modern_protocol`: a server that echoes it back inside an `initialize`
+/// result is not speaking the stateless 2026-07-28 wire format at all.
 pub const supported_protocols = [_][]const u8{
-    latest_protocol,
+    legacy_protocol,
     "2025-06-18",
     "2025-03-26",
     "2024-11-05",
@@ -129,6 +136,11 @@ test "initialize negotiation rejects missing, non-string, and unsupported versio
         .{ .json = "{\"result\":{}}", .expected = error.MissingMcpProtocolVersion },
         .{ .json = "{\"result\":{\"protocolVersion\":20251125}}", .expected = error.InvalidMcpProtocolVersion },
         .{ .json = "{\"result\":{\"protocolVersion\":\"2099-01-01\"}}", .expected = error.UnsupportedMcpProtocolVersion },
+        // A server echoing the modern, handshake-free revision back inside a
+        // legacy `initialize` result is nonsense — the legacy negotiator must
+        // never accept it (mcp_rpc's stdio/HTTP probe path is the only place
+        // `modern_protocol` is ever legitimate).
+        .{ .json = "{\"result\":{\"protocolVersion\":\"2026-07-28\"}}", .expected = error.UnsupportedMcpProtocolVersion },
     };
     for (cases) |case| {
         var parsed = try std.json.parseFromSlice(Value, std.testing.allocator, case.json, .{});

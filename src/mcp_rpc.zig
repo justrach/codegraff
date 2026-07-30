@@ -14,7 +14,7 @@ const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
 const mcp_teardown = @import("mcp_teardown.zig");
 
-const latest_protocol = mcp_protocol.latest_protocol;
+const legacy_protocol = mcp_protocol.legacy_protocol;
 
 pub const StdioTransport = struct {
     child: std.process.Child,
@@ -51,7 +51,7 @@ pub fn deinitServer(server: *Server, io: Io, budget: mcp_teardown.Budget) void {
 pub fn initializeServer(server: *Server, response_alloc: Allocator, session_alloc: Allocator) !void {
     const init_resp = try request(server, response_alloc,
         \\{"protocolVersion":"
-    ++ latest_protocol ++
+    ++ legacy_protocol ++
         \\","capabilities":{},"clientInfo":{"name":"simple-harness","version":"0.1"}}
     , "initialize");
     const protocol_transport: mcp_protocol.Transport = switch (server.transport) {
@@ -88,7 +88,7 @@ pub fn request(server: *Server, response_alloc: Allocator, params: []const u8, m
             const body = try std.fmt.allocPrint(response_alloc,
                 \\{{"jsonrpc":"2.0","id":{d},"method":"{s}","params":{s}}}
             , .{ id, method, params });
-            const protocol_version = if (std.mem.eql(u8, method, "initialize")) latest_protocol else server.protocol_version;
+            const protocol_version = if (std.mem.eql(u8, method, "initialize")) legacy_protocol else server.protocol_version;
             const response_body = (try mcp_http.post(http, body, protocol_version, id)) orelse return error.BadMcpResponse;
             defer http.client.allocator.free(response_body);
             return mcp_http.parseHttpResponse(response_alloc, response_body, id) orelse error.BadMcpResponse;

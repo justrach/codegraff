@@ -367,7 +367,7 @@ pub const Registry = struct {
         errdefer tools.shrinkRetainingCapacity(tools_before);
 
         // Handshake. The server's reply tells us which revision it picked;
-        // record it (we proceed regardless — see `latest_protocol`).
+        // record it (we proceed regardless — see `legacy_protocol`).
         try initializeServer(server, a, a);
 
         const listed = try request(server, a, "{}", "tools/list");
