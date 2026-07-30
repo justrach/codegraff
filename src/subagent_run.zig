@@ -74,10 +74,17 @@ pub fn classifyFailure(err: anyerror, detail: ?[]const u8) FailKind {
         else => {},
     }
     const msg = detail orelse return .unknown;
+    // 5xx before everything: a server-side outage is the most common transient
+    // failure there is, and "503 Service Unavailable" used to fall through to
+    // the .model arm on the bare word "unavailable". That was harmless while
+    // this classifier was advisory prose; once failureAllowsRetry made it
+    // control flow it meant a whole fan-out stopped retrying an outage.
+    if (containsAnyCI(msg, &.{ "500", "502", "503", "504", "service unavailable", "temporarily unavailable", "bad gateway", "gateway timeout", "internal server error", "overloaded_error" })) return .transport;
     if (containsAnyCI(msg, &.{ "network error", "stream stalled", "stream dropped", "timed out", "connection reset", "connection closed" })) return .transport;
     if (containsAnyCI(msg, &.{ "rate limit", "rate_limit", "quota", "429", "overloaded", "out of credits", "credits", "billing", "too many requests" })) return .quota;
     if (containsAnyCI(msg, &.{ "api key", "unauthorized", "expired", "authentication", "invalid_api_key", "401" })) return .auth;
-    if (containsAnyCI(msg, &.{ "does not exist", "not found", "no such model", "decommission", "no longer", "model_not_found", "unavailable", "404" })) return .model;
+    // "unavailable" must stay qualified: bare, it swallows every 5xx above.
+    if (containsAnyCI(msg, &.{ "does not exist", "not found", "no such model", "decommission", "no longer", "model_not_found", "model unavailable", "model is unavailable", "404" })) return .model;
     if (containsAnyCI(msg, &.{ "context length", "context window", "invalid", "unsupported", "not supported", "must be", "too long", "400", "parameter", "max_tokens", "bad request" })) return .invalid;
     return .unknown;
 }

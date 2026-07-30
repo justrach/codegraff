@@ -217,7 +217,7 @@ pub fn pipelineIsolationError(stage_index: usize, iso: Isolation) ?[]const u8 {
 /// Pipeline mode entry (#3): validate {items, stages}, then run one independent
 /// chain per item concurrently (no barrier) and return the labeled final-stage
 /// result for each item.
-fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
+fn runPipeline(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
     const gpa = ctx.gpa;
     if (pv != .object) return .{ .text = try gpa.dupe(u8, "pipeline must be an object with items + stages"), .is_error = true };
     const items_val = pv.object.get("items") orelse return .{ .text = try gpa.dupe(u8, "pipeline needs an items array"), .is_error = true };
@@ -227,9 +227,12 @@ fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
     const stage_vals = stages_val.array.items;
     if (items.len == 0 or items.len > max_pipeline_items) return .{ .text = try std.fmt.allocPrint(gpa, "pipeline needs 1-{d} items", .{max_pipeline_items}), .is_error = true };
     if (stage_vals.len == 0 or stage_vals.len > max_pipeline_stages) return .{ .text = try std.fmt.allocPrint(gpa, "pipeline needs 1-{d} stages", .{max_pipeline_stages}), .is_error = true };
-    // U5 — shared context slot: one string, set once on the pipeline object,
-    // prepended to every stage prompt below (before {{item}}/{{prev}}).
-    const context_str: []const u8 = if (pv.object.get("context")) |cv| (if (cv == .string) cv.string else "") else "";
+    // Shared context slot: one string prepended to every stage prompt below
+    // (before {{item}}/{{prev}}). Readable in BOTH places the tool schema says
+    // it is - on the pipeline object, or top-level alongside it - because the
+    // dispatch to runPipeline happens before the top-level read, so a pipeline
+    // call silently ignored the documented top-level field.
+    const context_str: []const u8 = if (pv.object.get("context")) |cv| (if (cv == .string) cv.string else outer_context) else outer_context;
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -350,7 +353,8 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         .text = try gpa.dupe(u8, "workflow: arguments must be a JSON object with a \"phases\" array (or a \"pipeline\" object)"),
         .is_error = true,
     };
-    if (obj.get("pipeline")) |pv| return runPipeline(ctx, pv);
+    const outer_context: []const u8 = if (obj.get("context")) |cv| (if (cv == .string) cv.string else "") else "";
+    if (obj.get("pipeline")) |pv| return runPipeline(ctx, pv, outer_context);
     const phases_val = obj.get("phases") orelse return .{
         .text = try gpa.dupe(u8, "workflow needs a \"phases\" array (or a \"pipeline\" object)"),
         .is_error = true,
@@ -366,7 +370,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
     // U5 — shared context slot: one string, set once on the workflow object,
     // prepended to every task prompt below (before {{prev}} substitution) so
     // repo/task boilerplate is paid for once instead of per task.
-    const context_str: []const u8 = if (obj.get("context")) |cv| (if (cv == .string) cv.string else "") else "";
+    const context_str = outer_context; // read once above, shared with the pipeline branch
 
     // All intermediate strings live in this arena; the final result is
     // duped into gpa for the caller.

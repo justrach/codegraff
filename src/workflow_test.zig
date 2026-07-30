@@ -10,6 +10,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 const workflow = @import("workflow.zig");
 const subagent = @import("subagent.zig");
+const subagent_run = @import("subagent_run.zig");
 const tools = @import("tools.zig");
 const util = @import("util.zig");
 const ToolCtx = tools.ToolCtx;
@@ -195,4 +196,16 @@ test "pipelineIsolationError: stage 0 may isolate, stage 1+ worktree is refused 
     try std.testing.expect(pipelineIsolationError(0, .shared_cwd) == null);
     try std.testing.expect(pipelineIsolationError(1, .shared_cwd) == null);
     try std.testing.expect(pipelineIsolationError(4, .shared_cwd) == null);
+}
+
+test "a 5xx outage is transient, so a fan-out keeps retrying it (U1 regression guard)" {
+    // The classifier was advisory prose until failureAllowsRetry made it control
+    // flow. Its .model arm matched the bare word "unavailable", so "503 Service
+    // Unavailable" - the single most common transient failure - classified as a
+    // dead model and stopped the whole phase retrying.
+    for ([_][]const u8{ "503 Service Unavailable", "502 Bad Gateway", "500 internal server error", "upstream temporarily unavailable" }) |detail|
+        try std.testing.expectEqual(subagent_run.FailKind.transport, subagent_run.classifyFailure(error.Unexpected, detail));
+    // A genuinely dead model still classifies as .model and still stops retrying.
+    for ([_][]const u8{ "model unavailable", "no such model", "model_not_found" }) |detail|
+        try std.testing.expectEqual(subagent_run.FailKind.model, subagent_run.classifyFailure(error.Unexpected, detail));
 }
