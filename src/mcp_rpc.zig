@@ -276,8 +276,15 @@ fn connectHttpAttempt(server: *Server, a: Allocator, session_alloc: Allocator, r
     });
     defer if (reply.body) |b| http.client.allocator.free(b);
 
-    if (reply.status >= 200 and reply.status < 300) {
-        const parsed = (if (reply.body) |b| mcp_http.parseHttpResponse(a, b, probe_id) else null) orelse return error.BadMcpResponse;
+    // A 2xx alone does NOT mean modern. JSON-RPC carries application errors in
+    // a 200 body, and a legacy server that enforces "initialize first" answers
+    // this probe with exactly that: 200 plus an error object. Treating it as
+    // modern skipped the fallback and broke every such server. Only a real
+    // `result` proves the server understood a request sent with no handshake.
+    if (reply.status >= 200 and reply.status < 300) modern: {
+        const body = reply.body orelse break :modern;
+        const parsed = mcp_http.parseHttpResponse(a, body, probe_id) orelse break :modern;
+        if (parsed != .object or parsed.object.get("result") == null) break :modern;
         server.era = .modern;
         server.protocol_version = try session_alloc.dupe(u8, modern_protocol);
         server.initialized = true;

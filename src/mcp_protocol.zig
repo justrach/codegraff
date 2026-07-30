@@ -392,6 +392,24 @@ test "classifyProbe: the real TS-SDK legacy rejection classifies as legacy" {
     try std.testing.expectEqual(Probe.legacy, probe);
 }
 
+test "a 200 carrying a JSON-RPC error is NOT proof of a modern server" {
+    var arena_state = testArena();
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // JSON-RPC puts application errors in a 200 body, so status alone cannot
+    // decide the era. A legacy server enforcing "initialize first" answers the
+    // stateless probe with exactly this, and an earlier version read the 2xx
+    // as "modern", skipped the fallback, and broke every such server.
+    const rejection = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Server not initialized\"},\"id\":1}";
+    const parsed = try std.json.parseFromSliceLeaky(Value, a, rejection, .{});
+    // The rule the caller applies: a `result` member, not the status, is what
+    // proves the server understood a request sent with no handshake.
+    try std.testing.expect(parsed == .object and parsed.object.get("result") == null);
+    // And a real modern reply does carry one.
+    const ok = try std.json.parseFromSliceLeaky(Value, a, "{\"jsonrpc\":\"2.0\",\"result\":{\"tools\":[]},\"id\":1}", .{});
+    try std.testing.expect(ok == .object and ok.object.get("result") != null);
+}
+
 test "classifyProbe: never crashes on empty, HTML, or truncated bodies" {
     var arena_state = testArena();
     defer arena_state.deinit();
