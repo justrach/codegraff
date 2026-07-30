@@ -141,6 +141,28 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
     return .{ .text = gpa.dupe(u8, prev) catch "" };
 }
 
+/// Comptime-formatted refusal message for a worktree-isolated stage past 0.
+fn stageIsoMsg(comptime n: usize) []const u8 {
+    return std.fmt.comptimePrint("pipeline stage {d} requests worktree isolation, but a pipeline is a dependent chain over one item -- stage {d} must see what earlier stages did, and worktree isolation would silently hide that work. Only stage 0 may isolate with its own worktree. If you wanted real per-item isolation, use phases instead (phases run independently, with no such dependency).", .{ n, n });
+}
+
+/// Pure guard-rail predicate for pipeline-stage isolation: a pipeline chains
+/// dependent stages over one item, so only stage 0 (index 0) may resolve to
+/// worktree isolation -- any later stage in its own worktree cannot see what
+/// the prior stage did, and the run would silently produce nonsense (#295
+/// territory covers the real per-item-worktree redesign; this only refuses
+/// the broken config). Returns the refusal message, or null when allowed.
+fn pipelineIsolationError(stage_index: usize, iso: Isolation) ?[]const u8 {
+    if (stage_index == 0 or iso != .worktree) return null;
+    return switch (stage_index) {
+        1 => stageIsoMsg(1),
+        2 => stageIsoMsg(2),
+        3 => stageIsoMsg(3),
+        4 => stageIsoMsg(4),
+        else => "pipeline stage requests worktree isolation, but a pipeline is a dependent chain over one item -- only stage 0 may isolate with its own worktree. If you wanted real per-item isolation, use phases instead (phases run independently).",
+    };
+}
+
 /// Pipeline mode entry (#3): validate {items, stages}, then run one independent
 /// chain per item concurrently (no barrier) and return the labeled final-stage
 /// result for each item.
@@ -161,7 +183,7 @@ fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
 
     // Parse stages once — shared (read-only) by every item chain.
     const stages = try arena.alloc(StageSpec, stage_vals.len);
-    for (stage_vals, stages) |sv, *sp| {
+    for (stage_vals, stages, 0..) |sv, *sp, stage_index| {
         if (sv != .object) return .{ .text = try gpa.dupe(u8, "each pipeline stage must be an object"), .is_error = true };
         const so = sv.object;
         sp.label = if (so.get("description")) |d| (if (d == .string) d.string else "stage") else "stage";
@@ -172,6 +194,11 @@ fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
         const an = fleet.resolveNiche(so);
         sp.niche = if (an.len > 0) an else sp.label;
         sp.isolation = fleet.resolveIsolation(so);
+        // A pipeline is a dependent chain over one item: stage 2+ must see
+        // what earlier stages did, which worktree isolation would silently
+        // hide (#295 territory). Reject rather than run the chain wrong.
+        if (pipelineIsolationError(stage_index, sp.isolation)) |msg|
+            return .{ .text = try gpa.dupe(u8, msg), .is_error = true };
         sp.isolation_fallback = fleet.resolveIsolationFallback(so);
     }
 
@@ -417,4 +444,24 @@ test "pipelinePrompt substitutes {{item}}/{{prev}} and appends when omitted (#3)
     try std.testing.expect(std.mem.indexOf(u8, s3, "Item: ticket-7") != null);
     try std.testing.expect(std.mem.indexOf(u8, s3, "Result from the previous stage:") != null);
     try std.testing.expect(std.mem.indexOf(u8, s3, "DONE") != null);
+}
+
+test "pipelineIsolationError: stage 0 may isolate, stage 1+ worktree is refused naming the stage, non-worktree is always allowed (#295 guard rail)" {
+    // Stage 0 (the first stage) may isolate with its own worktree.
+    try std.testing.expect(pipelineIsolationError(0, .worktree) == null);
+
+    // Stage 1+ requesting worktree isolation is refused — a pipeline is a
+    // dependent chain over one item, so a later stage in its own worktree
+    // cannot see what the prior stage did.
+    const msg1 = pipelineIsolationError(1, .worktree) orelse return error.TestExpectedNonNull;
+    try std.testing.expect(std.mem.indexOf(u8, msg1, "stage 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg1, "phases") != null);
+
+    const msg3 = pipelineIsolationError(3, .worktree) orelse return error.TestExpectedNonNull;
+    try std.testing.expect(std.mem.indexOf(u8, msg3, "stage 3") != null);
+
+    // Non-worktree isolation (shared_cwd) is allowed at any stage index.
+    try std.testing.expect(pipelineIsolationError(0, .shared_cwd) == null);
+    try std.testing.expect(pipelineIsolationError(1, .shared_cwd) == null);
+    try std.testing.expect(pipelineIsolationError(4, .shared_cwd) == null);
 }
