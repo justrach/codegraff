@@ -425,6 +425,8 @@ pub fn emergencyTrim(self: *Agent) usize {
     // suppressed /loop note points the model at (#318).
     if (trimOldestToolOutputs(self) > 0) {
         self.history_rewrites +%= 1;
+        if (self.pending_goal_note == null)
+            self.pending_goal_note = goal_flow.compactionSnapshot(self.arena, self) catch null;
         return 1;
     }
     return 0;

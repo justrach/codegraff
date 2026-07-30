@@ -169,15 +169,13 @@ pub fn reconcileRestored(root: *Agent) bool {
 /// can (#318). Pure (no Io) so the rule is unit-tested; the caller passes the
 /// clock reading.
 pub fn retireOnCompletion(root: *Agent, now_ms: i64) bool {
-    if (!goalActive(root)) return false;
-    if (root.goal.?.standing) {
-        // The accepted claim consumed this double-check cycle. A /goal objective
-        // retires here, making its arm moot; a standing goal lives on, so without
-        // this reset the arm stayed stuck and every LATER claim passed unchecked -
-        // the unearned accepted, displaced by one cycle (#318).
-        resetCompletionGate(root);
-        return false;
-    }
+    // ANY accepted claim consumes the double-check arm: the refusal it answered
+    // is spent whether the goal retires, stands, or sits paused. A goal that
+    // lives on (standing, or paused-then-resumed) must not ride one refusal
+    // forever, or every later claim passes unchecked - the unearned accepted,
+    // displaced by one cycle (#318).
+    resetCompletionGate(root);
+    if (!goalActive(root) or root.goal.?.standing) return false;
     root.goal.?.status = .complete;
     root.goal.?.updated_ms = now_ms;
     return true;

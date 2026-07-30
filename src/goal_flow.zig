@@ -49,6 +49,7 @@ pub fn reapplyFlagGoal(arena: Allocator, root: *Agent, objective: []const u8, no
             // steering and no completion gate at all, silently (#318).
             g.status = .active;
             g.updated_ms = now_ms;
+            root.goal_note_fp = 0; // a revived goal re-states its note, not by caller-ordering luck
             return null;
         }
     }

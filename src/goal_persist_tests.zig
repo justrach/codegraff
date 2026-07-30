@@ -397,3 +397,24 @@ test "a fresh /loop cannot stop accepted off a checklist finished before it (#31
     goal_state.noteTodoWrite(&root); // the model re-plans and finishes in-run
     try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
 }
+
+test "an accepted claim while paused still consumes the double-check arm (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    root.goal = .{ .objective = "ship", .epoch = 1, .status = .active };
+    try root.todos.append(ar, .{ .content = "open", .status = "pending", .epoch = 1 });
+    try std.testing.expect((try goal_state.completionGate(ar, &root)) != null);
+    goal_state.noteCompletionRefused(&root);
+    // The user pauses between the refusal and the promised second call. The
+    // gate stands down for a paused goal, the claim is recorded, nothing
+    // retires - but the arm must be SPENT, or /goal resume hands the revived
+    // goal a free pass on its next claim with the items still open.
+    root.goal.?.status = .paused;
+    try std.testing.expect((try goal_state.completionGate(ar, &root)) == null);
+    try std.testing.expect(!goal_state.retireOnCompletion(&root, 9));
+    try std.testing.expect(!root.completion_gate_armed);
+    root.goal.?.status = .active; // /goal resume
+    try std.testing.expect((try goal_state.completionGate(ar, &root)) != null); // fresh double-check
+}
