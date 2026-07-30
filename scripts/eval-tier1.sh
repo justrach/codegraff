@@ -166,8 +166,8 @@ if wanted invariants; then
     else
       printf '  filtered run: %s tests, floor %s\n' "$named" "$floor"
       if python3 scripts/eval/tier1_invariants.py invariants --observed "$((named - floor))"; then :; else
-        printf '    the required set is listed in scripts/eval/tier1-manifest.json:\n'
-        python3 -c 'import json,sys; m=json.load(open("scripts/eval/tier1-manifest.json")); [print(f"      {e[\"id\"]}: {e[\"test\"]}") for e in m["required_invariants"]]'
+        printf '    the required set (scripts/eval/tier1-manifest.json):\n'
+        python3 scripts/eval/tier1_invariants.py list
         record_fail invariants
       fi
     fi

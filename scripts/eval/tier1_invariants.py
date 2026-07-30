@@ -134,6 +134,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("static")
     sub.add_parser("filters")
+    sub.add_parser("list")
     count = sub.add_parser("count")
     count.add_argument("--observed", type=int, required=True)
     inv = sub.add_parser("invariants")
@@ -146,6 +147,11 @@ def main() -> None:
     if args.cmd == "filters":
         for entry in manifest["required_invariants"]:
             print(entry["test"])
+        return
+
+    if args.cmd == "list":
+        for entry in manifest["required_invariants"]:
+            print(f"      {entry['id']}: {entry['test']}")
         return
 
     if args.cmd == "docs-only":
@@ -191,10 +197,13 @@ def main() -> None:
             print(
                 f"  FAIL {args.observed} of {expected} named invariants ran under"
                 " -Dtest-filter.\n"
-                "    A named test exists in the source but did not run, which means the\n"
-                "    module holding it is no longer pulled into the test root.\n"
-                "      fix: `scripts/eval-tier1.sh --only invariants` names the set;\n"
-                "           reference the module from src/main.zig's `test {}` block.",
+                "    Either one of them is gone from the source, or it is still there and\n"
+                "    its module is no longer pulled into the test root - in which case it\n"
+                "    compiles to nothing and the suite still reports green.\n"
+                "      fix: `scripts/eval-tier1.sh --only reach` names any invariant that\n"
+                "           vanished from the source. If that passes, the test exists but\n"
+                "           never runs: reference its module from src/main.zig's `test {}`\n"
+                "           block (`_ = @import(\"x.zig\");`).",
                 file=sys.stderr,
             )
             sys.exit(1)
