@@ -25,7 +25,7 @@ const workflowTask = subagent.workflowTask;
 const workflowRetryTask = subagent.workflowRetryTask;
 const runSub = subagent.runSub;
 const scoreVariants = subagent.scoreVariants;
-const max_workflow_tasks = subagent.max_workflow_tasks;
+pub const max_workflow_tasks = subagent.max_workflow_tasks;
 
 // Sibling-imported directly (not through subagent.zig, which sits at the
 // 600-line cap): the harness's own retry-safety verdict from subagentFailure,
@@ -57,8 +57,8 @@ const max_workflow_phases = 5;
 // file — with a truncation marker between, so nothing is actually lost. (A
 // synthesis/compress pass is the heavier alternative; this slicing is the
 // cheap, no-extra-LLM-call lever.)
-const phase_prev_budget = 6000;
-const min_task_prev_cap = 800;
+pub const phase_prev_budget = 6000;
+pub const min_task_prev_cap = 800;
 const prev_tail_keep = 600;
 
 // Flat {{prev}} cap for pipeline mode (#3): each pipeline item runs its own
@@ -71,7 +71,7 @@ const pipeline_prev_cap = 6000;
 /// phase_prev_budget divided across the phase's width, floored at
 /// min_task_prev_cap. Pure, and kept separate from cappedPrevBody so the
 /// division arithmetic is independently testable.
-fn phaseTaskCap(n_tasks: usize) usize {
+pub fn phaseTaskCap(n_tasks: usize) usize {
     return @max(min_task_prev_cap, phase_prev_budget / n_tasks);
 }
 
@@ -80,7 +80,7 @@ fn phaseTaskCap(n_tasks: usize) usize {
 /// truncation marker + tail. Saturating subtraction guards a `cap` smaller
 /// than prev_tail_keep (not expected from either call site — both stay well
 /// above prev_tail_keep — but this keeps the function safe standalone).
-fn cappedPrevBody(arena: Allocator, text: []const u8, cap: usize) []const u8 {
+pub fn cappedPrevBody(arena: Allocator, text: []const u8, cap: usize) []const u8 {
     if (text.len <= cap) return text;
     const head = util.utf8Prefix(text, cap -| prev_tail_keep);
     const tail = text[text.len -| prev_tail_keep..];
@@ -91,7 +91,7 @@ fn cappedPrevBody(arena: Allocator, text: []const u8, cap: usize) []const u8 {
 /// that substring appears (case-insensitively) in the previous phase's results —
 /// e.g. gate a synthesis phase on a findings sentinel so it never runs when the
 /// earlier phase turned up nothing. Empty `when` (or phase 1, no prev) → runs.
-fn gateAllows(prev: []const u8, when: []const u8) bool {
+pub fn gateAllows(prev: []const u8, when: []const u8) bool {
     return when.len == 0 or util.indexOfIgnoreCase(prev, when) != null;
 }
 
@@ -129,7 +129,7 @@ fn replacePlaceholder(arena: Allocator, hay: []const u8, needle: []const u8, wit
 /// result: context, blank line, raw prompt (U5). Absent/empty context
 /// returns `raw` unchanged (no allocation), so the composed prompt stays
 /// byte-identical to today's behavior when no context is set.
-fn withContext(arena: Allocator, context: []const u8, raw: []const u8) ![]const u8 {
+pub fn withContext(arena: Allocator, context: []const u8, raw: []const u8) ![]const u8 {
     if (context.len == 0) return raw;
     return std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ context, raw });
 }
@@ -137,7 +137,7 @@ fn withContext(arena: Allocator, context: []const u8, raw: []const u8) ![]const 
 /// Resolve a pipeline stage prompt for one item: substitute {{item}}, and from
 /// stage 2 {{prev}} = this item's bounded previous-stage result. Either is
 /// appended when its placeholder is omitted (mirrors phases-mode {{prev}}).
-fn pipelinePrompt(arena: Allocator, raw: []const u8, item: []const u8, prev: []const u8, stage_no: usize) ![]const u8 {
+pub fn pipelinePrompt(arena: Allocator, raw: []const u8, item: []const u8, prev: []const u8, stage_no: usize) ![]const u8 {
     const cp = if (stage_no > 1) cappedPrevBody(arena, prev, pipeline_prev_cap) else "";
     var p = raw;
     if (std.mem.indexOf(u8, p, "{{item}}") != null)
@@ -203,7 +203,7 @@ fn stageIsoMsg(comptime n: usize) []const u8 {
 /// the prior stage did, and the run would silently produce nonsense (#295
 /// territory covers the real per-item-worktree redesign; this only refuses
 /// the broken config). Returns the refusal message, or null when allowed.
-fn pipelineIsolationError(stage_index: usize, iso: Isolation) ?[]const u8 {
+pub fn pipelineIsolationError(stage_index: usize, iso: Isolation) ?[]const u8 {
     if (stage_index == 0 or iso != .worktree) return null;
     return switch (stage_index) {
         1 => stageIsoMsg(1),
@@ -294,7 +294,7 @@ fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
 // buildManifest are kept PURE (no ctx/io) so both are unit-testable without
 // running a real subagent.
 
-const PhaseTally = struct {
+pub const PhaseTally = struct {
     phase_no: usize,
     total_phases: usize,
     title: []const u8,
@@ -308,7 +308,7 @@ const PhaseTally = struct {
 /// assembled per-task failure headers plus a line naming the phase, so the
 /// caller (or a human) can see exactly why the run stopped instead of
 /// silently receiving empty "evidence".
-fn buildAbortText(arena: Allocator, labels: []const []const u8, phase_no: usize, total_phases: usize, title: []const u8) ![]const u8 {
+pub fn buildAbortText(arena: Allocator, labels: []const []const u8, phase_no: usize, total_phases: usize, title: []const u8) ![]const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
     for (labels) |label| {
         try aw.writer.print("### {s} (no result — task failed)\n\n", .{label});
@@ -321,7 +321,7 @@ fn buildAbortText(arena: Allocator, labels: []const []const u8, phase_no: usize,
 /// currently the only way the orchestrator learns a phase was skipped, or
 /// that a synthesis stage is about to work from partial (some-tasks-failed)
 /// evidence rather than a clean phase.
-fn buildManifest(arena: Allocator, tallies: []const PhaseTally) ![]const u8 {
+pub fn buildManifest(arena: Allocator, tallies: []const PhaseTally) ![]const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
     try aw.writer.writeAll("## workflow\n");
     for (tallies) |t| {
@@ -540,174 +540,4 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
     const manifest = try buildManifest(arena, tallies);
     const final_text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ prev_results, manifest });
     return .{ .text = try gpa.dupe(u8, final_text) };
-}
-
-test "cappedPrevBody bounds a wide phase output, keeps head + inspect tail at several caps (#4/U3)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    // A short result passes through untouched — most outputs never hit the
-    // cap, at any cap size.
-    try std.testing.expectEqualStrings("hi", cappedPrevBody(a, "hi", phase_prev_budget));
-    try std.testing.expectEqualStrings("hi", cappedPrevBody(a, "hi", min_task_prev_cap));
-
-    // A huge result is capped at several different cap sizes (the divided
-    // per-task cap varies with phase width): head kept, the trailing
-    // inspect: pointer never truncated away, a truncation marker added, and
-    // the full text never lands verbatim.
-    const big = util.repeatBytes("X", 9000) ++ "\n[subagent sa-007-abcd · inspect: .graff/subagents/sa-007-abcd.md]";
-    for ([_]usize{ phase_prev_budget, 3000, 1500, min_task_prev_cap }) |cap| {
-        const capped = cappedPrevBody(a, big, cap);
-        try std.testing.expect(capped.len < big.len);
-        try std.testing.expect(capped.len <= cap + 200); // head + tail + marker overhead
-        try std.testing.expect(std.mem.indexOf(u8, capped, "truncated") != null);
-        try std.testing.expect(std.mem.indexOf(u8, capped, "inspect: .graff/subagents/sa-007-abcd.md") != null);
-        try std.testing.expect(std.mem.indexOf(u8, capped, big) == null);
-    }
-}
-
-test "phaseTaskCap divides the phase budget across tasks, floored at min_task_prev_cap (#U3)" {
-    // Narrow phases: budget/n_tasks comfortably clears the floor.
-    try std.testing.expectEqual(@as(usize, phase_prev_budget), phaseTaskCap(1));
-    try std.testing.expectEqual(@as(usize, phase_prev_budget / 2), phaseTaskCap(2));
-
-    // Wide phases (up to max_workflow_tasks, and beyond): the divided cap
-    // would fall below min_task_prev_cap, so the floor wins — never an
-    // unreadably tiny per-task slice.
-    try std.testing.expect(phase_prev_budget / max_workflow_tasks < min_task_prev_cap);
-    try std.testing.expectEqual(@as(usize, min_task_prev_cap), phaseTaskCap(max_workflow_tasks));
-    try std.testing.expectEqual(@as(usize, min_task_prev_cap), phaseTaskCap(50));
-}
-
-test "withContext: set prepends context + blank line; absent/empty is byte-identical (U5)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    // Context set: context, blank line, raw task — nothing else.
-    const with = try withContext(a, "Repo: zig 0.16, 600-line file cap.", "Implement the thing.");
-    try std.testing.expectEqualStrings("Repo: zig 0.16, 600-line file cap.\n\nImplement the thing.", with);
-
-    // Context absent → byte-identical to the raw task (no stray blank line).
-    const absent = try withContext(a, "", "Implement the thing.");
-    try std.testing.expectEqualStrings("Implement the thing.", absent);
-
-    // Context present but empty string behaves the same as absent.
-    const empty = try withContext(a, "", "Do the other thing.");
-    try std.testing.expectEqualStrings("Do the other thing.", empty);
-}
-
-test "gateAllows: empty when always runs, else case-insensitive substring (#5)" {
-    try std.testing.expect(gateAllows("anything", "")); // no gate → always run
-    try std.testing.expect(gateAllows("found 3 ISSUES here", "issues")); // case-insensitive hit
-    try std.testing.expect(!gateAllows("all clean, no findings", "ISSUE")); // absent → skip
-    try std.testing.expect(!gateAllows("", "ready")); // empty prev → skip
-}
-
-test "buildAbortText names the phase index and title, and lists every failed task (U2)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    const labels = [_][]const u8{ "scan A", "scan B" };
-    const text = try buildAbortText(a, &labels, 2, 3, "Recon");
-
-    // Every failed task's header survives, so a human can see what was tried.
-    try std.testing.expect(std.mem.indexOf(u8, text, "### scan A (no result — task failed)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "### scan B (no result — task failed)") != null);
-    // The abort line names the phase index/total and title — the whole point
-    // of this text existing instead of a silent empty {{prev}}.
-    try std.testing.expect(std.mem.indexOf(u8, text, "workflow aborted: every task in phase 2/3 (Recon) failed") != null);
-}
-
-test "buildManifest reports ok/retried per phase and SKIPPED for a gated phase (U2)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    const tallies = [_]PhaseTally{
-        .{ .phase_no = 1, .total_phases = 3, .title = "Gather", .ok = 3, .total = 3, .retried = 1 },
-        .{ .phase_no = 2, .total_phases = 3, .title = "Verify", .ok = 0, .total = 2, .retried = 0, .skipped_when = "no findings" },
-        .{ .phase_no = 3, .total_phases = 3, .title = "Report", .ok = 1, .total = 2, .retried = 0 },
-    };
-    const block = try buildManifest(a, &tallies);
-
-    try std.testing.expect(std.mem.startsWith(u8, block, "## workflow"));
-    try std.testing.expect(std.mem.indexOf(u8, block, "phase 1/3 Gather: 3/3 ok, 1 retried") != null);
-    try std.testing.expect(std.mem.indexOf(u8, block, "phase 2/3 Verify: SKIPPED (when=\"no findings\")") != null);
-    try std.testing.expect(std.mem.indexOf(u8, block, "phase 3/3 Report: 1/2 ok, 0 retried") != null);
-    // A skipped phase must never claim an ok/retried count it never earned.
-    try std.testing.expect(std.mem.indexOf(u8, block, "phase 2/3 Verify: 0/2") == null);
-}
-
-test "pipelinePrompt substitutes {{item}}/{{prev}} and appends when omitted (#3)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    // {{item}} substituted on stage 1; no previous-stage section.
-    const s1 = try pipelinePrompt(a, "Audit {{item}} for bugs.", "src/x.zig", "", 1);
-    try std.testing.expect(std.mem.indexOf(u8, s1, "Audit src/x.zig for bugs.") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s1, "previous stage") == null);
-
-    // {{item}} and {{prev}} both substituted on stage 2.
-    const s2 = try pipelinePrompt(a, "Given {{prev}}, fix {{item}}.", "src/x.zig", "BUG: off-by-one", 2);
-    try std.testing.expect(std.mem.indexOf(u8, s2, "Given BUG: off-by-one, fix src/x.zig.") != null);
-
-    // Omitted placeholders are appended (item on stage 1, prev on stage 2+).
-    const s3 = try pipelinePrompt(a, "Summarize the result.", "ticket-7", "DONE", 2);
-    try std.testing.expect(std.mem.indexOf(u8, s3, "Item: ticket-7") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s3, "Result from the previous stage:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s3, "DONE") != null);
-}
-
-test "execWorkflow rejects a non-object argument tree instead of dereferencing it" {
-    var ctx: ToolCtx = undefined;
-    ctx.gpa = std.testing.allocator;
-    ctx.from_sub = false;
-
-    const out1 = try execWorkflow(ctx, .{ .string = "do it" });
-    try std.testing.expect(out1.is_error);
-    try std.testing.expect(std.mem.indexOf(u8, out1.text, "object") != null);
-    std.testing.allocator.free(out1.text);
-
-    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"phases\":\"nope\"}", .{});
-    defer parsed.deinit();
-    const out2 = try execWorkflow(ctx, parsed.value);
-    try std.testing.expect(out2.is_error);
-    try std.testing.expect(std.mem.indexOf(u8, out2.text, "array") != null);
-    std.testing.allocator.free(out2.text);
-}
-
-test "execSubagent rejects a non-object argument tree instead of dereferencing it" {
-    var ctx: ToolCtx = undefined;
-    ctx.gpa = std.testing.allocator;
-    ctx.from_sub = false;
-
-    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, "[1,2]", .{});
-    defer parsed.deinit();
-    const out = try subagent.execSubagent(ctx, parsed.value);
-    try std.testing.expect(out.is_error);
-    std.testing.allocator.free(out.text);
-}
-
-test "pipelineIsolationError: stage 0 may isolate, stage 1+ worktree is refused naming the stage, non-worktree is always allowed (#295 guard rail)" {
-    // Stage 0 (the first stage) may isolate with its own worktree.
-    try std.testing.expect(pipelineIsolationError(0, .worktree) == null);
-
-    // Stage 1+ requesting worktree isolation is refused — a pipeline is a
-    // dependent chain over one item, so a later stage in its own worktree
-    // cannot see what the prior stage did.
-    const msg1 = pipelineIsolationError(1, .worktree) orelse return error.TestExpectedNonNull;
-    try std.testing.expect(std.mem.indexOf(u8, msg1, "stage 1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, msg1, "phases") != null);
-
-    const msg3 = pipelineIsolationError(3, .worktree) orelse return error.TestExpectedNonNull;
-    try std.testing.expect(std.mem.indexOf(u8, msg3, "stage 3") != null);
-
-    // Non-worktree isolation (shared_cwd) is allowed at any stage index.
-    try std.testing.expect(pipelineIsolationError(0, .shared_cwd) == null);
-    try std.testing.expect(pipelineIsolationError(1, .shared_cwd) == null);
-    try std.testing.expect(pipelineIsolationError(4, .shared_cwd) == null);
 }

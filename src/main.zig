@@ -579,16 +579,16 @@ const tools_mod = @import("tools.zig");
 const Snapshots = tools_mod.Snapshots;
 const subagent = @import("subagent.zig");
 const agentJobsReap = subagent.agentJobsReap; // #276 P0-3: background subagents die with the session, mirroring jobsReap
-const workflow = @import("workflow.zig");
+const workflow = @import("workflow_test.zig"); // the engine's tests live here (workflow.zig hit the 600-line cap)
 const exec = @import("exec.zig");
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────
 test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
     _ = @import("main_test.zig");
     // A module whose tests must run needs an explicit reference here: a plain
-    // @import elsewhere (or a type-only alias, as readline.zig has for
-    // HistoryNav) is NOT enough to pull its `test {}` blocks into the binary —
-    // they silently compile to nothing and the suite still reports green.
+    // @import elsewhere (or a type-only alias) is NOT enough to pull its
+    // `test {}` blocks in — they compile to nothing and the suite still reports
+    // green. scripts/eval-tier1.sh --only reach catches an unreferenced one.
     _ = @import("scoring_slot_test.zig");
     _ = @import("readline_history.zig");
     _ = @import("goal_pacing_autonomous_test.zig");
