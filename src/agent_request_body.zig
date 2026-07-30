@@ -52,8 +52,17 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                         }
                     }
                 } else {
+                    // Current Claude models default thinking.display to "omitted", which
+                    // streams thinking blocks with an empty body — graff's live Thinking
+                    // panel then shows nothing. Ask for the summary. Only the real
+                    // Anthropic API knows the field; the other anthropic-format providers
+                    // (minimax) must never see it.
+                    const thinking_obj: []const u8 = if (std.mem.eql(u8, self.provider.id, "anthropic"))
+                        "{\"type\":\"adaptive\",\"display\":\"summarized\"}"
+                    else
+                        "{\"type\":\"adaptive\"}";
                     try s.objectField("thinking");
-                    try s.print("{s}", .{"{\"type\":\"adaptive\"}"});
+                    try s.print("{s}", .{thinking_obj});
                 }
             }
             // Prompt caching (Anthropic): a cache_control breakpoint on the
@@ -417,8 +426,9 @@ test "retained reasoning: anthropic replays thinking+signature inside a multi-st
     defer std.testing.allocator.free(body);
 
     // Adaptive thinking is what enables interleaved reasoning between tool
-    // calls; it needs no beta header on current models.
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"thinking\":{\"type\":\"adaptive\"}") != null);
+    // calls; it needs no beta header on current models. It also opts into a
+    // summarized display, since current Claude models default to an empty one.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"}") != null);
     // The whole block, signature included, survives the cache-breakpoint rewrite.
     try std.testing.expect(std.mem.indexOf(u8, body, "{\"type\":\"thinking\",\"thinking\":\"the linker flag is wrong\",\"signature\":\"sigabc\"}") != null);
     // A cache breakpoint belongs on the trailing tool_result, never on a
@@ -474,4 +484,49 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
     try std.testing.expect(std.mem.indexOf(u8, body, "\"store\":false") != null);
     // No live WS session -> no chaining, so the full input must carry it.
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
+}
+
+test "anthropic asks for summarized thinking; other anthropic-format providers do not" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var messages = std.json.Array.init(arena);
+    try messages.append(try testUserMessage(arena, "hello"));
+
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = undefined,
+        .client = undefined,
+        .provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude", .context = 1_000_000 },
+        .messages = messages,
+        .sub = false,
+        .label = "",
+        .out = null,
+        .sys_normal = "system",
+    };
+    const tools = "[{\"name\":\"bash\",\"description\":\"\",\"input_schema\":{\"type\":\"object\"}}]";
+
+    // a. Real Anthropic, thinking allowed: adaptive thinking opts into a
+    // summarized display, since current Claude models default to empty.
+    const body_a = try agent.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(body_a);
+    try std.testing.expect(std.mem.indexOf(u8, body_a, "\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"}") != null);
+
+    // b. Forced tool_choice still suppresses the whole thinking object, exactly
+    // as before this change.
+    const body_b = try agent.buildBody(tools, true, true, true);
+    defer std.testing.allocator.free(body_b);
+    try std.testing.expect(std.mem.indexOf(u8, body_b, "\"thinking\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body_b, "\"tool_choice\":{\"type\":\"any\"}") != null);
+
+    // c. Other anthropic-format providers (minimax) reject unknown fields, so
+    // they must never see "display" — only the bare adaptive object.
+    agent.provider.id = "minimax";
+    agent.provider.model = "MiniMax-M3";
+    const body_c = try agent.buildBody(tools, false, true, true);
+    defer std.testing.allocator.free(body_c);
+    try std.testing.expect(std.mem.indexOf(u8, body_c, "\"thinking\":{\"type\":\"adaptive\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body_c, "\"display\"") == null);
 }
