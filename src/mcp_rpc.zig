@@ -147,12 +147,110 @@ fn connectLegacy(server: *Server, a: Allocator, session_alloc: Allocator) !Value
     return request(server, a, "{}", "tools/list", null);
 }
 
-/// Connect a stdio server. Always legacy today — the `server/discover`
-/// probe lands gated behind `GRAFF_MCP_PROBE` in a later commit; with the
-/// gate off (the default), this is byte-identical to graff's pre-migration
-/// behavior.
+const stdio_probe_timeout: Io.Duration = .fromSeconds(3);
+
+fn stdioProbeReadTask(server: *Server, response_alloc: Allocator, id: i64) anyerror!Value {
+    const stdio = &server.transport.stdio;
+    const r = &stdio.stdout_reader.interface;
+    while (true) {
+        const line = (try r.takeDelimiter('\n')) orelse return error.McpClosed;
+        if (mcp_http.matchingResponse(response_alloc, line, id)) |parsed| return parsed;
+    }
+}
+
+fn stdioProbeTimeoutTask(io: Io) void {
+    io.sleep(stdio_probe_timeout, .awake) catch {};
+}
+
+const StdioProbeDone = union(enum) {
+    replied: anyerror!Value,
+    timeout,
+};
+
+pub const StdioProbeOutcome = enum { modern, legacy, closed };
+
+fn classifyStdioProbe(result: anyerror!Value) StdioProbeOutcome {
+    const response = result catch |err| switch (err) {
+        error.McpClosed => return .closed,
+        else => return .legacy, // any other error (incl. a malformed line) — never treat as modern
+    };
+    // A recognized modern *error* here (-32020/-32021/-32022) still reads as
+    // legacy for stdio specifically: unlike the HTTP probe, graff has no
+    // real modern stdio server to validate a "fail loudly" path against
+    // (population ~0 today), so the conservative choice is the one that
+    // degrades to the handshake graff already knows works.
+    if (response.object.get("error") != null) return .legacy;
+    const supported = mcp_protocol.discoverSupportedVersions(response) catch return .legacy;
+    for (supported) |v| if (v == .string and std.mem.eql(u8, v.string, modern_protocol)) return .modern;
+    return .legacy;
+}
+
+/// Attempt the `server/discover` probe, bounded to `stdio_probe_timeout` so
+/// a legacy server that silently ignores an unrecognized pre-`initialize`
+/// method can never hang graff at startup (stdio § Backward Compatibility:
+/// fall back "on any error that is not a recognized modern error, or no
+/// response within a reasonable timeout"). `Select.cancel` blocks until the
+/// read task has actually stopped before returning, so by the time this
+/// function returns on a timeout, nothing is still touching the reader —
+/// the caller's subsequent (unbounded, as today) legacy `request()` reads
+/// pick up cleanly on the same stream.
+///
+/// `.closed` (the child exited or closed stdout) is reported distinctly
+/// from `.legacy` (a reply arrived, or the wait simply timed out) because
+/// only `.closed` needs the caller to respawn: some legacy SDK servers
+/// exit on an unrecognized pre-initialize message, and writing the
+/// `initialize` request to a dead child's closed stdin would just error.
+pub fn probeStdio(server: *Server, a: Allocator, io: Io) !StdioProbeOutcome {
+    const id = server.next_id;
+    server.next_id += 1;
+    {
+        const stdio = &server.transport.stdio;
+        const w = &stdio.stdin_writer.interface;
+        try w.print(
+            \\{{"jsonrpc":"2.0","id":{d},"method":"server/discover","params":{{}}}}
+        ++ "\n", .{id});
+        try w.flush();
+    }
+
+    var done_buf: [2]StdioProbeDone = undefined;
+    var select: Io.Select(StdioProbeDone) = .init(io, &done_buf);
+    select.concurrent(.replied, stdioProbeReadTask, .{ server, a, id }) catch return .legacy;
+    select.concurrent(.timeout, stdioProbeTimeoutTask, .{io}) catch {
+        const only = select.await() catch return .legacy;
+        select.cancelDiscard();
+        return classifyStdioProbe(only.replied);
+    };
+
+    const first = select.await() catch return .legacy;
+    switch (first) {
+        .replied => |result| {
+            select.cancelDiscard();
+            return classifyStdioProbe(result);
+        },
+        .timeout => {
+            _ = select.cancel(); // blocks until the read task has actually stopped
+            return .legacy;
+        },
+    }
+}
+
+/// Connect a stdio server. Always legacy — the gated `server/discover`
+/// probe (`GRAFF_MCP_PROBE=1`, default off) is orchestrated by mcp.zig's
+/// `startServer` instead of here: only it has the argv/env needed to
+/// respawn a server whose process closes during the probe. This is
+/// byte-identical to graff's pre-migration behavior either way.
 pub fn connectStdio(server: *Server, a: Allocator, session_alloc: Allocator) !Value {
     return connectLegacy(server, a, session_alloc);
+}
+
+/// Finish connecting a stdio server that `probeStdio` found modern: no
+/// handshake, just the modern-enveloped `tools/list` (era is set first so
+/// `request` picks the modern wire format).
+pub fn finishModernStdio(server: *Server, a: Allocator, session_alloc: Allocator) !Value {
+    server.era = .modern;
+    server.protocol_version = try session_alloc.dupe(u8, modern_protocol);
+    server.initialized = true;
+    return request(server, a, "{}", "tools/list", null);
 }
 
 /// Connect a Streamable HTTP server: attempt a modern (2026-07-28)
@@ -213,4 +311,33 @@ fn connectHttpAttempt(server: *Server, a: Allocator, session_alloc: Allocator, r
             return connectLegacy(server, a, session_alloc);
         },
     }
+}
+
+test "a late reply for a stale id cannot be mistaken for the id actually awaited" {
+    // The exact loop body `request`'s stdio branch and `stdioProbeReadTask`
+    // both use: takeDelimiter, then filter by id via
+    // mcp_http.matchingResponse, skipping any line whose id doesn't match.
+    // Proves that if a `server/discover` probe times out but its reply
+    // arrives later, it cannot be mistaken for the `initialize` response
+    // that follows it on the same stream — the ids differ (discover used
+    // an earlier next_id).
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var reader: Io.Reader = .fixed(
+        \\{"jsonrpc":"2.0","id":1,"result":{}}
+        \\{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}
+        \\
+    );
+    var found: ?Value = null;
+    while (true) {
+        const line = (try reader.takeDelimiter('\n')) orelse break;
+        if (mcp_http.matchingResponse(a, line, 2)) |parsed| {
+            found = parsed;
+            break;
+        }
+    }
+    const result = found orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(i64, 2), result.object.get("id").?.integer);
+    try std.testing.expect(result.object.get("result").?.object.get("tools") != null);
 }

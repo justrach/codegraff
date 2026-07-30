@@ -47,6 +47,12 @@ pub const Registry = struct {
     mutex: Io.Mutex = .init,
     servers: []*Server = &.{},
     tools: []Tool = &.{},
+    /// `GRAFF_MCP_PROBE=1`, default off (see mcp_rpc.probeStdio's doc comment
+    /// for why this cannot be turned on unconditionally today). Only
+    /// `Registry.init` reads the environment; servers added later via
+    /// `addServer`/`trustWorkspace` on a `Registry.empty*`-constructed
+    /// registry inherit `false` — a documented gap, never a safety issue.
+    stdio_probe: bool = false,
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
@@ -56,7 +62,7 @@ pub const Registry = struct {
     /// Streamable HTTP `url`, handshake each server, and collect their tools.
     /// Returns null
     /// (no error) when the config file is absent — MCP is optional.
-    pub fn init(gpa: Allocator, io: Io, config_path: []const u8, home: []const u8) !?Registry {
+    pub fn init(gpa: Allocator, io: Io, config_path: []const u8, home: []const u8, environ_map: anytype) !?Registry {
         const text = Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .limited(1 << 20)) catch |err| switch (err) {
             error.FileNotFound => return null,
             else => return err,
@@ -68,6 +74,7 @@ pub const Registry = struct {
             .io = io,
             .home = home,
             .arena_state = std.heap.ArenaAllocator.init(gpa),
+            .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| std.mem.eql(u8, v, "1") else false,
         };
         errdefer reg.deinit();
         const a = reg.arena();
@@ -270,6 +277,29 @@ pub const Registry = struct {
         };
         return n;
     }
+    /// Spawn a stdio child and wire up its transport. Factored out of
+    /// `startServer` so the `GRAFF_MCP_PROBE` path can call it a second
+    /// time: some legacy SDK servers close stdout on an unrecognized
+    /// pre-`initialize` message (`server/discover`), and the only fix is a
+    /// fresh process — the closed one can't be un-closed.
+    fn spawnStdio(reg: *Registry, a: Allocator, argv: []const []const u8, env_map: ?*std.process.Environ.Map) !Transport {
+        var child = try std.process.spawn(reg.io, .{
+            .argv = argv,
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .ignore,
+            .environ_map = env_map,
+        });
+        errdefer mcp_stdio.stopChild(reg.io, &child);
+        const in_buf = try a.alloc(u8, 64 * 1024);
+        const out_buf = try a.alloc(u8, 1 << 20);
+        return .{ .stdio = .{
+            .child = child,
+            .stdin_writer = child.stdin.?.writerStreaming(reg.io, in_buf),
+            .stdout_reader = child.stdout.?.readerStreaming(reg.io, out_buf),
+        } };
+    }
+
     fn startServer(
         reg: *Registry,
         a: Allocator,
@@ -283,6 +313,12 @@ pub const Registry = struct {
         if ((command_v == null) == (url_v == null)) return error.BadMcpConfig;
 
         const server = try a.create(Server);
+        // Hoisted out of the `else` branch below (rather than local to it)
+        // so the GRAFF_MCP_PROBE respawn path -- which runs after this
+        // if/else, once the era-detection dispatch below finds a closed
+        // stdio child -- can spawn a fresh process with the same argv/env.
+        var stdio_argv: std.ArrayList([]const u8) = .empty;
+        var stdio_env_map: ?*std.process.Environ.Map = null;
         if (url_v) |url| {
             if (url != .string) return error.BadMcpConfig;
             if (!validRemoteUrl(url.string)) return error.BadMcpUrl;
@@ -312,18 +348,16 @@ pub const Registry = struct {
             };
         } else {
             const command = if (command_v.? == .string) command_v.?.string else return error.BadMcpConfig;
-            var argv: std.ArrayList([]const u8) = .empty;
-            try argv.append(a, command);
+            try stdio_argv.append(a, command);
             if (cfg.get("args")) |args| {
                 if (args != .array) return error.BadMcpConfig;
                 for (args.array.items) |arg| {
                     if (arg != .string) return error.BadMcpConfig;
-                    try argv.append(a, arg.string);
+                    try stdio_argv.append(a, arg.string);
                 }
             }
 
             // Optional per-server env overlaid on the parent environment.
-            var env_map: ?*std.process.Environ.Map = null;
             if (cfg.get("env")) |env| {
                 if (env != .object) return error.BadMcpConfig;
                 const m = try a.create(std.process.Environ.Map);
@@ -333,31 +367,10 @@ pub const Registry = struct {
                     if (entry.value_ptr.* != .string) return error.BadMcpConfig;
                     try m.put(entry.key_ptr.*, entry.value_ptr.*.string);
                 }
-                env_map = m;
+                stdio_env_map = m;
             }
 
-            var child = try std.process.spawn(reg.io, .{
-                .argv = argv.items,
-                .stdin = .pipe,
-                .stdout = .pipe,
-                .stderr = .ignore,
-                .environ_map = env_map,
-            });
-            var server_owns_child = false;
-            errdefer if (!server_owns_child) {
-                mcp_stdio.stopChild(reg.io, &child);
-            };
-            const in_buf = try a.alloc(u8, 64 * 1024);
-            const out_buf = try a.alloc(u8, 1 << 20);
-            server.* = .{
-                .name = name,
-                .transport = .{ .stdio = .{
-                    .child = child,
-                    .stdin_writer = child.stdin.?.writerStreaming(reg.io, in_buf),
-                    .stdout_reader = child.stdout.?.readerStreaming(reg.io, out_buf),
-                } },
-            };
-            server_owns_child = true;
+            server.* = .{ .name = name, .transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map) };
         }
 
         var registry_owns_server = false;
@@ -367,12 +380,30 @@ pub const Registry = struct {
         errdefer tools.shrinkRetainingCapacity(tools_before);
 
         // Probe-then-fallback for HTTP (mcp_rpc.connectHttp), the unchanged
-        // legacy handshake for stdio (mcp_rpc.connectStdio) — either way,
+        // legacy handshake for stdio unless GRAFF_MCP_PROBE=1 opts into the
+        // gated server/discover probe (mcp_rpc.probeStdio) — either way,
         // server.era and server.protocol_version are set by the time this
         // returns, and the model sees whichever revision was negotiated.
         const listed = switch (server.transport) {
             .http => try mcp_rpc.connectHttp(server, a, a),
-            .stdio => try mcp_rpc.connectStdio(server, a, a),
+            .stdio => stdio_listed: {
+                if (!reg.stdio_probe) break :stdio_listed try mcp_rpc.connectStdio(server, a, a);
+                switch (try mcp_rpc.probeStdio(server, a, reg.io)) {
+                    .modern => break :stdio_listed try mcp_rpc.finishModernStdio(server, a, a),
+                    .legacy => break :stdio_listed try mcp_rpc.connectStdio(server, a, a),
+                    .closed => {
+                        // The probe write/read found a dead process (some
+                        // legacy SDK servers exit on an unrecognized
+                        // pre-initialize message) — respawn once and go
+                        // straight to legacy on the fresh process, no
+                        // second probe against a server that already
+                        // proved it can't tolerate one.
+                        mcp_stdio.stopChild(reg.io, &server.transport.stdio.child);
+                        server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map);
+                        break :stdio_listed try mcp_rpc.connectStdio(server, a, a);
+                    },
+                }
+            },
         };
         const result_v = listed.object.get("result") orelse return error.BadMcpResponse;
         if (result_v != .object) return error.BadMcpResponse;
