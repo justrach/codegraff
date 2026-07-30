@@ -488,10 +488,11 @@ session. See [Permission modes](#permission-modes).
 `/goal pause` stops the steering without losing the objective, `/goal resume`
 turns it back on, and `/goal status` shows the objective and its current state.
 `/loop <prompt>` works autonomously toward the prompt, running turn after turn
-(plan, act, verify) and stopping on its own with a named outcome (accepted,
-idle, blocked, cancelled, or exhausted) once the work is done, the model stops
-making tool progress without claiming completion (idle), you step in, or a
-safety limit is hit, instead of pausing for confirmation between routine steps.
+(plan, act, verify) instead of pausing for confirmation between routine steps,
+and stops on its own with a named outcome: accepted once the work is done, idle
+when the model stops making tool progress without claiming completion, cancelled
+or blocked when you step in or it needs you, and exhausted when a safety limit
+is hit.
 `/review <target or instructions>` is the deliberately narrower path for code
 review: it suppresses goal/eval/ultracode steering, admits only local
 read/search tools and read-only shell inspection, and runs with fresh

@@ -96,10 +96,10 @@ pub fn run(ctx: *Ctx) !void {
             // here, so an interrupted/errored turn does not resume the loop.
             loop_continue_armed = false;
             is_loop_continuation = true;
-            const todos_render = goal_state.renderCurrent(ctx.root); // current epoch only: parked work never re-enters a /loop turn (#318)
             // Gated: these prompts persist in root.messages, autosave, and are
-            // compaction input, so the list is pasted only when it changed (#318).
-            const note = try loop_list.note(ctx.arena, todos_render);
+            // compaction input, so the current epoch's list is pasted only when
+            // it changed or a history rewrite destroyed the pasted copies (#318).
+            const note = try loop_list.note(ctx.arena, ctx.root);
             break :blk try std.fmt.allocPrint(ctx.arena, "/loop {s}", .{note});
         } else if (ctx.interactive) blk: {
             try ctx.root.prompt();
@@ -553,8 +553,7 @@ pub fn run(ctx: *Ctx) !void {
             // Trim on failure only when we're genuinely against the window — at
             // 80–95% a transient compaction failure can recover next turn.
             const near_cap = ctx.root.provider.nearContextLimit(session_context_tokens);
-            ctx.root.compactOrRecover(near_cap);
-            loop_list.reset(); // the pasted copies died with the old history - re-carry the list once, mirroring goal_note_fp (#318)
+            ctx.root.compactOrRecover(near_cap); // loop_list re-carries via root.history_rewrites, incl. MID-turn rewrites this block never sees (#318)
         }
 
         // #226: /loop controller-authorized continuation. After a cleanly-

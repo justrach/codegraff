@@ -15,21 +15,42 @@ const Agent = agent_mod.Agent;
 const TodoItem = agent_mod.TodoItem;
 
 /// The Goal `--goal <text>` seeds: a STANDING objective (the flag's documented
-/// contract is "every turn, incl. --json/-p/SDK"), stamped above every epoch
-/// already present in `todos` so a resumed session's parked checklist can never
-/// become its work, and so it never aliases the epoch-0 no-goal bucket (#318).
-/// `objective` must already be owned by the session arena. Also used to
-/// RE-apply the flag after a resume: loadSession overwrites root.goal with the
-/// goal from disk, so `graff -r <session> --goal X` silently dropped X.
-pub fn standingGoalFromFlag(objective: []const u8, todos: []const TodoItem, now_ms: i64) agent_mod.Goal {
+/// contract is "every turn, incl. --json/-p/SDK"), stamped above `old` (the
+/// goal it displaces, if any) and every epoch already present in `todos`, so a
+/// resumed session's parked checklist can never become its work and it never
+/// aliases the epoch-0 no-goal bucket (#318).
+/// `objective` must already be owned by the session arena. Re-application over
+/// a loadSession goes through reapplyFlagGoal, which keeps the same objective's
+/// goal instead of re-minting it.
+pub fn standingGoalFromFlag(objective: []const u8, old: ?agent_mod.Goal, todos: []const TodoItem, now_ms: i64) agent_mod.Goal {
     return .{
         .objective = objective,
         .status = .active,
         .standing = true,
-        .epoch = goal_state.nextEpoch(null, todos),
+        .epoch = goal_state.nextEpoch(old, todos),
         .created_ms = now_ms,
         .updated_ms = now_ms,
     };
+}
+
+/// Re-apply the --goal flag over whatever loadSession restored (#318). The flag
+/// wins, but idempotently: resuming the SAME standing objective keeps the
+/// restored goal - epoch, checklist and timestamps - instead of minting a new
+/// epoch and parking the objective's own work on every restart. A different
+/// restored goal is displaced like any supersession; when it was live with open
+/// items the returned note must be queued (pending_goal_note, always null right
+/// after a load) so neither the model nor the user loses the boundary silently.
+pub fn reapplyFlagGoal(arena: Allocator, root: *Agent, objective: []const u8, now_ms: i64) !?[]const u8 {
+    if (root.goal) |g| if (g.standing and std.mem.eql(u8, g.objective, objective)) return null;
+    const displaced: ?agent_mod.Goal = if (root.goal) |old| (if (old.status == .complete) null else old) else null;
+    root.goal = standingGoalFromFlag(objective, root.goal, root.todos.items, now_ms);
+    root.goal_note_fp = 0; // re-state the (now standing) note on the next turn
+    goal_state.resetCompletionGate(root); // a new objective is fresh evidence for the double-check
+    if (displaced) |old| {
+        const parked = goal_state.parkedOpenCount(root.todos.items, root.goal.?.epoch);
+        if (parked > 0) return try goal_state.supersededNote(arena, old.objective, parked);
+    }
+    return null;
 }
 
 /// The checklist render carried into a compaction handoff is capped here: a
@@ -57,9 +78,9 @@ pub fn compactionSnapshot(arena: Allocator, root: *Agent) !?[]const u8 {
     const objective = root.goal.?.objective;
     const rendered = goal_state.renderCurrent(root);
     if (rendered.len == 0)
-        return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives compaction): goal: {s}. No checklist has been written for it yet - plan the work with todo_write, and read the list back with todo_read at any time.]", .{objective});
+        return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): goal: {s}. No checklist has been written for it yet - plan the work with todo_write, and read the list back with todo_read at any time.]", .{objective});
     const open = goal_state.openCount(root.todos.items, goal_state.currentEpoch(root.goal));
-    return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives compaction): goal: {s}. Checklist ({d} open):\n{s}\nThis list is live harness state, read it back with todo_read at any time. todo_write REPLACES the current goal's whole list, so include already-completed items when rewriting.]", .{ objective, open, try capRender(arena, rendered) });
+    return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): goal: {s}. Checklist ({d} open):\n{s}\nThis list is live harness state, read it back with todo_read at any time. todo_write REPLACES the current goal's whole list, so include already-completed items when rewriting.]", .{ objective, open, try capRender(arena, rendered) });
 }
 
 /// Cut an oversized checklist render at a line boundary (never mid-item, never
@@ -152,18 +173,28 @@ pub fn continuationSteeringNote(arena: Allocator, todos_render: []const u8, past
 pub const LoopListGate = struct {
     fp: u64 = 0,
     age: u32 = 0,
+    rewrites_seen: u32 = 0,
 
     pub fn reset(self: *LoopListGate) void {
         self.* = .{};
     }
 
     /// This continuation turn's steering note, pasting the render only when the
-    /// model has not just been handed the same list.
-    pub fn note(self: *LoopListGate, arena: Allocator, todos_render: []const u8) ![]const u8 {
-        const gate = goal_state.steeringGate(todos_render, self.fp, self.age, goal_state.refresh_turns);
+    /// model has not just been handed the same list. A history rewrite
+    /// (root.history_rewrites: compaction or emergency trim) kills every copy
+    /// already pasted - including MID-turn, where mainloop's post-turn hook
+    /// never fires because the meter is already back under the window - so the
+    /// first continuation after one re-carries the list in full.
+    pub fn note(self: *LoopListGate, arena: Allocator, root: *Agent) ![]const u8 {
+        if (root.history_rewrites != self.rewrites_seen) {
+            self.reset();
+            self.rewrites_seen = root.history_rewrites;
+        }
+        const rendered = goal_state.renderCurrent(root);
+        const gate = goal_state.steeringGate(rendered, self.fp, self.age, goal_state.refresh_turns);
         self.fp = gate.fp;
         self.age = gate.age;
-        return continuationSteeringNote(arena, todos_render, gate.inject);
+        return continuationSteeringNote(arena, rendered, gate.inject);
     }
 };
 
@@ -194,6 +225,9 @@ fn flowRoot(arena: Allocator) Agent {
     root.completion_gate_armed = false;
     root.completion_refused = false;
     root.completed = null;
+    root.goal_note_fp = 0;
+    root.pending_goal_note = null;
+    root.history_rewrites = 0;
     return root;
 }
 
@@ -202,26 +236,33 @@ test "a --goal standing objective outlives the model's own completion (#318)" {
     defer arena_state.deinit();
     const ar = arena_state.allocator();
     var root = flowRoot(ar);
-    root.goal = standingGoalFromFlag("keep the tree green", root.todos.items, 7);
+    root.goal = standingGoalFromFlag("keep the tree green", null, root.todos.items, 7);
     try std.testing.expect(root.goal.?.standing);
     try std.testing.expectEqual(@as(u64, 1), root.goal.?.epoch); // never epoch 0: that bucket is the no-goal one
 
-    // The gate never fires for it: there is no close event to double-check, so
-    // the arm never arms and open work never produces a refusal either.
-    try std.testing.expect((try goal_state.completionGate(ar, &root)) == null);
-    try root.todos.append(ar, .{ .content = "an open item", .status = "pending", .epoch = 1 });
-    try std.testing.expect((try goal_state.completionGate(ar, &root)) == null);
-    try std.testing.expect(!root.completion_gate_armed);
+    // The completion CLAIM is double-checked exactly like a /goal objective:
+    // an unearned "done" is worst in the flag's own headless sessions, where it
+    // ended a /loop as accepted with open work. Only RETIREMENT is exempt.
+    const r1 = try goal_state.completionGate(ar, &root);
+    try std.testing.expect(r1 != null and std.mem.indexOf(u8, r1.?, "no checklist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1.?, "keeps steering") != null); // the refusal never promises a close
+    goal_state.noteCompletionRefused(&root);
+    try std.testing.expect((try goal_state.completionGate(ar, &root)) == null); // the promised second call is accepted...
 
-    // attempt_completion: the result is recorded (the handler does that above
-    // the branch), but the objective stays active and keeps steering. Before
-    // this, one attempt_completion left every later turn of a headless/SDK
-    // session unsteered - and the note itself coached the model into making it.
+    // ...and the accepted claim is recorded, but the objective stays active and
+    // keeps steering. Before this, one attempt_completion left every later turn
+    // of a headless/SDK session unsteered.
     root.completed = "shipped the first task";
     try std.testing.expect(!goal_state.retireOnCompletion(&root, 99));
     try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status);
     try std.testing.expect(root.completed != null);
     try std.testing.expect(goal_state.goalActive(&root));
+
+    // Open work refuses with the standing consequence: the items stay active.
+    goal_state.resetCompletionGate(&root);
+    try root.todos.append(ar, .{ .content = "an open item", .status = "pending", .epoch = 1 });
+    const r2 = try goal_state.completionGate(ar, &root);
+    try std.testing.expect(r2 != null and std.mem.indexOf(u8, r2.?, "stay active") != null);
 
     // A /goal-typed objective is unchanged: it still retires on completion.
     root.goal = .{ .objective = "ship phase 2", .epoch = 1 };
@@ -238,7 +279,7 @@ test "resume never auto-retires a standing goal over a finished checklist (#318)
     // A restored session whose --goal checklist is all done. reconcileRestored
     // retires a /goal objective here (the model finished and quit), but a
     // standing one is the user's policy for the session, not a task that ended.
-    root.goal = standingGoalFromFlag("keep the tree green", root.todos.items, 7);
+    root.goal = standingGoalFromFlag("keep the tree green", null, root.todos.items, 7);
     try root.todos.append(ar, .{ .content = "done", .status = "completed", .epoch = 1 });
     try std.testing.expect(goal_state.allDone(root.todos.items, 1));
     try std.testing.expect(!goal_state.reconcileRestored(&root));
@@ -260,7 +301,7 @@ test "--goal seeded onto a resumed session lands above every restored epoch (#31
     // instantly its "finished checklist" and completion was free.
     try root.todos.append(ar, .{ .content = "old unscoped work", .status = "completed", .epoch = 0 });
     try root.todos.append(ar, .{ .content = "parked", .status = "pending", .epoch = 3 });
-    root.goal = standingGoalFromFlag("keep the tree green", root.todos.items, 7);
+    root.goal = standingGoalFromFlag("keep the tree green", null, root.todos.items, 7);
     try std.testing.expectEqual(@as(u64, 4), root.goal.?.epoch);
     try std.testing.expectEqual(@as(u64, 4), goal_state.currentEpoch(root.goal));
     try std.testing.expect(!goal_state.hasCurrent(root.todos.items, 4));
@@ -451,26 +492,74 @@ test "LoopListGate pastes the checklist once per change, not once per turn (#318
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const ar = arena_state.allocator();
+    var root = flowRoot(ar);
+    root.goal = .{ .objective = "ship", .epoch = 1 };
+    try root.todos.append(ar, .{ .content = "a", .status = "pending", .epoch = 1 });
+    try root.todos.append(ar, .{ .content = "b", .status = "pending", .epoch = 1 });
     var gate: LoopListGate = .{};
 
     // Turn 1 of a run carries the list; the next turns do not, so a 25-turn
     // /loop no longer writes 25 near-identical copies into root.messages (all
     // autosaved, and all fed verbatim into the next compaction's summary).
-    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, "[ ] a\n[ ] b"), "[ ] a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, &root), "[ ] a") != null);
     var i: usize = 0;
     while (i < 3) : (i += 1)
-        try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, "[ ] a\n[ ] b"), "[ ] a") == null);
+        try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, &root), "[ ] a") == null);
     // A real change to the list is carried immediately.
-    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, "[x] a\n[ ] b"), "[x] a") != null);
+    root.todos.items[0].status = "completed";
+    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, &root), "[x] a") != null);
     // An unchanged list is re-stated after the refresh interval, in case it
     // aged out of the model's effective attention.
     i = 0;
     var restated = false;
     while (i < goal_state.refresh_turns) : (i += 1)
-        restated = restated or std.mem.indexOf(u8, try gate.note(ar, "[x] a\n[ ] b"), "[x] a") != null;
+        restated = restated or std.mem.indexOf(u8, try gate.note(ar, &root), "[x] a") != null;
     try std.testing.expect(restated);
-    // reset() is what a fresh run, a user steer, a stop and a compaction do:
-    // the very next continuation carries the list in full again.
+    // A history rewrite (compaction or emergency trim, possibly MID-turn where
+    // no post-turn hook fires) destroyed every pasted copy: the next
+    // continuation re-carries the list in full, then gates again.
+    _ = try gate.note(ar, &root); // settle into suppression
+    root.history_rewrites += 1;
+    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, &root), "[x] a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, &root), "[x] a") == null);
+    // reset() is what a fresh run, a user steer and a stop do: the very next
+    // continuation carries the list in full again.
     gate.reset();
-    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, "[x] a\n[ ] b"), "[x] a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try gate.note(ar, &root), "[x] a") != null);
+}
+
+test "re-applying --goal on resume keeps the same objective's own checklist (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = flowRoot(ar);
+    // Run 1 of `graff -r sess --goal X` wrote a checklist under the standing
+    // goal. Run 2 of the IDENTICAL command must find that work, not park it:
+    // re-minting an epoch on every restart orphaned the objective's own list.
+    root.goal = standingGoalFromFlag("keep the tree green", null, root.todos.items, 7);
+    try root.todos.append(ar, .{ .content = "a", .status = "completed", .epoch = 1 });
+    try root.todos.append(ar, .{ .content = "b", .status = "pending", .epoch = 1 });
+    try std.testing.expect((try reapplyFlagGoal(ar, &root, "keep the tree green", 9)) == null);
+    try std.testing.expectEqual(@as(u64, 1), root.goal.?.epoch);
+    try std.testing.expectEqual(@as(i64, 7), root.goal.?.created_ms); // the restored goal, not a re-mint
+    try std.testing.expectEqualStrings("[x] a\n[ ] b", goal_state.renderCurrent(&root));
+
+    // A DIFFERENT flag objective displaces a live restored /goal like any
+    // supersession: new standing goal above every epoch, and the note reports
+    // the parked work so the model does not silently continue it.
+    root.goal = .{ .objective = "ship phase 2", .epoch = 1, .status = .active };
+    root.completion_gate_armed = true; // a stale arm must not survive the boundary
+    const note = try reapplyFlagGoal(ar, &root, "keep master green", 11);
+    try std.testing.expect(note != null and std.mem.indexOf(u8, note.?, "ship phase 2") != null);
+    try std.testing.expect(root.goal.?.standing);
+    try std.testing.expectEqual(@as(u64, 2), root.goal.?.epoch);
+    try std.testing.expect(!root.completion_gate_armed);
+    try std.testing.expectEqual(@as(usize, 1), goal_state.parkedOpenCount(root.todos.items, 2)); // b parked, never adopted
+
+    // Displacing an already-complete goal queues nothing: its work already
+    // parked when it retired, so there is no live boundary to announce.
+    root.goal.?.standing = false;
+    root.goal.?.status = .complete;
+    try std.testing.expect((try reapplyFlagGoal(ar, &root, "keep the tree green", 12)) == null);
+    try std.testing.expect(root.goal.?.standing and root.goal.?.status == .active);
 }

@@ -234,24 +234,37 @@ pub fn hasCurrent(todos: []const TodoItem, epoch: u64) bool {
 /// text when completion must be deferred - the checklist has open items, or the
 /// goal has no checklist at all so there is no evidence it is done - and null
 /// to accept. The armed flag (set by the caller on refusal) persists until the
-/// checklist or the goal changes, so the promised "call it again" closes the goal
+/// checklist or the goal changes, so the promised "call it again" is honored
 /// even when the model makes that call on a LATER turn - which is the only way it
 /// ever can, since one attempt_completion per turn is all a model emits.
+/// A standing --goal is gated like any other goal (#318: an unearned "done" is
+/// exactly what the flag's headless sessions need double-checked - exempting
+/// them here let one premature claim end a /loop as accepted with open work);
+/// standing only exempts RETIREMENT (retireOnCompletion), so a confirmed claim
+/// is recorded and the objective keeps steering.
 pub fn completionGate(arena: Allocator, agent: *Agent) !?[]const u8 {
     if (!goalActive(agent)) return null;
-    if (agent.goal.?.standing) return null; // a standing --goal has no close event to gate: the arm never arms for it (#318)
     if (agent.completion_gate_armed) return null;
+    const standing = agent.goal.?.standing;
     const epoch = currentEpoch(agent.goal);
     const open = openCount(agent.todos.items, epoch);
-    if (open > 0) return try completionRefusalText(arena, open, renderTodos(agent, epoch));
-    if (!hasCurrent(agent.todos.items, epoch))
+    if (open > 0) return try completionRefusalText(arena, open, renderTodos(agent, epoch), standing);
+    if (!hasCurrent(agent.todos.items, epoch)) {
+        if (standing) return "completion deferred: the standing goal has no checklist yet, so there is no evidence this task is done. If it truly is, call attempt_completion again - now or on a later turn - to record it (the standing objective keeps steering either way); otherwise write the remaining plan with todo_write and work it.";
         return "completion deferred: the standing goal has no checklist yet, so there is no evidence the objective is done. If it truly is, call attempt_completion again - now or on a later turn - to close the goal; otherwise write the remaining plan with todo_write and work it.";
+    }
     return null; // nonempty checklist, every item completed
 }
 
-/// The refusal text for completionGate's open-checklist arm.
-pub fn completionRefusalText(arena: Allocator, open: usize, rendered: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(arena, "completion deferred: the standing goal still has {d} open checklist item(s):\n{s}\nFinish them, or call attempt_completion again - now or on a later turn - to close the goal anyway; the open items are then parked (kept in the session, no longer steering).", .{ open, rendered });
+/// The refusal text for completionGate's open-checklist arm. The second-call
+/// consequence differs (#318): a /goal objective closes and parks its open
+/// items; a standing --goal records the completion and stays active.
+pub fn completionRefusalText(arena: Allocator, open: usize, rendered: []const u8, standing: bool) ![]const u8 {
+    const consequence = if (standing)
+        "to record completion anyway; the standing objective and its open items stay active"
+    else
+        "to close the goal anyway; the open items are then parked (kept in the session, no longer steering)";
+    return std.fmt.allocPrint(arena, "completion deferred: the standing goal still has {d} open checklist item(s):\n{s}\nFinish them, or call attempt_completion again - now or on a later turn - {s}.", .{ open, rendered, consequence });
 }
 
 /// One-shot note for the turn after /goal replaced an active goal — ports

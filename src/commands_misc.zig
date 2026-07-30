@@ -28,6 +28,7 @@ const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
 const goal_state = @import("goal_state.zig");
+const goal_flow = @import("goal_flow.zig");
 const jobs = @import("jobs.zig");
 const subagent = @import("subagent.zig"); // #276 P0-3: g_agent_jobs, for /jobs
 
@@ -467,6 +468,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return true;
         };
         root.session_name = name;
+        // The third restore path (#318): --goal outranks the restored goal here
+        // too, idempotently, or /resume was the one door that silently dropped it.
+        if (root.goal_flag) |g| root.pending_goal_note = goal_flow.reapplyFlagGoal(arena, root, g, util.unixMs(root.io)) catch null;
         try out.print("resumed {s}{s} — {d} message(s), {s} via {s}{s}\n", .{
             name,                                 session_ext, root.messages.items.len, root.provider.model, root.provider.id,
             if (root.strict) " (strict)" else "",

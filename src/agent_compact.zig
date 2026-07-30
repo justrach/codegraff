@@ -160,6 +160,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     self.last_context_tokens = 0;
     self.context_local_tokens = 0;
     self.goal_note_fp = 0; // the injected goal note died with the old history - re-state in full (#318)
+    self.history_rewrites +%= 1; // readers of pasted state (the /loop checklist gate) re-carry it (#318)
     installed_summary = true;
     if (!main_mod.json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
     return summary.len;
@@ -406,6 +407,7 @@ pub fn emergencyTrim(self: *Agent) usize {
         for (self.messages.items[cut..]) |m| fresh.append(m) catch return 0;
         self.messages = fresh;
         self.goal_note_fp = 0; // trimmed history may have carried the goal note (#318)
+        self.history_rewrites +%= 1; // and the /loop checklist gate's pasted copies (#318)
         // No synthetic message exists here to hang the standing state on (unlike
         // compact()'s handoff), so it rides the next turn's one-shot slot. Only
         // when that slot is free: a queued /goal replace|clear note is the USER's
