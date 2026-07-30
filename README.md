@@ -489,8 +489,9 @@ session. See [Permission modes](#permission-modes).
 turns it back on, and `/goal status` shows the objective and its current state.
 `/loop <prompt>` works autonomously toward the prompt, running turn after turn
 (plan, act, verify) and stopping on its own with a named outcome (accepted,
-blocked, cancelled, or exhausted) once the work is done, you step in, or a safety
-limit is hit, instead of pausing for confirmation between routine steps.
+idle, blocked, cancelled, or exhausted) once the work is done, the model stops
+making tool progress without claiming completion (idle), you step in, or a
+safety limit is hit, instead of pausing for confirmation between routine steps.
 `/review <target or instructions>` is the deliberately narrower path for code
 review: it suppresses goal/eval/ultracode steering, admits only local
 read/search tools and read-only shell inspection, and runs with fresh
