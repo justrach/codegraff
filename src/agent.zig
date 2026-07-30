@@ -29,6 +29,7 @@ const ansi = @import("ansi.zig");
 const style = &ansi.style;
 const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
+const goal_state = @import("goal_state.zig");
 
 const reasoningPromptLabel = prompt_ui.reasoningLabel;
 const reasoningPromptColor = prompt_ui.reasoningColor;
@@ -39,6 +40,7 @@ const contextPercent = prompt_ui.contextPercent;
 pub const TodoItem = struct {
     content: []const u8,
     status: []const u8,
+    epoch: u64 = 0, // the goal epoch that authored this item (#318); 0 = no goal
 };
 
 /// Governed-run status for a standing /goal (#223). Only `.active` steers turns;
@@ -52,6 +54,8 @@ pub const GoalStatus = enum { active, paused, blocked, complete };
 pub const Goal = struct {
     objective: []const u8,
     status: GoalStatus = .active,
+    epoch: u64 = 0, // monotonic per session; todos are stamped with it so a replaced goal cannot bequeath its checklist (#318)
+    standing: bool = false, // seeded by --goal: steering policy for the WHOLE session that the model can never retire; only the user can, with /goal clear|pause|<new> (#318)
     created_ms: i64 = 0,
     updated_ms: i64 = 0,
 };
@@ -126,6 +130,14 @@ pub const Agent = struct {
     show_thinking: bool = true, // stream the model's reasoning live in the TUI (/thinking); off = spinner only
     ai_title: bool = true, // AI-generate the tab/session title from the first prompt (/title)
     goal: ?Goal = null, // structured objective + status lifecycle (/goal, #223)
+    goal_note_fp: u64 = 0, // last-injected standing-goal note fingerprint (goal_state.steeringGate, #318)
+    goal_note_age: u32 = 0, // turns since that note was last injected (refresh interval)
+    pending_goal_note: ?[]const u8 = null, // one-shot supersession note for the next turn (/goal replace|clear)
+    completion_gate_armed: bool = false, // attempt_completion was refused; the promised second call closes the goal. Persists ACROSS turns (a model emits one per turn) until the checklist or goal changes (#318)
+    completion_refused: bool = false, // a refused attempt_completion this turn: work the model must react to, so /loop must not read the turn as zero-tool (#318)
+    todos_dirty: bool = false, // todo_write ran in THIS process: a checklist restored from disk is persisted state, never evidence that the current prompt is done (#318)
+    goal_flag: ?[]const u8 = null, // --goal objective verbatim: re-applied over EVERY loadSession, including /resume, so the flag's contract survives restores (#318)
+    history_rewrites: u32 = 0, // bumped by compact()/emergencyTrim; state pasted into the dead history (e.g. the /loop checklist copy) must be re-carried (#318)
     session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
     session_title: ?[]const u8 = null, // human-readable title/rename metadata
     sys_strict: []const u8 = prompts.main_system_prompt_strict,
@@ -448,21 +460,7 @@ pub const Agent = struct {
     pub const emitAskUser = @import("agent_tools.zig").emitAskUser;
     pub const sayToolUse = @import("agent_tools.zig").sayToolUse;
     pub const sayToolResult = @import("agent_tools.zig").sayToolResult;
-    pub fn renderTodos(self: *Agent) []const u8 {
-        if (self.todos.items.len == 0) return "(no todos)";
-        var aw: Io.Writer.Allocating = .init(self.arena);
-        const w = &aw.writer;
-        for (self.todos.items) |t| {
-            const mark = if (std.mem.eql(u8, t.status, "completed"))
-                "[x]"
-            else if (std.mem.eql(u8, t.status, "in_progress"))
-                "[~]"
-            else
-                "[ ]";
-            w.print("{s} {s}\n", .{ mark, t.content }) catch break;
-        }
-        return std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
-    }
+    pub const renderTodos = goal_state.renderTodos; // body in goal_state.zig (600-line cap)
 
     // Context management (compaction/emergency-trim) and the --eval/--until
     // eval-driven loop (+ optional LLM-as-judge) live in agent_compact.zig

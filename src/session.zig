@@ -17,6 +17,7 @@ const Allocator = std.mem.Allocator;
 const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
 const util = @import("util.zig");
+const goal_state = @import("goal_state.zig");
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const unixMs = util.unixMs;
@@ -235,12 +236,31 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
         try s.write(g.objective);
         try s.objectField("status");
         try s.write(@tagName(g.status));
+        try s.objectField("epoch");
+        try s.write(g.epoch);
+        try s.objectField("standing"); // a --goal objective resumes as one: the model still cannot retire it (#318)
+        try s.write(g.standing);
         try s.objectField("created_ms");
         try s.write(g.created_ms);
         try s.objectField("updated_ms");
         try s.write(g.updated_ms);
         try s.endObject();
     } else try s.write(null);
+    // #318: the checklist is durable, goal-scoped state - persist it with the
+    // epoch that authored each item so resume cannot mix goals and checklists.
+    try s.objectField("todos");
+    try s.beginArray();
+    for (root.todos.items) |t| {
+        try s.beginObject();
+        try s.objectField("content");
+        try s.write(t.content);
+        try s.objectField("status");
+        try s.write(t.status);
+        try s.objectField("epoch");
+        try s.write(t.epoch);
+        try s.endObject();
+    }
+    try s.endArray();
     try s.objectField("title");
     if (root.session_title) |title| try s.write(title) else try s.write(sessionTitle(root));
     try s.objectField("updated_ms");
@@ -277,7 +297,7 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
 /// objective + status + created/updated timestamps (an unknown/missing status
 /// falls back to .active). Pure (no Io) so it round-trips in unit tests. Returns
 /// null for an empty/absent objective.
-fn goalFromValue(v: Value, now_ms: i64) ?agent_mod.Goal {
+pub fn goalFromValue(v: Value, now_ms: i64) ?agent_mod.Goal {
     if (v == .string) {
         if (v.string.len == 0) return null;
         return .{ .objective = v.string, .status = .active, .created_ms = now_ms, .updated_ms = now_ms };
@@ -287,11 +307,46 @@ fn goalFromValue(v: Value, now_ms: i64) ?agent_mod.Goal {
         const txt = if (go.get("objective")) |o| (if (o == .string and o.string.len > 0) o.string else null) else null;
         const objective = txt orelse return null;
         const st: agent_mod.GoalStatus = if (go.get("status")) |s| (if (s == .string) (std.meta.stringToEnum(agent_mod.GoalStatus, s.string) orelse .active) else .active) else .active;
+        const ep: u64 = if (go.get("epoch")) |e| (if (e == .integer and e.integer >= 0) @intCast(e.integer) else 0) else 0;
         const cms: i64 = if (go.get("created_ms")) |c| (if (c == .integer) c.integer else 0) else 0;
         const ums: i64 = if (go.get("updated_ms")) |u| (if (u == .integer) u.integer else 0) else 0;
-        return .{ .objective = objective, .status = st, .created_ms = cms, .updated_ms = ums };
+        const standing = if (go.get("standing")) |b| (b == .bool and b.bool) else false; // absent in legacy sessions: a /goal objective the model may retire (#318)
+        return .{ .objective = objective, .status = st, .epoch = ep, .standing = standing, .created_ms = cms, .updated_ms = ums };
     }
     return null;
+}
+
+/// Parse the persisted `todos` array (#318). The caller clears the list first
+/// so nothing from a previous conversation survives a resume. Pure (no Io) so
+/// it round-trips in unit tests.
+pub fn appendTodosFromValue(arena: Allocator, todos: *std.ArrayList(agent_mod.TodoItem), v: Value) !void {
+    if (v != .array) return;
+    for (v.array.items) |item| {
+        if (item != .object) continue;
+        const content = if (item.object.get("content")) |c| (if (c == .string) c.string else continue) else continue;
+        const status = if (item.object.get("status")) |s| (if (s == .string) s.string else "pending") else "pending";
+        const epoch: u64 = if (item.object.get("epoch")) |e| (if (e == .integer and e.integer >= 0) @intCast(e.integer) else 0) else 0;
+        try todos.append(arena, .{ .content = content, .status = status, .epoch = epoch });
+    }
+}
+
+test "todos round-trip: appendTodosFromValue parses content/status/epoch, skips junk (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(Value, a,
+        \\[{"content":"wire epochs","status":"completed","epoch":2},
+        \\ {"content":"add test","status":"pending","epoch":2},
+        \\ {"status":"orphan, no content"}, 17]
+    , .{});
+    var todos: std.ArrayList(agent_mod.TodoItem) = .empty;
+    try appendTodosFromValue(a, &todos, parsed);
+    try std.testing.expectEqual(@as(usize, 2), todos.items.len);
+    try std.testing.expectEqualStrings("wire epochs", todos.items[0].content);
+    try std.testing.expectEqual(@as(u64, 2), todos.items[1].epoch);
+    // Legacy sessions (no todos field / wrong type): nothing appended.
+    try appendTodosFromValue(a, &todos, .null);
+    try std.testing.expectEqual(@as(usize, 2), todos.items.len);
 }
 
 test "goalFromValue: legacy string -> active; object round-trips; paused stays paused (#223)" {
@@ -409,6 +464,21 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.strict = strict;
     root.ultracode_mode = ultracode_mode;
     root.goal = goal;
+    root.todos.clearRetainingCapacity(); // never inherit another conversation's checklist (#318)
+    if (obj.get("todos")) |tv| try appendTodosFromValue(arena, &root.todos, tv);
+    root.todos_dirty = false; // restored todos are persisted state, never this-process completion evidence (#318)
+    // The completion double-check is per-PROCESS state and leaked across /resume
+    // (#318): an arm left by a refusal in the previous session short-circuited the
+    // first attempt_completion of the resumed one, closing its goal unchecked.
+    root.completion_gate_armed = false;
+    root.completion_refused = false;
+    // #318: retire a restored-active goal whose checklist is already finished.
+    if (goal_state.reconcileRestored(root)) if (root.tracer) |t| t.note("goal", "reconciled-complete");
+    // Steering gate state belongs to the previous conversation (#318): drop any
+    // queued one-shot note and force a full goal-note re-statement next turn.
+    root.pending_goal_note = null;
+    root.goal_note_fp = 0;
+    root.goal_note_age = 0;
     root.session_title = title;
     // Rebase the saved server-only delta onto today's prompt/tool-schema input.
     restoreContextMeter(root, saved_context_tokens, saved_local_tokens);

@@ -92,19 +92,23 @@ pub const ReplStreamSink = struct {
     }
 };
 
-/// The standing-goal steering note appended to each turn when /goal is set: the
-/// objective, an instruction to track it as a todo_write checklist, and the
-/// current checklist render when one exists. Returns "" when goal is null so the
-/// caller can skip the append. Pass todos_render="" when there are no todos — do
-/// NOT pass renderTodos()'s "(no todos)" placeholder, which would leak into the prompt.
-pub fn goalSteeringNote(arena: Allocator, goal: ?agent_mod.Goal, todos_render: []const u8) ![]const u8 {
+/// The standing-goal steering note for a turn when /goal is set. The checklist
+/// itself is deliberately NOT embedded (#318): the model sees it in todo_write
+/// results, and re-pasting it every turn is how a dead goal's items kept
+/// steering later work. The ONE exception is compaction, where those results
+/// are gone - goal_flow.compactionSnapshot restates the list into the new
+/// history instead, so this text (and its fingerprint) never moves. Returns ""
+/// when goal is null/inactive; injection is diff-gated by goal_state.steeringGate.
+pub fn goalSteeringNote(arena: Allocator, goal: ?agent_mod.Goal) ![]const u8 {
     const g = goal orelse return "";
     if (g.status != .active) return ""; // paused/blocked/complete/budget_limited never steer (#223)
-    const progress: []const u8 = if (todos_render.len > 0)
-        try std.fmt.allocPrint(arena, "\n\nChecklist so far:\n{s}", .{todos_render})
-    else
-        "";
-    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a todo_write checklist and work through it, marking each item in_progress when you start and completed when done.]{s}", .{ g.objective, progress });
+    // A --goal objective is the user's policy for the session, so its note must
+    // not coach the model into ending it: the old text told every turn to call
+    // attempt_completion "to end this steering", and one such call left the rest
+    // of a headless/SDK session running unsteered (#318).
+    if (g.standing)
+        return std.fmt.allocPrint(arena, "[standing goal: {s} - keep this objective in view on every task; track multi-step work as a live todo_write checklist (todo_read shows the current one; todo_write REPLACES it, so include already-completed items when rewriting), marking each item in_progress when you start and completed when done. This steering persists for the whole session.]", .{g.objective});
+    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a live todo_write checklist and work through it (todo_read shows the current one; todo_write REPLACES it, so include already-completed items when rewriting), marking each item in_progress when you start and completed when done. When the objective is verifiably done, call attempt_completion - that completes the goal and ends this steering.]", .{g.objective});
 }
 
 /// Extract a 0-100 score from an eval command's output: a `score` key (JSON or
@@ -170,26 +174,36 @@ pub fn evalSteeringNote(
     , .{ state, target, gate, notes });
 }
 
-test "goalSteeringNote: active-only gate + checklist assembly, no (no todos) leak" {
+test "goalSteeringNote: active-only gate, completion contract, and no embedded checklist (#318)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const ar = arena.allocator();
 
     // No goal -> empty note, caller skips the append.
-    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, null, ""));
+    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, null));
 
     // A paused (non-active) goal never steers (#223): empty note.
-    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, .{ .objective = "close all issues", .status = .paused }, ""));
+    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, .{ .objective = "close all issues", .status = .paused }));
 
-    // Active goal, no todos -> bracket note, no checklist, and never the "(no todos)" placeholder.
-    const n1 = try goalSteeringNote(ar, .{ .objective = "close all issues" }, "");
-    try std.testing.expect(std.mem.startsWith(u8, n1, "[standing goal: close all issues - track this as a todo_write checklist"));
+    // Active goal -> bracket note with the completion contract; the checklist
+    // is never embedded (it reaches the model via todo_write results).
+    const n1 = try goalSteeringNote(ar, .{ .objective = "close all issues" });
+    try std.testing.expect(std.mem.startsWith(u8, n1, "[standing goal: close all issues - track this as a live todo_write checklist"));
+    try std.testing.expect(std.mem.indexOf(u8, n1, "attempt_completion") != null);
     try std.testing.expect(std.mem.indexOf(u8, n1, "Checklist so far") == null);
     try std.testing.expect(std.mem.indexOf(u8, n1, "(no todos)") == null);
 
-    // Active goal + live todos -> the rendered checklist is appended verbatim.
-    const n2 = try goalSteeringNote(ar, .{ .objective = "ship 0.0.177" }, "[x] wire steering\n[ ] add test");
-    try std.testing.expect(std.mem.indexOf(u8, n2, "Checklist so far:\n[x] wire steering\n[ ] add test") != null);
+    // A --goal standing objective keeps the checklist guidance but drops the
+    // self-termination clause: the model cannot retire it, so telling it to
+    // "call attempt_completion and end this steering" was a lie that cost every
+    // later turn of a headless/SDK session its goal (#318).
+    const n2 = try goalSteeringNote(ar, .{ .objective = "close all issues", .standing = true });
+    try std.testing.expect(std.mem.startsWith(u8, n2, "[standing goal: close all issues - keep this objective in view"));
+    try std.testing.expect(std.mem.indexOf(u8, n2, "todo_write checklist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, n2, "attempt_completion") == null);
+    try std.testing.expect(std.mem.indexOf(u8, n2, "persists for the whole session") != null);
+    // Still gated on .active: /goal pause silences a standing goal too.
+    try std.testing.expectEqualStrings("", try goalSteeringNote(ar, .{ .objective = "x", .standing = true, .status = .paused }));
 }
 
 /// #226 continuation gate — the outcome when a /loop turn finishes: the loop
@@ -197,6 +211,7 @@ test "goalSteeringNote: active-only gate + checklist assembly, no (no todos) lea
 /// the transcript so #219's ledger can later record it verbatim). Budget-free.
 pub const ContinuationOutcome = enum {
     accepted, // the goal's checklist is complete (or the goal itself is complete)
+    idle, // the turn did no tool work and asserted nothing - the loop stops, but nothing is done (#318)
     exhausted, // hit the hard per-/loop iteration bound with work still open
     blocked, // the goal is blocked and needs the user
     cancelled, // the goal was paused — the user stepped in
@@ -210,57 +225,69 @@ pub const ContinuationDecision = union(enum) {
 /// Pure controller decision for /loop continuation (#226): continuation is
 /// authorized by CONTROLLER STATE, never by the model merely stopping. An active
 /// goal with the checklist still open and iterations left keeps going; a
-/// completed checklist, a paused/blocked/complete goal, or a spent iteration
-/// bound each yield the matching named terminal outcome. No budgets.
+/// paused or blocked goal, or a spent iteration bound, yields the matching
+/// named terminal outcome. No budgets. `accepted` is reserved for real evidence
+/// of completion: a turn that merely did nothing stops as `idle` (#318), and a
+/// goal that was already complete when the run started decides nothing at all.
 pub fn continuationDecision(
     goal_status: agent_mod.GoalStatus,
-    todos_all_completed: bool,
+    work_done: bool,
+    model_stopped: bool,
     iters_left: u32,
 ) ContinuationDecision {
-    if (todos_all_completed) return .{ .stop = .accepted };
+    if (work_done) return .{ .stop = .accepted };
     switch (goal_status) {
         .paused => return .{ .stop = .cancelled },
         .blocked => return .{ .stop = .blocked },
-        .complete => return .{ .stop = .accepted },
-        .active => {},
+        // A goal completed DURING this run already stopped it through work_done
+        // (attempt_completion sets root.completed) or through mainloop's
+        // flip-then-stop, so .complete here is a LEFTOVER objective from an
+        // earlier run or a resume reconciliation. It must not label a fresh
+        // /loop `accepted` at iteration 1 before anything happened (#318).
+        .complete, .active => {},
     }
+    if (model_stopped) return .{ .stop = .idle };
     if (iters_left == 0) return .{ .stop = .exhausted };
     return .continue_turn;
 }
 
-/// The steering appended to each autonomous /loop continuation turn (the
-/// continuation_steering_item analog): keep working the checklist, verify, and
-/// stop only when done or blocked — not a per-turn user note.
-pub fn continuationSteeringNote(arena: Allocator, todos_render: []const u8) ![]const u8 {
-    if (todos_render.len == 0)
-        return "[continuing autonomously (/loop): make the next concrete step toward the goal, then verify it. Do not ask for confirmation between routine steps. Stop only when the work is complete or you hit a blocker that needs the user.]";
-    return std.fmt.allocPrint(arena, "[continuing autonomously (/loop): keep working the checklist below — do the next incomplete item, mark it in_progress then completed, and verify. Do not ask for confirmation between routine steps. Stop only when every item is done or you are blocked.\n\nChecklist so far:\n{s}]", .{todos_render});
+/// Did this turn genuinely stop working? Zero tool calls is the model declining
+/// to act - but a REFUSED attempt_completion is exempt from the tool counter,
+/// and that is exactly a turn where the model acted and got an is_error back to
+/// react to. Reading it as silence killed the /loop on the very turn the
+/// completion gate meant to keep alive (#318).
+pub fn turnStopped(tool_calls: u64, completion_refused: bool) bool {
+    return tool_calls == 0 and !completion_refused;
 }
 
 test "continuationDecision: one assertion per branch (#226)" {
-    // todos all complete -> accepted, regardless of status/iters.
-    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.active, true, 5).stop);
+    // work asserted or the checklist finished -> accepted, regardless of iters.
+    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.active, true, false, 5).stop);
     // active + open todos + iterations left -> continue.
-    try std.testing.expect(std.meta.activeTag(continuationDecision(.active, false, 5)) == .continue_turn);
+    try std.testing.expect(std.meta.activeTag(continuationDecision(.active, false, false, 5)) == .continue_turn);
     // active + open todos + iteration bound spent -> exhausted.
-    try std.testing.expectEqual(ContinuationOutcome.exhausted, continuationDecision(.active, false, 0).stop);
+    try std.testing.expectEqual(ContinuationOutcome.exhausted, continuationDecision(.active, false, false, 0).stop);
     // paused -> cancelled (the user stepped in).
-    try std.testing.expectEqual(ContinuationOutcome.cancelled, continuationDecision(.paused, false, 5).stop);
+    try std.testing.expectEqual(ContinuationOutcome.cancelled, continuationDecision(.paused, false, false, 5).stop);
     // blocked -> blocked.
-    try std.testing.expectEqual(ContinuationOutcome.blocked, continuationDecision(.blocked, false, 5).stop);
-    // complete -> accepted.
-    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.complete, false, 5).stop);
+    try std.testing.expectEqual(ContinuationOutcome.blocked, continuationDecision(.blocked, false, false, 5).stop);
+    // a LEFTOVER complete goal governs nothing: work decides, exactly as .active.
+    try std.testing.expect(std.meta.activeTag(continuationDecision(.complete, false, false, 5)) == .continue_turn);
+    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.complete, true, false, 5).stop);
 }
 
-test "continuationSteeringNote: renders checklist when present, generic otherwise (#226)" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const ar = arena.allocator();
-    const empty = try continuationSteeringNote(ar, "");
-    try std.testing.expect(std.mem.indexOf(u8, empty, "Checklist so far") == null);
-    try std.testing.expect(std.mem.indexOf(u8, empty, "continuing autonomously") != null);
-    const withlist = try continuationSteeringNote(ar, "[ ] add test");
-    try std.testing.expect(std.mem.indexOf(u8, withlist, "Checklist so far:\n[ ] add test") != null);
+test "a zero-tool turn stops as idle, not accepted; a refused completion keeps the loop (#318)" {
+    // The model stopped with the checklist still open: the loop ends, but
+    // labelling that `accepted` claimed a goal was done that nobody finished.
+    try std.testing.expectEqual(ContinuationOutcome.idle, continuationDecision(.active, false, true, 5).stop);
+    // Real evidence still earns `accepted`.
+    try std.testing.expectEqual(ContinuationOutcome.accepted, continuationDecision(.active, true, true, 5).stop);
+    // A refused attempt_completion is work, so the turn is not "stopped" ...
+    try std.testing.expect(turnStopped(0, false));
+    try std.testing.expect(!turnStopped(0, true));
+    try std.testing.expect(!turnStopped(3, false));
+    // ... and the loop runs another turn so the model can react to the refusal.
+    try std.testing.expect(std.meta.activeTag(continuationDecision(.active, false, turnStopped(0, true), 5)) == .continue_turn);
 }
 
 /// repl.TurnFn — run a full ROOT agent turn (tools + MCP) for `graff repl`, so

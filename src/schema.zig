@@ -130,14 +130,14 @@ const base_specs = [_]ToolSpec{
 const meta_specs = [_]ToolSpec{
     .{
         .name = "todo_write",
-        .desc = "Replace your task list. Use to plan and track multi-step work. Each item has content and status (pending|in_progress|completed).",
+        .desc = "Replace the task list for the current standing goal (items from a replaced, cleared or completed goal are parked - kept in the session, but not part of this list and not replaced by this call). Use to plan and track multi-step work. Each item has content and status (pending|in_progress|completed).",
         .schema =
         \\{"type": "object", "properties": {"todos": {"type": "array", "items": {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}}, "required": ["content", "status"]}}}, "required": ["todos"]}
         ,
     },
     .{
         .name = "todo_read",
-        .desc = "Read your current task list.",
+        .desc = "Read your current task list (the current goal's items; work parked by an earlier goal is not included).",
         .schema = empty_schema,
     },
     .{
@@ -156,7 +156,7 @@ const meta_specs = [_]ToolSpec{
     },
     .{
         .name = "attempt_completion",
-        .desc = "Signal that the task is complete. Put your final answer to the user in the result field. In strict mode this is the only way to end a turn.",
+        .desc = "Signal that the task is complete. Put your final answer to the user in the result field. In strict mode this is the only way to end a turn. Completing also closes the standing /goal; if its checklist still has open items you will be asked once to finish or confirm.",
         .schema =
         \\{"type": "object", "properties": {"result": {"type": "string", "description": "Final answer to present to the user"}}, "required": ["result"]}
         ,

@@ -30,6 +30,7 @@ const tty = terminal.tty;
 const schema = @import("schema.zig");
 const isMetaName = schema.isMetaName;
 const eval_control = @import("agent_eval_control.zig");
+const goal_state = @import("goal_state.zig");
 pub const toolInvalidatesEval = eval_control.toolInvalidatesEval;
 pub const gateTool = @import("agent_tool_gate.zig").gateTool;
 pub const firstWord = @import("agent_tool_gate.zig").firstWord;
@@ -286,10 +287,24 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
                 "completion blocked: the latest verifier contradicted the plan; repair the failure and run eval until it meets the target"
             else
                 "completion blocked: workspace state is not verified; run eval and meet the target after the final change";
+            self.completion_refused = true; // blocked, not silence: attempt_completion skips the tool counter, and /loop must give the model a turn to run eval (#318)
             return .{ .text = message, .is_error = true };
+        }
+        if (try goal_state.completionGate(self.arena, self)) |refusal| {
+            goal_state.noteCompletionRefused(self); // arm the double-check (across turns) and mark the turn as worked (#318)
+            if (!self.sub) try self.say("\xe2\x8f\xb8 completion deferred \xe2\x80\x94 the standing goal's checklist isn't settled\n", .{});
+            return .{ .text = refusal, .is_error = true };
         }
         const result = if (call.input.object.get("result")) |r| r.string else "";
         self.completed = try self.arena.dupe(u8, result);
+        // .complete retires the epoch (goal_state.currentEpoch) and the checklist parks - readable, no longer current, never deleted (#318).
+        // A --goal standing objective is exempt: the completion is recorded above, the steering stays, and only /goal clear|pause|<new> retires it.
+        if (goal_state.retireOnCompletion(self, util.unixMs(self.io))) {
+            if (self.tracer) |t| t.note("goal", "completed via attempt_completion");
+            try self.say("\xf0\x9f\x8e\xaf standing goal complete\n", .{});
+        } else if (goal_state.goalActive(self)) {
+            if (self.tracer) |t| t.note("goal", "completion; standing goal retained");
+        }
         // Skip the re-print only when the result streamed live in full.
         if (!self.sub and !self.argStreamedFully(call)) try self.say("{s}\n", .{result});
         return .{ .text = "completion recorded", .is_error = false };
@@ -299,7 +314,9 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return self.runEval(note);
     }
     if (std.mem.eql(u8, call.name, "todo_write")) {
-        self.todos.clearRetainingCapacity();
+        const epoch = goal_state.currentEpoch(self.goal); // items belong to the goal that authored them (#318)
+        _ = goal_state.clearEpoch(&self.todos, epoch); // replace THIS epoch's list; parked items from earlier goals survive
+        goal_state.noteTodoWrite(self); // new evidence for the completion double-check, and the list is now this-process evidence (#318)
         if (call.input.object.get("todos")) |list| if (list == .array) {
             for (list.array.items) |item| {
                 if (item != .object) continue;
@@ -309,10 +326,11 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
                 try self.todos.append(self.arena, .{
                     .content = try self.arena.dupe(u8, content.string),
                     .status = try self.arena.dupe(u8, status),
+                    .epoch = epoch,
                 });
             }
         };
-        const rendered = self.renderTodos();
+        const rendered = self.renderTodos(epoch);
         if (!self.sub) try self.say("{s}\n", .{rendered});
         return .{ .text = rendered, .is_error = false };
     }
@@ -338,7 +356,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
     }
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
-    return .{ .text = self.renderTodos(), .is_error = false };
+    return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };
 }
 
 /// The "user message as a tool" half of the loop: the agent calls

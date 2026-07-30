@@ -79,9 +79,9 @@ pub const sub_system_prompt =
 pub const compact_instruction =
     \\Summarize this entire conversation for a context handoff. Capture: the
     \\user's goals, all important facts and decisions, file paths and code
-    \\that was created or modified, command results that matter, and any
-    \\pending or unfinished work. Be thorough but compact. Reply with only
-    \\the summary.
+    \\that was created or modified, command results that matter, the current
+    \\task checklist and each item's status, and any pending or unfinished
+    \\work. Be thorough but compact. Reply with only the summary.
 ;
 
 test "root prompt permits explicit external targets without weakening confinement" {

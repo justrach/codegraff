@@ -19,6 +19,7 @@ const recentContextStart = compact.recentContextStart;
 const cleanUserTurn = compact.cleanUserTurn;
 const emergencyCutIndex = compact.emergencyCutIndex;
 const emergencyTrim = compact.emergencyTrim;
+const handoffMessage = compact.handoffMessage;
 
 test "compaction accepts only complete provider terminal states" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -398,6 +399,11 @@ test "emergencyTrim preserves the authoritative meter after a partial cut" {
     agent.sys_normal = "";
     agent.sys_strict = "";
     agent.tools_responses = "";
+    // emergencyTrim now re-queues the standing goal state (#318), so the fields
+    // that decision reads have to be real even in the no-goal case.
+    agent.review_mode = false;
+    agent.goal = null;
+    agent.pending_goal_note = null;
 
     const before = agent.fullInputEstimateTokens();
     const before_request = agent.fullRequestEstimateTokens();
@@ -425,4 +431,105 @@ test "emergencyCutIndex: skips a tool_result user message at the midpoint" {
     try items.append(try textMessage(a, "user", "x")); // 6 (first clean user >= midpoint)
     try items.append(try textMessage(a, "assistant", "x")); // 7
     try std.testing.expectEqual(@as(?usize, 6), emergencyCutIndex(items.items));
+}
+
+test "a compaction handoff carries the live checklist across the summary (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent: Agent = undefined;
+    agent.arena = a;
+    agent.sub = false;
+    agent.review_mode = false;
+    agent.todos = .empty;
+    agent.goal = .{ .objective = "ship the epoch fix", .epoch = 2 };
+    try agent.todos.append(a, .{ .content = "write the helper", .status = "completed", .epoch = 2 });
+    try agent.todos.append(a, .{ .content = "wire it into compact", .status = "completed", .epoch = 2 });
+    try agent.todos.append(a, .{ .content = "test it", .status = "pending", .epoch = 2 });
+    try agent.todos.append(a, .{ .content = "parked by an older goal", .status = "pending", .epoch = 1 });
+
+    const handoff = try handoffMessage(&agent, "the model summarized the earlier work");
+    // The summary and its framing are unchanged...
+    try std.testing.expect(std.mem.indexOf(u8, handoff, "the model summarized the earlier work") != null);
+    try std.testing.expect(std.mem.indexOf(u8, handoff, "Continue assisting the user based on this summary.") != null);
+    // ...and the state a summary cannot be trusted to carry rides with it. The
+    // last todo_write result is not in the ~8k suffix after a long tool loop,
+    // and the summarizer may never have seen the item statuses at all.
+    try std.testing.expect(std.mem.indexOf(u8, handoff, "ship the epoch fix") != null);
+    try std.testing.expect(std.mem.indexOf(u8, handoff, "Checklist (1 open)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, handoff, "[x] write the helper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, handoff, "[x] wire it into compact") != null);
+    try std.testing.expect(std.mem.indexOf(u8, handoff, "[ ] test it") != null);
+    // The REPLACES warning is the whole point: without it the model rewrote the
+    // list from the summary's prose, todo_write's clearEpoch dropped the three
+    // completed items, allDone flipped false, and the goal never completed -
+    // durably, because the autosave persisted the damaged list (#318).
+    try std.testing.expect(std.mem.indexOf(u8, handoff, "todo_write REPLACES") != null);
+    try std.testing.expect(std.mem.indexOf(u8, handoff, "todo_read") != null);
+    // Parked work is never resurrected into the handoff.
+    try std.testing.expect(std.mem.indexOf(u8, handoff, "parked by an older goal") == null);
+
+    // A subagent shares the Agent struct but not the goal, so its handoff is
+    // byte-identical to the pre-#318 text - as is a session with no goal.
+    agent.sub = true;
+    const plain = try handoffMessage(&agent, "the model summarized the earlier work");
+    try std.testing.expect(std.mem.indexOf(u8, plain, "standing state") == null);
+    try std.testing.expect(std.mem.endsWith(u8, plain, "Continue assisting the user based on this summary."));
+    agent.sub = false;
+    agent.goal = null;
+    try std.testing.expectEqualStrings(plain, try handoffMessage(&agent, "the model summarized the earlier work"));
+}
+
+test "an emergency trim re-queues the standing state, never over a user note (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const roles = [_][]const u8{ "user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant" };
+
+    var agent: Agent = undefined;
+    agent.arena = a;
+    agent.provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 270_000 };
+    agent.last_context_tokens = 200_000;
+    agent.context_local_tokens = 200_000;
+    agent.sub = false;
+    agent.review_mode = false;
+    agent.strict = false;
+    agent.sys_normal = "";
+    agent.sys_strict = "";
+    agent.tools_responses = "";
+    agent.todos = .empty;
+    agent.goal = .{ .objective = "keep the tree green", .epoch = 1 };
+    agent.pending_goal_note = null;
+    try agent.todos.append(a, .{ .content = "audit the loop", .status = "in_progress", .epoch = 1 });
+
+    // emergencyTrim has no synthetic message of its own to append the standing
+    // state to (compact() does), so it hands it to the one-shot slot instead -
+    // otherwise a mid-turn trim leaves the rest of the turn checklist-blind.
+    var items = std.json.Array.init(a);
+    for (roles) |role| try items.append(try textMessage(a, role, "a retained message with some measurable bytes"));
+    agent.messages = items;
+    try std.testing.expectEqual(@as(usize, 4), emergencyTrim(&agent));
+    try std.testing.expect(agent.pending_goal_note != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.pending_goal_note.?, "keep the tree green") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.pending_goal_note.?, "[~] audit the loop") != null);
+    try std.testing.expectEqual(@as(u64, 0), agent.goal_note_fp);
+
+    // A queued supersession note (/goal replace|clear) always wins: it is the
+    // user changing the objective, and the standing state is only the harness
+    // restating itself. Clobbering it lost "stop working the old objective".
+    var again = std.json.Array.init(a);
+    for (roles) |role| try again.append(try textMessage(a, role, "a retained message with some measurable bytes"));
+    agent.messages = again;
+    agent.pending_goal_note = "[goal update: the standing goal above supersedes the previous goal]";
+    _ = emergencyTrim(&agent);
+    try std.testing.expectEqualStrings("[goal update: the standing goal above supersedes the previous goal]", agent.pending_goal_note.?);
+
+    // And with no live goal there is nothing to queue at all.
+    var third = std.json.Array.init(a);
+    for (roles) |role| try third.append(try textMessage(a, role, "a retained message with some measurable bytes"));
+    agent.messages = third;
+    agent.goal = null;
+    agent.pending_goal_note = null;
+    _ = emergencyTrim(&agent);
+    try std.testing.expect(agent.pending_goal_note == null);
 }

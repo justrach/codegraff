@@ -13,6 +13,8 @@ const provider_mod = @import("provider.zig");
 const util = @import("util.zig");
 const tools_mod = @import("tools.zig");
 const session_mod = @import("session.zig");
+const goal_state = @import("goal_state.zig");
+const goal_flow = @import("goal_flow.zig");
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const ToolCall = tools_mod.ToolCall;
@@ -57,7 +59,12 @@ const setTerminalTitle = title_mod.setTerminalTitle;
 /// after "context cleared" (#178).
 fn resetConversationSteering(root: *Agent) void {
     root.goal = null;
+    root.completion_gate_armed = false; // a dropped goal re-arms the completion double-check (#318)
+    root.todos_dirty = false; // the conversation's checklist dies with it; nothing survives as /loop evidence (#318)
     root.ultracode_mode = false;
+    root.pending_goal_note = null; // a queued supersession note dies with the conversation (#318)
+    root.goal_note_fp = 0;
+    root.goal_note_age = 0;
 }
 
 test "/clear + /new reset conversation steering — goal and ultracode_mode don't survive (#178)" {
@@ -131,12 +138,31 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         if (text.len == 0 or std.ascii.eqlIgnoreCase(text, "status")) {
             // bare /goal or /goal status: report the objective + lifecycle state.
             if (root.goal) |g| {
-                try out.print("\xf0\x9f\x8e\xaf Goal: {s}\nStatus: {s}. Commands: /goal pause | resume | clear.\n", .{ g.objective, @tagName(g.status) });
+                const open = goal_state.openCount(root.todos.items, g.epoch);
+                const parked = goal_state.parkedOpenCount(root.todos.items, g.epoch);
+                const state = if (g.status == .complete) "parked unfinished" else "open"; // a retired goal has no open work, only parked work (#318)
+                const standing = if (g.standing) " (standing)" else ""; // seeded by --goal: only the user retires it (#318)
+                try out.print("\xf0\x9f\x8e\xaf Goal: {s}{s}\nStatus: {s}. Checklist: {d} item(s) {s}. Commands: /goal pause | resume | clear.\n", .{ g.objective, standing, @tagName(g.status), open, state });
+                if (parked > 0) try out.print("(+{d} unfinished item(s) parked from earlier goals \xe2\x80\x94 kept in the session, not steering)\n", .{parked});
             } else try out.writeAll("No active goal. Set one with /goal <objective>.\n");
         } else if (std.ascii.eqlIgnoreCase(text, "clear") or std.ascii.eqlIgnoreCase(text, "off")) {
-            root.goal = null;
+            if (root.goal == null) {
+                // Nothing to clear: leave an unscoped (epoch-0) working checklist
+                // alone rather than destroying it and steering about a phantom goal.
+                try out.writeAll("No active goal. Set one with /goal <objective>.\n");
+                try out.flush();
+                return true;
+            }
+            const open = goal_state.openCount(root.todos.items, goal_state.currentEpoch(root.goal));
+            root.goal = null; // the checklist PARKS with the goal (#318): items keep their epoch and stay in the session, they just stop being current
+            goal_state.resetCompletionGate(root);
+            root.goal_note_fp = 0;
+            if (root.tracer) |t| t.note("goal", "cleared");
             saveSession(root, arena, root.session_name) catch {};
-            try out.writeAll("Goal cleared. Future turns will not get goal steering.\n");
+            if (open > 0) {
+                root.pending_goal_note = try goal_state.clearedNote(arena, open);
+                try out.print("Goal cleared \xe2\x80\x94 checklist parked ({d} unfinished item(s) kept in the session, no longer steering). Future turns will not get goal steering.\n", .{open});
+            } else try out.writeAll("Goal cleared. Future turns will not get goal steering.\n");
         } else if (std.ascii.eqlIgnoreCase(text, "pause")) {
             if (root.goal) |*g| {
                 g.status = .paused;
@@ -148,12 +174,24 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             if (root.goal) |*g| {
                 g.status = .active;
                 g.updated_ms = unixMs(root.io);
+                root.goal_note_fp = 0; // re-state the note on the next turn, not a stale-suppressed repeat
                 saveSession(root, arena, root.session_name) catch {};
                 try out.print("\xf0\x9f\x8e\xaf Goal resumed: {s} - steering every turn again.\n", .{g.objective});
             } else try out.writeAll("No goal to resume. Set one with /goal <objective>.\n");
         } else {
-            const now = unixMs(root.io);
-            root.goal = .{ .objective = try arena.dupe(u8, text), .status = .active, .created_ms = now, .updated_ms = now };
+            // The whole state transition (new epoch above every parked one,
+            // adopt-or-supersede, gate + fingerprint resets) is
+            // goal_flow.applyGoalSet; this handler only reports it.
+            const res = goal_flow.applyGoalSet(root, try arena.dupe(u8, text), unixMs(root.io));
+            if (res.superseded) |old| {
+                // Replacement is a supersession boundary (#318): the old
+                // checklist parks (retained, no longer current) and a one-shot
+                // note tells the model not to treat inherited items as
+                // authorization to keep going.
+                root.pending_goal_note = try goal_state.supersededNote(arena, old.objective, res.parked_open);
+                if (root.tracer) |t| t.note("goal", "replaced");
+                if (res.parked_open > 0) try out.print("(superseded \"{s}\" \xe2\x80\x94 parked {d} unfinished checklist item(s), kept in the session)\n", .{ old.objective, res.parked_open });
+            } else if (root.tracer) |t| t.note("goal", "set");
             saveSession(root, arena, root.session_name) catch {};
             try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; it steers every turn until /goal pause or /goal clear).\n", .{text});
         }
