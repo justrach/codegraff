@@ -18,6 +18,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const repl_glue = @import("repl_glue.zig");
 const Agent = @import("agent.zig").Agent;
 
 /// A parsed `/loop` argument: an optional wall-clock budget and the prompt.
@@ -69,6 +70,33 @@ pub const max_budget_ms: i64 = 7 * 24 * std.time.ms_per_hour;
 pub fn loopBudgetFromLine(line: []const u8) ?LoopBudget {
     if (!std.mem.startsWith(u8, line, "/loop ")) return null;
     return parseLoopBudget(line["/loop".len..]);
+}
+
+/// A slash command typed into `-p` reaches the MODEL as prose: that path runs
+/// one turn and never sees mainloop's command parse, so `graff -p "/goal 30m
+/// ..."` adopted no goal, armed no clock, and then accepted an
+/// attempt_completion against a null goal - the double-check silently absent.
+/// Refuse it and name the flag that does work instead. A `/`-prefixed path is
+/// not a command; repl_glue.isSlashCommandLine already settles that.
+pub fn oneshotSlashRefusal(prompt_text: []const u8) ?[]const u8 {
+    const line = std.mem.trim(u8, prompt_text, " \t\r\n");
+    if (!repl_glue.isSlashCommandLine(line)) return null;
+    if (std.mem.startsWith(u8, line, "/goal"))
+        return "slash commands are interactive only: -p runs a single turn and never reaches the command parser, so this would have been sent to the model as text. Use `graff --goal \"<objective>\" -p \"<prompt>\"` to steer a headless run.";
+    if (std.mem.startsWith(u8, line, "/loop"))
+        return "slash commands are interactive only: -p runs a single turn, so there is no loop to continue. Run /loop in an interactive session, or give -p the work directly as a prompt.";
+    return "slash commands are interactive only: -p runs a single turn and never reaches the command parser, so this would have been sent to the model as text.";
+}
+
+test "oneshotSlashRefusal: commands are refused, prompts and paths are not" {
+    try std.testing.expect(oneshotSlashRefusal("/goal 30m ship it") != null);
+    try std.testing.expect(oneshotSlashRefusal("/loop keep going") != null);
+    try std.testing.expect(oneshotSlashRefusal("  /model  ") != null);
+    // Real prompts, including one opening with an absolute path.
+    try std.testing.expect(oneshotSlashRefusal("fix the retry path") == null);
+    try std.testing.expect(oneshotSlashRefusal("/etc/hosts is wrong, fix it") == null);
+    // The /goal refusal names the flag that actually works headlessly.
+    try std.testing.expect(std.mem.indexOf(u8, oneshotSlashRefusal("/goal ship").?, "--goal") != null);
 }
 
 /// One autonomous run, however it was asked for. `/goal <objective>` and
