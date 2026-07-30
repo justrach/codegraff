@@ -170,17 +170,21 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         try self.say("[api error: choice had no message]\n", .{});
         return error.ApiError;
     };
+    const msg_obj = tools_mod.json_args.object(message) orelse {
+        try self.say("[api error: choice message was not an object]\n", .{});
+        return error.ApiError;
+    };
     try self.messages.append(message); // echo verbatim (content may be null)
 
     var final_text: []const u8 = "";
-    if (message.object.get("content")) |c| if (c == .string and c.string.len > 0) {
+    if (msg_obj.get("content")) |c| if (c == .string and c.string.len > 0) {
         final_text = c.string;
         try surfaceUnstreamedText(self, c.string);
     };
 
     var calls: std.ArrayList(ToolCall) = .empty;
     defer calls.deinit(self.gpa);
-    if (message.object.get("tool_calls")) |tcs| if (tcs == .array) {
+    if (msg_obj.get("tool_calls")) |tcs| if (tcs == .array) {
         for (tcs.array.items) |tc| {
             if (tc != .object) continue;
             const function = tc.object.get("function") orelse continue;

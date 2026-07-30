@@ -52,15 +52,15 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
         .text = try ctx.gpa.dupe(u8, "subagents cannot spawn subagents — do this work yourself"),
         .is_error = true,
     };
-    const label = if (input.object.get("description")) |d| (if (d == .string) d.string else "subagent") else "subagent";
-    const prompt = if (input.object.get("prompt")) |p| (if (p == .string) p.string else "") else "";
+    const obj = tools.json_args.object(input) orelse return .{ .text = try ctx.gpa.dupe(u8, "subagent: arguments must be a JSON object with a \"prompt\" string"), .is_error = true };
+    const label = tools.json_args.str(obj, "description") orelse "subagent";
+    const prompt = tools.json_args.str(obj, "prompt") orelse "";
     if (prompt.len == 0) return .{ .text = try ctx.gpa.dupe(u8, "subagent: missing required \"prompt\" (a self-contained task)"), .is_error = true };
-    const sys_override = fleet.resolveOverride(input.object);
-    const niche = fleet.resolveNiche(input.object);
-    const isolation = fleet.resolveIsolation(input.object);
-    const isolation_fallback = fleet.resolveIsolationFallback(input.object);
-    const background = if (input.object.get("run_in_background")) |v| v == .bool and v.bool else false;
-    if (background) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback);
+    const sys_override = fleet.resolveOverride(obj);
+    const niche = fleet.resolveNiche(obj);
+    const isolation = fleet.resolveIsolation(obj);
+    const isolation_fallback = fleet.resolveIsolationFallback(obj);
+    if (tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback);
     const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback);
     return run.output;
 }

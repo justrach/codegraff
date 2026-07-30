@@ -195,7 +195,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             .text = try gpa.dupe(u8, "command not pre-approved — subagents may only run user-approved or read-only commands, with no chaining/pipes/redirection. Use read_file/edit_file/write_file, or report back what you need run."),
             .is_error = true,
         };
-        const bg = if (input == .object) (if (input.object.get("run_in_background")) |v| v == .bool and v.bool else false) else false;
+        const bg = tools.json_args.flag(input, "run_in_background");
         if (bg) {
             const job = spawnJob(gpa, io, cmd) catch |err| return .{
                 // #122: backgrounding costs MORE fds (pipes + pump task), so the
@@ -282,7 +282,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
         const start_line = intField(input, "start_line");
         const end_line = intField(input, "end_line");
-        const want_compact = if (input == .object) (if (input.object.get("compact")) |v| v == .bool and v.bool else false) else false;
+        const want_compact = tools.json_args.flag(input, "compact");
         // #66: opt-in compact view routes to `codedb read <path> [-L a-b] --compact`
         // when codedb is present and this file is indexed. Lossy (strips comments/
         // blanks, shows line numbers) so it is NEVER the default and is labeled
@@ -368,7 +368,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         const old = strField(input, "old_string") orelse return missingArg(gpa, "old_string");
         const new = strField(input, "new_string") orelse return missingArg(gpa, "new_string");
         if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
-        const all = if (input.object.get("replace_all")) |v| v == .bool and v.bool else false;
+        const all = tools.json_args.flag(input, "replace_all");
         if (old.len == 0) return .{ .text = try gpa.dupe(u8, "old_string must not be empty"), .is_error = true };
 
         // #276 P0-1: resolve under the agent's isolated worktree when set.
