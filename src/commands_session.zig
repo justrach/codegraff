@@ -14,6 +14,7 @@ const util = @import("util.zig");
 const tools_mod = @import("tools.zig");
 const session_mod = @import("session.zig");
 const goal_state = @import("goal_state.zig");
+const goal_flow = @import("goal_flow.zig");
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const ToolCall = tools_mod.ToolCall;
@@ -178,30 +179,19 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.print("\xf0\x9f\x8e\xaf Goal resumed: {s} - steering every turn again.\n", .{g.objective});
             } else try out.writeAll("No goal to resume. Set one with /goal <objective>.\n");
         } else {
-            const now = unixMs(root.io);
-            const epoch = goal_state.nextEpoch(root.goal, root.todos.items); // above every parked epoch too, or a cleared goal's list becomes this one's (#318)
-            // A COMPLETE goal is already retired and its checklist already parked
-            // (#318 D1), so the next /goal is not superseding live work: it takes
-            // the adoption branch, exactly like a first /goal.
-            const superseded: ?agent_mod.Goal = if (root.goal) |old| (if (old.status == .complete) null else old) else null;
-            if (superseded) |old| {
+            // The whole state transition (new epoch above every parked one,
+            // adopt-or-supersede, gate + fingerprint resets) is
+            // goal_flow.applyGoalSet; this handler only reports it.
+            const res = goal_flow.applyGoalSet(root, try arena.dupe(u8, text), unixMs(root.io));
+            if (res.superseded) |old| {
                 // Replacement is a supersession boundary (#318): the old
                 // checklist parks (retained, no longer current) and a one-shot
                 // note tells the model not to treat inherited items as
                 // authorization to keep going.
-                const parked = goal_state.parkedOpenCount(root.todos.items, epoch);
-                root.pending_goal_note = try goal_state.supersededNote(arena, old.objective, parked);
+                root.pending_goal_note = try goal_state.supersededNote(arena, old.objective, res.parked_open);
                 if (root.tracer) |t| t.note("goal", "replaced");
-                if (parked > 0) try out.print("(superseded \"{s}\" \xe2\x80\x94 parked {d} unfinished checklist item(s), kept in the session)\n", .{ old.objective, parked });
-            } else {
-                // Formalizing an in-flight plan keeps its checklist; work parked
-                // by a finished goal stays parked.
-                goal_state.adoptTodos(root.todos.items, goal_state.currentEpoch(root.goal), epoch);
-                if (root.tracer) |t| t.note("goal", "set");
-            }
-            root.goal = .{ .objective = try arena.dupe(u8, text), .status = .active, .epoch = epoch, .created_ms = now, .updated_ms = now };
-            root.goal_note_fp = 0;
-            goal_state.resetCompletionGate(root); // a new objective is new evidence for the completion double-check
+                if (res.parked_open > 0) try out.print("(superseded \"{s}\" \xe2\x80\x94 parked {d} unfinished checklist item(s), kept in the session)\n", .{ old.objective, res.parked_open });
+            } else if (root.tracer) |t| t.note("goal", "set");
             saveSession(root, arena, root.session_name) catch {};
             try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; it steers every turn until /goal pause or /goal clear).\n", .{text});
         }

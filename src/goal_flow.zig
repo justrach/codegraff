@@ -71,6 +71,74 @@ fn capRender(arena: Allocator, rendered: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}\n[checklist truncated for the handoff - call todo_read for the full list]", .{rendered[0..cut]});
 }
 
+pub const GoalSetResult = struct {
+    /// The live goal this one replaced, or null when there was nothing to
+    /// supersede (no goal, or one already retired). The caller prints it and
+    /// queues the supersession note.
+    superseded: ?agent_mod.Goal,
+    /// Open items that do NOT belong to the new epoch, i.e. the work that
+    /// stopped steering. Retained, never deleted (#318).
+    parked_open: usize,
+};
+
+/// The pure state transition behind `/goal <objective>` (set and replace are
+/// the same transition): the new epoch, the adopt-or-supersede choice, the
+/// goal assignment, and the gate/fingerprint resets. Printing, tracing and the
+/// session save stay with the caller, which is what makes the rules here
+/// unit-testable - the two riskiest of them had no test at all before, since
+/// they only existed inside a slash-command handler.
+/// `objective` must already be owned by the session arena. `standing` is left
+/// at its default false: a typed /goal is a task the model may complete, only
+/// the --goal flag makes an objective standing (goal_flow.standingGoalFromFlag).
+pub fn applyGoalSet(root: *Agent, objective: []const u8, now_ms: i64) GoalSetResult {
+    const epoch = goal_state.nextEpoch(root.goal, root.todos.items);
+    // A COMPLETE goal is already retired and its checklist already parked
+    // (#318 D1), so the next /goal is not superseding live work: it takes the
+    // adoption branch, exactly like a first /goal.
+    const superseded: ?agent_mod.Goal = if (root.goal) |old| (if (old.status == .complete) null else old) else null;
+    // Formalizing an in-flight plan keeps its checklist; work parked by a
+    // finished or superseded goal stays parked and is never resurrected.
+    if (superseded == null)
+        goal_state.adoptTodos(root.todos.items, goal_state.currentEpoch(root.goal), epoch);
+    const parked_open = goal_state.parkedOpenCount(root.todos.items, epoch);
+    root.goal = .{ .objective = objective, .status = .active, .epoch = epoch, .created_ms = now_ms, .updated_ms = now_ms };
+    root.goal_note_fp = 0; // re-state the note on the next turn, not a stale-suppressed repeat
+    goal_state.resetCompletionGate(root); // a new objective is new evidence for the completion double-check
+    return .{ .superseded = superseded, .parked_open = parked_open };
+}
+
+/// The /loop controller's per-turn decision, assembled from root state. Split
+/// out of mainloop (#318) so the composition itself is testable: which turns
+/// count as work, which count as silence, and which goal status is read.
+/// work_done is the only evidence that may complete the goal and the only
+/// thing that earns `accepted` - a checklist restored from disk is not it
+/// (checklistFinished gates on this-process freshness). A zero-tool turn ends
+/// the LOOP as `idle` (codex RegularTask semantics: no /loop burns 25
+/// continuations on a one-turn prompt), but a REFUSED attempt_completion is
+/// work, not silence. A session with no goal reads as .active, so a bare /loop
+/// is governed by its work and its iteration bound alone.
+pub fn loopTurnDecision(root: *Agent, iters_left: u32) repl_glue.ContinuationDecision {
+    const work_done = root.completed != null or goal_state.checklistFinished(root);
+    const model_stopped = repl_glue.turnStopped(root.tool_calls_this_turn, root.completion_refused);
+    const gstatus: agent_mod.GoalStatus = if (root.goal) |g| g.status else .active;
+    return repl_glue.continuationDecision(gstatus, work_done, model_stopped, iters_left);
+}
+
+/// The goal-side effect of a /loop run that stopped as `accepted`: the loop
+/// drove the objective to done, so it retires. Returns true when it flipped.
+/// A standing --goal is the user's policy for the whole session and outlives
+/// any single completion (#318); a paused or already-complete goal is not the
+/// loop's to change either.
+pub fn acceptLoopOutcome(root: *Agent) bool {
+    if (root.goal) |*g| {
+        if (g.status == .active and !g.standing) {
+            g.status = .complete;
+            return true;
+        }
+    }
+    return false;
+}
+
 /// A root agent in the shape the goal helpers read; no live turn behind it.
 fn flowRoot(arena: Allocator) Agent {
     var root: Agent = undefined;

@@ -12,6 +12,8 @@ const Allocator = std.mem.Allocator;
 const agent_mod = @import("agent.zig");
 const session = @import("session.zig");
 const goal_state = @import("goal_state.zig");
+const goal_flow = @import("goal_flow.zig");
+const repl_glue = @import("repl_glue.zig");
 const Agent = agent_mod.Agent;
 
 /// Restore `json` onto `root` the way loadSession does (session.zig): parse the
@@ -30,6 +32,9 @@ fn resumeSession(arena: Allocator, root: *Agent, json: []const u8) !void {
 }
 
 /// A root agent in the state loadSession hands back: no live turn behind it.
+/// The turn-scoped fields matter too - goal_flow.loopTurnDecision reads them
+/// to decide whether a /loop continues, and "restored, no work yet" is exactly
+/// the state #318's never-completing loop started from.
 fn blankRoot(arena: Allocator) Agent {
     var root: Agent = undefined;
     root.arena = arena;
@@ -39,6 +44,10 @@ fn blankRoot(arena: Allocator) Agent {
     root.goal = null;
     root.todos_dirty = false;
     root.completion_gate_armed = false;
+    root.completion_refused = false;
+    root.completed = null;
+    root.tool_calls_this_turn = 0;
+    root.goal_note_fp = 0;
     return root;
 }
 
@@ -219,4 +228,149 @@ test "resume: a paused or already-complete goal is restored verbatim (#318)" {
     try std.testing.expectEqual(agent_mod.GoalStatus.complete, root2.goal.?.status);
     try std.testing.expectEqual(@as(u64, 0), goal_state.currentEpoch(root2.goal)); // dead epoch: later writes are unscoped
     try std.testing.expectEqualStrings("", goal_state.renderCurrent(&root2));
+}
+
+test "/goal over live work supersedes it and never inherits its checklist (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    try resumeSession(ar, &root,
+        \\{"goal":{"objective":"ship phase 2","status":"active","epoch":2,"created_ms":1,"updated_ms":2},
+        \\ "todos":[{"content":"fix the tests","status":"completed","epoch":2},
+        \\          {"content":"verify in the browser","status":"pending","epoch":2},
+        \\          {"content":"parked earlier","status":"pending","epoch":1}]}
+    );
+    root.completion_gate_armed = true; // a refusal the old objective was still answering
+
+    const res = goal_flow.applyGoalSet(&root, "ship phase 3", 5_000);
+    try std.testing.expect(res.superseded != null);
+    try std.testing.expectEqualStrings("ship phase 2", res.superseded.?.objective);
+    try std.testing.expectEqual(@as(usize, 2), res.parked_open); // both open items stopped steering
+    try std.testing.expectEqual(@as(u64, 3), root.goal.?.epoch); // above the live goal AND every parked epoch
+    try std.testing.expect(!root.goal.?.standing); // a typed /goal is retirable; only --goal is standing
+    try std.testing.expect(!root.completion_gate_armed); // new objective, new evidence for the double-check
+    try std.testing.expectEqual(@as(u64, 0), root.goal_note_fp); // and the note re-states next turn
+    // The new objective starts with no plan of its own, and nothing was deleted.
+    try std.testing.expectEqualStrings("", goal_state.renderCurrent(&root));
+    try std.testing.expectEqual(@as(usize, 3), root.todos.items.len);
+}
+
+test "/goal over a retired goal adopts only its OPEN current items (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    // A goal that already completed is not live work, so the next /goal is not
+    // superseding anything - it takes the adoption branch, like a first /goal.
+    // But a COMPLETE goal's epoch is dead (currentEpoch 0), so there is nothing
+    // current to adopt and its finished list stays parked where it is.
+    try resumeSession(ar, &root,
+        \\{"goal":{"objective":"ship phase 2","status":"complete","epoch":2,"created_ms":1,"updated_ms":2},
+        \\ "todos":[{"content":"fix the tests","status":"completed","epoch":2},
+        \\          {"content":"leftover","status":"pending","epoch":2}]}
+    );
+    const res = goal_flow.applyGoalSet(&root, "ship phase 3", 5_000);
+    try std.testing.expect(res.superseded == null); // nothing live was replaced
+    try std.testing.expectEqual(@as(u64, 3), root.goal.?.epoch);
+    try std.testing.expect(!goal_state.hasCurrent(root.todos.items, 3));
+    try std.testing.expectEqual(@as(usize, 1), goal_state.parkedOpenCount(root.todos.items, 3));
+    // Born with no checklist, so completion is gated rather than free (#318).
+    const refusal = try goal_state.completionGate(ar, &root);
+    try std.testing.expect(refusal != null and std.mem.indexOf(u8, refusal.?, "no checklist") != null);
+}
+
+test "the first /goal adopts the in-flight unscoped plan, minus finished work (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    // The model planned before the user named the objective: an epoch-0 list.
+    // Formalizing it should keep the OPEN items (the plan the /goal serves) and
+    // leave the completed ones parked - carrying those in made the fresh goal
+    // born "done": openCount 0 with a checklist present, so the double-check's
+    // confirm-once arm was skipped and completion was free before any work.
+    try root.todos.append(ar, .{ .content = "already done", .status = "completed", .epoch = 0 });
+    try root.todos.append(ar, .{ .content = "still open", .status = "in_progress", .epoch = 0 });
+    const res = goal_flow.applyGoalSet(&root, "make the tests pass", 5_000);
+    try std.testing.expect(res.superseded == null);
+    try std.testing.expectEqual(@as(u64, 1), root.goal.?.epoch);
+    try std.testing.expectEqualStrings("[~] still open", goal_state.renderCurrent(&root));
+    try std.testing.expectEqual(@as(usize, 1), goal_state.openCount(root.todos.items, 1));
+    try std.testing.expectEqual(@as(u64, 0), root.todos.items[0].epoch); // the finished item parked
+    const refusal = try goal_state.completionGate(ar, &root);
+    try std.testing.expect(refusal != null and std.mem.indexOf(u8, refusal.?, "1 open") != null);
+}
+
+test "/loop: a restored all-[x] list is idle, not accepted (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    // A standing --goal survives the resume with its finished checklist intact
+    // (reconcileRestored leaves it alone), so this is the exact state a fresh
+    // /loop starts from: goal active, every item [x], zero tools run yet. It
+    // used to stop at iteration 1 as `accepted` with nothing done.
+    try resumeSession(ar, &root,
+        \\{"goal":{"objective":"keep the tree green","status":"active","epoch":2,"standing":true,"created_ms":1,"updated_ms":2},
+        \\ "todos":[{"content":"fix the tests","status":"completed","epoch":2}]}
+    );
+    try std.testing.expect(goal_state.allDone(root.todos.items, 2));
+    try std.testing.expect(!root.todos_dirty); // the freshness flag is what saves it
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status); // and nothing was retired
+}
+
+test "/loop: a finished list accepts and retires only a retirable goal (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    root.goal = .{ .objective = "ship phase 2", .epoch = 1 };
+    try root.todos.append(ar, .{ .content = "fix the tests", .status = "completed", .epoch = 1 });
+    goal_state.noteTodoWrite(&root); // THIS process finished the list: real evidence
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expect(goal_flow.acceptLoopOutcome(&root));
+    try std.testing.expectEqual(agent_mod.GoalStatus.complete, root.goal.?.status);
+
+    // A paused goal is the user stepping in, and a standing --goal is their
+    // policy for the whole session: the loop still stops as accepted, but
+    // neither objective is the loop's to retire (#318).
+    root.goal = .{ .objective = "ship phase 2", .epoch = 1, .status = .paused };
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expect(!goal_flow.acceptLoopOutcome(&root));
+    try std.testing.expectEqual(agent_mod.GoalStatus.paused, root.goal.?.status);
+    root.goal = .{ .objective = "keep the tree green", .epoch = 1, .standing = true };
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expect(!goal_flow.acceptLoopOutcome(&root));
+    try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status);
+}
+
+test "/loop: a refused completion is work, and a leftover complete goal decides nothing (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    root.goal = .{ .objective = "ship phase 2", .epoch = 1 };
+    try root.todos.append(ar, .{ .content = "verify in the browser", .status = "pending", .epoch = 1 });
+    // The completion gate refused: the model called attempt_completion (which
+    // is exempt from the tool counter) and got an is_error back to react to.
+    // Reading that as silence killed the /loop on the very turn the gate meant
+    // to keep alive, so the promised second call could never happen (#318).
+    goal_state.noteCompletionRefused(&root);
+    try std.testing.expectEqual(@as(u64, 0), root.tool_calls_this_turn);
+    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25)) == .continue_turn);
+    // Genuine silence on the same state does stop the loop.
+    root.completion_refused = false;
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, goal_flow.loopTurnDecision(&root, 25).stop);
+
+    // A goal left .complete by an earlier run or a resume reconciliation must
+    // not label a fresh /loop `accepted` at iteration 1 before anything has
+    // happened: it decides nothing, exactly like .active.
+    root.goal.?.status = .complete;
+    root.tool_calls_this_turn = 3;
+    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25)) == .continue_turn);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.exhausted, goal_flow.loopTurnDecision(&root, 0).stop);
+    root.tool_calls_this_turn = 0;
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, goal_flow.loopTurnDecision(&root, 25).stop);
 }

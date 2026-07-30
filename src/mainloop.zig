@@ -24,6 +24,7 @@ const jobs = @import("jobs.zig");
 const session = @import("session.zig");
 const repl_glue = @import("repl_glue.zig");
 const goal_state = @import("goal_state.zig");
+const goal_flow = @import("goal_flow.zig");
 const eval_memory = @import("eval_memory.zig");
 const mainloop_score = @import("mainloop_score.zig");
 const mainloop_trace = @import("mainloop_trace.zig");
@@ -561,16 +562,7 @@ pub fn run(ctx: *Ctx) !void {
         // never resumes the loop.
         if (loop_prompt != null and !main_mod.json_mode) {
             if (!is_loop_continuation) loop_iters_left = loop_iter_cap; // fresh /loop run: arm the bound
-            // work_done: the model asserted completion or finished the checklist
-            // - the only evidence that may complete the goal, and the only thing
-            // that earns `accepted`. A zero-tool turn ends the LOOP as `idle`
-            // (codex RegularTask semantics: no /loop burns 25 continuations on a
-            // one-turn prompt); a refused attempt_completion is work, not silence.
-            const work_done = ctx.root.completed != null or
-                goal_state.checklistFinished(ctx.root); // a checklist restored from disk is not evidence (#318)
-            const model_stopped = repl_glue.turnStopped(ctx.root.tool_calls_this_turn, ctx.root.completion_refused);
-            const gstatus: agent_mod.GoalStatus = if (ctx.root.goal) |g| g.status else .active;
-            switch (repl_glue.continuationDecision(gstatus, work_done, model_stopped, loop_iters_left)) {
+            switch (goal_flow.loopTurnDecision(ctx.root, loop_iters_left)) {
                 .continue_turn => {
                     loop_iters_left -= 1; // consume one credit for the queued continuation
                     loop_continue_armed = true;
@@ -578,9 +570,9 @@ pub fn run(ctx: *Ctx) !void {
                 .stop => |outcome| {
                     loop_iters_left = 0;
                     loop_continue_armed = false;
-                    if (outcome == .accepted and work_done) if (ctx.root.goal) |*g| {
-                        if (g.status == .active and !g.standing) g.status = .complete; // the loop drove the goal to done; a --goal standing objective outlives it (#318)
-                    };
+                    // Only work_done reaches `accepted`, so the loop drove the
+                    // goal to done; a --goal standing objective outlives it (#318).
+                    if (outcome == .accepted) _ = goal_flow.acceptLoopOutcome(ctx.root);
                     try ctx.out.print("{s}↩ /loop stopped — {s}{s}\n", .{ style.dim, @tagName(outcome), style.reset });
                     try ctx.out.flush();
                 },
