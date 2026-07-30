@@ -9,6 +9,7 @@ const main_mod = @import("main.zig");
 const Agent = @import("agent.zig").Agent;
 const Provider = @import("provider.zig").Provider;
 const util = @import("util.zig");
+const goal_pacing = @import("goal_pacing.zig");
 const tools = @import("tools.zig");
 const ToolCtx = tools.ToolCtx;
 const ToolOutput = tools.ToolOutput;
@@ -227,7 +228,11 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
 
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label } });
-    try agent.messages.append(try textMessage(arena, "user", prompt));
+    // A /loop deadline on the parent reaches the child as guidance on its own
+    // task prompt (goal_pacing.childTaskPrompt): same absolute deadline, minus
+    // the margin the parent needs to integrate the result. No-op without one.
+    const task_prompt = try goal_pacing.childTaskPrompt(arena, prompt, ctx.loop_deadline_ms, util.unixMs(ctx.io));
+    try agent.messages.append(try textMessage(arena, "user", task_prompt));
     defer agent.tools_used.deinit(gpa);
     const report = agent.runTurn();
     const run_ms: i64 = @intCast(@max(0, sub_start.untilNow(ctx.io, .awake).toMilliseconds()));

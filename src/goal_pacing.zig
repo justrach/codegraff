@@ -137,6 +137,37 @@ pub fn pacingNote(arena: Allocator, now_ms: i64, clock: LoopClock, iters_used: u
     return std.fmt.allocPrint(arena, "[pace: continuation {d} of {d}, {s} elapsed, ~{s} of the time budget left ({d}%). {s}]", .{ iters_used, iters_cap, elapsed, try fmtDur(arena, left), pct, phaseHint(pct) });
 }
 
+/// How much of the parent's remaining time a child is asked to leave behind, so
+/// the parent can actually integrate what the child returns: 10%, never less
+/// than a minute. A child that finishes exactly on the parent's deadline is a
+/// child whose work is thrown away.
+pub const integration_margin_floor_ms: i64 = std.time.ms_per_min;
+
+/// The budget a child spawned at `now_ms` gets from a parent deadline.
+/// Absolute deadlines PROPAGATE; they are never sliced. Wall-clock is shared
+/// state - three concurrent children all live through the same minute, so
+/// dividing the remaining time between them would give each one a third of a
+/// budget it is not actually competing for. Every child gets the same
+/// (deadline - now) minus the integration margin. May be <= 0.
+pub fn childBudgetMs(deadline_ms: i64, now_ms: i64) i64 {
+    const left = deadline_ms - now_ms;
+    return left - @max(integration_margin_floor_ms, @divTrunc(left, 10));
+}
+
+/// A child's task prompt, prefixed with the parent's time budget when a /loop
+/// deadline is live. Returns `prompt` untouched when there is none, so an
+/// ordinary session's subagents are byte-identical to before. Guidance only:
+/// subagents get no watchdog in this round, because a killed child returns
+/// nothing at all, which is strictly worse than a late one.
+pub fn childTaskPrompt(arena: Allocator, prompt: []const u8, deadline_ms: ?i64, now_ms: i64) ![]const u8 {
+    const deadline = deadline_ms orelse return prompt;
+    const budget = childBudgetMs(deadline, now_ms);
+    if (budget <= 0)
+        return std.fmt.allocPrint(arena, "[time budget: the parent's deadline is imminent; return your best partial result immediately]\n\n{s}", .{prompt});
+    const mins = @max(1, @divTrunc(budget, std.time.ms_per_min));
+    return std.fmt.allocPrint(arena, "[time budget: conclude within ~{d}m and return results - the parent must integrate them before its own deadline; prefer decisive action and a partial result over overrunning]\n\n{s}", .{ mins, prompt });
+}
+
 test "parseLoopBudget: a duration prefix arms a deadline, anything else is prompt" {
     const b1 = parseLoopBudget("30m fix the flaky test");
     try std.testing.expectEqual(@as(?i64, 30 * std.time.ms_per_min), b1.deadline_ms_delta);
@@ -183,6 +214,40 @@ test "LoopClock: arms and clears the Agent-visible deadline together" {
     try std.testing.expect(clock.expired(61_000)); // the instant it lands, not one tick later
     clock.clear(&root);
     try std.testing.expect(clock.deadline_ms == null and root.loop_deadline_ms == null and clock.started_ms == 0);
+}
+
+test "childTaskPrompt: the same absolute deadline reaches every child, minus a margin" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    const prompt = "audit the retry path";
+
+    // No /loop deadline: the child's prompt is untouched, byte for byte.
+    try std.testing.expectEqualStrings(prompt, try childTaskPrompt(ar, prompt, null, 0));
+
+    // 60 minutes left -> 6 minutes of margin -> 54 for the child. Three
+    // siblings spawned in the same instant all get 54, not 18: they share the
+    // clock, they are not spending each other's time.
+    const hour: i64 = 60 * std.time.ms_per_min;
+    try std.testing.expectEqual(@as(i64, 54 * std.time.ms_per_min), childBudgetMs(hour, 0));
+    const timed = try childTaskPrompt(ar, prompt, hour, 0);
+    try std.testing.expect(std.mem.startsWith(u8, timed, "[time budget: conclude within ~54m and return results"));
+    try std.testing.expect(std.mem.endsWith(u8, timed, "\n\naudit the retry path")); // the task itself is unchanged
+    try std.testing.expect(std.mem.indexOf(u8, timed, "partial result over overrunning") != null);
+
+    // The margin has a floor: a short window is mostly margin, and a 90-second
+    // one leaves nothing at all rather than pretending 30s is a research budget.
+    try std.testing.expectEqual(@as(i64, 9 * std.time.ms_per_min), childBudgetMs(10 * std.time.ms_per_min, 0));
+    try std.testing.expectEqual(@as(i64, 30 * std.time.ms_per_s), childBudgetMs(90 * std.time.ms_per_s, 0));
+    try std.testing.expect(std.mem.indexOf(u8, try childTaskPrompt(ar, prompt, 90 * std.time.ms_per_s, 0), "~1m") != null); // never "~0m"
+
+    // Inside the margin, or already past the deadline: the spawn is NOT blocked
+    // (a refused child is a lost child), it is told to come back at once.
+    for ([_]i64{ 30 * std.time.ms_per_s, 0, -60 * std.time.ms_per_s }) |left| {
+        const urgent = try childTaskPrompt(ar, prompt, left, 0);
+        try std.testing.expect(std.mem.startsWith(u8, urgent, "[time budget: the parent's deadline is imminent"));
+        try std.testing.expect(std.mem.endsWith(u8, urgent, "\n\naudit the retry path"));
+    }
 }
 
 test "armFreshRun: a /loop line starts the clock, any other line ends it" {
