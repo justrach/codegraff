@@ -1,0 +1,69 @@
+{
+  "schema": "codegraff.eval.tier1.manifest.v1",
+  "comment": [
+    "Tier 1 of the internal eval set: the deterministic invariants the pre-push hook enforces.",
+    "No network, no model calls. Tier 2 (model-backed behavior) lives in evals/ and is opt-in.",
+    "test_count_baseline is a ratchet: the suite may grow, it may never shrink. A drop means a",
+    "module stopped being referenced from the test root and its tests silently vanished."
+  ],
+  "test_roots": ["src/main.zig", "src/repl.zig"],
+  "test_count_baseline": 449,
+  "required_invariants": [
+    {
+      "id": "goal-epochs",
+      "test": "epochs: nextEpoch clears the live goal AND every parked epoch; currentEpoch 0 without a goal",
+      "why": "#318: a new goal inherited the previous goal's checklist and was born done."
+    },
+    {
+      "id": "todo-preserve",
+      "test": "a replace keeps omitted completed items and still drops omitted open ones",
+      "why": "2896b32: a replace deleted completed items the model omitted, erasing finished work."
+    },
+    {
+      "id": "todo-empty-write",
+      "test": "a write with zero usable items is rejected untouched, never completion evidence (#318)",
+      "why": "6300514: an empty todo_write wiped the checklist and read as completion."
+    },
+    {
+      "id": "loop-expired",
+      "test": "/loop: a passed wall-clock deadline stops as expired and flips nothing",
+      "why": "6300514: a timed run past its deadline must stop as expired, not as accepted."
+    },
+    {
+      "id": "loop-idle",
+      "test": "/loop: a restored all-[x] list is idle, not accepted (#318)",
+      "why": "#318: a leftover finished checklist ended a fresh /loop at iteration 1."
+    },
+    {
+      "id": "goal-loop-one-run",
+      "test": "/goal and /loop produce the same run; only /goal adopts the objective",
+      "why": "010b9ad: /goal and /loop are one autonomous run; they must not drift apart."
+    },
+    {
+      "id": "compaction-keeps-goal",
+      "test": "compactionSnapshot: no live goal, no checklist, and a capped render (#318)",
+      "why": "#318: compaction dropped the goal and its completed items mid-run."
+    },
+    {
+      "id": "completion-gate",
+      "test": "completionGate: open list refused once, no-checklist needs confirm, done list accepts, review exempt (#318)",
+      "why": "#318: the model could claim completion over an unfinished checklist."
+    },
+    {
+      "id": "child-deadline",
+      "test": "childTaskPrompt: the same absolute deadline reaches every child, minus a margin",
+      "why": "d33c4a4: a timed /loop must hand its deadline down, or children outlive the run."
+    }
+  ],
+  "docs_only_paths": [
+    "*.md",
+    "docs/*",
+    "plans/*",
+    "social/*",
+    "socials/*",
+    "assets/*",
+    "benchmarks/*.png",
+    "*.png",
+    "LICENSE"
+  ]
+}

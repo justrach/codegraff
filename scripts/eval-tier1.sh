@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# Tier 1 of the internal eval set: every check here is deterministic, offline,
+# and free. No provider calls, no network, no model in the loop. This is what
+# the pre-push hook runs, so it has to stay honest and it has to stay fast
+# (~30s warm on an M-series laptop).
+#
+# Tier 2 is the model-backed behavioral eval set (scripts/eval-tier2.py). It is
+# deliberately NOT in the hook: it spends turns and it is slower.
+#
+#   scripts/eval-tier1.sh              run every check
+#   scripts/eval-tier1.sh --list       show the check names
+#   scripts/eval-tier1.sh --only sdk   run one check
+#
+set -uo pipefail
+
+repo_root=$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)
+cd "$repo_root"
+
+CHECKS=(fmt lines reach build tests invariants sdk)
+
+usage() {
+  cat <<'EOF'
+usage: scripts/eval-tier1.sh [--only <check>] [--list]
+
+checks, in order:
+  fmt         zig fmt --check src build.zig
+  lines       scripts/check-zig-lines.sh (600-line ceiling, AGENTS.md)
+  reach       every file that declares tests is reachable from the test root
+  build       zig build
+  tests       zig build test, and the suite count never shrinks
+  invariants  the named goal/loop/todo tests actually ran, not just compiled
+  sdk         the committed SDKs match `graff --schema`
+EOF
+}
+
+only=""
+while (($#)); do
+  case "$1" in
+    --list) printf '%s\n' "${CHECKS[@]}"; exit 0 ;;
+    --only) only=${2:-}; shift 2 || true ;;
+    --only=*) only=${1#--only=}; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'eval-tier1: unknown argument %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ -n "$only" ]]; then
+  found=0
+  for name in "${CHECKS[@]}"; do [[ $name == "$only" ]] && found=1; done
+  if ((!found)); then
+    printf 'eval-tier1: no check named %s (try --list)\n' "$only" >&2
+    exit 2
+  fi
+fi
+
+wanted() { [[ -z "$only" || "$only" == "$1" ]]; }
+
+failed=()
+started=$SECONDS
+
+announce() { printf '\n\033[1m==> %s\033[0m  %s\n' "$1" "$2"; }
+record_fail() {
+  failed+=("$1")
+  printf '\n  \033[31mFAILED\033[0m %s\n  rerun just this check: scripts/eval-tier1.sh --only %s\n' "$1" "$1"
+}
+
+# --- fmt ---------------------------------------------------------------
+if wanted fmt; then
+  announce fmt "zig fmt --check src build.zig"
+  if zig fmt --check src build.zig; then
+    printf '  formatting is clean\n'
+  else
+    printf '  the files above are unformatted.\n    fix: zig fmt src build.zig\n'
+    record_fail fmt
+  fi
+fi
+
+# --- lines -------------------------------------------------------------
+if wanted lines; then
+  announce lines "600-line ceiling on hand-written Zig (AGENTS.md)"
+  if bash scripts/check-zig-lines.sh; then :; else
+    printf '    fix: split the file above into focused sibling modules.\n'
+    record_fail lines
+  fi
+fi
+
+# --- reach -------------------------------------------------------------
+if wanted reach; then
+  announce reach "tests declared in src/ are reachable from the test root"
+  if python3 scripts/eval/tier1_invariants.py static; then :; else
+    record_fail reach
+  fi
+fi
+
+# --- build -------------------------------------------------------------
+build_ok=1
+if wanted build; then
+  announce build "zig build"
+  if zig build; then
+    printf '  zig-out/bin/graff is current\n'
+  else
+    build_ok=0
+    record_fail build
+  fi
+fi
+
+# The suite count and the SDK gate both need a working compile; skip rather
+# than report a second, derived failure.
+skip_dependent() {
+  printf '\n  \033[33mskipped\033[0m %s (zig build failed above)\n' "$1"
+}
+
+# --- tests -------------------------------------------------------------
+suite_count() {
+  # `--summary all` prints "N/N tests passed" even on a fully cached run.
+  sed -n 's/.*Build Summary:.*; \([0-9][0-9]*\)\/[0-9][0-9]* tests passed.*/\1/p' <<<"$1" | tail -1
+}
+
+if wanted tests; then
+  if ((!build_ok)); then
+    skip_dependent tests
+  else
+    announce tests "zig build test, and the suite count never shrinks"
+    out=$(zig build test --summary all 2>&1)
+    status=$?
+    printf '%s\n' "$out" | tail -4
+    if ((status != 0)); then
+      printf '    fix: the failing test names are above; rerun one with\n'
+      printf '         zig build test -Dtest-filter="<part of the name>"\n'
+      record_fail tests
+    else
+      count=$(suite_count "$out")
+      if [[ -z "$count" ]]; then
+        printf '  FAIL could not read the test count out of the build summary\n'
+        record_fail tests
+      elif python3 scripts/eval/tier1_invariants.py count --observed "$count"; then :; else
+        record_fail tests
+      fi
+    fi
+  fi
+fi
+
+# --- invariants --------------------------------------------------------
+if wanted invariants; then
+  if ((!build_ok)); then
+    skip_dependent invariants
+  else
+    announce invariants "the named goal/loop/todo tests actually ran"
+    filters=()
+    while IFS= read -r line; do [[ -n "$line" ]] && filters+=(-Dtest-filter="$line"); done \
+      < <(python3 scripts/eval/tier1_invariants.py filters)
+    # Anonymous `test {}` blocks ignore -Dtest-filter and always run, so measure
+    # that floor with a filter that matches nothing and subtract it.
+    floor_out=$(zig build test --summary all -Dtest-filter="__tier1_matches_nothing__" 2>&1)
+    floor=$(suite_count "$floor_out")
+    named_out=$(zig build test --summary all "${filters[@]}" 2>&1)
+    status=$?
+    named=$(suite_count "$named_out")
+    if ((status != 0)); then
+      printf '%s\n' "$named_out" | tail -6
+      printf '    one of the named invariants is failing.\n'
+      record_fail invariants
+    elif [[ -z "$floor" || -z "$named" ]]; then
+      printf '  FAIL could not read the filtered test counts\n'
+      record_fail invariants
+    else
+      printf '  filtered run: %s tests, floor %s\n' "$named" "$floor"
+      if python3 scripts/eval/tier1_invariants.py invariants --observed "$((named - floor))"; then :; else
+        printf '    the required set is listed in scripts/eval/tier1-manifest.json:\n'
+        python3 -c 'import json,sys; m=json.load(open("scripts/eval/tier1-manifest.json")); [print(f"      {e[\"id\"]}: {e[\"test\"]}") for e in m["required_invariants"]]'
+        record_fail invariants
+      fi
+    fi
+  fi
+fi
+
+# --- sdk ---------------------------------------------------------------
+if wanted sdk; then
+  if ((!build_ok)); then
+    skip_dependent sdk
+  else
+    announce sdk "the committed SDKs match \`graff --schema\`"
+    if python3 sdk/generate.py --harness ./zig-out/bin/graff >/dev/null; then
+      if git diff --exit-code --stat -- sdk/; then
+        printf '  sdk/ is in sync with the schema\n'
+      else
+        printf '\n  The generator just rewrote the files above, so the committed SDKs were\n'
+        printf '  stale. They are regenerated in your working tree right now - review and\n'
+        printf '  commit them:\n'
+        printf '    git add sdk/ && git commit -m "chore(sdk): regenerate from the schema"\n'
+        record_fail sdk
+      fi
+    else
+      printf '  sdk/generate.py failed\n'
+      record_fail sdk
+    fi
+  fi
+fi
+
+# --- verdict -----------------------------------------------------------
+elapsed=$((SECONDS - started))
+if ((${#failed[@]} == 0)); then
+  printf '\n\033[32mtier 1 green\033[0m in %ss\n' "$elapsed"
+  exit 0
+fi
+printf '\n\033[31mtier 1 red\033[0m in %ss - %d check(s) failed: %s\n' \
+  "$elapsed" "${#failed[@]}" "${failed[*]}"
+printf 'rerun one with: scripts/eval-tier1.sh --only <check>\n'
+exit 1
