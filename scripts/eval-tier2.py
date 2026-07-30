@@ -115,6 +115,11 @@ def execute(case: dict[str, Any], graff: str, port: int,
                 "GRAFF_NO_SMOLIFY": "1",
                 "NO_COLOR": "1",
             })
+            # Per-case environment. A case that needs the harness to reach a
+            # state it will not reach on its own - a tiny context window so a
+            # SUBAGENT compacts, say - sets it here rather than in the shared
+            # block, so one case cannot quietly change the others.
+            env.update({k: str(v) for k, v in case.get("env", {}).items()})
             argv = [graff, "--json", "--yolo", "--model", model or "lmstudio"]
             if provider:
                 argv += ["--subagent-provider", provider]
