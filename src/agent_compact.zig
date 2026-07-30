@@ -27,6 +27,11 @@ pub const runJudge = agent_eval.runJudge;
 
 pub const recent_context_tokens: u64 = 8_000;
 
+/// Head-cap for a child's pinned task prompt when restated in a handoff.
+/// ~2k tokens; head-capped because a workflow child's prompt carries the
+/// previous phase's results as a TAIL, so the head is the instruction.
+pub const task_pin_cap: usize = 8_000;
+
 /// Pick the earliest clean user-turn boundary whose suffix fits in the recent
 /// context budget. Returning items.len means "summarize everything". We never
 /// split at a tool output, so retained call/result history stays valid.
@@ -80,6 +85,7 @@ pub fn compact(self: *Agent) anyerror!usize {
         if (!main_mod.json_mode) try self.say("nothing to compact\n", .{});
         return 0;
     }
+    pinChildTask(self);
     self.last_request_context_overflow = false;
     if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens…]\n", .{self.effectiveContextTokens()});
     // #163: reclaim room BEFORE the summarization request so it fits under the
@@ -174,8 +180,24 @@ pub fn compact(self: *Agent) anyerror!usize {
 /// goalSteeringNote would move that note's diff-gate fingerprint on every
 /// compaction, defeating the suppression the gate exists for. With no live goal
 /// the text is byte-identical to what it always was.
+///
+/// A subagent's ONLY clean user turn is its task prompt at index 0 (#B3):
+/// recentContextStart never keeps a verbatim suffix for a child, since every
+/// message after it is either assistant or a tool_result/tool-role turn.
+/// Without a pin, compaction would summarize the mandate away with nothing
+/// left to restate it - childHandoff below restates it verbatim instead of
+/// re-deriving it, so it can never drift or compound across compactions.
 pub fn handoffMessage(self: *Agent, summary: []const u8) ![]const u8 {
-    const base = try std.fmt.allocPrint(self.arena,
+    const base = if (self.sub)
+        (if (self.task_prompt) |tp| try childHandoff(self, tp, summary) else try rootHandoff(self, summary))
+    else
+        try rootHandoff(self, summary);
+    const standing = (try goal_flow.compactionSnapshot(self.arena, self)) orelse return base;
+    return std.fmt.allocPrint(self.arena, "{s}\n\n{s}", .{ base, standing });
+}
+
+fn rootHandoff(self: *Agent, summary: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(self.arena,
         \\Context: the earlier conversation was compacted to save space.
         \\Summary of the earlier work:
         \\
@@ -183,8 +205,26 @@ pub fn handoffMessage(self: *Agent, summary: []const u8) ![]const u8 {
         \\
         \\Continue assisting the user based on this summary.
     , .{summary});
-    const standing = (try goal_flow.compactionSnapshot(self.arena, self)) orelse return base;
-    return std.fmt.allocPrint(self.arena, "{s}\n\n{s}", .{ base, standing });
+}
+
+fn childHandoff(self: *Agent, task_prompt: []const u8, summary: []const u8) ![]const u8 {
+    const capped = utf8Prefix(task_prompt, task_pin_cap);
+    const truncated_note = if (capped.len < task_prompt.len)
+        "\n[task prompt truncated for the handoff - the head above is the mandate]"
+    else
+        "";
+    return std.fmt.allocPrint(self.arena,
+        \\Your assigned task, restated verbatim. The conversation that carried it was compacted; this is still your mandate and the only thing you have to deliver:
+        \\
+        \\{s}{s}
+        \\
+        \\Context: the earlier conversation was compacted to save space.
+        \\Summary of the earlier work:
+        \\
+        \\{s}
+        \\
+        \\Continue the assigned task above using this summary of the work already done, and report back as the task requires.
+    , .{ capped, truncated_note, summary });
 }
 
 /// Clone JSON arrays/objects while borrowing immutable leaf strings. Send-time
@@ -210,6 +250,23 @@ pub fn cloneJsonArray(arena: Allocator, src: std.json.Array) Allocator.Error!std
     try out.ensureTotalCapacity(src.items.len);
     for (src.items) |item| try out.append(try cloneJsonValue(arena, item));
     return out;
+}
+
+/// Capture a subagent's task prompt ONCE, before the first history rewrite.
+/// Capturing once is the whole point: after a compaction messages[0] IS the
+/// handoff, so re-deriving it would fold each summary into the next without
+/// bound. Best-effort - a shape we do not recognise simply leaves the pin unset
+/// and behaviour unchanged.
+pub fn pinChildTask(self: *Agent) void {
+    if (!self.sub or self.task_prompt != null) return;
+    if (self.messages.items.len == 0) return;
+    const m = self.messages.items[0];
+    if (m != .object) return;
+    const role = m.object.get("role") orelse return;
+    if (role != .string or !std.mem.eql(u8, role.string, "user")) return;
+    const c = m.object.get("content") orelse return;
+    if (c != .string or c.string.len == 0) return;
+    self.task_prompt = self.arena.dupe(u8, c.string) catch null;
 }
 
 pub fn cleanUserTurn(m: Value) bool {

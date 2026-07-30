@@ -20,6 +20,9 @@ const cleanUserTurn = compact.cleanUserTurn;
 const emergencyCutIndex = compact.emergencyCutIndex;
 const emergencyTrim = compact.emergencyTrim;
 const handoffMessage = compact.handoffMessage;
+const pinChildTask = compact.pinChildTask;
+const task_pin_cap = compact.task_pin_cap;
+const th = @import("agent_compact_test_support.zig");
 
 test "compaction accepts only complete provider terminal states" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -439,6 +442,7 @@ test "a compaction handoff carries the live checklist across the summary (#318)"
     const a = arena_state.allocator();
     var agent: Agent = undefined;
     agent.arena = a;
+    agent.task_prompt = null; // this test flips agent.sub to true below (#B3)
     agent.sub = false;
     agent.review_mode = false;
     agent.todos = .empty;
@@ -532,4 +536,65 @@ test "an emergency trim re-queues the standing state, never over a user note (#3
     agent.pending_goal_note = null;
     _ = emergencyTrim(&agent);
     try std.testing.expect(agent.pending_goal_note == null);
+}
+test "recentContextStart keeps NOTHING verbatim for a subagent-shaped history (the #318-shaped failure one level down)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const short = try th.paddedSubHistory(a, 1, "ok");
+    try std.testing.expectEqual(short.items.len, recentContextStart(short.items, 8000));
+    const pad = util.repeatBytes("x", 4000);
+    const long = try th.paddedSubHistory(a, 10, &pad);
+    try std.testing.expectEqual(long.items.len, recentContextStart(long.items, 8000));
+}
+test "a compacting subagent's handoff restates its task prompt verbatim" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = th.subAgent(a, true);
+    agent.task_prompt = "AUDIT src/foo.zig and report every unguarded json deref";
+    const handoff = try handoffMessage(&agent, "the model summarized the earlier work");
+    try std.testing.expect(std.mem.indexOf(u8, handoff, agent.task_prompt.?) != null and std.mem.indexOf(u8, handoff, "the model summarized the earlier work") != null and std.mem.indexOf(u8, handoff, "still your mandate") != null);
+}
+test "the root handoff is byte-identical to before the child pin" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = th.subAgent(a, false);
+    const handoff = try handoffMessage(&agent, "the model summarized the earlier work");
+    try std.testing.expectEqualStrings("Context: the earlier conversation was compacted to save space.\nSummary of the earlier work:\n\nthe model summarized the earlier work\n\nContinue assisting the user based on this summary.", handoff);
+}
+test "pinChildTask captures the mandate once, never re-pins, and ignores a root agent or an unrecognised head" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = th.subAgent(a, true);
+    agent.messages = try th.msg1(a, "user", "TASK X");
+    pinChildTask(&agent);
+    agent.messages = try th.msg1(a, "user", "Context: the earlier conversation was compacted...");
+    pinChildTask(&agent);
+    try std.testing.expectEqualStrings("TASK X", agent.task_prompt.?);
+    for ([_]struct { s: bool, r: ?[]const u8 }{ .{ .s = false, .r = "user" }, .{ .s = true, .r = "assistant" }, .{ .s = true, .r = null } }) |c| {
+        var ag = th.subAgent(a, c.s);
+        ag.messages = if (c.r) |r| try th.msg1(a, r, "x") else std.json.Array.init(a);
+        pinChildTask(&ag);
+        try std.testing.expect(ag.task_prompt == null);
+    }
+}
+test "an oversized task prompt is head-capped in the child handoff" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = th.subAgent(a, true);
+    const big = util.repeatBytes("T", 20000);
+    agent.task_prompt = &big;
+    const handoff = try handoffMessage(&agent, "summary text");
+    try std.testing.expect(handoff.len < 12_000 and std.mem.indexOf(u8, handoff, "task prompt truncated for the handoff") != null and std.mem.indexOf(u8, handoff, big[0..100]) != null and std.mem.indexOf(u8, handoff, &big) == null);
+}
+test "emergencyCutIndex finds no cut in a subagent-shaped history, so the pinned mandate survives an emergency trim" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const items = try th.paddedSubHistory(a, 6, "ok");
+    try std.testing.expectEqual(@as(?usize, null), emergencyCutIndex(items.items));
 }
