@@ -68,8 +68,7 @@ pub const Agent = struct {
     /// #124: per-turn transient parse garbage (per-SSE-event envelope parses,
     /// isStreamEnd) allocates here and is reset each request(), so the long-lived
     /// ROOT agent's session arena stops growing unboundedly. Optional — null on
-    /// subagents/one-shots (they free their own arena per task); scratchAlloc()
-    /// then falls back to arena, so their behavior is unchanged.
+    /// subagents/one-shots (scratchAlloc() then falls back to arena, unchanged).
     scratch_arena: ?*std.heap.ArenaAllocator = null,
     /// Optional allocator for a temporary request transaction. compact() points
     /// this at its arena so failed summaries do not leak message rewrites or
@@ -143,6 +142,8 @@ pub const Agent = struct {
     session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
     session_title: ?[]const u8 = null, // human-readable title/rename metadata
     sys_strict: []const u8 = prompts.main_system_prompt_strict,
+    sys_ultra: []const u8 = prompts.main_system_prompt ++ prompts.ultracode_system_note, // #326: comptime defaults only — prompts.setSystemPrompts() is the sole production writer
+    sys_ultra_strict: []const u8 = prompts.main_system_prompt_strict ++ prompts.ultracode_system_note, // composes onto sys_strict, never replaces it
     tools_anthropic: []const u8 = schema.tools_anthropic_sub,
     tools_openai: []const u8 = schema.tools_openai_sub,
     tools_responses: []const u8 = schema.tools_responses_sub,
@@ -287,7 +288,8 @@ pub const Agent = struct {
     pub fn systemPrompt(self: *const Agent) []const u8 {
         if (self.review_mode) return self.sys_override orelse self.sys_normal;
         if (self.sub) return self.sys_override orelse prompts.sub_system_prompt;
-        return if (self.strict) self.sys_strict else self.sys_normal;
+        // #326: ultra composes onto normal/strict rather than replacing it.
+        return if (self.strict) (if (prompts.ultracodeActive(self)) self.sys_ultra_strict else self.sys_strict) else (if (prompts.ultracodeActive(self)) self.sys_ultra else self.sys_normal);
     }
 
     /// Whether the active provider honors a reasoning-effort hint: the
@@ -490,10 +492,9 @@ pub const Agent = struct {
     // and through reasoning-model thinking deltas (which print nothing) —
     // cleared the moment the first visible text byte streams (printDelta)
     // or the stream ends (postStream's defer). Root + interactive TTY only;
-    // single-threaded start/stop (root thread), the task itself is on the
-    // pool and polls the stop flag every 20ms so stopping is near-instant.
-    // The animation is picked via /animation (ported in spirit from
-    // arpagon/pi-animations, MIT) and persists in .harness/settings.json.
+    // single-threaded start/stop, polling the stop flag every 20ms on the
+    // pool so stopping is near-instant. Picked via /animation (ported in
+    // spirit from arpagon/pi-animations, MIT), persists in settings.json.
     pub var g_spin_stop: std.atomic.Value(bool) = .init(true);
     pub var g_spin_future: ?Io.Future(void) = null;
     pub const spinnerTask = @import("agent_stream.zig").spinnerTask;

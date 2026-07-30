@@ -60,6 +60,7 @@ const learn_init = @import("learn_init.zig");
 const run_budget_mod = @import("run_budget.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const commands_privacy = @import("commands_privacy.zig");
+const prompts = @import("prompts.zig");
 
 /// `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL
 /// agent loop — each prompt runs a full root turn (tools + MCP) via
@@ -119,7 +120,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
     root.in = null; // gate: deny instead of prompt; ask_user: self-decide
     root.out = null; // tool progress → stderr; stdout carries only the answer
     root.stream_quiet = true;
-    const ultracode_msg = try pickers.applyUltracodeSteering(arena, prompt_text, prompt_text, root.ultracode_mode or root.reasoning == .ultra);
+    const ultracode_msg = try pickers.applyUltracodeSteering(arena, prompt_text, prompt_text, prompts.ultracodeActive(root));
     if (ultracode_msg.explicit) {
         tracer.note("ultracode", prompt_text[0..@min(prompt_text.len, 120)]);
         if (telemetry.g_telem) |t| t.ultracode();
@@ -216,8 +217,10 @@ pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ
 /// storage, not anything local to this function (see this file's header).
 /// Also does the post-construction config (session name, persisted
 /// thinking/goal/eval settings, the session-start trace note) and kicks off
-/// the backgrounded fleet-champion pull, all moved out of main() verbatim
-/// (600-line goal).
+/// the backgrounded fleet-champion pull, moved out of main() verbatim
+/// (600-line goal). `sys_normal` is the startup-composed BASE; this calls
+/// prompts.setSystemPrompts() to derive sys_strict/sys_ultra/sys_ultra_strict
+/// from it, the same funnel every later prompt mutation must use (#326).
 pub fn buildRootAgent(
     gpa: Allocator,
     arena: Allocator,
@@ -232,7 +235,6 @@ pub fn buildRootAgent(
     approvals: *approvals_mod.Approvals,
     tracer: *trace.Tracer,
     sys_normal: []const u8,
-    sys_strict: []const u8,
     snaps: *tools_mod.Snapshots,
     flags: args.Flags,
     telem_endpoint: []const u8,
@@ -255,12 +257,11 @@ pub fn buildRootAgent(
         .registry = registry,
         .approvals = approvals,
         .tracer = tracer,
-        .sys_normal = sys_normal,
-        .sys_strict = sys_strict,
         .tools_anthropic = "",
         .tools_openai = "",
         .tools_responses = "",
     };
+    try prompts.setSystemPrompts(&root, sys_normal, arena);
     // Startup pays for one provider format, not all three. Other formats are
     // rendered on first switch with the same built-in + live MCP inputs.
     try root.ensureRootTools(default_provider.kind);
@@ -373,9 +374,8 @@ pub const ThemeSetup = struct {
     theme_on: bool,
     limyuxi_glam: bool,
     /// True when a PTY self-test already ran + printed its render — main()
-    /// should return immediately without going any
-    /// further (but AFTER registering the theme/limyuxi reset defers below,
-    /// exactly like the original inline code did).
+    /// should return immediately (but AFTER registering the theme/limyuxi
+    /// reset defers below, exactly like the original inline code did).
     should_exit: bool,
 };
 

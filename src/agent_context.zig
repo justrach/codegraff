@@ -539,3 +539,41 @@ test "recordUsageResponses: usage fallbacks never lower an authoritative meter" 
     recordUsageResponses(&agent, missing, 4_000);
     try std.testing.expectEqual(@max(fullRequestEstimateTokens(&agent), @as(u64, 1_000)), agent.last_context_tokens);
 }
+
+// #326: systemPrompt() must gate the ultra variant on the SAME condition the
+// persistent-steering call sites use (session_run.zig/mainloop.zig both call
+// prompts.ultracodeActive(root)), and must COMPOSE it with strict rather than
+// replace it. Attempt 1 broke both: (1) gated on ultracode_mode alone, so a
+// bare /effort ultra session got sys_normal — never sys_ultra — and (2)
+// returned sys_ultra before the strict check, so /strict + /ultracode
+// together silently dropped strict. Distinct marker strings (not real prose)
+// prove the dispatch logic itself, independent of setSystemPrompts' own tests.
+test "systemPrompt (#326): all four {ultracode, strict} combos, plus /effort ultra without ultracode_mode" {
+    var agent: Agent = undefined;
+    agent.review_mode = false;
+    agent.sub = false;
+    agent.sys_override = null;
+    agent.sys_normal = "NORMAL";
+    agent.sys_strict = "STRICT";
+    agent.sys_ultra = "ULTRA";
+    agent.sys_ultra_strict = "ULTRA_STRICT";
+    agent.strict = false;
+    agent.ultracode_mode = false;
+    agent.reasoning = .medium;
+
+    try std.testing.expectEqualStrings("NORMAL", agent.systemPrompt()); // off, off
+    agent.strict = true;
+    try std.testing.expectEqualStrings("STRICT", agent.systemPrompt()); // off, strict
+    agent.ultracode_mode = true;
+    try std.testing.expectEqualStrings("ULTRA_STRICT", agent.systemPrompt()); // on, strict — composes, not replaces
+    agent.strict = false;
+    try std.testing.expectEqualStrings("ULTRA", agent.systemPrompt()); // on, off
+
+    // /effort ultra sets reasoning == .ultra, NOT ultracode_mode — attempt 1's
+    // regression 1 dropped the catalog entirely on this exact path.
+    agent.ultracode_mode = false;
+    agent.reasoning = .ultra;
+    try std.testing.expectEqualStrings("ULTRA", agent.systemPrompt());
+    agent.strict = true;
+    try std.testing.expectEqualStrings("ULTRA_STRICT", agent.systemPrompt());
+}

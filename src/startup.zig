@@ -300,11 +300,6 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     return .{ .keys = keys, .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account, .model_catalog = model_catalog, .stored_keys_loaded = stored_keys_loaded };
 }
 
-pub const SystemPrompt = struct {
-    sys_normal: []const u8,
-    sys_strict: []const u8,
-};
-
 /// Root system-prompt layering, frozen at startup so it stays
 /// KV-cache-friendly: built-in base (or its --system-prompt replacement),
 /// then project instructions from the first of AGENTS.md/HARNESS.md/
@@ -339,7 +334,7 @@ pub fn buildSystemPrompt(
     mcp_tools: []const mcp.Tool,
     codedbpro_licensed: bool,
     learned_policy_env: ?[]const u8,
-) !SystemPrompt {
+) ![]const u8 {
     // A learned policy is used unless this session opted out of it.
     const learned: ?learn_store.ActiveAgent = if (system_prompt_flag == null and learn_auto.enabled(learned_policy_env)) learnedRootPolicy(io, arena) else null;
     if (learned) |policy| if (!quiet) {
@@ -377,8 +372,12 @@ pub fn buildSystemPrompt(
         const note = skills.codedbproNote(mn.server, codedbpro_licensed, mn.note);
         sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, note });
     }
-    const sys_strict: []const u8 = try std.fmt.allocPrint(arena, "{s}{s}", .{ sys_normal, prompts.strict_note });
-    return .{ .sys_normal = sys_normal, .sys_strict = sys_strict };
+    // #326: this returns the composed BASE only. prompts.setSystemPrompts()
+    // (called once by buildRootAgent, the sole consumer) derives
+    // sys_normal/sys_strict/sys_ultra/sys_ultra_strict from it — the single
+    // funnel every later mutation (repl, set_agent, set_system_prompt) must
+    // also go through, so none of the four ever go stale independently.
+    return sys_normal;
 }
 
 const args = @import("args.zig");

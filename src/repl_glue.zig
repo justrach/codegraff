@@ -6,15 +6,13 @@
 //! (save/loadThinkingSettings). Split out of main.zig (600-line goal, #123).
 //!
 //! The mutable steer/thinking globals (g_steer_buf, g_steer_queue,
-//! g_steer_echoed, g_steer_visible, g_out) stay declared in main.zig — they're
-//! shared live with agent_interrupt.zig/agent_stream.zig via the same
-//! `main_mod.g_x` pattern those files already use — so every access here goes
-//! through `main_mod.g_x`, never a local alias (aliasing a `var` would freeze
-//! its value at import time).
+//! g_steer_echoed, g_steer_visible, g_out) stay declared in main.zig — shared
+//! live with agent_interrupt.zig/agent_stream.zig via the same `main_mod.g_x`
+//! pattern those files already use, so every access here goes through
+//! `main_mod.g_x`, never a local alias (would freeze its value at import time).
 //!
 //! parseEvalScore/steerEcho/saveThinkingSettings stay pub — subagent.zig,
-//! agent_compact.zig, agent_interrupt.zig, and commands_model.zig already
-//! back-import them as `main_mod.parseEvalScore` etc.
+//! agent_compact.zig, agent_interrupt.zig, commands_model.zig back-import them.
 
 const std = @import("std");
 const Io = std.Io;
@@ -40,6 +38,7 @@ const providers = @import("providers.zig");
 const trace = @import("trace.zig");
 const serde = @import("serde.zig");
 const fallback_config = @import("fallback_config.zig");
+const prompts = @import("prompts.zig");
 
 pub const ReplCtx = struct {
     io: Io,
@@ -325,7 +324,6 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         .tracer = c.tracer,
         .run_budget = c.run_budget,
         .approvals = &approvals,
-        .sys_normal = sys,
         .tools_anthropic = c.tools_anthropic,
         .tools_openai = c.tools_openai,
         .tools_responses = c.tools_responses,
@@ -344,6 +342,9 @@ pub fn replTurnCb(ctx_ptr: ?*anyopaque, gpa: Allocator, history: []const repl.Tu
         .ultracode_mode = params.ultracode,
         .show_thinking = params.thinking,
     };
+    // #326: the funnel — also recomputes sys_ultra/sys_ultra_strict from
+    // `sys`, so ultracode/effort-ultra here carries the REAL composed base.
+    prompts.setSystemPrompts(&agent, sys, arena) catch return null;
     defer agent.tools_used.deinit(gpa);
     for (history) |t| {
         const role = switch (t.role) {

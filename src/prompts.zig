@@ -4,6 +4,16 @@
 //! the Agent struct's default field values (sys_normal/sys_strict) and
 //! main()'s prompt-selection logic read unchanged; compact_instruction stays
 //! pub — agent_compact.zig already back-imports it as `root.compact_instruction`.
+//!
+//! setSystemPrompts()/ultracodeActive() live here too (#326): the ultra
+//! variants are pre-built strings exactly like sys_normal/sys_strict, so
+//! this is the one place that derives all four from a base, next to the
+//! constants it composes them from.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const shapes = @import("shapes.zig");
+const Agent = @import("agent.zig").Agent;
 
 pub const main_system_prompt =
     \\You are a coding agent running in a minimal terminal harness on the
@@ -68,6 +78,48 @@ pub const strict_note =
 
 pub const main_system_prompt_strict = main_system_prompt ++ strict_note;
 
+/// Appended once to the active system-prompt variant when ultracode mode is
+/// active (#326), instead of pasted onto every turn's user message the way
+/// the old persistent steering note did — that re-paste put the shape
+/// catalog in compaction input on every single turn. setSystemPrompts()
+/// composes this onto whichever base (normal or strict) is active.
+pub const ultracode_system_note =
+    \\
+    \\
+    \\ULTRACODE MODE: use the workflow tool for coding tasks. Tell
+    \\code-exploration subagents to go through the repo with the codedb tool
+    \\(search / symbol / callers / outline / context) before reaching for
+    \\bash grep — it is indexed and structural.
+    \\
+    \\
+++ shapes.shape_catalog_note;
+
+/// The exact condition the persistent-steering call sites (session_run.zig,
+/// mainloop.zig) use to decide a turn is ultracode-steered: `/effort ultra`
+/// sets reasoning == .ultra WITHOUT ultracode_mode, and the two toggle
+/// independently. systemPrompt() gates its ultra variant on this SAME
+/// condition (#326 attempt 1 gated on ultracode_mode alone and lost the
+/// catalog entirely on the /effort ultra path).
+pub fn ultracodeActive(agent: *const Agent) bool {
+    return agent.ultracode_mode or agent.reasoning == .ultra;
+}
+
+/// #326: the ONLY function that may write sys_normal/sys_strict/sys_ultra/
+/// sys_ultra_strict. systemPrompt() returns a slice and cannot allocate, so
+/// all four have to be pre-built from `base` — and pre-building means any
+/// site that mutates the prompt by hand instead of through here goes stale
+/// (attempt 2's regression: startup composed the ultra variants once, but
+/// the repl and the JSON set_agent/set_system_prompt handlers wrote
+/// sys_normal directly and never recomputed them). `ultra` COMPOSES onto
+/// whichever base is active rather than replacing it, so /strict and
+/// /ultracode stay independent toggles.
+pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void {
+    agent.sys_normal = base;
+    agent.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ base, strict_note });
+    agent.sys_ultra = try std.fmt.allocPrint(arena, "{s}{s}", .{ base, ultracode_system_note });
+    agent.sys_ultra_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ agent.sys_strict, ultracode_system_note });
+}
+
 pub const sub_system_prompt =
     \\You are a subagent spawned by an orchestrator agent inside a terminal
     \\harness. Complete the assigned task using your tools, without asking
@@ -85,10 +137,70 @@ pub const compact_instruction =
 ;
 
 test "root prompt permits explicit external targets without weakening confinement" {
-    const std = @import("std");
     try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "explicitly names") != null);
     try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "permission-gated bash") != null);
     try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "not covered by /rewind") != null);
     try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Do not claim a relaunch is required") != null);
     try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Never extend") != null);
+}
+
+// #326: setSystemPrompts is the single funnel every production site must go
+// through. This asserts what it actually PRODUCES — the comptime
+// prompts.zig defaults on the Agent struct are what hid attempt 1's
+// regression, since a startup-composed value overwrote them in every real
+// session while the untested default kept the suite green.
+test "setSystemPrompts (#326): derives all four variants from base, composing ultra onto strict rather than replacing it" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent: Agent = undefined;
+
+    try setSystemPrompts(&agent, "BASE-A", a);
+    try std.testing.expectEqualStrings("BASE-A", agent.sys_normal);
+    for ([_][]const u8{ agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v|
+        try std.testing.expect(std.mem.indexOf(u8, v, "BASE-A") != null);
+    // The catalog rides on both ultra variants, and ONLY the ultra variants.
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_ultra, "Pick ONE shape") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_ultra_strict, "Pick ONE shape") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_normal, "Pick ONE shape") == null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_strict, "Pick ONE shape") == null);
+    // sys_ultra_strict still carries STRICT MODE — composed onto the strict
+    // base, never a replacement of it (#326 attempt 1 regression 2).
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_ultra_strict, "STRICT MODE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_strict, "STRICT MODE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, agent.sys_ultra, "STRICT MODE") == null);
+}
+
+// The structural bug attempt 2 shipped: buildSystemPrompt composed the
+// ultra variants ONCE at startup, but the repl and the JSON protocol's
+// set_agent/set_system_prompt handlers wrote sys_normal directly afterward
+// and never recomputed sys_ultra/sys_ultra_strict, so systemPrompt() served
+// the STALE startup-composed prompt once a persona or custom prompt landed.
+// A single funnel called at every mutation site is what closes that gap;
+// this proves the funnel itself has no such staleness — a later call with a
+// new base fully supersedes the first, in every variant.
+test "setSystemPrompts (#326): a later mutation (set_agent/set_system_prompt-style) replaces ALL four variants, none stay stale" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent: Agent = undefined;
+
+    try setSystemPrompts(&agent, "STARTUP-BASE", a); // e.g. buildRootAgent at process start
+    try setSystemPrompts(&agent, "MUTATED-BASE", a); // e.g. a later set_agent/set_system_prompt
+    for ([_][]const u8{ agent.sys_normal, agent.sys_strict, agent.sys_ultra, agent.sys_ultra_strict }) |v| {
+        try std.testing.expect(std.mem.indexOf(u8, v, "MUTATED-BASE") != null);
+        try std.testing.expect(std.mem.indexOf(u8, v, "STARTUP-BASE") == null);
+    }
+}
+
+test "ultracodeActive (#326): matches the persistent-steering gate exactly, including /effort ultra without ultracode_mode" {
+    var agent: Agent = undefined;
+    agent.ultracode_mode = false;
+    agent.reasoning = .medium;
+    try std.testing.expect(!ultracodeActive(&agent));
+    agent.ultracode_mode = true;
+    try std.testing.expect(ultracodeActive(&agent));
+    agent.ultracode_mode = false;
+    agent.reasoning = .ultra; // /effort ultra: reasoning == .ultra, ultracode_mode stays false
+    try std.testing.expect(ultracodeActive(&agent));
 }
