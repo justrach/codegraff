@@ -196,7 +196,7 @@ pub const Registry = struct {
             .protocol_version = "on-demand",
         };
         var registry_owns_server = false;
-        errdefer if (!registry_owns_server) deinitServer(server, reg.io);
+        errdefer if (!registry_owns_server) deinitServer(server, reg.io, .init(reg.io, mcp_teardown.teardown_grace)); // fresh window: not the exit path (#305)
         const added = try smolify_manifest.appendTools(Tool, a, &tools, servers.items.len, full_access);
         try servers.append(a, server);
         const new_servers = try a.dupe(*Server, servers.items);
@@ -377,7 +377,7 @@ pub const Registry = struct {
         }
 
         var registry_owns_server = false;
-        errdefer if (!registry_owns_server) deinitServer(server, reg.io);
+        errdefer if (!registry_owns_server) deinitServer(server, reg.io, .init(reg.io, mcp_teardown.teardown_grace)); // fresh window: not the exit path (#305)
         const server_index = servers.items.len;
         const tools_before = tools.items.len;
         errdefer tools.shrinkRetainingCapacity(tools_before);
@@ -415,8 +415,11 @@ pub const Registry = struct {
         std.debug.print("  [mcp:{s}] connected (mcp {s}) — {d} tool(s)\n", .{ name, server.protocol_version, tools_v.array.items.len });
     }
 
+    /// One shared window bounds the whole teardown: the loop is sequential, so
+    /// a per-server grace cost N graces for N stalled peers (#305).
     pub fn deinit(reg: *Registry) void {
-        for (reg.servers) |server| deinitServer(server, reg.io);
+        const budget: mcp_teardown.Budget = .init(reg.io, mcp_teardown.teardown_grace);
+        for (reg.servers) |server| deinitServer(server, reg.io, budget);
         reg.arena_state.deinit();
     }
 
@@ -516,15 +519,13 @@ pub const Registry = struct {
     }
 };
 
-fn deinitServer(server: *Server, io: Io) void {
+fn deinitServer(server: *Server, io: Io, budget: mcp_teardown.Budget) void {
     switch (server.transport) {
         .stdio => |*stdio| mcp_stdio.stopChild(io, &stdio.child),
-        .http => |*http| {
-            // Session exit must never wait on a remote peer: teardown is
-            // bounded and abandoned past its deadline (#305).
+        .http => |*http| { // never waits on a peer: bounded by `budget` (#305)
             if (http.session_id) |session_id| http.client.allocator.free(session_id);
             http.session_id = null;
-            mcp_teardown.deinitHttpClient(&http.client, io);
+            mcp_teardown.deinitHttpClient(&http.client, io, budget);
         },
     }
 }
