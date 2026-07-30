@@ -115,6 +115,9 @@ jobs:
       - name: Codex WS/SSE transport and mid-turn compaction test
         run: python3 scripts/test-pty-codex-ws.py zig-out/bin/graff
 
+      - name: PTY /goal autonomous collapse wiring test
+        run: python3 scripts/test-pty-goal-loop.py zig-out/bin/graff
+
       - name: AI title and first turn run in parallel
         run: python3 scripts/test-title-parallel.py zig-out/bin/graff
 
