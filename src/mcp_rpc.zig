@@ -147,7 +147,14 @@ fn connectLegacy(server: *Server, a: Allocator, session_alloc: Allocator) !Value
     return request(server, a, "{}", "tools/list", null);
 }
 
-const stdio_probe_timeout: Io.Duration = .fromSeconds(3);
+/// A stdio server is a LOCAL process, so a reply is a pipe write away: 3s was
+/// a network-shaped budget and made the spec's SHOULD-probe unaffordable to
+/// run by default. A server that has not answered `server/discover` in this
+/// long is treated as legacy, which is exactly the behavior graff had before
+/// the probe existed - so the cost of guessing wrong is latency, never
+/// function (stdio spec: fall back on "no response within a reasonable
+/// timeout", never keyed to a specific error code).
+const stdio_probe_timeout: Io.Duration = .fromMilliseconds(600);
 
 fn stdioProbeReadTask(server: *Server, response_alloc: Allocator, id: i64) anyerror!Value {
     const stdio = &server.transport.stdio;

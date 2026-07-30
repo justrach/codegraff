@@ -47,12 +47,19 @@ pub const Registry = struct {
     mutex: Io.Mutex = .init,
     servers: []*Server = &.{},
     tools: []Tool = &.{},
-    /// `GRAFF_MCP_PROBE=1`, default off (see mcp_rpc.probeStdio's doc comment
-    /// for why this cannot be turned on unconditionally today). Only
-    /// `Registry.init` reads the environment; servers added later via
+    /// The stdio spec's backward-compatibility SHOULD: a dual-era client
+    /// probes `server/discover` before assuming legacy. ON by default;
+    /// `GRAFF_MCP_PROBE=0` opts out.
+    /// The cost was measured against the stdio server this repo actually
+    /// ships with, timing to the "connected" line rather than to process
+    /// exit: probe on and off are within run-to-run noise, because a legacy
+    /// server either answers the unknown method with an error at once or
+    /// closes stdout and is respawned. Only a server that SILENTLY IGNORES it
+    /// pays the timeout above, and it pays it once per process.
+    /// Only `Registry.init` reads the environment; servers added later via
     /// `addServer`/`trustWorkspace` on a `Registry.empty*`-constructed
     /// registry inherit `false` — a documented gap, never a safety issue.
-    stdio_probe: bool = false,
+    stdio_probe: bool = true,
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
@@ -74,7 +81,7 @@ pub const Registry = struct {
             .io = io,
             .home = home,
             .arena_state = std.heap.ArenaAllocator.init(gpa),
-            .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| std.mem.eql(u8, v, "1") else false,
+            .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| !std.mem.eql(u8, v, "0") else true,
         };
         errdefer reg.deinit();
         const a = reg.arena();

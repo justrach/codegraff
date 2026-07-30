@@ -44,9 +44,13 @@ FIXTURE_SOURCE = textwrap.dedent(
         method = msg.get("method")
         mid = msg.get("id")
         if method == "server/discover":
-            # Deliberately silent: the worst legacy case (unrecognized
-            # method, no reply at all) that the probe's bounded read must
-            # survive.
+            # Record that the probe reached us, so the test can assert the
+            # probe RAN without timing it (the bound is a tunable constant).
+            with open(__file__ + ".saw-discover", "w") as fh:
+                fh.write("1")
+            # Then stay deliberately silent: the worst legacy case, an
+            # unrecognized method with no reply at all, which the probe's
+            # bounded read must survive.
             continue
         if method == "initialize":
             send({
@@ -124,6 +128,11 @@ EXITING_FIXTURE_SOURCE = textwrap.dedent(
 ).strip()
 
 
+def fixture_saw_discover(fixture: Path) -> bool:
+    """Did the fixture record a server/discover? Behavioral proof the probe ran."""
+    return Path(str(fixture) + ".saw-discover").exists()
+
+
 def run_graff(graff: Path, fixture: Path, probe: bool) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory(prefix="graff-mcp-stdio-") as temp:
         workspace = Path(temp)
@@ -191,10 +200,11 @@ def run(graff: Path) -> None:
         ), f"[gate off] expected a normal legacy connect:\n{completed.stderr}"
         print("gate off: byte-identical legacy connect, no server/discover — OK")
 
-        # Scenario 2: gate on, server silently drops server/discover. Must
-        # time out (~3s) and fall back to the legacy handshake on the same
-        # process, completing well inside the outer 20s subprocess timeout
-        # (which would fire and fail this script if the probe hung).
+        # Scenario 2: gate on, server silently drops server/discover. Must time
+        # out (the probe bound, see mcp_rpc.stdio_probe_timeout) and fall back
+        # to the legacy handshake on the same process, completing well inside
+        # the outer 20s subprocess timeout (which would fire and fail this
+        # script if the probe hung).
         start = time.monotonic()
         completed = run_graff(graff, fixture, probe=True)
         elapsed = time.monotonic() - start
@@ -206,12 +216,15 @@ def run(graff: Path) -> None:
         assert (
             "connected (mcp 2025-06-18)" in completed.stderr
         ), f"[gate on] expected the legacy fallback to still connect:\n{completed.stderr}"
-        # The probe's 3s bound should dominate; a hang would have hit the
-        # 20s subprocess.run timeout above and raised instead of getting
-        # here, but a slack upper bound catches a "cancel doesn't actually
-        # cancel, it just silently proceeds without waiting" regression too.
+        # That the probe RAN is asserted on the fixture's own record, not on a
+        # stopwatch: the timing assertion here used to hard-code the 3s bound
+        # and went red the moment that constant was retuned, which says nothing
+        # about correctness. The upper bound stays, because it catches a real
+        # regression ("cancel doesn't actually cancel, it silently proceeds").
+        assert fixture_saw_discover(fixture), (
+            f"[gate on] the server never received server/discover, so the probe did not run:\n{completed.stderr}"
+        )
         assert elapsed < 15, f"[gate on] took {elapsed:.1f}s — the probe bound is not working"
-        assert elapsed >= 2.5, f"[gate on] took only {elapsed:.1f}s — the probe may not have run at all"
         print(f"gate on: timed-out probe -> legacy fallback in {elapsed:.1f}s — OK")
 
         # Scenario 3: gate on, server exits on server/discover (the other
