@@ -187,7 +187,13 @@ test "one Budget bounds the WHOLE teardown, not each transport (#305)" {
     }
     const elapsed = Io.Timestamp.now(io, .awake).nanoseconds - start.nanoseconds;
     try std.testing.expectEqual(@as(usize, 3), abandoned);
-    try std.testing.expect(elapsed < 3 * 60 * std.time.ns_per_ms); // strictly less than the per-transport sum
-    // And the window really is spent: nothing is left for a fourth.
+    // The sharing itself is asserted on STATE, not on the clock: the first
+    // abandon spends the window, so every later transport is handed a zero
+    // grace and waits for nothing. An earlier version compared elapsed against
+    // 3x the grace, which is thread-spawn overhead on a slow runner - it failed
+    // on the Windows CI job and deserved to.
     try std.testing.expectEqual(@as(u64, 0), budget.remaining(io).nanoseconds);
+    // The clock is only asked the question it can answer reliably: we did not
+    // sit through the stalls (3 x 60s) that the old inline teardown waited on.
+    try std.testing.expect(elapsed < 10 * std.time.ns_per_s);
 }
