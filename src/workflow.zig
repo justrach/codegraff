@@ -205,6 +205,54 @@ fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
     return .{ .text = try gpa.dupe(u8, std.mem.trimEnd(u8, aw.writer.buffered(), "\n")) };
 }
 
+// ── U2: all-failed abort + run manifest ─────────────────────────────────────
+// A phase where every task failed used to still feed {{prev}} — a bare
+// "(no result — task failed)" header per task — into the next phase, so a
+// synthesis stage confidently answered from zero evidence (the worst output
+// class: a wrong answer that looks researched). buildAbortText and
+// buildManifest are kept PURE (no ctx/io) so both are unit-testable without
+// running a real subagent.
+
+const PhaseTally = struct {
+    phase_no: usize,
+    total_phases: usize,
+    title: []const u8,
+    ok: usize,
+    total: usize,
+    retried: usize,
+    skipped_when: ?[]const u8 = null,
+};
+
+/// Build the hard-stop text for a phase where every task failed: the
+/// assembled per-task failure headers plus a line naming the phase, so the
+/// caller (or a human) can see exactly why the run stopped instead of
+/// silently receiving empty "evidence".
+fn buildAbortText(arena: Allocator, labels: []const []const u8, phase_no: usize, total_phases: usize, title: []const u8) ![]const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    for (labels) |label| {
+        try aw.writer.print("### {s} (no result — task failed)\n\n", .{label});
+    }
+    try aw.writer.print("workflow aborted: every task in phase {d}/{d} ({s}) failed", .{ phase_no, total_phases, title });
+    return aw.writer.buffered();
+}
+
+/// Build the trailing "## workflow" manifest block from one tally per phase —
+/// currently the only way the orchestrator learns a phase was skipped, or
+/// that a synthesis stage is about to work from partial (some-tasks-failed)
+/// evidence rather than a clean phase.
+fn buildManifest(arena: Allocator, tallies: []const PhaseTally) ![]const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    try aw.writer.writeAll("## workflow\n");
+    for (tallies) |t| {
+        if (t.skipped_when) |w| {
+            try aw.writer.print("phase {d}/{d} {s}: SKIPPED (when=\"{s}\")\n", .{ t.phase_no, t.total_phases, t.title, w });
+        } else {
+            try aw.writer.print("phase {d}/{d} {s}: {d}/{d} ok, {d} retried\n", .{ t.phase_no, t.total_phases, t.title, t.ok, t.total, t.retried });
+        }
+    }
+    return std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
+}
+
 /// Dynamic workflows as data: sequential phases, parallel tasks. Each task
 /// is an isolated subagent; "{{prev}}" in a task prompt is replaced with
 /// the labeled results of the previous phase (appended when omitted).
@@ -254,6 +302,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
     );
 
     var prev_results: []const u8 = "";
+    const tallies = try arena.alloc(PhaseTally, phases.len);
     for (phases, 1..) |phase_val, phase_no| {
         if (phase_val != .object) return .{ .text = try gpa.dupe(u8, "each phase must be an object"), .is_error = true };
         const phase = phase_val.object;
@@ -274,6 +323,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // skipped final phase just returns the prior phase's results (early-exit).
         if (phase_no > 1) if (phase.get("when")) |wv| if (wv == .string and !gateAllows(prev_results, wv.string)) {
             std.debug.print("  [workflow] phase {d}/{d}: {s} — SKIPPED (when \"{s}\" absent)\n", .{ phase_no, phases.len, title, wv.string });
+            tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = 0, .total = tasks.len, .retried = 0, .skipped_when = wv.string };
             continue;
         };
         std.debug.print("  [workflow] phase {d}/{d}: {s} ({d} task(s))\n", .{ phase_no, phases.len, title, tasks.len });
@@ -352,10 +402,24 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         }
         // Tally this phase's surviving failures into the run total (post-retry,
         // so a recovered task no longer counts). Accumulates across phases, like
-        // wf_tasks, for the single end-of-run workflowEvent.
+        // wf_tasks, for the single end-of-run workflowEvent. phase_failed is the
+        // same tally scoped to just this phase, for the all-failed hard stop
+        // below and the run-manifest ok count.
+        var phase_failed: usize = 0;
         for (outputs) |out| if (out.is_error) {
             wf_failed += 1;
+            phase_failed += 1;
         };
+
+        // U2 hard stop: a phase where every task failed (post-retry) must never
+        // feed {{prev}} — the next phase, or a synthesis stage, would receive
+        // nothing but bare "task failed" headers and could still confidently
+        // answer from zero evidence. Abort the whole run instead of continuing;
+        // the per-phase defers above already free `outputs`.
+        if (phase_failed == tasks.len) {
+            const abort_text = try buildAbortText(arena, labels, phase_no, phases.len, title);
+            return .{ .text = try gpa.dupe(u8, abort_text), .is_error = true };
+        }
 
         // #1 — Ultracode → DGM engine: when ≥2 persona variants competed this
         // phase, score each survivor and submit its niche-tagged fitness so the
@@ -363,6 +427,8 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // propose half already fired in runSub; this closes the loop runEval left
         // open (it submits niche=""). Gated on the fleet — no judge cost otherwise.
         scoreVariants(ctx, arena, title, prompts, raws, overrides, niches, outputs);
+
+        tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = tasks.len - phase_failed, .total = tasks.len, .retried = nf };
 
         var aw: Io.Writer.Allocating = .init(arena);
         for (labels, outputs) |label, out| {
@@ -376,7 +442,9 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         }
         prev_results = std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
     }
-    return .{ .text = try gpa.dupe(u8, prev_results) };
+    const manifest = try buildManifest(arena, tallies);
+    const final_text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ prev_results, manifest });
+    return .{ .text = try gpa.dupe(u8, final_text) };
 }
 
 test "cappedPrevBody bounds a wide phase output, keeps head + inspect tail (#4)" {
@@ -403,6 +471,42 @@ test "gateAllows: empty when always runs, else case-insensitive substring (#5)" 
     try std.testing.expect(gateAllows("found 3 ISSUES here", "issues")); // case-insensitive hit
     try std.testing.expect(!gateAllows("all clean, no findings", "ISSUE")); // absent → skip
     try std.testing.expect(!gateAllows("", "ready")); // empty prev → skip
+}
+
+test "buildAbortText names the phase index and title, and lists every failed task (U2)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const labels = [_][]const u8{ "scan A", "scan B" };
+    const text = try buildAbortText(a, &labels, 2, 3, "Recon");
+
+    // Every failed task's header survives, so a human can see what was tried.
+    try std.testing.expect(std.mem.indexOf(u8, text, "### scan A (no result — task failed)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "### scan B (no result — task failed)") != null);
+    // The abort line names the phase index/total and title — the whole point
+    // of this text existing instead of a silent empty {{prev}}.
+    try std.testing.expect(std.mem.indexOf(u8, text, "workflow aborted: every task in phase 2/3 (Recon) failed") != null);
+}
+
+test "buildManifest reports ok/retried per phase and SKIPPED for a gated phase (U2)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const tallies = [_]PhaseTally{
+        .{ .phase_no = 1, .total_phases = 3, .title = "Gather", .ok = 3, .total = 3, .retried = 1 },
+        .{ .phase_no = 2, .total_phases = 3, .title = "Verify", .ok = 0, .total = 2, .retried = 0, .skipped_when = "no findings" },
+        .{ .phase_no = 3, .total_phases = 3, .title = "Report", .ok = 1, .total = 2, .retried = 0 },
+    };
+    const block = try buildManifest(a, &tallies);
+
+    try std.testing.expect(std.mem.startsWith(u8, block, "## workflow"));
+    try std.testing.expect(std.mem.indexOf(u8, block, "phase 1/3 Gather: 3/3 ok, 1 retried") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "phase 2/3 Verify: SKIPPED (when=\"no findings\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "phase 3/3 Report: 1/2 ok, 0 retried") != null);
+    // A skipped phase must never claim an ok/retried count it never earned.
+    try std.testing.expect(std.mem.indexOf(u8, block, "phase 2/3 Verify: 0/2") == null);
 }
 
 test "pipelinePrompt substitutes {{item}}/{{prev}} and appends when omitted (#3)" {
