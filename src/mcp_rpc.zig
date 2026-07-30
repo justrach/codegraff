@@ -213,9 +213,14 @@ pub fn probeStdio(server: *Server, a: Allocator, io: Io) !StdioProbeOutcome {
     {
         const stdio = &server.transport.stdio;
         const w = &stdio.stdin_writer.interface;
-        try w.print(
-            \\{{"jsonrpc":"2.0","id":{d},"method":"server/discover","params":{{}}}}
-        ++ "\n", .{id});
+        // The probe is itself a modern request, so it MUST carry the `_meta`
+        // envelope. Sending bare `params:{}` made a conforming server answer
+        // -32602 "missing params._meta", which classifies as an error and so
+        // as LEGACY: graff fell back on exactly the servers the probe exists
+        // to find. Proven against codedb-pro 0.2.16, which speaks 2026-07-28.
+        const body = try mcp_protocol.buildRequest(a, id, "server/discover", "{}", true);
+        try w.writeAll(body);
+        try w.writeAll("\n");
         try w.flush();
     }
 
