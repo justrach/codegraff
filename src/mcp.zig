@@ -17,6 +17,7 @@ const Allocator = std.mem.Allocator;
 const mcp_http = @import("mcp_http.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
+const mcp_teardown = @import("mcp_teardown.zig");
 const smolify_manifest = @import("smolify_manifest.zig");
 
 const latest_protocol = mcp_protocol.latest_protocol;
@@ -519,8 +520,11 @@ fn deinitServer(server: *Server, io: Io) void {
     switch (server.transport) {
         .stdio => |*stdio| mcp_stdio.stopChild(io, &stdio.child),
         .http => |*http| {
+            // Session exit must never wait on a remote peer: teardown is
+            // bounded and abandoned past its deadline (#305).
             if (http.session_id) |session_id| http.client.allocator.free(session_id);
-            http.client.deinit();
+            http.session_id = null;
+            mcp_teardown.deinitHttpClient(&http.client, io);
         },
     }
 }
