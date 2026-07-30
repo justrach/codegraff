@@ -71,6 +71,7 @@ const approvals_mod = @import("approvals.zig");
 const Approvals = approvals_mod.Approvals;
 const skills = @import("skills.zig");
 const run_budget_mod = @import("run_budget.zig");
+pub const json_args = @import("json_args.zig");
 
 pub const ToolOutput = struct {
     text: []u8 = &.{}, // gpa-owned

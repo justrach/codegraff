@@ -217,12 +217,19 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
     };
     // Pipeline mode (#3): {pipeline:{items,stages}} maps each item through the
     // stages with no barrier — distinct from phases (fan-out + synthesis).
-    if (input.object.get("pipeline")) |pv| return runPipeline(ctx, pv);
-    const phases_val = input.object.get("phases") orelse return .{
+    const obj = tools.json_args.object(input) orelse return .{
+        .text = try gpa.dupe(u8, "workflow: arguments must be a JSON object with a \"phases\" array (or a \"pipeline\" object)"),
+        .is_error = true,
+    };
+    if (obj.get("pipeline")) |pv| return runPipeline(ctx, pv);
+    const phases_val = obj.get("phases") orelse return .{
         .text = try gpa.dupe(u8, "workflow needs a \"phases\" array (or a \"pipeline\" object)"),
         .is_error = true,
     };
-    const phases = phases_val.array.items;
+    const phases = tools.json_args.list(phases_val) orelse return .{
+        .text = try gpa.dupe(u8, "workflow: \"phases\" must be an array of phase objects"),
+        .is_error = true,
+    };
     if (phases.len == 0 or phases.len > max_workflow_phases) return .{
         .text = try std.fmt.allocPrint(gpa, "workflow needs 1-{d} phases", .{max_workflow_phases}),
         .is_error = true,
@@ -417,4 +424,34 @@ test "pipelinePrompt substitutes {{item}}/{{prev}} and appends when omitted (#3)
     try std.testing.expect(std.mem.indexOf(u8, s3, "Item: ticket-7") != null);
     try std.testing.expect(std.mem.indexOf(u8, s3, "Result from the previous stage:") != null);
     try std.testing.expect(std.mem.indexOf(u8, s3, "DONE") != null);
+}
+
+test "execWorkflow rejects a non-object argument tree instead of dereferencing it" {
+    var ctx: ToolCtx = undefined;
+    ctx.gpa = std.testing.allocator;
+    ctx.from_sub = false;
+
+    const out1 = try execWorkflow(ctx, .{ .string = "do it" });
+    try std.testing.expect(out1.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out1.text, "object") != null);
+    std.testing.allocator.free(out1.text);
+
+    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, "{\"phases\":\"nope\"}", .{});
+    defer parsed.deinit();
+    const out2 = try execWorkflow(ctx, parsed.value);
+    try std.testing.expect(out2.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out2.text, "array") != null);
+    std.testing.allocator.free(out2.text);
+}
+
+test "execSubagent rejects a non-object argument tree instead of dereferencing it" {
+    var ctx: ToolCtx = undefined;
+    ctx.gpa = std.testing.allocator;
+    ctx.from_sub = false;
+
+    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, "[1,2]", .{});
+    defer parsed.deinit();
+    const out = try subagent.execSubagent(ctx, parsed.value);
+    try std.testing.expect(out.is_error);
+    std.testing.allocator.free(out.text);
 }

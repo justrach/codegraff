@@ -297,7 +297,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
             if (!self.sub) try self.say("\xe2\x8f\xb8 completion deferred \xe2\x80\x94 the standing goal's checklist isn't settled\n", .{});
             return .{ .text = refusal, .is_error = true };
         }
-        const result = if (call.input.object.get("result")) |r| r.string else "";
+        const result = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "result") orelse "") else "";
         self.completed = try self.arena.dupe(u8, result);
         // .complete retires the epoch (goal_state.currentEpoch) and the checklist parks - readable, no longer current, never deleted (#318).
         // A --goal standing objective is exempt: the completion is recorded above, the steering stays, and only /goal clear|pause|<new> retires it.
@@ -312,13 +312,13 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return .{ .text = "completion recorded", .is_error = false };
     }
     if (std.mem.eql(u8, call.name, "eval")) {
-        const note = if (call.input.object.get("note")) |n| (if (n == .string) n.string else "") else "";
+        const note = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "note") orelse "") else "";
         return self.runEval(note);
     }
     if (std.mem.eql(u8, call.name, "todo_write")) {
         // Epoch-scoped replace, keeping omitted completed items; a write with
         // no usable items is rejected untouched (#318). goal_todo owns the rule.
-        const r = try goal_todo.applyTodoWrite(self, call.input.object.get("todos"));
+        const r = try goal_todo.applyTodoWrite(self, if (tools_mod.json_args.object(call.input)) |o| o.get("todos") else null);
         if (!self.sub and !r.rejected) try self.say("{s}\n", .{r.text});
         return .{ .text = r.text, .is_error = r.rejected };
     }
@@ -356,7 +356,7 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
         .is_error = true,
     };
     const w = self.out.?;
-    const question = if (call.input.object.get("question")) |q| q.string else "(no question)";
+    const question = if (tools_mod.json_args.object(call.input)) |o| (tools_mod.json_args.str(o, "question") orelse "(no question)") else "(no question)";
     if (main_mod.json_mode) {
         const call_id = if (call.id.len > 0) call.id else blk: {
             const id = try std.fmt.allocPrint(self.arena, "ask_user-{d}", .{self.next_ask_id});
@@ -381,8 +381,8 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
     }
     // Skip the re-print only when the question streamed live in full.
     if (!self.argStreamedFully(call)) try w.print("\n❓ {s}\n", .{question});
-    if (call.input.object.get("options")) |opts| if (opts == .array) {
-        for (opts.array.items, 1..) |opt, n| try w.print("   {d}) {s}\n", .{ n, opt.string });
+    if (tools_mod.json_args.object(call.input)) |o| if (tools_mod.json_args.arrayOf(o, "options")) |opts| {
+        for (opts, 1..) |opt, n| try w.print("   {d}) {s}\n", .{ n, tools_mod.json_args.text(opt) orelse "(non-text option)" });
     };
     try w.writeAll("   your answer › ");
     try w.flush();
