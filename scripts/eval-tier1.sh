@@ -188,7 +188,12 @@ if wanted sdk; then
       git status --porcelain -- sdk/ | sed 's/^/    /'
       printf '  commit or stash them, then rerun: scripts/eval-tier1.sh --only sdk\n'
       record_fail sdk
-    elif python3 sdk/generate.py --harness ./zig-out/bin/graff >/dev/null; then
+    # Generate against a PRISTINE HOME. graff --schema folds in the live model
+    # catalogs cached under $HOME, so a machine that has talked to a provider
+    # emits models CI has never heard of: the committed SDK then matched this
+    # laptop and failed CI with a drift the local check called clean.
+    elif sdk_home=$(mktemp -d) && HOME="$sdk_home" python3 sdk/generate.py --harness ./zig-out/bin/graff >/dev/null; then
+      rm -rf "$sdk_home"
       if git diff --exit-code --stat -- sdk/; then
         printf '  sdk/ is in sync with the schema\n'
       else
