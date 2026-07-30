@@ -19,9 +19,19 @@ const Agent = agent_mod.Agent;
 const TodoItem = agent_mod.TodoItem;
 const repl_glue = @import("repl_glue.zig");
 
-/// Epoch for a goal that replaces `old` (0 is the no-goal/legacy epoch).
-pub fn nextEpoch(old: ?agent_mod.Goal) u64 {
-    return if (old) |g| g.epoch + 1 else 1;
+/// Epoch for a goal that replaces `old`, above every epoch already present in
+/// `todos` (0 is the no-goal/legacy epoch, so the first goal gets 1). Deriving
+/// it from the live goal alone was not enough (#318): /goal clear nulls the goal
+/// while its items keep their epoch, so the NEXT goal was born on epoch 1 again
+/// and silently adopted the cleared goal's parked checklist - born done when
+/// that list was finished, steering someone else's open items when it was not.
+/// Parked epochs are the high-water mark, so a new objective always lands above
+/// them. The same collision is reachable across a resume (goal null on disk,
+/// parked items restored), which is why this reads the todos and not a counter.
+pub fn nextEpoch(old: ?agent_mod.Goal, todos: []const TodoItem) u64 {
+    var top: u64 = if (old) |g| g.epoch else 0;
+    for (todos) |t| top = @max(top, t.epoch);
+    return top + 1;
 }
 
 /// Epoch new todos are stamped with: the standing goal's while it still owns the
@@ -271,9 +281,18 @@ pub fn renderCurrent(root: *Agent) []const u8 {
     return renderTodos(root, epoch);
 }
 
-test "epochs: nextEpoch monotonic from the replaced goal; currentEpoch 0 without a goal" {
-    try std.testing.expectEqual(@as(u64, 1), nextEpoch(null));
-    try std.testing.expectEqual(@as(u64, 4), nextEpoch(.{ .objective = "a", .epoch = 3 }));
+test "epochs: nextEpoch clears the live goal AND every parked epoch; currentEpoch 0 without a goal" {
+    const parked = [_]TodoItem{
+        .{ .content = "parked by a cleared goal", .status = "pending", .epoch = 4 },
+        .{ .content = "older", .status = "completed", .epoch = 2 },
+    };
+    try std.testing.expectEqual(@as(u64, 1), nextEpoch(null, &.{}));
+    try std.testing.expectEqual(@as(u64, 4), nextEpoch(.{ .objective = "a", .epoch = 3 }, &.{}));
+    // No live goal (/goal clear) but parked items: the next goal lands ABOVE
+    // them instead of colliding with epoch 1 and adopting someone else's list.
+    try std.testing.expectEqual(@as(u64, 5), nextEpoch(null, &parked));
+    // A live goal below the high-water mark does not drag the next epoch down.
+    try std.testing.expectEqual(@as(u64, 5), nextEpoch(.{ .objective = "a", .epoch = 1 }, &parked));
     try std.testing.expectEqual(@as(u64, 0), currentEpoch(null));
     try std.testing.expectEqual(@as(u64, 7), currentEpoch(.{ .objective = "a", .epoch = 7 }));
     // A completed goal is a dead epoch: later todo_write calls are unscoped

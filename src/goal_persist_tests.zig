@@ -109,6 +109,30 @@ test "resume: a finished epoch-0 leftover cannot end a bare /loop (#318)" {
     try std.testing.expect(goal_state.checklistFinished(&root));
 }
 
+test "resume: a /goal set after restoring parked items lands above them (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    // The shape /goal clear leaves on disk: no goal, and its checklist parked at
+    // epoch 1. Nothing persists the epoch counter, so the next /goal re-derives
+    // it - from the live goal alone that was epoch 1 again, and the restored
+    // list became the new objective's work the moment it was set.
+    try resumeSession(ar, &root,
+        \\{"goal":null,
+        \\ "todos":[{"content":"leftover from the cleared goal","status":"pending","epoch":1},
+        \\          {"content":"and its finished item","status":"completed","epoch":1}]}
+    );
+    try std.testing.expect(root.goal == null);
+    const epoch = goal_state.nextEpoch(root.goal, root.todos.items);
+    try std.testing.expectEqual(@as(u64, 2), epoch);
+    goal_state.adoptTodos(root.todos.items, goal_state.currentEpoch(root.goal), epoch); // the /goal set branch
+    root.goal = .{ .objective = "a brand new objective", .epoch = epoch };
+    try std.testing.expect(!goal_state.hasCurrent(root.todos.items, epoch)); // it starts with no plan of its own
+    try std.testing.expectEqual(@as(usize, 1), goal_state.parkedOpenCount(root.todos.items, epoch));
+    try std.testing.expect(!goal_state.checklistFinished(&root));
+}
+
 test "resume: a paused or already-complete goal is restored verbatim (#318)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

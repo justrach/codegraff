@@ -178,7 +178,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             } else try out.writeAll("No goal to resume. Set one with /goal <objective>.\n");
         } else {
             const now = unixMs(root.io);
-            const epoch = goal_state.nextEpoch(root.goal);
+            const epoch = goal_state.nextEpoch(root.goal, root.todos.items); // above every parked epoch too, or a cleared goal's list becomes this one's (#318)
             // A COMPLETE goal is already retired and its checklist already parked
             // (#318 D1), so the next /goal is not superseding live work: it takes
             // the adoption branch, exactly like a first /goal.
