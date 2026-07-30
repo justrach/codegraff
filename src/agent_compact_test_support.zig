@@ -1,11 +1,18 @@
 //! Shared builders for agent_compact_test.zig's subagent-task-pin tests
-//! (#B3). Kept out of agent_compact_test.zig to stay under its 600-line cap;
-//! this file has no `test` blocks of its own so it needs no main.zig hook.
+//! (#B3), plus a compact()-wiring test of its own (G2). Kept out of
+//! agent_compact_test.zig to stay under its 600-line cap. It carries a
+//! `test` block despite not being referenced from src/main.zig's test{}
+//! block: any file reached through a *used* @import (agent_compact_test.zig
+//! calls the builders below) is fully analyzed, and `zig test` collects test
+//! declarations from every analyzed file, not just ones a main.zig `_ = x;`
+//! line names directly - verified empirically by adding a deliberately
+//! failing probe test here and confirming `zig build test` reported it.
 
 const std = @import("std");
 const Value = std.json.Value;
 const Agent = @import("agent.zig").Agent;
 const textMessage = @import("messages.zig").textMessage;
+const compact = @import("agent_compact.zig");
 
 /// A subagent-or-root Agent with just enough fields set for handoffMessage /
 /// pinChildTask to run without touching uninitialized memory.
@@ -38,4 +45,25 @@ pub fn paddedSubHistory(a: std.mem.Allocator, n: usize, pad: []const u8) !std.js
     var out = try msg1(a, "user", "AUDIT src/foo.zig");
     for (0..n) |_| try out.appendSlice(&.{ try textMessage(a, "assistant", pad), try toolResultMsg(a, "result") });
     return out;
+}
+
+// G2: compact() has exactly one call to pinChildTask, made through
+// compactPrelude - the extracted pure prelude (early-empty-return + pin)
+// that runs before compact() needs a live Io for its summarization request.
+// A plain unit test cannot reach compact() itself, but it CAN drive
+// compactPrelude directly, and that is a real proof of the wiring: delete
+// the `pinChildTask(self);` line inside compactPrelude and this test goes
+// red, whereas pinChildTask's own isolated tests above do not notice.
+test "compactPrelude actually pins a subagent's task - the wiring compact() depends on (G2)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = subAgent(a, true);
+    agent.messages = try msg1(a, "user", "TASK X");
+    try std.testing.expect(compact.compactPrelude(&agent));
+    try std.testing.expectEqualStrings("TASK X", agent.task_prompt.?);
+
+    var empty = subAgent(a, true);
+    empty.messages = std.json.Array.init(a);
+    try std.testing.expect(!compact.compactPrelude(&empty));
 }

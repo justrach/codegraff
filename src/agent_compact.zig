@@ -80,12 +80,25 @@ pub fn summaryResponseComplete(self: *Agent, root: std.json.ObjectMap) bool {
     };
 }
 
+/// The pure prelude of compact(): the early return for an already-empty
+/// history and the one-time task-prompt pin for a sub-agent (#B3). Split out
+/// of compact() because everything after this point needs a live Io and a
+/// network summarization request, so a plain unit test can never reach
+/// compact() itself - it can drive this slice directly instead, which is the
+/// actual proof that compact() is wired to call pinChildTask: delete the call
+/// below and the compactPrelude test goes red, whereas pinChildTask's own
+/// isolated tests do not notice.
+pub fn compactPrelude(self: *Agent) bool {
+    if (self.messages.items.len == 0) return false;
+    pinChildTask(self);
+    return true;
+}
+
 pub fn compact(self: *Agent) anyerror!usize {
-    if (self.messages.items.len == 0) {
+    if (!compactPrelude(self)) {
         if (!main_mod.json_mode) try self.say("nothing to compact\n", .{});
         return 0;
     }
-    pinChildTask(self);
     self.last_request_context_overflow = false;
     if (!main_mod.json_mode) try self.say("[compacting ~{d} tokens…]\n", .{self.effectiveContextTokens()});
     // #163: reclaim room BEFORE the summarization request so it fits under the
