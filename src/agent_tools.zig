@@ -31,6 +31,7 @@ const schema = @import("schema.zig");
 const isMetaName = schema.isMetaName;
 const eval_control = @import("agent_eval_control.zig");
 const goal_state = @import("goal_state.zig");
+const goal_todo = @import("goal_todo.zig"); // todo_write's replace path + the omitted-completed preserve rule
 pub const toolInvalidatesEval = eval_control.toolInvalidatesEval;
 pub const gateTool = @import("agent_tool_gate.zig").gateTool;
 pub const firstWord = @import("agent_tool_gate.zig").firstWord;
@@ -314,23 +315,9 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return self.runEval(note);
     }
     if (std.mem.eql(u8, call.name, "todo_write")) {
-        const epoch = goal_state.currentEpoch(self.goal); // items belong to the goal that authored them (#318)
-        _ = goal_state.clearEpoch(&self.todos, epoch); // replace THIS epoch's list; parked items from earlier goals survive
-        goal_state.noteTodoWrite(self); // new evidence for the completion double-check, and the list is now this-process evidence (#318)
-        if (call.input.object.get("todos")) |list| if (list == .array) {
-            for (list.array.items) |item| {
-                if (item != .object) continue;
-                const content = item.object.get("content") orelse continue;
-                if (content != .string) continue;
-                const status = if (item.object.get("status")) |st| (if (st == .string) st.string else "pending") else "pending";
-                try self.todos.append(self.arena, .{
-                    .content = try self.arena.dupe(u8, content.string),
-                    .status = try self.arena.dupe(u8, status),
-                    .epoch = epoch,
-                });
-            }
-        };
-        const rendered = self.renderTodos(epoch);
+        // Epoch-scoped replace, keeping omitted completed items: goal_todo owns
+        // the rule and its tests (this file is at the 600-line cap).
+        const rendered = try goal_todo.applyTodoWrite(self, call.input.object.get("todos"));
         if (!self.sub) try self.say("{s}\n", .{rendered});
         return .{ .text = rendered, .is_error = false };
     }

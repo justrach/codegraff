@@ -582,7 +582,6 @@ const agentJobsReap = subagent.agentJobsReap; // #276 P0-3: background subagents
 const workflow = @import("workflow.zig");
 const exec = @import("exec.zig");
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────
-
 test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
     _ = @import("main_test.zig");
@@ -595,4 +594,5 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = @import("goal_state.zig");
     _ = @import("goal_persist_tests.zig");
     _ = @import("goal_flow.zig");
+    _ = @import("goal_todo.zig");
 }
