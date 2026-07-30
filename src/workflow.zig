@@ -89,6 +89,16 @@ fn replacePlaceholder(arena: Allocator, hay: []const u8, needle: []const u8, wit
     return buf;
 }
 
+/// Prepend the workflow/pipeline-level shared "context" (if any) to a raw
+/// task or stage prompt, BEFORE {{prev}}/{{item}} substitution runs on the
+/// result: context, blank line, raw prompt (U5). Absent/empty context
+/// returns `raw` unchanged (no allocation), so the composed prompt stays
+/// byte-identical to today's behavior when no context is set.
+fn withContext(arena: Allocator, context: []const u8, raw: []const u8) ![]const u8 {
+    if (context.len == 0) return raw;
+    return std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ context, raw });
+}
+
 /// Resolve a pipeline stage prompt for one item: substitute {{item}}, and from
 /// stage 2 {{prev}} = this item's bounded previous-stage result. Either is
 /// appended when its placeholder is omitted (mirrors phases-mode {{prev}}).
@@ -154,6 +164,9 @@ fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
     const stage_vals = stages_val.array.items;
     if (items.len == 0 or items.len > max_pipeline_items) return .{ .text = try std.fmt.allocPrint(gpa, "pipeline needs 1-{d} items", .{max_pipeline_items}), .is_error = true };
     if (stage_vals.len == 0 or stage_vals.len > max_pipeline_stages) return .{ .text = try std.fmt.allocPrint(gpa, "pipeline needs 1-{d} stages", .{max_pipeline_stages}), .is_error = true };
+    // U5 — shared context slot: one string, set once on the pipeline object,
+    // prepended to every stage prompt below (before {{item}}/{{prev}}).
+    const context_str: []const u8 = if (pv.object.get("context")) |cv| (if (cv == .string) cv.string else "") else "";
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -167,7 +180,7 @@ fn runPipeline(ctx: ToolCtx, pv: Value) !ToolOutput {
         sp.label = if (so.get("description")) |d| (if (d == .string) d.string else "stage") else "stage";
         const raw = if (so.get("prompt")) |p| (if (p == .string) p.string else "") else "";
         if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each pipeline stage needs a non-empty \"prompt\""), .is_error = true };
-        sp.prompt = raw;
+        sp.prompt = try withContext(arena, context_str, raw);
         sp.override = fleet.resolveOverride(so);
         const an = fleet.resolveNiche(so);
         sp.niche = if (an.len > 0) an else sp.label;
@@ -234,6 +247,10 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         .text = try std.fmt.allocPrint(gpa, "workflow needs 1-{d} phases", .{max_workflow_phases}),
         .is_error = true,
     };
+    // U5 — shared context slot: one string, set once on the workflow object,
+    // prepended to every task prompt below (before {{prev}} substitution) so
+    // repo/task boilerplate is paid for once instead of per task.
+    const context_str: []const u8 = if (obj.get("context")) |cv| (if (cv == .string) cv.string else "") else "";
 
     // All intermediate strings live in this arena; the final result is
     // duped into gpa for the caller.
@@ -301,15 +318,16 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             const raw = if (task.get("prompt")) |p| (if (p == .string) p.string else "") else "";
             if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each task needs a non-empty \"prompt\""), .is_error = true };
             rawp.* = raw;
+            const based = try withContext(arena, context_str, raw);
             if (phase_no == 1) {
-                prompt.* = raw;
-            } else if (std.mem.indexOf(u8, raw, "{{prev}}") != null) {
-                const size = std.mem.replacementSize(u8, raw, "{{prev}}", prev_results);
+                prompt.* = based;
+            } else if (std.mem.indexOf(u8, based, "{{prev}}") != null) {
+                const size = std.mem.replacementSize(u8, based, "{{prev}}", prev_results);
                 const buf = try arena.alloc(u8, size);
-                _ = std.mem.replace(u8, raw, "{{prev}}", prev_results, buf);
+                _ = std.mem.replace(u8, based, "{{prev}}", prev_results, buf);
                 prompt.* = buf;
             } else {
-                prompt.* = try std.fmt.allocPrint(arena, "{s}\n\nResults from the previous workflow phase:\n\n{s}", .{ raw, prev_results });
+                prompt.* = try std.fmt.allocPrint(arena, "{s}\n\nResults from the previous workflow phase:\n\n{s}", .{ based, prev_results });
             }
         }
 
@@ -396,6 +414,24 @@ test "cappedPrevBody bounds a wide phase output, keeps head + inspect tail (#4)"
     try std.testing.expect(std.mem.indexOf(u8, capped, "truncated") != null);
     try std.testing.expect(std.mem.indexOf(u8, capped, "inspect: .graff/subagents/sa-007-abcd.md") != null);
     try std.testing.expect(std.mem.indexOf(u8, capped, big) == null);
+}
+
+test "withContext: set prepends context + blank line; absent/empty is byte-identical (U5)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // Context set: context, blank line, raw task — nothing else.
+    const with = try withContext(a, "Repo: zig 0.16, 600-line file cap.", "Implement the thing.");
+    try std.testing.expectEqualStrings("Repo: zig 0.16, 600-line file cap.\n\nImplement the thing.", with);
+
+    // Context absent → byte-identical to the raw task (no stray blank line).
+    const absent = try withContext(a, "", "Implement the thing.");
+    try std.testing.expectEqualStrings("Implement the thing.", absent);
+
+    // Context present but empty string behaves the same as absent.
+    const empty = try withContext(a, "", "Do the other thing.");
+    try std.testing.expectEqualStrings("Do the other thing.", empty);
 }
 
 test "gateAllows: empty when always runs, else case-insensitive substring (#5)" {
