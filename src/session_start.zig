@@ -354,7 +354,7 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
 /// `/mcp add` still works. Moved out of main() (600-line goal). Returns the
 /// Registry by value — mcp.Registry holds no self-references (its storage
 /// is ArrayList/HashMap-backed), so returning it is safe.
-pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, home: []const u8, use_color: bool, json_mode: bool) !mcp.Registry {
+pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, home: []const u8, use_color: bool, json_mode: bool, environ_map: anytype) !mcp.Registry {
     const mcp_count = mcp_cli.countMcpServers(io, arena);
     var connect_mcp = flags.yolo_flag or mcp_count == 0;
     if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
@@ -363,7 +363,7 @@ pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Wr
         const ans = in.takeDelimiter('\n') catch null;
         connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
     }
-    return if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, home) catch |err| inner: {
+    return if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, home, environ_map) catch |err| inner: {
         try out.print("[mcp] init failed: {t} — continuing without MCP\n", .{err});
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;

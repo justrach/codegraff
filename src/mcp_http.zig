@@ -5,6 +5,7 @@ const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
 const mcp_oauth = @import("mcp_oauth.zig");
+const mcp_protocol = @import("mcp_protocol.zig");
 
 const max_http_response = 1 << 20;
 
@@ -29,6 +30,36 @@ fn validRemoteUri(uri: std.Uri) bool {
 
 pub fn validRemoteUrl(url: []const u8) bool {
     return validRemoteUri(std.Uri.parse(url) catch return false);
+}
+
+/// Per-request header inputs, modern vs legacy. `name` is the tool name for
+/// a `tools/call` (rendered as `Mcp-Name`); leave null for `tools/list` and
+/// `server/discover`, which have none.
+pub const RequestMeta = struct {
+    protocol_version: []const u8,
+    method: []const u8,
+    name: ?[]const u8 = null,
+    modern: bool,
+};
+
+/// Build the extra headers for one Streamable HTTP POST. Modern requests get
+/// `Mcp-Method`/`Mcp-Name` and never `Mcp-Session-Id` (no session is ever
+/// minted in the stateless wire format); legacy requests get the negotiated
+/// `Mcp-Session-Id` when one exists and never `Mcp-Method`/`Mcp-Name`, so a
+/// dual-era server can't mistake a legacy request for a modern one.
+pub fn buildHeaders(a: Allocator, http: *const HttpTransport, meta: RequestMeta, bearer: ?[]const u8) ![]std.http.Header {
+    var headers: std.ArrayList(std.http.Header) = .empty;
+    try headers.appendSlice(a, http.headers);
+    if (bearer) |token| try headers.append(a, .{ .name = "authorization", .value = try std.fmt.allocPrint(a, "Bearer {s}", .{token}) });
+    try headers.append(a, .{ .name = "accept", .value = "application/json, text/event-stream" });
+    try headers.append(a, .{ .name = "mcp-protocol-version", .value = meta.protocol_version });
+    if (meta.modern) {
+        try headers.append(a, .{ .name = "mcp-method", .value = meta.method });
+        if (meta.name) |name| try headers.append(a, .{ .name = "mcp-name", .value = try mcp_protocol.headerValue(a, name) });
+    } else if (http.session_id) |session_id| {
+        try headers.append(a, .{ .name = "mcp-session-id", .value = session_id });
+    }
+    return headers.toOwnedSlice(a);
 }
 
 pub fn matchingResponse(a: Allocator, bytes: []const u8, id: i64) ?Value {
@@ -117,26 +148,27 @@ fn readSseResponse(gpa: Allocator, reader: *Io.Reader, expected_id: ?i64) !?[]u8
     return null;
 }
 
+/// Load the OAuth bearer token, if any, into `arena`.
+fn loadBearer(http: *HttpTransport, arena: Allocator) ?[]const u8 {
+    const home = http.oauth_home orelse return null;
+    return mcp_oauth.loadAccessToken(http.client.io, http.client.allocator, arena, home, http.url);
+}
+
 /// Perform one bounded Streamable HTTP POST, retaining the MCP session ID from
 /// initialize and accepting both JSON and SSE responses. A 202 with no body is
-/// the normal response to a notification.
-fn httpPostUnwatched(http: *HttpTransport, body: []const u8, protocol_version: []const u8, expected_id: ?i64) !?[]u8 {
+/// the normal response to a notification. Legacy-shaped error handling only
+/// (401/403 always fail, a stale session 404s, any other non-2xx errors and
+/// discards the body) — a probe that must see a non-2xx body to classify the
+/// server's era uses `probe` (below) instead, which duplicates the send
+/// rather than share a Request/Response across a function return: the Zig
+/// std.http.Client types are not documented as safe to move by value across
+/// a boundary like that, and this is exactly the kind of subtle bug that
+/// would be invisible until a real flaky connection hit it.
+fn httpPostUnwatched(http: *HttpTransport, body: []const u8, meta: RequestMeta, expected_id: ?i64) !?[]u8 {
     var oauth_arena_state = std.heap.ArenaAllocator.init(http.client.allocator);
     defer oauth_arena_state.deinit();
-    const oauth_arena = oauth_arena_state.allocator();
-
-    var extra: std.ArrayList(std.http.Header) = .empty;
-    defer extra.deinit(http.client.allocator);
-    try extra.appendSlice(http.client.allocator, http.headers);
-    if (http.oauth_home) |home| if (mcp_oauth.loadAccessToken(http.client.io, http.client.allocator, oauth_arena, home, http.url)) |token| {
-        try extra.append(http.client.allocator, .{
-            .name = "authorization",
-            .value = try std.fmt.allocPrint(oauth_arena, "Bearer {s}", .{token}),
-        });
-    };
-    try extra.append(http.client.allocator, .{ .name = "accept", .value = "application/json, text/event-stream" });
-    try extra.append(http.client.allocator, .{ .name = "mcp-protocol-version", .value = protocol_version });
-    if (http.session_id) |session_id| try extra.append(http.client.allocator, .{ .name = "mcp-session-id", .value = session_id });
+    const bearer = loadBearer(http, oauth_arena_state.allocator());
+    const extra = try buildHeaders(oauth_arena_state.allocator(), http, meta, bearer);
 
     var req = try http.client.request(.POST, try std.Uri.parse(http.url), .{
         .redirect_behavior = .unhandled,
@@ -145,7 +177,7 @@ fn httpPostUnwatched(http: *HttpTransport, body: []const u8, protocol_version: [
             .accept_encoding = .omit,
             .user_agent = .{ .override = "codegraff-mcp/1" },
         },
-        .extra_headers = extra.items,
+        .extra_headers = extra,
     });
     defer req.deinit();
     errdefer {
@@ -175,13 +207,19 @@ fn httpPostUnwatched(http: *HttpTransport, body: []const u8, protocol_version: [
         return error.McpHttpStatus;
     }
 
-    var header_it = response.head.iterateHeaders();
-    while (header_it.next()) |header| {
-        if (std.ascii.eqlIgnoreCase(header.name, "mcp-session-id")) {
-            if (http.session_id) |session_id| {
-                if (!std.mem.eql(u8, session_id, header.value)) return error.McpSessionChanged;
-            } else {
-                http.session_id = try http.client.allocator.dupe(u8, header.value);
+    // A modern request never sent Mcp-Session-Id (see buildHeaders) and never
+    // mints one either: the stateless wire format has no session concept, so
+    // a stray header from a dual-era server must not leak a session into
+    // requests this era never asked for one on.
+    if (!meta.modern) {
+        var header_it = response.head.iterateHeaders();
+        while (header_it.next()) |header| {
+            if (std.ascii.eqlIgnoreCase(header.name, "mcp-session-id")) {
+                if (http.session_id) |session_id| {
+                    if (!std.mem.eql(u8, session_id, header.value)) return error.McpSessionChanged;
+                } else {
+                    http.session_id = try http.client.allocator.dupe(u8, header.value);
+                }
             }
         }
     }
@@ -215,8 +253,8 @@ const HttpPostDone = union(enum) {
     timeout,
 };
 
-fn httpPostTask(http: *HttpTransport, body: []const u8, protocol_version: []const u8, expected_id: ?i64) anyerror!?[]u8 {
-    return httpPostUnwatched(http, body, protocol_version, expected_id);
+fn httpPostTask(http: *HttpTransport, body: []const u8, meta: RequestMeta, expected_id: ?i64) anyerror!?[]u8 {
+    return httpPostUnwatched(http, body, meta, expected_id);
 }
 
 fn httpPostTimeout(io: Io) void {
@@ -238,10 +276,10 @@ fn cancelHttpPost(select: *Io.Select(HttpPostDone), allocator: Allocator) void {
 
 /// Race network I/O against a hard deadline. Cancellation unwinds the request,
 /// whose errdefer poisons the connection so a timed-out socket is never pooled.
-pub fn post(http: *HttpTransport, body: []const u8, protocol_version: []const u8, expected_id: ?i64) !?[]u8 {
+pub fn post(http: *HttpTransport, body: []const u8, meta: RequestMeta, expected_id: ?i64) !?[]u8 {
     var done_buf: [2]HttpPostDone = undefined;
     var select: Io.Select(HttpPostDone) = .init(http.client.io, &done_buf);
-    select.concurrent(.posted, httpPostTask, .{ http, body, protocol_version, expected_id }) catch
+    select.concurrent(.posted, httpPostTask, .{ http, body, meta, expected_id }) catch
         return error.McpRequestTimedOut;
     select.concurrent(.timeout, httpPostTimeout, .{http.client.io}) catch {
         const only = select.await() catch |err| {
@@ -264,6 +302,135 @@ pub fn post(http: *HttpTransport, body: []const u8, protocol_version: []const u8
         .timeout => {
             while (select.cancel()) |late| switch (late) {
                 .posted => |result| freeLateHttpPost(http.client.allocator, result),
+                .timeout => {},
+            };
+            return error.McpRequestTimedOut;
+        },
+    }
+}
+
+/// A probe reply: the raw status and (if any) body, on ANY status — unlike
+/// `post`, a probe never errors on a non-2xx status, since the whole point
+/// is to hand the caller the error body so `mcp_protocol.classifyProbe` can
+/// read it. `body` is `http.client.allocator`-owned; callers must free it.
+pub const ProbeReply = struct { status: u16, body: ?[]u8 };
+
+fn probeUnwatched(http: *HttpTransport, body: []const u8, meta: RequestMeta) !ProbeReply {
+    var oauth_arena_state = std.heap.ArenaAllocator.init(http.client.allocator);
+    defer oauth_arena_state.deinit();
+    const bearer = loadBearer(http, oauth_arena_state.allocator());
+    const extra = try buildHeaders(oauth_arena_state.allocator(), http, meta, bearer);
+
+    var req = try http.client.request(.POST, try std.Uri.parse(http.url), .{
+        .redirect_behavior = .unhandled,
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+            .accept_encoding = .omit,
+            .user_agent = .{ .override = "codegraff-mcp/1" },
+        },
+        .extra_headers = extra,
+    });
+    defer req.deinit();
+    errdefer {
+        if (req.connection) |connection| connection.closing = true;
+    }
+
+    req.transfer_encoding = .{ .content_length = body.len };
+    var body_writer = try req.sendBodyUnflushed(&.{});
+    try body_writer.writer.writeAll(body);
+    try body_writer.end();
+    try req.connection.?.flush();
+    var response = try req.receiveHead(&.{});
+
+    const status = @intFromEnum(response.head.status);
+    // Auth failures aren't a version signal either way — surface them exactly
+    // like `post` does so the existing OAuth flow still triggers.
+    if (status == 401 or status == 403) {
+        if (req.connection) |connection| connection.closing = true;
+        return error.McpAuthenticationRequired;
+    }
+    // A probe never carries a session id (buildHeaders never sends one for a
+    // modern request), so the legacy session-expiry branch does not apply.
+    if (status < 200 or status >= 300) {
+        if (req.connection) |connection| connection.closing = true;
+    }
+
+    if (response.head.content_length == 0) return .{ .status = status, .body = null };
+    const is_sse = if (response.head.content_type) |content_type|
+        std.ascii.startsWithIgnoreCase(content_type, "text/event-stream")
+    else
+        false;
+    var transfer_buf: [4096]u8 = undefined;
+    const reader = response.reader(&transfer_buf);
+    if (is_sse) return .{ .status = status, .body = try readSseResponse(http.client.allocator, reader, null) };
+
+    const response_buf = try http.client.allocator.alloc(u8, max_http_response);
+    errdefer http.client.allocator.free(response_buf);
+    var fixed = Io.Writer.fixed(response_buf);
+    _ = reader.streamRemaining(&fixed) catch |err| switch (err) {
+        error.WriteFailed => return error.McpResponseTooLarge,
+        else => return err,
+    };
+    const len = fixed.buffered().len;
+    if (len == 0) {
+        http.client.allocator.free(response_buf);
+        return .{ .status = status, .body = null };
+    }
+    return .{ .status = status, .body = try http.client.allocator.realloc(response_buf, len) };
+}
+
+const ProbeDone = union(enum) {
+    probed: anyerror!ProbeReply,
+    timeout,
+};
+
+fn probeTask(http: *HttpTransport, body: []const u8, meta: RequestMeta) anyerror!ProbeReply {
+    return probeUnwatched(http, body, meta);
+}
+
+fn freeLateProbe(allocator: Allocator, result: anyerror!ProbeReply) void {
+    if (result) |reply| {
+        if (reply.body) |bytes| allocator.free(bytes);
+    } else |_| {}
+}
+
+fn cancelProbe(select: *Io.Select(ProbeDone), allocator: Allocator) void {
+    while (select.cancel()) |late| switch (late) {
+        .probed => |result| freeLateProbe(allocator, result),
+        .timeout => {},
+    };
+}
+
+/// Attempt one modern (2026-07-28) request, bounded by the same deadline as
+/// `post`. On success or a recognized-modern error, this is the entire
+/// connect cost; on anything else, the caller falls back to the legacy
+/// handshake (see mcp_rpc.connectHttp).
+pub fn probe(http: *HttpTransport, body: []const u8, meta: RequestMeta) !ProbeReply {
+    var done_buf: [2]ProbeDone = undefined;
+    var select: Io.Select(ProbeDone) = .init(http.client.io, &done_buf);
+    select.concurrent(.probed, probeTask, .{ http, body, meta }) catch
+        return error.McpRequestTimedOut;
+    select.concurrent(.timeout, httpPostTimeout, .{http.client.io}) catch {
+        const only = select.await() catch |err| {
+            cancelProbe(&select, http.client.allocator);
+            return err;
+        };
+        select.cancelDiscard();
+        return only.probed;
+    };
+
+    const first = select.await() catch |err| {
+        cancelProbe(&select, http.client.allocator);
+        return err;
+    };
+    switch (first) {
+        .probed => |result| {
+            select.cancelDiscard();
+            return result;
+        },
+        .timeout => {
+            while (select.cancel()) |late| switch (late) {
+                .probed => |result| freeLateProbe(http.client.allocator, result),
                 .timeout => {},
             };
             return error.McpRequestTimedOut;
@@ -294,4 +461,65 @@ test "parseHttpResponse accepts JSON and Streamable HTTP SSE" {
     const event = parseHttpResponse(a, sse, 8).?;
     try std.testing.expectEqual(@as(i64, 8), event.object.get("id").?.integer);
     try std.testing.expect(parseHttpResponse(a, sse, 9) == null);
+}
+
+fn findHeader(headers: []const std.http.Header, name: []const u8) ?[]const u8 {
+    for (headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
+    return null;
+}
+
+test "buildHeaders: modern tools/call carries Mcp-Method/Mcp-Name, never a session id" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var http: HttpTransport = .{ .url = "https://example/mcp", .client = .{ .allocator = std.testing.allocator, .io = std.testing.io } };
+    const headers = try buildHeaders(a, &http, .{
+        .protocol_version = mcp_protocol.modern_protocol,
+        .method = "tools/call",
+        .name = "search",
+        .modern = true,
+    }, null);
+    try std.testing.expectEqualStrings("tools/call", findHeader(headers, "mcp-method").?);
+    try std.testing.expectEqualStrings("search", findHeader(headers, "mcp-name").?);
+    try std.testing.expectEqualStrings(mcp_protocol.modern_protocol, findHeader(headers, "mcp-protocol-version").?);
+    try std.testing.expectEqualStrings("application/json, text/event-stream", findHeader(headers, "accept").?);
+    try std.testing.expect(findHeader(headers, "mcp-session-id") == null);
+    // Structurally guaranteed to match modern_meta's embedded protocolVersion,
+    // asserted anyway per the migration spec's design note.
+    try std.testing.expect(std.mem.indexOf(u8, mcp_protocol.modern_meta, mcp_protocol.modern_protocol) != null);
+}
+
+test "buildHeaders: legacy carries the negotiated session id, never Mcp-Method/Mcp-Name" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var http: HttpTransport = .{
+        .url = "https://example/mcp",
+        .client = .{ .allocator = std.testing.allocator, .io = std.testing.io },
+        .session_id = "sess-123",
+    };
+    const headers = try buildHeaders(a, &http, .{
+        .protocol_version = "2025-06-18",
+        .method = "tools/call",
+        .name = "search",
+        .modern = false,
+    }, null);
+    try std.testing.expectEqualStrings("sess-123", findHeader(headers, "mcp-session-id").?);
+    try std.testing.expectEqualStrings("2025-06-18", findHeader(headers, "mcp-protocol-version").?);
+    try std.testing.expect(findHeader(headers, "mcp-method") == null);
+    try std.testing.expect(findHeader(headers, "mcp-name") == null);
+}
+
+test "buildHeaders: modern tools/list omits Mcp-Name" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var http: HttpTransport = .{ .url = "https://example/mcp", .client = .{ .allocator = std.testing.allocator, .io = std.testing.io } };
+    const headers = try buildHeaders(a, &http, .{
+        .protocol_version = mcp_protocol.modern_protocol,
+        .method = "tools/list",
+        .modern = true,
+    }, null);
+    try std.testing.expectEqualStrings("tools/list", findHeader(headers, "mcp-method").?);
+    try std.testing.expect(findHeader(headers, "mcp-name") == null);
 }

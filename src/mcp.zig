@@ -18,12 +18,17 @@ const mcp_http = @import("mcp_http.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
 const mcp_teardown = @import("mcp_teardown.zig");
+const mcp_rpc = @import("mcp_rpc.zig");
 const smolify_manifest = @import("smolify_manifest.zig");
 
-const latest_protocol = mcp_protocol.latest_protocol;
 const rewriteOneOf = mcp_protocol.rewriteOneOf;
 const HttpTransport = mcp_http.HttpTransport;
 pub const validRemoteUrl = mcp_http.validRemoteUrl;
+const Server = mcp_rpc.Server;
+const Transport = mcp_rpc.Transport;
+const deinitServer = mcp_rpc.deinitServer;
+const initializeServer = mcp_rpc.initializeServer;
+const request = mcp_rpc.request;
 
 pub const Tool = struct {
     server_index: usize,
@@ -34,27 +39,6 @@ pub const Tool = struct {
 };
 pub const smolify_url = "https://app.smol.ly/mcp";
 
-const StdioTransport = struct {
-    child: std.process.Child,
-    stdin_writer: Io.File.Writer,
-    stdout_reader: Io.File.Reader,
-};
-
-const Transport = union(enum) {
-    stdio: StdioTransport,
-    http: HttpTransport,
-};
-
-const Server = struct {
-    name: []const u8,
-    transport: Transport,
-    next_id: i64 = 1,
-    initialized: bool = true,
-    /// Revision the server negotiated in its validated `initialize` response,
-    /// shown in `/mcp` so version skew is visible.
-    protocol_version: []const u8 = "?",
-};
-
 pub const Registry = struct {
     gpa: Allocator,
     io: Io,
@@ -63,6 +47,12 @@ pub const Registry = struct {
     mutex: Io.Mutex = .init,
     servers: []*Server = &.{},
     tools: []Tool = &.{},
+    /// `GRAFF_MCP_PROBE=1`, default off (see mcp_rpc.probeStdio's doc comment
+    /// for why this cannot be turned on unconditionally today). Only
+    /// `Registry.init` reads the environment; servers added later via
+    /// `addServer`/`trustWorkspace` on a `Registry.empty*`-constructed
+    /// registry inherit `false` — a documented gap, never a safety issue.
+    stdio_probe: bool = false,
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
@@ -72,7 +62,7 @@ pub const Registry = struct {
     /// Streamable HTTP `url`, handshake each server, and collect their tools.
     /// Returns null
     /// (no error) when the config file is absent — MCP is optional.
-    pub fn init(gpa: Allocator, io: Io, config_path: []const u8, home: []const u8) !?Registry {
+    pub fn init(gpa: Allocator, io: Io, config_path: []const u8, home: []const u8, environ_map: anytype) !?Registry {
         const text = Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .limited(1 << 20)) catch |err| switch (err) {
             error.FileNotFound => return null,
             else => return err,
@@ -84,6 +74,7 @@ pub const Registry = struct {
             .io = io,
             .home = home,
             .arena_state = std.heap.ArenaAllocator.init(gpa),
+            .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| std.mem.eql(u8, v, "1") else false,
         };
         errdefer reg.deinit();
         const a = reg.arena();
@@ -286,6 +277,29 @@ pub const Registry = struct {
         };
         return n;
     }
+    /// Spawn a stdio child and wire up its transport. Factored out of
+    /// `startServer` so the `GRAFF_MCP_PROBE` path can call it a second
+    /// time: some legacy SDK servers close stdout on an unrecognized
+    /// pre-`initialize` message (`server/discover`), and the only fix is a
+    /// fresh process — the closed one can't be un-closed.
+    fn spawnStdio(reg: *Registry, a: Allocator, argv: []const []const u8, env_map: ?*std.process.Environ.Map) !Transport {
+        var child = try std.process.spawn(reg.io, .{
+            .argv = argv,
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .ignore,
+            .environ_map = env_map,
+        });
+        errdefer mcp_stdio.stopChild(reg.io, &child);
+        const in_buf = try a.alloc(u8, 64 * 1024);
+        const out_buf = try a.alloc(u8, 1 << 20);
+        return .{ .stdio = .{
+            .child = child,
+            .stdin_writer = child.stdin.?.writerStreaming(reg.io, in_buf),
+            .stdout_reader = child.stdout.?.readerStreaming(reg.io, out_buf),
+        } };
+    }
+
     fn startServer(
         reg: *Registry,
         a: Allocator,
@@ -299,6 +313,12 @@ pub const Registry = struct {
         if ((command_v == null) == (url_v == null)) return error.BadMcpConfig;
 
         const server = try a.create(Server);
+        // Hoisted out of the `else` branch below (rather than local to it)
+        // so the GRAFF_MCP_PROBE respawn path -- which runs after this
+        // if/else, once the era-detection dispatch below finds a closed
+        // stdio child -- can spawn a fresh process with the same argv/env.
+        var stdio_argv: std.ArrayList([]const u8) = .empty;
+        var stdio_env_map: ?*std.process.Environ.Map = null;
         if (url_v) |url| {
             if (url != .string) return error.BadMcpConfig;
             if (!validRemoteUrl(url.string)) return error.BadMcpUrl;
@@ -328,18 +348,16 @@ pub const Registry = struct {
             };
         } else {
             const command = if (command_v.? == .string) command_v.?.string else return error.BadMcpConfig;
-            var argv: std.ArrayList([]const u8) = .empty;
-            try argv.append(a, command);
+            try stdio_argv.append(a, command);
             if (cfg.get("args")) |args| {
                 if (args != .array) return error.BadMcpConfig;
                 for (args.array.items) |arg| {
                     if (arg != .string) return error.BadMcpConfig;
-                    try argv.append(a, arg.string);
+                    try stdio_argv.append(a, arg.string);
                 }
             }
 
             // Optional per-server env overlaid on the parent environment.
-            var env_map: ?*std.process.Environ.Map = null;
             if (cfg.get("env")) |env| {
                 if (env != .object) return error.BadMcpConfig;
                 const m = try a.create(std.process.Environ.Map);
@@ -349,31 +367,10 @@ pub const Registry = struct {
                     if (entry.value_ptr.* != .string) return error.BadMcpConfig;
                     try m.put(entry.key_ptr.*, entry.value_ptr.*.string);
                 }
-                env_map = m;
+                stdio_env_map = m;
             }
 
-            var child = try std.process.spawn(reg.io, .{
-                .argv = argv.items,
-                .stdin = .pipe,
-                .stdout = .pipe,
-                .stderr = .ignore,
-                .environ_map = env_map,
-            });
-            var server_owns_child = false;
-            errdefer if (!server_owns_child) {
-                mcp_stdio.stopChild(reg.io, &child);
-            };
-            const in_buf = try a.alloc(u8, 64 * 1024);
-            const out_buf = try a.alloc(u8, 1 << 20);
-            server.* = .{
-                .name = name,
-                .transport = .{ .stdio = .{
-                    .child = child,
-                    .stdin_writer = child.stdin.?.writerStreaming(reg.io, in_buf),
-                    .stdout_reader = child.stdout.?.readerStreaming(reg.io, out_buf),
-                } },
-            };
-            server_owns_child = true;
+            server.* = .{ .name = name, .transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map) };
         }
 
         var registry_owns_server = false;
@@ -382,11 +379,32 @@ pub const Registry = struct {
         const tools_before = tools.items.len;
         errdefer tools.shrinkRetainingCapacity(tools_before);
 
-        // Handshake. The server's reply tells us which revision it picked;
-        // record it (we proceed regardless — see `latest_protocol`).
-        try initializeServer(server, a, a);
-
-        const listed = try request(server, a, "{}", "tools/list");
+        // Probe-then-fallback for HTTP (mcp_rpc.connectHttp), the unchanged
+        // legacy handshake for stdio unless GRAFF_MCP_PROBE=1 opts into the
+        // gated server/discover probe (mcp_rpc.probeStdio) — either way,
+        // server.era and server.protocol_version are set by the time this
+        // returns, and the model sees whichever revision was negotiated.
+        const listed = switch (server.transport) {
+            .http => try mcp_rpc.connectHttp(server, a, a),
+            .stdio => stdio_listed: {
+                if (!reg.stdio_probe) break :stdio_listed try mcp_rpc.connectStdio(server, a, a);
+                switch (try mcp_rpc.probeStdio(server, a, reg.io)) {
+                    .modern => break :stdio_listed try mcp_rpc.finishModernStdio(server, a, a),
+                    .legacy => break :stdio_listed try mcp_rpc.connectStdio(server, a, a),
+                    .closed => {
+                        // The probe write/read found a dead process (some
+                        // legacy SDK servers exit on an unrecognized
+                        // pre-initialize message) — respawn once and go
+                        // straight to legacy on the fresh process, no
+                        // second probe against a server that already
+                        // proved it can't tolerate one.
+                        mcp_stdio.stopChild(reg.io, &server.transport.stdio.child);
+                        server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map);
+                        break :stdio_listed try mcp_rpc.connectStdio(server, a, a);
+                    },
+                }
+            },
+        };
         const result_v = listed.object.get("result") orelse return error.BadMcpResponse;
         if (result_v != .object) return error.BadMcpResponse;
         const tools_v = result_v.object.get("tools") orelse return error.BadMcpResponse;
@@ -457,12 +475,18 @@ pub const Registry = struct {
         defer response_arena_state.deinit();
         const response_alloc = response_arena_state.allocator();
         if (!server.initialized) try initializeServer(server, response_alloc, reg.arena());
-        const resp = request(server, response_alloc, pw.writer.buffered(), "tools/call") catch |err| switch (err) {
+        const resp = request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name) catch |err| switch (err) {
             // Streamable HTTP servers use 404 to expire a session. Re-run the
             // MCP handshake once, then retry the call without the stale ID.
+            // A modern-era server never carries a session id in the first
+            // place (mcp_http never sends/stores one for a modern request),
+            // so this cannot structurally fire for one — the explicit guard
+            // is defense-in-depth against a future refactor resurrecting a
+            // re-handshake loop against a server that has no `initialize`.
             error.McpSessionExpired => retry: {
+                if (server.era != .legacy) return err;
                 try initializeServer(server, response_alloc, reg.arena());
-                break :retry try request(server, response_alloc, pw.writer.buffered(), "tools/call");
+                break :retry try request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name);
             },
             else => return err,
         };
@@ -494,6 +518,12 @@ pub const Registry = struct {
         if (result_val != .object)
             return .{ .text = try out_alloc.dupe(u8, "MCP response result was not an object"), .is_error = true };
         const result = result_val.object;
+        // resultType absent MUST read as "complete" (every server graff has
+        // ever talked to). MRTR (inputRequests/inputResponses) is not
+        // implemented — surface a clear error instead of silently returning
+        // "" with is_error=false, which is what fell through here before.
+        if (!mcp_protocol.resultIsComplete(result))
+            return .{ .text = try out_alloc.dupe(u8, "MCP server returned an input_required result (MRTR); codegraff does not implement it"), .is_error = true };
         const is_error = if (result.get("isError")) |v| (v == .bool and v.bool) else false;
 
         // result.content is an array of {type:"text", text:...} blocks.
@@ -518,83 +548,3 @@ pub const Registry = struct {
         return .{ .text = try ow.toOwnedSlice(), .is_error = is_error };
     }
 };
-
-fn deinitServer(server: *Server, io: Io, budget: mcp_teardown.Budget) void {
-    switch (server.transport) {
-        .stdio => |*stdio| mcp_stdio.stopChild(io, &stdio.child),
-        .http => |*http| { // never waits on a peer: bounded by `budget` (#305)
-            if (http.session_id) |session_id| http.client.allocator.free(session_id);
-            http.session_id = null;
-            mcp_teardown.deinitHttpClient(&http.client, io, budget);
-        },
-    }
-}
-
-fn initializeServer(server: *Server, response_alloc: Allocator, session_alloc: Allocator) !void {
-    const init_resp = try request(server, response_alloc,
-        \\{"protocolVersion":"
-    ++ latest_protocol ++
-        \\","capabilities":{},"clientInfo":{"name":"simple-harness","version":"0.1"}}
-    , "initialize");
-    const protocol_transport: mcp_protocol.Transport = switch (server.transport) {
-        .stdio => .stdio,
-        .http => .streamable_http,
-    };
-    const protocol_version = try mcp_protocol.negotiatedProtocol(init_resp, protocol_transport);
-    server.protocol_version = try session_alloc.dupe(u8, protocol_version);
-    try notify(server, response_alloc, "notifications/initialized");
-    server.initialized = true;
-}
-
-/// JSON-RPC request/response over either transport. `params` is a raw JSON
-/// object string. Result Values use `response_alloc`.
-fn request(server: *Server, response_alloc: Allocator, params: []const u8, method: []const u8) !Value {
-    const id = server.next_id;
-    server.next_id += 1;
-
-    switch (server.transport) {
-        .stdio => |*stdio| {
-            const w = &stdio.stdin_writer.interface;
-            try w.print(
-                \\{{"jsonrpc":"2.0","id":{d},"method":"{s}","params":{s}}}
-            ++ "\n", .{ id, method, params });
-            try w.flush();
-
-            const r = &stdio.stdout_reader.interface;
-            while (true) {
-                const line = (try r.takeDelimiter('\n')) orelse return error.McpClosed;
-                if (mcp_http.matchingResponse(response_alloc, line, id)) |parsed| return parsed;
-            }
-        },
-        .http => |*http| {
-            const body = try std.fmt.allocPrint(response_alloc,
-                \\{{"jsonrpc":"2.0","id":{d},"method":"{s}","params":{s}}}
-            , .{ id, method, params });
-            const protocol_version = if (std.mem.eql(u8, method, "initialize")) latest_protocol else server.protocol_version;
-            const response_body = (try mcp_http.post(http, body, protocol_version, id)) orelse return error.BadMcpResponse;
-            defer http.client.allocator.free(response_body);
-            return mcp_http.parseHttpResponse(response_alloc, response_body, id) orelse error.BadMcpResponse;
-        },
-    }
-}
-
-/// Fire-and-forget JSON-RPC notification (no id, no response).
-fn notify(server: *Server, response_alloc: Allocator, method: []const u8) !void {
-    switch (server.transport) {
-        .stdio => |*stdio| {
-            const w = &stdio.stdin_writer.interface;
-            try w.print(
-                \\{{"jsonrpc":"2.0","method":"{s}","params":{{}}}}
-            ++ "\n", .{method});
-            try w.flush();
-        },
-        .http => |*http| {
-            const body = try std.fmt.allocPrint(response_alloc,
-                \\{{"jsonrpc":"2.0","method":"{s}","params":{{}}}}
-            , .{method});
-            if (try mcp_http.post(http, body, server.protocol_version, null)) |response_body| {
-                http.client.allocator.free(response_body);
-            }
-        },
-    }
-}

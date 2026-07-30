@@ -371,7 +371,7 @@ pub fn main(init: std.process.Init) !void {
     // auto-connect only with --yolo (trusted) or explicit per-session consent; otherwise start with an empty (but live) registry so `/mcp add`
     // still works.
     const mcp_home = homeEnv(init.environ_map) orelse "";
-    var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, mcp_home, use_color, json_mode);
+    var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, mcp_home, use_color, json_mode, init.environ_map);
     boot.mark(io, "MCP registry");
     defer registry_storage.deinit();
     const registry: ?*mcp.Registry = &registry_storage;
@@ -582,11 +582,11 @@ const exec = @import("exec.zig");
 // ── Unit tests (`zig build test`) ──────────────────────────────────────────
 test { // pull in tests from imported modules (mcp.zig)
     _ = mcp;
+    _ = @import("mcp_rpc.zig");
     _ = @import("main_test.zig");
-    // A module whose tests must run needs an explicit reference here: a plain
-    // @import elsewhere (or a type-only alias) is NOT enough to pull its
-    // `test {}` blocks in — they compile to nothing and the suite still reports
-    // green. scripts/eval-tier1.sh --only reach catches an unreferenced one.
+    // A module whose tests must run needs an explicit reference here: a
+    // plain @import elsewhere (or a type-only alias) is NOT enough — it
+    // compiles to nothing; scripts/eval-tier1.sh --only reach catches one.
     _ = @import("scoring_slot_test.zig");
     _ = @import("readline_history.zig");
     _ = @import("goal_pacing_autonomous_test.zig");
