@@ -366,11 +366,14 @@ pub const Registry = struct {
         const tools_before = tools.items.len;
         errdefer tools.shrinkRetainingCapacity(tools_before);
 
-        // Handshake. The server's reply tells us which revision it picked;
-        // record it (we proceed regardless — see `legacy_protocol`).
-        try initializeServer(server, a, a);
-
-        const listed = try request(server, a, "{}", "tools/list");
+        // Probe-then-fallback for HTTP (mcp_rpc.connectHttp), the unchanged
+        // legacy handshake for stdio (mcp_rpc.connectStdio) — either way,
+        // server.era and server.protocol_version are set by the time this
+        // returns, and the model sees whichever revision was negotiated.
+        const listed = switch (server.transport) {
+            .http => try mcp_rpc.connectHttp(server, a, a),
+            .stdio => try mcp_rpc.connectStdio(server, a, a),
+        };
         const result_v = listed.object.get("result") orelse return error.BadMcpResponse;
         if (result_v != .object) return error.BadMcpResponse;
         const tools_v = result_v.object.get("tools") orelse return error.BadMcpResponse;
@@ -441,12 +444,18 @@ pub const Registry = struct {
         defer response_arena_state.deinit();
         const response_alloc = response_arena_state.allocator();
         if (!server.initialized) try initializeServer(server, response_alloc, reg.arena());
-        const resp = request(server, response_alloc, pw.writer.buffered(), "tools/call") catch |err| switch (err) {
+        const resp = request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name) catch |err| switch (err) {
             // Streamable HTTP servers use 404 to expire a session. Re-run the
             // MCP handshake once, then retry the call without the stale ID.
+            // A modern-era server never carries a session id in the first
+            // place (mcp_http never sends/stores one for a modern request),
+            // so this cannot structurally fire for one — the explicit guard
+            // is defense-in-depth against a future refactor resurrecting a
+            // re-handshake loop against a server that has no `initialize`.
             error.McpSessionExpired => retry: {
+                if (server.era != .legacy) return err;
                 try initializeServer(server, response_alloc, reg.arena());
-                break :retry try request(server, response_alloc, pw.writer.buffered(), "tools/call");
+                break :retry try request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name);
             },
             else => return err,
         };
@@ -478,6 +487,12 @@ pub const Registry = struct {
         if (result_val != .object)
             return .{ .text = try out_alloc.dupe(u8, "MCP response result was not an object"), .is_error = true };
         const result = result_val.object;
+        // resultType absent MUST read as "complete" (every server graff has
+        // ever talked to). MRTR (inputRequests/inputResponses) is not
+        // implemented — surface a clear error instead of silently returning
+        // "" with is_error=false, which is what fell through here before.
+        if (!mcp_protocol.resultIsComplete(result))
+            return .{ .text = try out_alloc.dupe(u8, "MCP server returned an input_required result (MRTR); codegraff does not implement it"), .is_error = true };
         const is_error = if (result.get("isError")) |v| (v == .bool and v.bool) else false;
 
         // result.content is an array of {type:"text", text:...} blocks.

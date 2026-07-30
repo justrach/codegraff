@@ -148,26 +148,27 @@ fn readSseResponse(gpa: Allocator, reader: *Io.Reader, expected_id: ?i64) !?[]u8
     return null;
 }
 
+/// Load the OAuth bearer token, if any, into `arena`.
+fn loadBearer(http: *HttpTransport, arena: Allocator) ?[]const u8 {
+    const home = http.oauth_home orelse return null;
+    return mcp_oauth.loadAccessToken(http.client.io, http.client.allocator, arena, home, http.url);
+}
+
 /// Perform one bounded Streamable HTTP POST, retaining the MCP session ID from
 /// initialize and accepting both JSON and SSE responses. A 202 with no body is
-/// the normal response to a notification.
-fn httpPostUnwatched(http: *HttpTransport, body: []const u8, protocol_version: []const u8, expected_id: ?i64) !?[]u8 {
+/// the normal response to a notification. Legacy-shaped error handling only
+/// (401/403 always fail, a stale session 404s, any other non-2xx errors and
+/// discards the body) — a probe that must see a non-2xx body to classify the
+/// server's era uses `probe` (below) instead, which duplicates the send
+/// rather than share a Request/Response across a function return: the Zig
+/// std.http.Client types are not documented as safe to move by value across
+/// a boundary like that, and this is exactly the kind of subtle bug that
+/// would be invisible until a real flaky connection hit it.
+fn httpPostUnwatched(http: *HttpTransport, body: []const u8, meta: RequestMeta, expected_id: ?i64) !?[]u8 {
     var oauth_arena_state = std.heap.ArenaAllocator.init(http.client.allocator);
     defer oauth_arena_state.deinit();
-    const oauth_arena = oauth_arena_state.allocator();
-
-    var extra: std.ArrayList(std.http.Header) = .empty;
-    defer extra.deinit(http.client.allocator);
-    try extra.appendSlice(http.client.allocator, http.headers);
-    if (http.oauth_home) |home| if (mcp_oauth.loadAccessToken(http.client.io, http.client.allocator, oauth_arena, home, http.url)) |token| {
-        try extra.append(http.client.allocator, .{
-            .name = "authorization",
-            .value = try std.fmt.allocPrint(oauth_arena, "Bearer {s}", .{token}),
-        });
-    };
-    try extra.append(http.client.allocator, .{ .name = "accept", .value = "application/json, text/event-stream" });
-    try extra.append(http.client.allocator, .{ .name = "mcp-protocol-version", .value = protocol_version });
-    if (http.session_id) |session_id| try extra.append(http.client.allocator, .{ .name = "mcp-session-id", .value = session_id });
+    const bearer = loadBearer(http, oauth_arena_state.allocator());
+    const extra = try buildHeaders(oauth_arena_state.allocator(), http, meta, bearer);
 
     var req = try http.client.request(.POST, try std.Uri.parse(http.url), .{
         .redirect_behavior = .unhandled,
@@ -176,7 +177,7 @@ fn httpPostUnwatched(http: *HttpTransport, body: []const u8, protocol_version: [
             .accept_encoding = .omit,
             .user_agent = .{ .override = "codegraff-mcp/1" },
         },
-        .extra_headers = extra.items,
+        .extra_headers = extra,
     });
     defer req.deinit();
     errdefer {
@@ -206,13 +207,19 @@ fn httpPostUnwatched(http: *HttpTransport, body: []const u8, protocol_version: [
         return error.McpHttpStatus;
     }
 
-    var header_it = response.head.iterateHeaders();
-    while (header_it.next()) |header| {
-        if (std.ascii.eqlIgnoreCase(header.name, "mcp-session-id")) {
-            if (http.session_id) |session_id| {
-                if (!std.mem.eql(u8, session_id, header.value)) return error.McpSessionChanged;
-            } else {
-                http.session_id = try http.client.allocator.dupe(u8, header.value);
+    // A modern request never sent Mcp-Session-Id (see buildHeaders) and never
+    // mints one either: the stateless wire format has no session concept, so
+    // a stray header from a dual-era server must not leak a session into
+    // requests this era never asked for one on.
+    if (!meta.modern) {
+        var header_it = response.head.iterateHeaders();
+        while (header_it.next()) |header| {
+            if (std.ascii.eqlIgnoreCase(header.name, "mcp-session-id")) {
+                if (http.session_id) |session_id| {
+                    if (!std.mem.eql(u8, session_id, header.value)) return error.McpSessionChanged;
+                } else {
+                    http.session_id = try http.client.allocator.dupe(u8, header.value);
+                }
             }
         }
     }
@@ -246,8 +253,8 @@ const HttpPostDone = union(enum) {
     timeout,
 };
 
-fn httpPostTask(http: *HttpTransport, body: []const u8, protocol_version: []const u8, expected_id: ?i64) anyerror!?[]u8 {
-    return httpPostUnwatched(http, body, protocol_version, expected_id);
+fn httpPostTask(http: *HttpTransport, body: []const u8, meta: RequestMeta, expected_id: ?i64) anyerror!?[]u8 {
+    return httpPostUnwatched(http, body, meta, expected_id);
 }
 
 fn httpPostTimeout(io: Io) void {
@@ -269,10 +276,10 @@ fn cancelHttpPost(select: *Io.Select(HttpPostDone), allocator: Allocator) void {
 
 /// Race network I/O against a hard deadline. Cancellation unwinds the request,
 /// whose errdefer poisons the connection so a timed-out socket is never pooled.
-pub fn post(http: *HttpTransport, body: []const u8, protocol_version: []const u8, expected_id: ?i64) !?[]u8 {
+pub fn post(http: *HttpTransport, body: []const u8, meta: RequestMeta, expected_id: ?i64) !?[]u8 {
     var done_buf: [2]HttpPostDone = undefined;
     var select: Io.Select(HttpPostDone) = .init(http.client.io, &done_buf);
-    select.concurrent(.posted, httpPostTask, .{ http, body, protocol_version, expected_id }) catch
+    select.concurrent(.posted, httpPostTask, .{ http, body, meta, expected_id }) catch
         return error.McpRequestTimedOut;
     select.concurrent(.timeout, httpPostTimeout, .{http.client.io}) catch {
         const only = select.await() catch |err| {
@@ -295,6 +302,135 @@ pub fn post(http: *HttpTransport, body: []const u8, protocol_version: []const u8
         .timeout => {
             while (select.cancel()) |late| switch (late) {
                 .posted => |result| freeLateHttpPost(http.client.allocator, result),
+                .timeout => {},
+            };
+            return error.McpRequestTimedOut;
+        },
+    }
+}
+
+/// A probe reply: the raw status and (if any) body, on ANY status — unlike
+/// `post`, a probe never errors on a non-2xx status, since the whole point
+/// is to hand the caller the error body so `mcp_protocol.classifyProbe` can
+/// read it. `body` is `http.client.allocator`-owned; callers must free it.
+pub const ProbeReply = struct { status: u16, body: ?[]u8 };
+
+fn probeUnwatched(http: *HttpTransport, body: []const u8, meta: RequestMeta) !ProbeReply {
+    var oauth_arena_state = std.heap.ArenaAllocator.init(http.client.allocator);
+    defer oauth_arena_state.deinit();
+    const bearer = loadBearer(http, oauth_arena_state.allocator());
+    const extra = try buildHeaders(oauth_arena_state.allocator(), http, meta, bearer);
+
+    var req = try http.client.request(.POST, try std.Uri.parse(http.url), .{
+        .redirect_behavior = .unhandled,
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+            .accept_encoding = .omit,
+            .user_agent = .{ .override = "codegraff-mcp/1" },
+        },
+        .extra_headers = extra,
+    });
+    defer req.deinit();
+    errdefer {
+        if (req.connection) |connection| connection.closing = true;
+    }
+
+    req.transfer_encoding = .{ .content_length = body.len };
+    var body_writer = try req.sendBodyUnflushed(&.{});
+    try body_writer.writer.writeAll(body);
+    try body_writer.end();
+    try req.connection.?.flush();
+    var response = try req.receiveHead(&.{});
+
+    const status = @intFromEnum(response.head.status);
+    // Auth failures aren't a version signal either way — surface them exactly
+    // like `post` does so the existing OAuth flow still triggers.
+    if (status == 401 or status == 403) {
+        if (req.connection) |connection| connection.closing = true;
+        return error.McpAuthenticationRequired;
+    }
+    // A probe never carries a session id (buildHeaders never sends one for a
+    // modern request), so the legacy session-expiry branch does not apply.
+    if (status < 200 or status >= 300) {
+        if (req.connection) |connection| connection.closing = true;
+    }
+
+    if (response.head.content_length == 0) return .{ .status = status, .body = null };
+    const is_sse = if (response.head.content_type) |content_type|
+        std.ascii.startsWithIgnoreCase(content_type, "text/event-stream")
+    else
+        false;
+    var transfer_buf: [4096]u8 = undefined;
+    const reader = response.reader(&transfer_buf);
+    if (is_sse) return .{ .status = status, .body = try readSseResponse(http.client.allocator, reader, null) };
+
+    const response_buf = try http.client.allocator.alloc(u8, max_http_response);
+    errdefer http.client.allocator.free(response_buf);
+    var fixed = Io.Writer.fixed(response_buf);
+    _ = reader.streamRemaining(&fixed) catch |err| switch (err) {
+        error.WriteFailed => return error.McpResponseTooLarge,
+        else => return err,
+    };
+    const len = fixed.buffered().len;
+    if (len == 0) {
+        http.client.allocator.free(response_buf);
+        return .{ .status = status, .body = null };
+    }
+    return .{ .status = status, .body = try http.client.allocator.realloc(response_buf, len) };
+}
+
+const ProbeDone = union(enum) {
+    probed: anyerror!ProbeReply,
+    timeout,
+};
+
+fn probeTask(http: *HttpTransport, body: []const u8, meta: RequestMeta) anyerror!ProbeReply {
+    return probeUnwatched(http, body, meta);
+}
+
+fn freeLateProbe(allocator: Allocator, result: anyerror!ProbeReply) void {
+    if (result) |reply| {
+        if (reply.body) |bytes| allocator.free(bytes);
+    } else |_| {}
+}
+
+fn cancelProbe(select: *Io.Select(ProbeDone), allocator: Allocator) void {
+    while (select.cancel()) |late| switch (late) {
+        .probed => |result| freeLateProbe(allocator, result),
+        .timeout => {},
+    };
+}
+
+/// Attempt one modern (2026-07-28) request, bounded by the same deadline as
+/// `post`. On success or a recognized-modern error, this is the entire
+/// connect cost; on anything else, the caller falls back to the legacy
+/// handshake (see mcp_rpc.connectHttp).
+pub fn probe(http: *HttpTransport, body: []const u8, meta: RequestMeta) !ProbeReply {
+    var done_buf: [2]ProbeDone = undefined;
+    var select: Io.Select(ProbeDone) = .init(http.client.io, &done_buf);
+    select.concurrent(.probed, probeTask, .{ http, body, meta }) catch
+        return error.McpRequestTimedOut;
+    select.concurrent(.timeout, httpPostTimeout, .{http.client.io}) catch {
+        const only = select.await() catch |err| {
+            cancelProbe(&select, http.client.allocator);
+            return err;
+        };
+        select.cancelDiscard();
+        return only.probed;
+    };
+
+    const first = select.await() catch |err| {
+        cancelProbe(&select, http.client.allocator);
+        return err;
+    };
+    switch (first) {
+        .probed => |result| {
+            select.cancelDiscard();
+            return result;
+        },
+        .timeout => {
+            while (select.cancel()) |late| switch (late) {
+                .probed => |result| freeLateProbe(http.client.allocator, result),
                 .timeout => {},
             };
             return error.McpRequestTimedOut;

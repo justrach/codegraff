@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Offline end-to-end smoke for Graff's modern (2026-07-28) Streamable HTTP
-MCP probe: a server that answers the first, handshake-free `tools/list`
-request costs exactly one POST — no `initialize`, no
-`notifications/initialized`. See test-mcp-legacy-fallback.py for the
-backward-compat proof (a server that rejects the modern probe)."""
+"""Offline end-to-end proof that graff's HTTP MCP client still falls back to
+the pre-2026-07-28 handshake byte-for-byte. The fixture answers the modern
+probe (an unadorned `tools/list`) with a 400 shaped like the real TS SDK's
+pre-initialize rejection, then requires the legacy `initialize` ->
+`notifications/initialized` -> `tools/list` sequence — each request must be
+indistinguishable from what graff sent before this migration: no `_meta`,
+no `Mcp-Method`/`Mcp-Name` header, and the negotiated `Mcp-Session-Id`
+echoed once the fixture has minted one."""
 
 from __future__ import annotations
 
@@ -18,12 +21,20 @@ import threading
 from typing import Any
 
 
-MODERN_PROTOCOL = "2026-07-28"
-RESERVED_META_KEYS = (
-    "io.modelcontextprotocol/protocolVersion",
-    "io.modelcontextprotocol/clientInfo",
-    "io.modelcontextprotocol/clientCapabilities",
-)
+LEGACY_PROTOCOL = "2025-11-25"
+NEGOTIATED_PROTOCOL = "2025-06-18"
+SESSION_ID = "graff-mcp-fixture-session"
+
+# The real TS SDK's shape for "you didn't call initialize first" — id is
+# null because the server never learned graff's request id.
+MODERN_PROBE_REJECTION = json.dumps(
+    {
+        "jsonrpc": "2.0",
+        "error": {"code": -32000, "message": "Bad Request: Server not initialized"},
+        "id": None,
+    },
+    separators=(",", ":"),
+).encode()
 
 
 class McpFixture(BaseHTTPRequestHandler):
@@ -35,11 +46,19 @@ class McpFixture(BaseHTTPRequestHandler):
     def log_message(self, _format: str, *_args: object) -> None:
         pass
 
-    def _respond(self, status: int, body: bytes = b"", content_type: str | None = None) -> None:
+    def _respond(
+        self,
+        status: int,
+        body: bytes = b"",
+        content_type: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Length", str(len(body)))
         if content_type is not None:
             self.send_header("Content-Type", content_type)
+        if session_id is not None:
+            self.send_header("Mcp-Session-Id", session_id)
         self.end_headers()
         if body:
             self.wfile.write(body)
@@ -69,37 +88,72 @@ class McpFixture(BaseHTTPRequestHandler):
                     }
                 )
 
-            assert ordinal == 1, f"expected exactly one request, saw a {ordinal}th"
-            assert message["method"] == "tools/list"
-            assert message["id"] == 1
-            meta = message["params"]["_meta"]
-            for key in RESERVED_META_KEYS:
-                assert key in meta, f"missing reserved _meta key {key}"
-            assert meta["io.modelcontextprotocol/protocolVersion"] == MODERN_PROTOCOL
-            assert self.headers.get("Mcp-Protocol-Version") == MODERN_PROTOCOL
-            assert self.headers.get("Mcp-Method") == "tools/list"
-            assert self.headers.get("Mcp-Session-Id") is None
+            # Every legacy-shaped request (everything after the modern probe)
+            # must carry neither Mcp-Method nor Mcp-Name — that pair only
+            # exists in the stateless 2026-07-28 wire format.
+            if ordinal > 1:
+                assert self.headers.get("Mcp-Method") is None
+                assert self.headers.get("Mcp-Name") is None
+                assert "_meta" not in raw.decode("utf-8")
 
+            if ordinal == 1:
+                # The modern probe: an unadorned tools/list, no handshake.
+                assert message["method"] == "tools/list"
+                assert message["id"] == 1
+                assert "_meta" in message["params"]
+                assert self.headers.get("Mcp-Protocol-Version") == "2026-07-28"
+                assert self.headers.get("Mcp-Method") == "tools/list"
+                assert self.headers.get("Mcp-Session-Id") is None
+                self._respond(400, MODERN_PROBE_REJECTION, "application/json")
+                return
+
+            if ordinal == 2:
+                assert message["method"] == "initialize"
+                assert message["id"] == 2
+                assert message["params"]["protocolVersion"] == LEGACY_PROTOCOL
+                assert self.headers.get("Mcp-Protocol-Version") == LEGACY_PROTOCOL
+                # No session minted yet: nothing to echo on the request that
+                # establishes one.
+                assert self.headers.get("Mcp-Session-Id") is None
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {
+                            "protocolVersion": NEGOTIATED_PROTOCOL,
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "fixture", "version": "1"},
+                        },
+                    },
+                    separators=(",", ":"),
+                ).encode()
+                self._respond(200, body, "application/json", SESSION_ID)
+                return
+
+            assert self.headers.get("Mcp-Protocol-Version") == NEGOTIATED_PROTOCOL
+            assert self.headers.get("Mcp-Session-Id") == SESSION_ID
+            if ordinal == 3:
+                assert message == {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                    "params": {},
+                }
+                self._respond(202)
+                return
+
+            assert ordinal == 4
+            assert message["method"] == "tools/list"
+            assert message["id"] == 3
             body = json.dumps(
                 {
                     "jsonrpc": "2.0",
-                    "id": 1,
+                    "id": 3,
                     "result": {
                         "tools": [
                             {
                                 "name": "fixture_search",
                                 "description": "Search public fixture docs.",
-                                "inputSchema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "query": {
-                                            "oneOf": [
-                                                {"type": "string"},
-                                                {"type": "null"},
-                                            ]
-                                        }
-                                    },
-                                },
+                                "inputSchema": {"type": "object", "properties": {}},
                             }
                         ]
                     },
@@ -119,7 +173,7 @@ def run(graff: Path) -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        with tempfile.TemporaryDirectory(prefix="graff-mcp-http-") as temp:
+        with tempfile.TemporaryDirectory(prefix="graff-mcp-legacy-") as temp:
             workspace = Path(temp)
             (workspace / ".mcp.json").write_text(
                 json.dumps(
@@ -168,11 +222,18 @@ def run(graff: Path) -> None:
                 )
             if McpFixture.failure is not None:
                 raise AssertionError("MCP fixture rejected a request") from McpFixture.failure
-            assert len(McpFixture.requests) == 1, McpFixture.requests
+            assert len(McpFixture.requests) == 4, McpFixture.requests
             assert (
-                f"[mcp:fixture] connected (mcp {MODERN_PROTOCOL}) — 1 tool(s)"
+                f"[mcp:fixture] connected (mcp {NEGOTIATED_PROTOCOL}) — 1 tool(s)"
                 in completed.stderr
             ), completed.stderr
+            # Byte-identity guard across the three legacy requests: no _meta
+            # anywhere, and Mcp-Session-Id echoed once minted (requests 3-4;
+            # request 2 is the one that establishes it, so it has none yet).
+            for i, req in enumerate(McpFixture.requests[1:], start=2):
+                assert "_meta" not in req["raw"], (i, req)
+                if i >= 3:
+                    assert req["session"] == SESSION_ID, (i, req)
             serialized = json.dumps(McpFixture.requests, separators=(",", ":"))
             assert str(workspace) not in serialized
             assert "fixture-not-used" not in serialized
@@ -190,7 +251,7 @@ def main() -> int:
     if not graff.is_file():
         parser.error(f"graff binary not found: {graff}")
     run(graff)
-    print("Streamable HTTP MCP E2E passed")
+    print("Legacy fallback MCP E2E passed")
     return 0
 
 
