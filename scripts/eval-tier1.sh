@@ -180,7 +180,15 @@ if wanted sdk; then
     skip_dependent sdk
   else
     announce sdk "the committed SDKs match \`graff --schema\`"
-    if python3 sdk/generate.py --harness ./zig-out/bin/graff >/dev/null; then
+    # The generator rewrites sdk/ IN PLACE, so running it over uncommitted work
+    # there destroys it silently. Refuse instead: the check cannot tell a stale
+    # commit from an edit in progress, and only one of those is safe to clobber.
+    if [ -n "$(git status --porcelain -- sdk/)" ]; then
+      printf '  sdk/ has uncommitted changes; skipping rather than overwriting them:\n'
+      git status --porcelain -- sdk/ | sed 's/^/    /'
+      printf '  commit or stash them, then rerun: scripts/eval-tier1.sh --only sdk\n'
+      record_fail sdk
+    elif python3 sdk/generate.py --harness ./zig-out/bin/graff >/dev/null; then
       if git diff --exit-code --stat -- sdk/; then
         printf '  sdk/ is in sync with the schema\n'
       else

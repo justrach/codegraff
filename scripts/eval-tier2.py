@@ -238,6 +238,14 @@ def main() -> None:
                              indent=2))
             return
         problems = evaluate(case, run)
+        # A harness that crashed, hung, or died instantly must FAIL the case on
+        # its own, not merely annotate someone else's failure. Without this a
+        # case whose assertions are all upper bounds passes against a binary
+        # that never ran at all.
+        if run.exit_code not in (0, None):
+            problems.append(f"graff exited {run.exit_code}")
+        elif run.exit_code is None:
+            problems.append("graff did not exit (timed out)")
         if problems:
             failed.append(case["id"])
             print(f"  FAIL  {case['id']}")
