@@ -27,6 +27,14 @@ const runSub = subagent.runSub;
 const scoreVariants = subagent.scoreVariants;
 const max_workflow_tasks = subagent.max_workflow_tasks;
 
+// Sibling-imported directly (not through subagent.zig, which sits at the
+// 600-line cap): the harness's own retry-safety verdict from subagentFailure,
+// consumed at both retry sites below so a task the harness already knows
+// can't be helped by a retry (auth, invalid args, an unavailable model)
+// doesn't get retried anyway.
+const subagent_run = @import("subagent_run.zig");
+const failureAllowsRetry = subagent_run.failureAllowsRetry;
+
 const fleet = @import("fleet.zig");
 const Isolation = fleet.Isolation; // #276 P0-1
 const telemetry = @import("telemetry.zig");
@@ -121,8 +129,14 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
         const prompt = pipelinePrompt(arena, st.prompt, item, prev, stage_no) catch |e| return failure(gpa, e);
         var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback)) |r| r.output else |e| failure(gpa, e);
         if (out.is_error) {
-            gpa.free(out.text);
-            out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback)) |r| r.output else |e| failure(gpa, e);
+            // Only spend the one retry (#2) when the harness's own
+            // classification hasn't already ruled it out (auth, invalid
+            // args, an unavailable model) — those stay failed below without
+            // wasting a second attempt.
+            if (failureAllowsRetry(out.text)) {
+                gpa.free(out.text);
+                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback)) |r| r.output else |e| failure(gpa, e);
+            }
             if (out.is_error) {
                 gpa.free(out.text);
                 return .{
@@ -329,9 +343,13 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // for the next one. We can't reliably tell a transient failure from a
         // deterministic one, so we retry every failure exactly once: a permanent
         // failure just costs one more attempt and stays failed.
+        // Failures the harness already classified as not retry-safe (auth, an
+        // invalid argument, an unavailable model — see failureAllowsRetry) are
+        // excluded here: retrying the whole phase would only double the cost
+        // of a broken run for zero chance of success.
         var fidx: [max_workflow_tasks]usize = undefined;
         var nf: usize = 0;
-        for (outputs, 0..) |out, i| if (out.is_error) {
+        for (outputs, 0..) |out, i| if (out.is_error and failureAllowsRetry(out.text)) {
             fidx[nf] = i;
             nf += 1;
         };
