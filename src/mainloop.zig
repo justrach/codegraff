@@ -25,6 +25,7 @@ const session = @import("session.zig");
 const repl_glue = @import("repl_glue.zig");
 const goal_state = @import("goal_state.zig");
 const goal_flow = @import("goal_flow.zig");
+const goal_pacing = @import("goal_pacing.zig");
 const eval_memory = @import("eval_memory.zig");
 const mainloop_score = @import("mainloop_score.zig");
 const mainloop_trace = @import("mainloop_trace.zig");
@@ -70,6 +71,7 @@ pub fn run(ctx: *Ctx) !void {
     var loop_iters_left: u32 = 0; // continuation turns still authorized this /loop run
     var loop_continue_armed = false; // a continuation turn is queued for the next readline
     var loop_list: goal_flow.LoopListGate = .{}; // diff-gate for the checklist copy in continuation prompts (#318)
+    var loop_clock: goal_pacing.LoopClock = .{}; // this run's wall clock: `/loop 30m <prompt>` arms a deadline, and every continuation is told where it stands
 
     while (true) {
         // Titles can land between interactions but never join the response path.
@@ -83,6 +85,7 @@ pub fn run(ctx: *Ctx) !void {
             loop_iters_left = 0; // #226: a user steer/force cancels the autonomous /loop run
             loop_continue_armed = false;
             loop_list.reset();
+            loop_clock.clear(ctx.root); // and its deadline stops reaching subagents
             if (e.force) {
                 try ctx.out.print("{s}↳ force ›{s} {s}\n", .{ style.yellow, style.reset, e.text });
             } else {
@@ -100,7 +103,8 @@ pub fn run(ctx: *Ctx) !void {
             // compaction input, so the current epoch's list is pasted only when
             // it changed or a history rewrite destroyed the pasted copies (#318).
             const note = try loop_list.note(ctx.arena, ctx.root);
-            break :blk try std.fmt.allocPrint(ctx.arena, "/loop {s}", .{note});
+            const pace = try goal_pacing.pacingNote(ctx.arena, util.unixMs(ctx.io), loop_clock, loop_iter_cap - loop_iters_left, loop_iter_cap);
+            break :blk try std.fmt.allocPrint(ctx.arena, "/loop {s}\n{s}", .{ note, pace });
         } else if (ctx.interactive) blk: {
             try ctx.root.prompt();
             break :blk (try readline.readLine(ctx.root, ctx.in, ctx.out, ctx.gpa, ctx.history, ctx.linebuf)) orelse break;
@@ -110,22 +114,16 @@ pub fn run(ctx: *Ctx) !void {
         title_jobs.poll(ctx);
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
-        const loop_prompt: ?[]const u8 = if (!main_mod.json_mode and std.mem.startsWith(u8, line, "/loop "))
-            std.mem.trim(u8, line["/loop".len..], " \t")
-        else
-            null;
-        // A checklist finished BEFORE this /loop is not evidence its prompt is done:
-        // stale todos_dirty ended a standing goal's next run at iteration 1 as accepted (#318).
-        if (loop_prompt != null and !is_loop_continuation) ctx.root.todos_dirty = false;
+        // `/loop [<n>s|m|h] <prompt>`: an unambiguous duration arms this run's wall clock; anything else is prompt.
+        const loop_budget: ?goal_pacing.LoopBudget = if (main_mod.json_mode) null else goal_pacing.loopBudgetFromLine(line);
+        const loop_prompt: ?[]const u8 = if (loop_budget) |b| b.prompt else null;
+        // A fresh line starts (or ends) a /loop run: its wall clock begins here, and stale todos_dirty
+        // is dropped - a checklist finished BEFORE this prompt ended the next run at iteration 1 (#318).
+        if (!is_loop_continuation) goal_pacing.armFreshRun(&loop_clock, ctx.root, util.unixMs(ctx.io), loop_budget);
         var review_prompt: ?[]const u8 = if (!main_mod.json_mode) review.promptFromLine(line) else null;
-        // /goal <objective>: set the standing goal AND run it as the first turn
-        // right away — codex/opencode both start the loop on a goal instead of
-        // just recording it. Bare /goal (show) and /goal clear/off stay commands.
-        const goal_prompt: ?[]const u8 = if (!main_mod.json_mode and std.mem.startsWith(u8, line, "/goal ")) gblk: {
-            const g = std.mem.trim(u8, line["/goal".len..], " \t");
-            if (g.len == 0 or std.ascii.eqlIgnoreCase(g, "clear") or std.ascii.eqlIgnoreCase(g, "off") or std.ascii.eqlIgnoreCase(g, "pause") or std.ascii.eqlIgnoreCase(g, "resume") or std.ascii.eqlIgnoreCase(g, "status")) break :gblk null;
-            break :gblk g;
-        } else null;
+        // /goal <objective>: set the standing goal AND run it as the first turn right away — codex/opencode
+        // both start the loop on a goal instead of just recording it (the parse itself is in repl_glue).
+        const goal_prompt: ?[]const u8 = if (main_mod.json_mode) null else repl_glue.goalPromptFromLine(line);
         if (!main_mod.json_mode) {
             const l = if (line.len > 0 and line[0] == '/') line[1..] else line;
             if (std.mem.eql(u8, l, "exit") or std.mem.eql(u8, l, "quit") or std.mem.eql(u8, l, "q")) break;
@@ -570,7 +568,7 @@ pub fn run(ctx: *Ctx) !void {
                 loop_iters_left = loop_iter_cap; // fresh /loop run: arm the bound
                 loop_list.reset(); // and a clean gate: its first continuation carries the list in full
             }
-            switch (goal_flow.loopTurnDecision(ctx.root, loop_iters_left)) {
+            switch (goal_flow.loopTurnDecision(ctx.root, loop_iters_left, util.unixMs(ctx.io))) {
                 .continue_turn => {
                     loop_iters_left -= 1; // consume one credit for the queued continuation
                     loop_continue_armed = true;
@@ -579,6 +577,7 @@ pub fn run(ctx: *Ctx) !void {
                     loop_iters_left = 0;
                     loop_continue_armed = false;
                     loop_list.reset();
+                    loop_clock.clear(ctx.root);
                     // Only work_done reaches `accepted`, so the loop drove the
                     // goal to done; a --goal standing objective outlives it (#318).
                     if (outcome == .accepted) _ = goal_flow.acceptLoopOutcome(ctx.root);

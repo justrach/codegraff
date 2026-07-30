@@ -48,6 +48,7 @@ fn blankRoot(arena: Allocator) Agent {
     root.completed = null;
     root.tool_calls_this_turn = 0;
     root.goal_note_fp = 0;
+    root.loop_deadline_ms = null;
     return root;
 }
 
@@ -317,7 +318,7 @@ test "/loop: a restored all-[x] list is idle, not accepted (#318)" {
     );
     try std.testing.expect(goal_state.allDone(root.todos.items, 2));
     try std.testing.expect(!root.todos_dirty); // the freshness flag is what saves it
-    try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, goal_flow.loopTurnDecision(&root, 25, 0).stop);
     try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status); // and nothing was retired
 }
 
@@ -329,7 +330,7 @@ test "/loop: a finished list accepts and retires only a retirable goal (#318)" {
     root.goal = .{ .objective = "ship phase 2", .epoch = 1 };
     try root.todos.append(ar, .{ .content = "fix the tests", .status = "completed", .epoch = 1 });
     goal_state.noteTodoWrite(&root); // THIS process finished the list: real evidence
-    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25, 0).stop);
     try std.testing.expect(goal_flow.acceptLoopOutcome(&root));
     try std.testing.expectEqual(agent_mod.GoalStatus.complete, root.goal.?.status);
 
@@ -337,11 +338,11 @@ test "/loop: a finished list accepts and retires only a retirable goal (#318)" {
     // policy for the whole session: the loop still stops as accepted, but
     // neither objective is the loop's to retire (#318).
     root.goal = .{ .objective = "ship phase 2", .epoch = 1, .status = .paused };
-    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25, 0).stop);
     try std.testing.expect(!goal_flow.acceptLoopOutcome(&root));
     try std.testing.expectEqual(agent_mod.GoalStatus.paused, root.goal.?.status);
     root.goal = .{ .objective = "keep the tree green", .epoch = 1, .standing = true };
-    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25, 0).stop);
     try std.testing.expect(!goal_flow.acceptLoopOutcome(&root));
     try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status);
 }
@@ -359,20 +360,20 @@ test "/loop: a refused completion is work, and a leftover complete goal decides 
     // to keep alive, so the promised second call could never happen (#318).
     goal_state.noteCompletionRefused(&root);
     try std.testing.expectEqual(@as(u64, 0), root.tool_calls_this_turn);
-    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25)) == .continue_turn);
+    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25, 0)) == .continue_turn);
     // Genuine silence on the same state does stop the loop.
     root.completion_refused = false;
-    try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, goal_flow.loopTurnDecision(&root, 25, 0).stop);
 
     // A goal left .complete by an earlier run or a resume reconciliation must
     // not label a fresh /loop `accepted` at iteration 1 before anything has
     // happened: it decides nothing, exactly like .active.
     root.goal.?.status = .complete;
     root.tool_calls_this_turn = 3;
-    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25)) == .continue_turn);
-    try std.testing.expectEqual(repl_glue.ContinuationOutcome.exhausted, goal_flow.loopTurnDecision(&root, 0).stop);
+    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25, 0)) == .continue_turn);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.exhausted, goal_flow.loopTurnDecision(&root, 0, 0).stop);
     root.tool_calls_this_turn = 0;
-    try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, goal_flow.loopTurnDecision(&root, 25, 0).stop);
 }
 
 test "a fresh /loop cannot stop accepted off a checklist finished before it (#318)" {
@@ -388,14 +389,47 @@ test "a fresh /loop cannot stop accepted off a checklist finished before it (#31
     root.todos_dirty = true;
     root.tool_calls_this_turn = 1;
     // Stale evidence reads as work_done -> accepted on B's very first decision...
-    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25, 0).stop);
     // ...which is why mainloop clears todos_dirty when a FRESH /loop arms: the
     // new prompt starts with no completion evidence of its own, and only a
     // todo_write (or attempt_completion) made DURING the run can stop it.
     root.todos_dirty = false;
-    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25)) == .continue_turn);
+    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25, 0)) == .continue_turn);
     goal_state.noteTodoWrite(&root); // the model re-plans and finishes in-run
-    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25, 0).stop);
+}
+
+test "/loop: a passed wall-clock deadline stops as expired and flips nothing" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    root.goal = .{ .objective = "ship phase 2", .epoch = 1, .status = .active };
+    try root.todos.append(ar, .{ .content = "still open", .status = "pending", .epoch = 1 });
+    root.tool_calls_this_turn = 3; // the turn worked; it simply ran out of clock
+    root.loop_deadline_ms = 10_000; // `/loop 30m ...` armed this
+
+    // One second short of it the run continues exactly as before.
+    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25, 9_999)) == .continue_turn);
+    // On it, the run stops with its own named outcome. This is the deadline's
+    // ONLY hard effect: #224 dropped goal budget ENFORCEMENT and that stands,
+    // so the goal is untouched and the checklist is left exactly as it is.
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.expired, goal_flow.loopTurnDecision(&root, 25, 10_000).stop);
+    try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status);
+    try std.testing.expectEqual(@as(usize, 1), goal_state.openCount(root.todos.items, 1));
+    // expired is not accepted, so mainloop never runs acceptLoopOutcome on it -
+    // and if it somehow did, the goal is still active work, not a completion.
+    try std.testing.expect(goal_flow.acceptLoopOutcome(&root)); // proof the two paths differ
+    root.goal.?.status = .active;
+
+    // Real completion evidence outranks the clock: a run that finished on its
+    // last second reports accepted, not expired.
+    root.completed = "shipped";
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25, 99_999).stop);
+    // And a run with no budget never expires, however long it goes.
+    root.completed = null;
+    root.loop_deadline_ms = null;
+    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25, 1 << 40)) == .continue_turn);
 }
 
 test "an accepted claim while paused still consumes the double-check arm (#318)" {

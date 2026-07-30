@@ -149,8 +149,14 @@ pub fn applyGoalSet(root: *Agent, objective: []const u8, now_ms: i64) GoalSetRes
 /// continuations on a one-turn prompt), but a REFUSED attempt_completion is
 /// work, not silence. A session with no goal reads as .active, so a bare /loop
 /// is governed by its work and its iteration bound alone.
-pub fn loopTurnDecision(root: *Agent, iters_left: u32) repl_glue.ContinuationDecision {
+pub fn loopTurnDecision(root: *Agent, iters_left: u32, now_ms: i64) repl_glue.ContinuationDecision {
     const work_done = root.completed != null or goal_state.checklistFinished(root);
+    // A `/loop 30m ...` deadline is the run's ONLY hard effect (#224 dropped
+    // goal budget enforcement, and that stands): it stops the run and names the
+    // outcome. It flips no goal status and is never `accepted` - the work is
+    // unfinished, that is the whole point. Real completion evidence still wins,
+    // so a run that finished on its last second reports accepted, not expired.
+    if (!work_done) if (root.loop_deadline_ms) |d| if (now_ms >= d) return .{ .stop = .expired };
     const model_stopped = repl_glue.turnStopped(root.tool_calls_this_turn, root.completion_refused);
     const gstatus: agent_mod.GoalStatus = if (root.goal) |g| g.status else .active;
     return repl_glue.continuationDecision(gstatus, work_done, model_stopped, iters_left);
@@ -240,6 +246,7 @@ fn flowRoot(arena: Allocator) Agent {
     root.pending_goal_note = null;
     root.history_rewrites = 0;
     root.tool_calls_this_turn = 0;
+    root.loop_deadline_ms = null;
     return root;
 }
 

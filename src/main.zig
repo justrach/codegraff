@@ -595,4 +595,5 @@ test { // pull in tests from imported modules (mcp.zig)
     _ = @import("goal_persist_tests.zig");
     _ = @import("goal_flow.zig");
     _ = @import("goal_todo.zig");
+    _ = @import("goal_pacing.zig");
 }

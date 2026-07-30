@@ -465,7 +465,7 @@ other animation names remain available.
 /ultracode      toggle persistent multi-agent workflow mode
 /animation      choose a thinking animation (`/animation` lists every option)
 /goal [text]    set/show a standing objective; /goal pause|resume|status|clear
-/loop <prompt>  work autonomously toward the prompt, stopping with a named outcome when done or blocked
+/loop [30m] <prompt>  work autonomously toward the prompt, stopping with a named outcome; an optional 30s/30m/2h budget paces the run
 /review <target> one read-only review pass; no edits, delegation, workflows, or web access
 /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
 /image <path>   attach an image to your next message (vision models only)
@@ -491,8 +491,15 @@ turns it back on, and `/goal status` shows the objective and its current state.
 (plan, act, verify) instead of pausing for confirmation between routine steps,
 and stops on its own with a named outcome: accepted once the work is done, idle
 when the model stops making tool progress without claiming completion, cancelled
-or blocked when you step in or it needs you, and exhausted when a safety limit
-is hit.
+or blocked when you step in or it needs you, exhausted when a safety limit is
+hit, and expired when a time budget runs out.
+Start the prompt with a duration to give the run one: `/loop 30m fix the flaky
+test` (also `45s`, `2h`). Each continuation turn then tells the model where it
+stands: which continuation it is on, how long the run has taken, how much of the
+budget is left, and one phase hint (explore, implement, finish, wrap up).
+Nothing is enforced except the stop itself, and the model is never cut off
+mid-turn. Subagents spawned during a timed run are told the parent's remaining
+time, minus a margin for the parent to integrate their results.
 `/review <target or instructions>` is the deliberately narrower path for code
 review: it suppresses goal/eval/ultracode steering, admits only local
 read/search tools and read-only shell inspection, and runs with fresh

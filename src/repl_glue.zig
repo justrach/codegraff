@@ -213,6 +213,7 @@ pub const ContinuationOutcome = enum {
     accepted, // the goal's checklist is complete (or the goal itself is complete)
     idle, // the turn did no tool work and asserted nothing - the loop stops, but nothing is done (#318)
     exhausted, // hit the hard per-/loop iteration bound with work still open
+    expired, // the run's wall-clock budget (`/loop 30m ...`) ran out with work still open
     blocked, // the goal is blocked and needs the user
     cancelled, // the goal was paused — the user stepped in
 };
@@ -566,6 +567,25 @@ pub fn isSlashCommandLine(line: []const u8) bool {
     if (token.len > 1 and std.mem.indexOfScalar(u8, token[1..], '/') != null) return false;
 
     return true;
+}
+
+/// `/goal <objective>` sets the standing goal AND runs it as the first turn, so the caller needs the
+/// objective back as a prompt; a bare `/goal` and the lifecycle words stay commands. Extracted from
+/// mainloop (600-line cap), and kept beside isSlashCommandLine: both settle "command, or prompt?".
+pub fn goalPromptFromLine(line: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, line, "/goal ")) return null;
+    const g = std.mem.trim(u8, line["/goal".len..], " \t");
+    if (g.len == 0) return null;
+    for ([_][]const u8{ "clear", "off", "pause", "resume", "status" }) |sub|
+        if (std.ascii.eqlIgnoreCase(g, sub)) return null;
+    return g;
+}
+
+test "goalPromptFromLine: an objective runs a turn, the lifecycle words do not" {
+    try std.testing.expectEqualStrings("ship phase 2", goalPromptFromLine("/goal   ship phase 2  ").?);
+    try std.testing.expect(goalPromptFromLine("/goal ") == null); // bare /goal shows the objective
+    try std.testing.expect(goalPromptFromLine("/goal PAUSE") == null); // case-insensitive, like handleCommand
+    try std.testing.expectEqualStrings("clear the flaky tests", goalPromptFromLine("/goal clear the flaky tests").?); // merely STARTS with one
 }
 
 test "absolute path prompts are not mistaken for slash commands" {
