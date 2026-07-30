@@ -46,6 +46,8 @@ pub const agentWorktreeNames = agent_worktree.agentWorktreeNames;
 pub const agentWorktreeCreate = agent_worktree.agentWorktreeCreate;
 pub const isWorktreeStatusDirty = agent_worktree.isWorktreeStatusDirty;
 pub const agentWorktreeFinish = agent_worktree.agentWorktreeFinish;
+pub const KeepReason = agent_worktree.KeepReason;
+pub const keepReasonText = agent_worktree.keepReasonText;
 
 /// True if the current git working tree has uncommitted *tracked* changes
 /// (staged or unstaged). Untracked files (`?? …`) don't count — `git reset
