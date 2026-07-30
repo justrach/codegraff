@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Tracked pre-push hook. The logic lives in scripts/pre-push.sh so it can be
+# read, run, and tested on its own. Enable with scripts/install-hooks.sh.
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/pre-push.sh" "$@"

@@ -1175,6 +1175,66 @@ and the GitHub issues for what's in flight:
 
 ---
 
+## Working on codegraff
+
+Install the tracked git hooks once:
+
+```bash
+scripts/install-hooks.sh
+```
+
+From then on, every push runs **tier 1** of the internal eval set. It is
+deterministic and offline (no provider calls, no network, no spend) and takes
+about 20 seconds warm:
+
+| check | what it holds |
+| --- | --- |
+| `fmt` | `zig fmt --check src build.zig` |
+| `lines` | the 600-line ceiling on hand-written Zig |
+| `reach` | every file that declares tests is reachable from the test root |
+| `build` | `zig build` |
+| `tests` | `zig build test`, and a suite count that may grow but never shrink |
+| `invariants` | the named goal/loop/todo tests actually ran, not just compiled |
+| `sdk` | the committed SDKs still match `graff --schema` |
+
+A push that only touches docs skips the whole thing. When a check fails it names
+the invariant, says which regression it guards, and prints the one-liner that
+reruns only it:
+
+```bash
+scripts/eval-tier1.sh                 # everything
+scripts/eval-tier1.sh --only sdk      # one check
+scripts/eval-tier1.sh --list          # the check names
+```
+
+If you need to push past it, `git push --no-verify` (or `GRAFF_SKIP_PREPUSH=1
+git push`). CI runs the same checks and more, so the hook is a fast local
+opinion, not the last word.
+
+**Tier 2** is the model-backed half, and it is not in the hook because it runs
+the harness for real. The cases live in `evals/harness_behavior.jsonl`, one line
+each, carrying the regression it guards: a goal writes a checklist and finishes
+it, an empty `todo_write` changes nothing, a compaction keeps the items already
+completed, `--max-tool-calls` actually stops the run. The model is scripted, so
+the default run is offline and free:
+
+```bash
+python3 scripts/eval-tier2.py                 # every case, scripted model
+python3 scripts/eval-tier2.py --list          # the cases and what they guard
+python3 scripts/eval-tier2.py --dump <id>     # everything one case did
+python3 scripts/eval-tier2.py --provider anthropic --model claude-sonnet-4-6
+```
+
+Two checks exist because the unit suite could not see the failure. `reach` walks
+the `@import` graph: Zig only runs tests in files the root pulls in, so a
+split-out module nobody references compiles to nothing and the suite still
+reports green. `invariants` goes further, rerunning the suite under
+`-Dtest-filter` to prove the named tests executed, because a test can sit in the
+source and never run. Both are configured as data in
+`scripts/eval/tier1-manifest.json`.
+
+---
+
 ## License
 
 codegraff is licensed under a **modified GNU AGPL-3.0** (see [`LICENSE`](LICENSE)).

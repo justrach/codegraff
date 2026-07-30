@@ -65,12 +65,22 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // `zig build test` — unit tests live in src/main.zig `test "..." {}` blocks.
+    // `-Dtest-filter="<text>"` (repeatable) narrows the run to the tests whose
+    // name contains that text. scripts/eval-tier1.sh uses it to prove the named
+    // goal/loop/todo invariants still run — a test whose module fell out of the
+    // test root exists in the source but never executes.
+    const test_filters = b.option(
+        []const []const u8,
+        "test-filter",
+        "Only run tests whose name contains this text (repeatable)",
+    ) orelse &[_][]const u8{};
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
         }),
+        .filters = test_filters,
     });
     unit_tests.root_module.addOptions("build_options", opts);
     unit_tests.root_module.addImport("zigzag", zigzag.module("zigzag"));
