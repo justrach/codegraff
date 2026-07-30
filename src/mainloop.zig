@@ -53,8 +53,7 @@ pub const Ctx = struct {
     history: *std.ArrayList([]const u8),
     linebuf: *std.ArrayList(u8),
     interactive: bool,
-    sys_normal: []const u8,
-    sys_strict: []const u8,
+    sys_normal: []const u8, // startup-composed BASE; set_agent's reset-to-original path re-derives from this via prompts.setSystemPrompts() (#326)
 };
 
 /// Run turns until EOF/quit; main then performs final save/worktree cleanup.
@@ -209,8 +208,7 @@ pub fn run(ctx: *Ctx) !void {
             if (std.mem.eql(u8, rtype, "set_agent")) {
                 const id = if (parsed.object.get("id")) |v| (if (v == .string) v.string else "") else "";
                 if (id.len == 0) {
-                    ctx.root.sys_normal = ctx.sys_normal;
-                    ctx.root.sys_strict = ctx.sys_strict;
+                    try prompts.setSystemPrompts(ctx.root, ctx.sys_normal, ctx.arena); // #326: reset to the startup base, all four variants
                     ctx.root.rebaseContextMeter();
                     ctx.root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = ctx.root.sys_normal.len });
                     continue;
@@ -220,8 +218,8 @@ pub fn run(ctx: *Ctx) !void {
                     ctx.root.emit(.{ .type = "error", .message = message });
                     continue;
                 };
-                ctx.root.sys_normal = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ ctx.sys_normal, prompt });
-                ctx.root.sys_strict = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ ctx.root.sys_normal, prompts.strict_note });
+                const persona_base = try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ ctx.sys_normal, prompt });
+                try prompts.setSystemPrompts(ctx.root, persona_base, ctx.arena); // #326: recomputes strict + ultra too
                 ctx.root.rebaseContextMeter();
                 ctx.root.emit(.{ .type = "agent", .ok = true, .id = id, .chars = ctx.root.sys_normal.len });
                 continue;
@@ -266,11 +264,11 @@ pub fn run(ctx: *Ctx) !void {
             }
             if (std.mem.eql(u8, rtype, "set_system_prompt")) {
                 const append = if (parsed.object.get("append")) |v| v == .bool and v.bool else false;
-                ctx.root.sys_normal = if (append)
+                const new_base = if (append)
                     try std.fmt.allocPrint(ctx.arena, "{s}\n\n{s}", .{ ctx.root.sys_normal, text })
                 else
                     try ctx.arena.dupe(u8, text);
-                ctx.root.sys_strict = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ ctx.root.sys_normal, prompts.strict_note });
+                try prompts.setSystemPrompts(ctx.root, new_base, ctx.arena); // #326: recomputes strict + ultra too
                 ctx.root.rebaseContextMeter();
                 ctx.root.emit(.{ .type = "system_prompt", .ok = true, .append = append, .chars = ctx.root.sys_normal.len });
                 continue;
@@ -367,7 +365,7 @@ pub fn run(ctx: *Ctx) !void {
         const ultracode_msg = if (ctx.root.review_mode)
             pickers.UltracodeMessage{ .text = msg, .explicit = false }
         else
-            try pickers.applyUltracodeSteering(ctx.arena, msg, base_msg, ctx.root.ultracode_mode or ctx.root.reasoning == .ultra);
+            try pickers.applyUltracodeSteering(ctx.arena, msg, base_msg, prompts.ultracodeActive(ctx.root));
         if (ultracode_msg.explicit) {
             if (!main_mod.json_mode) {
                 if (ctx.interactive) {

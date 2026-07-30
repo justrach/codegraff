@@ -405,10 +405,9 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Root system-prompt layering (base + AGENTS.md/HARNESS.md/CLAUDE.md + --append-system-prompt + active-skill lines + connected-MCP notes) lives
-    // in startup.zig as buildSystemPrompt() — pure over io/arena, returns both prompt strings by value.
-    const sys_prompt = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null, mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"));
-    const sys_normal = sys_prompt.sys_normal;
-    const sys_strict = sys_prompt.sys_strict;
+    // in startup.zig as buildSystemPrompt() — pure over io/arena, returns the composed base by value. buildRootAgent derives every prompt variant
+    // from it via prompts.setSystemPrompts() (#326).
+    const sys_normal = try startup.buildSystemPrompt(io, arena, out, flags.system_prompt_flag, flags.append_system_flag, json_mode or flags.oneshot_prompt != null, mcp_tools, g_codedbpro_licensed, init.environ_map.get("GRAFF_LEARNED_PROMPT"));
     boot.mark(io, "system prompt");
     session_run.learningNotice(io, arena, init.environ_map, out, json_mode or flags.oneshot_prompt != null);
 
@@ -426,7 +425,7 @@ pub fn main(init: std.process.Init) !void {
     // Root Agent construction + post-construction config (session name, persisted thinking/goal/eval settings, session-start trace note) + the
     // backgrounded fleet-champion pull live in session_start.zig. `root`'s pointer fields (snapshots/client/tracer/approvals/registry) all reference
     // already-stable main()-owned storage passed in by address, so returning the constructed Agent by value here is safe.
-    var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, subagent_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, sys_strict, &snaps, flags, telem.endpoint);
+    var root = try session_run.buildRootAgent(gpa, arena, io, &client, default_provider, subagent_provider, init.environ_map, out, in, registry, &approvals, &tracer, sys_normal, &snaps, flags, telem.endpoint);
     root.run_budget = &invocation_budget;
     root.model_catalog = resolved_keys.model_catalog;
     root.stored_keys_loaded = resolved_keys.stored_keys_loaded;
@@ -524,7 +523,6 @@ pub fn main(init: std.process.Init) !void {
         .linebuf = &linebuf,
         .interactive = interactive,
         .sys_normal = sys_normal,
-        .sys_strict = sys_strict,
     };
     try mainloop.run(&loop_ctx);
     try session_run.finalizeSession(gpa, io, arena, out, &root, json_mode);

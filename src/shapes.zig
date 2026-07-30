@@ -3,11 +3,15 @@
 //! name their phases with, and the steering text appended to an ultracode
 //! turn.
 //!
-//! Lives outside pickers.zig (which owns the steering call site) for two
-//! reasons: pickers.zig is at the 600-line cap, and the slot vocabulary is
-//! not a picker concern — it is the third component of the MAP-Elites cell
-//! key (#290). Keeping this a std-only leaf module, prompts.zig-style, lets
-//! both the steering path and the fleet scoring path import it with no cycle.
+//! Also applyUltracodeSteering() itself (#326, moved from pickers.zig which
+//! is at the 600-line cap): the explicit-codeword and persistent steering
+//! notes are shape-catalog concerns first, picker concerns second.
+//!
+//! Lives outside pickers.zig for two reasons: pickers.zig is at the
+//! 600-line cap, and the slot vocabulary is not a picker concern — it is
+//! the third component of the MAP-Elites cell key (#290). A leaf module
+//! (std + util.zig, itself std-only), prompts.zig-style, so both the
+//! steering path and the fleet scoring path import it with no cycle.
 //!
 //! Why a fixed catalog at all: left to itself the model authors a different
 //! workflow shape every run, so two scores for the same persona are not
@@ -16,6 +20,8 @@
 //! accrues real fitness across runs.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const util = @import("util.zig");
 
 /// Canonical phase/stage labels an ultracode workflow names its slots with.
 ///
@@ -201,4 +207,84 @@ test "shape catalog never tells a dependent chain to isolate into worktrees" {
     try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "Never set it on a dependent chain") != null);
     // The old unconditional phrasing must not come back.
     try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "Give file-editing tasks isolation") == null);
+}
+
+pub const UltracodeMessage = struct {
+    text: []const u8,
+    explicit: bool,
+};
+
+const ultracode_explicit_head =
+    \\[harness note: the user invoked the "ultracode" codeword, opting
+    \\this turn into multi-agent orchestration. Fulfill the request with
+    \\the workflow tool.
+    \\Tell code-exploration subagents to go through the repo with the
+    \\codedb tool (search / symbol / callers / outline / context) before
+    \\reaching for bash grep — it is indexed and structural.
+    \\Use the workflow even if you could do the work solo; skip it only
+    \\if the message needs a purely conversational reply.
+;
+
+// The explicit-codeword note carries the shape catalog (#293): a one-shot
+// invocation can't rely on the system prompt already having it, so it
+// instantiates one of the five known shapes under canonical slot names here.
+const ultracode_explicit_note = ultracode_explicit_head ++ "\n\n" ++ shape_catalog_note ++ "]";
+
+// No catalog here (#326): it used to ride on every turn while ultracode was
+// on, landing in compaction input every turn. setSystemPrompts() composes
+// it into sys_ultra/sys_ultra_strict once; this note just points at it.
+const ultracode_persistent_note =
+    \\[harness note: ultracode mode is enabled for this session. Use the
+    \\workflow tool for coding tasks — your system prompt already has the
+    \\shape catalog; instantiate one of those shapes rather than freeforming
+    \\a structure. Tell code-exploration subagents to go through the repo
+    \\with the codedb tool (search / symbol / callers / outline / context)
+    \\before reaching for bash grep — it is indexed and structural.]
+;
+
+/// `raw` is what the user actually typed this turn; `msg` is the assembled
+/// turn message (goal/eval/loop/plan notes may already be appended). The
+/// explicit-codeword scan runs ONLY on `raw`: harness-assembled notes replay
+/// prior context — a /goal set during an ultracode task, a todo echoed
+/// through the goal note — and scanning them made the codeword sticky, so
+/// every turn after /clear bannered as explicit even though the user never
+/// typed the word (#178).
+pub fn applyUltracodeSteering(arena: Allocator, msg: []const u8, raw: []const u8, persistent_enabled: bool) !UltracodeMessage {
+    const explicit = util.indexOfIgnoreCase(raw, "ultracode") != null;
+    if (explicit) {
+        return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_explicit_note }), .explicit = true };
+    }
+    if (persistent_enabled) {
+        return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_persistent_note }), .explicit = false };
+    }
+    return .{ .text = msg, .explicit = false };
+}
+
+test "applyUltracodeSteering (#178): the codeword scan runs on the raw typed text, not the assembled msg" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // The word arriving via an appended harness note (e.g. a standing goal)
+    // must NOT count as an invocation — and with persistent mode off, the
+    // message passes through untouched.
+    const assembled = "write the report\n\n[harness note: goal — ultracode the pipeline]";
+    const via_note = try applyUltracodeSteering(a, assembled, "write the report", false);
+    try std.testing.expect(!via_note.explicit);
+    try std.testing.expectEqualStrings(assembled, via_note.text);
+    // The user actually typing it does (case-insensitive) and appends the note.
+    const typed = try applyUltracodeSteering(a, "ULTRACODE fix the bug", "ULTRACODE fix the bug", false);
+    try std.testing.expect(typed.explicit);
+    try std.testing.expect(std.mem.indexOf(u8, typed.text, "codeword") != null);
+    // Persistent mode still applies its note without ever claiming explicit.
+    const persistent = try applyUltracodeSteering(a, assembled, "write the report", true);
+    try std.testing.expect(!persistent.explicit);
+    try std.testing.expect(std.mem.indexOf(u8, persistent.text, "ultracode mode is enabled") != null);
+    // #326: explicit carries the catalog (can't rely on the system prompt);
+    // persistent does not — that every-turn re-paste is what #326 removes,
+    // since setSystemPrompts() composes it into sys_ultra/sys_ultra_strict.
+    try std.testing.expect(std.mem.indexOf(u8, typed.text, "Pick ONE shape") != null);
+    try std.testing.expect(std.mem.indexOf(u8, typed.text, "synthesize") != null);
+    try std.testing.expect(std.mem.endsWith(u8, typed.text, "]"));
+    try std.testing.expect(std.mem.indexOf(u8, persistent.text, "Pick ONE shape") == null);
+    try std.testing.expect(std.mem.indexOf(u8, persistent.text, "already has the") != null);
 }

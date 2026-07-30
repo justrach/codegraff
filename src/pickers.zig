@@ -398,75 +398,10 @@ pub fn listPickerAt(root: *Agent, arena: Allocator, out: *Io.Writer, title: []co
     }
 }
 
-pub const UltracodeMessage = struct {
-    text: []const u8,
-    explicit: bool,
-};
-
-const ultracode_explicit_head =
-    \\[harness note: the user invoked the "ultracode" codeword, opting
-    \\this turn into multi-agent orchestration. Fulfill the request with
-    \\the workflow tool.
-    \\Tell code-exploration subagents to go through the repo with the
-    \\codedb tool (search / symbol / callers / outline / context) before
-    \\reaching for bash grep — it is indexed and structural.
-    \\Use the workflow even if you could do the work solo; skip it only
-    \\if the message needs a purely conversational reply.
-;
-
-const ultracode_persistent_head =
-    \\[harness note: ultracode mode is enabled for this session. Use the
-    \\workflow tool for coding tasks. Tell code-exploration subagents to go
-    \\through the repo with the codedb tool (search / symbol / callers /
-    \\outline / context) before reaching for bash grep — it is indexed and
-    \\structural.
-;
-
-// Both steering notes carry the shape catalog (#293), so an ultracode turn
-// instantiates one of the five known shapes under canonical slot names instead
-// of inventing a fresh structure each run — scores from differently-shaped runs
-// are not comparable, which is what kept the fleet from accruing real fitness.
-const ultracode_explicit_note = ultracode_explicit_head ++ "\n\n" ++ shapes.shape_catalog_note ++ "]";
-const ultracode_persistent_note = ultracode_persistent_head ++ "\n\n" ++ shapes.shape_catalog_note ++ "]";
-
-/// `raw` is what the user actually typed this turn; `msg` is the assembled
-/// turn message (goal/eval/loop/plan notes may already be appended). The
-/// explicit-codeword scan runs ONLY on `raw`: harness-assembled notes replay
-/// prior context — a /goal set during an ultracode task, a todo echoed
-/// through the goal note — and scanning them made the codeword sticky, so
-/// every turn after /clear bannered as explicit even though the user never
-/// typed the word (#178).
-pub fn applyUltracodeSteering(arena: Allocator, msg: []const u8, raw: []const u8, persistent_enabled: bool) !UltracodeMessage {
-    const explicit = util.indexOfIgnoreCase(raw, "ultracode") != null;
-    if (explicit) {
-        return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_explicit_note }), .explicit = true };
-    }
-    if (persistent_enabled) {
-        return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_persistent_note }), .explicit = false };
-    }
-    return .{ .text = msg, .explicit = false };
-}
-
-test "applyUltracodeSteering (#178): the codeword scan runs on the raw typed text, not the assembled msg" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    // The word arriving via an appended harness note (e.g. a standing goal)
-    // must NOT count as an invocation — and with persistent mode off, the
-    // message passes through untouched.
-    const assembled = "write the report\n\n[harness note: goal — ultracode the pipeline]";
-    const via_note = try applyUltracodeSteering(a, assembled, "write the report", false);
-    try std.testing.expect(!via_note.explicit);
-    try std.testing.expectEqualStrings(assembled, via_note.text);
-    // The user actually typing it does (case-insensitive) and appends the note.
-    const typed = try applyUltracodeSteering(a, "ULTRACODE fix the bug", "ULTRACODE fix the bug", false);
-    try std.testing.expect(typed.explicit);
-    try std.testing.expect(std.mem.indexOf(u8, typed.text, "codeword") != null);
-    // Persistent mode still applies its note without ever claiming explicit.
-    const persistent = try applyUltracodeSteering(a, assembled, "write the report", true);
-    try std.testing.expect(!persistent.explicit);
-    try std.testing.expect(std.mem.indexOf(u8, persistent.text, "ultracode mode is enabled") != null);
-}
+// applyUltracodeSteering()/UltracodeMessage moved to shapes.zig (#326: the
+// steering notes are a shape-catalog concern, and pickers.zig is at cap).
+pub const UltracodeMessage = shapes.UltracodeMessage;
+pub const applyUltracodeSteering = shapes.applyUltracodeSteering;
 
 const ultracode_on_first = [_]PickItem{
     .{ .name = "on", .desc = "Enable ultracode orchestration" },
@@ -584,13 +519,13 @@ test "applyUltracodeSteering handles explicit and persistent modes" {
     try std.testing.expect(std.mem.indexOf(u8, explicit.text, "user invoked the \"ultracode\" codeword") != null);
     try std.testing.expect(std.mem.indexOf(u8, explicit.text, "ultracode mode is enabled") == null);
 
-    // #293: BOTH steering paths must carry the shape catalog — a turn steered
-    // into orchestration without it is exactly the free-form case the catalog
-    // exists to remove. Check a slot word and the closing bracket, so a broken
-    // concatenation (dropped catalog, or a note left unterminated) fails here.
-    for ([_][]const u8{ explicit.text, persistent.text }) |steered| {
-        try std.testing.expect(std.mem.indexOf(u8, steered, "Pick ONE shape") != null);
-        try std.testing.expect(std.mem.indexOf(u8, steered, "synthesize") != null);
-        try std.testing.expect(std.mem.endsWith(u8, steered, "]"));
-    }
+    // #293: the explicit codeword note carries the shape catalog. Slot word +
+    // closing bracket catches a dropped/unterminated concatenation.
+    try std.testing.expect(std.mem.indexOf(u8, explicit.text, "Pick ONE shape") != null);
+    try std.testing.expect(std.mem.indexOf(u8, explicit.text, "synthesize") != null);
+    try std.testing.expect(std.mem.endsWith(u8, explicit.text, "]"));
+    // #326: the PERSISTENT note must NOT carry the catalog — that re-paste is
+    // exactly what this fix removes. setSystemPrompts() puts the catalog in
+    // sys_ultra/sys_ultra_strict once instead.
+    try std.testing.expect(std.mem.indexOf(u8, persistent.text, "Pick ONE shape") == null);
 }
