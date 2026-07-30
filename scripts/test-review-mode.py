@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 
 from codex_ws_mock import CodexMock, RecordedRequest
 
@@ -132,9 +134,28 @@ def environment(tmp: str, port: int) -> dict[str, str]:
             "GRAFF_CODEX_WS": "off",
             "GRAFF_FLEET": "off",
             "GRAFF_NO_TELEMETRY": "1",
+            # Review mode is what is under test here; a detached background
+            # learning trial writes into .graff/learn/tmp/<hex> in this same
+            # temp tree after graff exits, which races the test's own
+            # cleanup and can raise ENOTEMPTY. Keep the learner off.
+            "GRAFF_LEARN_AUTO": "off",
         }
     )
     return env
+
+
+def _drain_stderr(process: subprocess.Popen[str]) -> None:
+    """Consume stderr in the background so a full pipe can never block wait().
+
+    graff writes learning/status lines to stderr via std.debug.print; if
+    nothing reads them, the 64KB pipe fills and close() looks like a hang.
+    """
+    assert process.stderr is not None
+    try:
+        for _ in process.stderr:
+            pass
+    except (ValueError, OSError):
+        pass
 
 
 def start_graff(
@@ -148,7 +169,7 @@ def start_graff(
         argv.extend(["--max-model-calls", str(max_model_calls)])
     if extra_args:
         argv.extend(extra_args)
-    return subprocess.Popen(
+    process = subprocess.Popen(
         argv,
         cwd=tmp,
         env=environment(tmp, port),
@@ -158,6 +179,8 @@ def start_graff(
         text=True,
         bufsize=1,
     )
+    threading.Thread(target=_drain_stderr, args=(process,), daemon=True).start()
+    return process
 
 
 def send(process: subprocess.Popen[str], payload: dict) -> list[dict]:
@@ -180,18 +203,31 @@ def run_review(
     return send(process, {"type": "review", "text": "Review target.txt"}), process
 
 
-def close(process: subprocess.Popen[str]) -> None:
-    if process.stdin:
-        process.stdin.close()
+def close(process: subprocess.Popen[str], label: str) -> None:
     try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.terminate()
-        process.wait(timeout=5)
+        if process.stdin:
+            process.stdin.close()
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+                raise AssertionError(
+                    f"{label} session did not exit: pid={process.pid} rc={process.returncode}"
+                )
+    finally:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="graff-review-mode-") as tmp:
+    tmp = tempfile.mkdtemp(prefix="graff-review-mode-")
+    try:
         target = os.path.join(tmp, "target.txt")
         with open(target, "w", encoding="utf-8") as fh:
             fh.write("original")
@@ -200,7 +236,7 @@ def main() -> None:
         port = mock.start()
         try:
             events, process = run_review(tmp, port)
-            close(process)
+            close(process, "review")
         finally:
             mock.stop()
 
@@ -230,7 +266,7 @@ def main() -> None:
         long_port = long_mock.start()
         try:
             long_events, long_process = run_review(tmp, long_port)
-            close(long_process)
+            close(long_process, "long review")
         finally:
             long_mock.stop()
         calls = len(long_mock.recorded_requests())
@@ -243,7 +279,7 @@ def main() -> None:
         global_port = global_mock.start()
         try:
             global_events, global_process = run_review(tmp, global_port, max_model_calls=3)
-            close(global_process)
+            close(global_process, "global budget")
         finally:
             global_mock.stop()
         if len(global_mock.recorded_requests()) != 3:
@@ -263,7 +299,7 @@ def main() -> None:
                     "maxToolCalls": 3,
                 },
             )
-            close(tool_budget_process)
+            close(tool_budget_process, "tool budget")
         finally:
             tool_budget_mock.stop()
         budget_rejections = [
@@ -292,7 +328,7 @@ def main() -> None:
             send(isolation_process, {"type": "user", "text": "PARENT_SENTINEL"})
             send(isolation_process, {"type": "review", "text": "Review target.txt"})
             send(isolation_process, {"type": "user", "text": "FOLLOWUP_SENTINEL"})
-            close(isolation_process)
+            close(isolation_process, "isolation")
         finally:
             isolation_mock.stop()
         requests = isolation_mock.recorded_requests()
@@ -348,7 +384,7 @@ def main() -> None:
             strict_events = send(
                 strict_process, {"type": "review", "text": "Review target.txt"}
             )
-            close(strict_process)
+            close(strict_process, "strict eval")
         finally:
             strict_mock.stop()
         if len(strict_mock.recorded_requests()) != 2:
@@ -365,7 +401,13 @@ def main() -> None:
                 f"parent eval gate blocked review finalization: {strict_events[-1]!r}"
             )
 
-    print("ok    review is isolated/read-only, admits >40 tools, and honors opt-in budgets")
+        for leftover in (os.path.join(tmp, ".graff", "learn"), os.path.join(tmp, ".graff", "learn-auto-init")):
+            if os.path.exists(leftover):
+                raise AssertionError(f"background learning wrote into the review-mode temp tree: {leftover}")
+
+        print("ok    review is isolated/read-only, admits >40 tools, and honors opt-in budgets")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
