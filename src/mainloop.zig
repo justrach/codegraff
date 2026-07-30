@@ -117,9 +117,10 @@ pub fn run(ctx: *Ctx) !void {
         // `/loop [<n>s|m|h] <prompt>`: an unambiguous duration arms this run's wall clock; anything else is prompt.
         const loop_budget: ?goal_pacing.LoopBudget = if (main_mod.json_mode) null else goal_pacing.loopBudgetFromLine(line);
         const loop_prompt: ?[]const u8 = if (loop_budget) |b| b.prompt else null;
-        // A fresh line starts (or ends) a /loop run: its wall clock begins here, and stale todos_dirty
-        // is dropped - a checklist finished BEFORE this prompt ended the next run at iteration 1 (#318).
-        if (!is_loop_continuation) goal_pacing.armFreshRun(&loop_clock, ctx.root, util.unixMs(ctx.io), loop_budget);
+        // A fresh line starts (or ends) a /loop run: the wall clock begins here, stale todos_dirty is
+        // dropped (a checklist finished BEFORE this prompt ended the next run at iteration 1, #318),
+        // and an armed budget is echoed - a silently-eaten "5m" reads exactly like a truncated prompt.
+        if (!is_loop_continuation) try goal_pacing.armAndAnnounce(&loop_clock, ctx.root, ctx.out, ctx.arena, util.unixMs(ctx.io), loop_budget);
         var review_prompt: ?[]const u8 = if (!main_mod.json_mode) review.promptFromLine(line) else null;
         // /goal <objective>: set the standing goal AND run it as the first turn right away — codex/opencode
         // both start the loop on a goal instead of just recording it (the parse itself is in repl_glue).

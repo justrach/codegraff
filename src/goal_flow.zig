@@ -91,7 +91,7 @@ pub fn compactionSnapshot(arena: Allocator, root: *Agent) !?[]const u8 {
     if (rendered.len == 0)
         return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): goal: {s}. No checklist has been written for it yet - plan the work with todo_write, and read the list back with todo_read at any time.]", .{objective});
     const open = goal_state.openCount(root.todos.items, goal_state.currentEpoch(root.goal));
-    return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): goal: {s}. Checklist ({d} open):\n{s}\nThis list is live harness state, read it back with todo_read at any time. todo_write REPLACES the current goal's whole list, so include already-completed items when rewriting.]", .{ objective, open, try capRender(arena, rendered) });
+    return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): goal: {s}. Checklist ({d} open):\n{s}\nThis list is live harness state, read it back with todo_read at any time. todo_write REPLACES the current goal's whole list; completed items you omit are kept automatically, open items you omit are dropped.]", .{ objective, open, try capRender(arena, rendered) });
 }
 
 /// Cut an oversized checklist render at a line boundary (never mid-item, never
@@ -151,15 +151,20 @@ pub fn applyGoalSet(root: *Agent, objective: []const u8, now_ms: i64) GoalSetRes
 /// is governed by its work and its iteration bound alone.
 pub fn loopTurnDecision(root: *Agent, iters_left: u32, now_ms: i64) repl_glue.ContinuationDecision {
     const work_done = root.completed != null or goal_state.checklistFinished(root);
-    // A `/loop 30m ...` deadline is the run's ONLY hard effect (#224 dropped
-    // goal budget enforcement, and that stands): it stops the run and names the
-    // outcome. It flips no goal status and is never `accepted` - the work is
-    // unfinished, that is the whole point. Real completion evidence still wins,
-    // so a run that finished on its last second reports accepted, not expired.
-    if (!work_done) if (root.loop_deadline_ms) |d| if (now_ms >= d) return .{ .stop = .expired };
     const model_stopped = repl_glue.turnStopped(root.tool_calls_this_turn, root.completion_refused);
     const gstatus: agent_mod.GoalStatus = if (root.goal) |g| g.status else .active;
-    return repl_glue.continuationDecision(gstatus, work_done, model_stopped, iters_left);
+    const d = repl_glue.continuationDecision(gstatus, work_done, model_stopped, iters_left);
+    // A deadline is the run's ONLY hard effect (#224 dropped goal budget
+    // enforcement): it stops the run and names the outcome, flipping no goal
+    // status. accepted (real evidence) and cancelled/blocked (the USER is
+    // needed) outrank the clock; expired renames only uninformative stops.
+    if (root.loop_deadline_ms) |dl| if (now_ms >= dl) {
+        return switch (d) {
+            .continue_turn => .{ .stop = .expired },
+            .stop => |o| if (o == .idle or o == .exhausted) .{ .stop = .expired } else d,
+        };
+    };
+    return d;
 }
 
 /// The steering appended to each autonomous /loop continuation turn (the
@@ -457,7 +462,7 @@ test "compactionSnapshot: no live goal, no checklist, and a capped render (#318)
     try std.testing.expect(capped.len < snapshot_render_cap + 600);
     try std.testing.expect(std.mem.indexOf(u8, capped, "checklist truncated") != null);
     try std.testing.expect(std.mem.indexOf(u8, capped, "Checklist (401 open)") != null);
-    try std.testing.expect(std.mem.endsWith(u8, capped, "when rewriting.]")); // the REPLACES warning survives the cut
+    try std.testing.expect(std.mem.endsWith(u8, capped, "are dropped.]")); // the REPLACES warning survives the cut
 }
 
 test "a compaction does not move the goal note's diff-gate fingerprint (#318)" {

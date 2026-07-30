@@ -199,7 +199,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (std.mem.eql(u8, line, "/loop")) {
-        try out.writeAll("usage: /loop <prompt> — run an autonomous plan→act→verify pass.\n");
+        try out.writeAll("usage: /loop [30m] <prompt> — run an autonomous plan→act→verify pass. A leading 30s/30m/2h paces the run and stops it when the time is up.\n");
         try out.flush();
         return true;
     }

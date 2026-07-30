@@ -316,11 +316,11 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return self.runEval(note);
     }
     if (std.mem.eql(u8, call.name, "todo_write")) {
-        // Epoch-scoped replace, keeping omitted completed items: goal_todo owns
-        // the rule and its tests (this file is at the 600-line cap).
-        const rendered = try goal_todo.applyTodoWrite(self, call.input.object.get("todos"));
-        if (!self.sub) try self.say("{s}\n", .{rendered});
-        return .{ .text = rendered, .is_error = false };
+        // Epoch-scoped replace, keeping omitted completed items; a write with
+        // no usable items is rejected untouched (#318). goal_todo owns the rule.
+        const r = try goal_todo.applyTodoWrite(self, call.input.object.get("todos"));
+        if (!self.sub and !r.rejected) try self.say("{s}\n", .{r.text});
+        return .{ .text = r.text, .is_error = r.rejected };
     }
     if (std.mem.eql(u8, call.name, "clock_sleep")) {
         const parsed = parseClockSleepMs(call.input) catch return .{

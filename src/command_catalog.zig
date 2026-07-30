@@ -27,7 +27,7 @@ pub const commands = [_]Item{
     .{ .name = "/new", .desc = "start a fresh autosaved session" },
     .{ .name = "/rename", .usage = "/rename <title>", .desc = "set the current session title" },
     .{ .name = "/goal", .usage = "/goal [text|pause|resume|status|clear]", .desc = "set/show a standing objective (tracked as a checklist); pause/resume steering, status shows state, clear removes it" },
-    .{ .name = "/loop", .usage = "/loop <prompt>", .desc = "run an autonomous plan->act->verify pass" },
+    .{ .name = "/loop", .usage = "/loop [30m] <prompt>", .desc = "run an autonomous plan->act->verify pass; an optional 30s/30m/2h budget paces it and stops it" },
     .{ .name = "/review", .usage = "/review <target or instructions>", .desc = "run one isolated read-only review pass; no edits, delegation, or workflows" },
     .{ .name = "/plan", .desc = "toggle plan mode: read-only explore + propose; writes/edits denied" },
     .{ .name = "/ultracode", .desc = "toggle persistent workflow mode; bare opens an on/off picker, or /ultracode on|off" },

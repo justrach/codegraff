@@ -78,21 +78,6 @@ pub fn parkedOpenCount(todos: []const TodoItem, keep_epoch: u64) usize {
     return parked;
 }
 
-/// Drop `epoch`'s items so todo_write can write that epoch's checklist afresh.
-/// The only removal in this file, and the safe one: it is the authoring goal
-/// rewriting its own list. Items from other (parked) epochs are untouched.
-pub fn clearEpoch(todos: *std.ArrayList(TodoItem), epoch: u64) usize {
-    var removed: usize = 0;
-    var i: usize = 0;
-    while (i < todos.items.len) {
-        if (todos.items[i].epoch == epoch) {
-            _ = todos.orderedRemove(i);
-            removed += 1;
-        } else i += 1;
-    }
-    return removed;
-}
-
 /// A fresh goal set while a current (unscoped, or post-completion) checklist
 /// exists adopts it: the user just formalized the objective the plan was already
 /// serving. Only `from_epoch` items move - work parked by a finished or
@@ -363,13 +348,10 @@ test "parking retains: superseded items are counted and kept, never deleted (#31
     try std.testing.expectEqual(@as(usize, 3), todos.items.len); // a mistyped /goal deletes nothing
     try std.testing.expectEqual(@as(u64, 1), todos.items[0].epoch); // parked work keeps its own epoch
     // Retention is safe because every query is epoch-scoped: parked items are
-    // invisible to the new goal's open/allDone accounting.
+    // invisible to the new goal's open/allDone accounting. (todo_write's
+    // epoch-scoped replace lives in goal_todo.zig with its own tests.)
     try std.testing.expectEqual(@as(usize, 1), openCount(todos.items, 2));
     try std.testing.expect(!allDone(todos.items, 2));
-    // todo_write rewrites the CURRENT epoch only - parked items survive it.
-    try std.testing.expectEqual(@as(usize, 1), clearEpoch(&todos, 2));
-    try std.testing.expectEqual(@as(usize, 2), todos.items.len);
-    try std.testing.expectEqualStrings("phase3 audit", todos.items[0].content);
 }
 
 test "adoptTodos takes OPEN current-epoch items only; finished and parked work stays put" {

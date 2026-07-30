@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const Agent = @import("agent.zig").Agent;
 
 /// A parsed `/loop` argument: an optional wall-clock budget and the prompt.
@@ -54,8 +55,14 @@ pub fn parseLoopBudget(text: []const u8) LoopBudget {
     const n = std.fmt.parseInt(i64, trimmed[0..digits], 10) catch return none;
     if (n <= 0) return none; // "0m" is not a deadline that already passed, it is a typo
     const delta = std.math.mul(i64, n, unit) catch return none;
-    return .{ .deadline_ms_delta = delta, .prompt = prompt };
+    // Clamped, not rejected: "/loop 9999h soak" is a real (if odd) instruction,
+    // and an unclamped delta overflowed pacingNote's percent math (round-4
+    // verifier: a typed line panicked Debug builds and mis-phased ReleaseFast).
+    return .{ .deadline_ms_delta = @min(delta, max_budget_ms), .prompt = prompt };
 }
+
+/// A week: past it nothing about a run is meaningful, and the percent math stays in i64.
+pub const max_budget_ms: i64 = 7 * 24 * std.time.ms_per_hour;
 
 /// The same parse straight off an input line, so the caller stays one line.
 /// Returns null when the line is not a `/loop` invocation at all.
@@ -104,6 +111,16 @@ pub fn armFreshRun(clock: *LoopClock, root: *Agent, now_ms: i64, budget: ?LoopBu
     clock.arm(root, now_ms, b.deadline_ms_delta);
 }
 
+/// armFreshRun plus one line of feedback the instant a wall clock arms. Silent
+/// arming hid misparses: `/loop 5m ...` quietly took the "5m" out of the prompt
+/// AND started a deadline whose only trace was an `expired` stop minutes later.
+pub fn armAndAnnounce(clock: *LoopClock, root: *Agent, out: *Io.Writer, arena: Allocator, now_ms: i64, budget: ?LoopBudget) !void {
+    armFreshRun(clock, root, now_ms, budget);
+    const d = (budget orelse return).deadline_ms_delta orelse return;
+    try out.print("\xe2\x8f\xb1 /loop budget: {s}\n", .{try fmtDur(arena, d)});
+    try out.flush();
+}
+
 /// "45s" / "12m" / "1h5m" - short enough to sit inside a bracketed note.
 pub fn fmtDur(arena: Allocator, ms: i64) ![]const u8 {
     const secs = @divTrunc(@max(0, ms), std.time.ms_per_s);
@@ -130,10 +147,12 @@ fn phaseHint(pct_left: i64) []const u8 {
 pub fn pacingNote(arena: Allocator, now_ms: i64, clock: LoopClock, iters_used: u32, iters_cap: u32) ![]const u8 {
     const elapsed = try fmtDur(arena, now_ms - clock.started_ms);
     const deadline = clock.deadline_ms orelse
-        return std.fmt.allocPrint(arena, "[pace: continuation {d} of {d}, {s} elapsed. No wall-clock budget was set for this run.]", .{ iters_used, iters_cap, elapsed });
+        return std.fmt.allocPrint(arena, "[pace: continuation {d} of {d}, {s} elapsed.]", .{ iters_used, iters_cap, elapsed });
     const total = @max(1, deadline - clock.started_ms);
     const left = @max(0, deadline - now_ms);
-    const pct = @divTrunc(left * 100, total);
+    // Divide before multiplying: parseLoopBudget clamps, but this math must not
+    // depend on every caller remembering that (left * 100 overflowed i64).
+    const pct = @divTrunc(left, @max(1, @divTrunc(total, 100)));
     return std.fmt.allocPrint(arena, "[pace: continuation {d} of {d}, {s} elapsed, ~{s} of the time budget left ({d}%). {s}]", .{ iters_used, iters_cap, elapsed, try fmtDur(arena, left), pct, phaseHint(pct) });
 }
 
@@ -195,14 +214,26 @@ test "parseLoopBudget: every ambiguous shape stays a prompt, verbatim" {
         try std.testing.expect(b.deadline_ms_delta == null);
         try std.testing.expectEqualStrings(std.mem.trim(u8, text, " \t"), b.prompt);
     }
+    // An absurd-but-parseable duration clamps to the week cap instead of
+    // feeding pacingNote a deadline whose percent math overflows i64.
+    try std.testing.expectEqual(@as(?i64, max_budget_ms), parseLoopBudget("30000000000h go").deadline_ms_delta);
     // And the whole thing only fires on a real /loop line.
     try std.testing.expect(loopBudgetFromLine("/goal 30m ship") == null);
     try std.testing.expectEqual(@as(?i64, 5 * std.time.ms_per_min), loopBudgetFromLine("/loop 5m ship").?.deadline_ms_delta);
 }
 
-test "LoopClock: arms and clears the Agent-visible deadline together" {
+/// The two Agent fields this file's helpers touch, initialized; everything
+/// else stays undefined ON PURPOSE, so a future read of another field in this
+/// path fails loudly under the testing allocator instead of passing by luck.
+fn pacingRoot() Agent {
     var root: Agent = undefined;
     root.loop_deadline_ms = null;
+    root.todos_dirty = false;
+    return root;
+}
+
+test "LoopClock: arms and clears the Agent-visible deadline together" {
+    var root = pacingRoot();
     var clock: LoopClock = .{};
     clock.arm(&root, 1_000, null);
     try std.testing.expect(clock.deadline_ms == null and root.loop_deadline_ms == null);
@@ -251,8 +282,7 @@ test "childTaskPrompt: the same absolute deadline reaches every child, minus a m
 }
 
 test "armFreshRun: a /loop line starts the clock, any other line ends it" {
-    var root: Agent = undefined;
-    root.loop_deadline_ms = null;
+    var root = pacingRoot();
     root.todos_dirty = true; // left over from the previous run
     var clock: LoopClock = .{};
 
@@ -280,9 +310,11 @@ test "pacingNote: iterations always, then remaining time and one phase hint" {
     defer arena_state.deinit();
     const ar = arena_state.allocator();
 
-    // No budget: the model still learns how many continuations it has left.
+    // No budget: the model still learns how many continuations it has left,
+    // and nothing more - a sentence restating the absence of a budget was pure
+    // compaction fodder (25 unique copies per run, round-4 verifier).
     const plain = try pacingNote(ar, 90_000, .{ .started_ms = 0 }, 3, 25);
-    try std.testing.expectEqualStrings("[pace: continuation 3 of 25, 1m elapsed. No wall-clock budget was set for this run.]", plain);
+    try std.testing.expectEqualStrings("[pace: continuation 3 of 25, 1m elapsed.]", plain);
 
     const clock: LoopClock = .{ .started_ms = 0, .deadline_ms = 60 * std.time.ms_per_min };
     const hints = [_]struct { now: i64, frag: []const u8 }{

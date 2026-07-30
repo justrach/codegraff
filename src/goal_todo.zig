@@ -30,8 +30,9 @@ const goal_state = @import("goal_state.zig");
 /// EXCEPT completed ones whose content the incoming list does not mention.
 /// Items from other (parked) epochs are never touched - the authoring goal is
 /// rewriting its own list, nobody else's. Returns the number removed.
-/// This is goal_state.clearEpoch plus the preserve rule; clearEpoch itself
-/// stays for the callers that really do mean "drop the whole epoch".
+/// Callers must guarantee `incoming` is nonempty (applyTodoWrite rejects the
+/// empty case): an empty replace here would leave only completed survivors,
+/// an epoch that reads allDone off a write that did nothing (#318).
 pub fn clearEpochForReplace(todos: *std.ArrayList(TodoItem), epoch: u64, incoming: []const []const u8) usize {
     var removed: usize = 0;
     var i: usize = 0;
@@ -53,18 +54,27 @@ fn mentions(contents: []const []const u8, content: []const u8) bool {
     return false;
 }
 
+pub const WriteResult = struct { text: []const u8, rejected: bool = false };
+
 /// The whole todo_write handler: replace the current epoch's checklist with
 /// `list` (the tool call's "todos" argument, already parsed), preserving
 /// omitted completed items, and return the rendered result the model sees.
-/// `list` is null or a non-array when the model sent nothing usable, which is a
-/// legitimate way to clear the open items of a checklist.
-pub fn applyTodoWrite(root: *Agent, list: ?Value) ![]const u8 {
+/// A write with ZERO usable items (missing/typo'd "todos" key, empty array,
+/// items without a content string) is REJECTED without touching anything:
+/// under the preserve rule it would have left the epoch holding only
+/// completed survivors - allDone true, todos_dirty true - so one malformed
+/// call ended a /loop as accepted and retired the goal (#318, proven by the
+/// round-4 verifier). It must also never count as completion evidence, so
+/// noteTodoWrite runs only on the accepted path.
+pub fn applyTodoWrite(root: *Agent, list: ?Value) !WriteResult {
     const epoch = goal_state.currentEpoch(root.goal); // items belong to the goal that authored them (#318)
     var incoming: std.ArrayList([]const u8) = .empty;
     defer incoming.deinit(root.gpa);
     if (asArray(list)) |items| {
         for (items) |item| if (contentOf(item)) |c| try incoming.append(root.gpa, c);
     }
+    if (incoming.items.len == 0)
+        return .{ .text = "todo_write had no usable items; the list is unchanged. Each item needs a content string and a status. Send your full remaining plan - completed items you omit are kept automatically.", .rejected = true };
     _ = clearEpochForReplace(&root.todos, epoch, incoming.items);
     goal_state.noteTodoWrite(root); // fresh evidence for the completion double-check, and this-process evidence for /loop (#318)
     if (asArray(list)) |items| {
@@ -78,7 +88,7 @@ pub fn applyTodoWrite(root: *Agent, list: ?Value) ![]const u8 {
             });
         }
     }
-    return goal_state.renderTodos(root, epoch);
+    return .{ .text = goal_state.renderTodos(root, epoch) };
 }
 
 fn asArray(list: ?Value) ?[]const Value {
@@ -133,9 +143,9 @@ test "a replace keeps omitted completed items and still drops omitted open ones"
     // the two finished items were deleted outright - most often after a
     // compaction, where the list is rewritten from a summary (#318) - and the
     // goal's record of what it had already done was gone for good.
-    const rendered = try applyTodoWrite(&root, try todosArg(ar,
+    const rendered = (try applyTodoWrite(&root, try todosArg(ar,
         \\{"todos":[{"content":"wire it up","status":"in_progress"}]}
-    ));
+    ))).text;
     try std.testing.expectEqualStrings("[x] write the helper\n[x] test it\n[~] wire it up", rendered);
     // The omitted OPEN item really is gone: a re-plan must be able to abandon work.
     try std.testing.expect(std.mem.indexOf(u8, rendered, "abandoned idea") == null);
@@ -161,10 +171,10 @@ test "an incoming item with the same content replaces the preserved one, never d
     ));
     // "that one was not actually done, redo it" has to keep working: the
     // incoming item wins outright, so the list holds one entry, not two.
-    const rendered = try applyTodoWrite(&root, try todosArg(ar,
+    const rendered = (try applyTodoWrite(&root, try todosArg(ar,
         \\{"todos":[{"content":"land the fix","status":"pending"},
         \\          {"content":"and verify","status":"pending"}]}
-    ));
+    ))).text;
     try std.testing.expectEqualStrings("[ ] land the fix\n[ ] and verify", rendered);
     try std.testing.expectEqual(@as(usize, 2), root.todos.items.len);
     try std.testing.expectEqual(@as(usize, 2), goal_state.openCount(root.todos.items, 1));
@@ -181,16 +191,16 @@ test "the replace stays epoch-scoped: parked work of any status is untouched" {
     _ = try applyTodoWrite(&root, try todosArg(ar,
         \\{"todos":[{"content":"B1","status":"pending"}]}
     ));
-    const rendered = try applyTodoWrite(&root, try todosArg(ar,
+    const rendered = (try applyTodoWrite(&root, try todosArg(ar,
         \\{"todos":[{"content":"B2","status":"pending"}]}
-    ));
+    ))).text;
     try std.testing.expectEqualStrings("[ ] B2", rendered); // B1 was open, so it dropped
     try std.testing.expectEqual(@as(usize, 3), root.todos.items.len);
     try std.testing.expectEqual(@as(u64, 3), root.todos.items[0].epoch);
     try std.testing.expectEqual(@as(usize, 1), goal_state.parkedOpenCount(root.todos.items, 4));
 }
 
-test "an empty or missing todos argument clears the open items but not the record" {
+test "a write with zero usable items is rejected untouched, never completion evidence (#318)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const ar = arena_state.allocator();
@@ -199,9 +209,20 @@ test "an empty or missing todos argument clears the open items but not the recor
     _ = try applyTodoWrite(&root, try todosArg(ar,
         \\{"todos":[{"content":"done","status":"completed"},{"content":"open","status":"pending"}]}
     ));
-    try std.testing.expectEqualStrings("[x] done", try applyTodoWrite(&root, try todosArg(ar, "{\"todos\":[]}")));
-    // A malformed call (no "todos" at all) takes the same path rather than crashing.
-    try std.testing.expectEqualStrings("[x] done", try applyTodoWrite(&root, null));
+    root.todos_dirty = false; // as after a resume: the list is persisted state, not evidence
+    // The round-4 verifier's exact trace: under the preserve rule, an empty or
+    // malformed write used to strip the open items and leave only completed
+    // survivors - allDone true, todos_dirty true - so one typo'd call ended a
+    // /loop as accepted and retired the goal. It is rejected outright instead.
+    for ([_]?Value{ try todosArg(ar, "{\"todos\":[]}"), null, try todosArg(ar, "{\"todos\":[{\"status\":\"pending\"}]}") }) |bad| {
+        const r = try applyTodoWrite(&root, bad);
+        try std.testing.expect(r.rejected);
+        try std.testing.expect(std.mem.indexOf(u8, r.text, "unchanged") != null);
+    }
+    try std.testing.expectEqual(@as(usize, 2), root.todos.items.len); // nothing removed
+    try std.testing.expectEqual(@as(usize, 1), goal_state.openCount(root.todos.items, 1));
+    try std.testing.expect(!root.todos_dirty); // and no fake this-process evidence
+    try std.testing.expect(!goal_state.checklistFinished(&root));
 }
 
 test "preserved [x] items never make the NEXT goal born done (#318 guard holds)" {
@@ -213,10 +234,12 @@ test "preserved [x] items never make the NEXT goal born done (#318 guard holds)"
     _ = try applyTodoWrite(&root, try todosArg(ar,
         \\{"todos":[{"content":"A1","status":"completed"}]}
     ));
-    // A replace that mentions nothing leaves A's finished item standing - which
-    // is precisely the state that used to make the next goal inherit a "done"
-    // checklist. adoptTodos takes OPEN items only, so it adopts nothing.
-    _ = try applyTodoWrite(&root, try todosArg(ar, "{\"todos\":[]}"));
+    // A later replace omits A1 but it survives as history: the epoch reads all
+    // done - precisely the state that used to make the next goal inherit a
+    // "done" checklist. adoptTodos takes OPEN items only, so it adopts nothing.
+    _ = try applyTodoWrite(&root, try todosArg(ar,
+        \\{"todos":[{"content":"A2","status":"completed"}]}
+    ));
     try std.testing.expect(goal_state.allDone(root.todos.items, 1));
 
     const epoch_b = goal_state.nextEpoch(root.goal, root.todos.items);
@@ -228,5 +251,5 @@ test "preserved [x] items never make the NEXT goal born done (#318 guard holds)"
     const refusal = try goal_state.completionGate(ar, &root);
     try std.testing.expect(refusal != null and std.mem.indexOf(u8, refusal.?, "no checklist") != null);
     // A's record is still there, parked under its own epoch.
-    try std.testing.expectEqualStrings("[x] A1", goal_state.renderTodos(&root, 1));
+    try std.testing.expectEqualStrings("[x] A1\n[x] A2", goal_state.renderTodos(&root, 1));
 }

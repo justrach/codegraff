@@ -107,8 +107,8 @@ pub fn goalSteeringNote(arena: Allocator, goal: ?agent_mod.Goal) ![]const u8 {
     // attempt_completion "to end this steering", and one such call left the rest
     // of a headless/SDK session running unsteered (#318).
     if (g.standing)
-        return std.fmt.allocPrint(arena, "[standing goal: {s} - keep this objective in view on every task; track multi-step work as a live todo_write checklist (todo_read shows the current one; todo_write REPLACES it, so include already-completed items when rewriting), marking each item in_progress when you start and completed when done. This steering persists for the whole session.]", .{g.objective});
-    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a live todo_write checklist and work through it (todo_read shows the current one; todo_write REPLACES it, so include already-completed items when rewriting), marking each item in_progress when you start and completed when done. When the objective is verifiably done, call attempt_completion - that completes the goal and ends this steering.]", .{g.objective});
+        return std.fmt.allocPrint(arena, "[standing goal: {s} - keep this objective in view on every task; track multi-step work as a live todo_write checklist (todo_read shows the current one; todo_write REPLACES it - completed items you omit are kept, open items you omit are dropped), marking each item in_progress when you start and completed when done. This steering persists for the whole session.]", .{g.objective});
+    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a live todo_write checklist and work through it (todo_read shows the current one; todo_write REPLACES it - completed items you omit are kept, open items you omit are dropped), marking each item in_progress when you start and completed when done. When the objective is verifiably done, call attempt_completion - that completes the goal and ends this steering.]", .{g.objective});
 }
 
 /// Extract a 0-100 score from an eval command's output: a `score` key (JSON or

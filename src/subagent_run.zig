@@ -180,6 +180,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         .approvals = ctx.approvals,
         .tracer = ctx.tracer,
         .run_budget = ctx.run_budget,
+        .loop_deadline_ms = ctx.loop_deadline_ms, // a timed run's deadline reaches grandchildren too, not just depth 1
         .depth = ctx.depth + 1,
         .call_kind = if (std.mem.eql(u8, kind, "judge_task"))
             .judge
