@@ -24,6 +24,8 @@ fn resumeSession(arena: Allocator, root: *Agent, json: []const u8) !void {
     root.todos.clearRetainingCapacity();
     if (parsed.object.get("todos")) |tv| try session.appendTodosFromValue(arena, &root.todos, tv);
     root.todos_dirty = false;
+    root.completion_gate_armed = false; // the double-check is per-process: an arm from the PREVIOUS session must not close this one's goal (#318)
+    root.completion_refused = false;
     _ = goal_state.reconcileRestored(root);
 }
 
@@ -107,6 +109,28 @@ test "resume: a finished epoch-0 leftover cannot end a bare /loop (#318)" {
     try std.testing.expect(!goal_state.checklistFinished(&root));
     goal_state.noteTodoWrite(&root); // the model restates its plan: now it counts
     try std.testing.expect(goal_state.checklistFinished(&root));
+}
+
+test "resume: the completion double-check does not ride in from the previous session (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    // The arm survives turns on purpose (a model emits one attempt_completion
+    // per turn), so a refusal late in session A left it set. /resume B then
+    // restored an active goal with open work and the FIRST attempt_completion
+    // of B hit the armed short-circuit: the goal closed, the double-check the
+    // user never saw refused nothing.
+    root.completion_gate_armed = true;
+    root.completion_refused = true;
+    try resumeSession(ar, &root,
+        \\{"goal":{"objective":"ship phase 2","status":"active","epoch":2,"created_ms":1,"updated_ms":2},
+        \\ "todos":[{"content":"verify in the browser","status":"pending","epoch":2}]}
+    );
+    try std.testing.expect(!root.completion_gate_armed);
+    try std.testing.expect(!root.completion_refused);
+    const refusal = try goal_state.completionGate(ar, &root);
+    try std.testing.expect(refusal != null and std.mem.indexOf(u8, refusal.?, "1 open") != null);
 }
 
 test "goalFromValue: epoch round-trips; legacy goals default to epoch 0 (#318)" {

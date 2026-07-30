@@ -467,6 +467,11 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.todos.clearRetainingCapacity(); // never inherit another conversation's checklist (#318)
     if (obj.get("todos")) |tv| try appendTodosFromValue(arena, &root.todos, tv);
     root.todos_dirty = false; // restored todos are persisted state, never this-process completion evidence (#318)
+    // The completion double-check is per-PROCESS state and leaked across /resume
+    // (#318): an arm left by a refusal in the previous session short-circuited the
+    // first attempt_completion of the resumed one, closing its goal unchecked.
+    root.completion_gate_armed = false;
+    root.completion_refused = false;
     // #318: retire a restored-active goal whose checklist is already finished.
     if (goal_state.reconcileRestored(root)) if (root.tracer) |t| t.note("goal", "reconciled-complete");
     // Steering gate state belongs to the previous conversation (#318): drop any
