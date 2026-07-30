@@ -1103,7 +1103,8 @@ Notes:
 
 - UI/UX changes are tracked in [uxlog.md](uxlog.md): what changed, what it
   replaced, and the design reasoning (newest first).
-- Anthropic requests use adaptive thinking; the assistant's full `content` array
+- Anthropic requests use adaptive thinking with a summarized display, so the
+  reasoning stream is not empty; the assistant's full `content` array
   (including thinking blocks and signatures) is echoed back verbatim, as the API
   requires for tool-use loops.
 - OpenAI tool arguments arrive as *stringified* JSON and are parsed before
