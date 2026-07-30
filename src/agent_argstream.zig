@@ -339,8 +339,22 @@ pub fn emitArgText(self: *Agent, tool: ArgTool, text: []const u8) void {
 pub fn argStreamedFully(self: *Agent, call: ToolCall) bool {
     const at = argToolFor(call.name);
     if (at == .none or at != self.streamed_args) return false;
+    // `call.input` is model-supplied: a non-object here is undefined behavior in
+    // a ReleaseFast build, not a panic. This sits one line above the gate that
+    // fix B2 added, so it was the last unguarded deref on that path.
+    if (call.input != .object) return false;
     const v = call.input.object.get(argField(at)) orelse return false;
     return v == .string and v.string.len == self.streamed_args_len;
+}
+
+test "argStreamedFully: a non-object tool input is refused, not dereferenced" {
+    var a: Agent = undefined;
+    a.streamed_args = .attempt_completion;
+    a.streamed_args_len = 3;
+    // Exactly what a malformed tool call delivers: the arguments are a bare
+    // string (or null, or a number), never the object the schema promised.
+    for ([_]std.json.Value{ .{ .string = "abc" }, .null, .{ .integer = 1 } }) |bad|
+        try std.testing.expect(!argStreamedFully(&a, .{ .id = "1", .name = "attempt_completion", .input = bad }));
 }
 
 test "ArgLive streams the target argument field across fragment splits" {
