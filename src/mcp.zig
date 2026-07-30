@@ -18,12 +18,17 @@ const mcp_http = @import("mcp_http.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
 const mcp_teardown = @import("mcp_teardown.zig");
+const mcp_rpc = @import("mcp_rpc.zig");
 const smolify_manifest = @import("smolify_manifest.zig");
 
-const latest_protocol = mcp_protocol.latest_protocol;
 const rewriteOneOf = mcp_protocol.rewriteOneOf;
 const HttpTransport = mcp_http.HttpTransport;
 pub const validRemoteUrl = mcp_http.validRemoteUrl;
+const Server = mcp_rpc.Server;
+const Transport = mcp_rpc.Transport;
+const deinitServer = mcp_rpc.deinitServer;
+const initializeServer = mcp_rpc.initializeServer;
+const request = mcp_rpc.request;
 
 pub const Tool = struct {
     server_index: usize,
@@ -33,27 +38,6 @@ pub const Tool = struct {
     input_schema: Value, // arena-owned parsed JSON Schema
 };
 pub const smolify_url = "https://app.smol.ly/mcp";
-
-const StdioTransport = struct {
-    child: std.process.Child,
-    stdin_writer: Io.File.Writer,
-    stdout_reader: Io.File.Reader,
-};
-
-const Transport = union(enum) {
-    stdio: StdioTransport,
-    http: HttpTransport,
-};
-
-const Server = struct {
-    name: []const u8,
-    transport: Transport,
-    next_id: i64 = 1,
-    initialized: bool = true,
-    /// Revision the server negotiated in its validated `initialize` response,
-    /// shown in `/mcp` so version skew is visible.
-    protocol_version: []const u8 = "?",
-};
 
 pub const Registry = struct {
     gpa: Allocator,
@@ -518,83 +502,3 @@ pub const Registry = struct {
         return .{ .text = try ow.toOwnedSlice(), .is_error = is_error };
     }
 };
-
-fn deinitServer(server: *Server, io: Io, budget: mcp_teardown.Budget) void {
-    switch (server.transport) {
-        .stdio => |*stdio| mcp_stdio.stopChild(io, &stdio.child),
-        .http => |*http| { // never waits on a peer: bounded by `budget` (#305)
-            if (http.session_id) |session_id| http.client.allocator.free(session_id);
-            http.session_id = null;
-            mcp_teardown.deinitHttpClient(&http.client, io, budget);
-        },
-    }
-}
-
-fn initializeServer(server: *Server, response_alloc: Allocator, session_alloc: Allocator) !void {
-    const init_resp = try request(server, response_alloc,
-        \\{"protocolVersion":"
-    ++ latest_protocol ++
-        \\","capabilities":{},"clientInfo":{"name":"simple-harness","version":"0.1"}}
-    , "initialize");
-    const protocol_transport: mcp_protocol.Transport = switch (server.transport) {
-        .stdio => .stdio,
-        .http => .streamable_http,
-    };
-    const protocol_version = try mcp_protocol.negotiatedProtocol(init_resp, protocol_transport);
-    server.protocol_version = try session_alloc.dupe(u8, protocol_version);
-    try notify(server, response_alloc, "notifications/initialized");
-    server.initialized = true;
-}
-
-/// JSON-RPC request/response over either transport. `params` is a raw JSON
-/// object string. Result Values use `response_alloc`.
-fn request(server: *Server, response_alloc: Allocator, params: []const u8, method: []const u8) !Value {
-    const id = server.next_id;
-    server.next_id += 1;
-
-    switch (server.transport) {
-        .stdio => |*stdio| {
-            const w = &stdio.stdin_writer.interface;
-            try w.print(
-                \\{{"jsonrpc":"2.0","id":{d},"method":"{s}","params":{s}}}
-            ++ "\n", .{ id, method, params });
-            try w.flush();
-
-            const r = &stdio.stdout_reader.interface;
-            while (true) {
-                const line = (try r.takeDelimiter('\n')) orelse return error.McpClosed;
-                if (mcp_http.matchingResponse(response_alloc, line, id)) |parsed| return parsed;
-            }
-        },
-        .http => |*http| {
-            const body = try std.fmt.allocPrint(response_alloc,
-                \\{{"jsonrpc":"2.0","id":{d},"method":"{s}","params":{s}}}
-            , .{ id, method, params });
-            const protocol_version = if (std.mem.eql(u8, method, "initialize")) latest_protocol else server.protocol_version;
-            const response_body = (try mcp_http.post(http, body, protocol_version, id)) orelse return error.BadMcpResponse;
-            defer http.client.allocator.free(response_body);
-            return mcp_http.parseHttpResponse(response_alloc, response_body, id) orelse error.BadMcpResponse;
-        },
-    }
-}
-
-/// Fire-and-forget JSON-RPC notification (no id, no response).
-fn notify(server: *Server, response_alloc: Allocator, method: []const u8) !void {
-    switch (server.transport) {
-        .stdio => |*stdio| {
-            const w = &stdio.stdin_writer.interface;
-            try w.print(
-                \\{{"jsonrpc":"2.0","method":"{s}","params":{{}}}}
-            ++ "\n", .{method});
-            try w.flush();
-        },
-        .http => |*http| {
-            const body = try std.fmt.allocPrint(response_alloc,
-                \\{{"jsonrpc":"2.0","method":"{s}","params":{{}}}}
-            , .{method});
-            if (try mcp_http.post(http, body, server.protocol_version, null)) |response_body| {
-                http.client.allocator.free(response_body);
-            }
-        },
-    }
-}
