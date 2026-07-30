@@ -374,3 +374,26 @@ test "/loop: a refused completion is work, and a leftover complete goal decides 
     root.tool_calls_this_turn = 0;
     try std.testing.expectEqual(repl_glue.ContinuationOutcome.idle, goal_flow.loopTurnDecision(&root, 25).stop);
 }
+
+test "a fresh /loop cannot stop accepted off a checklist finished before it (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+    // Run A drove the standing goal's checklist to all-done (todos_dirty=true)
+    // and stopped accepted. The goal never retires, so its epoch stays live and
+    // allDone stays true into run B.
+    root.goal = goal_flow.standingGoalFromFlag("keep the tree green", null, root.todos.items, 7);
+    try root.todos.append(ar, .{ .content = "done last run", .status = "completed", .epoch = 1 });
+    root.todos_dirty = true;
+    root.tool_calls_this_turn = 1;
+    // Stale evidence reads as work_done -> accepted on B's very first decision...
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
+    // ...which is why mainloop clears todos_dirty when a FRESH /loop arms: the
+    // new prompt starts with no completion evidence of its own, and only a
+    // todo_write (or attempt_completion) made DURING the run can stop it.
+    root.todos_dirty = false;
+    try std.testing.expect(std.meta.activeTag(goal_flow.loopTurnDecision(&root, 25)) == .continue_turn);
+    goal_state.noteTodoWrite(&root); // the model re-plans and finishes in-run
+    try std.testing.expectEqual(repl_glue.ContinuationOutcome.accepted, goal_flow.loopTurnDecision(&root, 25).stop);
+}

@@ -420,8 +420,14 @@ pub fn emergencyTrim(self: *Agent) usize {
     }
     // #163: no clean user turn to cut at (a runaway tool loop). Don't wedge the
     // session — reclaim context by truncating the oldest tool outputs in place,
-    // keeping every call/output pair valid. Nonzero = recovered.
-    return if (trimOldestToolOutputs(self) > 0) 1 else 0;
+    // keeping every call/output pair valid. Nonzero = recovered. This too is a
+    // rewrite: the stubbed outputs may include the last todo_write render the
+    // suppressed /loop note points the model at (#318).
+    if (trimOldestToolOutputs(self) > 0) {
+        self.history_rewrites +%= 1;
+        return 1;
+    }
+    return 0;
 }
 
 /// Auto-compaction with recovery. compact() summarizes the whole history in

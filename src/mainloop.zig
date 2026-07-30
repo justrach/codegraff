@@ -114,6 +114,9 @@ pub fn run(ctx: *Ctx) !void {
             std.mem.trim(u8, line["/loop".len..], " \t")
         else
             null;
+        // A checklist finished BEFORE this /loop is not evidence its prompt is done:
+        // stale todos_dirty ended a standing goal's next run at iteration 1 as accepted (#318).
+        if (loop_prompt != null and !is_loop_continuation) ctx.root.todos_dirty = false;
         var review_prompt: ?[]const u8 = if (!main_mod.json_mode) review.promptFromLine(line) else null;
         // /goal <objective>: set the standing goal AND run it as the first turn
         // right away — codex/opencode both start the loop on a goal instead of

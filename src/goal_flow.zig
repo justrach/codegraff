@@ -41,7 +41,17 @@ pub fn standingGoalFromFlag(objective: []const u8, old: ?agent_mod.Goal, todos: 
 /// items the returned note must be queued (pending_goal_note, always null right
 /// after a load) so neither the model nor the user loses the boundary silently.
 pub fn reapplyFlagGoal(arena: Allocator, root: *Agent, objective: []const u8, now_ms: i64) !?[]const u8 {
-    if (root.goal) |g| if (g.standing and std.mem.eql(u8, g.objective, objective)) return null;
+    if (root.goal) |*g| {
+        if (g.standing and std.mem.eql(u8, g.objective, objective)) {
+            // Same policy, same goal - but the flag passed TODAY outranks a saved
+            // pause: --goal on the command line means steer. Without this, a
+            // paused standing goal came back paused and the flag produced no
+            // steering and no completion gate at all, silently (#318).
+            g.status = .active;
+            g.updated_ms = now_ms;
+            return null;
+        }
+    }
     const displaced: ?agent_mod.Goal = if (root.goal) |old| (if (old.status == .complete) null else old) else null;
     root.goal = standingGoalFromFlag(objective, root.goal, root.todos.items, now_ms);
     root.goal_note_fp = 0; // re-state the (now standing) note on the next turn
@@ -228,6 +238,7 @@ fn flowRoot(arena: Allocator) Agent {
     root.goal_note_fp = 0;
     root.pending_goal_note = null;
     root.history_rewrites = 0;
+    root.tool_calls_this_turn = 0;
     return root;
 }
 
@@ -257,9 +268,12 @@ test "a --goal standing objective outlives the model's own completion (#318)" {
     try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status);
     try std.testing.expect(root.completed != null);
     try std.testing.expect(goal_state.goalActive(&root));
+    // The accepted claim CONSUMED the arm: a goal that never retires must not
+    // ride one refusal forever, or every later claim passes unchecked.
+    try std.testing.expect(!root.completion_gate_armed);
 
-    // Open work refuses with the standing consequence: the items stay active.
-    goal_state.resetCompletionGate(&root);
+    // So the NEXT claim starts a fresh double-check cycle, no reset needed:
+    // open work refuses with the standing consequence (the items stay active).
     try root.todos.append(ar, .{ .content = "an open item", .status = "pending", .epoch = 1 });
     const r2 = try goal_state.completionGate(ar, &root);
     try std.testing.expect(r2 != null and std.mem.indexOf(u8, r2.?, "stay active") != null);
@@ -543,6 +557,14 @@ test "re-applying --goal on resume keeps the same objective's own checklist (#31
     try std.testing.expectEqual(@as(u64, 1), root.goal.?.epoch);
     try std.testing.expectEqual(@as(i64, 7), root.goal.?.created_ms); // the restored goal, not a re-mint
     try std.testing.expectEqualStrings("[x] a\n[ ] b", goal_state.renderCurrent(&root));
+    // A saved pause does not survive the flag: --goal typed TODAY means steer.
+    // Restored verbatim, a paused standing goal produced no steering and no
+    // completion gate at all, silently, in exactly the flag's headless flows.
+    root.goal.?.status = .paused;
+    try std.testing.expect((try reapplyFlagGoal(ar, &root, "keep the tree green", 10)) == null);
+    try std.testing.expectEqual(agent_mod.GoalStatus.active, root.goal.?.status);
+    try std.testing.expectEqual(@as(u64, 1), root.goal.?.epoch); // still the same goal, not a re-mint
+    try std.testing.expect(goal_state.goalActive(&root));
 
     // A DIFFERENT flag objective displaces a live restored /goal like any
     // supersession: new standing goal above every epoch, and the note reports
