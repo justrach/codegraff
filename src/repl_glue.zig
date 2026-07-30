@@ -93,11 +93,12 @@ pub const ReplStreamSink = struct {
 };
 
 /// The standing-goal steering note for a turn when /goal is set. The checklist
-/// itself is deliberately NOT embedded (#318): the model already sees it in
-/// todo_write tool results, and re-pasting it every turn is how items from a
-/// dead goal kept steering later work (and how compaction memorized them).
-/// Returns "" when goal is null/inactive so the caller can skip the append;
-/// injection is diff-gated by goal_state.steeringGate.
+/// itself is deliberately NOT embedded (#318): the model sees it in todo_write
+/// results, and re-pasting it every turn is how a dead goal's items kept
+/// steering later work. The ONE exception is compaction, where those results
+/// are gone - goal_flow.compactionSnapshot restates the list into the new
+/// history instead, so this text (and its fingerprint) never moves. Returns ""
+/// when goal is null/inactive; injection is diff-gated by goal_state.steeringGate.
 pub fn goalSteeringNote(arena: Allocator, goal: ?agent_mod.Goal) ![]const u8 {
     const g = goal orelse return "";
     if (g.status != .active) return ""; // paused/blocked/complete/budget_limited never steer (#223)
@@ -106,8 +107,8 @@ pub fn goalSteeringNote(arena: Allocator, goal: ?agent_mod.Goal) ![]const u8 {
     // attempt_completion "to end this steering", and one such call left the rest
     // of a headless/SDK session running unsteered (#318).
     if (g.standing)
-        return std.fmt.allocPrint(arena, "[standing goal: {s} - keep this objective in view on every task; track multi-step work as a live todo_write checklist, marking each item in_progress when you start and completed when done. This steering persists for the whole session.]", .{g.objective});
-    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a live todo_write checklist and work through it, marking each item in_progress when you start and completed when done. When the objective is verifiably done, call attempt_completion - that completes the goal and ends this steering.]", .{g.objective});
+        return std.fmt.allocPrint(arena, "[standing goal: {s} - keep this objective in view on every task; track multi-step work as a live todo_write checklist (todo_read shows the current one; todo_write REPLACES it, so include already-completed items when rewriting), marking each item in_progress when you start and completed when done. This steering persists for the whole session.]", .{g.objective});
+    return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a live todo_write checklist and work through it (todo_read shows the current one; todo_write REPLACES it, so include already-completed items when rewriting), marking each item in_progress when you start and completed when done. When the objective is verifiably done, call attempt_completion - that completes the goal and ends this steering.]", .{g.objective});
 }
 
 /// Extract a 0-100 score from an eval command's output: a `score` key (JSON or

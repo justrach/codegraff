@@ -298,8 +298,8 @@ pub fn run(ctx: *Ctx) !void {
         }
 
         // Persistent goal steering (#318): the diff-gated standing-goal note
-        // plus a one-shot supersession note when /goal was replaced or cleared.
-        // The checklist is NOT re-injected - it lives in todo_write results.
+        // plus one-shot notes (/goal replace|clear, and the standing state an
+        // emergency trim re-queues). Compaction restates the checklist itself.
         var goal_msg: []const u8 = try goal_state.applyGoalSteering(ctx.arena, ctx.root, base_msg);
         const eval_note = if (ctx.root.review_mode) "" else try repl_glue.evalSteeringNote(
             ctx.arena,

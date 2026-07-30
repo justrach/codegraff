@@ -12,6 +12,7 @@ const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const prompts = @import("prompts.zig");
 const compact_instruction = prompts.compact_instruction;
+const goal_flow = @import("goal_flow.zig");
 
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
@@ -151,15 +152,7 @@ pub fn compact(self: *Agent) anyerror!usize {
     }
 
     var fresh = std.json.Array.init(self.arena);
-    const handoff = try std.fmt.allocPrint(self.arena,
-        \\Context: the earlier conversation was compacted to save space.
-        \\Summary of the earlier work:
-        \\
-        \\{s}
-        \\
-        \\Continue assisting the user based on this summary.
-    , .{summary});
-    try fresh.append(try textMessage(self.arena, "user", handoff));
+    try fresh.append(try textMessage(self.arena, "user", try handoffMessage(self, summary)));
     // Preserve a valid recent suffix verbatim (up to ~8k estimated tokens),
     // including its user boundary and paired tool calls/results.
     for (recent_messages) |message| try fresh.append(message);
@@ -170,6 +163,27 @@ pub fn compact(self: *Agent) anyerror!usize {
     installed_summary = true;
     if (!main_mod.json_mode) try self.say("[history compacted to a {d}-char summary]\n", .{summary.len});
     return summary.len;
+}
+
+/// The message a successful compaction installs as the new history head: the
+/// model's handoff summary, plus the harness-kept standing state when a goal is
+/// live (#318). That state is HISTORY, not steering, for two reasons: a
+/// mid-turn compaction (agent.zig's in-loop call) must reach the tool loop
+/// immediately rather than at the next turn boundary, and feeding it through
+/// goalSteeringNote would move that note's diff-gate fingerprint on every
+/// compaction, defeating the suppression the gate exists for. With no live goal
+/// the text is byte-identical to what it always was.
+pub fn handoffMessage(self: *Agent, summary: []const u8) ![]const u8 {
+    const base = try std.fmt.allocPrint(self.arena,
+        \\Context: the earlier conversation was compacted to save space.
+        \\Summary of the earlier work:
+        \\
+        \\{s}
+        \\
+        \\Continue assisting the user based on this summary.
+    , .{summary});
+    const standing = (try goal_flow.compactionSnapshot(self.arena, self)) orelse return base;
+    return std.fmt.allocPrint(self.arena, "{s}\n\n{s}", .{ base, standing });
 }
 
 /// Clone JSON arrays/objects while borrowing immutable leaf strings. Send-time
@@ -392,6 +406,12 @@ pub fn emergencyTrim(self: *Agent) usize {
         for (self.messages.items[cut..]) |m| fresh.append(m) catch return 0;
         self.messages = fresh;
         self.goal_note_fp = 0; // trimmed history may have carried the goal note (#318)
+        // No synthetic message exists here to hang the standing state on (unlike
+        // compact()'s handoff), so it rides the next turn's one-shot slot. Only
+        // when that slot is free: a queued /goal replace|clear note is the USER's
+        // instruction and outranks the harness restating itself (#318).
+        if (self.pending_goal_note == null)
+            self.pending_goal_note = goal_flow.compactionSnapshot(self.arena, self) catch null;
         const after_tokens = self.fullInputEstimateTokens();
         accountForReclaimedTokens(self, before_tokens -| after_tokens);
         return cut;

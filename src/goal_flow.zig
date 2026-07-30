@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
 const agent_mod = @import("agent.zig");
 const goal_state = @import("goal_state.zig");
 const repl_glue = @import("repl_glue.zig");
+const utf8Prefix = @import("util.zig").utf8Prefix;
 const Agent = agent_mod.Agent;
 const TodoItem = agent_mod.TodoItem;
 
@@ -29,6 +30,45 @@ pub fn standingGoalFromFlag(objective: []const u8, todos: []const TodoItem, now_
         .created_ms = now_ms,
         .updated_ms = now_ms,
     };
+}
+
+/// The checklist render carried into a compaction handoff is capped here: a
+/// pathological 200-item list must never eat the very context the compaction
+/// was run to reclaim. Over the cap the render is cut at a line boundary and
+/// the model is pointed at todo_read for the rest.
+pub const snapshot_render_cap: usize = 2_000;
+
+/// The standing state a compaction handoff has to carry across the summary
+/// boundary (#318). compact() rebuilds history as [handoff summary] + an ~8k
+/// suffix, so the last todo_write result - the ONLY place the live checklist
+/// ever reaches the model - is usually gone, and the summarizer may not have
+/// seen the item statuses either (trimOldestToolOutputs blanks old outputs
+/// before the summary request). The model then rewrote the list from prose,
+/// todo_write REPLACED the epoch, three already-completed items came back as
+/// pending, allDone flipped false, and the goal could never finish - durably,
+/// because the autosave persisted the damaged list. So the harness restates
+/// the list itself, once, as part of the new history.
+/// Returns null unless a root, non-review agent has an ACTIVE goal, which also
+/// excludes subagents and /review turns: they share the Agent struct but not
+/// the goal. Allocates from `arena`, which MUST outlive compact()'s temporary
+/// compaction arena - the text goes into the history that survives it.
+pub fn compactionSnapshot(arena: Allocator, root: *Agent) !?[]const u8 {
+    if (!goal_state.goalActive(root)) return null;
+    const objective = root.goal.?.objective;
+    const rendered = goal_state.renderCurrent(root);
+    if (rendered.len == 0)
+        return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives compaction): goal: {s}. No checklist has been written for it yet - plan the work with todo_write, and read the list back with todo_read at any time.]", .{objective});
+    const open = goal_state.openCount(root.todos.items, goal_state.currentEpoch(root.goal));
+    return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives compaction): goal: {s}. Checklist ({d} open):\n{s}\nThis list is live harness state, read it back with todo_read at any time. todo_write REPLACES the current goal's whole list, so include already-completed items when rewriting.]", .{ objective, open, try capRender(arena, rendered) });
+}
+
+/// Cut an oversized checklist render at a line boundary (never mid-item, never
+/// mid-codepoint) and say so, rather than pasting it whole.
+fn capRender(arena: Allocator, rendered: []const u8) ![]const u8 {
+    if (rendered.len <= snapshot_render_cap) return rendered;
+    const head = utf8Prefix(rendered, snapshot_render_cap);
+    const cut = std.mem.lastIndexOfScalar(u8, head, '\n') orelse head.len;
+    return std.fmt.allocPrint(arena, "{s}\n[checklist truncated for the handoff - call todo_read for the full list]", .{rendered[0..cut]});
 }
 
 /// A root agent in the shape the goal helpers read; no live turn behind it.
@@ -190,4 +230,88 @@ test "a cleared goal's OPEN items never become the next goal's work (#318)" {
     try std.testing.expect(refusal != null and std.mem.indexOf(u8, refusal.?, "no checklist") != null);
     try std.testing.expect(std.mem.indexOf(u8, refusal.?, "open checklist item") == null);
     try std.testing.expectEqualStrings("", goal_state.renderCurrent(&root)); // B never renders A's list
+}
+
+test "compactionSnapshot: no live goal, no checklist, and a capped render (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = flowRoot(ar);
+
+    // No goal: nothing to restate, and the handoff stays byte-identical.
+    try std.testing.expect((try compactionSnapshot(ar, &root)) == null);
+
+    // A goal that has not planned yet gets the list-free variant - never the
+    // "(no todos)" placeholder, which reads as a checklist that exists and is
+    // empty rather than one the model still has to write.
+    root.goal = .{ .objective = "ship phase 2", .epoch = 1 };
+    const bare = (try compactionSnapshot(ar, &root)).?;
+    try std.testing.expect(std.mem.indexOf(u8, bare, "ship phase 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bare, "Checklist (") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bare, "(no todos)") == null);
+
+    // Only an ACTIVE root goal is restated: a paused goal is not steering, and
+    // a review turn or subagent shares the Agent struct but not the objective.
+    root.goal.?.status = .paused;
+    try std.testing.expect((try compactionSnapshot(ar, &root)) == null);
+    root.goal.?.status = .active;
+    root.review_mode = true;
+    try std.testing.expect((try compactionSnapshot(ar, &root)) == null);
+    root.review_mode = false;
+    root.sub = true;
+    try std.testing.expect((try compactionSnapshot(ar, &root)) == null);
+    root.sub = false;
+
+    // Parked work never re-enters the handoff, and the open count is the
+    // current epoch's.
+    try root.todos.append(ar, .{ .content = "parked by an older goal", .status = "pending", .epoch = 0 });
+    try root.todos.append(ar, .{ .content = "write the helper", .status = "completed", .epoch = 1 });
+    try root.todos.append(ar, .{ .content = "test it", .status = "pending", .epoch = 1 });
+    const snap = (try compactionSnapshot(ar, &root)).?;
+    try std.testing.expect(std.mem.indexOf(u8, snap, "Checklist (1 open)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap, "[x] write the helper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap, "[ ] test it") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap, "parked by an older goal") == null);
+    try std.testing.expect(std.mem.indexOf(u8, snap, "todo_write REPLACES") != null);
+
+    // A pathological list is cut at a line boundary instead of pasted whole:
+    // the restatement must not undo the compaction it rides on.
+    var i: usize = 0;
+    while (i < 400) : (i += 1)
+        try root.todos.append(ar, .{ .content = "a checklist item with some measurable length", .status = "pending", .epoch = 1 });
+    const capped = (try compactionSnapshot(ar, &root)).?;
+    try std.testing.expect(capped.len < snapshot_render_cap + 600);
+    try std.testing.expect(std.mem.indexOf(u8, capped, "checklist truncated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, capped, "Checklist (401 open)") != null);
+    try std.testing.expect(std.mem.endsWith(u8, capped, "when rewriting.]")); // the REPLACES warning survives the cut
+}
+
+test "a compaction does not move the goal note's diff-gate fingerprint (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = flowRoot(ar);
+    root.goal = .{ .objective = "ship phase 2", .epoch = 1 };
+    try root.todos.append(ar, .{ .content = "write the test", .status = "pending", .epoch = 1 });
+
+    // The restatement is HISTORY (compact() appends it to the handoff message),
+    // never steering. Routing it through goalSteeringNote would change that
+    // note's text on the turn after every compaction, re-fingerprinting the
+    // diff-gate whose entire job is to stop the checklist being re-pasted.
+    const before = try repl_glue.goalSteeringNote(ar, root.goal);
+    const snap = (try compactionSnapshot(ar, &root)).?;
+    root.goal_note_fp = 0; // the reset compact()/emergencyTrim really do perform
+    const after = try repl_glue.goalSteeringNote(ar, root.goal);
+    try std.testing.expectEqualStrings(before, after);
+    try std.testing.expect(std.mem.indexOf(u8, after, "write the test") == null); // the note still embeds no checklist
+    try std.testing.expect(std.mem.indexOf(u8, snap, "[ ] write the test") != null); // the snapshot is where it lives
+
+    // Both note variants now point at todo_read and warn that a todo_write
+    // REPLACES the list: rewriting it from a summary is exactly how the three
+    // completed items were lost after every compaction (#318).
+    const standing = try repl_glue.goalSteeringNote(ar, .{ .objective = "keep the tree green", .standing = true });
+    for ([_][]const u8{ after, standing }) |n| {
+        try std.testing.expect(std.mem.indexOf(u8, n, "todo_read") != null);
+        try std.testing.expect(std.mem.indexOf(u8, n, "REPLACES") != null);
+    }
 }
