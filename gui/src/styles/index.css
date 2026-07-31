@@ -3,3 +3,4 @@
 @import "./theme-presets.css";
 @import "./workspace.css";
 @import "./motion.css";
+@import "katex/dist/katex.min.css";

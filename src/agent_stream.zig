@@ -41,7 +41,7 @@ const WatchdogFired = http.WatchdogFired;
 const sendHeadTask = http.sendHeadTask;
 const headStallTask = http.headStallTask;
 const streamLineTask = http.streamLineTask;
-const streamStallTask = http.streamStallTask;
+const streamStallWatch = http.streamStallWatch;
 const watchdogError = http.watchdogError;
 
 // escPressed/drainSteerStdin/rawNonblockStdin/ssePayload live in
@@ -194,7 +194,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     };
     defer if (bearer.len > 0) gpa.free(bearer);
     var headers_buf: [12]std.http.Header = undefined;
-    const extra = providerHeaders(provider, bearer, &headers_buf);
+    const extra = providerHeaders(self.io, provider, bearer, &headers_buf);
 
     self.md_buf.clearRetainingCapacity(); // fresh markdown state per stream
     self.arg_live = .{}; // fresh tool-argument extractor per stream
@@ -342,9 +342,10 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     defer line.deinit();
 
     stream: while (true) {
-        // Race the line read against an idle-stall watchdog so a dead
-        // stream can't hang the turn (the Esc escape below is TTY-only, so
-        // --json/GUI sessions would otherwise wait forever).
+        // Race the line read against an idle-stall watchdog so a dead stream can't
+        // hang the turn (the Esc escape below is TTY-only, so --json/GUI sessions
+        // would otherwise wait forever). #56: a non-empty partial_text (cleared per
+        // stream above) means tokens already flowed, so the silence trips sooner.
         read: {
             const ReadDone = union(enum) { line: anyerror!usize, stall: WatchdogFired };
             var rd_buf: [2]ReadDone = undefined;
@@ -366,7 +367,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 if (req.connection) |conn| conn.closing = true;
                 return error.StreamStalled;
             };
-            rsel.concurrent(.stall, streamStallTask, .{ self.io, orig_tio != null }) catch {
+            rsel.concurrent(.stall, streamStallWatch, .{ self.io, orig_tio != null, self.partial_text.items.len != 0 }) catch {
                 const r = rsel.await() catch |e| {
                     rsel.cancelDiscard();
                     return e;
@@ -399,11 +400,10 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
                 .stall => |w| {
                     self.flushStreamTail();
                     if (req.connection) |conn| conn.closing = true;
-                    // A user Esc is a deliberate cancel; a `.deadline` is a dead
-                    // or idle stream (no SSE bytes for stream_stall_ms) — end the
-                    // turn, but as error.StreamStalled so it is never recorded as
-                    // "[response interrupted by user]" (#134). The notice below is
-                    // for the deadline case only (Esc has its own message path).
+                    // A user Esc is a deliberate cancel; a `.deadline` is a dead or
+                    // idle stream (silent past this read's budget) — end the turn as
+                    // error.StreamStalled so it is never recorded as "[response
+                    // interrupted by user]" (#134). The notice below is deadline-only.
                     if (w == .deadline and !main_mod.json_mode) if (self.out) |o| {
                         o.writeAll("\n⚠ stream stalled — ending turn\n") catch {};
                         o.flush() catch {};

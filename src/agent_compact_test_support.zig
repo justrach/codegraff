@@ -27,6 +27,11 @@ pub fn subAgent(a: std.mem.Allocator, sub: bool) Agent {
     // compactPrelude reports the token figure compact() prints, so the estimate
     // path has to be reachable: system prompt, tool json, provider context and
     // the two meter anchors it reads.
+    // compactPrelude now drops the codex chain before compaction's own request,
+    // so the fields closeCodexWs reads have to be real even off the codex path.
+    agent.codex_ws = null;
+    agent.codex_prev_id = null;
+    agent.codex_sent_upto = 0;
     agent.sys_override = null;
     agent.sys_normal = "";
     agent.sys_strict = "";

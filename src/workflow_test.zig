@@ -20,6 +20,8 @@ const phaseTaskCap = workflow.phaseTaskCap;
 const withContext = workflow.withContext;
 const gateAllows = workflow.gateAllows;
 const buildAbortText = workflow.buildAbortText;
+const failExcerpt = workflow.failExcerpt;
+const fail_excerpt_cap = workflow.fail_excerpt_cap;
 const buildManifest = workflow.buildManifest;
 const pipelinePrompt = workflow.pipelinePrompt;
 const pipelineIsolationError = workflow.pipelineIsolationError;
@@ -92,20 +94,53 @@ test "gateAllows: empty when always runs, else case-insensitive substring (#5)" 
     try std.testing.expect(!gateAllows("", "ready")); // empty prev → skip
 }
 
-test "buildAbortText names the phase index and title, and lists every failed task (U2)" {
+test "buildAbortText names the phase index and title, and surfaces each failed task's error (U2/#248)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
     const labels = [_][]const u8{ "scan A", "scan B" };
-    const text = try buildAbortText(a, &labels, 2, 3, "Recon");
+    // Parallel per-task excerpts: one real API error, one task that left
+    // nothing to report.
+    const details = [_][]const u8{ "subagent sa-001 failed before producing a report: 429 rate_limit_exceeded [quota failure].", "" };
+    const text = try buildAbortText(a, &labels, &details, 2, 3, "Recon");
 
     // Every failed task's header survives, so a human can see what was tried.
     try std.testing.expect(std.mem.indexOf(u8, text, "### scan A (no result — task failed)") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "### scan B (no result — task failed)") != null);
+    // #248 — the underlying API error travels WITH the header instead of being
+    // consumed by the retry gate and dropped. This is the whole ask on the
+    // issue: a caller that only reads "task failed" cannot adapt.
+    try std.testing.expect(std.mem.indexOf(u8, text, "429 rate_limit_exceeded") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "### scan A (no result — task failed)\nsubagent sa-001 failed") != null);
     // The abort line names the phase index/total and title — the whole point
     // of this text existing instead of a silent empty {{prev}}.
     try std.testing.expect(std.mem.indexOf(u8, text, "workflow aborted: every task in phase 2/3 (Recon) failed") != null);
+}
+
+test "failExcerpt keeps the API error on one capped line, and stays empty when there is none (#248)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // A real subagentFailure text: the cause survives, flattened, so it can sit
+    // under a "### label" header without breaking that layout.
+    const raw = "subagent sa-001 failed before producing a report:\n{\"error\":\"rate_limit_exceeded\"}\t[quota failure].";
+    const one = failExcerpt(a, raw);
+    try std.testing.expect(std.mem.indexOf(u8, one, "rate_limit_exceeded") != null);
+    try std.testing.expect(std.mem.indexOfAny(u8, one, "\n\r\t") == null);
+
+    // A huge error body is capped, so one failure can never blow up the next
+    // phase's prompt — the reason the excerpt is bounded at all.
+    const huge = util.repeatBytes("E", 5000);
+    const capped = failExcerpt(a, &huge);
+    try std.testing.expect(capped.len < huge.len);
+    try std.testing.expect(capped.len <= fail_excerpt_cap + 8); // + the "…" marker
+    try std.testing.expect(std.mem.endsWith(u8, capped, "…"));
+
+    // Nothing to report → "" so the render sites keep the bare header rather
+    // than printing an empty detail line.
+    try std.testing.expectEqualStrings("", failExcerpt(a, "  \n\t "));
 }
 
 test "buildManifest reports ok/retried per phase and SKIPPED for a gated phase (U2)" {

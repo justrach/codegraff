@@ -85,22 +85,36 @@ pub const snapshot_render_cap: usize = 2_000;
 /// the goal. Allocates from `arena`, which MUST outlive compact()'s temporary
 /// compaction arena - the text goes into the history that survives it.
 pub fn compactionSnapshot(arena: Allocator, root: *Agent) !?[]const u8 {
-    if (!goal_state.goalActive(root)) return null;
-    const objective = root.goal.?.objective;
+    // The gate is the CHECKLIST, not the goal. Gating on goalActive left every
+    // todo_write user who never types /goal - most of them - with no
+    // restatement, which is the #318 failure this exists to stop; a paused goal
+    // needs it too, since it emits no steering note either. Subagents and
+    // review turns share the Agent but not the goal, so they still never do.
+    if (root.sub or root.review_mode) return null;
     const rendered = goal_state.renderCurrent(root);
-    if (rendered.len == 0)
-        return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): goal: {s}. No checklist has been written for it yet - plan the work with todo_write, and read the list back with todo_read at any time.]", .{objective});
+    const objective: ?[]const u8 = if (root.goal) |g| g.objective else null;
+    if (rendered.len == 0) {
+        const obj = objective orelse return null; // no goal AND no checklist: nothing to restate
+        return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): goal: {s}. No checklist has been written for it yet - plan the work with todo_write, and read the list back with todo_read at any time.]", .{obj});
+    }
     const open = goal_state.openCount(root.todos.items, goal_state.currentEpoch(root.goal));
-    return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): goal: {s}. Checklist ({d} open):\n{s}\nThis list is live harness state, read it back with todo_read at any time. todo_write REPLACES the current goal's whole list; completed items you omit are kept automatically, open items you omit are dropped.]", .{ objective, open, try capRender(arena, rendered) });
+    const head = if (objective) |obj|
+        try std.fmt.allocPrint(arena, "goal: {s}. Checklist ({d} open)", .{ obj, open })
+    else
+        try std.fmt.allocPrint(arena, "Checklist ({d} open)", .{open});
+    return try std.fmt.allocPrint(arena, "[standing state (harness-kept, survives context rewrites): {s}:\n{s}\nThis list is live harness state, read it back with todo_read at any time. todo_write REPLACES the whole list; completed items you omit are kept automatically, open items you omit are dropped.]", .{ head, try capRender(arena, rendered) });
 }
 
-/// Cut an oversized checklist render at a line boundary (never mid-item, never
-/// mid-codepoint) and say so, rather than pasting it whole.
+/// Cut an oversized checklist render at a line boundary and say so, rather
+/// than pasting it whole. Cuts from the FRONT: preserved completed items keep
+/// their original positions while new work appends, so cutting the tail threw
+/// away the live plan and kept a wall of finished history.
 fn capRender(arena: Allocator, rendered: []const u8) ![]const u8 {
     if (rendered.len <= snapshot_render_cap) return rendered;
-    const head = utf8Prefix(rendered, snapshot_render_cap);
-    const cut = std.mem.lastIndexOfScalar(u8, head, '\n') orelse head.len;
-    return std.fmt.allocPrint(arena, "{s}\n[checklist truncated for the handoff - call todo_read for the full list]", .{rendered[0..cut]});
+    const start = rendered.len - snapshot_render_cap;
+    const tail = rendered[start..];
+    const cut = if (std.mem.indexOfScalar(u8, tail, '\n')) |i| i + 1 else 0;
+    return std.fmt.allocPrint(arena, "[earlier completed items truncated for the handoff - call todo_read for the full list]\n{s}", .{tail[cut..]});
 }
 
 pub const GoalSetResult = struct {
@@ -409,60 +423,6 @@ test "a cleared goal's OPEN items never become the next goal's work (#318)" {
     try std.testing.expect(refusal != null and std.mem.indexOf(u8, refusal.?, "no checklist") != null);
     try std.testing.expect(std.mem.indexOf(u8, refusal.?, "open checklist item") == null);
     try std.testing.expectEqualStrings("", goal_state.renderCurrent(&root)); // B never renders A's list
-}
-
-test "compactionSnapshot: no live goal, no checklist, and a capped render (#318)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ar = arena_state.allocator();
-    var root = flowRoot(ar);
-
-    // No goal: nothing to restate, and the handoff stays byte-identical.
-    try std.testing.expect((try compactionSnapshot(ar, &root)) == null);
-
-    // A goal that has not planned yet gets the list-free variant - never the
-    // "(no todos)" placeholder, which reads as a checklist that exists and is
-    // empty rather than one the model still has to write.
-    root.goal = .{ .objective = "ship phase 2", .epoch = 1 };
-    const bare = (try compactionSnapshot(ar, &root)).?;
-    try std.testing.expect(std.mem.indexOf(u8, bare, "ship phase 2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, bare, "Checklist (") == null);
-    try std.testing.expect(std.mem.indexOf(u8, bare, "(no todos)") == null);
-
-    // Only an ACTIVE root goal is restated: a paused goal is not steering, and
-    // a review turn or subagent shares the Agent struct but not the objective.
-    root.goal.?.status = .paused;
-    try std.testing.expect((try compactionSnapshot(ar, &root)) == null);
-    root.goal.?.status = .active;
-    root.review_mode = true;
-    try std.testing.expect((try compactionSnapshot(ar, &root)) == null);
-    root.review_mode = false;
-    root.sub = true;
-    try std.testing.expect((try compactionSnapshot(ar, &root)) == null);
-    root.sub = false;
-
-    // Parked work never re-enters the handoff, and the open count is the
-    // current epoch's.
-    try root.todos.append(ar, .{ .content = "parked by an older goal", .status = "pending", .epoch = 0 });
-    try root.todos.append(ar, .{ .content = "write the helper", .status = "completed", .epoch = 1 });
-    try root.todos.append(ar, .{ .content = "test it", .status = "pending", .epoch = 1 });
-    const snap = (try compactionSnapshot(ar, &root)).?;
-    try std.testing.expect(std.mem.indexOf(u8, snap, "Checklist (1 open)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snap, "[x] write the helper") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snap, "[ ] test it") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snap, "parked by an older goal") == null);
-    try std.testing.expect(std.mem.indexOf(u8, snap, "todo_write REPLACES") != null);
-
-    // A pathological list is cut at a line boundary instead of pasted whole:
-    // the restatement must not undo the compaction it rides on.
-    var i: usize = 0;
-    while (i < 400) : (i += 1)
-        try root.todos.append(ar, .{ .content = "a checklist item with some measurable length", .status = "pending", .epoch = 1 });
-    const capped = (try compactionSnapshot(ar, &root)).?;
-    try std.testing.expect(capped.len < snapshot_render_cap + 600);
-    try std.testing.expect(std.mem.indexOf(u8, capped, "checklist truncated") != null);
-    try std.testing.expect(std.mem.indexOf(u8, capped, "Checklist (401 open)") != null);
-    try std.testing.expect(std.mem.endsWith(u8, capped, "are dropped.]")); // the REPLACES warning survives the cut
 }
 
 test "a compaction does not move the goal note's diff-gate fingerprint (#318)" {

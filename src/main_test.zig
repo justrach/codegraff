@@ -152,3 +152,11 @@ test "/bash slash command runs the bash tool and frees its gpa-allocated result"
     const written = aw.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, written, "leak-guard-XYZ") != null);
 }
+
+// main.zig itself is at the 600-line ceiling (#274 fix), so
+// startup_tests.zig's regression coverage is pulled in from here instead —
+// same test-root-reference requirement as main.zig's own hook: an
+// unreferenced module's test {} blocks silently compile to nothing.
+test {
+    _ = @import("startup_tests.zig");
+}

@@ -65,15 +65,37 @@ fn resetConversationSteering(root: *Agent) void {
     root.pending_goal_note = null; // a queued supersession note dies with the conversation (#318)
     root.goal_note_fp = 0;
     root.goal_note_age = 0;
+    // A --goal objective is the USER's policy for the process, not a property
+    // of the conversation, so it outlives the conversation the way it outlives
+    // a resume. Without this, one /clear downgraded a standing goal to nothing,
+    // the user set a fresh /goal, got a RETIRABLE one, and the next
+    // attempt_completion ended their steering - #318 through the /clear door.
+    if (root.goal_flag) |g| root.goal = goal_flow.standingGoalFromFlag(g, null, root.todos.items, 0);
 }
 
 test "/clear + /new reset conversation steering — goal and ultracode_mode don't survive (#178)" {
     var root: Agent = undefined;
     root.goal = .{ .objective = "ultracode: index the statutes" };
     root.ultracode_mode = true;
+    root.goal_flag = null; // no --goal: the conversation's goal dies with it
+    root.todos = .empty;
     resetConversationSteering(&root);
     try std.testing.expect(root.goal == null);
     try std.testing.expect(!root.ultracode_mode);
+}
+
+test "/clear keeps a --goal standing objective standing (#318 through the /clear door)" {
+    var root: Agent = undefined;
+    root.ultracode_mode = false;
+    root.todos = .empty;
+    root.goal_flag = "keep the tree green"; // the user passed --goal
+    root.goal = .{ .objective = "keep the tree green", .standing = true, .epoch = 1 };
+    resetConversationSteering(&root);
+    // Before this, /clear dropped it, the user typed a fresh /goal, got a
+    // RETIRABLE one, and the next attempt_completion ended their steering.
+    const g = root.goal orelse return error.TestExpectedNonNull;
+    try std.testing.expect(g.standing);
+    try std.testing.expectEqualStrings("keep the tree green", g.objective);
 }
 
 /// Try to handle a session/environment slash command. Returns false (line
@@ -193,13 +215,23 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 if (res.parked_open > 0) try out.print("(superseded \"{s}\" \xe2\x80\x94 parked {d} unfinished checklist item(s), kept in the session)\n", .{ old.objective, res.parked_open });
             } else if (root.tracer) |t| t.note("goal", "set");
             saveSession(root, arena, root.session_name) catch {};
-            try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; it steers every turn until /goal pause or /goal clear).\n", .{text});
+            // Only a STANDING goal (--goal) survives the model's own
+            // attempt_completion; goal_flow.zig:244 lets a typed /goal retire
+            // itself. Promising "until /goal pause or /goal clear" for both was
+            // a lifetime the retirable kind does not have.
+            const lifetime: []const u8 = if (root.goal) |g|
+                (if (g.standing) "it steers every turn for the whole session; only you can end it (/goal pause or /goal clear)" else "it steers every turn until the objective is verifiably done, or you pause or clear it")
+            else
+                "it steers every turn until the objective is verifiably done, or you pause or clear it";
+            try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; {s}).\n", .{ text, lifetime });
         }
         try out.flush();
         return true;
     }
     if (std.mem.eql(u8, line, "/loop")) {
-        try out.writeAll("usage: /loop [30m] <prompt> — run an autonomous plan→act→verify pass. A leading 30s/30m/2h paces the run and stops it when the time is up.\n");
+        // "stops it when the time is up" overpromised: the deadline is checked
+        // between turns, so a long turn runs to completion past it.
+        try out.writeAll("usage: /loop [30m] <prompt> — run an autonomous plan→act→verify pass. A leading 30s/30m/2h paces the run and stops it at the first turn boundary after the time is up.\n");
         try out.flush();
         return true;
     }

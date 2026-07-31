@@ -40,14 +40,17 @@ pub const canonical_slots = [_][]const u8{
     // C — design/solve
     "variants",
     "build",
-    // D — migration/mechanical.
-    // KNOWN GAP: pipeline stages call runSub directly and never reach the
-    // variant-scoring path, so a spec-compliant `transform` stage cannot fill
-    // its cell today — it is scoreable only via an off-catalog phase of the same
-    // name. Kept in the vocabulary because it is the right name and becomes
-    // reachable the moment pipeline stages are scored; see the pipeline-scoring
-    // issue. Migration execution is unaffected — only learning/promotion is.
-    "transform",
+    // D — migration/mechanical has NO slot: shape D is a pipeline, and a
+    // pipeline stage cannot be scored (#296). `transform` used to sit here and
+    // advertise a cell nothing could ever fill — pipeline stages call runSub
+    // directly and never reach scoreVariants, the one path that derives a slot,
+    // so the only way to score one was to disobey the catalog and run it as a
+    // phase. Dropped rather than scored: a tournament needs an axis a stage
+    // does not have. One stage carries ONE system_prompt, so its N "variants"
+    // would be N ITEMS — the same genome on different inputs — and ranking
+    // those measures item difficulty, not prompt quality. Restore `transform`
+    // only together with per-stage prompt variants; migration EXECUTION is
+    // unaffected either way, the catalog still names the stage below.
     // E — feature
     "scope",
     "implement",
@@ -186,6 +189,30 @@ test "shape catalog names every canonical slot it depends on" {
     for (canonical_slots) |slot| {
         try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, slot) != null);
     }
+}
+
+test "#296: no canonical slot is reachable only through a pipeline stage" {
+    // Only the PHASES path scores: scoreVariants derives the slot with
+    // canonicalSlot(phase title), and pipeline stages call runSub directly.
+    // So a slot the catalog names ONLY inside shape D (the pipeline shape)
+    // declares a MAP-Elites cell nothing can ever fill. `transform` was exactly
+    // that, and this pins it shut — re-adding it to canonical_slots turns this
+    // red, because D's stage list is the only place the catalog says the word.
+    const d = std.mem.indexOf(u8, shape_catalog_note, "D migration/mechanical").?;
+    const e = std.mem.indexOf(u8, shape_catalog_note, "E feature").?;
+    // The trailing prose (scaling advice, the isolation warning) names stages
+    // by example, so the E window has to stop before it or this proves nothing.
+    const tail = std.mem.indexOf(u8, shape_catalog_note, "Scale to the ask").?;
+    for (canonical_slots) |slot| {
+        const in_a_phase_shape = std.mem.indexOf(u8, shape_catalog_note[0..d], slot) != null or
+            std.mem.indexOf(u8, shape_catalog_note[e..tail], slot) != null;
+        try std.testing.expect(in_a_phase_shape);
+    }
+    // Migration EXECUTION is untouched: the catalog still tells the model to
+    // run a `transform` stage, it just no longer claims a fitness cell for it.
+    try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "transform") != null);
+    try std.testing.expectEqualStrings("", canonicalSlot("transform"));
+    try std.testing.expectEqualStrings("", canonicalSlot("transform each file"));
 }
 
 test "shape catalog covers all five shapes and stays within a sane token budget" {

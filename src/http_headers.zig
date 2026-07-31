@@ -1,9 +1,46 @@
 //! Provider-specific HTTP identity and authorization headers.
 
 const std = @import("std");
+const Io = std.Io;
 const Provider = @import("provider.zig").Provider;
 const root = @import("main.zig");
 const kimi_catalog = @import("kimi_catalog.zig");
+
+var session_id_buf: [36]u8 = undefined;
+var session_id_len: usize = 0;
+/// Spin-lock, not an Io.Mutex: providerHeaders has no Io handle to reach one
+/// with, and the critical section is a single one-time 36-byte format.
+var session_id_lock: std.atomic.Value(bool) = .init(false);
+
+/// A UUIDv4 minted once per process, matching what openai/codex generates per
+/// session. It rides two places: the `session_id` header and `prompt_cache_key`
+/// on the Responses body, which is what the backend partitions its prompt cache
+/// on. This was a single hardcoded constant shared by every graff user on every
+/// machine, which is the worst case for that partition: one key carrying all
+/// traffic overflows and DEGRADES hit rate, so the full histories we resend
+/// each turn had no affinity to land on.
+pub fn sessionId(io: Io) []const u8 {
+    while (session_id_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
+    defer session_id_lock.store(false, .release);
+    if (session_id_len == 0) {
+        var raw: [16]u8 = undefined;
+        io.random(&raw);
+        raw[6] = (raw[6] & 0x0f) | 0x40; // version 4
+        raw[8] = (raw[8] & 0x3f) | 0x80; // variant 1
+        const hex = std.fmt.bytesToHex(raw, .lower);
+        @memcpy(session_id_buf[0..8], hex[0..8]);
+        session_id_buf[8] = '-';
+        @memcpy(session_id_buf[9..13], hex[8..12]);
+        session_id_buf[13] = '-';
+        @memcpy(session_id_buf[14..18], hex[12..16]);
+        session_id_buf[18] = '-';
+        @memcpy(session_id_buf[19..23], hex[16..20]);
+        session_id_buf[23] = '-';
+        @memcpy(session_id_buf[24..36], hex[20..32]);
+        session_id_len = 36;
+    }
+    return session_id_buf[0..session_id_len];
+}
 
 pub fn userAgent(provider: Provider) std.http.Client.Request.Headers.Value {
     if (std.mem.eql(u8, provider.id, "kimi")) {
@@ -12,7 +49,7 @@ pub fn userAgent(provider: Provider) std.http.Client.Request.Headers.Value {
     return .default;
 }
 
-pub fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[12]std.http.Header) []const std.http.Header {
+pub fn providerHeaders(io: Io, provider: Provider, bearer: []const u8, buf: *[12]std.http.Header) []const std.http.Header {
     var count: usize = 0;
     switch (provider.auth) {
         .x_api_key => {
@@ -39,8 +76,38 @@ pub fn providerHeaders(provider: Provider, bearer: []const u8, buf: *[12]std.htt
         count += 1;
         buf[count] = .{ .name = "originator", .value = "codex_cli_rs" };
         count += 1;
-        buf[count] = .{ .name = "session_id", .value = "00000000-0000-0000-0000-000000000001" };
+        buf[count] = .{ .name = "session_id", .value = sessionId(io) };
         count += 1;
     }
     return buf[0..count];
+}
+
+test "session_id is a stable per-process UUIDv4, not a shared constant" {
+    const io = std.testing.io;
+    const a = sessionId(io);
+    try std.testing.expectEqual(@as(usize, 36), a.len);
+    // The value the backend partitions its prompt cache on used to be this
+    // constant, identical for every session and every graff user.
+    try std.testing.expect(!std.mem.eql(u8, a, "00000000-0000-0000-0000-000000000001"));
+    for ([_]usize{ 8, 13, 18, 23 }) |i| try std.testing.expectEqual(@as(u8, '-'), a[i]);
+    try std.testing.expectEqual(@as(u8, '4'), a[14]); // version nibble
+    try std.testing.expect(a[19] == '8' or a[19] == '9' or a[19] == 'a' or a[19] == 'b'); // variant
+    for (a, 0..) |c, i| {
+        if (i == 8 or i == 13 or i == 18 or i == 23) continue;
+        try std.testing.expect((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'));
+    }
+    // Stable within the process: the header and prompt_cache_key must agree,
+    // and the key must not move turn to turn or it partitions nothing.
+    try std.testing.expectEqualStrings(a, sessionId(io));
+
+    var buf: [12]std.http.Header = undefined;
+    const p: Provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 272_000, .account = "acct" };
+    const headers = providerHeaders(io, p, "Bearer k", &buf);
+    for (headers) |h| {
+        if (std.mem.eql(u8, h.name, "session_id")) {
+            try std.testing.expectEqualStrings(a, h.value);
+            return;
+        }
+    }
+    return error.SessionIdHeaderMissing;
 }

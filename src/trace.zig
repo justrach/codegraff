@@ -477,6 +477,13 @@ test "writeJsonLine signals a file-write failure so the tracer can disable (#242
     try std.testing.expect(writeJsonLine(std.testing.allocator, &wb, identity, .{ .ev = "ws", .detail = "connecting" }));
 }
 
+test { // #270: mainloop_trace writes the per-turn record through this file, but
+    // unit_tests' root is main.zig — a module only reachable transitively is
+    // never analyzed for tests. Pull its final-response-shape tests in here,
+    // where the tracer they feed lives.
+    _ = @import("mainloop_trace.zig");
+}
+
 test "run-scoped paths separate traces and trajectories" {
     const trace_path = try tracePath(std.testing.allocator, "abc123");
     defer std.testing.allocator.free(trace_path);

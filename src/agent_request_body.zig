@@ -8,6 +8,8 @@ const main_mod = @import("main.zig");
 const max_tokens = main_mod.max_tokens;
 const Agent = @import("agent.zig").Agent;
 const serde = @import("serde.zig");
+const http_headers = @import("http_headers.zig");
+const codex_chain = @import("codex_chain.zig");
 const pricing = @import("pricing.zig");
 const writeAnthropicMessages = serde.writeAnthropicMessages;
 const writeAnthropicTools = serde.writeAnthropicTools;
@@ -42,7 +44,12 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 if (is_kimi) {
                     if (pricing.kimiSupportsThinking(self.provider.model)) {
                         try s.objectField("thinking");
-                        try s.print("{s}", .{"{\"type\":\"enabled\"}"});
+                        // #323: k2.6 bills the reasoning we replay every turn and
+                        // then ignores it unless the request says keep:"all".
+                        if (pricing.kimiKeepsReasoning(self.provider.model))
+                            try s.print("{s}", .{"{\"type\":\"enabled\",\"keep\":\"all\"}"})
+                        else
+                            try s.print("{s}", .{"{\"type\":\"enabled\"}"});
                         if (pricing.kimiThinkingEffort(self.provider.model, @tagName(self.reasoning))) |effort| {
                             try s.objectField("output_config");
                             try s.beginObject();
@@ -126,10 +133,11 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
             if (tools) |t| {
                 try s.objectField("tools");
+                // #261 follow-up: the rest need the root-schema repair too.
                 if (is_kimi)
                     try writeKimiTools(&s, self.scratchAlloc(), t)
                 else
-                    try s.print("{s}", .{t});
+                    try serde.writeOpenAITools(&s, self.scratchAlloc(), t);
                 if (force_tool) {
                     try s.objectField("tool_choice");
                     try s.write("required");
@@ -153,6 +161,11 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 try s.beginObject();
                 try s.objectField("type");
                 try s.write("enabled");
+                // #323: same per-model opt-in as the Anthropic branch above.
+                if (pricing.kimiKeepsReasoning(self.provider.model)) {
+                    try s.objectField("keep");
+                    try s.write("all");
+                }
                 if (pricing.kimiThinkingEffort(self.provider.model, @tagName(self.reasoning))) |effort| {
                     try s.objectField("effort");
                     try s.write(effort);
@@ -174,16 +187,25 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             // returned encrypted and passed back for cross-turn continuity.
             try s.objectField("instructions");
             try s.write(self.systemPrompt());
+            // Pin our full resends to a per-session cache partition, the way
+            // openai/codex does (it defaults this to the same session UUID it
+            // puts in the `session_id` header). Without it the backend has no
+            // affinity hint for a prefix we re-upload every turn.
+            try s.objectField("prompt_cache_key");
+            try s.write(http_headers.sessionId(self.io));
             // Codex WS delta: once a response.id is held on a live WS session,
             // send previous_response_id + only the items the server does not yet
             // hold, instead of the full history (avoids the huge frame that the
             // backend rejects → WriteFailed). Full input otherwise (first turn/SSE).
-            if (self.codex_ws != null) if (self.codex_prev_id) |pid| {
+            // ONE gate for both fields: emitting previous_response_id beside a full
+            // input would make the server re-prepend a history we also sent.
+            const chain = codex_chain.chainUsable(self);
+            if (chain) {
                 try s.objectField("previous_response_id");
-                try s.write(pid);
-            };
+                try s.write(self.codex_prev_id.?);
+            }
             try s.objectField("input");
-            if (self.codex_ws != null and self.codex_prev_id != null and self.codex_sent_upto <= self.messages.items.len) {
+            if (chain) {
                 var delta = std.json.Array.init(self.arena);
                 for (self.messages.items[self.codex_sent_upto..]) |m| try delta.append(m);
                 try s.write(Value{ .array = delta });
@@ -192,7 +214,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
             if (tools) |t| {
                 try s.objectField("tools");
-                try s.print("{s}", .{t});
+                try serde.writeOpenAITools(&s, self.scratchAlloc(), t); // #261 follow-up
                 try s.objectField("tool_choice");
                 try s.write(if (force_tool) "required" else "auto");
                 try s.objectField("parallel_tool_calls");
@@ -253,7 +275,7 @@ test "Kimi request body follows live native or Anthropic protocol metadata" {
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = arena,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "native-k3", .context = 1_048_576 },
         .messages = messages,
@@ -271,6 +293,7 @@ test "Kimi request body follows live native or Anthropic protocol metadata" {
     try std.testing.expect(std.mem.indexOf(u8, native, "\"reasoning_effort\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, native, "\"target\":{\"anyOf\":[{\"const\":\"one\",\"type\":\"string\"},{\"const\":\"two\",\"type\":\"string\"}]}") != null);
     try std.testing.expect(std.mem.indexOf(u8, native, "\"oneOf\":[{\"required\":[\"target\"],\"type\":\"object\"},{\"required\":[\"other\"],\"type\":\"object\"}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, native, "\"keep\"") == null); // #323: k3 has no thinking.keep
 
     agent.provider.kind = .anthropic;
     agent.provider.auth = .x_api_key;
@@ -284,6 +307,7 @@ test "Kimi request body follows live native or Anthropic protocol metadata" {
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"system\":[{\"type\":\"text\",\"text\":\"system\",\"cache_control\":{\"type\":\"ephemeral\"}}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"content\":[{\"type\":\"text\",\"text\":\"hello\",\"cache_control\":{\"type\":\"ephemeral\"}}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"input_schema\":{\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"keep\"") == null); // #323: k3 has no thinking.keep
 }
 
 // ── Retained-reasoning wire-format regressions ──────────────────────────────
@@ -345,7 +369,7 @@ test "retained reasoning: openai-chat history replays reasoning_content on the n
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = arena,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 128_000 },
         .messages = messages,
@@ -354,8 +378,9 @@ test "retained reasoning: openai-chat history replays reasoning_content on the n
         .out = null,
         .sys_normal = "system",
     };
-    const body = try agent.buildBody(null, false, true, true);
+    const body = try agent.buildBody("[{\"type\":\"function\",\"function\":{\"name\":\"mcp__s__t\",\"description\":\"\",\"parameters\":{}}}]", false, true, true);
     defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"}") != null); // #261 follow-up: repaired on every non-kimi openai endpoint
 
     // Both turns' reasoning must reach the wire. DeepSeek's thinking mode
     // REQUIRES the tool-call turn's reasoning_content to be replayed on every
@@ -412,7 +437,7 @@ test "retained reasoning: anthropic replays thinking+signature inside a multi-st
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = arena,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude", .context = 1_000_000 },
         .messages = messages,
@@ -464,7 +489,7 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = arena,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 272_000 },
         .messages = messages,
@@ -473,9 +498,10 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
         .out = null,
         .sys_normal = "system",
     };
-    const body = try agent.buildBody("[]", false, true, true);
+    const body = try agent.buildBody("[{\"type\":\"function\",\"name\":\"mcp__s__t\",\"description\":\"\",\"parameters\":{},\"strict\":false}]", false, true, true);
     defer std.testing.allocator.free(body);
 
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"}") != null); // #261 follow-up: repaired on the responses wire too
     // Ask the backend to hand reasoning back encrypted...
     try std.testing.expect(std.mem.indexOf(u8, body, "\"include\":[\"reasoning.encrypted_content\"]") != null);
     // ...and send the prior turn's reasoning item straight back. store:false
@@ -484,6 +510,12 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
     try std.testing.expect(std.mem.indexOf(u8, body, "\"store\":false") != null);
     // No live WS session -> no chaining, so the full input must carry it.
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
+
+    // Because store:false makes every turn a full resend, the backend needs a
+    // cache partition to land it in. openai/codex sends prompt_cache_key on
+    // this exact path, defaulting it to the per-session UUID.
+    const key = try std.fmt.allocPrint(arena, "\"prompt_cache_key\":\"{s}\"", .{http_headers.sessionId(agent.io)});
+    try std.testing.expect(std.mem.indexOf(u8, body, key) != null);
 }
 
 test "anthropic asks for summarized thinking; other anthropic-format providers do not" {
@@ -497,7 +529,7 @@ test "anthropic asks for summarized thinking; other anthropic-format providers d
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = arena,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude", .context = 1_000_000 },
         .messages = messages,
@@ -529,4 +561,39 @@ test "anthropic asks for summarized thinking; other anthropic-format providers d
     defer std.testing.allocator.free(body_c);
     try std.testing.expect(std.mem.indexOf(u8, body_c, "\"thinking\":{\"type\":\"adaptive\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body_c, "\"display\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body_c, "\"keep\"") == null); // #323: thinking.keep is Kimi-only
+}
+
+test "kimi k2.6 opts into thinking.keep so replayed reasoning is used, not just billed" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    // Live-catalog shape for a keep-wanting model. #323: k2.6 supports
+    // `thinking.keep` and defaults it to null, so without keep:"all" the
+    // reasoning_content we replay each turn is billed and then discarded.
+    const rows = [_]pricing.ModelInfo{.{ .provider = "kimi", .name = "kimi-k2.6", .context = 262_144, .supports_reasoning = true }};
+    try std.testing.expect(pricing.activateKimiModels(arena, &rows));
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "kimi-k2.6", .context = 262_144 },
+        .messages = std.json.Array.init(arena),
+        .sub = false,
+        .label = "",
+        .out = null,
+        .sys_normal = "system",
+    };
+    const keep = "\"thinking\":{\"type\":\"enabled\",\"keep\":\"all\"}";
+    const native = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(native);
+    try std.testing.expect(std.mem.indexOf(u8, native, keep) != null);
+    // Kimi's Anthropic transport carries the same opt-in.
+    agent.provider.kind = .anthropic;
+    const anthropic = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(anthropic);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, keep) != null);
 }

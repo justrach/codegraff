@@ -48,6 +48,8 @@ fn blankRoot(arena: Allocator) Agent {
     root.completed = null;
     root.tool_calls_this_turn = 0;
     root.goal_note_fp = 0;
+    root.pending_goal_note = null;
+    root.history_rewrites = 0;
     root.loop_deadline_ms = null;
     return root;
 }
@@ -451,4 +453,81 @@ test "an accepted claim while paused still consumes the double-check arm (#318)"
     try std.testing.expect(!root.completion_gate_armed);
     root.goal.?.status = .active; // /goal resume
     try std.testing.expect((try goal_state.completionGate(ar, &root)) != null); // fresh double-check
+}
+
+test "compactionSnapshot: no live goal, no checklist, and a capped render (#318)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    var root = blankRoot(ar);
+
+    // No goal: nothing to restate, and the handoff stays byte-identical.
+    try std.testing.expect((try goal_flow.compactionSnapshot(ar, &root)) == null);
+
+    // A goal that has not planned yet gets the list-free variant - never the
+    // "(no todos)" placeholder, which reads as a checklist that exists and is
+    // empty rather than one the model still has to write.
+    root.goal = .{ .objective = "ship phase 2", .epoch = 1 };
+    const bare = (try goal_flow.compactionSnapshot(ar, &root)).?;
+    try std.testing.expect(std.mem.indexOf(u8, bare, "ship phase 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bare, "Checklist (") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bare, "(no todos)") == null);
+
+    // A PAUSED goal still restates. It emits no steering note either, so
+    // gating it out left /goal resume returning to a model with amnesia about
+    // its own plan - the restatement follows the CHECKLIST, not the status.
+    root.goal.?.status = .paused;
+    try std.testing.expect((try goal_flow.compactionSnapshot(ar, &root)) != null);
+    root.goal.?.status = .active;
+    root.review_mode = true;
+    try std.testing.expect((try goal_flow.compactionSnapshot(ar, &root)) == null);
+    root.review_mode = false;
+    root.sub = true;
+    try std.testing.expect((try goal_flow.compactionSnapshot(ar, &root)) == null);
+    root.sub = false;
+
+    // Parked work never re-enters the handoff, and the open count is the
+    // current epoch's.
+    try root.todos.append(ar, .{ .content = "parked by an older goal", .status = "pending", .epoch = 0 });
+    try root.todos.append(ar, .{ .content = "write the helper", .status = "completed", .epoch = 1 });
+    try root.todos.append(ar, .{ .content = "test it", .status = "pending", .epoch = 1 });
+    const snap = (try goal_flow.compactionSnapshot(ar, &root)).?;
+    try std.testing.expect(std.mem.indexOf(u8, snap, "Checklist (1 open)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap, "[x] write the helper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap, "[ ] test it") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snap, "parked by an older goal") == null);
+    try std.testing.expect(std.mem.indexOf(u8, snap, "todo_write REPLACES") != null);
+
+    // A pathological list is cut at a line boundary instead of pasted whole:
+    // the restatement must not undo the compaction it rides on. The cut takes
+    // the FRONT: preserved completed items keep their original positions while
+    // new work appends, so cutting the tail threw away the live plan and kept
+    // a wall of finished history - the opposite of what the model needs.
+    var i: usize = 0;
+    while (i < 400) : (i += 1)
+        try root.todos.append(ar, .{ .content = "a checklist item with some measurable length", .status = "pending", .epoch = 1 });
+    const capped = (try goal_flow.compactionSnapshot(ar, &root)).?;
+    try std.testing.expect(capped.len < goal_flow.snapshot_render_cap + 600);
+    try std.testing.expect(std.mem.indexOf(u8, capped, "truncated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, capped, "Checklist (401 open)") != null);
+    try std.testing.expect(std.mem.endsWith(u8, capped, "are dropped.]")); // the REPLACES warning survives the cut
+    // The oldest completed item is what got cut, not the newest work.
+    try std.testing.expect(std.mem.indexOf(u8, capped, "[x] write the helper") == null);
+}
+
+test "goalPromptFromLine: an objective runs a turn, the lifecycle words do not" {
+    try std.testing.expectEqualStrings("ship phase 2", repl_glue.goalPromptFromLine("/goal   ship phase 2  ").?);
+    try std.testing.expect(repl_glue.goalPromptFromLine("/goal ") == null); // bare /goal shows the objective
+    try std.testing.expect(repl_glue.goalPromptFromLine("/goal PAUSE") == null); // case-insensitive, like handleCommand
+    try std.testing.expectEqualStrings("clear the flaky tests", repl_glue.goalPromptFromLine("/goal clear the flaky tests").?); // merely STARTS with one
+}
+
+test "absolute path prompts are not mistaken for slash commands" {
+    try std.testing.expect(repl_glue.isSlashCommandLine("/"));
+    try std.testing.expect(repl_glue.isSlashCommandLine("/help"));
+    try std.testing.expect(repl_glue.isSlashCommandLine("/bash echo hi"));
+    try std.testing.expect(repl_glue.isSlashCommandLine("/not-a-command"));
+
+    try std.testing.expect(!repl_glue.isSlashCommandLine("/System/Library/PrivateFrameworks/StorageManagement.framework/PlugIns/StorageManagementService what causes this to start"));
+    try std.testing.expect(!repl_glue.isSlashCommandLine("/Users/blackfloofie/codedb/src/main.zig explain this"));
 }

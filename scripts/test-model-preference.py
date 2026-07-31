@@ -51,6 +51,9 @@ def launch(
         env=child_env,
         unset_env=PROVIDER_KEYS + (("CODEX_HOME",) if codex_home is None else ()) + ("NO_COLOR",),
         timeout=15.0,
+        # Wide enough that the width-budgeted prompt (#209) never drops cwd,
+        # even under a long platform tempdir (e.g. macOS's /var/folders/...).
+        cols=240,
     )
 
 

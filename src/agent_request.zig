@@ -307,7 +307,10 @@ pub fn request(self: *Agent, tools: ?[]const u8) !std.json.ObjectMap {
         // object — pull the final `response` out of it (or an error).
         if (self.provider.kind == .responses) {
             const r = self.parseResponses(resp_body) catch {
-                try self.say("unparseable codex response: {s}\n", .{resp_body[0..@min(resp_body.len, 600)]});
+                // #287/#299: sayApiError so the body snippet survives as
+                // last_api_error; with plain say a subagent's parent got only
+                // the literal "ApiError" for this failure.
+                try self.sayApiError("unparseable codex response: {s}", .{resp_body[0..@min(resp_body.len, 600)]});
                 if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, 0, 0, true);
                 return error.ApiError;
             };

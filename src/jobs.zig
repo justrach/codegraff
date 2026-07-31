@@ -37,6 +37,20 @@ pub fn runCappedCwd(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap
     return runCappedWithOptions(gpa, io, argv, stdout_cap, stderr_cap, deadline_ms, .{ .cwd = cwd });
 }
 
+/// Run options for a FOREGROUND tool subprocess (the `bash` and `codedb`
+/// tools). kill_process_tree is always on here: the child leads its own
+/// process group, so an Esc cancel or a deadline takes the grandchildren down
+/// with it instead of orphaning them onto init — the `ssh` left running after
+/// an interrupt in #266, the `codedb search` / `xcodebuild` trees that
+/// outlived their session for days in #198. `cwd` is null unless the caller is
+/// a worktree-isolated agent (#276 P0-1).
+pub fn toolRunOptions(cwd: ?[]const u8) CappedRunOptions {
+    return .{
+        .cwd = if (cwd) |path| .{ .path = path } else .inherit,
+        .kill_process_tree = true,
+    };
+}
+
 const agent_worktree = @import("agent_worktree.zig");
 pub const AgentWorktree = agent_worktree.AgentWorktree;
 pub const AgentWorktreeError = agent_worktree.AgentWorktreeError;
@@ -48,6 +62,10 @@ pub const isWorktreeStatusDirty = agent_worktree.isWorktreeStatusDirty;
 pub const agentWorktreeFinish = agent_worktree.agentWorktreeFinish;
 pub const KeepReason = agent_worktree.KeepReason;
 pub const keepReasonText = agent_worktree.keepReasonText;
+
+// #112 (list age column + `prune --older-than`) and #320 (canonical worktree
+// identity) live in their own modules: jobs.zig is at the 600-line cap.
+const worktree_prune = @import("worktree_prune.zig");
 
 /// True if the current git working tree has uncommitted *tracked* changes
 /// (staged or unstaged). Untracked files (`?? …`) don't count — `git reset
@@ -109,20 +127,7 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
     const action = if (args.len > 0) args[0] else "list";
 
     if (std.mem.eql(u8, action, "list") or std.mem.eql(u8, action, "ls")) {
-        const r = runCapped(gpa, io, &.{ "git", "worktree", "list" }, 1 << 16, 8192, 30_000) catch {
-            try out.writeAll("not a git repository (no worktrees)\n");
-            return;
-        };
-        defer {
-            gpa.free(r.stdout);
-            gpa.free(r.stderr);
-        }
-        if (!ranOk(r)) {
-            try out.writeAll(r.stderr);
-            return;
-        }
-        try out.writeAll(r.stdout);
-        return;
+        return worktree_prune.listWithAge(gpa, io, arena, out);
     }
 
     if (std.mem.eql(u8, action, "merge")) {
@@ -223,18 +228,12 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
     }
 
     if (std.mem.eql(u8, action, "prune")) {
-        // Drop git's registrations for worktrees whose dirs were deleted out of band.
-        const r = runCapped(gpa, io, &.{ "git", "worktree", "prune" }, 8192, 8192, 30_000) catch {
-            try out.writeAll("not a git repository (nothing to prune)\n");
-            return;
-        };
-        gpa.free(r.stdout);
-        gpa.free(r.stderr);
-        try out.writeAll("✓ pruned stale worktree registrations\n");
-        return;
+        // Drops git's registrations for worktrees whose dirs were deleted out of
+        // band, and with `older-than <days>` the stale DIRECTORIES too (#112).
+        return worktree_prune.pruneCommand(gpa, io, arena, out, args[1..]);
     }
 
-    try out.print("unknown worktree command '{s}' — use: graff worktree list | merge <name> | remove <name> | prune\n", .{action});
+    try out.print("unknown worktree command '{s}' — use: graff worktree list | merge <name> | remove <name> | prune [older-than <days>]\n", .{action});
 }
 
 /// One background bash job (`bash` with run_in_background:true). A pump task
@@ -258,6 +257,10 @@ const Job = struct {
 
 const job_unread_cap = 256 * 1024;
 const job_wait_cap_ms: u64 = 30_000;
+
+/// POSIX process groups; windows/wasi have none, so the group kills below and
+/// the job's own pgid are compiled out there (#198).
+const posix_groups = builtin.os.tag != .windows and builtin.os.tag != .wasi;
 
 const Jobs = struct {
     mutex: Io.Mutex = .init,
@@ -318,6 +321,10 @@ fn jobPump(job: *Job, gpa: Allocator, io: Io) void {
     g_jobs.mutex.unlock(io);
     var code: ?u8 = null;
     if (killed) {
+        // #198: take the whole process group down first — a job's grandchildren
+        // (ssh, xcodebuild, codedb) survive a bare child.kill and are then
+        // reparented to init, where they sleep on for days.
+        if (comptime posix_groups) if (job.child.id) |pid| std.posix.kill(-pid, .KILL) catch {};
         job.child.kill(io); // also reaps (wait would assert afterwards)
     } else if (job.child.wait(io)) |term| {
         code = switch (term) {
@@ -352,6 +359,9 @@ pub fn spawnJob(gpa: Allocator, io: Io, cmd: []const u8) !*Job {
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
+        // #198: the job leads its own process group, so bash_kill / jobsReap
+        // reach everything it spawned, not just the shell.
+        .pgid = if (posix_groups) 0 else null,
     });
     const cmd_copy = gpa.dupe(u8, cmd) catch |e| {
         child.kill(io);
@@ -496,6 +506,40 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
     }
     gpa.free(jobs);
     g_jobs.list.deinit(gpa);
+}
+
+test { // split-out modules: unreferenced, their tests silently never run
+    _ = worktree_prune;
+    _ = @import("worktree_lease.zig");
+}
+
+test "foreground tool subprocesses own their process group (#266, #198)" {
+    const inherited = toolRunOptions(null);
+    try std.testing.expect(inherited.kill_process_tree);
+    try std.testing.expect(std.meta.activeTag(inherited.cwd) == .inherit);
+    const pinned = toolRunOptions("/tmp/graff-worktree");
+    try std.testing.expect(pinned.kill_process_tree);
+    try std.testing.expectEqualStrings("/tmp/graff-worktree", pinned.cwd.path);
+}
+
+test "killing a background job takes its grandchildren with it (#198)" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // The job inherits this process's cwd, the one tmpDir resolved .zig-cache
+    // against, so the marker path is reachable from the shell. The grandchild
+    // detaches from the job's pipes or the pump never sees EOF; `sh` execs the
+    // trailing sleep, so a bare child kill orphans the marker subshell.
+    const cmd = try std.fmt.allocPrint(gpa, "(sleep 0.8; printf survived > .zig-cache/tmp/{s}/marker) >/dev/null 2>&1 & sleep 30", .{&tmp.sub_path});
+    defer gpa.free(cmd);
+    const id = (try spawnJob(gpa, io, cmd)).id;
+    defer jobsReap(gpa, io);
+    const killed = try jobKill(gpa, io, id);
+    gpa.free(killed.text);
+    io.sleep(.fromMilliseconds(1_200), .awake) catch {};
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "marker", .{}));
 }
 
 test "isolated capped runs clean descendants after timeout and normal exit" {

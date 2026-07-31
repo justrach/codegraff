@@ -23,6 +23,7 @@ const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 
 const ws = @import("ws.zig");
+const http_headers = @import("http_headers.zig");
 
 const term = @import("term.zig");
 const tty = term.tty;
@@ -176,10 +177,10 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     defer gpa.free(frame);
 
     const bearer = try std.fmt.allocPrint(arena, "Bearer {s}", .{provider.api_key});
-    var rnd: [16]u8 = undefined;
-    self.io.random(&rnd);
-    const hex = std.fmt.bytesToHex(rnd, .lower);
-    const sid = try std.fmt.allocPrint(arena, "{s}-{s}-{s}-{s}-{s}", .{ hex[0..8], hex[8..12], hex[12..16], hex[16..20], hex[20..32] });
+    // The SAME per-process session id the HTTP path sends, not a fresh one per
+    // connect: this is what the backend partitions its prompt cache on, so a
+    // new id per socket handed every re-anchor a cold partition.
+    const sid = http_headers.sessionId(self.io);
     const headers = [_]ws.Header{
         .{ .name = "Authorization", .value = bearer },
         .{ .name = "chatgpt-account-id", .value = provider.account },

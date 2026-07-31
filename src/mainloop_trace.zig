@@ -4,6 +4,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const Value = std.json.Value;
 
 const agent_mod = @import("agent.zig");
 const pricing = @import("pricing.zig");
@@ -23,6 +24,120 @@ pub fn begin(root: *agent_mod.Agent, io: Io) Before {
         .model_calls = if (root.run_budget) |budget| budget.used() else 0,
         .cost = pricing.g_cost.snap(io),
     };
+}
+
+/// Shape of the turn's final assistant response: counts and block types
+/// only, never a byte of the content itself (#270). An unrelated text-only
+/// refusal and a turn where the model emitted nothing looked identical in
+/// the trace afterwards — both recorded a successful API call, no tool
+/// calls, and nothing else. Recording the shape separates "one text block of
+/// 240 chars, no tools" from "no blocks at all" while staying privacy-safe.
+pub const ResponseShape = struct {
+    blocks: u32 = 0,
+    text_len: u64 = 0,
+    has_text: bool = false,
+    has_tool_use: bool = false,
+    has_thinking: bool = false,
+    has_reasoning: bool = false,
+
+    /// The set of block types present, joined in a fixed order so archived
+    /// rows group: "", "text", "text+tool_use+thinking", … Longest possible
+    /// value is 32 bytes.
+    pub fn typeSet(self: ResponseShape, buf: *[40]u8) []const u8 {
+        var w: Io.Writer = .fixed(buf);
+        inline for (.{
+            .{ self.has_text, "text" },
+            .{ self.has_tool_use, "tool_use" },
+            .{ self.has_thinking, "thinking" },
+            .{ self.has_reasoning, "reasoning" },
+        }) |entry| if (entry[0]) {
+            if (w.buffered().len > 0) w.writeByte('+') catch {};
+            w.writeAll(entry[1]) catch {};
+        };
+        return w.buffered();
+    }
+};
+
+fn jsonStr(obj: std.json.ObjectMap, key: []const u8) []const u8 {
+    const v = obj.get(key) orelse return "";
+    return if (v == .string) v.string else "";
+}
+
+/// A bare Responses output item (no "role") that the model authored.
+fn isModelItem(kind: []const u8) bool {
+    return std.mem.eql(u8, kind, "message") or
+        std.mem.eql(u8, kind, "function_call") or
+        std.mem.eql(u8, kind, "reasoning");
+}
+
+/// Shape of the final response = the trailing run of model-authored history
+/// entries, i.e. everything appended after the last user turn or tool
+/// result. All three wire formats land here, because the history holds
+/// whatever that provider's step function appended: anthropic content
+/// blocks, an openai message with content + tool_calls beside it, or bare
+/// Responses output items (#270).
+pub fn finalResponseShape(messages: []const Value) ResponseShape {
+    var shape: ResponseShape = .{};
+    var i = messages.len;
+    while (i > 0) {
+        i -= 1;
+        if (messages[i] != .object) break;
+        const obj = messages[i].object;
+        const role = jsonStr(obj, "role");
+        const kind = jsonStr(obj, "type");
+        if (role.len > 0) {
+            if (!std.mem.eql(u8, role, "assistant")) break; // user turn / tool result
+        } else if (!isModelItem(kind)) break; // function_call_output, …
+        countEntry(&shape, obj, kind);
+    }
+    return shape;
+}
+
+fn countEntry(shape: *ResponseShape, obj: std.json.ObjectMap, kind: []const u8) void {
+    // A bare Responses item is one block on its own; only "message" carries a
+    // content array, which the shared block walk below handles.
+    if (std.mem.eql(u8, kind, "function_call")) {
+        shape.blocks += 1;
+        shape.has_tool_use = true;
+        return;
+    }
+    if (std.mem.eql(u8, kind, "reasoning")) {
+        shape.blocks += 1;
+        shape.has_reasoning = true;
+        return;
+    }
+    if (obj.get("content")) |content| switch (content) {
+        .array => for (content.array.items) |block| {
+            if (block != .object) continue;
+            shape.blocks += 1;
+            const bt = jsonStr(block.object, "type");
+            if (std.mem.eql(u8, bt, "text") or std.mem.eql(u8, bt, "output_text")) {
+                shape.has_text = true;
+                shape.text_len += jsonStr(block.object, "text").len;
+            } else if (std.mem.eql(u8, bt, "tool_use")) {
+                shape.has_tool_use = true;
+            } else if (std.mem.eql(u8, bt, "thinking") or std.mem.eql(u8, bt, "redacted_thinking")) {
+                shape.has_thinking = true;
+            }
+        },
+        .string => if (content.string.len > 0) {
+            shape.blocks += 1;
+            shape.has_text = true;
+            shape.text_len += content.string.len;
+        },
+        else => {}, // openai sends content:null next to tool_calls
+    };
+    // openai keeps calls and reasoning beside the content, not inside it.
+    if (obj.get("tool_calls")) |tcs| if (tcs == .array and tcs.array.items.len > 0) {
+        shape.blocks += @intCast(tcs.array.items.len);
+        shape.has_tool_use = true;
+    };
+    for ([_][]const u8{ "reasoning_content", "reasoning" }) |key| {
+        if (jsonStr(obj, key).len > 0) {
+            shape.blocks += 1;
+            shape.has_reasoning = true;
+        }
+    }
 }
 
 pub fn record(
@@ -56,6 +171,11 @@ pub fn record(
         .cost_microusd = @intFromFloat(@max(0.0, after.usd - before.cost.usd) * 1_000_000.0),
     };
     const mutated = !std.mem.eql(u8, &prompt_fp, prev_prompt_fp);
+    // #270: the history still ends with this turn's response here — compaction
+    // and the review-context restore both run after record() returns.
+    const shape = finalResponseShape(root.messages.items);
+    var shape_buf: [40]u8 = undefined;
+    const shape_types = shape.typeSet(&shape_buf);
 
     if (root.tracer) |tracer| tracer.write(.{
         .t = tracer.elapsedMs(),
@@ -74,6 +194,11 @@ pub fn record(
         .cache_read_tokens = outcome.cache_read_tokens,
         .cache_permille = outcome.cachePermille(),
         .cost_microusd = outcome.cost_microusd,
+        // Shape only, no content (#270): tells a text-only response apart from
+        // a turn that produced nothing.
+        .resp_blocks = shape.blocks,
+        .resp_types = shape_types,
+        .resp_text_len = shape.text_len,
     });
 
     if (trace.g_traj) |trajectory| {
@@ -102,6 +227,9 @@ pub fn record(
             .uncached_tokens = outcome.uncached_tokens,
             .cache_read_tokens = outcome.cache_read_tokens,
             .cost_microusd = outcome.cost_microusd,
+            .resp_blocks = shape.blocks,
+            .resp_types = shape_types,
+            .resp_text_len = shape.text_len,
         });
         if (!turn_ok) {
             const detail: []const u8 = if (result) |_| "" else |err| switch (err) {
@@ -116,4 +244,84 @@ pub fn record(
         prev_turn_id.* = turn_id;
         prev_prompt_fp.* = prompt_fp;
     }
+}
+
+/// Parse a history array and shape it. ResponseShape holds no pointers into
+/// the tree, so the parse can be freed before the assertions.
+fn testShape(json: []const u8) !ResponseShape {
+    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    return finalResponseShape(parsed.value.array.items);
+}
+
+test "#270: the turn record separates a text-only response from an empty turn" {
+    var buf: [40]u8 = undefined;
+
+    // The reported event: one text block, no tool calls, benign task. The
+    // trace previously carried nothing that distinguished this from a turn
+    // where the model emitted no blocks at all.
+    const refusal_text = "你好，我无法给到相关内容。";
+    const refusal = try testShape(
+        \\[{"role":"user","content":"serve the two mockups"},
+        \\ {"role":"assistant","content":[{"type":"text","text":"你好，我无法给到相关内容。"}]}]
+    );
+    try std.testing.expectEqual(@as(u32, 1), refusal.blocks);
+    try std.testing.expectEqual(@as(u64, refusal_text.len), refusal.text_len);
+    try std.testing.expectEqualStrings("text", refusal.typeSet(&buf));
+
+    const empty = try testShape(
+        \\[{"role":"user","content":"serve the two mockups"},
+        \\ {"role":"assistant","content":[]}]
+    );
+    try std.testing.expectEqual(@as(u32, 0), empty.blocks);
+    try std.testing.expectEqual(@as(u64, 0), empty.text_len);
+    try std.testing.expectEqualStrings("", empty.typeSet(&buf));
+}
+
+test "#270: a tool-calling turn records tool_use, and only the FINAL response" {
+    var buf: [40]u8 = undefined;
+
+    const calling = try testShape(
+        \\[{"role":"user","content":"serve the two mockups"},
+        \\ {"role":"assistant","content":[{"type":"thinking","thinking":"…"},
+        \\  {"type":"text","text":"serving"},
+        \\  {"type":"tool_use","id":"t1","name":"bash","input":{}}]}]
+    );
+    try std.testing.expectEqual(@as(u32, 3), calling.blocks);
+    try std.testing.expectEqual(@as(u64, "serving".len), calling.text_len);
+    try std.testing.expectEqualStrings("text+tool_use+thinking", calling.typeSet(&buf));
+
+    // The earlier tool-calling message is a previous step, not the response:
+    // the scan stops at the intervening tool result.
+    const after_tools = try testShape(
+        \\[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"bash","input":{}}]},
+        \\ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},
+        \\ {"role":"assistant","content":[{"type":"text","text":"http://localhost:8080"}]}]
+    );
+    try std.testing.expectEqual(@as(u32, 1), after_tools.blocks);
+    try std.testing.expectEqualStrings("text", after_tools.typeSet(&buf));
+}
+
+test "#270: openai and Responses histories shape the same way" {
+    var buf: [40]u8 = undefined;
+
+    // openai keeps the calls beside a null content.
+    const openai = try testShape(
+        \\[{"role":"user","content":"go"},
+        \\ {"role":"assistant","content":null,"reasoning_content":"…",
+        \\  "tool_calls":[{"id":"c1","function":{"name":"bash","arguments":"{}"}}]}]
+    );
+    try std.testing.expectEqual(@as(u32, 2), openai.blocks);
+    try std.testing.expectEqual(@as(u64, 0), openai.text_len);
+    try std.testing.expectEqualStrings("tool_use+reasoning", openai.typeSet(&buf));
+
+    // Responses appends bare output items, so the trailing run spans several.
+    const responses = try testShape(
+        \\[{"type":"function_call_output","call_id":"c1","output":"ok"},
+        \\ {"type":"reasoning","summary":[]},
+        \\ {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]
+    );
+    try std.testing.expectEqual(@as(u32, 2), responses.blocks);
+    try std.testing.expectEqual(@as(u64, "done".len), responses.text_len);
+    try std.testing.expectEqualStrings("text+reasoning", responses.typeSet(&buf));
 }

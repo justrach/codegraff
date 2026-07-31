@@ -18,6 +18,7 @@ const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
 const util = @import("util.zig");
 const goal_state = @import("goal_state.zig");
+const session_lock = @import("session_lock.zig"); // the locked write path (#289)
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const unixMs = util.unixMs;
@@ -286,10 +287,9 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     try s.write(@min(context_estimate.local, @as(u64, std.math.maxInt(i64))));
     try s.endObject();
 
-    Io.Dir.cwd().createDir(root.io, ".graff", .default_dir) catch {};
-    Io.Dir.cwd().createDir(root.io, sessions_dir, .default_dir) catch {};
-    const path = try sessionPath(arena, name);
-    try Io.Dir.cwd().writeFile(root.io, .{ .sub_path = path, .data = aw.writer.buffered() });
+    // #289: two graffs in one workspace share this file — writeSession makes the
+    // parent dirs and takes an exclusive advisory lock, so the loser reports.
+    try session_lock.writeSession(root.io, .cwd(), try sessionPath(arena, name), aw.writer.buffered());
 }
 
 /// Parse the persisted `goal` field into a structured Goal (#223). A bare string
@@ -486,6 +486,9 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.effort_rejected = false;
     root.ws_off = false; // transport failures belong to the prior live session
     root.ws_transport_failures = 0;
+    // A restored history is a DIFFERENT conversation, not an extension, and
+    // codex_chain.usable detects no identity swap - it would chain onto the old one.
+    root.closeCodexWs();
     root.compact_transport_failures = 0;
     root.last_usage_includes_output = false;
     root.last_request_context_overflow = false;

@@ -48,9 +48,11 @@ pub const commands = [_]Item{
     .{ .name = "/agents", .desc = "list agent types — builtin personas + .harness/agents/*.md" },
     .{ .name = "/skills", .usage = "/skills [remove <name>]", .desc = "list available skills; /skills remove <name> disables one" },
     .{ .name = "/hooks", .desc = "list lifecycle hooks and the built-in codedb guard" },
+    .{ .name = "/doctor", .desc = "read-only health check: goal/todo invariants, and why steering will or will not be appended" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },
     .{ .name = "/rewind", .usage = "/rewind [n]", .desc = "list past prompts; /rewind <n> drops prompt n+after & reverts its file edits" },
     .{ .name = "/image", .usage = "/image <path>", .desc = "attach an image to your next message (vision models only)" },
+    .{ .name = "/images", .desc = "open image URLs from the last response (e.g. issue attachments) in your browser" },
     .{ .name = "/paste", .desc = "attach the clipboard image — macOS; also Ctrl-V (⌘V can't be captured)" },
     .{ .name = "/bash", .usage = "/bash <command>", .desc = "run a shell command directly" },
     .{ .name = "/save", .usage = "/save [name]", .desc = "write the conversation to <name>.session.json (default: current)" },
@@ -73,6 +75,13 @@ pub const names = blk: {
     for (&arr, commands) |*slot, command| slot.* = command.name;
     break :blk arr;
 };
+
+test { // #321: /doctor's rules live in doctor.zig, which nothing else references
+    // yet - and a module with no test-root reference has its tests silently
+    // skipped. Hung here beside the catalog entry that introduces the command;
+    // it belongs in main.zig's test block once /doctor is dispatched.
+    _ = @import("doctor.zig");
+}
 
 test "catalog is well-formed and names track commands" {
     try std.testing.expectEqual(commands.len, names.len);

@@ -7,12 +7,15 @@ const Allocator = std.mem.Allocator;
 
 const eval = @import("learn_eval.zig");
 const learn_run = @import("learn_run.zig");
+const mcp_teardown = @import("mcp_teardown.zig");
 const receipt = @import("learn_receipt.zig");
 const scoring = @import("scoring.zig");
 const store_mod = @import("learn_store.zig");
 const submit = @import("learn_submit.zig");
-const telemetry = @import("telemetry.zig");
 const telemetry_net = @import("telemetry_net.zig");
+
+/// How long the collector gets to answer one DELETE before we stop waiting.
+const delete_deadline = Io.Duration.fromSeconds(10);
 
 fn learningUrl(gpa: Allocator, endpoint: []const u8, run_id: []const u8) ![]u8 {
     const logs_url = (try telemetry_net.otlpLogsUrl(gpa, endpoint)) orelse
@@ -35,24 +38,69 @@ fn deleteRequest(client: *std.http.Client, url: []const u8, token: []const u8) u
     return @intFromEnum(response.status);
 }
 
-fn deleteWithDeadline(io: Io, client: *std.http.Client, url: []const u8, token: []const u8) u16 {
-    const Done = union(enum) { status: u16, deadline: void };
-    var done_buf: [2]Done = undefined;
-    var select: Io.Select(Done) = .init(io, &done_buf);
-    select.concurrent(.deadline, telemetry.Telemetry.flushDeadline, .{ io, Io.Duration.fromSeconds(10) }) catch return 0;
-    select.concurrent(.status, deleteRequest, .{ client, url, token }) catch {
-        select.cancelDiscard();
-        return 0;
-    };
-    const first = select.await() catch {
-        select.cancelDiscard();
-        return 0;
-    };
-    select.cancelDiscard();
-    return switch (first) {
-        .status => |status| status,
-        .deadline => 0,
-    };
+/// One DELETE plus every byte it touches, in heap state the caller does not
+/// own. A request that overruns the deadline keeps running on a detached
+/// thread (#303), so nothing it reads may live in the caller's frame, and its
+/// client draws on a process-lifetime allocator rather than the session gpa:
+/// pool memory left behind by an abandoned request would otherwise surface in
+/// the gpa's exit-time leak report and read as a harness bug.
+const Deletion = struct {
+    client: std.http.Client,
+    url: []u8,
+    token: []u8,
+    status: u16 = 0,
+
+    fn create(heap: Allocator, io: Io, url: []const u8, token: []const u8) !*Deletion {
+        const self = try heap.create(Deletion);
+        errdefer heap.destroy(self);
+        const url_copy = try heap.dupe(u8, url);
+        errdefer heap.free(url_copy);
+        self.* = .{
+            .client = .{ .allocator = heap, .io = io },
+            .url = url_copy,
+            .token = try heap.dupe(u8, token),
+        };
+        return self;
+    }
+
+    fn destroy(self: *Deletion, heap: Allocator) void {
+        self.client.deinit();
+        heap.free(self.token);
+        heap.free(self.url);
+        heap.destroy(self);
+    }
+
+    fn send(self: *Deletion) void {
+        self.status = deleteRequest(&self.client, self.url, self.token);
+    }
+};
+
+/// Run `send(state)` under `deadline` and read back the status it recorded,
+/// or null when the deadline wins.
+///
+/// #303: work that overruns the deadline is ABANDONED, never cancelled. The
+/// old shape raced the request against the deadline in an Io.Select and then
+/// called cancelDiscard(), which cancels AND synchronously joins whatever is
+/// left. Against the real TLS collector that cancel landed inside an in-flight
+/// read and panicked, so `learn delete-remote` crashed instead of reporting a
+/// failure, and deletion is the one guarantee a user cannot work around.
+/// mcp_teardown.runBounded (#305) exists for exactly this shape: it detaches
+/// the work, waits out the deadline, and walks away without touching it again.
+fn statusWithin(io: Io, deadline: Io.Duration, comptime send: anytype, state: anytype) ?u16 {
+    // page_allocator, not the session gpa: the bookkeeping for an abandoned
+    // task is leaked on purpose and must not read as a harness leak at exit.
+    if (!mcp_teardown.runBounded(std.heap.page_allocator, io, deadline, send, .{state})) return null;
+    return state.status;
+}
+
+fn deleteWithDeadline(io: Io, url: []const u8, token: []const u8) u16 {
+    const heap = std.heap.page_allocator;
+    const deletion = Deletion.create(heap, io, url, token) catch return 0;
+    // Nothing is reclaimed on the null branch: the request is still in flight
+    // on a detached thread, so `deletion` is leaked on purpose (#303).
+    const status = statusWithin(io, delete_deadline, Deletion.send, deletion) orelse return 0;
+    deletion.destroy(heap);
+    return status;
 }
 
 pub fn command(
@@ -87,9 +135,7 @@ pub fn command(
     const endpoint = try submit.deletionEndpoint(environ);
     const url = try learningUrl(gpa, endpoint, run_id);
     defer gpa.free(url);
-    var client: std.http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
-    switch (deleteWithDeadline(io, &client, url, &token)) {
+    switch (deleteWithDeadline(io, url, &token)) {
         200, 202, 204 => try out.print(
             "deleted remote aggregate receipt for run {s}; local evidence was not changed\n",
             .{run_id},
@@ -109,4 +155,37 @@ test "learning receipt URL preserves endpoint query parameters" {
         "https://collector.example/base/v1/learning/" ++ run_id ++ "?token=x",
         url,
     );
+}
+
+test "a DELETE that overruns its deadline is abandoned, not cancelled (#303)" {
+    // #303: `learn delete-remote` panicked against the real TLS collector
+    // because the deadline branch cancelled the losing request arm, and
+    // Io.Select.cancelDiscard() cancels AND synchronously joins its loser.
+    // The stall below parks where Io has no cancelation point at all, which
+    // is what an in-flight read looks like to a canceller: an implementation
+    // that joins its loser cannot come back before the stall ends, and this
+    // test catches it by finding the request already finished.
+    const Stall = struct {
+        io: Io,
+        status: u16 = 200,
+        finished: std.atomic.Value(bool) = .init(false),
+
+        fn send(self: *@This()) void {
+            // A spin, not io.sleep: io.sleep IS cancelable, so a sleeping
+            // stall would let the very shape this test rejects pass.
+            const end = Io.Timestamp.now(self.io, .awake).nanoseconds + 3 * std.time.ns_per_s;
+            while (Io.Timestamp.now(self.io, .awake).nanoseconds < end) std.atomic.spinLoopHint();
+            self.finished.store(true, .release);
+        }
+    };
+    const io = std.testing.io;
+    // page_allocator: abandoned state is leaked by design, and a
+    // leak-checking allocator would misreport that as a test failure.
+    const heap = std.heap.page_allocator;
+    const stall = try heap.create(Stall);
+    stall.* = .{ .io = io };
+    try std.testing.expect(statusWithin(io, .fromMilliseconds(50), Stall.send, stall) == null);
+    // Asserted on STATE, not on the clock: a shared CI runner makes elapsed
+    // time a flaky proxy, but "the request is still running" is exact.
+    try std.testing.expect(!stall.finished.load(.acquire));
 }

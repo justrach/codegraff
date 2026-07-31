@@ -55,12 +55,78 @@ pub fn deinitServer(server: *Server, io: Io, budget: mcp_teardown.Budget) void {
     }
 }
 
-pub fn initializeServer(server: *Server, response_alloc: Allocator, session_alloc: Allocator) !void {
-    const init_resp = try request(server, response_alloc,
+/// A stdio server is a local process, so a handshake reply is a pipe write
+/// away - but `request`'s stdio branch loops on takeDelimiter with NO deadline.
+/// That is fine for a live tool call (the turn is interruptible) and wrong at
+/// STARTUP: a server that holds stdout open and never answers `initialize`
+/// hangs graff before the REPL exists, with no way out (#275). Generous, since
+/// a cold `npx` server can be slow to first byte; overridable for the truly odd
+/// one via GRAFF_MCP_HANDSHAKE_SECS (parsed in session_run.zig).
+pub var stdio_handshake_timeout_ms: i64 = 15_000;
+
+/// GRAFF_MCP_HANDSHAKE_SECS raises/lowers the bound above (default 15s). A cold
+/// `npx` server can be slow to first byte and the bound only has to be shorter
+/// than "forever", so this is a safety valve, not a tuning knob. Seconds;
+/// ignored if unparseable or 0; clamped to <=1 day. Lives here rather than in
+/// session_run.zig, which is at the 600-line cap.
+pub fn applyHandshakeTimeoutEnv(environ_map: anytype) void {
+    const v = environ_map.get("GRAFF_MCP_HANDSHAKE_SECS") orelse return;
+    const secs = std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10) catch return;
+    if (secs > 0) stdio_handshake_timeout_ms = @intCast(@min(secs, 86_400) * 1000);
+}
+
+fn stdioHandshakeTimeoutTask(io: Io) void {
+    io.sleep(.fromMilliseconds(stdio_handshake_timeout_ms), .awake) catch {};
+}
+
+/// One legacy-handshake round trip over stdio, bounded. Same Select+deadline
+/// shape as probeStdio, including its guarantee: `Select.cancel` blocks until
+/// the read task has actually stopped, so nothing is still touching the reader
+/// when this returns.
+fn stdioRequestBounded(server: *Server, a: Allocator, io: Io, params: []const u8, method: []const u8) !Value {
+    const id = server.next_id;
+    server.next_id += 1;
+    {
+        const stdio = &server.transport.stdio;
+        const w = &stdio.stdin_writer.interface;
+        try w.writeAll(try mcp_protocol.buildRequest(a, id, method, params, false));
+        try w.writeByte('\n');
+        try w.flush();
+    }
+    var done_buf: [2]StdioProbeDone = undefined;
+    var select: Io.Select(StdioProbeDone) = .init(io, &done_buf);
+    select.concurrent(.replied, stdioProbeReadTask, .{ server, a, id }) catch return error.McpHandshakeTimeout;
+    select.concurrent(.timeout, stdioHandshakeTimeoutTask, .{io}) catch {
+        const only = select.await() catch return error.McpHandshakeTimeout;
+        select.cancelDiscard();
+        return only.replied;
+    };
+    const first = select.await() catch return error.McpHandshakeTimeout;
+    switch (first) {
+        .replied => |result| {
+            select.cancelDiscard();
+            return result;
+        },
+        .timeout => {
+            _ = select.cancel(); // blocks until the read task has actually stopped
+            return error.McpHandshakeTimeout;
+        },
+    }
+}
+
+/// A handshake round trip, bounded when the caller supplied an Io and the
+/// transport is stdio. HTTP is already bounded by the client's own timeouts.
+fn handshakeRequest(server: *Server, a: Allocator, bound_io: ?Io, params: []const u8, method: []const u8) !Value {
+    if (bound_io) |io| if (server.transport == .stdio) return stdioRequestBounded(server, a, io, params, method);
+    return request(server, a, params, method, null);
+}
+
+pub fn initializeServer(server: *Server, response_alloc: Allocator, session_alloc: Allocator, bound_io: ?Io) !void {
+    const init_resp = try handshakeRequest(server, response_alloc, bound_io,
         \\{"protocolVersion":"
     ++ legacy_protocol ++
         \\","capabilities":{},"clientInfo":{"name":"simple-harness","version":"0.1"}}
-    , "initialize", null);
+    , "initialize");
     const protocol_transport: mcp_protocol.Transport = switch (server.transport) {
         .stdio => .stdio,
         .http => .streamable_http,
@@ -142,9 +208,9 @@ pub fn notify(server: *Server, response_alloc: Allocator, method: []const u8) !v
     }
 }
 
-fn connectLegacy(server: *Server, a: Allocator, session_alloc: Allocator) !Value {
-    try initializeServer(server, a, session_alloc); // sets server.era = .legacy
-    return request(server, a, "{}", "tools/list", null);
+fn connectLegacy(server: *Server, a: Allocator, session_alloc: Allocator, bound_io: ?Io) !Value {
+    try initializeServer(server, a, session_alloc, bound_io); // sets server.era = .legacy
+    return handshakeRequest(server, a, bound_io, "{}", "tools/list");
 }
 
 /// A stdio server is a LOCAL process, so a reply is a pipe write away: 3s was
@@ -251,18 +317,20 @@ pub fn probeStdio(server: *Server, a: Allocator, io: Io) !StdioProbeOutcome {
 /// `startServer` instead of here: only it has the argv/env needed to
 /// respawn a server whose process closes during the probe. This is
 /// byte-identical to graff's pre-migration behavior either way.
-pub fn connectStdio(server: *Server, a: Allocator, session_alloc: Allocator) !Value {
-    return connectLegacy(server, a, session_alloc);
+pub fn connectStdio(server: *Server, a: Allocator, session_alloc: Allocator, io: Io) !Value {
+    return connectLegacy(server, a, session_alloc, io);
 }
 
 /// Finish connecting a stdio server that `probeStdio` found modern: no
 /// handshake, just the modern-enveloped `tools/list` (era is set first so
 /// `request` picks the modern wire format).
-pub fn finishModernStdio(server: *Server, a: Allocator, session_alloc: Allocator) !Value {
+pub fn finishModernStdio(server: *Server, a: Allocator, session_alloc: Allocator, io: Io) !Value {
     server.era = .modern;
     server.protocol_version = try session_alloc.dupe(u8, modern_protocol);
     server.initialized = true;
-    return request(server, a, "{}", "tools/list", null);
+    // Bounded like the legacy handshake: a modern server that answered the probe
+    // and then goes silent must not hang startup either (#275).
+    return stdioRequestBounded(server, a, io, "{}", "tools/list");
 }
 
 /// Connect a Streamable HTTP server: attempt a modern (2026-07-28)
@@ -304,7 +372,7 @@ fn connectHttpAttempt(server: *Server, a: Allocator, session_alloc: Allocator, r
     }
 
     switch (mcp_protocol.classifyProbe(a, reply.body orelse &.{})) {
-        .legacy => return connectLegacy(server, a, session_alloc),
+        .legacy => return connectLegacy(server, a, session_alloc, null),
         // -32020/-32021: graff's own request was malformed. That is a graff
         // bug, not a version mismatch — surface it loudly rather than
         // falling back and hiding it behind a legacy handshake that will
@@ -327,9 +395,56 @@ fn connectHttpAttempt(server: *Server, a: Allocator, session_alloc: Allocator, r
             // No overlap with modern_protocol, but classifyProbe only
             // returns this variant when `supported` overlaps something we
             // speak — so it must be a legacy revision: dual-era server.
-            return connectLegacy(server, a, session_alloc);
+            return connectLegacy(server, a, session_alloc, null); // HTTP: bounded by the client's own timeouts
         },
     }
+}
+
+// #275: a stdio server that accepts the connection and then never answers must
+// not hang startup. The child here holds stdout open and writes nothing, which
+// is precisely the reported repro. Before the bound, connectStdio's initialize
+// read looped on takeDelimiter forever - so reverting the fix does not turn this
+// test RED, it makes it HANG, which is the same signal in a slower form.
+test "connectStdio (#275): a silent stdio server times out instead of hanging startup" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // /bin/sh
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const saved = stdio_handshake_timeout_ms;
+    stdio_handshake_timeout_ms = 250; // keep the suite fast; the bound is what matters
+    defer stdio_handshake_timeout_ms = saved;
+
+    // Reads stdin so our write cannot fail, and never writes a line back.
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ "/bin/sh", "-c", "cat > /dev/null" },
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
+    defer mcp_stdio.stopChild(io, &child);
+
+    const in_buf = try a.alloc(u8, 4096);
+    const out_buf = try a.alloc(u8, 4096);
+    var server: Server = .{
+        .name = "silent",
+        .transport = .{ .stdio = .{
+            .child = child,
+            .stdin_writer = child.stdin.?.writerStreaming(io, in_buf),
+            .stdout_reader = child.stdout.?.readerStreaming(io, out_buf),
+        } },
+    };
+
+    const before = Io.Timestamp.now(io, .awake).nanoseconds;
+    try std.testing.expectError(error.McpHandshakeTimeout, connectStdio(&server, a, a, io));
+    const elapsed_ms = @divTrunc(Io.Timestamp.now(io, .awake).nanoseconds - before, std.time.ns_per_ms);
+    // Bounded, not merely "eventually": assert it gave up near the deadline
+    // rather than after some unrelated timeout far above it.
+    try std.testing.expect(elapsed_ms < 5_000);
+    // The child is still alive - the timeout is the CLIENT giving up, so the
+    // caller (startServer) stays in charge of tearing the server down.
+    server.transport.stdio.child = child;
 }
 
 test "a late reply for a stale id cannot be mistaken for the id actually awaited" {

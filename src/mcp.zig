@@ -20,6 +20,8 @@ const mcp_stdio = @import("mcp_stdio.zig");
 const mcp_teardown = @import("mcp_teardown.zig");
 const mcp_rpc = @import("mcp_rpc.zig");
 const smolify_manifest = @import("smolify_manifest.zig");
+const vision = @import("vision.zig"); // #249: MCP image results become staged vision blocks
+const renderContent = @import("mcp_content.zig").renderContent;
 
 const rewriteOneOf = mcp_protocol.rewriteOneOf;
 const HttpTransport = mcp_http.HttpTransport;
@@ -56,10 +58,19 @@ pub const Registry = struct {
     /// server either answers the unknown method with an error at once or
     /// closes stdout and is respawned. Only a server that SILENTLY IGNORES it
     /// pays the timeout above, and it pays it once per process.
-    /// Only `Registry.init` reads the environment; servers added later via
-    /// `addServer`/`trustWorkspace` on a `Registry.empty*`-constructed
-    /// registry inherit `false` — a documented gap, never a safety issue.
+    /// Only `Registry.init` reads the environment, so a `Registry.empty*`-
+    /// constructed registry keeps this field default (true) and cannot be
+    /// opted out of the probe by `GRAFF_MCP_PROBE=0` — the env var reaches
+    /// only the config-file path.
     stdio_probe: bool = true,
+    /// An image an MCP tool returned, waiting for the next turn to collect it
+    /// (#249). Written under `mutex` by `call`, drained by
+    /// `vision.mcpImageHandoff` — the registry cannot reach the agent itself.
+    pending_image: ?vision.PendingImage = null,
+    /// Whether the active model accepts image blocks. The registry cannot see
+    /// the provider, so the same per-turn handoff refreshes it; false until it
+    /// does, so a result explains the drop rather than promising an attachment.
+    vision_capable: bool = false,
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
@@ -83,6 +94,8 @@ pub const Registry = struct {
             .arena_state = std.heap.ArenaAllocator.init(gpa),
             .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| !std.mem.eql(u8, v, "0") else true,
         };
+        mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275: GRAFF_MCP_HANDSHAKE_SECS, read on the same pass as the probe flag
+
         errdefer reg.deinit();
         const a = reg.arena();
 
@@ -394,10 +407,10 @@ pub const Registry = struct {
         const listed = switch (server.transport) {
             .http => try mcp_rpc.connectHttp(server, a, a),
             .stdio => stdio_listed: {
-                if (!reg.stdio_probe) break :stdio_listed try mcp_rpc.connectStdio(server, a, a);
+                if (!reg.stdio_probe) break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
                 switch (try mcp_rpc.probeStdio(server, a, reg.io)) {
-                    .modern => break :stdio_listed try mcp_rpc.finishModernStdio(server, a, a),
-                    .legacy => break :stdio_listed try mcp_rpc.connectStdio(server, a, a),
+                    .modern => break :stdio_listed try mcp_rpc.finishModernStdio(server, a, a, reg.io),
+                    .legacy => break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io),
                     .closed => {
                         // The probe write/read found a dead process (some
                         // legacy SDK servers exit on an unrecognized
@@ -407,7 +420,7 @@ pub const Registry = struct {
                         // proved it can't tolerate one.
                         mcp_stdio.stopChild(reg.io, &server.transport.stdio.child);
                         server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map);
-                        break :stdio_listed try mcp_rpc.connectStdio(server, a, a);
+                        break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
                     },
                 }
             },
@@ -442,6 +455,15 @@ pub const Registry = struct {
 
     /// One shared window bounds the whole teardown: the loop is sequential, so
     /// a per-server grace cost N graces for N stalled peers (#305).
+    /// Registry teardown for the EXIT path. If any transport was abandoned, a
+    /// detached thread still holds this Io, so leave immediately rather than let
+    /// a later defer tear that Io down underneath it (#325). Kept separate from
+    /// `deinit` because tests and mid-session callers must never exit.
+    pub fn deinitAtExit(reg: *Registry) void {
+        reg.deinit();
+        mcp_teardown.exitIfAbandoned();
+    }
+
     pub fn deinit(reg: *Registry) void {
         const budget: mcp_teardown.Budget = .init(reg.io, mcp_teardown.teardown_grace);
         for (reg.servers) |server| deinitServer(server, reg.io, budget);
@@ -481,7 +503,7 @@ pub const Registry = struct {
         var response_arena_state = std.heap.ArenaAllocator.init(reg.gpa);
         defer response_arena_state.deinit();
         const response_alloc = response_arena_state.allocator();
-        if (!server.initialized) try initializeServer(server, response_alloc, reg.arena());
+        if (!server.initialized) try initializeServer(server, response_alloc, reg.arena(), null);
         const resp = request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name) catch |err| switch (err) {
             // Streamable HTTP servers use 404 to expire a session. Re-run the
             // MCP handshake once, then retry the call without the stale ID.
@@ -492,7 +514,7 @@ pub const Registry = struct {
             // re-handshake loop against a server that has no `initialize`.
             error.McpSessionExpired => retry: {
                 if (server.era != .legacy) return err;
-                try initializeServer(server, response_alloc, reg.arena());
+                try initializeServer(server, response_alloc, reg.arena(), null);
                 break :retry try request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name);
             },
             else => return err,
@@ -533,17 +555,14 @@ pub const Registry = struct {
             return .{ .text = try out_alloc.dupe(u8, "MCP server returned an input_required result (MRTR); codegraff does not implement it"), .is_error = true };
         const is_error = if (result.get("isError")) |v| (v == .bool and v.bool) else false;
 
-        // result.content is an array of {type:"text", text:...} blocks.
         var ow: Io.Writer.Allocating = .init(out_alloc);
         errdefer ow.deinit();
-        if (result.get("content")) |content| if (content == .array) {
-            for (content.array.items) |block| {
-                if (block == .object) if (block.object.get("text")) |txt| if (txt == .string) {
-                    if (ow.writer.buffered().len > 0) try ow.writer.writeByte('\n');
-                    try ow.writer.writeAll(txt.string);
-                };
-            }
-        };
+        if (result.get("content")) |content| try renderContent(&ow.writer, content, .{
+            .arena = reg.arena(),
+            .slot = &reg.pending_image,
+            .label = qualified,
+            .supports_vision = reg.vision_capable,
+        });
         // 2025-06-18+ structured tool output: if the server sent only
         // structuredContent (no text blocks), surface it instead of "".
         if (ow.writer.buffered().len == 0) {

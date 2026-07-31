@@ -93,6 +93,51 @@ pub const CappedRunOptions = struct {
     kill_process_tree: bool = false,
 };
 
+/// #253: RLIMIT_NOFILE as this process actually observes it. main() calls
+/// `std.process.raiseFileDescriptorLimit()` at startup but nothing ever
+/// reported the result, so a "ProcessFdQuotaExceeded blocks every shell
+/// command" report could not tell "the soft limit never rose" apart from "it
+/// rose and the parallel tool/subagent fan-out still exhausted it".
+pub const FdLimit = struct { soft: u64, hard: u64 };
+
+/// Same platform predicate as `posix_process_groups`: no rlimits on Windows/WASI.
+const have_rlimits = posix_process_groups;
+
+/// `null` where the platform has no rlimits (Windows/WASI) or the query fails.
+pub fn fdLimitSnapshot() ?FdLimit {
+    if (comptime have_rlimits) {
+        const lim = std.posix.getrlimit(.NOFILE) catch return null;
+        return .{
+            .soft = std.math.cast(u64, lim.cur) orelse std.math.maxInt(u64),
+            .hard = std.math.cast(u64, lim.max) orelse std.math.maxInt(u64),
+        };
+    } else {
+        return null;
+    }
+}
+
+/// #253: the one line the next fd-exhaustion report needs. Rendered into
+/// `buf` rather than printed so it can be asserted on without exhausting a
+/// real descriptor table; truncation is impossible for the shapes we format
+/// but is reported as the bare error name rather than silently dropped.
+pub fn fdQuotaNote(buf: []u8, err_name: []const u8, limit: ?FdLimit) []const u8 {
+    const rendered = if (limit) |lim| std.fmt.bufPrint(
+        buf,
+        "  [fd] spawn failed: {s}; RLIMIT_NOFILE soft={d} hard={d} (#253)\n",
+        .{ err_name, lim.soft, lim.hard },
+    ) else std.fmt.bufPrint(
+        buf,
+        "  [fd] spawn failed: {s}; RLIMIT_NOFILE unavailable on this platform (#253)\n",
+        .{err_name},
+    );
+    return rendered catch err_name;
+}
+
+fn reportFdQuota(err: anyerror) void {
+    var buf: [160]u8 = undefined;
+    std.debug.print("{s}", .{fdQuotaNote(&buf, @errorName(err), fdLimitSnapshot())});
+}
+
 fn setupWindowsJob(child: *std.process.Child, enabled: bool) !WindowsJobHandle {
     if (comptime builtin.os.tag == .windows) {
         return if (enabled) try WinJob.setup(child) else null;
@@ -126,7 +171,7 @@ pub fn runCapped(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: u
 }
 
 pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, stdout_cap: usize, stderr_cap: usize, deadline_ms: u64, options: CappedRunOptions) !CappedRun {
-    var child = try std.process.spawn(io, .{
+    var child = std.process.spawn(io, .{
         .argv = argv,
         .cwd = options.cwd,
         .environ_map = options.environ_map,
@@ -135,7 +180,16 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
         .stderr = .pipe,
         .pgid = if (posix_process_groups and options.kill_process_tree) 0 else null,
         .start_suspended = builtin.os.tag == .windows and options.kill_process_tree,
-    });
+    }) catch |err| switch (err) {
+        // #253: fd quota is the one spawn failure where the *limit* is the
+        // evidence, and it is gone by the time anyone reads the transcript.
+        // Name it at the failure site; the error itself propagates unchanged.
+        error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => {
+            reportFdQuota(err);
+            return err;
+        },
+        else => return err,
+    };
     var setup_cleanup_needed = true;
     errdefer if (setup_cleanup_needed) child.kill(io);
     const group_id: GroupId = if (posix_process_groups) child.id.? else {};
@@ -199,4 +253,86 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
 
 pub fn ranOk(run: CappedRun) bool {
     return run.term == .exited and run.term.exited == 0;
+}
+
+/// #253: descriptor high-water probe. `dup` always hands back the LOWEST free
+/// slot, so claiming a fixed burst and taking the highest number returned
+/// counts everything the process is holding below that ceiling — unlike a
+/// single `dup`, which only sees the lowest gap and is blind to a leak that
+/// sits above one. Every descriptor claimed here is released again.
+/// `std.posix.system.dup` is the RAW syscall wrapper and its return type is
+/// version-dependent: signed on Zig 0.16, unsigned on the 0.17 nightly CI
+/// pins (there is no checked `std.posix.dup` in either). Assigning it
+/// directly built locally and failed the CI zig job, so normalize on
+/// signedness at comptime instead of assuming a width.
+fn dupLowestFree() ?std.posix.fd_t {
+    const raw = std.posix.system.dup(0);
+    const signed: isize = if (@typeInfo(@TypeOf(raw)).int.signedness == .signed) @intCast(raw) else @bitCast(raw);
+    if (signed < 0) return null; // out of descriptors: the probe stops here
+    return @intCast(signed);
+}
+
+fn fdHighWater() i32 {
+    if (comptime !have_rlimits) return -1; // no POSIX descriptor table to probe
+    var claimed: [64]std.posix.fd_t = undefined;
+    var n: usize = 0;
+    var high: i32 = -1;
+    while (n < claimed.len) : (n += 1) {
+        claimed[n] = dupLowestFree() orelse break;
+        const numbered: i32 = @intCast(claimed[n]);
+        if (numbered > high) high = numbered;
+    }
+    for (claimed[0..n]) |fd| _ = std.posix.system.close(fd);
+    return high;
+}
+
+test "#253: timed-out runs do not leak the child's stdout/stderr descriptors" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const timeout_run = struct {
+        fn once(a: Allocator, i: Io) !void {
+            const r = try runCapped(a, i, &.{ "/bin/sh", "-c", "sleep 30" }, 1024, 1024, 50);
+            a.free(r.stdout);
+            a.free(r.stderr);
+            try std.testing.expect(r.timed_out);
+        }
+    }.once;
+
+    // Two warm-up runs first: whatever the Io backend claims once is then
+    // already inside the baseline, so only per-run growth can move the probe.
+    try timeout_run(gpa, io);
+    try timeout_run(gpa, io);
+    const warm = fdHighWater();
+    var i: usize = 0;
+    while (i < 6) : (i += 1) try timeout_run(gpa, io);
+    const after = fdHighWater();
+    // A branch that terminated the child but never closed its two pipes would
+    // push this out by 12. The tolerance absorbs unrelated one-off
+    // descriptors, never a per-run leak.
+    try std.testing.expect(after - warm < 4);
+}
+
+test "#253: fdLimitSnapshot observes a real NOFILE soft limit" {
+    const snapshot = fdLimitSnapshot();
+    if (comptime !have_rlimits) {
+        try std.testing.expect(snapshot == null);
+        return;
+    }
+    const lim = snapshot orelse return error.NoFdLimitObserved;
+    // main() raises the soft limit at startup; a snapshot that cannot even see
+    // the POSIX floor is reporting nothing useful.
+    try std.testing.expect(lim.soft >= 20);
+    try std.testing.expect(lim.hard >= lim.soft);
+}
+
+test "#253: fdQuotaNote names the error and the observed limit" {
+    var buf: [160]u8 = undefined;
+    const with = fdQuotaNote(&buf, "ProcessFdQuotaExceeded", .{ .soft = 256, .hard = 10240 });
+    try std.testing.expect(std.mem.indexOf(u8, with, "ProcessFdQuotaExceeded") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with, "soft=256") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with, "hard=10240") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with, "#253") != null);
+    const without = fdQuotaNote(&buf, "SystemFdQuotaExceeded", null);
+    try std.testing.expect(std.mem.indexOf(u8, without, "unavailable") != null);
 }

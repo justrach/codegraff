@@ -49,3 +49,35 @@ test("allows markdown links to workspace file paths", () => {
   expect(html).toContain('href="src/app.ts"');
   expect(html).toContain('href="/Users/example/project/src/app.ts"');
 });
+
+// #208: agent responses emit LaTeX; the renderer must typeset it via KaTeX
+// rather than showing raw source, while keeping code and unsafe input safe.
+test("renders display math as typeset KaTeX, not raw source", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={"\\[\nG \\approx 1+\\alpha\n\\]"} />,
+  );
+  expect(html).toContain("katex-display");
+  expect(html).toContain('class="katex"');
+});
+
+test("renders inline $...$ as KaTeX while keeping surrounding text", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={"The ratio $G = 1+\\alpha$ converges."} />,
+  );
+  expect(html).toContain('class="katex"');
+  expect(html).toContain("converges");
+});
+
+test("leaves a $ inside inline code as code, not math", () => {
+  const html = renderToStaticMarkup(<MarkdownRenderer text={"use `$x$` please"} />);
+  expect(html).toContain("<code>$x$</code>");
+  expect(html).not.toContain("katex");
+});
+
+test("sanitizes unsafe LaTeX: no javascript href or anchor is emitted", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text={"$\\href{javascript:alert(1)}{x}$"} />,
+  );
+  expect(html).not.toContain("<a ");
+  expect(html).not.toMatch(/href\s*=\s*"javascript:/i);
+});

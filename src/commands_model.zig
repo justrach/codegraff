@@ -44,6 +44,8 @@ const fallback_config = @import("fallback_config.zig");
 const serde = @import("serde.zig");
 
 const oauth = @import("oauth.zig");
+const images_command = @import("images_command.zig");
+const images = @import("images.zig");
 
 const reasoning_levels = [_]PickItem{
     .{ .name = "Low", .desc = "Fast responses with lighter reasoning" },
@@ -520,7 +522,8 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.startsWith(u8, line, "/image")) {
+    if (std.mem.eql(u8, line, "/images")) {
+        if (std.mem.eql(u8, line, "/images")) return images_command.run(root, out);
         const path = std.mem.trim(u8, line["/image".len..], " \t");
         if (path.len == 0) {
             if (root.pending_image) |pi| {

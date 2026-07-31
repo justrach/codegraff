@@ -156,7 +156,12 @@ pub fn nextFallbackProvider(keys: Keys, after_id: []const u8, tried: []const []c
 /// Only failures that clearly mean "this credential/model cannot serve the
 /// request" are safe to fail over. Network flakes, rate limits, malformed
 /// replies, context overflow, and interrupts stay on the selected provider.
-pub fn failoverEligible(detail: []const u8) bool {
+/// #294: the auth/model needles are universal, but the billing ones only
+/// qualify when the codegraff gateway raised them. A billing error from a
+/// provider the user keyed themselves is about their own account, and treating
+/// it as failover-eligible silently swapped their chosen model for some other
+/// provider's default.
+pub fn failoverEligible(provider_id: []const u8, detail: []const u8) bool {
     const needles = [_][]const u8{
         "unauthorized",
         "authentication_error",
@@ -185,6 +190,10 @@ pub fn failoverEligible(detail: []const u8) bool {
         "does not exist or you do not have access",
         "you do not have access to model",
         "you do not have access to this model",
+    };
+    for (needles) |needle| if (util.indexOfIgnoreCase(detail, needle) != null) return true;
+    if (!std.mem.eql(u8, provider_id, "codegraff")) return false;
+    const gateway_billing = [_][]const u8{
         "insufficient_quota",
         "quota exceeded",
         "credits exhausted",
@@ -193,7 +202,7 @@ pub fn failoverEligible(detail: []const u8) bool {
         "no credits",
         "billing limit",
     };
-    for (needles) |needle| if (util.indexOfIgnoreCase(detail, needle) != null) return true;
+    for (gateway_billing) |needle| if (util.indexOfIgnoreCase(detail, needle) != null) return true;
     return false;
 }
 
@@ -223,7 +232,7 @@ pub fn runTurnWithFallback(root: *Agent, keys: *Keys, arena: Allocator, out: ?*I
             if (err != error.ApiError or root.partial_text.items.len != 0 or root.tool_calls_this_turn != 0)
                 return err;
             const detail = root.last_api_error orelse return err;
-            if (!failoverEligible(detail)) return err;
+            if (!failoverEligible(root.provider.id, detail)) return err;
             const failed_id = root.provider.id;
             const failed_model = root.provider.model;
             root.ensureStoredKeys(keys);
@@ -371,14 +380,39 @@ test {
 }
 
 test "failoverEligible: accepts unavailable credentials/models, rejects transient or prompt errors" {
-    try std.testing.expect(failoverEligible("codex api error: Unauthorized"));
-    try std.testing.expect(failoverEligible("access token has expired"));
-    try std.testing.expect(failoverEligible("model_not_found: rollout ended"));
-    try std.testing.expect(failoverEligible("insufficient_quota"));
-    try std.testing.expect(!failoverEligible("network error: HttpConnectionClosing"));
-    try std.testing.expect(!failoverEligible("rate limited (429)"));
-    try std.testing.expect(!failoverEligible("maximum context length exceeded"));
-    try std.testing.expect(!failoverEligible("unparseable response"));
+    try std.testing.expect(failoverEligible("codex", "codex api error: Unauthorized"));
+    try std.testing.expect(failoverEligible("codex", "access token has expired"));
+    try std.testing.expect(failoverEligible("codex", "model_not_found: rollout ended"));
+    try std.testing.expect(failoverEligible("codegraff", "insufficient_quota"));
+    try std.testing.expect(!failoverEligible("codex", "network error: HttpConnectionClosing"));
+    try std.testing.expect(!failoverEligible("codex", "rate limited (429)"));
+    try std.testing.expect(!failoverEligible("codex", "maximum context length exceeded"));
+    try std.testing.expect(!failoverEligible("codex", "unparseable response"));
+}
+
+test "failoverEligible: billing needles only fire for the gateway (#294)" {
+    // The same detail string decides differently depending on who raised it:
+    // a low balance on the gateway is a reason to move, the user's own
+    // anthropic/codex billing is not.
+    const billing = [_][]const u8{
+        "your credit balance is too low",
+        "insufficient credits",
+        "credits exhausted",
+        "no credits remaining",
+        "billing limit reached",
+        "quota exceeded for this account",
+        "insufficient_quota",
+    };
+    for (billing) |detail| {
+        try std.testing.expect(failoverEligible("codegraff", detail));
+        try std.testing.expect(!failoverEligible("anthropic", detail));
+        try std.testing.expect(!failoverEligible("codex", detail));
+        try std.testing.expect(!failoverEligible("kimi", detail));
+    }
+    // Auth and model failures stay provider-agnostic.
+    try std.testing.expect(failoverEligible("anthropic", "invalid x-api-key"));
+    try std.testing.expect(failoverEligible("kimi", "model does not exist"));
+    try std.testing.expect(failoverEligible("codegraff", "unauthorized"));
 }
 
 test "nextFallbackProvider: rotates after the failed provider and skips missing or tried credentials" {

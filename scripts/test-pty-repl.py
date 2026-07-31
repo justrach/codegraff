@@ -24,6 +24,10 @@ def main() -> None:
             "GRAFF_FLEET": "off",
             "GRAFF_NO_TELEMETRY": "1",
         }
+        # A wide pane so the full status line (all mode badges + the deep temp
+        # cwd) fits without the width budgeting (#209) dropping cwd; narrow-
+        # width layout is covered by the pure-Zig prompt-budget tests in
+        # agent_prompt.zig.
         with PtySession(
             GRAFF,
             ["--model", "deepseek-v4-pro", "--no-telemetry"],
@@ -31,6 +35,7 @@ def main() -> None:
             env=env,
             unset_env=("CODEX_HOME", "NO_COLOR"),
             timeout=15.0,
+            cols=240,
         ) as session:
             session.wait_for_literal("] ›")
 

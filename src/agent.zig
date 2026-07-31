@@ -19,23 +19,15 @@ const tools_mod = @import("tools.zig");
 const vision = @import("vision.zig");
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");
-const pricing = @import("pricing.zig");
 const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
-const learning_privacy = @import("learning_privacy.zig");
 
-const ansi = @import("ansi.zig");
-const style = &ansi.style;
+// prompt_ui (agent_prompt.zig) owns the width-budgeted status line (#209,
+// 600-line goal); prompt() is member-aliased back onto Agent below.
 const prompt_ui = @import("agent_prompt.zig");
 const agent_tests = @import("agent_tests.zig");
 const goal_state = @import("goal_state.zig");
-
-const reasoningPromptLabel = prompt_ui.reasoningLabel;
-const reasoningPromptColor = prompt_ui.reasoningColor;
-const writePromptBadge = prompt_ui.writeBadge;
-const compactTokenCount = prompt_ui.compactTokenCount;
-const contextPercent = prompt_ui.contextPercent;
 
 pub const TodoItem = struct {
     content: []const u8,
@@ -80,11 +72,12 @@ pub const Agent = struct {
     subagent_provider: ?Provider = null, // optional model pin for every direct child/workflow/judge
     subagent_cross_provider: bool = false, // user explicitly allowed the pin to cross a provider/data boundary
     messages: std.json.Array,
-    // Codex Responses WS delta transport: one WS held across a turn's tool loop,
-    // sending previous_response_id + only new items. Reset by closeCodexWs.
+    // Codex Responses WS delta transport: one WS held ACROSS user turns (codex_chain.zig), sending previous_response_id + only new items. Reset by closeCodexWs.
     codex_ws: ?*ws.WsClient = null,
     codex_prev_id: ?[]const u8 = null, // last response.id (gpa-owned); null = re-anchor with full input
     codex_sent_upto: usize = 0, // messages the server already holds; delta = messages[codex_sent_upto..]
+    codex_chain_rewrites: u32 = 0, // history_rewrites when the chain was anchored; a later compaction/trim invalidates it
+    codex_props_fp: u64 = 0, // request properties the server anchored on (model/effort/fast/tools/instructions)
     codex_ws_used_ms: i64 = 0, // .awake-clock ms of the WS's last successful use; gates the idle preemptive re-anchor (#codex-ws)
     sub: bool,
     label: []const u8,
@@ -192,63 +185,10 @@ pub const Agent = struct {
     next_ask_id: u64 = 1,
     tui_header_shown: bool = false,
 
-    pub fn prompt(self: *Agent) !void {
-        if (main_mod.json_mode) return; // SDK drives turns; no human prompt
-        const w = self.out orelse return;
-        var cbuf: [40]u8 = undefined;
-        const cost: []const u8 = if (!main_mod.show_cost) "" else blk: {
-            if (std.mem.eql(u8, self.provider.id, "codex"))
-                break :blk " · sub";
-            if (pricing.priceFor(self.provider.model) == null) break :blk " · $?";
-            break :blk std.fmt.bufPrint(&cbuf, " · ${d:.4}", .{pricing.g_cost.snap(self.io).usd}) catch "";
-        };
-        // Prompt-cache hit from the last response — proof caching is working.
-        var kbuf: [32]u8 = undefined;
-        var kval: [24]u8 = undefined;
-        const cached: []const u8 = if (self.last_cache_read > 0)
-            (std.fmt.bufPrint(&kbuf, " · ⚡{s} cached", .{compactTokenCount(&kval, self.last_cache_read)}) catch "")
-        else
-            "";
-        try w.print("\n{s}[{s}{s}{s}{s}", .{ style.dim, style.reset, style.accent, self.provider.model, style.reset });
-        // Fast is the most operationally important model setting, so keep it
-        // immediately beside the model instead of letting permission modes
-        // push it deeper into the status line.
-        if (self.fast and self.provider.kind == .responses) try writePromptBadge(w, style.green, "Fast");
-        if (self.effortApplies()) try writePromptBadge(w, reasoningPromptColor(self.reasoning), reasoningPromptLabel(self.reasoning));
-        try writePromptBadge(w, style.accent, self.provider.id);
-        if (self.fallback_active) try writePromptBadge(w, style.yellow, "Fallback");
-        if (main_mod.plan_mode) try writePromptBadge(w, style.yellow, "Plan");
-        if (self.strict) try writePromptBadge(w, style.red, "Strict");
-        if (self.ultracode_mode) try writePromptBadge(w, style.accent, "Ultracode");
-        const privacy_mode = learning_privacy.current();
-        try writePromptBadge(w, switch (privacy_mode) {
-            .local, .aggregate => style.green,
-            .templates => style.yellow,
-            .examples => style.red,
-        }, privacy_mode.badge());
-        try w.print("{s} · cwd {s}{s}{s}", .{ style.dim, style.reset, main_mod.g_cwd_display, style.dim });
-        const context_tokens = self.effectiveContextTokens();
-        if (self.last_context_tokens > 0) {
-            const threshold = self.provider.compactAt();
-            const pct = contextPercent(context_tokens, self.provider.context);
-            var used_buf: [24]u8 = undefined;
-            try w.print(" · {s}/{d}k ctx ({d}% · compact@{d}k){s}{s}]{s} {s}{s}›{s} ", .{
-                compactTokenCount(&used_buf, context_tokens),
-                self.provider.context / 1000,
-                pct,
-                threshold / 1000,
-                cached,
-                cost,
-                style.reset,
-                style.bold,
-                style.accent,
-                style.reset,
-            });
-        } else {
-            try w.print("{s}]{s} {s}{s}›{s} ", .{ cost, style.reset, style.bold, style.accent, style.reset });
-        }
-        try w.flush();
-    }
+    // Width-budgeted status-line rendering lives in agent_prompt.zig (#209,
+    // 600-line goal); member-aliased so `self.prompt()` still reads as one
+    // of Agent's own methods.
+    pub const prompt = prompt_ui.prompt;
 
     pub fn say(self: *Agent, comptime fmt: []const u8, args: anytype) !void {
         // stdout is a strict JSONL transport in --json mode. Human-facing
@@ -351,9 +291,9 @@ pub const Agent = struct {
 
     /// Run until the model stops (or, in strict mode, calls
     /// attempt_completion). Returns the final assistant text (arena-owned).
-    /// Close the held codex Responses WS session and reset the delta state. Called
-    /// at both ends of runTurn so each turn gets a fresh connection and re-anchors
-    /// with full input (the server only holds state within one live connection).
+    /// Close the held codex Responses WS session and reset the delta state, so the
+    /// next request re-anchors with full input. The chain now spans user turns
+    /// (codex_chain.zig guards it), so this is for errors, idle and compaction.
     pub fn closeCodexWs(self: *Agent) void {
         if (self.codex_ws) |c| {
             c.deinit(self.gpa);
@@ -370,8 +310,7 @@ pub const Agent = struct {
         // Defensive for restored/embedded agents whose provider was assigned
         // directly instead of going through providers.applyProvider.
         try self.ensureRootTools(self.provider.kind);
-        self.closeCodexWs(); // fresh codex WS session per turn
-        defer self.closeCodexWs();
+        // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
         if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
         while (true) {

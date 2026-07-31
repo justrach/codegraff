@@ -373,3 +373,43 @@ test "failureAllowsRetry keys off the harness's own retry-safety classification"
     // classification was made, so it must keep retrying like before this fix.
     try std.testing.expect(failureAllowsRetry("subagent finished without a report"));
 }
+
+test "a child's api-error cause reaches the parent verbatim (#287/#299)" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    // say() writes here instead of the terminal; what this pins is the copy
+    // sayApiError leaves behind on the agent.
+    var say_buf: [1024]u8 = undefined;
+    var sink = Io.Writer.fixed(&say_buf);
+    var child: Agent = .{
+        .gpa = gpa,
+        .arena = arena_state.allocator(),
+        .io = undefined,
+        .client = undefined,
+        .provider = undefined,
+        .messages = undefined,
+        .sub = true,
+        .label = "child",
+        .out = &sink,
+    };
+
+    // An empty body is a shape every wire format rejects. Each of these used to
+    // `return error.ApiError` without recording a cause, so subagentFailure
+    // fell back to @errorName and the parent's tool result read "ApiError" —
+    // the opaque failure #287/#299 report.
+    inline for (.{ Agent.stepAnthropic, Agent.stepOpenAI, Agent.stepResponses }) |step| {
+        child.last_api_error = null;
+        try std.testing.expectError(error.ApiError, step(&child, .empty));
+        try std.testing.expect(child.last_api_error != null);
+        const detail = child.last_api_error.?;
+
+        // This is the wiring runSub depends on: agent.last_api_error ->
+        // subagentFailure -> the string the parent's tool result carries.
+        const out = subagentFailure(gpa, "sa-001-abcd", error.ApiError, child.last_api_error);
+        defer gpa.free(out.text);
+        try std.testing.expect(out.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, out.text, detail) != null); // verbatim
+        try std.testing.expect(std.mem.indexOf(u8, out.text, "ApiError") == null); // never the bare error name
+    }
+}

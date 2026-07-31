@@ -50,7 +50,8 @@ const agent_mod = @import("agent.zig");
 const session = @import("session.zig");
 const Agent = agent_mod.Agent;
 const saveSession = session.saveSession;
-const HistoryNav = @import("readline_history.zig").HistoryNav;
+const rl_history = @import("readline_history.zig");
+const HistoryNav = rl_history.HistoryNav;
 
 /// Read one input line with a tiny raw-mode editor: ↑/↓ walk history,
 /// Tab completes/cycles (models, providers, slash commands), backspace edits,
@@ -369,14 +370,12 @@ pub fn readLine(
                 const ps = params[0..pn];
                 const word_mod = std.mem.indexOfScalar(u8, ps, ';') != null; // 1;3 (alt) / 1;5 (ctrl)
                 switch (final) {
-                    'A' => if (nav.up(gpa, history.items, buf.items)) |text| { // up → history back; snapshots draft (#101)
-                        setLine(gpa, buf, text);
-                        cur = buf.items.len;
+                    'A' => if (nav.up(gpa, history.items, rl_history.g_history_images.slice(), buf.items, root.pending_image)) |step| { // up → history back; snapshots draft (#101)
+                        replayStep(root, gpa, buf, &cur, &marks, step);
                         redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                     },
-                    'B' => if (nav.down(history.items)) |text| { // down → history forward; restores draft past newest (#101)
-                        setLine(gpa, buf, text);
-                        cur = buf.items.len;
+                    'B' => if (nav.down(history.items, rl_history.g_history_images.slice())) |step| { // down → history forward; restores draft past newest (#101)
+                        replayStep(root, gpa, buf, &cur, &marks, step);
                         redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
                     },
                     'C' => { // right (word-right with a modifier)
@@ -529,9 +528,33 @@ pub fn readLine(
     }
 
     const trimmed = std.mem.trim(u8, buf.items, " \t\r");
-    if (trimmed.len > 0 and util.rememberInput(buf.items) and (history.items.len == 0 or !std.mem.eql(u8, history.items[history.items.len - 1], buf.items))) {
+    // The staged image is part of the entry's identity, so the same words with
+    // a different attachment are not a duplicate (#108). root.pending_image is
+    // still set here — mainloop consumes it after readLine returns.
+    const images = rl_history.g_history_images.slice();
+    if (trimmed.len > 0 and util.rememberInput(buf.items) and !rl_history.repeatsLast(history.items, images, buf.items, root.pending_image)) {
         const dup = gpa.dupe(u8, buf.items) catch return buf.items;
-        history.append(gpa, dup) catch {};
+        history.append(gpa, dup) catch return buf.items;
+        // Session-arena backed, like the base64 payload it points at, so this
+        // outlives the entry without a free of its own (#108).
+        rl_history.g_history_images.record(root.arena, history.items.len - 1, root.pending_image);
     }
     return buf.items;
+}
+
+/// Apply one history step to the editor: text into the buffer, and the entry's
+/// attachment back onto the agent so resending sends the image and not just the
+/// literal "[Image]" marker (#108). A text-only entry clears whatever was staged.
+fn replayStep(
+    root: *Agent,
+    gpa: Allocator,
+    buf: *std.ArrayList(u8),
+    cur: *usize,
+    marks: *std.ArrayList([]const u8),
+    step: rl_history.Step,
+) void {
+    setLine(gpa, buf, step.text);
+    cur.* = buf.items.len;
+    root.pending_image = step.image;
+    if (step.image != null) addMark(gpa, marks, "[Image]"); // re-highlight the marker the replayed text carries
 }

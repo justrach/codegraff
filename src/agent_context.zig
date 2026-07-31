@@ -380,7 +380,19 @@ test "inputOverCompactThreshold (#193): local estimate gates a pre-send compact"
     agent.sys_normal = &util.repeatBytes("x", 40_000);
     try std.testing.expect(inputOverCompactThreshold(&agent));
     agent.sys_normal = "";
-    // unknown window (context 0) never gates
+    // #192: the reported overflow was a PARALLEL tool batch, not one fat result.
+    // Each function_call_output below sits far under compactAt() on its own; only
+    // the six together cross it, and the continuation request carrying the whole
+    // batch is the one the backend rejected. The gate has to weigh the history it
+    // is about to send, not the item it just appended.
+    const parallel = "{\"type\":\"function_call_output\",\"output\":\"" ++ util.repeatBytes("x", 5000) ++ "\"}";
+    const one_result = try std.json.parseFromSliceLeaky(Value, a, parallel, .{});
+    for (0..6) |_| {
+        try std.testing.expect(!inputOverCompactThreshold(&agent)); // no prefix of the batch trips it
+        try agent.messages.append(one_result);
+    }
+    try std.testing.expect(inputOverCompactThreshold(&agent)); // jointly over → compact before the continuation
+    // unknown window (context 0) never gates, even on this over-threshold history
     agent.provider.context = 0;
     try std.testing.expect(!inputOverCompactThreshold(&agent));
 }

@@ -54,8 +54,7 @@ const util = @import("util.zig"); // shared JSON ObjectMap getters (strFieldObj/
 const learn_store = @import("learn_store.zig");
 const learn_eval = @import("learn_eval.zig");
 const learn_cli = @import("learn_cli.zig");
-test {
-    // build.zig's unit_tests root is main.zig only — reference every split-out module so their test blocks keep running.
+test { // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
     _ = pricing;
     _ = models_cache;
     _ = ansi;
@@ -180,6 +179,7 @@ pub var g_worktree_autocommit: bool = true; // --no-autocommit turns off the per
 /// report its capacity next to the scratch arena's.
 pub var g_session_arena: ?*std.heap.ArenaAllocator = null;
 pub var g_mem_debug: bool = false;
+pub var g_no_browser: bool = false; // GRAFF_NO_BROWSER=1: headless/SSH, /images just lists the URLs
 /// Short task label for terminal/TUI headers (mirrors the GUI's first-prompt fallback: the user's first message as a compact tab/session title).
 // Session-title + header rendering + provider-response text parsers live in title.zig.
 const title_mod = @import("title.zig");
@@ -256,6 +256,7 @@ pub fn main(init: std.process.Init) !void {
     defer hooks.deinitCodedbCache(gpa, io);
     g_session_arena = init.arena;
     g_mem_debug = init.environ_map.get("GRAFF_MEM_DEBUG") != null;
+    g_no_browser = init.environ_map.get("GRAFF_NO_BROWSER") != null;
     // Windows: let the console interpret ANSI/VT escapes so the harness's color and cursor sequences render instead of literal text.
     if (builtin.os.tag == .windows) tty.enableVtOutput();
     // Environment supplies the default; an explicit CLI flag parsed below has
@@ -373,7 +374,7 @@ pub fn main(init: std.process.Init) !void {
     const mcp_home = homeEnv(init.environ_map) orelse "";
     var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, mcp_home, use_color, json_mode, init.environ_map);
     boot.mark(io, "MCP registry");
-    defer registry_storage.deinit();
+    defer registry_storage.deinitAtExit(); // #325: an abandoned teardown thread still holds `io`
     const registry: ?*mcp.Registry = &registry_storage;
     // Per-skill/companion opt-outs, animation/theme settings, and the --selftest-spinner headless render live in session_start.zig. The theme/
     // limyuxi-glam reset `defer`s stay HERE (registered in main()'s own frame) so they fire when main() returns, not when the helper does.
@@ -588,6 +589,7 @@ test { // pull in tests from imported modules (mcp.zig)
     // plain @import elsewhere (or a type-only alias) is NOT enough — it
     // compiles to nothing; scripts/eval-tier1.sh --only reach catches one.
     _ = @import("scoring_slot_test.zig");
+    _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
     _ = @import("readline_history.zig");
     _ = @import("goal_pacing_autonomous_test.zig");
     _ = @import("goal_state.zig");

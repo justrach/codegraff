@@ -13,6 +13,9 @@ struct ChatView: View {
     @State private var serveSessionID: String?
     @State private var streaming = false
     @State private var didAutoSend = false
+    // #59: the streaming task was discarded, so the composer's "working" glyph
+    // was a dead button. Holding it makes stop a real action.
+    @State private var turnTask: Task<Void, Never>?
 
     private enum CubeLiveness { case unknown, alive, stopped, gone }
     @State private var cubeLiveness: CubeLiveness = .unknown
@@ -37,6 +40,14 @@ struct ChatView: View {
                     .padding()
                 }
                 .onChange(of: session.messages.last?.text) {
+                    if let last = session.messages.last {
+                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                    }
+                }
+                // A turn that ends with no new text still changes what the row
+                // says (#307/#285): scroll so the failure notice is not left
+                // hidden behind the composer.
+                .onChange(of: session.messages.last?.state) {
                     if let last = session.messages.last {
                         withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                     }
@@ -70,7 +81,7 @@ struct ChatView: View {
 
             Composer(draft: $draft, streaming: streaming,
                      disabled: session.cube != nil && cubeLiveness != .alive && cubeLiveness != .unknown,
-                     onSend: send)
+                     onSend: send, onStop: stop)
                 .padding(.horizontal)
                 .padding(.bottom, 8)
         }
@@ -95,7 +106,18 @@ struct ChatView: View {
         session.messages.append(ChatMessage(role: .user, text: t))
         streaming = true
         session.status = .working
-        Task { await runTurn(t) }
+        announce("Message sent. Assistant is responding.")
+        turnTask = Task { await runTurn(t) }
+    }
+
+    // #59: cancelling the turn task terminates the NDJSON stream (the client
+    // already wires onTermination) and runTurn records .cancelled on the turn.
+    private func stop() { turnTask?.cancel() }
+
+    // #317: VoiceOver gets nothing out of an animated dot row, so the start and
+    // the terminal state of a turn are spoken once each - not per token.
+    private func announce(_ message: String) {
+        AccessibilityNotification.Announcement(message).post()
     }
 
     // For cube sessions the agent is told where it is and what credentials it
@@ -114,38 +136,64 @@ struct ChatView: View {
 
     @MainActor
     private func runTurn(_ text: String) async {
-        defer { streaming = false }
+        defer { streaming = false; turnTask = nil }
+        var turnID: UUID?
+        var outcome: TurnState = .completed
         do {
             if serveSessionID == nil {
                 serveSessionID = try await client.createSession(model: session.model,
                                                                 yolo: session.cube != nil,
                                                                 appendSystemPrompt: cubeSystemNote)
             }
-            session.messages.append(ChatMessage(role: .assistant, text: ""))
-            let idx = session.messages.count - 1
+            // #309: the row is addressed by its stable id for the rest of the
+            // turn - hydration may rewrite session.messages under us.
+            let placeholder = ChatMessage(role: .assistant, text: "", state: .streaming)
+            let id = placeholder.id
+            turnID = id
+            session.messages.append(placeholder)
             for try await ev in client.streamTurn(sessionID: serveSessionID!, text: text) {
                 switch ev {
                 case .reasoning(let r):
-                    session.messages[idx].reasoning = (session.messages[idx].reasoning ?? "") + r
+                    session.messages.updateTurn(id) { $0.reasoning = ($0.reasoning ?? "") + r }
                 case .text(let d):
-                    session.messages[idx].text += d
+                    session.messages.updateTurn(id) { $0.text += d }
                 case .turn(let final, _, _):
-                    session.messages[idx].text = final
+                    session.messages.updateTurn(id) { $0.text = final }
                 case .error(let m):
-                    session.messages[idx].text = "Error: " + m
+                    // #285: a server-reported error is not model prose, so it
+                    // lands on the turn's state rather than in its text.
+                    outcome = .failed(m)
                 case .toolCall(let name):
-                    session.messages[idx].reasoning = ((session.messages[idx].reasoning ?? "") + "\n⚙️ \(name)")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    session.messages.updateTurn(id) {
+                        $0.reasoning = (($0.reasoning ?? "") + "\n⚙️ \(name)")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
                 case .other:
                     break
                 }
             }
-            session.status = .idle
+            // Falling out of the loop without a throw means a terminal event
+            // arrived - the client reports a bare EOF as prematureEnd (#307).
+            // A cancelled consumer ends the stream quietly, so ask (#59).
+            if Task.isCancelled { outcome = .cancelled }
         } catch {
-            session.messages.append(ChatMessage(role: .assistant,
-                text: "Transport error: \(error.localizedDescription)"))
-            session.status = .idle
+            outcome = Task.isCancelled ? .cancelled : .failed(error.localizedDescription)
         }
+        if let turnID {
+            // #285: one submission, one assistant record - the failure updates
+            // the turn it belongs to instead of appending a second bubble.
+            session.messages.updateTurn(turnID) { $0.state = outcome }
+        } else if case .failed(let why) = outcome {
+            // createSession failed before any placeholder existed; the failure
+            // still needs exactly one record to sit on.
+            session.messages.append(ChatMessage(role: .assistant, text: "", state: .failed(why)))
+        }
+        switch outcome {
+        case .failed(let why): announce("Turn failed. \(why)")
+        case .cancelled: announce("Turn stopped.")
+        case .completed, .streaming: announce("Assistant finished responding.")
+        }
+        session.status = .idle
         session.lastActivity = "just now"
         AppSessionSync.save(session)
     }
@@ -154,8 +202,16 @@ struct ChatView: View {
     private func hydrateIfNeeded() async {
         guard session.needsHydration, !didHydrate else { return }
         didHydrate = true
+        let localCount = session.messages.count
         if let full = try? await Gateway.fetchAppSession(session.id.uuidString.lowercased()) {
-            session.messages = AppSessionSync.messages(fromTranscript: full.transcript)
+            // #309: the composer stays live while this request is in flight, so
+            // anything appended meanwhile belongs to the running turn. History
+            // is restored in front of it instead of replacing the array
+            // wholesale, which used to erase a just-sent message.
+            let live = session.messages.count > localCount
+                ? Array(session.messages[localCount...])
+                : []
+            session.messages = AppSessionSync.messages(fromTranscript: full.transcript) + live
             session.needsHydration = false
         }
     }
@@ -220,6 +276,28 @@ struct TaskProgressCard: View {
 struct MessageBubble: View {
     let message: ChatMessage
     private var isBlank: Bool { message.text.isEmpty && (message.reasoning?.isEmpty ?? true) }
+    // #307: only a turn that is actually streaming may animate. Emptiness is
+    // not evidence of progress - a failed turn, or a blank record reloaded from
+    // history, used to keep the dots pulsing forever.
+    private var isTyping: Bool {
+        message.role == .assistant && message.state == .streaming && isBlank
+    }
+
+    // #317: the whole bubble is one VoiceOver element that says who spoke, what
+    // was said, and how the turn ended - not three decorative circles.
+    private var voiceOverLabel: String {
+        var parts = [message.role == .user ? "You said" : "Assistant"]
+        if let r = message.reasoning, !r.isEmpty { parts.append("Reasoning: \(r)") }
+        if !message.text.isEmpty { parts.append(message.text) }
+        switch message.state {
+        case .streaming: if isBlank { parts.append("Responding") }
+        case .failed(let why): parts.append("Turn failed: \(why)")
+        case .cancelled: parts.append("Turn stopped")
+        case .completed: break
+        }
+        return parts.joined(separator: ". ")
+    }
+
     var body: some View {
         HStack {
             if message.role == .user { Spacer(minLength: 40) }
@@ -232,8 +310,19 @@ struct MessageBubble: View {
                 if !message.text.isEmpty {
                     Text(message.text)
                         .foregroundStyle(message.role == .user ? Color.white : Color.primary)
-                } else if message.role == .assistant && isBlank {
+                } else if isTyping {
                     TypingIndicator()
+                }
+                // #285: the failure reason is turn metadata, rendered as such,
+                // so it can never be mistaken for model-authored text.
+                if case .failed(let why) = message.state {
+                    Label(why, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else if message.state == .cancelled {
+                    Label("Stopped", systemImage: "stop.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, 14)
@@ -242,12 +331,16 @@ struct MessageBubble: View {
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             if message.role == .assistant { Spacer(minLength: 40) }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(voiceOverLabel)
+        .accessibilityAddTraits(message.state == .streaming ? .updatesFrequently : [])
     }
 }
 
 // Three pulsing dots shown in the assistant bubble while a turn is in flight
 // but no reasoning/text has streamed yet (e.g. during a tool call) - so an
-// in-progress turn never looks like an empty, stuck bubble.
+// in-progress turn never looks like an empty, stuck bubble. Shown only for a
+// .streaming turn (#307), and spoken as one status element (#317).
 struct TypingIndicator: View {
     @State private var animating = false
     var body: some View {
@@ -263,6 +356,9 @@ struct TypingIndicator: View {
         }
         .padding(.vertical, 2)
         .onAppear { animating = true }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Assistant is responding")
+        .accessibilityAddTraits(.updatesFrequently)
     }
 }
 
@@ -291,6 +387,9 @@ struct Composer: View {
     var streaming: Bool = false
     var disabled: Bool = false
     let onSend: () -> Void
+    // #59: while a turn streams the button is a live stop, not a greyed-out
+    // ellipsis whose action is still onSend.
+    var onStop: () -> Void = {}
     var body: some View {
         HStack(spacing: 10) {
             TextField(disabled ? "Resume the cube to continue" : "Type a message", text: $draft, axis: .vertical)
@@ -299,12 +398,18 @@ struct Composer: View {
                 .padding(.vertical, 11)
                 .glassCapsule()
                 .disabled(streaming || disabled)
-            Button(action: onSend) {
-                Image(systemName: streaming ? "ellipsis" : "arrow.up")
+                .accessibilityLabel("Message")
+                .accessibilityHint(streaming
+                    ? "Unavailable while the assistant is responding"
+                    : "Write a message to the assistant")
+            Button(action: streaming ? onStop : onSend) {
+                Image(systemName: streaming ? "stop.fill" : "arrow.up")
                     .font(.headline.weight(.bold))
             }
             .buttonStyle(.glassProminent)
-            .disabled(streaming || disabled || draft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .tint(streaming ? .red : nil)
+            .disabled(!streaming && (disabled || draft.trimmingCharacters(in: .whitespaces).isEmpty))
+            .accessibilityLabel(streaming ? "Stop responding" : "Send message")
         }
     }
 }
