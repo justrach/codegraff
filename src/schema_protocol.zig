@@ -1,4 +1,30 @@
-//! Embedded documentation for Graff's newline-delimited JSON protocol.
+//! Embedded documentation for Graff's newline-delimited JSON protocol, plus
+//! the launch-flag list `--schema` publishes alongside it (schema.zig aliases
+//! both back; they live here to keep schema.zig under the 600-line ceiling).
+
+/// Launch flags relevant to SDK clients, embedded verbatim in `--schema`
+/// output so generated clients can surface them as first-class options.
+/// Pinned against learning_privacy.default_mode by a test there: the SDKs are
+/// generated from this text, so a stale default here is a promise the binary
+/// does not keep.
+pub const flags =
+    \\[
+    \\  {"flag": "--model", "arg": "name", "description": "start on this model (same fuzzy resolution as /model)"},
+    \\  {"flag": "--subagent-model", "arg": "name", "description": "pin direct subagents, workflow workers/retries, and judges to this model on the root provider; GRAFF_SUBAGENT_MODEL is the lower-precedence equivalent"},
+    \\  {"flag": "--subagent-provider", "arg": "id", "description": "route pinned workers through this explicit provider; GRAFF_SUBAGENT_PROVIDER is the lower-precedence equivalent"},
+    \\  {"flag": "--allow-cross-provider-subagents", "arg": null, "description": "explicitly consent to sending worker prompts, code, and tool results to a provider different from the root"},
+    \\  {"flag": "--yolo", "arg": null, "description": "skip all permission prompts for the session"},
+    \\  {"flag": "--no-local-tools", "arg": null, "description": "embedder mode: hard-disable the built-in bash/bash_output/bash_kill/read_file/edit_file/write_file/codedb tools for the whole process, so the harness can run outside the sandbox and source its coding tools from an MCP server instead; webfetch, orchestration and MCP tools are unaffected, and subagents inherit the gate. GRAFF_NO_LOCAL_TOOLS=1 is the equivalent"},
+    \\  {"flag": "--system-prompt", "arg": "text", "description": "replace the built-in system prompt (cwd project-instructions file is still appended)"},
+    \\  {"flag": "--append-system-prompt", "arg": "text", "description": "append extra text to the end of the system prompt"},
+    \\  {"flag": "--json", "arg": null, "description": "structured stdio protocol (JSON in, JSONL events out)"},
+    \\  {"flag": "--max-tool-calls", "arg": "N", "description": "hard per-turn root tool-call budget; rejected calls emit tool_rejected/tool_result"},
+    \\  {"flag": "--max-model-calls", "arg": "N", "description": "opt-in invocation-wide provider-call ceiling shared by root, review, subagents, retries, title, compaction, and judges; default unlimited"},
+    \\  {"flag": "--dedupe-tool-calls", "arg": null, "description": "reject duplicate root tool name+normalized-input calls per turn"},
+    \\  {"flag": "--no-telemetry", "arg": null, "description": "disable anonymous OTEL usage telemetry for this run"},
+    \\  {"flag": "--learning-privacy", "arg": "local|aggregate|templates|examples", "description": "set the prompt-learning egress ceiling; default aggregate (signed prompt-free grades), local sends nothing, and template text still requires exact interactive approval"}
+    \\]
+;
 
 pub const json =
     \\{

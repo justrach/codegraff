@@ -104,6 +104,7 @@ pub const usage_text =
     \\  -w, --worktree <name>           isolate this session in a git worktree (.graff/worktrees/<name>) so parallel agents don't collide on files
     \\  --no-autocommit                 with -w, don't auto-commit each turn (default on; land work with `graff worktree merge`)
     \\  --yolo           skip all permission prompts for the session
+    \\  --no-local-tools embedder mode: hard-disable the built-in bash/bash_output/bash_kill/read_file/edit_file/write_file/codedb tools for the whole process (subagents included), so graff can run outside the sandbox and get its coding tools from an MCP server instead; webfetch, orchestration and MCP tools still work (GRAFF_NO_LOCAL_TOOLS=1)
     \\  -p, --print      one-shot print mode (answer on stdout, progress on stderr)
     \\  --timing         show per-tool wall-clock on result lines
     \\  --cost           show running session spend in the prompt

@@ -19,6 +19,7 @@ const tools_mod = @import("tools.zig");
 const vision = @import("vision.zig");
 const prompts = @import("prompts.zig");
 const schema = @import("schema.zig");
+const no_local_tools = @import("no_local_tools.zig"); // #330: --no-local-tools picks the gated subagent catalogs
 const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
@@ -240,11 +241,15 @@ pub const Agent = struct {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
 
+    /// #330: a child's catalog is a comptime constant, so the gate picks the
+    /// pre-filtered twin rather than rebuilding one per subagent. Root catalogs
+    /// are filtered where they are assembled (schema.effectiveRootSpecs).
     pub fn toolsJson(self: *const Agent) []const u8 {
+        const gated = no_local_tools.enabled;
         return switch (self.provider.kind) {
-            .anthropic => if (self.sub) schema.tools_anthropic_sub else self.tools_anthropic,
-            .openai => if (self.sub) schema.tools_openai_sub else self.tools_openai,
-            .responses => if (self.sub) schema.tools_responses_sub else self.tools_responses,
+            .anthropic => if (self.sub) (if (gated) schema.tools_anthropic_sub_remote else schema.tools_anthropic_sub) else self.tools_anthropic,
+            .openai => if (self.sub) (if (gated) schema.tools_openai_sub_remote else schema.tools_openai_sub) else self.tools_openai,
+            .responses => if (self.sub) (if (gated) schema.tools_responses_sub_remote else schema.tools_responses_sub) else self.tools_responses,
         };
     }
 

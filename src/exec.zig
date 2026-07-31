@@ -1,11 +1,12 @@
-//! Tool dispatch: `execTool` (the timed/traced/hooked outer wrapper) and
+//! Tool dispatch: `execTool` (the timed/traced/hooked outer wrapper, whose
+//! guard chain starts with the #330 `--no-local-tools` refusal) and
 //! `execToolInner` (the big per-tool-name switch — bash, bash_output,
 //! bash_kill, webfetch, read_file, codedb, edit_file, write_file, subagent,
-//! workflow, learn_candidate). Split out of main.zig (600-line goal); LAST in the tool-exec
-//! region since it's the glue that imports tools.zig/subagent.zig/
-//! workflow.zig as siblings, plus approvals.zig/mcp.zig/jobs.zig/skills.zig/
-//! telemetry.zig. Back-imports main (as `main_mod`) for
-//! `ToolCall`/`plan_mode` (pub-flipped) and `utf8Prefix`.
+//! workflow, learn_candidate). Split out of main.zig (600-line goal); LAST in
+//! the tool-exec region since it's the glue that imports tools.zig/
+//! subagent.zig/workflow.zig as siblings, plus approvals.zig/mcp.zig/jobs.zig/
+//! skills.zig/telemetry.zig. Back-imports main (`main_mod`) for `ToolCall`/
+//! `plan_mode` (pub-flipped) and `utf8Prefix`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -60,6 +61,7 @@ const read_file = @import("read_file.zig");
 const hooks = @import("hooks.zig");
 const telemetry = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
+const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate
 
 /// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
 /// threads with no TTY, so there is no Esc to kill a runaway command — without
@@ -94,7 +96,7 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     // #255: reserved before any gate/dispatch runs so tool_started/
     // tool_finished bracket the whole call, including a gate denial below.
     const call_id: u64 = if (ctx.tracer) |tr| tr.toolStarted(call.name, call.input) else 0;
-    if (codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call)) |blocked| {
+    if (noLocalToolsGate(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
         if (ctx.tracer) |tr| {
@@ -121,6 +123,15 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     if (ctx.tools_used) |ts| ts.add(ctx.io, ctx.gpa, call.name, out.is_error);
     runPostToolHooks(ctx, call, out);
     return out;
+}
+
+/// #330 layer 2: refuse a host-touching built-in even if a provider hallucinates
+/// one that was never advertised (layer 1 is schema.zig). FIRST in the guard
+/// chain; an `mcp__*` name never matches, so the sandbox proxy keeps working.
+fn noLocalToolsGate(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
+    if (!no_local_tools.blocks(call.name)) return null;
+    const text = ctx.gpa.dupe(u8, no_local_tools.refusal_text) catch return .{ .text = &.{}, .is_error = true };
+    return .{ .text = text, .is_error = true };
 }
 
 fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
