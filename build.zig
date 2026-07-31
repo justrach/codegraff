@@ -104,6 +104,17 @@ pub fn build(b: *std.Build) void {
         unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
     }
 
+    // Bundled skills: SKILL.md playbooks compiled into every binary (embedded
+    // by name in src/skill_docs.zig), so a fresh install already knows how to
+    // author more skills and how to change this workspace's MCP servers.
+    for ([_]struct { import: []const u8, path: []const u8 }{
+        .{ .import = "skill_doc_creator", .path = "assets/skills/skill-creator.md" },
+        .{ .import = "skill_doc_mcp_config", .path = "assets/skills/mcp-config.md" },
+    }) |asset| {
+        exe.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+        unit_tests.root_module.addAnonymousImport(asset.import, .{ .root_source_file = b.path(asset.path) });
+    }
+
     // --- spike (branch: spike/zigzag-repl): zigzag-based REPL ---
     // Also reachable as the `graff repl` subcommand of the main binary (see
     // src/main.zig). This standalone exe + `repl-test` step are kept for

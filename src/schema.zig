@@ -13,6 +13,7 @@ const Allocator = std.mem.Allocator;
 const mcp = @import("mcp.zig");
 const pricing = @import("pricing.zig");
 const learn_store = @import("learn_store.zig");
+const skill_docs = @import("skill_docs.zig"); // SKILL.md playbooks: the `skill` tool's name/desc/schema live there
 
 const root = @import("main.zig");
 const provider_mod = @import("provider.zig");
@@ -119,6 +120,9 @@ const base_specs = [_]ToolSpec{
         \\{"type": "object", "properties": {"url": {"type": "string", "description": "Absolute http:// or https:// URL to fetch"}}, "required": ["url"]}
         ,
     },
+    // Progressive disclosure: the system prompt carries skill names +
+    // descriptions, this tool fetches one body on demand (skill_docs.zig).
+    .{ .name = skill_docs.tool_name, .desc = skill_docs.tool_desc, .schema = skill_docs.tool_schema },
     .{
         .name = "codedb",
         .desc = "Query codedb (github.com/justrach/codedb) — the code-intelligence index for this repo (fast & structural; prefer over grep/bash for navigating code). `command` is a codedb subcommand line: search <query> | symbol <name> [--body] | callers <name> | outline <path> | find <name> | deps <path> | tree | context <task...> | read <path>.",
@@ -175,7 +179,7 @@ const meta_specs = [_]ToolSpec{
 
 const subagent_spec = ToolSpec{
     .name = "subagent",
-    .desc = "Delegate a self-contained task to a subagent. It has bash, read_file, edit_file, write_file, and codedb (code search); it cannot spawn further subagents and does NOT share your context — the prompt must be self-contained. Returns the subagent final report. Call several times in one response to run tasks in parallel. Pick a persona with agent (builtins: reviewer, researcher, implementer, skeptic — plus any in .harness/agents/), or give the child a custom system_prompt; the trajectory log records the lineage either way. Set run_in_background true to launch it asynchronously instead: you get the agent id back immediately and keep working, then fetch the result with agent_output.",
+    .desc = "Delegate a self-contained task to a subagent. It has bash, read_file, edit_file, write_file, codedb (code search), and skill (load an installed playbook); it cannot spawn further subagents and does NOT share your context — the prompt must be self-contained. Returns the subagent final report. Call several times in one response to run tasks in parallel. Pick a persona with agent (builtins: reviewer, researcher, implementer, skeptic — plus any in .harness/agents/), or give the child a custom system_prompt; the trajectory log records the lineage either way. Set run_in_background true to launch it asynchronously instead: you get the agent id back immediately and keep working, then fetch the result with agent_output.",
     .schema =
     \\{"type": "object", "properties": {"description": {"type": "string", "description": "Short label for logs, 3-5 words"}, "prompt": {"type": "string", "description": "Complete, self-contained task description"}, "agent": {"type": "string", "description": "Optional: a named agent type (reviewer, researcher, implementer, skeptic, or a .harness/agents/ name) whose persona the child runs with"}, "system_prompt": {"type": "string", "description": "Optional: replace the child's system prompt with a custom one (overrides agent)"}, "isolation": {"type": "string", "enum": ["shared_cwd", "worktree"], "description": "Optional: \"worktree\" gives this child its own scratch git worktree (auto-removed if it finishes with no changes, kept + reported if it has any) instead of the shared working tree — use for parallel agents that edit files. Default shared_cwd (today's behavior), unless the chosen agent persona sets its own default."}, "isolation_fallback": {"type": "boolean", "description": "Optional: if isolation:\"worktree\" fails to set up (not a git repo, git error), run in the shared working tree instead of failing the spawn. Default false (fails the spawn on setup failure)."}, "run_in_background": {"type": "boolean", "description": "Optional: start this subagent asynchronously and return its agent id immediately instead of waiting for it to finish (default false). Poll status/result with agent_output (id, optional wait_ms). A spawn beyond the concurrency cap is queued, never failed."}}, "required": ["description", "prompt"]}
     ,
@@ -382,7 +386,7 @@ fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const u8,
 /// a per-commit git describe) — bump this only when the schema or JSONL
 /// protocol changes shape, so SDK regeneration stays byte-stable across
 /// commits.
-pub const schema_version = "0.8"; // #276 P0-3: subagent gained run_in_background; new agent_output tool
+pub const schema_version = "0.9"; // new `skill` tool (SKILL.md playbooks, skill_docs.zig)
 
 /// Emit the machine-readable interface description for `harness --schema`:
 /// providers, models, built-in tools (name/description/parameters), and the

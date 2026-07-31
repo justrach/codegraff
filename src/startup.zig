@@ -40,6 +40,8 @@ const router_catalog = @import("router_catalog.zig");
 const subagent_selection = @import("subagent_selection.zig");
 const serde = @import("serde.zig");
 const skills = @import("skills.zig");
+const skill_docs = @import("skill_docs.zig");
+const fleet = @import("fleet.zig"); // g_home: resolved before any prompt build (session_run.initApprovalsHooksFleet)
 const prompts = @import("prompts.zig");
 const learn_store = @import("learn_store.zig");
 const learn_bootstrap = @import("learn_bootstrap.zig");
@@ -375,6 +377,15 @@ pub fn buildSystemPrompt(
         if (!skills.mcpServerConnected(mcp_tools, mn.server)) continue;
         const note = skills.codedbproNote(mn.server, codedbpro_licensed, mn.note);
         sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, note });
+    }
+    // Markdown skills (skill_docs.zig): names + trigger descriptions only. The
+    // bodies stay on disk until the model calls the `skill` tool, so a large
+    // installed skill set costs a line each rather than its full text. Loaded
+    // here rather than in session_run so every prompt rebuild rescans the tiers.
+    skill_docs.g_skills = skill_docs.load(io, arena, fleet.g_home);
+    const skill_catalog = skill_docs.promptCatalog(arena, skill_docs.g_skills);
+    if (skill_catalog.len > 0) {
+        sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, skill_catalog });
     }
     // #326: this returns the composed BASE only. prompts.setSystemPrompts()
     // (called once by buildRootAgent, the sole consumer) derives

@@ -123,7 +123,7 @@ pub const ToolClass = enum {
 /// table.
 pub fn toolClass(name: []const u8) ToolClass {
     if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "bash_output") or std.mem.eql(u8, name, "bash_kill")) return .shell;
-    if (std.mem.eql(u8, name, "read_file")) return .read;
+    if (std.mem.eql(u8, name, "read_file") or std.mem.eql(u8, name, "skill")) return .read; // `skill` reads an installed playbook off disk
     if (std.mem.eql(u8, name, "edit_file") or std.mem.eql(u8, name, "write_file")) return .write;
     if (std.mem.eql(u8, name, "codedb")) return .search;
     if (std.mem.eql(u8, name, "webfetch")) return .web;
