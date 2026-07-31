@@ -264,11 +264,6 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8, 
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    st.mutex.lockUncancelable(io);
-    const sess = st.find(id);
-    st.mutex.unlock(io);
-    const s = sess orelse return respondJson(st, req, .not_found, "{\"error\":\"no such session\"}");
-
     var bbuf: [64 * 1024]u8 = undefined;
     const br = req.readerExpectContinue(&bbuf) catch return error.WriteFailed;
     const body = br.allocRemaining(arena, .limited(serve_body_cap)) catch
@@ -284,77 +279,92 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8, 
         break :blk if (v == .integer and v.integer > 0) @as(u64, @intCast(v.integer)) else null;
     };
     const rtype = if (parsed.object.get("type")) |v| (if (v == .string) v.string else "") else "";
-    if (std.mem.eql(u8, rtype, "answer")) return serveAnswer(st, req, s, line, parsed.object);
-    // A pure reconnect: replay + tail, send nothing new to the child.
+    // A pure reconnect: replay + tail, send nothing new to the child. Answered
+    // before the live-session lookup, because the session this client is
+    // catching up on may belong to a bridge that is already dead.
     if (std.mem.eql(u8, rtype, "reattach")) return serveFollow(st, req, id, from orelse 1);
 
-    s.busy.lockUncancelable(io); // serialize requests per session
-    defer s.busy.unlock(io);
+    st.mutex.lockUncancelable(io);
+    const sess = st.find(id);
+    st.mutex.unlock(io);
+    const s = sess orelse return respondJson(st, req, .not_found, "{\"error\":\"no such session\"}");
+    if (std.mem.eql(u8, rtype, "answer")) return serveAnswer(st, req, s, line, parsed.object);
 
+    // `dead` rather than dropping inline: serveDrop FREES the session, and the
+    // busy/in_flight defers below would then run through a dangling pointer.
+    var dead = false;
     {
-        var wb: [1024]u8 = undefined;
-        var cw = s.child.stdin.?.writerStreaming(io, &wb);
-        cw.interface.writeAll(line) catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
-        cw.interface.writeByte('\n') catch return error.WriteFailed;
-        cw.interface.flush() catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
-    }
+        s.busy.lockUncancelable(io); // serialize requests per session
+        defer s.busy.unlock(io);
 
-    var stream_buf: [16 * 1024]u8 = undefined;
-    var bw = req.respondStreaming(&stream_buf, .{
-        .respond_options = .{ .extra_headers = serveNdjsonHeaders(st) },
-    }) catch return error.WriteFailed;
-    // Replayed events all predate the request we just sent, so the client sees
-    // one ordered, gap-free sequence: the tail it missed, then the live turn.
-    var client_alive = true;
-    if (from) |n| {
-        if (Io.Dir.cwd().readFileAlloc(io, s.log_path, arena, .limited(events.max_log_bytes))) |data| {
-            _ = events.replay(&bw.writer, data, n) catch {
-                client_alive = false;
-            };
-            bw.flush() catch {
-                client_alive = false;
-            };
-        } else |_| {}
-    }
+        {
+            var wb: [1024]u8 = undefined;
+            var cw = s.child.stdin.?.writerStreaming(io, &wb);
+            cw.interface.writeAll(line) catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
+            cw.interface.writeByte('\n') catch return error.WriteFailed;
+            cw.interface.flush() catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
+        }
 
-    s.in_flight.store(true, .release);
-    defer s.in_flight.store(false, .release);
-    while (true) {
-        const ev_line = s.rdr.interface.takeDelimiter('\n') catch |err| switch (err) {
-            error.StreamTooLong => return serveAbort(st, s, &bw, client_alive, "event line exceeded the 1 MiB serve cap — session closed"),
-            error.ReadFailed => return serveAbort(st, s, &bw, client_alive, "session process exited mid-request"),
-        } orelse return serveAbort(st, s, &bw, client_alive, "session process exited mid-request");
-        const trimmed = std.mem.trim(u8, ev_line, " \t\r");
-        if (trimmed.len == 0) continue;
-        serveUpdateAnswerState(io, s, trimmed);
-        // Persist BEFORE the socket: the tape has to survive a client that is
-        // already gone, or a reconnect would find the run stalled at the
-        // moment the supervisor died.
-        s.log.append(trimmed);
-        if (events.seqOf(trimmed)) |q| s.last_seq = @max(s.last_seq, q);
-        if (client_alive) {
-            bw.writer.writeAll(trimmed) catch {
-                client_alive = false;
-            };
-            if (client_alive) bw.writer.writeByte('\n') catch {
-                client_alive = false;
-            };
-            if (client_alive) bw.flush() catch {
-                client_alive = false;
-            }; // deliver each event as it happens
+        var stream_buf: [16 * 1024]u8 = undefined;
+        var bw = req.respondStreaming(&stream_buf, .{
+            .respond_options = .{ .extra_headers = serveNdjsonHeaders(st) },
+        }) catch return error.WriteFailed;
+        // Replayed events all predate the request we just sent, so the client
+        // sees one ordered, gap-free sequence: the tail it missed, then the
+        // live turn.
+        var client_alive = true;
+        if (from) |n| {
+            if (Io.Dir.cwd().readFileAlloc(io, s.log_path, arena, .limited(events.max_log_bytes))) |data| {
+                _ = events.replay(&bw.writer, data, n) catch {
+                    client_alive = false;
+                };
+                bw.flush() catch {
+                    client_alive = false;
+                };
+            } else |_| {}
         }
-        if (events.terminalEvent(trimmed)) {
-            serveClearAnswerState(io, s);
-            break;
+
+        s.in_flight.store(true, .release);
+        defer s.in_flight.store(false, .release);
+        while (true) {
+            const ev_line = s.rdr.interface.takeDelimiter('\n') catch |err| switch (err) {
+                error.StreamTooLong => break serveAbort(s, &bw, client_alive, "event line exceeded the 1 MiB serve cap — session closed", &dead),
+                error.ReadFailed => break serveAbort(s, &bw, client_alive, "session process exited mid-request", &dead),
+            } orelse break serveAbort(s, &bw, client_alive, "session process exited mid-request", &dead);
+            const trimmed = std.mem.trim(u8, ev_line, " \t\r");
+            if (trimmed.len == 0) continue;
+            serveUpdateAnswerState(io, s, trimmed);
+            // Persist BEFORE the socket: the tape has to survive a client that
+            // is already gone, or a reconnect would find the run stalled at the
+            // moment the supervisor died.
+            s.log.append(trimmed);
+            if (events.seqOf(trimmed)) |q| s.last_seq = @max(s.last_seq, q);
+            if (client_alive) {
+                bw.writer.writeAll(trimmed) catch {
+                    client_alive = false;
+                };
+                if (client_alive) bw.writer.writeByte('\n') catch {
+                    client_alive = false;
+                };
+                if (client_alive) bw.flush() catch {
+                    client_alive = false;
+                }; // deliver each event as it happens
+            }
+            if (events.terminalEvent(trimmed)) {
+                serveClearAnswerState(io, s);
+                break;
+            }
         }
+        if (client_alive and !dead) bw.end() catch {};
     }
-    if (client_alive) bw.end() catch return;
+    if (dead) serveDrop(st, s); // after the defers above are done with `s`
 }
 
 /// The child died (or overran the line cap) mid-request: record a terminal
 /// error on the tape with the next sequence id — a reconnecting client must
-/// see the failure, not a hole — then drop the session.
-fn serveAbort(st: *ServeState, s: *ServeSession, bw: anytype, client_alive: bool, message: []const u8) void {
+/// see the failure, not a hole — and flag the session for removal once the
+/// caller's locks are released.
+fn serveAbort(s: *ServeSession, bw: anytype, client_alive: bool, message: []const u8, dead: *bool) void {
     s.last_seq += 1;
     var buf: [256]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "{{\"seq\":{d},\"type\":\"error\",\"message\":\"{s}\"}}", .{ s.last_seq, message }) catch
@@ -365,7 +375,7 @@ fn serveAbort(st: *ServeState, s: *ServeSession, bw: anytype, client_alive: bool
         bw.writer.writeByte('\n') catch {};
         bw.end() catch {};
     }
-    serveDrop(st, s);
+    dead.* = true;
 }
 
 /// GET /v1/sessions/<id>/events?from=N (and the `{"type":"reattach"}` POST):
@@ -377,20 +387,19 @@ fn serveFollow(st: *ServeState, req: *std.http.Server.Request, id: []const u8, f
     const io = st.io;
     const gpa = st.gpa;
     if (!events.validName(id)) return respondJson(st, req, .bad_request, "{\"error\":\"bad session id\"}");
-    st.mutex.lockUncancelable(io);
-    const sess = st.find(id);
-    st.mutex.unlock(io);
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const log_path = if (sess) |s| s.log_path else try events.logPath(arena, id);
+    // The tape path is derived, not borrowed: a follower must never hold a
+    // pointer into a ServeSession another connection may drop and free while
+    // this one is still tailing. `inFlight` re-looks the session up under the
+    // mutex each poll for the same reason.
+    const log_path = try events.logPath(arena, id);
     // A session this bridge never spawned is still replayable from its tape:
     // that is exactly the supervisor-crash case.
-    if (sess == null) {
-        if (Io.Dir.cwd().statFile(io, log_path, .{})) |_| {} else |_| {
-            return respondJson(st, req, .not_found, "{\"error\":\"no such session\"}");
-        }
+    if (Io.Dir.cwd().statFile(io, log_path, .{})) |_| {} else |_| {
+        return respondJson(st, req, .not_found, "{\"error\":\"no such session\"}");
     }
 
     const buf = gpa.alloc(u8, serve_line_cap + 4096) catch return error.WriteFailed;
@@ -416,13 +425,23 @@ fn serveFollow(st: *ServeState, req: *std.http.Server.Request, id: []const u8, f
             idle = 0;
             continue;
         }
-        const s = sess orelse break; // cold replay of a dead session: tape only
-        if (!s.in_flight.load(.acquire)) break; // idle session: the tape is complete
+        // Idle session (or one this bridge never ran): the tape is complete.
+        if (!inFlight(st, id)) break;
         idle += 1;
         if (idle > follow_max_polls) break;
         io.sleep(.fromMilliseconds(follow_poll_ms), .awake) catch break;
     }
     bw.end() catch return;
+}
+
+/// Is a request streaming on this session right now? Read under the session
+/// mutex, which serveDrop also takes before removing a session, so the answer
+/// can never come from freed storage.
+fn inFlight(st: *ServeState, id: []const u8) bool {
+    st.mutex.lockUncancelable(st.io);
+    defer st.mutex.unlock(st.io);
+    const s = st.find(id) orelse return false;
+    return s.in_flight.load(.acquire);
 }
 
 fn serveAnswer(st: *ServeState, req: *std.http.Server.Request, s: *ServeSession, line: []const u8, obj: std.json.ObjectMap) !void {

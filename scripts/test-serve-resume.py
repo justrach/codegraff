@@ -239,6 +239,14 @@ def main() -> None:
         print(f"  replay: from=1 identical ({len(replay_all)}), from={mid} exact tail "
               f"({len(replay_tail)}), from={last + 1} empty")
 
+        # the POST spelling of the same reconnect, for clients that only speak
+        # one protocol request per POST
+        reattached = stream(serve_port, "POST", f"/v1/sessions/{SESSION}",
+                            {"type": "reattach", "resume_from": mid})
+        if reattached != replay_tail:
+            raise AssertionError("{'type':'reattach'} did not match the GET replay")
+        print(f"  reattach POST: resume_from={mid} matched the GET ({len(reattached)} events)")
+
         # 3 ── drop the socket mid-turn; the run continues, ?from=N catches up ─
         slow_turn.set()
         partial: list[dict] = []
@@ -271,9 +279,14 @@ def main() -> None:
             raise AssertionError(
                 f"replacement bridge lost the tape end: {resumed['last_seq']} != {last}")
 
-        third = stream(serve_port_2, "POST", f"/v1/sessions/{SESSION}",
+        # ?from=1 on a real request: the whole tape replays, THEN the live turn,
+        # as one gap-free sequence spanning both bridge processes.
+        before = stream(serve_port_2, "GET", f"/v1/sessions/{SESSION}/events?from=1")
+        third = stream(serve_port_2, "POST", f"/v1/sessions/{SESSION}?from=1",
                        {"type": "user", "text": "TURN_THREE"})
-        last_3 = expect_contiguous(third, last + 1, "turn three (replacement process)")
+        last_3 = expect_contiguous(third, 1, "turn three (replay + live)")
+        if third[:len(before)] != before:
+            raise AssertionError("?from=1 on a request did not replay the tape first")
         text_three = final_text(third)
         if "saw_sentinel=True" not in text_three:
             raise AssertionError(
@@ -282,7 +295,7 @@ def main() -> None:
         if items < 5:
             raise AssertionError(f"resumed history is too short to be turns 1-2: {text_three!r}")
         print(f"  replacement bridge: resumed={resumed['resumed']} last_seq={resumed['last_seq']}, "
-              f"turn 3 seq {last + 1}..{last_3} -> {text_three!r}")
+              f"turn 3 replayed seq 1..{last} then ran {last + 1}..{last_3} -> {text_three!r}")
 
         # the whole tape, across both processes, is one gap-free sequence
         log = os.path.join(tmp, ".graff", "serve", f"{SESSION}.events.jsonl")
