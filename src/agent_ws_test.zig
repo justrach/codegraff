@@ -191,6 +191,59 @@ test "buildBody (.responses): a cross-turn delta re-anchors when history or sett
     try std.testing.expect(std.mem.indexOf(u8, after_clear, "second turn prompt") == null); // cleared, not resurrected
 }
 
+// #194: a response with no usable `id` must not leave a STALE previous_response_id
+// paired with an ADVANCED delta boundary. That combination makes the next request
+// send `previous_response_id: <old>` plus a delta starting after items the server
+// never received, so those items vanish from the conversation with no error. The
+// window used to be one turn (runTurn tore the session down); now that the chain
+// spans turns, the anchor has to be dropped explicitly.
+test "stepResponses (#194): a response with no id drops the anchor instead of advancing it" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try textMessage(a, "user", "first"));
+
+    var dummy_ws: ws.WsClient = undefined;
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = a,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://x/responses", .api_key = "k", .model = "gpt-5.6", .context = 270_000 },
+        .messages = msgs,
+        .sub = true, // suppress the unstreamed-text surface; irrelevant here
+        .label = "",
+        .out = null,
+        .codex_ws = &dummy_ws,
+        .codex_prev_id = try std.testing.allocator.dupe(u8, "resp_old"),
+    };
+    codex_chain.record(&agent); // anchored: server holds messages[0..1] under resp_old
+    try std.testing.expectEqual(@as(usize, 1), agent.codex_sent_upto);
+
+    // A turn appends work, then a response arrives WITHOUT an id.
+    try agent.messages.append(try textMessage(a, "user", "work the server must see"));
+    var no_id: std.json.ObjectMap = .empty;
+    try no_id.put(a, "output", .{ .array = std.json.Array.init(a) });
+    _ = try agent.stepResponses(no_id);
+
+    // The anchor is gone, so the next request re-sends everything. Before the
+    // fix the watermark advanced to 2 while prev_id stayed "resp_old", and the
+    // "work the server must see" message was never transmitted.
+    try std.testing.expect(agent.codex_prev_id == null);
+    try std.testing.expect(!codex_chain.chainUsable(&agent));
+
+    // A response WITH an id anchors normally: id and watermark move together.
+    var with_id: std.json.ObjectMap = .empty;
+    try with_id.put(a, "output", .{ .array = std.json.Array.init(a) });
+    try with_id.put(a, "id", .{ .string = "resp_new" });
+    _ = try agent.stepResponses(with_id);
+    defer std.testing.allocator.free(agent.codex_prev_id.?);
+    try std.testing.expectEqualStrings("resp_new", agent.codex_prev_id.?);
+    try std.testing.expectEqual(agent.messages.items.len, agent.codex_sent_upto);
+}
+
 // Regression (#codex gpt-5.6): the Codex Responses backend rejects a top-level
 // `max_output_tokens` ("Unsupported parameter: max_output_tokens"), which hard-
 // failed EVERY turn including the title task. openai/codex never sends it at the

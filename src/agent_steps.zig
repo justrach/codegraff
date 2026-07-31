@@ -82,12 +82,25 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
     // after this point - the tool results below, and on the following USER turn
     // that turn's prompt, since the chain outlives runTurn now. Only while the WS
     // session lives; codex_chain.record stamps what the anchor is valid for.
+    // #194: the watermark and the id it is keyed to must move TOGETHER. Advancing
+    // codex_sent_upto while codex_prev_id still points at the PREVIOUS response
+    // makes the next delta start after items the server never received, silently
+    // dropping them from the conversation. A response carrying no usable id (or a
+    // failed dupe) drops the anchor instead; the socket stays and the next request
+    // simply re-sends full input.
     if (self.codex_ws != null) {
-        codex_chain.record(self);
-        if (response.get("id")) |idv| if (idv == .string and idv.string.len > 0) {
+        const fresh: ?[]const u8 = if (response.get("id")) |idv|
+            (if (idv == .string and idv.string.len > 0) self.gpa.dupe(u8, idv.string) catch null else null)
+        else
+            null;
+        if (fresh) |id| {
             if (self.codex_prev_id) |old| self.gpa.free(old);
-            self.codex_prev_id = self.gpa.dupe(u8, idv.string) catch null;
-        };
+            self.codex_prev_id = id;
+            codex_chain.record(self);
+        } else if (self.codex_prev_id) |old| {
+            self.gpa.free(old);
+            self.codex_prev_id = null;
+        }
     }
 
     if (calls.items.len > 0) {
