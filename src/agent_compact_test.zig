@@ -402,10 +402,10 @@ test "emergencyTrim preserves the authoritative meter after a partial cut" {
     agent.sys_normal = "";
     agent.sys_strict = "";
     agent.tools_responses = "";
-    // emergencyTrim now re-queues the standing goal state (#318), so the fields
-    // that decision reads have to be real even in the no-goal case.
+    // emergencyTrim re-queues standing state (#318), gated on the LIST not the goal.
     agent.review_mode = false;
     agent.goal = null;
+    agent.todos = .empty;
     agent.pending_goal_note = null;
 
     const before = agent.fullInputEstimateTokens();

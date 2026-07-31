@@ -34,19 +34,23 @@ const goal_state = @import("goal_state.zig");
 /// empty case): an empty replace here would leave only completed survivors,
 /// an epoch that reads allDone off a write that did nothing (#318).
 pub fn clearEpochForReplace(todos: *std.ArrayList(TodoItem), epoch: u64, incoming: []const []const u8) usize {
-    var removed: usize = 0;
+    var dropped_open: usize = 0;
     var i: usize = 0;
     while (i < todos.items.len) {
         const t = todos.items[i];
-        const preserve = std.mem.eql(u8, t.status, "completed") and !mentions(incoming, t.content);
-        if (t.epoch != epoch or preserve) {
+        const done = std.mem.eql(u8, t.status, "completed");
+        const mentioned = mentions(incoming, t.content);
+        if (t.epoch != epoch or (done and !mentioned)) {
             i += 1;
             continue;
         }
+        // Open work the replacement did not mention is being ABANDONED. Count
+        // it so the caller can say so: every user-driven drop reports a count
+        // (/goal clear, /goal <new>), and only the model-driven one was silent.
+        if (!done and !mentioned) dropped_open += 1;
         _ = todos.orderedRemove(i);
-        removed += 1;
     }
-    return removed;
+    return dropped_open;
 }
 
 fn mentions(contents: []const []const u8, content: []const u8) bool {
@@ -54,7 +58,7 @@ fn mentions(contents: []const []const u8, content: []const u8) bool {
     return false;
 }
 
-pub const WriteResult = struct { text: []const u8, rejected: bool = false };
+pub const WriteResult = struct { text: []const u8, rejected: bool = false, dropped_open: usize = 0 };
 
 /// The whole todo_write handler: replace the current epoch's checklist with
 /// `list` (the tool call's "todos" argument, already parsed), preserving
@@ -75,7 +79,7 @@ pub fn applyTodoWrite(root: *Agent, list: ?Value) !WriteResult {
     }
     if (incoming.items.len == 0)
         return .{ .text = "todo_write had no usable items; the list is unchanged. Each item needs a content string and a status. Send your full remaining plan - completed items you omit are kept automatically.", .rejected = true };
-    _ = clearEpochForReplace(&root.todos, epoch, incoming.items);
+    const dropped_open = clearEpochForReplace(&root.todos, epoch, incoming.items);
     goal_state.noteTodoWrite(root); // fresh evidence for the completion double-check, and this-process evidence for /loop (#318)
     if (asArray(list)) |items| {
         for (items) |item| {
@@ -88,7 +92,14 @@ pub fn applyTodoWrite(root: *Agent, list: ?Value) !WriteResult {
             });
         }
     }
-    return .{ .text = goal_state.renderTodos(root, epoch) };
+    const rendered = goal_state.renderTodos(root, epoch);
+    if (dropped_open == 0) return .{ .text = rendered };
+    // Name the abandonment. The model may well have meant it, but the user
+    // reading the transcript needs the same count they get from /goal clear.
+    return .{
+        .text = try std.fmt.allocPrint(root.arena, "{s}\n({d} open item(s) you left out were dropped; re-list one to keep it)", .{ rendered, dropped_open }),
+        .dropped_open = dropped_open,
+    };
 }
 
 fn asArray(list: ?Value) ?[]const Value {
@@ -146,7 +157,10 @@ test "a replace keeps omitted completed items and still drops omitted open ones"
     const rendered = (try applyTodoWrite(&root, try todosArg(ar,
         \\{"todos":[{"content":"wire it up","status":"in_progress"}]}
     ))).text;
-    try std.testing.expectEqualStrings("[x] write the helper\n[x] test it\n[~] wire it up", rendered);
+    // The list itself is unchanged; the abandonment is NAMED after it, because
+    // a silent model-driven drop was the one deletion the user never saw.
+    try std.testing.expect(std.mem.startsWith(u8, rendered, "[x] write the helper\n[x] test it\n[~] wire it up"));
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "1 open item(s) you left out were dropped") != null);
     // The omitted OPEN item really is gone: a re-plan must be able to abandon work.
     try std.testing.expect(std.mem.indexOf(u8, rendered, "abandoned idea") == null);
     try std.testing.expectEqual(@as(usize, 1), goal_state.openCount(root.todos.items, 1));
@@ -194,7 +208,8 @@ test "the replace stays epoch-scoped: parked work of any status is untouched" {
     const rendered = (try applyTodoWrite(&root, try todosArg(ar,
         \\{"todos":[{"content":"B2","status":"pending"}]}
     ))).text;
-    try std.testing.expectEqualStrings("[ ] B2", rendered); // B1 was open, so it dropped
+    try std.testing.expect(std.mem.startsWith(u8, rendered, "[ ] B2")); // B1 was open, so it dropped
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "1 open item(s) you left out were dropped") != null);
     try std.testing.expectEqual(@as(usize, 3), root.todos.items.len);
     try std.testing.expectEqual(@as(u64, 3), root.todos.items[0].epoch);
     try std.testing.expectEqual(@as(usize, 1), goal_state.parkedOpenCount(root.todos.items, 4));

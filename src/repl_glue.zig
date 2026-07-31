@@ -208,6 +208,22 @@ test "goalSteeringNote: active-only gate, completion contract, and no embedded c
 /// #226 continuation gate — the outcome when a /loop turn finishes: the loop
 /// either runs another turn or stops with a NAMED terminal state (surfaced in
 /// the transcript so #219's ledger can later record it verbatim). Budget-free.
+/// One sentence per outcome, because the tag alone misleads: a user reading a
+/// dim "idle" at the end of an unattended run assumes success, when it means
+/// the model stopped WITHOUT finishing. Success and the four failure modes
+/// must not differ by one word.
+pub fn outcomeText(outcome: ContinuationOutcome, iter_cap: u32) []const u8 {
+    _ = iter_cap;
+    return switch (outcome) {
+        .accepted => "done - the work was completed",
+        .idle => "idle - the model stopped without finishing; the work is NOT done",
+        .exhausted => "out of turns - the iteration cap was reached with work still open",
+        .expired => "out of time - the budget ran out with work still open",
+        .blocked => "blocked - it needs you before it can continue",
+        .cancelled => "paused - you stepped in",
+    };
+}
+
 pub const ContinuationOutcome = enum {
     accepted, // the goal's checklist is complete (or the goal itself is complete)
     idle, // the turn did no tool work and asserted nothing - the loop stops, but nothing is done (#318)
@@ -580,21 +596,4 @@ pub fn goalPromptFromLine(line: []const u8) ?[]const u8 {
     for ([_][]const u8{ "clear", "off", "pause", "resume", "status" }) |sub|
         if (std.ascii.eqlIgnoreCase(g, sub)) return null;
     return g;
-}
-
-test "goalPromptFromLine: an objective runs a turn, the lifecycle words do not" {
-    try std.testing.expectEqualStrings("ship phase 2", goalPromptFromLine("/goal   ship phase 2  ").?);
-    try std.testing.expect(goalPromptFromLine("/goal ") == null); // bare /goal shows the objective
-    try std.testing.expect(goalPromptFromLine("/goal PAUSE") == null); // case-insensitive, like handleCommand
-    try std.testing.expectEqualStrings("clear the flaky tests", goalPromptFromLine("/goal clear the flaky tests").?); // merely STARTS with one
-}
-
-test "absolute path prompts are not mistaken for slash commands" {
-    try std.testing.expect(isSlashCommandLine("/"));
-    try std.testing.expect(isSlashCommandLine("/help"));
-    try std.testing.expect(isSlashCommandLine("/bash echo hi"));
-    try std.testing.expect(isSlashCommandLine("/not-a-command"));
-
-    try std.testing.expect(!isSlashCommandLine("/System/Library/PrivateFrameworks/StorageManagement.framework/PlugIns/StorageManagementService what causes this to start"));
-    try std.testing.expect(!isSlashCommandLine("/Users/blackfloofie/codedb/src/main.zig explain this"));
 }

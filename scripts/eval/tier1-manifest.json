@@ -6,8 +6,11 @@
     "test_count_baseline is a ratchet: the suite may grow, it may never shrink. A drop means a",
     "module stopped being referenced from the test root and its tests silently vanished."
   ],
-  "test_roots": ["src/main.zig", "src/repl.zig"],
-  "test_count_baseline": 449,
+  "test_roots": [
+    "src/main.zig",
+    "src/repl.zig"
+  ],
+  "test_count_baseline": 498,
   "required_invariants": [
     {
       "id": "goal-epochs",

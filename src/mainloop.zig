@@ -580,8 +580,10 @@ pub fn run(ctx: *Ctx) !void {
                     // Only work_done reaches `accepted`, so the loop drove the
                     // goal to done; a --goal standing objective outlives it (#318).
                     if (outcome == .accepted) _ = goal_flow.acceptLoopOutcome(ctx.root);
-                    try ctx.out.print("{s}↩ run stopped — {s}{s}\n", .{ style.dim, @tagName(outcome), style.reset });
+                    const tone = if (outcome == .accepted) style.green else style.yellow; // success must not look like the four failures
+                    try ctx.out.print("{s}↩ run stopped — {s}{s}\n", .{ tone, repl_glue.outcomeText(outcome, loop_iter_cap), style.reset });
                     try ctx.out.flush();
+                    if (ctx.root.tracer) |t| t.note("loop", @tagName(outcome)); // every /goal transition is traced; the run's end was not
                 },
             }
         }

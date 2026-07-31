@@ -65,15 +65,37 @@ fn resetConversationSteering(root: *Agent) void {
     root.pending_goal_note = null; // a queued supersession note dies with the conversation (#318)
     root.goal_note_fp = 0;
     root.goal_note_age = 0;
+    // A --goal objective is the USER's policy for the process, not a property
+    // of the conversation, so it outlives the conversation the way it outlives
+    // a resume. Without this, one /clear downgraded a standing goal to nothing,
+    // the user set a fresh /goal, got a RETIRABLE one, and the next
+    // attempt_completion ended their steering - #318 through the /clear door.
+    if (root.goal_flag) |g| root.goal = goal_flow.standingGoalFromFlag(g, null, root.todos.items, 0);
 }
 
 test "/clear + /new reset conversation steering — goal and ultracode_mode don't survive (#178)" {
     var root: Agent = undefined;
     root.goal = .{ .objective = "ultracode: index the statutes" };
     root.ultracode_mode = true;
+    root.goal_flag = null; // no --goal: the conversation's goal dies with it
+    root.todos = .empty;
     resetConversationSteering(&root);
     try std.testing.expect(root.goal == null);
     try std.testing.expect(!root.ultracode_mode);
+}
+
+test "/clear keeps a --goal standing objective standing (#318 through the /clear door)" {
+    var root: Agent = undefined;
+    root.ultracode_mode = false;
+    root.todos = .empty;
+    root.goal_flag = "keep the tree green"; // the user passed --goal
+    root.goal = .{ .objective = "keep the tree green", .standing = true, .epoch = 1 };
+    resetConversationSteering(&root);
+    // Before this, /clear dropped it, the user typed a fresh /goal, got a
+    // RETIRABLE one, and the next attempt_completion ended their steering.
+    const g = root.goal orelse return error.TestExpectedNonNull;
+    try std.testing.expect(g.standing);
+    try std.testing.expectEqualStrings("keep the tree green", g.objective);
 }
 
 /// Try to handle a session/environment slash command. Returns false (line
