@@ -5,6 +5,7 @@ const Agent = @import("agent.zig").Agent;
 const textMessage = @import("messages.zig").textMessage;
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig");
+const codex_chain = @import("codex_chain.zig");
 
 test "closeCodexWs resets the delta session state + frees the response id (codex-ws)" {
     var agent: Agent = undefined;
@@ -85,6 +86,10 @@ test "buildBody (.responses): delta while WS live; full input after closeCodexWs
         .codex_prev_id = try std.testing.allocator.dupe(u8, "resp_live"),
         .codex_sent_upto = 2, // server already holds messages[0..2]; delta = [2..]
     };
+    // Anchor the chain the way codex_chain.record does after a response: the
+    // delta is only sent when the request properties still match the ones the
+    // server produced that response under.
+    agent.codex_props_fp = codex_chain.propsFor(&agent);
 
     const delta_body = try agent.buildBody(null, false, false, false);
     defer std.testing.allocator.free(delta_body);
@@ -119,6 +124,71 @@ test "buildBody (.responses): delta while WS live; full input after closeCodexWs
     const title_body = try agent.buildBody(null, false, false, false);
     defer std.testing.allocator.free(title_body);
     try std.testing.expect(std.mem.indexOf(u8, title_body, "max_output_tokens") == null); // #codex: no top-level max_output_tokens even for the bounded title task
+}
+
+// The chain now outlives runTurn, so buildBody is the last line of defence: a
+// delta keyed to a history the server no longer mirrors would make it prepend
+// a conversation that no longer exists. Each guard is exercised through the
+// REAL body, not just the pure predicate.
+test "buildBody (.responses): a cross-turn delta re-anchors when history or settings move" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try textMessage(a, "user", "first"));
+    try msgs.append(try textMessage(a, "assistant", "second"));
+
+    var dummy_ws: ws.WsClient = undefined; // buildBody only checks != null
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = a,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://x/responses", .api_key = "k", .model = "gpt-5.6", .context = 270_000 },
+        .messages = msgs,
+        .sub = false,
+        .label = "",
+        .out = null,
+        .codex_ws = &dummy_ws,
+        .codex_prev_id = try std.testing.allocator.dupe(u8, "resp_turn1"),
+    };
+    defer std.testing.allocator.free(agent.codex_prev_id.?);
+    codex_chain.record(&agent); // server holds all 2 messages after turn 1
+
+    // The NEXT user turn appends a prompt. This is the whole point: before,
+    // runTurn's teardown made this a full re-upload plus a fresh handshake.
+    try agent.messages.append(try textMessage(a, "user", "second turn prompt"));
+    const chained = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(chained);
+    try std.testing.expect(std.mem.indexOf(u8, chained, "\"previous_response_id\":\"resp_turn1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chained, "second turn prompt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chained, "\"first\"") == null); // the win: not re-uploaded
+
+    // A compaction rewrote history in place. The length can still look fine, so
+    // only the rewrite counter catches it.
+    agent.history_rewrites += 1;
+    const after_compact = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(after_compact);
+    try std.testing.expect(std.mem.indexOf(u8, after_compact, "previous_response_id") == null);
+    try std.testing.expect(std.mem.indexOf(u8, after_compact, "\"first\"") != null); // full resend
+    agent.history_rewrites -= 1;
+
+    // /effort changed between turns: chaining would attribute turn 2 to a
+    // response the server generated under a different reasoning budget.
+    agent.reasoning = .high;
+    const after_effort = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(after_effort);
+    try std.testing.expect(std.mem.indexOf(u8, after_effort, "previous_response_id") == null);
+    agent.reasoning = .medium;
+
+    // /clear reinitializes messages, leaving the history SHORTER than the
+    // watermark: the server's copy is no longer a prefix of ours.
+    agent.messages = std.json.Array.init(a);
+    const after_clear = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(after_clear);
+    try std.testing.expect(std.mem.indexOf(u8, after_clear, "previous_response_id") == null);
+    try std.testing.expect(std.mem.indexOf(u8, after_clear, "second turn prompt") == null); // cleared, not resurrected
 }
 
 // Regression (#codex gpt-5.6): the Codex Responses backend rejects a top-level

@@ -9,6 +9,7 @@ const max_tokens = main_mod.max_tokens;
 const Agent = @import("agent.zig").Agent;
 const serde = @import("serde.zig");
 const http_headers = @import("http_headers.zig");
+const codex_chain = @import("codex_chain.zig");
 const pricing = @import("pricing.zig");
 const writeAnthropicMessages = serde.writeAnthropicMessages;
 const writeAnthropicTools = serde.writeAnthropicTools;
@@ -185,12 +186,15 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             // send previous_response_id + only the items the server does not yet
             // hold, instead of the full history (avoids the huge frame that the
             // backend rejects → WriteFailed). Full input otherwise (first turn/SSE).
-            if (self.codex_ws != null) if (self.codex_prev_id) |pid| {
+            // ONE gate for both fields: emitting previous_response_id beside a full
+            // input would make the server re-prepend a history we also sent.
+            const chain = codex_chain.chainUsable(self);
+            if (chain) {
                 try s.objectField("previous_response_id");
-                try s.write(pid);
-            };
+                try s.write(self.codex_prev_id.?);
+            }
             try s.objectField("input");
-            if (self.codex_ws != null and self.codex_prev_id != null and self.codex_sent_upto <= self.messages.items.len) {
+            if (chain) {
                 var delta = std.json.Array.init(self.arena);
                 for (self.messages.items[self.codex_sent_upto..]) |m| try delta.append(m);
                 try s.write(Value{ .array = delta });

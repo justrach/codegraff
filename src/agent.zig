@@ -80,11 +80,12 @@ pub const Agent = struct {
     subagent_provider: ?Provider = null, // optional model pin for every direct child/workflow/judge
     subagent_cross_provider: bool = false, // user explicitly allowed the pin to cross a provider/data boundary
     messages: std.json.Array,
-    // Codex Responses WS delta transport: one WS held across a turn's tool loop,
-    // sending previous_response_id + only new items. Reset by closeCodexWs.
+    // Codex Responses WS delta transport: one WS held ACROSS user turns (codex_chain.zig), sending previous_response_id + only new items. Reset by closeCodexWs.
     codex_ws: ?*ws.WsClient = null,
     codex_prev_id: ?[]const u8 = null, // last response.id (gpa-owned); null = re-anchor with full input
     codex_sent_upto: usize = 0, // messages the server already holds; delta = messages[codex_sent_upto..]
+    codex_chain_rewrites: u32 = 0, // history_rewrites when the chain was anchored; a later compaction/trim invalidates it
+    codex_props_fp: u64 = 0, // request properties the server anchored on (model/effort/fast/tools/instructions)
     codex_ws_used_ms: i64 = 0, // .awake-clock ms of the WS's last successful use; gates the idle preemptive re-anchor (#codex-ws)
     sub: bool,
     label: []const u8,
@@ -351,9 +352,9 @@ pub const Agent = struct {
 
     /// Run until the model stops (or, in strict mode, calls
     /// attempt_completion). Returns the final assistant text (arena-owned).
-    /// Close the held codex Responses WS session and reset the delta state. Called
-    /// at both ends of runTurn so each turn gets a fresh connection and re-anchors
-    /// with full input (the server only holds state within one live connection).
+    /// Close the held codex Responses WS session and reset the delta state, so the
+    /// next request re-anchors with full input. The chain now spans user turns
+    /// (codex_chain.zig guards it), so this is for errors, idle and compaction.
     pub fn closeCodexWs(self: *Agent) void {
         if (self.codex_ws) |c| {
             c.deinit(self.gpa);
@@ -370,8 +371,7 @@ pub const Agent = struct {
         // Defensive for restored/embedded agents whose provider was assigned
         // directly instead of going through providers.applyProvider.
         try self.ensureRootTools(self.provider.kind);
-        self.closeCodexWs(); // fresh codex WS session per turn
-        defer self.closeCodexWs();
+        // No per-turn teardown: the socket and the chain span user turns, guarded by codex_chain.usable instead.
         self.completed = null;
         if (!self.sub) esc_cancel.store(false, .release); // fresh turn, no stale cancel
         while (true) {
