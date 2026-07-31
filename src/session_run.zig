@@ -1,9 +1,8 @@
 //! Agent-boot + run-loop entry helpers, split out of session_start.zig
-//! (600-line goal — session_start.zig itself crossed the line goal once
-//! this content grew). Covers everything from approvals/hooks/fleet-type
-//! loading through Agent construction, the `graff repl`/one-shot early-exit
-//! paths, session resume/finalize, and the skills/theme/PTY self-tests
-//! setup.
+//! (600-line goal — session_start.zig itself crossed the line goal once this
+//! content grew). Covers everything from approvals/hooks/fleet-type loading
+//! through Agent construction, the `graff repl`/one-shot early-exit paths,
+//! session resume/finalize, and the skills/theme/PTY self-tests setup.
 //!
 //! Same dangling-pointer discipline as session_start.zig: `buildRootAgent`
 //! returns `agent_mod.Agent` by value — safe because its pointer fields
@@ -13,9 +12,8 @@
 //! `restoreResumedSession`/`finalizeSession` take `root: *agent_mod.Agent` —
 //! by the time any of these run, `root` is already stable main()-owned
 //! storage, so passing its address around is ordinary pointer-passing.
-//! `setupSkillsAndTheme` hands back which reset `defer`s main() needs to
-//! register itself (registering a `defer` in here would fire it when THIS
-//! function returns, not when main() does).
+//! `setupSkillsAndTheme` hands back which reset `defer`s main() must register
+//! itself (a `defer` here would fire when THIS function returns, not main()).
 //!
 //! Back-imports main (as main_mod) for Agent/the mutable globals it sets.
 //! Sibling-imports everything else directly.
@@ -31,6 +29,7 @@ const tools_mod = @import("tools.zig");
 const http = @import("http.zig");
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig"); // codex_ws_idle_ms override (#codex-ws)
+const no_local_tools = @import("no_local_tools.zig"); // #330: GRAFF_NO_LOCAL_TOOLS
 const provider_mod = @import("provider.zig");
 const keys_cli = @import("keys_cli.zig");
 const pricing = @import("pricing.zig");
@@ -415,14 +414,15 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     if (environ_map.get("GRAFF_CODEX_WS")) |v| {
         main_mod.g_codex_ws = !(std.ascii.eqlIgnoreCase(v, "off") or std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "false") or std.ascii.eqlIgnoreCase(v, "no"));
     }
-    // #225: GRAFF_CLOCK_SLEEP=1|true|on|yes arms the root-only clock_sleep
-    // meta tool (in addition to --clock-sleep). Affirmative-only, like
-    // GRAFF_WS_FORCE_FAIL_ONCE below — OR'd onto the CLI flag so a
-    // conflicting/absent env value never silently turns --clock-sleep back
-    // off; default stays off.
+    // #225 GRAFF_CLOCK_SLEEP (root-only clock_sleep meta tool) and #330
+    // GRAFF_NO_LOCAL_TOOLS (the hard local-execution gate): both are
+    // affirmative-only (1|true|on|yes), like GRAFF_WS_FORCE_FAIL_ONCE below,
+    // and both are OR'd onto their CLI flag so a conflicting or absent env
+    // value can never silently turn --clock-sleep / --no-local-tools back off.
     if (environ_map.get("GRAFF_CLOCK_SLEEP")) |v| {
         main_mod.g_clock_sleep = main_mod.g_clock_sleep or std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "yes");
     }
+    if (environ_map.get("GRAFF_NO_LOCAL_TOOLS")) |v| no_local_tools.enabled = no_local_tools.enabled or no_local_tools.envEnables(v);
     // (#codex-ws) GRAFF_CODEX_WS_IDLE_SECS raises/lowers the held-WS idle limit
     // (default 4 min — the backend killed ours within 8.5 min idle; opencode
     // pools at 5). Mirrors GRAFF_STREAM_STALL_SECS above: seconds, ignored if

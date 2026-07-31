@@ -24,6 +24,7 @@ const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
 const learning_privacy = @import("learning_privacy.zig");
+const no_local_tools = @import("no_local_tools.zig"); // #330: `--no-local-tools` arms the process-global gate (same set-only pattern as the main_mod globals)
 
 /// Every CLI-flag local main() used to declare, plus the resolved
 /// positionals/subcommand-detection/one-shot-prompt outputs computed right
@@ -121,6 +122,8 @@ pub fn parse(init: std.process.Init) !Flags {
                     main_mod.max_model_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-model-calls needs a non-negative integer, got '{s}'", .{mv});
                 } else if (std.mem.eql(u8, arg, "--dedupe-tool-calls")) {
                     main_mod.dedupe_tool_calls = true;
+                } else if (std.mem.eql(u8, arg, "--no-local-tools")) {
+                    no_local_tools.enabled = true; // #330: hard-disable the host-touching built-ins for the whole process (also GRAFF_NO_LOCAL_TOOLS=1)
                 } else if (std.mem.eql(u8, arg, "--clock-sleep")) {
                     main_mod.g_clock_sleep = true; // #225: opt in to the root-only clock_sleep meta tool (also GRAFF_CLOCK_SLEEP=1)
                 } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
