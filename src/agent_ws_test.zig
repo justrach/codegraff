@@ -6,6 +6,7 @@ const textMessage = @import("messages.zig").textMessage;
 const ws = @import("ws.zig");
 const agent_ws = @import("agent_ws.zig");
 const codex_chain = @import("codex_chain.zig");
+const agent_compact = @import("agent_compact.zig");
 
 test "closeCodexWs resets the delta session state + frees the response id (codex-ws)" {
     var agent: Agent = undefined;
@@ -242,6 +243,51 @@ test "stepResponses (#194): a response with no id drops the anchor instead of ad
     defer std.testing.allocator.free(agent.codex_prev_id.?);
     try std.testing.expectEqualStrings("resp_new", agent.codex_prev_id.?);
     try std.testing.expectEqual(agent.messages.items.len, agent.codex_sent_upto);
+}
+
+// runTurn used to bracket every compaction with closeCodexWs, so compact()'s own
+// summary request could never carry a delta. With the chain spanning user turns
+// that bracket is gone from the BETWEEN-turn callers (mainloop's two
+// compactOrRecover sites), and compact() sets stream_quiet -> its request goes
+// over codex HTTP, which rejects previous_response_id outright. The length guard
+// does not save it either: recentContextStart can leave the summary history
+// LONGER than codex_sent_upto. compactPrelude drops the anchor instead.
+test "compactPrelude drops the codex chain before compaction's own request" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try textMessage(a, "user", "first"));
+    try msgs.append(try textMessage(a, "assistant", "second"));
+
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = a,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://x/responses", .api_key = "k", .model = "gpt-5.6", .context = 270_000 },
+        .messages = msgs,
+        .sub = false,
+        .label = "",
+        .out = null,
+        .codex_ws = null, // no live socket to deinit; the anchor is what matters
+        .codex_prev_id = try std.testing.allocator.dupe(u8, "resp_live"),
+    };
+    codex_chain.record(&agent);
+
+    _ = agent_compact.compactPrelude(&agent);
+
+    // Anchor gone, so compaction's summary request carries full input and no
+    // previous_response_id - which the codex HTTP endpoint would reject anyway.
+    try std.testing.expect(agent.codex_prev_id == null);
+    try std.testing.expectEqual(@as(usize, 0), agent.codex_sent_upto);
+    try std.testing.expect(!codex_chain.chainUsable(&agent));
+
+    const body = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"first\"") != null);
 }
 
 // Regression (#codex gpt-5.6): the Codex Responses backend rejects a top-level

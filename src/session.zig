@@ -486,6 +486,9 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     root.effort_rejected = false;
     root.ws_off = false; // transport failures belong to the prior live session
     root.ws_transport_failures = 0;
+    // A restored history is a DIFFERENT conversation, not an extension, and
+    // codex_chain.usable detects no identity swap - it would chain onto the old one.
+    root.closeCodexWs();
     root.compact_transport_failures = 0;
     root.last_usage_includes_output = false;
     root.last_request_context_overflow = false;

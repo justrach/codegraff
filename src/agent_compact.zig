@@ -98,6 +98,15 @@ pub fn summaryResponseComplete(self: *Agent, root: std.json.ObjectMap) bool {
 /// compact() cannot drop the call without losing the number it prints, so the
 /// pin cannot be orphaned by a tidy-up that looks harmless.
 pub fn compactPrelude(self: *Agent) ?usize {
+    // Drop the codex chain BEFORE the summary request. runTurn used to bracket
+    // every compaction with closeCodexWs; now that the chain spans user turns,
+    // the BETWEEN-turn callers (mainloop's two compactOrRecover sites) have no
+    // such bracket. compact() sets stream_quiet, so its summary request goes out
+    // over codex HTTP - which rejects previous_response_id outright - and
+    // recentContextStart can leave summary_messages LONGER than codex_sent_upto,
+    // so the length guard would not catch it. history_rewrites covers the state
+    // AFTER compaction; this covers the request compaction itself makes.
+    self.closeCodexWs();
     if (self.messages.items.len == 0) return null;
     pinChildTask(self);
     self.last_request_context_overflow = false;
