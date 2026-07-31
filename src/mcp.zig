@@ -56,9 +56,10 @@ pub const Registry = struct {
     /// server either answers the unknown method with an error at once or
     /// closes stdout and is respawned. Only a server that SILENTLY IGNORES it
     /// pays the timeout above, and it pays it once per process.
-    /// Only `Registry.init` reads the environment; servers added later via
-    /// `addServer`/`trustWorkspace` on a `Registry.empty*`-constructed
-    /// registry inherit `false` — a documented gap, never a safety issue.
+    /// Only `Registry.init` reads the environment, so a `Registry.empty*`-
+    /// constructed registry keeps this field default (true) and cannot be
+    /// opted out of the probe by `GRAFF_MCP_PROBE=0` — the env var reaches
+    /// only the config-file path.
     stdio_probe: bool = true,
 
     pub fn arena(self: *Registry) Allocator {
