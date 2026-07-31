@@ -76,9 +76,11 @@ const Parsed = struct { name: []const u8, desc: []const u8, body: []const u8 };
 /// parsed at build time).
 fn parseDoc(fallback_name: []const u8, data: []const u8) Parsed {
     var out: Parsed = .{ .name = fallback_name, .desc = "", .body = std.mem.trim(u8, data, " \t\r\n") };
-    if (!std.mem.startsWith(u8, data, "---\n")) return out;
-    const fm_end = std.mem.indexOfPos(u8, data, 4, "\n---") orelse return out;
-    var lines = std.mem.tokenizeScalar(u8, data[4..fm_end], '\n');
+    // A CRLF checkout (Windows CI, notepad-authored skills) opens "---\r\n";
+    // the rest of the parser already tolerates \r via per-line trims.
+    const fence_len: usize = if (std.mem.startsWith(u8, data, "---\r\n")) 5 else if (std.mem.startsWith(u8, data, "---\n")) 4 else return out;
+    const fm_end = std.mem.indexOfPos(u8, data, fence_len, "\n---") orelse return out;
+    var lines = std.mem.tokenizeScalar(u8, data[fence_len..fm_end], '\n');
     while (lines.next()) |raw| {
         const ln = std.mem.trim(u8, raw, " \t\r");
         const sep = std.mem.indexOfScalar(u8, ln, ':') orelse continue;
@@ -350,6 +352,13 @@ test "parseDoc: frontmatter wins over the filename, body starts after it" {
     try std.testing.expectEqualStrings("real-name", p.name);
     try std.testing.expectEqualStrings("what it does and when", p.desc);
     try std.testing.expectEqualStrings("# Body\nstep one", p.body);
+}
+
+test "parseDoc: a CRLF checkout still yields frontmatter and body" {
+    const p = parseDoc("f", "---\r\nname: n\r\ndescription: d\r\n---\r\nBody.\r\n");
+    try std.testing.expectEqualStrings("n", p.name);
+    try std.testing.expectEqualStrings("d", p.desc);
+    try std.testing.expectEqualStrings("Body.", p.body);
 }
 
 test "parseDoc: no frontmatter keeps the filename and the whole file as body" {
