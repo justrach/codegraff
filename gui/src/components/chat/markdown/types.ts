@@ -8,6 +8,7 @@ export type MdInline =
   | { type: "em"; children: MdInline[] }
   | { type: "del"; children: MdInline[] }
   | { type: "code"; value: string }
+  | { type: "math"; value: string }
   | { type: "link"; href: string; children: MdInline[] }
   | { type: "break" };
 
@@ -22,6 +23,8 @@ export type MdBlock =
   | { type: "paragraph"; children: MdInline[] }
   // `closed` is false while a fence is still being streamed (no closing ```).
   | { type: "code"; lang: string | null; value: string; closed: boolean }
+  // Display math (\[...\] or $$...$$). `closed` is false while still streaming.
+  | { type: "math"; value: string; closed: boolean }
   | { type: "blockquote"; children: MdBlock[] }
   | { type: "list"; ordered: boolean; start: number; items: MdListItem[] }
   | {
