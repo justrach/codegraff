@@ -251,9 +251,16 @@ test "null, parent-identical, and duplicate candidates do not contend" {
 
 test "only the primary winner can become finally eligible" {
     const parent = "1111111111111111111111111111111111111111111111111111111111111111";
+    // Index 1 must win on a signal primaryOutranks actually reads. This test
+    // was dead (learn_tournament.zig had no test-root reference) and had gone
+    // stale: it gave index 1 the larger parent-relative DELTA, which stopped
+    // choosing winners when the ranking became correctness-then-cost - see the
+    // rationale at the top of primaryOutranks and the tie case in "primary
+    // winner is correctness-first...". Cost is what separates them now, so
+    // index 1 is the cheaper one.
     var candidates = [_]eval.CandidateRecord{
-        fakeCandidate("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", fakeComparison(20, 10, 5, 10, true, "eligible")),
-        fakeCandidate("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", fakeComparison(30, 10, 5, 20, true, "eligible")),
+        fakeCandidate("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", fakeComparison(20, 10, 5, 20, true, "eligible")),
+        fakeCandidate("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", fakeComparison(30, 10, 5, 10, true, "eligible")),
     };
     candidates[0].eligible = true;
     candidates[1].holdout = fakeComparison(5, 5, 10, 5, true, "eligible");
