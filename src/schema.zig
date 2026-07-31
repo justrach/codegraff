@@ -39,7 +39,10 @@ const schema_serve_json =
 ;
 /// Launch flags relevant to SDK clients, embedded verbatim in `--schema`
 /// output so generated clients can surface them as first-class options.
-const schema_flags_json =
+/// Pinned against learning_privacy.default_mode by a test there: the SDKs are
+/// generated from this text, so a stale default here is a promise the binary
+/// does not keep.
+pub const schema_flags_json =
     \\[
     \\  {"flag": "--model", "arg": "name", "description": "start on this model (same fuzzy resolution as /model)"},
     \\  {"flag": "--subagent-model", "arg": "name", "description": "pin direct subagents, workflow workers/retries, and judges to this model on the root provider; GRAFF_SUBAGENT_MODEL is the lower-precedence equivalent"},
@@ -53,7 +56,7 @@ const schema_flags_json =
     \\  {"flag": "--max-model-calls", "arg": "N", "description": "opt-in invocation-wide provider-call ceiling shared by root, review, subagents, retries, title, compaction, and judges; default unlimited"},
     \\  {"flag": "--dedupe-tool-calls", "arg": null, "description": "reject duplicate root tool name+normalized-input calls per turn"},
     \\  {"flag": "--no-telemetry", "arg": null, "description": "disable anonymous OTEL usage telemetry for this run"},
-    \\  {"flag": "--learning-privacy", "arg": "local|aggregate|templates|examples", "description": "set the prompt-learning egress ceiling; default local, and template text still requires exact interactive approval"}
+    \\  {"flag": "--learning-privacy", "arg": "local|aggregate|templates|examples", "description": "set the prompt-learning egress ceiling; default aggregate (signed prompt-free grades), local sends nothing, and template text still requires exact interactive approval"}
     \\]
 ;
 const ToolSpec = struct {

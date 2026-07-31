@@ -112,7 +112,7 @@ pub const usage_text =
     \\  --max-model-calls N total provider calls allowed across this run (default 256; includes children/title/judges)
     \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn
     \\  --no-telemetry   disable anonymous usage telemetry for this run
-    \\  --learning-privacy <mode>       learning egress ceiling: local|aggregate|templates|examples (default local)
+    \\  --learning-privacy <mode>       learning egress ceiling: local|aggregate|templates|examples (default aggregate)
     \\  -h, --help       this help
     \\  -V, --version    print version
     \\
@@ -127,8 +127,10 @@ pub const usage_text =
     \\OTEL_EXPORTER_OTLP_ENDPOINT (or GRAFF_OTEL_ENDPOINT) is set; opt out
     \\with --no-telemetry or GRAFF_NO_TELEMETRY=1. GRAFF_TELEMETRY_KEY sends
     \\an optional x-harness-key token to the configured collector.
-    \\learning privacy: prompt-policy learning stays local by default; /privacy
-    \\changes the session ceiling. Template text still needs exact approval.
+    \\learning privacy: local learning trials publish prompt-free aggregate grades
+    \\by default, announced once per machine; /privacy local (or
+    \\GRAFF_LEARNING_PRIVACY=local, GRAFF_FLEET=off, --no-telemetry) sends nothing.
+    \\/privacy changes the session ceiling; template text still needs exact approval.
     \\
 ;
 

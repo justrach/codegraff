@@ -342,9 +342,10 @@ serve elites. **No central inference → it runs at fleet scale for free.**
 - **Eval: private suite, public hash.** Only `eval_set_hash` is public; the
   suite is secret and rotated, so the honest majority can't study to the
   answer. Already bound into every score signature (Step 0).
-- **Contribution: local by default, independently scoped.** `/privacy
-  aggregate` admits prompt-free scores/metadata. `/privacy templates` raises
-  the ceiling, but each private persona still requires exact interactive
+- **Contribution: aggregate by default, independently scoped.** `/privacy
+  aggregate` is the shipped default, announced once per machine, and admits
+  prompt-free scores/metadata; `/privacy local` opts out. `/privacy templates`
+  raises the ceiling, but each private persona still requires exact interactive
   approval; `GRAFF_FLEET=off` remains a master kill switch.
 - **Grid: niche × provider-class.** The elite you *receive* is the one that won
   on *your* model tier — "let the provider be me" made literal.
