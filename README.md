@@ -259,10 +259,11 @@ the directory, so concurrent processes never share a truncate/append cursor:
 - **Tool-use is mined too.** Each agent logs its tool calls (name + error flag,
   in order): the process signal behind "which tool combinations work",
   joinable to scores via `prompt_sha`.
-- **Consent-scoped fleet loop.** Learning stays local by default; users can
-  contribute prompt-free aggregate fitness or individually reviewed reusable
-  templates. `/trajectory` renders the current session's agent tree; see
-  [docs/hyperagents.md](docs/hyperagents.md) for the full design.
+- **Consent-scoped fleet loop.** Learning contributes prompt-free aggregate
+  fitness by default, announced once per machine; `/privacy local` opts out
+  entirely, and individually reviewed reusable templates need an exact
+  per-artifact approval on top. `/trajectory` renders the current session's
+  agent tree; see [docs/hyperagents.md](docs/hyperagents.md) for the full design.
 
 For controlled local hill-climbing, `graff learn` adds a separate
 parent → mutate → paired-evaluate → select loop with immutable evidence, manual
@@ -984,11 +985,13 @@ file paths, or tool arguments. The separately bounded behavioral payload follows
 the metadata/content rules above; only explicit content mode permits opaque
 adapter fields that may contain task content.
 
-**Fleet / evolution signals are local by default.** `/privacy` selects a
-session-scoped learning ceiling: `local` sends nothing automatically (the
-bundled `learn_candidate` tool can request one aggregate-only send); `aggregate` permits
-signed grades and prompt-free fleet metadata; `templates` additionally offers
-each private reusable persona/template for an exact preview approval; and
+**Fleet / evolution signals default to `aggregate`,** and the first session that
+could contribute says so once per machine. `/privacy` selects a session-scoped
+learning ceiling: `local` sends nothing automatically (the bundled
+`learn_candidate` tool can request one aggregate-only send); `aggregate` (the
+default) permits signed grades and prompt-free fleet metadata; `templates`
+additionally offers each private reusable persona/template for an exact preview
+approval; and
 `examples` reserves a future one-shot reviewed-example channel (raw example
 upload is not implemented). `GRAFF_LEARNING_PRIVACY` or
 `--learning-privacy` can select the same mode, while `GRAFF_FLEET=off` or

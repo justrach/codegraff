@@ -216,6 +216,25 @@ test "learning privacy defaults to aggregate, fails closed, and modes form a cei
     try std.testing.expect(!allowsExamples());
 }
 
+test "--help and --schema state the default ceiling the binary actually applies" {
+    // The generated SDKs are built from `graff --schema`, so a stale default
+    // there is a machine-readable promise of more privacy than init() applies.
+    // Every mode name is checked, not just the current one, so flipping
+    // default_mode without moving the text fails here rather than in a user's
+    // reading of the docs.
+    const usage_text = @import("cli.zig").usage_text;
+    const schema_flags_json = @import("schema.zig").schema_flags_json;
+    const documented = "default " ++ @tagName(default_mode);
+    try std.testing.expect(std.mem.indexOf(u8, usage_text, documented) != null);
+    try std.testing.expect(std.mem.indexOf(u8, schema_flags_json, documented) != null);
+    inline for (comptime std.enums.values(Mode)) |mode| {
+        if (mode == default_mode) continue;
+        const stale = "default " ++ @tagName(mode);
+        try std.testing.expect(std.mem.indexOf(u8, usage_text, stale) == null);
+        try std.testing.expect(std.mem.indexOf(u8, schema_flags_json, stale) == null);
+    }
+}
+
 test "secret canaries are blocked without flagging ordinary agent templates" {
     const canaries = [_][]const u8{
         "OPENAI_API_KEY=sk-proj-test-only-not-real",
