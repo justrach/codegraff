@@ -33,6 +33,20 @@ pub const teardown_grace = Io.Duration.fromSeconds(1);
 
 const poll_step = Io.Duration.fromMilliseconds(5);
 
+/// Set when runBounded gives up on a task. That thread is detached, still holds
+/// the `Io` it was handed, and is parked in the syscall that made it miss the
+/// deadline. It almost certainly never returns to touch Io state - but "almost
+/// certainly" is a race, not a proof, and the header above says so (#325).
+pub var abandoned: std.atomic.Value(bool) = .init(false);
+
+/// Exit NOW if any teardown was abandoned. For the EXIT path only: by this
+/// point nothing useful is left to do, and the alternative is letting a later
+/// defer tear down an Io that a live thread is still inside a syscall on.
+/// Exiting is what makes the header's race unreachable instead of unlikely.
+pub fn exitIfAbandoned() void {
+    if (abandoned.load(.acquire)) std.process.exit(0);
+}
+
 /// One window shared by every transport in a teardown, rather than one window
 /// each. Registry.deinit tears servers down sequentially, so a per-transport
 /// grace made N stalled peers cost N graces: exit stayed bounded but grew with
@@ -101,7 +115,9 @@ pub fn runBounded(allocator: Allocator, io: Io, grace: Io.Duration, comptime fun
         return true;
     }
     // Abandoned: `task` is leaked on purpose so the detached thread never
-    // writes into freed memory.
+    // writes into freed memory, and the exit path is told not to tear down the
+    // Io that thread is still holding (#325).
+    abandoned.store(true, .release);
     return false;
 }
 
@@ -162,6 +178,31 @@ test "runBounded abandons teardown that outlives the grace window (#305)" {
     try std.testing.expect(elapsed < 10 * std.time.ns_per_s);
 }
 
+test "runBounded flags an abandon so the exit path can skip Io teardown (#325)" {
+    const io = std.testing.io;
+    const saved = abandoned.load(.acquire);
+    defer abandoned.store(saved, .release); // a global: never leak this test's state
+    abandoned.store(false, .release);
+
+    // A prompt task must NOT arm the escalation - the common case still runs
+    // every remaining defer normally.
+    const noop = struct {
+        fn run() void {}
+    }.run;
+    try std.testing.expect(runBounded(std.testing.allocator, io, .fromSeconds(5), noop, .{}));
+    try std.testing.expect(!abandoned.load(.acquire));
+
+    // A stalled peer arms it. exitIfAbandoned is deliberately NOT called here:
+    // it exits the process, so main's exit path is the only legal caller.
+    const stall = struct {
+        fn run(inner: Io) void {
+            inner.sleep(.fromSeconds(60), .awake) catch {};
+        }
+    }.run;
+    try std.testing.expect(!runBounded(std.heap.page_allocator, io, .fromMilliseconds(50), stall, .{io}));
+    try std.testing.expect(abandoned.load(.acquire));
+}
+
 test "deinitHttpClient tears down a pooled client within the grace window" {
     // Mirrors the smolify on-demand transport: an HTTP client that was
     // connected (handshake done or not) must not hold session exit.
@@ -181,12 +222,12 @@ test "one Budget bounds the WHOLE teardown, not each transport (#305)" {
         }
     }.run;
     const start = Io.Timestamp.now(io, .awake);
-    var abandoned: usize = 0;
+    var abandoned_count: usize = 0;
     for (0..3) |_| {
-        if (!runBounded(std.heap.page_allocator, io, budget.remaining(io), stall, .{io})) abandoned += 1;
+        if (!runBounded(std.heap.page_allocator, io, budget.remaining(io), stall, .{io})) abandoned_count += 1;
     }
     const elapsed = Io.Timestamp.now(io, .awake).nanoseconds - start.nanoseconds;
-    try std.testing.expectEqual(@as(usize, 3), abandoned);
+    try std.testing.expectEqual(@as(usize, 3), abandoned_count);
     // The sharing itself is asserted on STATE, not on the clock: the first
     // abandon spends the window, so every later transport is handed a zero
     // grace and waits for nothing. An earlier version compared elapsed against

@@ -374,7 +374,7 @@ pub fn main(init: std.process.Init) !void {
     const mcp_home = homeEnv(init.environ_map) orelse "";
     var registry_storage = try session_start.initRegistryConsent(io, gpa, arena, out, in, flags, mcp_config_path, mcp_home, use_color, json_mode, init.environ_map);
     boot.mark(io, "MCP registry");
-    defer registry_storage.deinit();
+    defer registry_storage.deinitAtExit(); // #325: an abandoned teardown thread still holds `io`
     const registry: ?*mcp.Registry = &registry_storage;
     // Per-skill/companion opt-outs, animation/theme settings, and the --selftest-spinner headless render live in session_start.zig. The theme/
     // limyuxi-glam reset `defer`s stay HERE (registered in main()'s own frame) so they fire when main() returns, not when the helper does.

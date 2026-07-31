@@ -445,6 +445,15 @@ pub const Registry = struct {
 
     /// One shared window bounds the whole teardown: the loop is sequential, so
     /// a per-server grace cost N graces for N stalled peers (#305).
+    /// Registry teardown for the EXIT path. If any transport was abandoned, a
+    /// detached thread still holds this Io, so leave immediately rather than let
+    /// a later defer tear that Io down underneath it (#325). Kept separate from
+    /// `deinit` because tests and mid-session callers must never exit.
+    pub fn deinitAtExit(reg: *Registry) void {
+        reg.deinit();
+        mcp_teardown.exitIfAbandoned();
+    }
+
     pub fn deinit(reg: *Registry) void {
         const budget: mcp_teardown.Budget = .init(reg.io, mcp_teardown.teardown_grace);
         for (reg.servers) |server| deinitServer(server, reg.io, budget);
