@@ -260,15 +260,27 @@ pub fn ranOk(run: CappedRun) bool {
 /// counts everything the process is holding below that ceiling — unlike a
 /// single `dup`, which only sees the lowest gap and is blind to a leak that
 /// sits above one. Every descriptor claimed here is released again.
+/// `std.posix.system.dup` is the RAW syscall wrapper and its return type is
+/// version-dependent: signed on Zig 0.16, unsigned on the 0.17 nightly CI
+/// pins (there is no checked `std.posix.dup` in either). Assigning it
+/// directly built locally and failed the CI zig job, so normalize on
+/// signedness at comptime instead of assuming a width.
+fn dupLowestFree() ?std.posix.fd_t {
+    const raw = std.posix.system.dup(0);
+    const signed: isize = if (@typeInfo(@TypeOf(raw)).int.signedness == .signed) @intCast(raw) else @bitCast(raw);
+    if (signed < 0) return null; // out of descriptors: the probe stops here
+    return @intCast(signed);
+}
+
 fn fdHighWater() i32 {
-    var claimed: [64]i32 = undefined;
+    if (comptime !have_rlimits) return -1; // no POSIX descriptor table to probe
+    var claimed: [64]std.posix.fd_t = undefined;
     var n: usize = 0;
     var high: i32 = -1;
     while (n < claimed.len) : (n += 1) {
-        const fd = std.posix.system.dup(0);
-        if (fd < 0) break;
-        claimed[n] = fd;
-        if (fd > high) high = fd;
+        claimed[n] = dupLowestFree() orelse break;
+        const numbered: i32 = @intCast(claimed[n]);
+        if (numbered > high) high = numbered;
     }
     for (claimed[0..n]) |fd| _ = std.posix.system.close(fd);
     return high;
