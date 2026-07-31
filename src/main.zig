@@ -180,6 +180,7 @@ pub var g_worktree_autocommit: bool = true; // --no-autocommit turns off the per
 /// report its capacity next to the scratch arena's.
 pub var g_session_arena: ?*std.heap.ArenaAllocator = null;
 pub var g_mem_debug: bool = false;
+pub var g_no_browser: bool = false; // GRAFF_NO_BROWSER=1: headless/SSH, /images just lists the URLs
 /// Short task label for terminal/TUI headers (mirrors the GUI's first-prompt fallback: the user's first message as a compact tab/session title).
 // Session-title + header rendering + provider-response text parsers live in title.zig.
 const title_mod = @import("title.zig");
@@ -256,6 +257,7 @@ pub fn main(init: std.process.Init) !void {
     defer hooks.deinitCodedbCache(gpa, io);
     g_session_arena = init.arena;
     g_mem_debug = init.environ_map.get("GRAFF_MEM_DEBUG") != null;
+    g_no_browser = init.environ_map.get("GRAFF_NO_BROWSER") != null;
     // Windows: let the console interpret ANSI/VT escapes so the harness's color and cursor sequences render instead of literal text.
     if (builtin.os.tag == .windows) tty.enableVtOutput();
     // Environment supplies the default; an explicit CLI flag parsed below has
