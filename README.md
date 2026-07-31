@@ -477,6 +477,7 @@ other animation names remain available.
 /compact        summarize history into a fresh context
 /save | /resume | /sessions   session persistence; bare /resume → interactive picker
 /todo           show the current task list
+/skills         list SKILL.md playbooks + companion tools; add/remove toggles one
 /mcp [add …]    list MCP servers/tools; /mcp add <name> <cmd> connects one live
 /help           list commands
 exit | /exit | ctrl-d | ctrl-c(empty)   quit
@@ -511,6 +512,24 @@ limits; the ordinary invocation budget is unlimited by default, while explicit
 `--max-tool-calls` and `--max-model-calls` settings still apply. Only the request
 and final report join the parent transcript. Use a later, explicit turn to fix
 accepted findings.
+
+### Skills
+
+A skill is a markdown playbook graff loads only when a task calls for it. Drop
+one in `.harness/skills/<name>/SKILL.md` (or `~/.harness/skills/` for every
+project), give it `name` and `description` frontmatter, and write the
+instructions in the body. Skills already written for Claude Code work as they
+are: `.claude/skills/` is read too.
+
+Only the name and description enter the system prompt, so a large skill library
+costs one line each. The model calls the `skill` tool to pull a body in when it
+needs it, and a skill written mid-session is loadable straight away.
+
+Two skills ship inside the binary: `skill-creator` (how to author and install
+new skills) and `mcp-config` (how to inspect and change the MCP servers below).
+`/skills` lists everything with its source, `/skills remove <name>` hides one,
+and `/skills add <name>` brings it back. See
+[docs/skills.md](docs/skills.md) for the full reference.
 
 ### MCP servers
 

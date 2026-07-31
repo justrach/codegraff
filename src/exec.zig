@@ -55,6 +55,7 @@ const jobOutput = jobs.jobOutput;
 const jobKill = jobs.jobKill;
 const shellArgv = jobs.shellArgv;
 const skills = @import("skills.zig");
+const skill_docs = @import("skill_docs.zig");
 const read_file = @import("read_file.zig");
 const hooks = @import("hooks.zig");
 const telemetry = @import("telemetry.zig");
@@ -464,6 +465,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         preserveMode(io, resolved, prev_stat);
         return .{ .text = try std.fmt.allocPrint(gpa, "wrote {d} bytes to {s}", .{ content.len, path }) };
     }
+    // Loads one SKILL.md body (or lists them). Rescans on every call, so a
+    // skill written this session is loadable without a restart.
+    if (std.mem.eql(u8, call.name, "skill")) return skill_docs.execSkill(gpa, io, input);
     if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
     if (std.mem.eql(u8, call.name, "agent_output")) {

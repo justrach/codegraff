@@ -46,7 +46,7 @@ pub const commands = [_]Item{
     .{ .name = "/privacy", .usage = "/privacy [local|aggregate|templates|examples]", .desc = "control prompt-learning data egress for this session" },
     .{ .name = "/trajectory", .desc = "show this session's agent tree — turns + spawned subagents" },
     .{ .name = "/agents", .desc = "list agent types — builtin personas + .harness/agents/*.md" },
-    .{ .name = "/skills", .usage = "/skills [remove <name>]", .desc = "list available skills; /skills remove <name> disables one" },
+    .{ .name = "/skills", .usage = "/skills [add|remove <name>]", .desc = "list SKILL.md playbooks + companion tools; add/remove enables or disables one" },
     .{ .name = "/hooks", .desc = "list lifecycle hooks and the built-in codedb guard" },
     .{ .name = "/doctor", .desc = "read-only health check: goal/todo invariants, and why steering will or will not be appended" },
     .{ .name = "/compact", .desc = "summarize history into a fresh context" },

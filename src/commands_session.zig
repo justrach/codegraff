@@ -48,6 +48,7 @@ const skillDisabled = skills.skillDisabled;
 const skillInstalled = skills.skillInstalled;
 const saveSkillSetting = skills.saveSkillSetting;
 const skills_registry = skills.skills_registry;
+const skill_docs = @import("skill_docs.zig"); // the other kind: SKILL.md playbooks
 
 const title_mod = @import("title.zig");
 const setTerminalTitle = title_mod.setTerminalTitle;
@@ -401,7 +402,9 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             }
-            try out.print("unknown skill: {s} — /skills lists the registry\n", .{name});
+            // Markdown skills use the same {"skills": {"<name>": false}} key.
+            if (try skill_docs.handleRemove(root.io, root.gpa, arena, name, out)) return true;
+            try out.print("unknown skill: {s} — /skills lists both kinds\n", .{name});
             try out.flush();
             return true;
         }
@@ -455,11 +458,16 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 try out.flush();
                 return true;
             }
-            try out.print("unknown skill: {s} — /skills lists the registry\n", .{name});
+            // Not a companion: a markdown skill hidden by an earlier
+            // `/skills remove` comes back by clearing that opt-out.
+            if (try skill_docs.handleAdd(root.io, root.gpa, arena, name, out)) return true;
+            try out.print("unknown skill: {s} — /skills lists both kinds\n", .{name});
             try out.flush();
             return true;
         }
-        try out.print("{s}skills{s} — optional companion tools (codex-style; one context line each when installed)\n", .{ style.bold, style.reset });
+        // Markdown skills first (SKILL.md playbooks), then the companions.
+        try skill_docs.printSection(root.io, arena, out);
+        try out.print("{s}companions{s} — optional companion tools (codex-style; one context line each when installed)\n", .{ style.bold, style.reset });
         for (skills_registry) |sk| {
             const inst = skillInstalled(root.io, sk);
             const disabled = skillDisabled(sk.name);
