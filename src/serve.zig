@@ -413,6 +413,11 @@ fn serveFollow(st: *ServeState, req: *std.http.Server.Request, id: []const u8, f
     }) catch return error.WriteFailed;
     var next_from = from;
     var idle: usize = 0;
+    // A terminal event ends this client's watch, but only once the tape is
+    // drained: a cold replay of a multi-turn session arrives in buffer-sized
+    // chunks, and one of those can END on a turn/ack with later turns still to
+    // come. Stopping there would silently truncate the replay.
+    var ended = false;
     while (true) {
         const chunk = follower.poll();
         if (chunk.len > 0) {
@@ -420,11 +425,12 @@ fn serveFollow(st: *ServeState, req: *std.http.Server.Request, id: []const u8, f
             if (replayed.emitted > 0) {
                 next_from = replayed.last_seq + 1;
                 bw.flush() catch break;
-                if (replayed.terminal) break; // the request this client was watching ended
+                ended = replayed.terminal;
             }
             idle = 0;
             continue;
         }
+        if (ended) break; // drained, and the last event closed a request
         // Idle session (or one this bridge never ran): the tape is complete.
         if (!inFlight(st, id)) break;
         idle += 1;
