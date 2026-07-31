@@ -74,7 +74,7 @@ test "buildBody (.responses): delta while WS live; full input after closeCodexWs
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = a,
-        .io = undefined, // unused by buildBody
+        .io = std.testing.io, // unused by buildBody
         .client = undefined, // unused by buildBody
         .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://x/responses", .api_key = "k", .model = "gpt-5", .context = 100_000 },
         .messages = msgs,
@@ -139,7 +139,7 @@ test "buildBody (.responses): never emits a top-level max_output_tokens (codex g
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = a,
-        .io = undefined, // unused by buildBody
+        .io = std.testing.io, // unused by buildBody
         .client = undefined, // unused by buildBody
         .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "https://x/responses", .api_key = "k", .model = "gpt-5.6-sol", .context = 270_000 },
         .messages = msgs,

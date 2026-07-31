@@ -130,7 +130,7 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
     defer if (bearer.len > 0) gpa.free(bearer);
 
     var headers_buf: [12]std.http.Header = undefined;
-    const extra = providerHeaders(provider, bearer, &headers_buf);
+    const extra = providerHeaders(client.io, provider, bearer, &headers_buf);
 
     var req = try client.request(.POST, try std.Uri.parse(provider.url), .{
         .redirect_behavior = .unhandled,

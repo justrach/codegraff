@@ -194,7 +194,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     };
     defer if (bearer.len > 0) gpa.free(bearer);
     var headers_buf: [12]std.http.Header = undefined;
-    const extra = providerHeaders(provider, bearer, &headers_buf);
+    const extra = providerHeaders(self.io, provider, bearer, &headers_buf);
 
     self.md_buf.clearRetainingCapacity(); // fresh markdown state per stream
     self.arg_live = .{}; // fresh tool-argument extractor per stream

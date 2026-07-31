@@ -8,6 +8,7 @@ const main_mod = @import("main.zig");
 const max_tokens = main_mod.max_tokens;
 const Agent = @import("agent.zig").Agent;
 const serde = @import("serde.zig");
+const http_headers = @import("http_headers.zig");
 const pricing = @import("pricing.zig");
 const writeAnthropicMessages = serde.writeAnthropicMessages;
 const writeAnthropicTools = serde.writeAnthropicTools;
@@ -174,6 +175,12 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             // returned encrypted and passed back for cross-turn continuity.
             try s.objectField("instructions");
             try s.write(self.systemPrompt());
+            // Pin our full resends to a per-session cache partition, the way
+            // openai/codex does (it defaults this to the same session UUID it
+            // puts in the `session_id` header). Without it the backend has no
+            // affinity hint for a prefix we re-upload every turn.
+            try s.objectField("prompt_cache_key");
+            try s.write(http_headers.sessionId(self.io));
             // Codex WS delta: once a response.id is held on a live WS session,
             // send previous_response_id + only the items the server does not yet
             // hold, instead of the full history (avoids the huge frame that the
@@ -253,7 +260,7 @@ test "Kimi request body follows live native or Anthropic protocol metadata" {
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = arena,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "native-k3", .context = 1_048_576 },
         .messages = messages,
@@ -345,7 +352,7 @@ test "retained reasoning: openai-chat history replays reasoning_content on the n
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = arena,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-pro", .context = 128_000 },
         .messages = messages,
@@ -412,7 +419,7 @@ test "retained reasoning: anthropic replays thinking+signature inside a multi-st
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = arena,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude", .context = 1_000_000 },
         .messages = messages,
@@ -464,7 +471,7 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = arena,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "codex", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.6", .context = 272_000 },
         .messages = messages,
@@ -484,6 +491,12 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
     try std.testing.expect(std.mem.indexOf(u8, body, "\"store\":false") != null);
     // No live WS session -> no chaining, so the full input must carry it.
     try std.testing.expect(std.mem.indexOf(u8, body, "previous_response_id") == null);
+
+    // Because store:false makes every turn a full resend, the backend needs a
+    // cache partition to land it in. openai/codex sends prompt_cache_key on
+    // this exact path, defaulting it to the per-session UUID.
+    const key = try std.fmt.allocPrint(arena, "\"prompt_cache_key\":\"{s}\"", .{http_headers.sessionId(agent.io)});
+    try std.testing.expect(std.mem.indexOf(u8, body, key) != null);
 }
 
 test "anthropic asks for summarized thinking; other anthropic-format providers do not" {
@@ -497,7 +510,7 @@ test "anthropic asks for summarized thinking; other anthropic-format providers d
     var agent: Agent = .{
         .gpa = std.testing.allocator,
         .arena = arena,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude", .context = 1_000_000 },
         .messages = messages,
