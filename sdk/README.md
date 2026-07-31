@@ -100,6 +100,30 @@ One protocol request is in flight per session at a time; pass `yolo=True` in
 most cases (the bridge has no terminal to show permission prompts on). The
 HTTP contract lives under the `serve` key of `graff --schema`.
 
+Remote sessions are resumable. Every event carries a monotonic `seq`, which the
+client tracks as `lastSeq` / `.last_seq`; if a stream dies mid-turn, iterate
+`reconnect()` and you get exactly the events you missed and then the live tail
+(the bridge kept draining the child into a persisted log the whole time). Name a
+session with `session` and the run survives the bridge itself: point a client at
+a replacement `graff serve` in the same workspace with the same name and it
+picks up from the last persisted turn.
+
+```ts
+const h = RemoteHarness.init({ url, session: "nightly-run", yolo: true });
+try {
+  for await (const ev of h.chat("keep going")) console.log(ev.seq, ev.type);
+} catch {
+  for await (const ev of h.reconnect()) console.log("missed", ev.seq, ev.type);
+}
+```
+
+```python
+h = RemoteHarness(url, session="nightly-run", yolo=True)
+print(h.info)          # {'session_id': 'nightly-run', 'resumed': True, 'last_seq': 42}
+for ev in h.reconnect():
+    print(ev["seq"], ev["type"])
+```
+
 ## Protocol
 
 `graff --json` reads `{"type":"user","text":"..."}` lines on stdin and emits
