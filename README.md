@@ -1101,6 +1101,16 @@ remote clients: `@graff-new/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers)
 and Python's `RemoteHarness` (stdlib urllib). Endpoints are documented under the
 `serve` key of `graff --schema`.
 
+Streams are resumable. Every event carries a monotonic `seq`, and the bridge
+persists each one to `.graff/serve/<session>.events.jsonl` while it keeps
+draining the child even after a client disconnects, so a supervisor that dies
+mid-turn does not stall the run. It reconnects with
+`GET /v1/sessions/{id}/events?from=N` (or `?from=N` on the next request) and
+gets exactly the events it missed. Sessions are durable too: the session id is
+the graff session name, the child runs as `graff --json --resume <id>`, and
+posting the same name to a replacement `graff serve` in the same workspace
+picks the run up from the last persisted turn with the sequence continuing.
+
 </details>
 
 <details>

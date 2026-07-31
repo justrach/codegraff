@@ -15,6 +15,7 @@ const Allocator = std.mem.Allocator;
 
 const serve = @import("serve.zig"); // back-import: shared state + HTTP helpers
 const events = @import("serve_events.zig");
+const session_index = @import("session_index.zig"); // the one definition of a session file's path
 
 const ServeState = serve.ServeState;
 const ServeSession = serve.ServeSession;
@@ -150,8 +151,11 @@ fn newSessionName(io: Io, arena: Allocator) ![]const u8 {
     return std.fmt.allocPrint(arena, "{x:0>16}", .{std.mem.readInt(u64, &raw, .big)});
 }
 
+/// Does the child have a conversation to restore under this name? Asked
+/// through session_index so the path can never drift from the one saveSession
+/// and --resume use.
 fn sessionOnDisk(io: Io, arena: Allocator, name: []const u8) bool {
-    const path = std.fmt.allocPrint(arena, ".graff/sessions/{s}.session.json", .{name}) catch return false;
+    const path = session_index.sessionPath(arena, name) catch return false;
     if (Io.Dir.cwd().statFile(io, path, .{})) |_| return true else |_| return false;
 }
 
