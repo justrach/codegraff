@@ -117,7 +117,12 @@ pub fn stageImagePath(root: *Agent, path: []const u8) StageResult {
 /// once the image is visible — so non-image `@[path]` entries the agent should
 /// open with its tools are untouched. No-op for non-vision providers, when an
 /// image is already staged (e.g. via /image), or when no image marker is found.
+///
+/// Also the per-turn home of the MCP image handoff (#249): mainloop calls this
+/// once per user message with the root agent in hand, which is the only place
+/// that holds both the registry and the provider.
 pub fn stageGuiImageAttachment(root: *Agent, msg: []const u8) void {
+    if (root.registry) |reg| if (mcpImageHandoff(reg, visionCapable(root.provider), &root.pending_image)) return; // #249
     if (root.pending_image != null) return;
     if (!visionCapable(root.provider)) return;
     var search: usize = 0;
@@ -128,6 +133,77 @@ pub fn stageGuiImageAttachment(root: *Agent, msg: []const u8) void {
         if (isImagePath(path) and stageImagePath(root, path) == .ok) return;
         search = open + 2 + close + 1;
     }
+}
+
+/// An MCP `tools/call` content block that carries pixels:
+/// `{type:"image", data:"<base64>", mimeType:"image/png"}` (#249). The strings
+/// are borrowed from the parsed response, so `stage` copies them out before the
+/// per-call response arena dies.
+pub const McpImageBlock = struct {
+    media_type: []const u8,
+    b64: []const u8,
+    bytes: usize, // decoded size, for the line the model reads
+
+    pub fn stage(self: McpImageBlock, arena: Allocator, label: []const u8) !PendingImage {
+        return .{
+            .media_type = try arena.dupe(u8, self.media_type),
+            .b64 = try arena.dupe(u8, self.b64),
+            .label = try arena.dupe(u8, label),
+        };
+    }
+};
+
+/// The same ceiling `stageImagePath` reads a file under.
+const max_mcp_image_bytes = 5 * 1024 * 1024;
+
+/// Recognize an MCP image content block. Null for anything else — a text block,
+/// a non-`image/*` mime, base64 we cannot decode, or a payload over the ceiling
+/// — so a malformed result is rejected at our boundary instead of turning into
+/// a provider 400 one call later.
+pub fn mcpImageBlock(block: Value) ?McpImageBlock {
+    if (block != .object) return null;
+    const t = block.object.get("type") orelse return null;
+    if (t != .string or !std.mem.eql(u8, t.string, "image")) return null;
+    const data = block.object.get("data") orelse return null;
+    if (data != .string) return null;
+    // mimeType is required by the spec; default rather than drop an otherwise
+    // usable image, but refuse a mime that is not an image at all.
+    const mime = if (block.object.get("mimeType")) |m| (if (m == .string) m.string else "") else "";
+    const media_type = if (mime.len == 0) "image/png" else mime;
+    if (!std.mem.startsWith(u8, media_type, "image/")) return null;
+    const bytes = std.base64.standard.Decoder.calcSizeForSlice(data.string) catch return null;
+    if (bytes == 0 or bytes > max_mcp_image_bytes) return null;
+    return .{ .media_type = media_type, .b64 = data.string, .bytes = bytes };
+}
+
+/// What became of an image block, so the tool result says it out loud instead
+/// of dropping the pixels in silence the way it used to (#249).
+pub const McpImageFate = enum { staged, no_vision, already_staged };
+
+pub fn mcpImageNote(w: *Io.Writer, blk: McpImageBlock, fate: McpImageFate) !void {
+    try w.print("[image: {s}, {d} bytes — {s}]", .{ blk.media_type, blk.bytes, switch (fate) {
+        .staged => "attached to your next turn",
+        .no_vision => no_vision_message,
+        .already_staged => "not attached: another image is already queued for the next turn",
+    } });
+}
+
+/// Move an image an MCP tool staged on the registry into the agent's slot, and
+/// tell the registry whether this model takes images at all — the registry sees
+/// the pixels but has no route to the provider (#249). `reg` is a
+/// `*mcp.Registry`, taken as anytype so vision.zig need not import back into the
+/// MCP client. Returns true when an image was promoted.
+pub fn mcpImageHandoff(reg: anytype, supports_vision: bool, slot: *?PendingImage) bool {
+    reg.mutex.lockUncancelable(reg.io); // `call` stages from agent pool threads
+    defer reg.mutex.unlock(reg.io);
+    reg.vision_capable = supports_vision;
+    const img = reg.pending_image orelse return false;
+    reg.pending_image = null;
+    // A text-only model, or /image already won this turn: drop it rather than
+    // let it surface several turns later, stripped of its context.
+    if (!supports_vision or slot.* != null) return false;
+    slot.* = img;
+    return true;
 }
 
 /// macOS: dump the clipboard image (if any) to a temp PNG via osascript and
@@ -286,4 +362,118 @@ test "pasteMessage: every non-image outcome has a distinct, non-empty line" {
     }
     // The staged-failure path reuses the same sentence rather than duplicating it.
     try std.testing.expectEqualStrings(no_vision_message, pasteMessage(.no_vision));
+}
+
+/// Parse one JSON literal into `a` — the MCP content blocks these tests feed in.
+fn parseBlock(a: Allocator, json: []const u8) !Value {
+    return std.json.parseFromSliceLeaky(Value, a, json, .{ .allocate = .alloc_always });
+}
+
+test "mcpImageBlock: an MCP image block round-trips base64 + mimeType (#249)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const png = "\x89PNG\r\n\x1a\n"; // 8 bytes of a real PNG signature
+    var b64_buf: [16]u8 = undefined;
+    const b64 = std.base64.standard.Encoder.encode(&b64_buf, png);
+    const json = try std.fmt.allocPrint(a, "{{\"type\":\"image\",\"data\":\"{s}\",\"mimeType\":\"image/png\"}}", .{b64});
+
+    const img = mcpImageBlock(try parseBlock(a, json)) orelse return error.ImageBlockNotRecognized;
+    try std.testing.expectEqualStrings("image/png", img.media_type);
+    try std.testing.expectEqual(@as(usize, png.len), img.bytes);
+
+    const staged = try img.stage(a, "mcp__shots__grab");
+    try std.testing.expectEqualStrings("image/png", staged.media_type);
+    try std.testing.expectEqualStrings(b64, staged.b64);
+    try std.testing.expectEqualStrings("mcp__shots__grab", staged.label);
+    var round_trip: [png.len]u8 = undefined;
+    try std.base64.standard.Decoder.decode(&round_trip, staged.b64);
+    try std.testing.expectEqualSlices(u8, png, &round_trip);
+
+    // Everything that is not a usable image stays out of the vision path.
+    try std.testing.expect(mcpImageBlock(try parseBlock(a, "{\"type\":\"text\",\"text\":\"hi\"}")) == null);
+    try std.testing.expect(mcpImageBlock(try parseBlock(a, "{\"type\":\"image\",\"data\":\"!!not-base64!!\"}")) == null);
+    try std.testing.expect(mcpImageBlock(try parseBlock(a, "{\"type\":\"image\",\"data\":\"aGVsbG8=\",\"mimeType\":\"text/plain\"}")) == null);
+    // mimeType is optional in the wild; default instead of dropping the pixels.
+    const defaulted = mcpImageBlock(try parseBlock(a, "{\"type\":\"image\",\"data\":\"aGVsbG8=\"}")) orelse return error.ImageBlockNotRecognized;
+    try std.testing.expectEqualStrings("image/png", defaulted.media_type);
+}
+
+test "renderContent: a text+image MCP result keeps both and stages the image (#249)" {
+    const mcp_content = @import("mcp_content.zig");
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const content = try parseBlock(a,
+        \\[{"type":"text","text":"here is the screenshot"},
+        \\ {"type":"image","data":"aGVsbG8=","mimeType":"image/jpeg"}]
+    );
+    var slot: ?PendingImage = null;
+    var w: Io.Writer.Allocating = .init(a);
+    try mcp_content.renderContent(&w.writer, content, .{ .arena = a, .slot = &slot, .label = "mcp__shots__grab", .supports_vision = true });
+
+    const text = w.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, text, "here is the screenshot") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "image/jpeg") != null);
+    const img = slot orelse return error.ImageNotStaged;
+    try std.testing.expectEqualStrings("image/jpeg", img.media_type);
+    try std.testing.expectEqualStrings("aGVsbG8=", img.b64);
+    try std.testing.expectEqualStrings("mcp__shots__grab", img.label);
+}
+
+test "renderContent: an image-only result is never silently empty (#249)" {
+    const mcp_content = @import("mcp_content.zig");
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const content = try parseBlock(a, "[{\"type\":\"image\",\"data\":\"aGVsbG8=\",\"mimeType\":\"image/png\"}]");
+
+    // Vision model: staged, and the text says so.
+    var slot: ?PendingImage = null;
+    var w: Io.Writer.Allocating = .init(a);
+    try mcp_content.renderContent(&w.writer, content, .{ .arena = a, .slot = &slot, .label = "t", .supports_vision = true });
+    try std.testing.expect(slot != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.writer.buffered(), "image/png") != null);
+
+    // Text-only model: nothing staged, but the model is TOLD, rather than
+    // receiving "" and inferring the tool did nothing.
+    var slot2: ?PendingImage = null;
+    var w2: Io.Writer.Allocating = .init(a);
+    try mcp_content.renderContent(&w2.writer, content, .{ .arena = a, .slot = &slot2, .label = "t", .supports_vision = false });
+    try std.testing.expect(slot2 == null);
+    try std.testing.expect(std.mem.indexOf(u8, w2.writer.buffered(), no_vision_message) != null);
+    try std.testing.expect(w2.writer.buffered().len > 0);
+}
+
+test "mcpImageHandoff: registry image reaches the agent slot, vision models only (#249)" {
+    const mcp = @import("mcp.zig");
+    const io = std.testing.io;
+    var reg = mcp.Registry.empty(std.testing.allocator, io);
+    defer reg.deinit();
+    const img: PendingImage = .{ .media_type = "image/png", .b64 = "aGVsbG8=", .label = "mcp__shots__grab" };
+
+    // Text-only model: the fact is pushed to the registry and the image is
+    // dropped rather than surfacing turns later out of context.
+    reg.pending_image = img;
+    var slot: ?PendingImage = null;
+    try std.testing.expect(!mcpImageHandoff(&reg, false, &slot));
+    try std.testing.expect(slot == null);
+    try std.testing.expect(!reg.vision_capable);
+    try std.testing.expect(reg.pending_image == null);
+
+    // Vision model: promoted, and the registry slot is cleared so one image is
+    // never attached to two turns.
+    reg.pending_image = img;
+    try std.testing.expect(mcpImageHandoff(&reg, true, &slot));
+    try std.testing.expect(reg.vision_capable);
+    try std.testing.expect(reg.pending_image == null);
+    try std.testing.expectEqualStrings("aGVsbG8=", slot.?.b64);
+
+    // /image already won this turn: keep the user's pick, drop the tool's.
+    reg.pending_image = .{ .media_type = "image/gif", .b64 = "R0lG", .label = "later" };
+    try std.testing.expect(!mcpImageHandoff(&reg, true, &slot));
+    try std.testing.expectEqualStrings("aGVsbG8=", slot.?.b64);
+    try std.testing.expect(reg.pending_image == null);
 }

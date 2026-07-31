@@ -12,8 +12,18 @@ enum GraffEvent {
 
 enum GraffError: LocalizedError {
     case badResponse(String)
+    // #307: a 200 whose NDJSON body ends without a terminal `turn`/`error`
+    // record is a truncated turn, not a successful one.
+    case prematureEnd
+    // #307: an undecodable line means the protocol broke mid-stream; skipping
+    // it let a truncated stream take the same false-success path.
+    case malformedEvent(String)
     var errorDescription: String? {
-        switch self { case .badResponse(let s): return s }
+        switch self {
+        case .badResponse(let s): return s
+        case .prematureEnd: return "The turn stream ended before the agent finished."
+        case .malformedEvent(let s): return "Unreadable turn stream record: \(s)"
+        }
     }
 }
 
@@ -83,13 +93,23 @@ struct GraffServeClient {
                         continuation.finish(throwing: GraffError.badResponse("turn HTTP \(Self.status(resp))"))
                         return
                     }
+                    // #307: exactly one terminal `turn`/`error` record ends a
+                    // turn. Anything else that stops the line loop - EOF, a
+                    // truncated or malformed record - is a transport failure,
+                    // so a caller can never read silence as success.
+                    var sawTerminal = false
                     for try await line in bytes.lines {
-                        guard !line.isEmpty, let ev = Self.decode(line) else { continue }
+                        if line.isEmpty { continue } // NDJSON keepalive padding
+                        guard let ev = Self.decode(line) else {
+                            continuation.finish(throwing:
+                                GraffError.malformedEvent(String(line.prefix(80))))
+                            return
+                        }
                         continuation.yield(ev)
-                        if case .turn = ev { break }
-                        if case .error = ev { break }
+                        if case .turn = ev { sawTerminal = true; break }
+                        if case .error = ev { sawTerminal = true; break }
                     }
-                    continuation.finish()
+                    continuation.finish(throwing: sawTerminal ? nil : GraffError.prematureEnd)
                 } catch {
                     continuation.finish(throwing: error)
                 }

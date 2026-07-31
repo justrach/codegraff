@@ -20,6 +20,8 @@ const mcp_stdio = @import("mcp_stdio.zig");
 const mcp_teardown = @import("mcp_teardown.zig");
 const mcp_rpc = @import("mcp_rpc.zig");
 const smolify_manifest = @import("smolify_manifest.zig");
+const vision = @import("vision.zig"); // #249: MCP image results become staged vision blocks
+const renderContent = @import("mcp_content.zig").renderContent;
 
 const rewriteOneOf = mcp_protocol.rewriteOneOf;
 const HttpTransport = mcp_http.HttpTransport;
@@ -61,6 +63,14 @@ pub const Registry = struct {
     /// opted out of the probe by `GRAFF_MCP_PROBE=0` — the env var reaches
     /// only the config-file path.
     stdio_probe: bool = true,
+    /// An image an MCP tool returned, waiting for the next turn to collect it
+    /// (#249). Written under `mutex` by `call`, drained by
+    /// `vision.mcpImageHandoff` — the registry cannot reach the agent itself.
+    pending_image: ?vision.PendingImage = null,
+    /// Whether the active model accepts image blocks. The registry cannot see
+    /// the provider, so the same per-turn handoff refreshes it; false until it
+    /// does, so a result explains the drop rather than promising an attachment.
+    vision_capable: bool = false,
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
@@ -545,17 +555,14 @@ pub const Registry = struct {
             return .{ .text = try out_alloc.dupe(u8, "MCP server returned an input_required result (MRTR); codegraff does not implement it"), .is_error = true };
         const is_error = if (result.get("isError")) |v| (v == .bool and v.bool) else false;
 
-        // result.content is an array of {type:"text", text:...} blocks.
         var ow: Io.Writer.Allocating = .init(out_alloc);
         errdefer ow.deinit();
-        if (result.get("content")) |content| if (content == .array) {
-            for (content.array.items) |block| {
-                if (block == .object) if (block.object.get("text")) |txt| if (txt == .string) {
-                    if (ow.writer.buffered().len > 0) try ow.writer.writeByte('\n');
-                    try ow.writer.writeAll(txt.string);
-                };
-            }
-        };
+        if (result.get("content")) |content| try renderContent(&ow.writer, content, .{
+            .arena = reg.arena(),
+            .slot = &reg.pending_image,
+            .label = qualified,
+            .supports_vision = reg.vision_capable,
+        });
         // 2025-06-18+ structured tool output: if the server sent only
         // structuredContent (no text blocks), surface it instead of "".
         if (ow.writer.buffered().len == 0) {

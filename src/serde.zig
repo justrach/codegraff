@@ -177,10 +177,14 @@ fn hasSchemaComposition(obj: std.json.ObjectMap) bool {
 /// ever got a chance to run. A tool's argument schema is an object by
 /// construction on both wires, so say so. A schema that already declares a
 /// type, or that defers to a root composition keyword, is left untouched.
-fn defaultRootObjectType(arena: Allocator, value: *Value) Allocator.Error!void {
-    if (value.* != .object) return;
-    if (value.object.get("type") != null or hasSchemaComposition(value.object)) return;
+///
+/// Reports whether it changed anything, so a writer that would otherwise pass
+/// the catalog through verbatim can keep the original bytes.
+fn defaultRootObjectType(arena: Allocator, value: *Value) Allocator.Error!bool {
+    if (value.* != .object) return false;
+    if (value.object.get("type") != null or hasSchemaComposition(value.object)) return false;
     try value.object.put(arena, "type", .{ .string = "object" });
+    return true;
 }
 
 /// Kimi's official Anthropic adapter places a cache breakpoint on the final
@@ -193,7 +197,7 @@ pub fn writeAnthropicTools(s: *std.json.Stringify, arena: Allocator, raw: []cons
     if (value != .array or value.array.items.len == 0) return s.print("{s}", .{raw});
     for (value.array.items) |*tool| {
         if (tool.* != .object) continue;
-        if (tool.object.getPtr("input_schema")) |schema| try defaultRootObjectType(arena, schema);
+        if (tool.object.getPtr("input_schema")) |schema| _ = try defaultRootObjectType(arena, schema);
     }
     try s.beginArray();
     for (value.array.items, 0..) |tool, i| {
@@ -275,7 +279,7 @@ fn normalizeKimiSchema(arena: Allocator, value: *Value, root: bool) Allocator.Er
     // The root never guesses (#261 wants "object" there, and inferredKimiType's
     // fallback is "string"); every child keeps the kimi-code inference.
     if (root) {
-        try defaultRootObjectType(arena, value);
+        _ = try defaultRootObjectType(arena, value);
     } else if (obj.get("type") == null and !hasSchemaComposition(obj.*)) {
         if (inferredKimiType(obj.*)) |kind| try obj.put(arena, "type", .{ .string = kind });
     }
@@ -315,6 +319,35 @@ pub fn writeKimiTools(s: *std.json.Stringify, arena: Allocator, raw: []const u8)
             }
         }
     }
+    try s.write(value);
+}
+
+/// Issue #261 follow-up: writeKimiTools and writeAnthropicTools repair a
+/// typeless MCP root schema, but every other OpenAI-compatible endpoint got the
+/// catalog bytes verbatim — and any endpoint validating as strictly as Moonshot
+/// rejects the whole request ("parameters.type is required and must be
+/// 'object'") before a single tool can run. Repair the root for both OpenAI
+/// tool shapes: chat completions nests the schema at `function.parameters`,
+/// the Responses API keeps it flat at `parameters`.
+///
+/// Only the root type is added — no child inference (that is Kimi-only), and a
+/// catalog that needs no repair, or that we cannot parse, goes out as its
+/// original bytes so the usual request keeps a byte-identical cached prefix.
+pub fn writeOpenAITools(s: *std.json.Stringify, arena: Allocator, raw: []const u8) !void {
+    const value = std.json.parseFromSliceLeaky(Value, arena, raw, .{ .allocate = .alloc_always }) catch return s.print("{s}", .{raw});
+    if (value != .array) return s.print("{s}", .{raw});
+    var repaired = false;
+    for (value.array.items) |*tool| {
+        if (tool.* != .object) continue;
+        const params = if (tool.object.getPtr("function")) |f|
+            (if (f.* == .object) f.object.getPtr("parameters") else null)
+        else
+            tool.object.getPtr("parameters");
+        if (params) |p| {
+            if (try defaultRootObjectType(arena, p)) repaired = true;
+        }
+    }
+    if (!repaired) return s.print("{s}", .{raw});
     try s.write(value);
 }
 
@@ -367,6 +400,13 @@ fn renderKimiTools(arena: Allocator, raw: []const u8) ![]const u8 {
     return aw.writer.buffered();
 }
 
+fn renderOpenAITools(arena: Allocator, raw: []const u8) ![]const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try writeOpenAITools(&s, arena, raw);
+    return aw.writer.buffered();
+}
+
 fn renderAnthropicTools(arena: Allocator, raw: []const u8, cache: bool) ![]const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
@@ -412,4 +452,36 @@ test "anthropic tools give a typeless MCP input_schema type object (#261)" {
     try std.testing.expectEqualStrings(composed, try renderAnthropicTools(arena, composed, false));
     const typed = "[{\"name\":\"t\",\"description\":\"\",\"input_schema\":{\"type\":\"object\",\"properties\":{}}}]";
     try std.testing.expectEqualStrings(typed, try renderAnthropicTools(arena, typed, false));
+}
+
+test "openai and responses tools give a typeless MCP root schema type object (#261)" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Chat completions: mcp.zig substitutes `{}` for a server that advertises
+    // no inputSchema, and renderRootTools nests it under function.parameters.
+    const chat = try renderOpenAITools(arena, "[{\"type\":\"function\",\"function\":{\"name\":\"mcp__s__t\",\"description\":\"\",\"parameters\":{}}}]");
+    try std.testing.expectEqualStrings(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"mcp__s__t\",\"description\":\"\",\"parameters\":{\"type\":\"object\"}}}]",
+        chat,
+    );
+
+    // Responses: the same tool, flat, with `strict` after the schema.
+    const responses = try renderOpenAITools(arena, "[{\"type\":\"function\",\"name\":\"mcp__s__t\",\"description\":\"\",\"parameters\":{},\"strict\":false}]");
+    try std.testing.expect(std.mem.indexOf(u8, responses, "\"parameters\":{\"type\":\"object\"},\"strict\":false") != null);
+
+    // Only the root is repaired: a typeless child keeps no type here (that
+    // inference is Kimi's stricter validator, not JSON Schema).
+    const props = try renderOpenAITools(arena, "[{\"type\":\"function\",\"function\":{\"name\":\"t\",\"description\":\"\",\"parameters\":{\"properties\":{\"path\":{}}}}}]");
+    try std.testing.expect(std.mem.indexOf(u8, props, "\"parameters\":{\"properties\":{\"path\":{}},\"type\":\"object\"}") != null);
+
+    // A declared type, a root composition keyword, and an unparsable catalog
+    // all reach the wire as their original bytes — whitespace included, since
+    // a catalog that needs no repair is never re-serialized.
+    const typed = "[{\"type\":\"function\",\"name\":\"t\",\"description\":\"\",\"parameters\":{\"type\": \"object\", \"properties\": {}},\"strict\":false}]";
+    try std.testing.expectEqualStrings(typed, try renderOpenAITools(arena, typed));
+    const composed = "[{\"type\":\"function\",\"function\":{\"name\":\"t\",\"description\":\"\",\"parameters\":{\"anyOf\":[{\"type\":\"object\"}]}}}]";
+    try std.testing.expectEqualStrings(composed, try renderOpenAITools(arena, composed));
+    try std.testing.expectEqualStrings("not json", try renderOpenAITools(arena, "not json"));
 }

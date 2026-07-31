@@ -63,6 +63,10 @@ pub const agentWorktreeFinish = agent_worktree.agentWorktreeFinish;
 pub const KeepReason = agent_worktree.KeepReason;
 pub const keepReasonText = agent_worktree.keepReasonText;
 
+// #112 (list age column + `prune --older-than`) and #320 (canonical worktree
+// identity) live in their own modules: jobs.zig is at the 600-line cap.
+const worktree_prune = @import("worktree_prune.zig");
+
 /// True if the current git working tree has uncommitted *tracked* changes
 /// (staged or unstaged). Untracked files (`?? …`) don't count — `git reset
 /// --hard` leaves them alone, so they're safe around a worktree land.
@@ -123,20 +127,7 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
     const action = if (args.len > 0) args[0] else "list";
 
     if (std.mem.eql(u8, action, "list") or std.mem.eql(u8, action, "ls")) {
-        const r = runCapped(gpa, io, &.{ "git", "worktree", "list" }, 1 << 16, 8192, 30_000) catch {
-            try out.writeAll("not a git repository (no worktrees)\n");
-            return;
-        };
-        defer {
-            gpa.free(r.stdout);
-            gpa.free(r.stderr);
-        }
-        if (!ranOk(r)) {
-            try out.writeAll(r.stderr);
-            return;
-        }
-        try out.writeAll(r.stdout);
-        return;
+        return worktree_prune.listWithAge(gpa, io, arena, out);
     }
 
     if (std.mem.eql(u8, action, "merge")) {
@@ -237,18 +228,12 @@ pub fn worktreeCommand(gpa: Allocator, io: Io, arena: Allocator, args: []const [
     }
 
     if (std.mem.eql(u8, action, "prune")) {
-        // Drop git's registrations for worktrees whose dirs were deleted out of band.
-        const r = runCapped(gpa, io, &.{ "git", "worktree", "prune" }, 8192, 8192, 30_000) catch {
-            try out.writeAll("not a git repository (nothing to prune)\n");
-            return;
-        };
-        gpa.free(r.stdout);
-        gpa.free(r.stderr);
-        try out.writeAll("✓ pruned stale worktree registrations\n");
-        return;
+        // Drops git's registrations for worktrees whose dirs were deleted out of
+        // band, and with `older-than <days>` the stale DIRECTORIES too (#112).
+        return worktree_prune.pruneCommand(gpa, io, arena, out, args[1..]);
     }
 
-    try out.print("unknown worktree command '{s}' — use: graff worktree list | merge <name> | remove <name> | prune\n", .{action});
+    try out.print("unknown worktree command '{s}' — use: graff worktree list | merge <name> | remove <name> | prune [older-than <days>]\n", .{action});
 }
 
 /// One background bash job (`bash` with run_in_background:true). A pump task
@@ -521,6 +506,11 @@ pub fn jobsReap(gpa: Allocator, io: Io) void {
     }
     gpa.free(jobs);
     g_jobs.list.deinit(gpa);
+}
+
+test { // split-out modules: unreferenced, their tests silently never run
+    _ = worktree_prune;
+    _ = @import("worktree_lease.zig");
 }
 
 test "foreground tool subprocesses own their process group (#266, #198)" {

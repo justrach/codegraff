@@ -16,13 +16,22 @@ struct NewSessionView: View {
     @State private var signedIn = Gateway.apiKey != nil
     @State private var showAccount = false
     @State private var handedOff = false
+    // #312: the launch used to run in an untracked Task, so tearing the sheet
+    // down left it provisioning a cube nobody would ever see. Hold the handle
+    // so dismissal can cancel it, and remember that we walked away.
+    @State private var launchTask: Task<Void, Never>? = nil
+    @State private var abandoned = false
 
     var body: some View {
         NavigationStack {
             Group {
                 switch phase {
                 case .compose: compose
-                case .launching: launching
+                case .launching:
+                    // Cancelling is the point of this button (#312): it stops the
+                    // cube coming up rather than just hiding the progress.
+                    launching
+                        .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { finish() } } }
                 case .chat:
                     ChatView(session: $session, autoSend: prompt)
                         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { finish() } } }
@@ -46,7 +55,7 @@ struct NewSessionView: View {
             if signedIn {
                 Button {
                     phase = .launching
-                    Task { await launch() }
+                    launchTask = Task { await launch() }
                 } label: {
                     Label("Start building", systemImage: "play.fill").frame(maxWidth: .infinity)
                 }
@@ -109,11 +118,22 @@ struct NewSessionView: View {
         do {
             let conn = try await CubeBroker.launch(purpose: "graff-ios") { msg in steps.append(msg) }
             let title = trimmed.count > 42 ? String(trimmed.prefix(42)) + "…" : trimmed
-            session = AgentSession(title: title.isEmpty ? "Cloud session" : title, model: "codegraff",
-                                   status: .working, lastActivity: "now", todos: [], messages: [], cube: conn)
+            let created = AgentSession(title: title.isEmpty ? "Cloud session" : title, model: "codegraff",
+                                       status: .working, lastActivity: "now", todos: [], messages: [], cube: conn)
+            session = created
+            // #312: the sheet can go away in the gap between the cube coming up
+            // and this line. The cube is real and already billed, so hand it to
+            // the Sessions list instead of orphaning it — rollback only covers
+            // launches cancellation actually caught in flight.
+            guard !abandoned else {
+                if !handedOff { handedOff = true; onCreated(created) }
+                return
+            }
             phase = .chat
         } catch {
-            phase = .failed(error.localizedDescription)
+            // A cancelled launch is not a failure — the sheet is already gone,
+            // and CubeBroker has stopped whatever it brought up (#312).
+            if !Task.isCancelled { phase = .failed(error.localizedDescription) }
         }
     }
 
@@ -124,6 +144,12 @@ struct NewSessionView: View {
         if case .chat = phase {
             handedOff = true
             onCreated(session)
+        } else {
+            // #312: leaving mid-provisioning used to bill a cube into the void.
+            // Cancelling lets CubeBroker unwind and stop what it brought up.
+            abandoned = true
+            launchTask?.cancel()
+            launchTask = nil
         }
         dismiss()
     }
@@ -150,8 +176,40 @@ struct CubeAutoTestView: View {
         .task { await run() }
     }
 
+    // Pure-logic leg: the token-expiry rule that decides whether a running cube
+    // may be reused as-is (#314). No network and no key, so it runs on every
+    // autotest launch — the closest thing this app has to a unit test.
+    @MainActor
+    private func checkTokenExpiry() {
+        let now = Date()
+        func conn(_ login: String?, _ expiry: Date?) -> CubeConnection {
+            CubeConnection(sandboxID: "s", base: "b", serveToken: "t", previewToken: nil,
+                           githubLogin: login, githubTokenExpiry: expiry)
+        }
+        var ok = conn("octo", now.addingTimeInterval(3600)).githubNeedsRefresh(asOf: now) == false
+        ok = ok && conn("octo", now.addingTimeInterval(-60)).githubNeedsRefresh(asOf: now)
+        ok = ok && conn("octo", now.addingTimeInterval(120)).githubNeedsRefresh(asOf: now)
+        ok = ok && conn("octo", nil).githubNeedsRefresh(asOf: now)        // stored before #314
+        ok = ok && conn(nil, nil).githubNeedsRefresh(asOf: now) == false  // no repo access to refresh
+        // A connection stored before #314 still has to decode, expiry-less.
+        let legacy = #"{"sandboxID":"s","base":"b","serveToken":"t","githubLogin":"octo"}"#
+        let old = try? JSONDecoder().decode(CubeConnection.self, from: Data(legacy.utf8))
+        ok = ok && old?.githubNeedsRefresh(asOf: now) == true
+        // ...and the expiry has to survive the Keychain round-trip.
+        let rt = (try? JSONEncoder().encode(conn("octo", now.addingTimeInterval(3600))))
+            .flatMap { try? JSONDecoder().decode(CubeConnection.self, from: $0) }
+        ok = ok && rt?.githubNeedsRefresh(asOf: now) == false
+        // The mint-token wire hands the expiry over as an ISO-8601 stamp.
+        let iso = "2026-07-31T12:00:00Z"
+        let parsed = MintedGitHub(token: "x", expires_at: iso, account_login: "octo").expiry
+        ok = ok && ISO8601DateFormatter().date(from: iso)
+            .map { abs(parsed.timeIntervalSince($0)) < 0.5 } == true
+        lines.append(ok ? "CUBE-TOKEN-EXPIRY-PASS" : "CUBE-TOKEN-EXPIRY-FAIL")
+    }
+
     @MainActor
     private func run() async {
+        checkTokenExpiry()
         guard let k = ProcessInfo.processInfo.environment["GRAFF_GATEWAY_KEY"] else {
             lines.append("FAIL: no GRAFF_GATEWAY_KEY in env")
             return

@@ -38,6 +38,10 @@ const failureAllowsRetry = subagent_run.failureAllowsRetry;
 const fleet = @import("fleet.zig");
 const Isolation = fleet.Isolation; // #276 P0-1
 const telemetry = @import("telemetry.zig");
+// #63: stable workflow/phase/task ids + the additive `workflow_progress`
+// JSONL event, so the REPL can map a run from state instead of scraping the
+// std.debug.print lines below. Also holds the run manifest (see below).
+const wfp = @import("workflow_progress.zig");
 
 const max_workflow_phases = 5;
 
@@ -302,6 +306,12 @@ fn runPipeline(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
 
     const wf_start = Io.Timestamp.now(ctx.io, .awake);
     std.debug.print("  [workflow] pipeline: {d} item(s) × {d} stage(s), no barrier\n", .{ items.len, stages.len });
+    // #63 — same fact, as state: phase_index 0 is the run-level event, since a
+    // pipeline has stages rather than phases. Per-stage events would have to be
+    // threaded into pipelineChain (one chain per item, on its own pool thread);
+    // that is left to the follow-up that renders them.
+    const run_id = try wfp.nextRunId(arena);
+    wfp.phase(ctx.io, arena, run_id, 0, stages.len, "pipeline", "started", items.len);
 
     // Spawn one chain per item — all joined before any fallible work so an early
     // return can never abandon a running chain.
@@ -324,56 +334,16 @@ fn runPipeline(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
     return .{ .text = try gpa.dupe(u8, std.mem.trimEnd(u8, aw.writer.buffered(), "\n")) };
 }
 
-// ── U2: all-failed abort + run manifest ─────────────────────────────────────
-// A phase where every task failed used to still feed {{prev}} — a bare
-// "(no result — task failed)" header per task — into the next phase, so a
-// synthesis stage confidently answered from zero evidence (the worst output
-// class: a wrong answer that looks researched). buildAbortText and
-// buildManifest are kept PURE (no ctx/io) so both are unit-testable without
-// running a real subagent.
+// U2's all-failed abort text, the run manifest and PhaseTally moved to
+// workflow_progress.zig alongside the #63 structured events (this file is at
+// the 600-line cap and both are "what did this run do" reporting). Aliased
+// back so workflow_test.zig and the call sites below still reach them here.
+pub const PhaseTally = wfp.PhaseTally;
+pub const buildAbortText = wfp.buildAbortText;
+pub const buildManifest = wfp.buildManifest;
 
-pub const PhaseTally = struct {
-    phase_no: usize,
-    total_phases: usize,
-    title: []const u8,
-    ok: usize,
-    total: usize,
-    retried: usize,
-    skipped_when: ?[]const u8 = null,
-};
-
-/// Build the hard-stop text for a phase where every task failed: the
-/// assembled per-task failure headers plus a line naming the phase, so the
-/// caller (or a human) can see exactly why the run stopped instead of
-/// silently receiving empty "evidence". `details` is parallel to `labels`
-/// (#248): each entry is that task's capped one-line error excerpt, or "" when
-/// the task left nothing to report.
-pub fn buildAbortText(arena: Allocator, labels: []const []const u8, details: []const []const u8, phase_no: usize, total_phases: usize, title: []const u8) ![]const u8 {
-    var aw: Io.Writer.Allocating = .init(arena);
-    for (labels, details) |label, detail| {
-        try aw.writer.print("### {s} (no result — task failed)\n", .{label});
-        if (detail.len > 0) try aw.writer.print("{s}\n", .{detail});
-        try aw.writer.writeAll("\n");
-    }
-    try aw.writer.print("workflow aborted: every task in phase {d}/{d} ({s}) failed", .{ phase_no, total_phases, title });
-    return aw.writer.buffered();
-}
-
-/// Build the trailing "## workflow" manifest block from one tally per phase —
-/// currently the only way the orchestrator learns a phase was skipped, or
-/// that a synthesis stage is about to work from partial (some-tasks-failed)
-/// evidence rather than a clean phase.
-pub fn buildManifest(arena: Allocator, tallies: []const PhaseTally) ![]const u8 {
-    var aw: Io.Writer.Allocating = .init(arena);
-    try aw.writer.writeAll("## workflow\n");
-    for (tallies) |t| {
-        if (t.skipped_when) |w| {
-            try aw.writer.print("phase {d}/{d} {s}: SKIPPED (when=\"{s}\")\n", .{ t.phase_no, t.total_phases, t.title, w });
-        } else {
-            try aw.writer.print("phase {d}/{d} {s}: {d}/{d} ok, {d} retried\n", .{ t.phase_no, t.total_phases, t.title, t.ok, t.total, t.retried });
-        }
-    }
-    return std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
+test { // a new module's tests run only when something references it (see main.zig)
+    _ = wfp;
 }
 
 /// Dynamic workflows as data: sequential phases, parallel tasks. Each task
@@ -417,6 +387,9 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
+    // #63 — one stable id per run; every phase/task event below keys to it.
+    const run_id = try wfp.nextRunId(arena);
+
     // Telemetry: one "workflow" record per run — phase/task/failure counts
     // and wall-clock — emitted however the run ends.
     const wf_start = Io.Timestamp.now(ctx.io, .awake);
@@ -451,10 +424,12 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // skipped final phase just returns the prior phase's results (early-exit).
         if (phase_no > 1) if (phase.get("when")) |wv| if (wv == .string and !gateAllows(prev_results, wv.string)) {
             std.debug.print("  [workflow] phase {d}/{d}: {s} — SKIPPED (when \"{s}\" absent)\n", .{ phase_no, phases.len, title, wv.string });
+            wfp.phase(ctx.io, arena, run_id, phase_no, phases.len, title, "skipped", tasks.len); // #63
             tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = 0, .total = tasks.len, .retried = 0, .skipped_when = wv.string };
             continue;
         };
         std.debug.print("  [workflow] phase {d}/{d}: {s} ({d} task(s))\n", .{ phase_no, phases.len, title, tasks.len });
+        wfp.phase(ctx.io, arena, run_id, phase_no, phases.len, title, "started", tasks.len); // #63
 
         // Resolve prompts: substitute or append the previous phase results.
         // raws keeps each task's pre-substitution spec (a stable eval-set id for
@@ -496,10 +471,16 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // can never abandon running subagents or free their result slots.
         const futures = try arena.alloc(Io.Future(ToolOutput), tasks.len);
         const outputs = try arena.alloc(ToolOutput, tasks.len);
-        for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures) |label, prompt, override, niche, isolation, isolation_fallback, *fut| {
+        for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures, 1..) |label, prompt, override, niche, isolation, isolation_fallback, *fut, task_no| {
+            wfp.task(ctx.io, arena, run_id, phase_no, task_no, tasks.len, label, "running"); // #63
             fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche, isolation, isolation_fallback });
         }
-        for (futures, outputs) |*fut, *out| out.* = fut.await(ctx.io);
+        for (futures, outputs, labels, 1..) |*fut, *out, label, task_no| {
+            out.* = fut.await(ctx.io);
+            // #63 — terminal per task, so a UI can settle that row without
+            // waiting for the phase (and before the retry pass below reruns it).
+            wfp.task(ctx.io, arena, run_id, phase_no, task_no, tasks.len, label, if (out.is_error) "failed" else "completed");
+        }
         defer for (outputs) |out| gpa.free(out.text);
         wf_tasks += tasks.len;
 

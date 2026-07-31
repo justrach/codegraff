@@ -119,7 +119,8 @@ pub const usage_text =
     \\keys: <PROVIDER>_API_KEY env vars, `graff key set`, or `graff login`;
     \\a Codex CLI login is picked up automatically.
     \\inside the REPL: /help lists commands, a bare "/" opens the command menu,
-    \\"@" opens a fuzzy file picker (drag-and-dropped files paste as their path),
+    \\"@" opens a fuzzy file picker (a drag-and-dropped image attaches as a
+    \\native vision block on vision models; other files paste as their path),
     \\esc interrupts a streaming response, "always allow" persists to
     \\.harness/settings.json.
     \\telemetry: anonymous OTLP usage stats are sent only when

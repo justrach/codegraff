@@ -133,10 +133,11 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
             if (tools) |t| {
                 try s.objectField("tools");
+                // #261 follow-up: the rest need the root-schema repair too.
                 if (is_kimi)
                     try writeKimiTools(&s, self.scratchAlloc(), t)
                 else
-                    try s.print("{s}", .{t});
+                    try serde.writeOpenAITools(&s, self.scratchAlloc(), t);
                 if (force_tool) {
                     try s.objectField("tool_choice");
                     try s.write("required");
@@ -213,7 +214,7 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
             }
             if (tools) |t| {
                 try s.objectField("tools");
-                try s.print("{s}", .{t});
+                try serde.writeOpenAITools(&s, self.scratchAlloc(), t); // #261 follow-up
                 try s.objectField("tool_choice");
                 try s.write(if (force_tool) "required" else "auto");
                 try s.objectField("parallel_tool_calls");
@@ -377,8 +378,9 @@ test "retained reasoning: openai-chat history replays reasoning_content on the n
         .out = null,
         .sys_normal = "system",
     };
-    const body = try agent.buildBody(null, false, true, true);
+    const body = try agent.buildBody("[{\"type\":\"function\",\"function\":{\"name\":\"mcp__s__t\",\"description\":\"\",\"parameters\":{}}}]", false, true, true);
     defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"}") != null); // #261 follow-up: repaired on every non-kimi openai endpoint
 
     // Both turns' reasoning must reach the wire. DeepSeek's thinking mode
     // REQUIRES the tool-call turn's reasoning_content to be replayed on every
@@ -496,9 +498,10 @@ test "retained reasoning: codex full resend keeps encrypted reasoning items and 
         .out = null,
         .sys_normal = "system",
     };
-    const body = try agent.buildBody("[]", false, true, true);
+    const body = try agent.buildBody("[{\"type\":\"function\",\"name\":\"mcp__s__t\",\"description\":\"\",\"parameters\":{},\"strict\":false}]", false, true, true);
     defer std.testing.allocator.free(body);
 
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"}") != null); // #261 follow-up: repaired on the responses wire too
     // Ask the backend to hand reasoning back encrypted...
     try std.testing.expect(std.mem.indexOf(u8, body, "\"include\":[\"reasoning.encrypted_content\"]") != null);
     // ...and send the prior turn's reasoning item straight back. store:false
