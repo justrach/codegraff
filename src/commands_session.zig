@@ -215,13 +215,23 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 if (res.parked_open > 0) try out.print("(superseded \"{s}\" \xe2\x80\x94 parked {d} unfinished checklist item(s), kept in the session)\n", .{ old.objective, res.parked_open });
             } else if (root.tracer) |t| t.note("goal", "set");
             saveSession(root, arena, root.session_name) catch {};
-            try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; it steers every turn until /goal pause or /goal clear).\n", .{text});
+            // Only a STANDING goal (--goal) survives the model's own
+            // attempt_completion; goal_flow.zig:244 lets a typed /goal retire
+            // itself. Promising "until /goal pause or /goal clear" for both was
+            // a lifetime the retirable kind does not have.
+            const lifetime: []const u8 = if (root.goal) |g|
+                (if (g.standing) "it steers every turn for the whole session; only you can end it (/goal pause or /goal clear)" else "it steers every turn until the objective is verifiably done, or you pause or clear it")
+            else
+                "it steers every turn until the objective is verifiably done, or you pause or clear it";
+            try out.print("\xf0\x9f\x8e\xaf Goal set: {s} \xe2\x80\x94 starting now (tracked as a live checklist; {s}).\n", .{ text, lifetime });
         }
         try out.flush();
         return true;
     }
     if (std.mem.eql(u8, line, "/loop")) {
-        try out.writeAll("usage: /loop [30m] <prompt> — run an autonomous plan→act→verify pass. A leading 30s/30m/2h paces the run and stops it when the time is up.\n");
+        // "stops it when the time is up" overpromised: the deadline is checked
+        // between turns, so a long turn runs to completion past it.
+        try out.writeAll("usage: /loop [30m] <prompt> — run an autonomous plan→act→verify pass. A leading 30s/30m/2h paces the run and stops it at the first turn boundary after the time is up.\n");
         try out.flush();
         return true;
     }
