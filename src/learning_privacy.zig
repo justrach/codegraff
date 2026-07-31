@@ -227,9 +227,9 @@ test "--help and --schema state the default ceiling the binary actually applies"
     const documented = "default " ++ @tagName(default_mode);
     try std.testing.expect(std.mem.indexOf(u8, usage_text, documented) != null);
     try std.testing.expect(std.mem.indexOf(u8, schema_flags_json, documented) != null);
-    inline for (@typeInfo(Mode).@"enum".fields) |field| {
-        if (comptime std.mem.eql(u8, field.name, @tagName(default_mode))) continue;
-        const stale = "default " ++ field.name;
+    inline for (comptime std.enums.values(Mode)) |mode| {
+        if (mode == default_mode) continue;
+        const stale = "default " ++ @tagName(mode);
         try std.testing.expect(std.mem.indexOf(u8, usage_text, stale) == null);
         try std.testing.expect(std.mem.indexOf(u8, schema_flags_json, stale) == null);
     }
