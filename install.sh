@@ -9,7 +9,9 @@ set -euo pipefail
 #   # or, from a checkout:  ./install.sh
 #
 # Env overrides: HARNESS_REPO (source repo), HARNESS_DIR (install dir),
-# HARNESS_BUILD=source (skip the release download and compile).
+# HARNESS_BUILD=source (skip the release download and compile),
+# HARNESS_NO_GRAFF=1 (skip the codedb/zigrep companion suite),
+# HARNESS_NO_KURI=1 (skip kuri browser automation).
 
 REPO="${HARNESS_REPO:-https://github.com/justrach/codegraff}"
 INSTALL_DIR="${HARNESS_DIR:-$HOME/bin}"
@@ -191,6 +193,18 @@ main() {
     suite_pid=$!
   fi
 
+  # kuri (browser automation, web crawling, iOS/Android device control) backs
+  # the webfetch tool's markdown path and the kuri skill. Installed by default
+  # and backgrounded like the suite above, so it overlaps the graff download
+  # instead of adding to the wall clock. Opt out with HARNESS_NO_KURI=1.
+  KURI_INSTALL_URL="${KURI_INSTALL_URL:-https://raw.githubusercontent.com/justrach/kuri/main/install.sh}"
+  kuri_pid=""; kuri_log=""
+  if [ -z "${HARNESS_NO_KURI:-}" ] && ! command -v kuri >/dev/null 2>&1; then
+    kuri_log="$(mktemp)"
+    ( curl -fsSL --max-time 120 "$KURI_INSTALL_URL" | sh >/dev/null 2>&1 && echo ok || echo fail ) >"$kuri_log" 2>&1 &
+    kuri_pid=$!
+  fi
+
   if [ "${HARNESS_BUILD:-release}" != "source" ] && fetch_release "$platform"; then
     printf "  ${D}│${N} %-10s ${G}✓${N} (prebuilt release)\n" "download"
   else
@@ -222,22 +236,23 @@ main() {
     fi
   fi
 
-  # Optional skill (codex-style): kuri — browser automation, web crawling,
-  # iOS/Android device control. Opt in here with HARNESS_WITH_KURI=1, or any
-  # time later from inside the harness with `/skills add kuri`.
-  if [ -n "${HARNESS_WITH_KURI:-}" ]; then
-    if command -v kuri >/dev/null 2>&1; then
-      printf "  ${D}│${N} %-10s ${G}✓${N} (already present)\n" "kuri"
+  # Reap kuri, kicked off beside the suite. Same contract: never fatal, and the
+  # harness is fully functional without it (webfetch falls back to a plain GET).
+  if [ -z "${HARNESS_NO_KURI:-}" ]; then
+    printf "  ${D}│${N} %-10s " "kuri"
+    if [ -z "$kuri_pid" ]; then
+      printf "${G}✓${N} (already present)\n"
     else
-      printf "  ${D}│${N} %-10s " "kuri"
-      if curl -fsSL https://raw.githubusercontent.com/justrach/kuri/main/install.sh | sh >/dev/null 2>&1; then
+      wait "$kuri_pid" 2>/dev/null || true
+      if [ "$(cat "$kuri_log" 2>/dev/null)" = ok ]; then
         printf "${G}✓${N} (browser automation)\n"
       else
-        printf "${Y}skipped${N} ${D}(kuri install failed — try /skills add kuri later)${N}\n"
+        printf "${Y}skipped${N} ${D}(kuri install failed — /skills add kuri to retry)${N}\n"
       fi
+      rm -f "$kuri_log"
     fi
   else
-    printf "  ${D}optional: kuri browser automation — HARNESS_WITH_KURI=1, or /skills add kuri in the harness${N}\n"
+    printf "  ${D}kuri skipped (HARNESS_NO_KURI) — /skills add kuri any time${N}\n"
   fi
 
   case ":$PATH:" in
