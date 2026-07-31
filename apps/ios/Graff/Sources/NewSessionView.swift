@@ -51,7 +51,9 @@ struct NewSessionView: View {
                     Label("Start building", systemImage: "play.fill").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.glassProminent)
-                .disabled(prompt.trimmingCharacters(in: .whitespaces).isEmpty)
+                // .whitespaces excludes newlines, so a return-only prompt read as
+                // non-empty here and bought a cube it could never use (#315).
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } else {
                 Button("Sign in to codegraff first") { showAccount = true }
                     .buttonStyle(.borderedProminent)
@@ -95,9 +97,17 @@ struct NewSessionView: View {
 
     @MainActor
     private func launch() async {
+        // Validate BEFORE spending. CubeBroker.launch provisions a PAID sandbox,
+        // and the prompt was only checked afterwards — so a whitespace/newline
+        // prompt bought a cube, then ChatView.send refused to send it, leaving a
+        // billed session with an empty transcript titled "Cloud session" (#315).
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            phase = .compose
+            return
+        }
         do {
             let conn = try await CubeBroker.launch(purpose: "graff-ios") { msg in steps.append(msg) }
-            let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             let title = trimmed.count > 42 ? String(trimmed.prefix(42)) + "…" : trimmed
             session = AgentSession(title: title.isEmpty ? "Cloud session" : title, model: "codegraff",
                                    status: .working, lastActivity: "now", todos: [], messages: [], cube: conn)
