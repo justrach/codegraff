@@ -48,7 +48,8 @@ const confinedPath = approvals_mod.confinedPath;
 const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 const jobs = @import("jobs.zig");
 const runCapped = jobs.runCapped;
-const runCappedCwd = jobs.runCappedCwd; // #276 P0-1: bash cwd for a worktree-isolated agent
+const runCappedWithOptions = jobs.runCappedWithOptions;
+const toolRunOptions = jobs.toolRunOptions; // #266/#198: own the child's process group
 const spawnJob = jobs.spawnJob;
 const jobOutput = jobs.jobOutput;
 const jobKill = jobs.jobKill;
@@ -65,6 +66,12 @@ const learning_privacy = @import("learning_privacy.zig");
 /// hangs the whole workflow for ~48 min (#93). The root keeps its Esc-only,
 /// no-deadline behavior (a human is watching and may want a long build).
 const subagent_bash_deadline_ms: u64 = 120 * 1000;
+
+/// Wall-clock ceiling for one `codedb` query (#198). Every allowed subcommand
+/// is a read that normally answers in seconds; a query that has not returned
+/// in a minute is stuck, and before this it stayed stuck forever — the tool
+/// blocked on EOF with no deadline at all.
+const codedb_deadline_ms: u64 = 60 * 1000;
 
 fn learningArgv(argv: *[10][]const u8, exe_path: []const u8, contribute: bool) usize {
     var argc: usize = 0;
@@ -214,10 +221,10 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // #276 P0-1: a worktree-isolated agent's bash calls run pinned to its
         // own worktree — via std.process.Child.Cwd, per spawn, never a
         // process-wide chdir — so parallel siblings never share a cwd.
-        const run = if (ctx.agent_cwd) |cw|
-            try runCappedCwd(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline, .{ .path = cw })
-        else
-            try runCapped(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline);
+        // #266/#198: toolRunOptions also gives the command its own process
+        // group, so an Esc cancel or the deadline kills what it spawned (ssh,
+        // xcodebuild) instead of leaving it running against a dead turn.
+        const run = try runCappedWithOptions(gpa, io, &sh, bash_stdout_cap, bash_stderr_cap, deadline, toolRunOptions(ctx.agent_cwd));
         defer gpa.free(run.stdout);
         defer gpa.free(run.stderr);
 
@@ -344,15 +351,24 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         argv.append(gpa, "codedb") catch {};
         argv.append(gpa, sub) catch {};
         while (it.next()) |tok| argv.append(gpa, tok) catch {};
-        var child = std.process.spawn(io, .{ .argv = argv.items, .stdin = .ignore, .stdout = .pipe, .stderr = .ignore }) catch {
-            return .{ .text = try gpa.dupe(u8, "codedb isn't installed — it's open source at github.com/justrach/codedb; install it, then run `codedb` once in the repo to index it"), .is_error = true };
+        // #198: this used to spawn by hand and block until EOF — no deadline, no
+        // process group, no Esc check — which is how abandoned sessions ended up
+        // owning dozens of `codedb search` children still asleep days later. The
+        // capped runner owns the group and tears it down on Esc or the deadline.
+        const run = runCappedWithOptions(gpa, io, argv.items, 512 * 1024, 4096, codedb_deadline_ms, toolRunOptions(null)) catch |e| switch (e) {
+            error.FileNotFound => return .{ .text = try gpa.dupe(u8, "codedb isn't installed — it's open source at github.com/justrach/codedb; install it, then run `codedb` once in the repo to index it"), .is_error = true },
+            else => return failure(gpa, e),
         };
-        const out_file = child.stdout orelse return .{ .text = try gpa.dupe(u8, "codedb: no output stream"), .is_error = true };
-        var rbuf: [4096]u8 = undefined;
-        var fr = out_file.readerStreaming(io, &rbuf);
-        const text = fr.interface.allocRemaining(gpa, .limited(512 * 1024)) catch |e| return failure(gpa, e);
-        _ = child.wait(io) catch {};
-        if (text.len == 0) return .{ .text = try gpa.dupe(u8, "(codedb returned nothing — try `codedb tree` to confirm the repo is indexed, or refine the query)") };
+        gpa.free(run.stderr);
+        const text = run.stdout;
+        if (run.timed_out) {
+            defer gpa.free(text);
+            return .{ .text = try std.fmt.allocPrint(gpa, "codedb {s} timed out after {d}s and was killed — narrow the query, or run it through bash if it really needs that long", .{ sub, codedb_deadline_ms / 1000 }), .is_error = true };
+        }
+        if (text.len == 0) {
+            defer gpa.free(text);
+            return .{ .text = try gpa.dupe(u8, "(codedb returned nothing — try `codedb tree` to confirm the repo is indexed, or refine the query)") };
+        }
         // Context guard: an unbounded `read <big file>` once dumped 500KB into
         // a subagent's context, ballooning it to 160k tokens and minutes-long
         // API calls. Cap what reaches the model and point it at targeted reads.

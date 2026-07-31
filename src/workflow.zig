@@ -87,6 +87,32 @@ pub fn cappedPrevBody(arena: Allocator, text: []const u8, cap: usize) []const u8
     return std.fmt.allocPrint(arena, "{s}\n\n…[{d} chars truncated — full result in the inspect file below]…\n\n{s}", .{ head, text.len - head.len - tail.len, tail }) catch text;
 }
 
+// #248: a failed task's output text is the ONLY place the underlying API error
+// survives. The retry gate (failureAllowsRetry) read it and every render site
+// then threw it away, so a synthesis phase saw a detail-free "(no result —
+// task failed)" and could not tell a rate limit from a bad model id. The cap
+// is what makes surfacing it safe: at most max_workflow_tasks ×
+// fail_excerpt_cap (~1.7 KB) of error text can reach the next phase's prompt,
+// however large the error bodies were.
+pub const fail_excerpt_cap = 200;
+
+/// One-line, capped excerpt of a failed task's output, for the three render
+/// sites (#248). Head-biased because subagentFailure puts the cause right
+/// after its "subagent … failed …:" prefix. Newlines and tabs collapse to
+/// spaces so the excerpt can never break the "### label" header layout; blank
+/// input returns "" so callers keep the bare header.
+pub fn failExcerpt(arena: Allocator, text: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (trimmed.len == 0) return "";
+    const head = util.utf8Prefix(trimmed, fail_excerpt_cap);
+    const flat = arena.dupe(u8, head) catch return "";
+    for (flat) |*c| if (c.* == '\n' or c.* == '\r' or c.* == '\t') {
+        c.* = ' ';
+    };
+    if (head.len == trimmed.len) return flat;
+    return std.fmt.allocPrint(arena, "{s}…", .{flat}) catch flat;
+}
+
 /// #5 conditional-phase gate: a phase carrying a non-empty `when` runs only when
 /// that substring appears (case-insensitively) in the previous phase's results —
 /// e.g. gate a synthesis phase on a findings sentinel so it never runs when the
@@ -155,7 +181,8 @@ pub fn pipelinePrompt(arena: Allocator, raw: []const u8, item: []const u8, prev:
 /// runPipeline). Stages run SEQUENTIALLY here via DIRECT runSub calls — never a
 /// nested io.async, which on a bounded pool could deadlock; different items run
 /// concurrently. A failed stage is retried once (#2); a stage that still fails
-/// ends the chain with a terse marker rather than feeding its error downstream.
+/// ends the chain with a terse marker plus a capped one-line excerpt of its
+/// error (#248), rather than feeding the whole error downstream.
 fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) ToolOutput {
     const gpa = ctx.gpa;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -175,9 +202,17 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
                 out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback)) |r| r.output else |e| failure(gpa, e);
             }
             if (out.is_error) {
+                // #248 — excerpt the stage's own error BEFORE freeing it, so
+                // the item's result says why the chain stopped, not just that
+                // it did.
+                const detail = failExcerpt(arena, out.text);
                 gpa.free(out.text);
+                const msg = if (detail.len > 0)
+                    std.fmt.allocPrint(gpa, "(pipeline stopped at stage {d}/{d} \"{s}\": task failed)\n{s}", .{ stage_no, stages.len, st.label, detail })
+                else
+                    std.fmt.allocPrint(gpa, "(pipeline stopped at stage {d}/{d} \"{s}\": task failed)", .{ stage_no, stages.len, st.label });
                 return .{
-                    .text = std.fmt.allocPrint(gpa, "(pipeline stopped at stage {d}/{d} \"{s}\": task failed)", .{ stage_no, stages.len, st.label }) catch (gpa.dupe(u8, "(pipeline stage failed)") catch ""),
+                    .text = msg catch (gpa.dupe(u8, "(pipeline stage failed)") catch ""),
                     .is_error = true,
                 };
             }
@@ -310,11 +345,15 @@ pub const PhaseTally = struct {
 /// Build the hard-stop text for a phase where every task failed: the
 /// assembled per-task failure headers plus a line naming the phase, so the
 /// caller (or a human) can see exactly why the run stopped instead of
-/// silently receiving empty "evidence".
-pub fn buildAbortText(arena: Allocator, labels: []const []const u8, phase_no: usize, total_phases: usize, title: []const u8) ![]const u8 {
+/// silently receiving empty "evidence". `details` is parallel to `labels`
+/// (#248): each entry is that task's capped one-line error excerpt, or "" when
+/// the task left nothing to report.
+pub fn buildAbortText(arena: Allocator, labels: []const []const u8, details: []const []const u8, phase_no: usize, total_phases: usize, title: []const u8) ![]const u8 {
     var aw: Io.Writer.Allocating = .init(arena);
-    for (labels) |label| {
-        try aw.writer.print("### {s} (no result — task failed)\n\n", .{label});
+    for (labels, details) |label, detail| {
+        try aw.writer.print("### {s} (no result — task failed)\n", .{label});
+        if (detail.len > 0) try aw.writer.print("{s}\n", .{detail});
+        try aw.writer.writeAll("\n");
     }
     try aw.writer.print("workflow aborted: every task in phase {d}/{d} ({s}) failed", .{ phase_no, total_phases, title });
     return aw.writer.buffered();
@@ -511,7 +550,11 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // answer from zero evidence. Abort the whole run instead of continuing;
         // the per-phase defers above already free `outputs`.
         if (phase_failed == tasks.len) {
-            const abort_text = try buildAbortText(arena, labels, phase_no, phases.len, title);
+            // #248 — thread each failed task's own error into the abort text,
+            // so the caller reads the API error, not a wall of bare headers.
+            const details = try arena.alloc([]const u8, outputs.len);
+            for (outputs, details) |out, *d| d.* = failExcerpt(arena, out.text);
+            const abort_text = try buildAbortText(arena, labels, details, phase_no, phases.len, title);
             return .{ .text = try gpa.dupe(u8, abort_text), .is_error = true };
         }
 
@@ -534,7 +577,12 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             if (out.is_error) {
                 // Keep the failure visible to the next phase, but never feed its
                 // raw error text into {{prev}} as if it were a real result (#2).
-                try aw.writer.print("### {s} (no result — task failed)\n\n", .{label});
+                // #248 sends a capped one-line excerpt of that error through,
+                // so a synthesis task can adapt to (say) a rate limit.
+                try aw.writer.print("### {s} (no result — task failed)\n", .{label});
+                const detail = failExcerpt(arena, out.text);
+                if (detail.len > 0) try aw.writer.print("{s}\n", .{detail});
+                try aw.writer.writeAll("\n");
             } else {
                 try aw.writer.print("### {s}\n{s}\n\n", .{ label, cappedPrevBody(arena, out.text, per_task_cap) });
             }

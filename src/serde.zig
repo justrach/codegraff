@@ -165,16 +165,39 @@ pub fn writeAnthropicMessages(s: *std.json.Stringify, messages: std.json.Array, 
     try s.endArray();
 }
 
+fn hasSchemaComposition(obj: std.json.ObjectMap) bool {
+    for ([_][]const u8{ "$ref", "allOf", "anyOf", "oneOf", "not", "if" }) |key| if (obj.get(key) != null) return true;
+    return false;
+}
+
+/// Issue #261: an MCP server may advertise an inputSchema with no root "type"
+/// (mcp.zig also defaults a missing one to `{}`), and it reached the wire
+/// verbatim — both Moonshot ("parameters.type is required and must be
+/// 'object'") and Anthropic reject the whole request for it, so no tool call
+/// ever got a chance to run. A tool's argument schema is an object by
+/// construction on both wires, so say so. A schema that already declares a
+/// type, or that defers to a root composition keyword, is left untouched.
+fn defaultRootObjectType(arena: Allocator, value: *Value) Allocator.Error!void {
+    if (value.* != .object) return;
+    if (value.object.get("type") != null or hasSchemaComposition(value.object)) return;
+    try value.object.put(arena, "type", .{ .string = "object" });
+}
+
 /// Kimi's official Anthropic adapter places a cache breakpoint on the final
 /// tool definition. The source catalog is already JSON, so rewrite only the
 /// last object and fall back to the original bytes if a custom catalog is bad.
+/// The parse is unconditional because every catalog also needs the #261 root
+/// type repair, not just the cached ones.
 pub fn writeAnthropicTools(s: *std.json.Stringify, arena: Allocator, raw: []const u8, cache: bool) !void {
-    if (!cache) return s.print("{s}", .{raw});
     const value = std.json.parseFromSliceLeaky(Value, arena, raw, .{ .allocate = .alloc_always }) catch return s.print("{s}", .{raw});
-    if (value != .array or value.array.items.len == 0) return s.write(value);
+    if (value != .array or value.array.items.len == 0) return s.print("{s}", .{raw});
+    for (value.array.items) |*tool| {
+        if (tool.* != .object) continue;
+        if (tool.object.getPtr("input_schema")) |schema| try defaultRootObjectType(arena, schema);
+    }
     try s.beginArray();
     for (value.array.items, 0..) |tool, i| {
-        if (i + 1 == value.array.items.len and tool == .object)
+        if (cache and i + 1 == value.array.items.len and tool == .object)
             try writeObjectWithCache(s, tool.object)
         else
             try s.write(tool);
@@ -249,8 +272,11 @@ fn normalizeKimiSchema(arena: Allocator, value: *Value, root: bool) Allocator.Er
             }
         }
     }
-    const has_composition = obj.get("$ref") != null or obj.get("allOf") != null or obj.get("anyOf") != null or obj.get("oneOf") != null or obj.get("not") != null or obj.get("if") != null;
-    if (!root and obj.get("type") == null and !has_composition) {
+    // The root never guesses (#261 wants "object" there, and inferredKimiType's
+    // fallback is "string"); every child keeps the kimi-code inference.
+    if (root) {
+        try defaultRootObjectType(arena, value);
+    } else if (obj.get("type") == null and !hasSchemaComposition(obj.*)) {
         if (inferredKimiType(obj.*)) |kind| try obj.put(arena, "type", .{ .string = kind });
     }
 
@@ -332,4 +358,58 @@ pub fn writeOpenAIMessageNormalized(s: *std.json.Stringify, m: Value) !void {
         try s.write("");
     }
     try s.endObject();
+}
+
+fn renderKimiTools(arena: Allocator, raw: []const u8) ![]const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try writeKimiTools(&s, arena, raw);
+    return aw.writer.buffered();
+}
+
+fn renderAnthropicTools(arena: Allocator, raw: []const u8, cache: bool) ![]const u8 {
+    var aw: Io.Writer.Allocating = .init(arena);
+    var s: std.json.Stringify = .{ .writer = &aw.writer };
+    try writeAnthropicTools(&s, arena, raw, cache);
+    return aw.writer.buffered();
+}
+
+test "kimi tools give a typeless MCP root schema type object (#261)" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // mcp.zig substitutes `{}` for a server that advertises no inputSchema.
+    const empty = try renderKimiTools(arena, "[{\"type\":\"function\",\"function\":{\"name\":\"mcp__s__t\",\"description\":\"\",\"parameters\":{}}}]");
+    try std.testing.expect(std.mem.indexOf(u8, empty, "\"parameters\":{\"type\":\"object\"}") != null);
+
+    // Properties but no root type: the root says object, children still infer.
+    const props = try renderKimiTools(arena, "[{\"type\":\"function\",\"function\":{\"name\":\"mcp__s__t\",\"description\":\"\",\"parameters\":{\"properties\":{\"path\":{}}}}}]");
+    try std.testing.expect(std.mem.indexOf(u8, props, "\"parameters\":{\"properties\":{\"path\":{\"type\":\"string\"}},\"type\":\"object\"}") != null);
+
+    // A declared type and a root composition keyword are both left alone.
+    const typed = try renderKimiTools(arena, "[{\"type\":\"function\",\"function\":{\"name\":\"t\",\"description\":\"\",\"parameters\":{\"type\":\"string\"}}}]");
+    try std.testing.expect(std.mem.indexOf(u8, typed, "\"parameters\":{\"type\":\"string\"}") != null);
+    const composed = try renderKimiTools(arena, "[{\"type\":\"function\",\"function\":{\"name\":\"t\",\"description\":\"\",\"parameters\":{\"allOf\":[{\"type\":\"object\"}]}}}]");
+    try std.testing.expect(std.mem.indexOf(u8, composed, "\"parameters\":{\"allOf\":[{\"type\":\"object\"}]}") != null);
+}
+
+test "anthropic tools give a typeless MCP input_schema type object (#261)" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const raw = "[{\"name\":\"mcp__s__t\",\"description\":\"\",\"input_schema\":{}}]";
+    try std.testing.expectEqualStrings(
+        "[{\"name\":\"mcp__s__t\",\"description\":\"\",\"input_schema\":{\"type\":\"object\"}}]",
+        try renderAnthropicTools(arena, raw, false),
+    );
+    // The repair survives the cache-breakpoint rewrite on the last tool.
+    const cached = try renderAnthropicTools(arena, raw, true);
+    try std.testing.expect(std.mem.indexOf(u8, cached, "\"input_schema\":{\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\"}") != null);
+
+    const composed = "[{\"name\":\"t\",\"description\":\"\",\"input_schema\":{\"oneOf\":[{\"type\":\"object\"}]}}]";
+    try std.testing.expectEqualStrings(composed, try renderAnthropicTools(arena, composed, false));
+    const typed = "[{\"name\":\"t\",\"description\":\"\",\"input_schema\":{\"type\":\"object\",\"properties\":{}}}]";
+    try std.testing.expectEqualStrings(typed, try renderAnthropicTools(arena, typed, false));
 }

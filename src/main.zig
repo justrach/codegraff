@@ -54,8 +54,7 @@ const util = @import("util.zig"); // shared JSON ObjectMap getters (strFieldObj/
 const learn_store = @import("learn_store.zig");
 const learn_eval = @import("learn_eval.zig");
 const learn_cli = @import("learn_cli.zig");
-test {
-    // build.zig's unit_tests root is main.zig only — reference every split-out module so their test blocks keep running.
+test { // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
     _ = pricing;
     _ = models_cache;
     _ = ansi;
@@ -590,6 +589,7 @@ test { // pull in tests from imported modules (mcp.zig)
     // plain @import elsewhere (or a type-only alias) is NOT enough — it
     // compiles to nothing; scripts/eval-tier1.sh --only reach catches one.
     _ = @import("scoring_slot_test.zig");
+    _ = @import("learn_delete.zig"); // #303: its tests were dead until listed here
     _ = @import("readline_history.zig");
     _ = @import("goal_pacing_autonomous_test.zig");
     _ = @import("goal_state.zig");

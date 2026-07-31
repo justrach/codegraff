@@ -44,7 +44,12 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 if (is_kimi) {
                     if (pricing.kimiSupportsThinking(self.provider.model)) {
                         try s.objectField("thinking");
-                        try s.print("{s}", .{"{\"type\":\"enabled\"}"});
+                        // #323: k2.6 bills the reasoning we replay every turn and
+                        // then ignores it unless the request says keep:"all".
+                        if (pricing.kimiKeepsReasoning(self.provider.model))
+                            try s.print("{s}", .{"{\"type\":\"enabled\",\"keep\":\"all\"}"})
+                        else
+                            try s.print("{s}", .{"{\"type\":\"enabled\"}"});
                         if (pricing.kimiThinkingEffort(self.provider.model, @tagName(self.reasoning))) |effort| {
                             try s.objectField("output_config");
                             try s.beginObject();
@@ -155,6 +160,11 @@ pub fn buildBody(self: *Agent, tools: ?[]const u8, force_tool: bool, stream: boo
                 try s.beginObject();
                 try s.objectField("type");
                 try s.write("enabled");
+                // #323: same per-model opt-in as the Anthropic branch above.
+                if (pricing.kimiKeepsReasoning(self.provider.model)) {
+                    try s.objectField("keep");
+                    try s.write("all");
+                }
                 if (pricing.kimiThinkingEffort(self.provider.model, @tagName(self.reasoning))) |effort| {
                     try s.objectField("effort");
                     try s.write(effort);
@@ -282,6 +292,7 @@ test "Kimi request body follows live native or Anthropic protocol metadata" {
     try std.testing.expect(std.mem.indexOf(u8, native, "\"reasoning_effort\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, native, "\"target\":{\"anyOf\":[{\"const\":\"one\",\"type\":\"string\"},{\"const\":\"two\",\"type\":\"string\"}]}") != null);
     try std.testing.expect(std.mem.indexOf(u8, native, "\"oneOf\":[{\"required\":[\"target\"],\"type\":\"object\"},{\"required\":[\"other\"],\"type\":\"object\"}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, native, "\"keep\"") == null); // #323: k3 has no thinking.keep
 
     agent.provider.kind = .anthropic;
     agent.provider.auth = .x_api_key;
@@ -295,6 +306,7 @@ test "Kimi request body follows live native or Anthropic protocol metadata" {
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"system\":[{\"type\":\"text\",\"text\":\"system\",\"cache_control\":{\"type\":\"ephemeral\"}}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"content\":[{\"type\":\"text\",\"text\":\"hello\",\"cache_control\":{\"type\":\"ephemeral\"}}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"input_schema\":{\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, "\"keep\"") == null); // #323: k3 has no thinking.keep
 }
 
 // ── Retained-reasoning wire-format regressions ──────────────────────────────
@@ -546,4 +558,39 @@ test "anthropic asks for summarized thinking; other anthropic-format providers d
     defer std.testing.allocator.free(body_c);
     try std.testing.expect(std.mem.indexOf(u8, body_c, "\"thinking\":{\"type\":\"adaptive\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body_c, "\"display\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body_c, "\"keep\"") == null); // #323: thinking.keep is Kimi-only
+}
+
+test "kimi k2.6 opts into thinking.keep so replayed reasoning is used, not just billed" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const saved = pricing.active_model_table;
+    defer pricing.active_model_table = saved;
+    // Live-catalog shape for a keep-wanting model. #323: k2.6 supports
+    // `thinking.keep` and defaults it to null, so without keep:"all" the
+    // reasoning_content we replay each turn is billed and then discarded.
+    const rows = [_]pricing.ModelInfo{.{ .provider = "kimi", .name = "kimi-k2.6", .context = 262_144, .supports_reasoning = true }};
+    try std.testing.expect(pricing.activateKimiModels(arena, &rows));
+    var agent: Agent = .{
+        .gpa = std.testing.allocator,
+        .arena = arena,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "kimi", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "kimi-k2.6", .context = 262_144 },
+        .messages = std.json.Array.init(arena),
+        .sub = false,
+        .label = "",
+        .out = null,
+        .sys_normal = "system",
+    };
+    const keep = "\"thinking\":{\"type\":\"enabled\",\"keep\":\"all\"}";
+    const native = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(native);
+    try std.testing.expect(std.mem.indexOf(u8, native, keep) != null);
+    // Kimi's Anthropic transport carries the same opt-in.
+    agent.provider.kind = .anthropic;
+    const anthropic = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(anthropic);
+    try std.testing.expect(std.mem.indexOf(u8, anthropic, keep) != null);
 }

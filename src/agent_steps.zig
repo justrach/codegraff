@@ -40,8 +40,18 @@ const sseIndex = Agent.sseIndex;
 /// collect any function calls. Returns final text when no tools were
 /// called, else null to loop after running them.
 pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
-    const output = response.get("output") orelse return error.ApiError;
-    if (output != .array) return error.ApiError;
+    // #287/#299: every error.ApiError raised in this file has to leave a cause
+    // behind. subagent_run hands agent.last_api_error to the parent's tool
+    // result, so a bare `return error.ApiError` reached the parent as the
+    // literal string "ApiError" — the opaque failure both issues report.
+    const output = response.get("output") orelse {
+        try self.sayApiError("api error: codex response had no output field", .{});
+        return error.ApiError;
+    };
+    if (output != .array) {
+        try self.sayApiError("api error: codex response output was not an array", .{});
+        return error.ApiError;
+    }
 
     var calls: std.ArrayList(ToolCall) = .empty;
     defer calls.deinit(self.gpa);
@@ -117,12 +127,14 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
 }
 
 pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
+    // #287/#299: sayApiError, not say — the text has to survive as
+    // last_api_error for the subagent/workflow failure report, not just print.
     const content = root.get("content") orelse {
-        try self.say("[api error: response had no content]\n", .{});
+        try self.sayApiError("api error: response had no content", .{});
         return error.ApiError;
     };
     if (content != .array) {
-        try self.say("[api error: malformed content block]\n", .{});
+        try self.sayApiError("api error: malformed content block", .{});
         return error.ApiError;
     }
     const stop_reason = if (root.get("stop_reason")) |s| (if (s == .string) s.string else "") else "";
@@ -177,17 +189,19 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
 
 pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
     const choices = root.get("choices");
+    // #287/#299: same as the anthropic step — the parent only ever sees what
+    // sayApiError records, so these three shapes must name themselves.
     if (choices == null or choices.? != .array or choices.?.array.items.len == 0 or choices.?.array.items[0] != .object) {
-        try self.say("[api error: response had no choices]\n", .{});
+        try self.sayApiError("api error: response had no choices", .{});
         return error.ApiError;
     }
     const choice = choices.?.array.items[0].object;
     const message = choice.get("message") orelse {
-        try self.say("[api error: choice had no message]\n", .{});
+        try self.sayApiError("api error: choice had no message", .{});
         return error.ApiError;
     };
     const msg_obj = tools_mod.json_args.object(message) orelse {
-        try self.say("[api error: choice message was not an object]\n", .{});
+        try self.sayApiError("api error: choice message was not an object", .{});
         return error.ApiError;
     };
     try self.messages.append(message); // echo verbatim (content may be null)

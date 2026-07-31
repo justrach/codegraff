@@ -15,6 +15,7 @@ const agent_mod = @import("agent.zig");
 const Provider = provider_mod.Provider;
 const Agent = agent_mod.Agent;
 const headers = @import("http_headers.zig");
+const stall = @import("http_stall.zig"); // #56: the watchdogs' pure budget arithmetic
 
 /// Launch-scoped gate installed while the shared client's CA bundle warms in
 /// the background. Null in unit tests and standalone pre-client subcommands.
@@ -228,16 +229,14 @@ fn postWatchdog(io: Io) WatchdogFired {
     return .deadline;
 }
 
-// A streaming response idle THIS LONG between SSE events (not total response
-// time — streamStallTask resets its clock on every line, so it measures the
-// gap between tokens/keep-alives/reasoning deltas) is treated as a dead or
-// hung connection and given up on, so a turn can't wait forever. Generous, so
-// a legit reasoning pause between tokens doesn't trip it; a model that streams
-// — even slowly — never does, since each event resets the clock. Only TOTAL
-// silence trips it. Tunable via GRAFF_STREAM_STALL_SECS (wired in
-// session_run.setupSkillsAndTheme) for providers that buffer a long reasoning
-// phase in complete silence. Giving up here is error.StreamStalled — a
-// harness stall, NEVER a user Esc interruption (#134).
+// A streaming response idle THIS LONG (not total response time — the watchdog
+// resets its clock on every line, so it measures the gap between tokens/
+// keep-alives/reasoning deltas) is a dead or hung connection, so a turn can't
+// wait forever. This is the PRE-first-token budget, generous because a silent
+// reasoning phase legitimately runs minutes; http_stall.budgetMs tightens it
+// once tokens are flowing (#56). Tunable via GRAFF_STREAM_STALL_SECS (wired in
+// session_run.setupSkillsAndTheme), which scales both regimes. Giving up here
+// is error.StreamStalled — a harness stall, NEVER a user Esc (#134).
 pub var stream_stall_ms: u64 = 120 * 1000;
 
 /// A response head (HTTP status line + headers) idle this long means the
@@ -299,11 +298,11 @@ pub fn streamLineTask(reader: *Io.Reader, w: *Io.Writer) anyerror!usize {
     return reader.streamDelimiterEnding(w, '\n');
 }
 
-/// Select-arm wrapper: fires after stream_stall_ms of no line (idle stall), or
+/// Select-arm wrapper: fires after this read's stall budget with no line, or
 /// early on Esc — resets each line, so it measures the gap between lines.
-pub fn streamStallTask(io: Io, poll_stdin: bool) WatchdogFired {
+pub fn streamStallWatch(io: Io, poll_stdin: bool, tokens_flowing: bool) WatchdogFired {
     var waited: u64 = 0;
-    while (waited < stream_stall_ms) {
+    while (!stall.expired(waited, stream_stall_ms, tokens_flowing)) {
         io.sleep(.fromMilliseconds(50), .awake) catch return .deadline; // canceled: a line arrived
         waited += 50;
         if (poll_stdin and Agent.drainSteerStdin(true)) {
@@ -313,6 +312,11 @@ pub fn streamStallTask(io: Io, poll_stdin: bool) WatchdogFired {
         if (Agent.esc_cancel.load(.acquire)) return .esc;
     }
     return .deadline;
+}
+
+/// Pre-first-token arm: the codex WS reader has no per-read token signal (#56).
+pub fn streamStallTask(io: Io, poll_stdin: bool) WatchdogFired {
+    return streamStallWatch(io, poll_stdin, false);
 }
 
 /// Select-arm wrapper: fires after head_stall_ms (head receive stall), or
