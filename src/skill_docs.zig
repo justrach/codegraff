@@ -435,7 +435,19 @@ test "promptCatalog: an over-long description is capped on a codepoint boundary"
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const long = "é" ** 400; // 800 bytes, cap lands mid-codepoint without utf8Prefix
+    // Built with a comptime loop rather than `**`, which the CI compiler
+    // rejects however it is spaced (see fdb12e7): 800 bytes of "é", so the
+    // cap lands mid-codepoint without utf8Prefix.
+    const long_arr = comptime blk: {
+        var buf: [800]u8 = undefined;
+        var i: usize = 0;
+        while (i < buf.len) : (i += 2) {
+            buf[i] = 0xC3;
+            buf[i + 1] = 0xA9;
+        }
+        break :blk buf;
+    };
+    const long: []const u8 = &long_arr;
     const list = [_]Skill{.{ .name = "x", .desc = long, .body = "b" }};
     const text = promptCatalog(arena, &list);
     try std.testing.expect(std.mem.indexOf(u8, text, long) == null); // capped, not whole
