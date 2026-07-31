@@ -84,6 +84,8 @@ pub const Registry = struct {
             .arena_state = std.heap.ArenaAllocator.init(gpa),
             .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| !std.mem.eql(u8, v, "0") else true,
         };
+        mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275: GRAFF_MCP_HANDSHAKE_SECS, read on the same pass as the probe flag
+
         errdefer reg.deinit();
         const a = reg.arena();
 
@@ -395,10 +397,10 @@ pub const Registry = struct {
         const listed = switch (server.transport) {
             .http => try mcp_rpc.connectHttp(server, a, a),
             .stdio => stdio_listed: {
-                if (!reg.stdio_probe) break :stdio_listed try mcp_rpc.connectStdio(server, a, a);
+                if (!reg.stdio_probe) break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
                 switch (try mcp_rpc.probeStdio(server, a, reg.io)) {
-                    .modern => break :stdio_listed try mcp_rpc.finishModernStdio(server, a, a),
-                    .legacy => break :stdio_listed try mcp_rpc.connectStdio(server, a, a),
+                    .modern => break :stdio_listed try mcp_rpc.finishModernStdio(server, a, a, reg.io),
+                    .legacy => break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io),
                     .closed => {
                         // The probe write/read found a dead process (some
                         // legacy SDK servers exit on an unrecognized
@@ -408,7 +410,7 @@ pub const Registry = struct {
                         // proved it can't tolerate one.
                         mcp_stdio.stopChild(reg.io, &server.transport.stdio.child);
                         server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map);
-                        break :stdio_listed try mcp_rpc.connectStdio(server, a, a);
+                        break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
                     },
                 }
             },
@@ -482,7 +484,7 @@ pub const Registry = struct {
         var response_arena_state = std.heap.ArenaAllocator.init(reg.gpa);
         defer response_arena_state.deinit();
         const response_alloc = response_arena_state.allocator();
-        if (!server.initialized) try initializeServer(server, response_alloc, reg.arena());
+        if (!server.initialized) try initializeServer(server, response_alloc, reg.arena(), null);
         const resp = request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name) catch |err| switch (err) {
             // Streamable HTTP servers use 404 to expire a session. Re-run the
             // MCP handshake once, then retry the call without the stale ID.
@@ -493,7 +495,7 @@ pub const Registry = struct {
             // re-handshake loop against a server that has no `initialize`.
             error.McpSessionExpired => retry: {
                 if (server.era != .legacy) return err;
-                try initializeServer(server, response_alloc, reg.arena());
+                try initializeServer(server, response_alloc, reg.arena(), null);
                 break :retry try request(server, response_alloc, pw.writer.buffered(), "tools/call", tool.original_name);
             },
             else => return err,

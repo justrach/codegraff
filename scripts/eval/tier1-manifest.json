@@ -10,7 +10,7 @@
     "src/main.zig",
     "src/repl.zig"
   ],
-  "test_count_baseline": 517,
+  "test_count_baseline": 518,
   "required_invariants": [
     {
       "id": "goal-epochs",
