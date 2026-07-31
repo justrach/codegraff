@@ -66,6 +66,30 @@ pub const main_system_prompt =
     \\auto-checkpoints are the user's safety net; do not blow them away.
     \\
     \\Be direct and concise.
+++ parallel_tools_note;
+
+/// Appended to BOTH the root and subagent prompts. openai/codex carries this
+/// instruction verbatim in its base instructions ("Parallelize tool calls
+/// whenever possible - especially file reads"); graff had no equivalent on
+/// either prompt, so batching was left entirely to the model's own initiative.
+///
+/// The executor has always been ready for it: agent_tools.zig dispatches every
+/// external call in a batch as a future BEFORE awaiting any of them, with no
+/// cap and no root-vs-subagent branch. So this asks for nothing the harness
+/// does not already do - it only stops the capability going unused.
+///
+/// The last sentence is the load-bearing half. Batching two edits to one file,
+/// or a read whose path comes from the previous call's output, is wrong: graff
+/// (unlike codex, which takes a write lock for non-parallel-safe tools) runs
+/// the whole batch concurrently, so an unsafe batch really does race.
+pub const parallel_tools_note =
+    \\
+    \\
+    \\Parallelize tool calls whenever possible: when several reads or checks are
+    \\independent, issue them in ONE response instead of one per turn. Reads and
+    \\searches are the common case (read_file, codedb, grep-style bash) and they
+    \\run concurrently. Keep a call in its own turn when it depends on an earlier
+    \\call's result, or when two calls would write to the same file.
 ;
 
 pub const strict_note =
@@ -126,7 +150,7 @@ pub const sub_system_prompt =
     \\questions — make reasonable assumptions. Your final message is returned
     \\verbatim to the orchestrator as the result of the task: make it a
     \\concise, complete report with the concrete facts you found.
-;
+++ parallel_tools_note;
 
 pub const compact_instruction =
     \\Summarize this entire conversation for a context handoff. Capture: the
@@ -135,6 +159,28 @@ pub const compact_instruction =
     \\task checklist and each item's status, and any pending or unfinished
     \\work. Be thorough but compact. Reply with only the summary.
 ;
+
+// The harness has always run a returned tool batch concurrently, for subagents
+// exactly as for the root (agent_tools.zig dispatches every external call as a
+// future before awaiting any). Nothing ASKED for a batch, though, so the
+// capability rode entirely on the model's own initiative - openai/codex spells
+// it out in its base instructions and graff did not. Pin it on BOTH prompts:
+// the subagent one is the easier of the two to forget, since it is five lines
+// long and does not share a base with the root.
+test "both prompts ask for parallel tool calls, with the dependency caveat" {
+    for ([_][]const u8{ main_system_prompt, sub_system_prompt, main_system_prompt_strict }) |p| {
+        try std.testing.expect(std.mem.indexOf(u8, p, "Parallelize tool calls") != null);
+        try std.testing.expect(std.mem.indexOf(u8, p, "ONE response") != null);
+        // Without the caveat this instruction is actively harmful: graff runs
+        // the whole batch concurrently, so two writes to one file would race.
+        try std.testing.expect(std.mem.indexOf(u8, p, "same file") != null);
+        try std.testing.expect(std.mem.indexOf(u8, p, "depends on an earlier") != null);
+    }
+    // Composing must not have cost either prompt its own identity.
+    try std.testing.expect(std.mem.indexOf(u8, sub_system_prompt, "subagent spawned by an orchestrator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Be direct and concise") != null);
+    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt_strict, "STRICT MODE") != null);
+}
 
 test "root prompt permits explicit external targets without weakening confinement" {
     try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "explicitly names") != null);
