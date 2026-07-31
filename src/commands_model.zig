@@ -522,7 +522,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
-    if (std.mem.eql(u8, line, "/images")) {
+    // startsWith, NOT eql: this branch owns BOTH `/images` (the URL opener,
+    // dispatched on the exact match just below) and `/image <path>` (staging an
+    // attachment). The #103 extraction overwrote this outer guard with a copy of
+    // the inner exact-match, which made every `/image` line below unreachable -
+    // the command stayed in the catalog and /help while answering "unknown".
+    if (std.mem.startsWith(u8, line, "/image")) {
         if (std.mem.eql(u8, line, "/images")) return images_command.run(root, out);
         const path = std.mem.trim(u8, line["/image".len..], " \t");
         if (path.len == 0) {

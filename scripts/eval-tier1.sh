@@ -86,8 +86,13 @@ fi
 
 # --- reach -------------------------------------------------------------
 if wanted reach; then
-  announce reach "tests declared in src/ are reachable from the test root"
-  if python3 scripts/eval/tier1_invariants.py static; then :; else
+  announce reach "every declared test is actually COMPILED IN, not just imported"
+  # tier1_invariants.py static modelled reachability as a textual @import graph,
+  # which over-approximates what Zig analyses: it printed "every test file is
+  # reachable" and exited 0 while 37 tests in 12 files were silently skipped.
+  # test_reachability.py diffs declared names against the compiled binary
+  # instead, so it cannot be fooled by an import Zig never follows.
+  if python3 scripts/eval/test_reachability.py; then :; else
     record_fail reach
   fi
 fi

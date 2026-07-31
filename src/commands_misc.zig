@@ -12,6 +12,7 @@ const main_mod = @import("main.zig");
 const provider_mod = @import("provider.zig");
 const agent_mod = @import("agent.zig");
 const util = @import("util.zig");
+const doctor = @import("doctor.zig");
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
 const utf8Prefix = util.utf8Prefix;
@@ -134,6 +135,14 @@ fn showModelsHealth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer
 /// to handleRest() for the unknown-command/help terminal stage.
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     if (try commands_privacy.tryHandle(root, line, out)) return true;
+    // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
+    // was advertised in /help and the `/` menu while answering "unknown command".
+    if (std.mem.eql(u8, line, "/doctor")) {
+        const checks = try doctor.run(arena, doctor.snapshot(root, util.unixMs(root.io)));
+        try out.writeAll(try doctor.render(arena, checks));
+        try out.flush();
+        return true;
+    }
     if (std.mem.eql(u8, line, "/todo")) {
         const epoch = goal_state.currentEpoch(root.goal);
         try out.print("{s}\n", .{root.renderTodos(epoch)});

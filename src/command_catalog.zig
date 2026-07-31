@@ -76,12 +76,8 @@ pub const names = blk: {
     break :blk arr;
 };
 
-test { // #321: /doctor's rules live in doctor.zig, which nothing else references
-    // yet - and a module with no test-root reference has its tests silently
-    // skipped. Hung here beside the catalog entry that introduces the command;
-    // it belongs in main.zig's test block once /doctor is dispatched.
-    _ = @import("doctor.zig");
-}
+// /doctor is dispatched from commands_misc.tryHandle now, so doctor.zig is
+// reached through the production import graph and needs no hook here.
 
 test "catalog is well-formed and names track commands" {
     try std.testing.expectEqual(commands.len, names.len);
