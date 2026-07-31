@@ -39,6 +39,11 @@ const repl_parser = @import("repl_parser.zig");
 const router_config = @import("router_config.zig");
 const subagent_selection = @import("subagent_selection.zig");
 
+// `graff serve` resumability (#330): serve.zig imports these, but nothing in
+// the production graph references their decls, so Zig never analyses them.
+const serve_events = @import("serve_events.zig");
+const serve_create = @import("serve_create.zig");
+
 // Moved off main.zig, which is at the 600-line cap.
 const scoring_slot_test = @import("scoring_slot_test.zig");
 
@@ -55,5 +60,7 @@ test {
     _ = repl_parser;
     _ = router_config;
     _ = subagent_selection;
+    _ = serve_events;
+    _ = serve_create;
     _ = scoring_slot_test;
 }

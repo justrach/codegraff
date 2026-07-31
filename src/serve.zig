@@ -2,6 +2,15 @@
 //! streamed back as NDJSON. Manages a pool of `<exe> --json` child processes
 //! and bridges HTTP <-> the stdio protocol. Split out of main.zig (#123).
 //!
+//! #330 (embedder mode): a session is DURABLE. Its id doubles as the graff
+//! session name, the child is spawned with `--resume <id>` so the conversation
+//! autosaves after every turn, and every forwarded event line is appended to
+//! `.graff/serve/<id>.events.jsonl` with the monotonic `seq` the child stamped.
+//! A supervisor that drops the socket reconnects with `?from=N`; a supervisor
+//! whose whole bridge died starts a REPLACEMENT process, POSTs the same session
+//! id, and picks the run up from the last persisted turn. The log plumbing and
+//! replay filter live in serve_events.zig.
+//!
 //! std-only except for three things that stay in main and are back-imported:
 //! emitSchema (GET /v1/schema) and harness_version + schema_version (/healthz).
 
@@ -14,6 +23,8 @@ const Allocator = std.mem.Allocator;
 // resolves the main<->serve import cycle fine (all runtime, no comptime dep).
 const root = @import("main.zig");
 const schema = @import("schema.zig");
+const events = @import("serve_events.zig");
+const serve_create = @import("serve_create.zig"); // POST /v1/sessions (durable naming + spawn)
 const emitSchema = schema.emitSchema;
 const harness_version = root.harness_version;
 const schema_version = schema.schema_version;
@@ -36,23 +47,31 @@ const ServeConfig = struct {
 
 /// Cap on one child event line (a tool_result event carrying a big tool
 /// output is the realistic worst case). Also the per-session reader buffer.
-const serve_line_cap = 1024 * 1024;
+pub const serve_line_cap = 1024 * 1024;
 /// Cap on one request body (a user prompt; pasted files can be large).
 const serve_body_cap = 8 * 1024 * 1024;
+/// Follow poll cadence and ceiling: a reattached client waits for live events
+/// at 25ms, and gives up after ~10 minutes rather than pinning a connection.
+const follow_poll_ms = 25;
+const follow_max_polls = 10 * 60 * 1000 / follow_poll_ms;
 
-const ServeSession = struct {
-    id: [16]u8, // hex
+pub const ServeSession = struct {
+    name: []const u8, // gpa-owned; the HTTP id AND the graff --resume session name
+    log_path: []const u8, // gpa-owned; .graff/serve/<name>.events.jsonl
+    log: events.EventLog,
+    last_seq: u64 = 0, // highest seq forwarded/persisted; bridge-generated errors continue it
     child: std.process.Child,
     rdr: Io.File.Reader, // persistent reader over child stdout — must not move (gpa.create)
     rbuf: []u8, // gpa-owned backing buffer for rdr
     busy: Io.Mutex = .init, // one in-flight protocol request per session
+    in_flight: std.atomic.Value(bool) = .init(false), // a request is streaming: followers keep tailing
     answer_mu: Io.Mutex = .init,
     awaiting_answer: bool = false,
     answer_call_id: [128]u8 = undefined,
     answer_call_id_len: usize = 0,
 };
 
-const ServeState = struct {
+pub const ServeState = struct {
     gpa: Allocator,
     io: Io,
     exe: []const u8, // this binary, re-spawned as `<exe> --json …` per session
@@ -61,8 +80,8 @@ const ServeState = struct {
     sessions: std.ArrayList(*ServeSession) = .empty,
     group: *Io.Group, // detached reapers for closed sessions
 
-    fn find(self: *ServeState, id: []const u8) ?*ServeSession {
-        for (self.sessions.items) |s| if (std.mem.eql(u8, &s.id, id)) return s;
+    pub fn find(self: *ServeState, id: []const u8) ?*ServeSession {
+        for (self.sessions.items) |s| if (std.mem.eql(u8, s.name, id)) return s;
         return null;
     }
 };
@@ -75,7 +94,7 @@ fn ctEql(a: []const u8, b: []const u8) bool {
     return diff == 0;
 }
 
-fn serveLog(io: Io, comptime fmt: []const u8, args: anytype) void {
+pub fn serveLog(io: Io, comptime fmt: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
     var w = Io.File.stderr().writer(io, &buf);
     w.interface.print(fmt ++ "\n", args) catch {};
@@ -150,7 +169,11 @@ fn serveJsonHeaders(st: *ServeState) []const std.http.Header {
     return if (st.cfg.token != null) &serve_cors_headers else &serve_json_headers;
 }
 
-fn respondJson(st: *ServeState, req: *std.http.Server.Request, status: std.http.Status, body: []const u8) !void {
+fn serveNdjsonHeaders(st: *ServeState) []const std.http.Header {
+    return if (st.cfg.token != null) &serve_ndjson_cors_headers else &serve_ndjson_headers;
+}
+
+pub fn respondJson(st: *ServeState, req: *std.http.Server.Request, status: std.http.Status, body: []const u8) !void {
     // A body-less POST/DELETE (neither content-length nor transfer-encoding)
     // trips an assert in std's keep-alive discardBody path — just close the
     // connection for those instead.
@@ -168,12 +191,17 @@ fn serveRequest(st: *ServeState, req: *std.http.Server.Request) !void {
     const target = target_buf[0..req.head.target.len];
     @memcpy(target, req.head.target);
     const method = req.head.method;
+    const split = events.splitTarget(target);
+    const path = split.path;
+    // #330: `?from=N` asks for persisted events with seq >= N before the live
+    // stream. Same meaning on the reattach GET and on a request POST.
+    const from_query = events.queryU64(split.query, "from");
 
     if (method == .OPTIONS) // CORS preflight
         return req.respond("", .{ .status = .no_content, .extra_headers = serveJsonHeaders(st) });
 
     if (st.cfg.token) |tok| {
-        if (!std.mem.eql(u8, target, "/healthz")) {
+        if (!std.mem.eql(u8, path, "/healthz")) {
             var authed = false;
             var it = req.iterateHeaders();
             while (it.next()) |h| {
@@ -186,7 +214,7 @@ fn serveRequest(st: *ServeState, req: *std.http.Server.Request) !void {
         }
     }
 
-    if (method == .GET and std.mem.eql(u8, target, "/healthz")) {
+    if (method == .GET and std.mem.eql(u8, path, "/healthz")) {
         st.mutex.lockUncancelable(io);
         const n = st.sessions.items.len;
         st.mutex.unlock(io);
@@ -194,140 +222,42 @@ fn serveRequest(st: *ServeState, req: *std.http.Server.Request) !void {
         const body = std.fmt.bufPrint(&buf, "{{\"ok\":true,\"harness\":\"{s}\",\"schema\":\"{s}\",\"sessions\":{d}}}", .{ harness_version, schema_version, n }) catch unreachable;
         return respondJson(st, req, .ok, body);
     }
-    if (method == .GET and std.mem.eql(u8, target, "/v1/schema")) {
+    if (method == .GET and std.mem.eql(u8, path, "/v1/schema")) {
         var aw: Io.Writer.Allocating = .init(gpa);
         defer aw.deinit();
         emitSchema(&aw.writer) catch return respondJson(st, req, .internal_server_error, "{\"error\":\"schema emit failed\"}");
         return respondJson(st, req, .ok, aw.writer.buffered());
     }
-    if (method == .POST and std.mem.eql(u8, target, "/v1/sessions"))
-        return serveCreate(st, req);
+    if (method == .POST and std.mem.eql(u8, path, "/v1/sessions"))
+        return serve_create.create(st, req);
     const sess_prefix = "/v1/sessions/";
-    if (std.mem.startsWith(u8, target, sess_prefix)) {
-        const id = target[sess_prefix.len..];
-        if (method == .POST) return serveMessage(st, req, id);
+    if (std.mem.startsWith(u8, path, sess_prefix)) {
+        var id = path[sess_prefix.len..];
+        const events_suffix = "/events";
+        if (method == .GET and std.mem.endsWith(u8, id, events_suffix)) {
+            id = id[0 .. id.len - events_suffix.len];
+            return serveFollow(st, req, id, from_query orelse 1);
+        }
+        if (method == .POST) return serveMessage(st, req, id, from_query);
         if (method == .DELETE) return serveDelete(st, req, id);
     }
     return respondJson(st, req, .not_found, "{\"error\":\"not found — see /v1/schema\"}");
 }
 
-/// POST /v1/sessions: spawn a `harness --json` child. Per-session options in
-/// the (optional) JSON body override the serve-level defaults.
-fn serveCreate(st: *ServeState, req: *std.http.Server.Request) !void {
-    const io = st.io;
-    const gpa = st.gpa;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var bbuf: [4096]u8 = undefined;
-    const br = req.readerExpectContinue(&bbuf) catch return error.WriteFailed;
-    const body = br.allocRemaining(arena, .limited(64 * 1024)) catch
-        return respondJson(st, req, .payload_too_large, "{\"error\":\"body too large\"}");
-
-    var model = st.cfg.model;
-    var subagent_provider = st.cfg.subagent_provider;
-    var subagent_model = st.cfg.subagent_model;
-    var allow_cross_provider_subagents = st.cfg.allow_cross_provider_subagents;
-    var yolo = st.cfg.yolo;
-    var sys = st.cfg.system_prompt;
-    var append_sys = st.cfg.append_system_prompt;
-    var max_tools = st.cfg.max_tool_calls;
-    var max_models: ?u64 = st.cfg.max_model_calls;
-    var dedupe_tools = st.cfg.dedupe_tool_calls;
-    if (std.mem.trim(u8, body, " \t\r\n").len > 0) {
-        const v = std.json.parseFromSliceLeaky(Value, arena, body, .{ .allocate = .alloc_always }) catch
-            return respondJson(st, req, .bad_request, "{\"error\":\"body must be a JSON object\"}");
-        if (v != .object) return respondJson(st, req, .bad_request, "{\"error\":\"body must be a JSON object\"}");
-        if (v.object.get("model")) |m| if (m == .string) {
-            model = m.string;
-        };
-        if (v.object.get("subagentModel") orelse v.object.get("subagent_model")) |m| if (m == .string) {
-            subagent_model = m.string;
-        };
-        if (v.object.get("subagentProvider") orelse v.object.get("subagent_provider")) |p| if (p == .string) {
-            subagent_provider = p.string;
-        };
-        if (v.object.get("allowCrossProviderSubagents") orelse v.object.get("allow_cross_provider_subagents")) |a| if (a == .bool) {
-            allow_cross_provider_subagents = a.bool;
-        };
-        if (v.object.get("yolo")) |y| if (y == .bool) {
-            yolo = y.bool;
-        };
-        if (v.object.get("system_prompt")) |s| if (s == .string) {
-            sys = s.string;
-        };
-        if (v.object.get("append_system_prompt")) |s| if (s == .string) {
-            append_sys = s.string;
-        };
-        if (v.object.get("maxToolCalls") orelse v.object.get("max_tool_calls")) |m| if (m == .integer and m.integer >= 0) {
-            max_tools = @intCast(m.integer);
-        };
-        if (v.object.get("maxModelCalls") orelse v.object.get("max_model_calls")) |m| if (m == .integer and m.integer >= 0) {
-            max_models = @intCast(m.integer);
-        };
-        if (v.object.get("dedupeToolCalls") orelse v.object.get("dedupe_tool_calls")) |d| if (d == .bool) {
-            dedupe_tools = d.bool;
-        };
-    }
-
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(arena, &.{ st.exe, "--json" });
-    if (yolo) try argv.append(arena, "--yolo");
-    if (model) |m| try argv.appendSlice(arena, &.{ "--model", m });
-    if (subagent_provider) |p| try argv.appendSlice(arena, &.{ "--subagent-provider", p });
-    if (subagent_model) |m| try argv.appendSlice(arena, &.{ "--subagent-model", m });
-    if (allow_cross_provider_subagents) try argv.append(arena, "--allow-cross-provider-subagents");
-    if (max_tools) |n| try argv.appendSlice(arena, &.{ "--max-tool-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
-    if (max_models) |n| try argv.appendSlice(arena, &.{ "--max-model-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
-    if (dedupe_tools) try argv.append(arena, "--dedupe-tool-calls");
-    if (sys) |s| try argv.appendSlice(arena, &.{ "--system-prompt", s });
-    if (append_sys) |s| try argv.appendSlice(arena, &.{ "--append-system-prompt", s });
-
-    var child = std.process.spawn(io, .{
-        .argv = argv.items,
-        .stdin = .pipe,
-        .stdout = .pipe,
-        .stderr = .inherit, // tool progress → the server's terminal
-    }) catch return respondJson(st, req, .internal_server_error, "{\"error\":\"failed to spawn harness child\"}");
-
-    const rbuf = gpa.alloc(u8, serve_line_cap) catch {
-        child.kill(io);
-        return error.WriteFailed;
-    };
-    const sess = gpa.create(ServeSession) catch {
-        gpa.free(rbuf);
-        child.kill(io);
-        return error.WriteFailed;
-    };
-    var raw: [8]u8 = undefined;
-    io.random(&raw);
-    sess.* = .{ .id = undefined, .child = child, .rdr = undefined, .rbuf = rbuf };
-    _ = std.fmt.bufPrint(&sess.id, "{x:0>16}", .{std.mem.readInt(u64, &raw, .big)}) catch unreachable;
-    sess.rdr = sess.child.stdout.?.readerStreaming(io, sess.rbuf);
-
-    st.mutex.lockUncancelable(io);
-    const appended = blk: {
-        st.sessions.append(gpa, sess) catch break :blk false;
-        break :blk true;
-    };
-    st.mutex.unlock(io);
-    if (!appended) {
-        sess.child.kill(io);
-        gpa.free(sess.rbuf);
-        gpa.destroy(sess);
-        return error.WriteFailed;
-    }
-    serveLog(io, "serve: session {s} created (model={s} yolo={})", .{ &sess.id, model orelse "default", yolo });
-    var obuf: [64]u8 = undefined;
-    const out = std.fmt.bufPrint(&obuf, "{{\"session_id\":\"{s}\"}}", .{&sess.id}) catch unreachable;
-    return respondJson(st, req, .created, out);
+pub fn freeSession(st: *ServeState, sess: *ServeSession) void {
+    sess.log.close();
+    st.gpa.free(sess.rbuf);
+    st.gpa.free(sess.name);
+    st.gpa.free(sess.log_path);
+    st.gpa.destroy(sess);
 }
 
 /// POST /v1/sessions/<id>: forward one protocol request line to the child and
 /// stream its stdout events back as chunked NDJSON until the terminal event
 /// for that request (turn/error for user turns; system_prompt/score acks).
-fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8) !void {
+/// `?from=N` (or `"resume_from": N` in the body) replays persisted events with
+/// seq >= N first, so a reconnecting supervisor never has a hole.
+fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8, from_query: ?u64) !void {
     const io = st.io;
     const gpa = st.gpa;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -349,8 +279,14 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8) 
     if (parsed != .object or std.mem.indexOfScalar(u8, line, '\n') != null)
         return respondJson(st, req, .bad_request, "{\"error\":\"body must be a single-line JSON object\"}");
 
+    const from = from_query orelse blk: {
+        const v = parsed.object.get("resume_from") orelse break :blk null;
+        break :blk if (v == .integer and v.integer > 0) @as(u64, @intCast(v.integer)) else null;
+    };
     const rtype = if (parsed.object.get("type")) |v| (if (v == .string) v.string else "") else "";
     if (std.mem.eql(u8, rtype, "answer")) return serveAnswer(st, req, s, line, parsed.object);
+    // A pure reconnect: replay + tail, send nothing new to the child.
+    if (std.mem.eql(u8, rtype, "reattach")) return serveFollow(st, req, id, from orelse 1);
 
     s.busy.lockUncancelable(io); // serialize requests per session
     defer s.busy.unlock(io);
@@ -365,40 +301,126 @@ fn serveMessage(st: *ServeState, req: *std.http.Server.Request, id: []const u8) 
 
     var stream_buf: [16 * 1024]u8 = undefined;
     var bw = req.respondStreaming(&stream_buf, .{
-        .respond_options = .{
-            .extra_headers = if (st.cfg.token != null) &serve_ndjson_cors_headers else &serve_ndjson_headers,
-        },
+        .respond_options = .{ .extra_headers = serveNdjsonHeaders(st) },
     }) catch return error.WriteFailed;
+    // Replayed events all predate the request we just sent, so the client sees
+    // one ordered, gap-free sequence: the tail it missed, then the live turn.
+    var client_alive = true;
+    if (from) |n| {
+        if (Io.Dir.cwd().readFileAlloc(io, s.log_path, arena, .limited(events.max_log_bytes))) |data| {
+            _ = events.replay(&bw.writer, data, n) catch {
+                client_alive = false;
+            };
+            bw.flush() catch {
+                client_alive = false;
+            };
+        } else |_| {}
+    }
+
+    s.in_flight.store(true, .release);
+    defer s.in_flight.store(false, .release);
     while (true) {
         const ev_line = s.rdr.interface.takeDelimiter('\n') catch |err| switch (err) {
-            error.StreamTooLong => {
-                bw.writer.writeAll("{\"type\":\"error\",\"message\":\"event line exceeded the 1 MiB serve cap — session closed\"}\n") catch {};
-                bw.end() catch {};
-                serveDrop(st, s);
-                return;
-            },
-            error.ReadFailed => {
-                bw.writer.writeAll("{\"type\":\"error\",\"message\":\"session process exited mid-request\"}\n") catch {};
-                bw.end() catch {};
-                serveDrop(st, s);
-                return;
-            },
-        } orelse {
-            bw.writer.writeAll("{\"type\":\"error\",\"message\":\"session process exited mid-request\"}\n") catch {};
-            bw.end() catch {};
-            serveDrop(st, s);
-            return;
-        };
+            error.StreamTooLong => return serveAbort(st, s, &bw, client_alive, "event line exceeded the 1 MiB serve cap — session closed"),
+            error.ReadFailed => return serveAbort(st, s, &bw, client_alive, "session process exited mid-request"),
+        } orelse return serveAbort(st, s, &bw, client_alive, "session process exited mid-request");
         const trimmed = std.mem.trim(u8, ev_line, " \t\r");
         if (trimmed.len == 0) continue;
         serveUpdateAnswerState(io, s, trimmed);
-        bw.writer.writeAll(trimmed) catch return;
-        bw.writer.writeByte('\n') catch return;
-        bw.flush() catch return; // deliver each event as it happens
-        if (serveTerminalEvent(trimmed)) {
+        // Persist BEFORE the socket: the tape has to survive a client that is
+        // already gone, or a reconnect would find the run stalled at the
+        // moment the supervisor died.
+        s.log.append(trimmed);
+        if (events.seqOf(trimmed)) |q| s.last_seq = @max(s.last_seq, q);
+        if (client_alive) {
+            bw.writer.writeAll(trimmed) catch {
+                client_alive = false;
+            };
+            if (client_alive) bw.writer.writeByte('\n') catch {
+                client_alive = false;
+            };
+            if (client_alive) bw.flush() catch {
+                client_alive = false;
+            }; // deliver each event as it happens
+        }
+        if (events.terminalEvent(trimmed)) {
             serveClearAnswerState(io, s);
             break;
         }
+    }
+    if (client_alive) bw.end() catch return;
+}
+
+/// The child died (or overran the line cap) mid-request: record a terminal
+/// error on the tape with the next sequence id — a reconnecting client must
+/// see the failure, not a hole — then drop the session.
+fn serveAbort(st: *ServeState, s: *ServeSession, bw: anytype, client_alive: bool, message: []const u8) void {
+    s.last_seq += 1;
+    var buf: [256]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "{{\"seq\":{d},\"type\":\"error\",\"message\":\"{s}\"}}", .{ s.last_seq, message }) catch
+        "{\"type\":\"error\",\"message\":\"session process exited mid-request\"}";
+    s.log.append(line);
+    if (client_alive) {
+        bw.writer.writeAll(line) catch {};
+        bw.writer.writeByte('\n') catch {};
+        bw.end() catch {};
+    }
+    serveDrop(st, s);
+}
+
+/// GET /v1/sessions/<id>/events?from=N (and the `{"type":"reattach"}` POST):
+/// replay the persisted tape from seq N, then keep tailing it live while a
+/// request is in flight. Takes no protocol lock and never writes to the child,
+/// so it works while another connection is mid-turn — that connection keeps
+/// draining the child into the log even after ITS socket dies.
+fn serveFollow(st: *ServeState, req: *std.http.Server.Request, id: []const u8, from: u64) !void {
+    const io = st.io;
+    const gpa = st.gpa;
+    if (!events.validName(id)) return respondJson(st, req, .bad_request, "{\"error\":\"bad session id\"}");
+    st.mutex.lockUncancelable(io);
+    const sess = st.find(id);
+    st.mutex.unlock(io);
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const log_path = if (sess) |s| s.log_path else try events.logPath(arena, id);
+    // A session this bridge never spawned is still replayable from its tape:
+    // that is exactly the supervisor-crash case.
+    if (sess == null) {
+        if (Io.Dir.cwd().statFile(io, log_path, .{})) |_| {} else |_| {
+            return respondJson(st, req, .not_found, "{\"error\":\"no such session\"}");
+        }
+    }
+
+    const buf = gpa.alloc(u8, serve_line_cap + 4096) catch return error.WriteFailed;
+    defer gpa.free(buf);
+    var follower = events.Follower.open(io, .cwd(), log_path, buf, 0);
+    defer follower.close();
+
+    var stream_buf: [16 * 1024]u8 = undefined;
+    var bw = req.respondStreaming(&stream_buf, .{
+        .respond_options = .{ .extra_headers = serveNdjsonHeaders(st) },
+    }) catch return error.WriteFailed;
+    var next_from = from;
+    var idle: usize = 0;
+    while (true) {
+        const chunk = follower.poll();
+        if (chunk.len > 0) {
+            const replayed = events.replay(&bw.writer, chunk, next_from) catch break;
+            if (replayed.emitted > 0) {
+                next_from = replayed.last_seq + 1;
+                bw.flush() catch break;
+                if (replayed.terminal) break; // the request this client was watching ended
+            }
+            idle = 0;
+            continue;
+        }
+        const s = sess orelse break; // cold replay of a dead session: tape only
+        if (!s.in_flight.load(.acquire)) break; // idle session: the tape is complete
+        idle += 1;
+        if (idle > follow_max_polls) break;
+        io.sleep(.fromMilliseconds(follow_poll_ms), .awake) catch break;
     }
     bw.end() catch return;
 }
@@ -428,9 +450,9 @@ fn serveAnswer(st: *ServeState, req: *std.http.Server.Request, s: *ServeSession,
 }
 
 fn serveUpdateAnswerState(io: Io, s: *ServeSession, line: []const u8) void {
-    const ty = serveStringField(line, "type") orelse return;
+    const ty = events.stringField(line, "type") orelse return;
     if (!std.mem.eql(u8, ty, "ask_user")) return;
-    const call_id = serveStringField(line, "call_id") orelse "";
+    const call_id = events.stringField(line, "call_id") orelse "";
     s.answer_mu.lockUncancelable(io);
     defer s.answer_mu.unlock(io);
     const n = @min(call_id.len, s.answer_call_id.len);
@@ -439,57 +461,11 @@ fn serveUpdateAnswerState(io: Io, s: *ServeSession, line: []const u8) void {
     s.awaiting_answer = true;
 }
 
-fn serveStringField(line: []const u8, field: []const u8) ?[]const u8 {
-    var needle_buf: [64]u8 = undefined;
-    if (field.len + 4 > needle_buf.len) return null;
-    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":\"", .{field}) catch return null;
-    const start = std.mem.indexOf(u8, line, needle) orelse return null;
-    var i = start + needle.len;
-    while (i < line.len) : (i += 1) {
-        if (line[i] == '\\') {
-            i += 1;
-            continue;
-        }
-        if (line[i] == '"') return line[start + needle.len .. i];
-    }
-    return null;
-}
-
 fn serveClearAnswerState(io: Io, s: *ServeSession) void {
     s.answer_mu.lockUncancelable(io);
     defer s.answer_mu.unlock(io);
     s.awaiting_answer = false;
     s.answer_call_id_len = 0;
-}
-
-/// Is this child event line the terminal event of a protocol request?
-/// turn/error end user turns; system_prompt and score are between-turn acks.
-/// Unknown event types stream through (edge-version durability) — a newer
-/// child must still terminate every request with one of these four.
-fn serveTerminalEvent(line: []const u8) bool {
-    var scratch: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&scratch);
-    // Only the leading "type" field matters; events put it first, so parsing
-    // a truncated prefix is enough even for MiB-sized tool_result lines.
-    const head = line[0..@min(line.len, 256)];
-    var t: []const u8 = "";
-    if (std.json.parseFromSliceLeaky(Value, fba.allocator(), line, .{})) |v| {
-        if (v == .object) if (v.object.get("type")) |ty| if (ty == .string) {
-            t = ty.string;
-        };
-    } else |_| {
-        // Huge line: fall back to a prefix scan for {"type":"..."}.
-        const needle = "\"type\":\"";
-        if (std.mem.indexOf(u8, head, needle)) |i| {
-            const rest = head[i + needle.len ..];
-            if (std.mem.indexOfScalar(u8, rest, '"')) |j| t = rest[0..j];
-        }
-    }
-    return std.mem.eql(u8, t, "turn") or std.mem.eql(u8, t, "error") or
-        std.mem.eql(u8, t, "system_prompt") or std.mem.eql(u8, t, "score") or
-        std.mem.eql(u8, t, "model") or std.mem.eql(u8, t, "compact") or
-        std.mem.eql(u8, t, "mode") or std.mem.eql(u8, t, "agent") or
-        std.mem.eql(u8, t, "effort") or std.mem.eql(u8, t, "fast");
 }
 
 /// Remove a dead session and free it (child already gone or being killed).
@@ -504,23 +480,21 @@ fn serveDrop(st: *ServeState, sess: *ServeSession) void {
     }
     st.mutex.unlock(io);
     sess.child.kill(io); // reaps; harmless if already exited
-    st.gpa.free(sess.rbuf);
-    st.gpa.destroy(sess);
+    freeSession(st, sess);
 }
 
 /// Background reaper for a gracefully-closed session: the child exits on
 /// stdin EOF (after finishing any in-flight turn) and flushes telemetry and
 /// trajectory records on the way out — kill would race (and lose) that flush.
 fn serveReap(st: *ServeState, sess: *ServeSession) void {
-    const io = st.io;
-    _ = sess.child.wait(io) catch {};
-    st.gpa.free(sess.rbuf);
-    st.gpa.destroy(sess);
+    _ = sess.child.wait(st.io) catch {};
+    freeSession(st, sess);
 }
 
 /// DELETE /v1/sessions/<id>: graceful close. Waits for an in-flight request
 /// to finish streaming (the busy lock), then EOFs the child's stdin and
-/// reaps it in the background.
+/// reaps it in the background. The event log and the session file stay on
+/// disk: closing a session ends the process, not the run's resumability.
 fn serveDelete(st: *ServeState, req: *std.http.Server.Request, id: []const u8) !void {
     const io = st.io;
     st.mutex.lockUncancelable(io);
@@ -551,14 +525,4 @@ test "ctEql: constant-time compare matches std.mem.eql semantics" {
     try std.testing.expect(!ctEql("secret-token", "secret-tokeX"));
     try std.testing.expect(!ctEql("short", "longer-string"));
     try std.testing.expect(ctEql("", ""));
-}
-
-test "serveStringField: extracts a JSON string field, handles escapes and misses" {
-    const line = "{\"type\":\"user\",\"text\":\"hello\"}";
-    try std.testing.expectEqualStrings("user", serveStringField(line, "type").?);
-    try std.testing.expectEqualStrings("hello", serveStringField(line, "text").?);
-    try std.testing.expect(serveStringField(line, "missing") == null);
-    // escaped quote inside the value is skipped, not treated as the terminator
-    const esc = "{\"text\":\"a\\\"b\"}";
-    try std.testing.expectEqualStrings("a\\\"b", serveStringField(esc, "text").?);
 }

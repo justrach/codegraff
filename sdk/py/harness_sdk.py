@@ -457,7 +457,12 @@ class RemoteHarness:
 
     Stdlib-only (urllib): usable anywhere Python runs, no local binary
     needed. Pass yolo=True in most cases — the bridge has no terminal to
-    show permission prompts on."""
+    show permission prompts on.
+
+    #330: sessions are durable. Pass `session="<name>"` and the bridge runs
+    `graff --json --resume <name>`, so a REPLACEMENT bridge given the same
+    name continues the run. Every event carries a monotonic `seq`; after a
+    dropped stream, `reconnect()` replays exactly what was missed."""
 
     def __init__(self, url: str, token: Optional[str] = None,
                  model: Optional[str] = None, yolo: bool = False,
@@ -466,13 +471,22 @@ class RemoteHarness:
                  max_tool_calls: Optional[int] = None,
                  dedupe_tool_calls: bool = False,
                  session_id: Optional[str] = None,
-                 max_model_calls: Optional[int] = None):
+                 max_model_calls: Optional[int] = None,
+                 session: Optional[str] = None):
         self.base = url.rstrip("/")
         self.token = token
+        # #330: highest event seq seen. reconnect() picks up from last_seq + 1.
+        self.last_seq = 0
+        self.info = None
         if session_id is not None:
             self.session_id = session_id
             return
         opts = {}
+        # A durable session name: the bridge runs the child as
+        # `graff --json --resume <session>`, so a REPLACEMENT bridge given the
+        # same name continues the run from its last persisted turn.
+        if session:
+            opts["session"] = session
         if model:
             opts["model"] = model
         if yolo:
@@ -488,7 +502,9 @@ class RemoteHarness:
         if dedupe_tool_calls:
             opts["dedupeToolCalls"] = True
         resp = self._request("POST", "/v1/sessions", opts)
-        self.session_id = json.loads(resp.read())["session_id"]
+        self.info = json.loads(resp.read())
+        self.session_id = self.info["session_id"]
+        self.last_seq = int(self.info.get("last_seq") or 0)
 
     def _request(self, method: str, path: str, body=None):
         headers = {"Content-Type": "application/json",
@@ -504,24 +520,45 @@ class RemoteHarness:
             detail = e.read().decode(errors="replace")[:256]
             raise RuntimeError(f"bridge {method} {path} → {e.code}: {detail}") from None
 
-    def _send(self, payload: dict) -> Iterator[dict]:
-        """POST one protocol request; yield its streamed NDJSON events."""
-        resp = self._request("POST", f"/v1/sessions/{self.session_id}", payload)
+    def _stream(self, resp) -> Iterator[dict]:
         for line in resp:
             line = line.strip()
             if not line:
                 continue
             try:
-                yield json.loads(line)
+                ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            seq = ev.get("seq")
+            if isinstance(seq, int) and seq > self.last_seq:
+                self.last_seq = seq
+            yield ev
 
-    def chat(self, text: str, review: bool = False) -> Iterator[dict]:
+    def _send(self, payload: dict, from_seq: Optional[int] = None) -> Iterator[dict]:
+        """POST one protocol request; yield its streamed NDJSON events.
+        from_seq replays persisted events with seq >= from_seq first."""
+        query = "" if from_seq is None else f"?from={from_seq}"
+        resp = self._request("POST", f"/v1/sessions/{self.session_id}{query}", payload)
+        return self._stream(resp)
+
+    def reconnect(self, from_seq: Optional[int] = None) -> Iterator[dict]:
+        """Re-attach after losing the stream: replay persisted events with
+        seq >= from_seq (default: everything after what this client saw), then
+        follow live until the in-flight request's terminal event. Sends nothing
+        to the model, so it is safe while a turn is running — including from a
+        different process than the one that started it."""
+        start = self.last_seq + 1 if from_seq is None else from_seq
+        resp = self._request("GET", f"/v1/sessions/{self.session_id}/events?from={start}")
+        return self._stream(resp)
+
+    def chat(self, text: str, review: bool = False,
+             from_seq: Optional[int] = None) -> Iterator[dict]:
         """Send a user turn; yield events until (and including) the 'turn'
         event. Raises RuntimeError if the stream ends without one (the
         session process died server-side)."""
         terminal = False
-        for ev in self._send({"type": "review" if review else "user", "text": text}):
+        payload = {"type": "review" if review else "user", "text": text}
+        for ev in self._send(payload, from_seq):
             yield ev
             if ev.get("type") in ("turn", "error"):
                 terminal = True

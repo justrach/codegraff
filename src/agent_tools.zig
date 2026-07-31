@@ -44,6 +44,7 @@ const exec = @import("exec.zig");
 const execTool = exec.execTool;
 
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
+const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
 const tool_results_dir = ".graff/tool-results";
 pub const tool_preview_chars: usize = 2_000;
@@ -397,17 +398,16 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
 
 pub fn emitAskUser(self: *Agent, call_id: []const u8, question: []const u8, input: Value) !void {
     const w = self.out orelse return;
-    var s: std.json.Stringify = .{ .writer = w };
-    try s.beginObject();
-    try s.objectField("type");
-    try s.write("ask_user");
-    try s.objectField("call_id");
-    try s.write(call_id);
-    try s.objectField("question");
-    try s.write(question);
-    try s.objectField("input");
-    try s.write(input);
-    try s.endObject();
+    // Same envelope as Agent.emit — hand-rolled only because `input` is a
+    // std.json.Value; #330's `seq` must ride this line too or a supervisor
+    // would see a hole exactly where it is asked to answer.
+    const ev = .{ .type = "ask_user", .call_id = call_id, .question = question, .input = input };
+    if (main_mod.json_mode) {
+        try protocol_seq.writeEvent(w, ev);
+    } else {
+        var s: std.json.Stringify = .{ .writer = w };
+        try s.write(ev);
+    }
     try w.writeByte('\n');
     try w.flush();
 }

@@ -22,6 +22,7 @@ const schema = @import("schema.zig");
 const models_cache = @import("models_cache.zig");
 const keys_cli = @import("keys_cli.zig");
 const run_budget_mod = @import("run_budget.zig");
+const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
 // prompt_ui (agent_prompt.zig) owns the width-budgeted status line (#209,
 // 600-line goal); prompt() is member-aliased back onto Agent below.
@@ -213,6 +214,11 @@ pub const Agent = struct {
     /// Emit one structured JSONL event to stdout (--json mode). `ev` is any
     /// struct/anonymous struct; field names become JSON keys (a std.json.Value
     /// field, e.g. tool input, serializes correctly). Best-effort.
+    ///
+    /// #330: in --json mode the event is stamped with a monotonic `seq` so a
+    /// supervisor that loses the stream can say exactly where it stopped. The
+    /// counter is bumped inside the same lock that serializes stdout, which is
+    /// what makes the sequence gap-free rather than merely increasing.
     pub fn emit(self: *Agent, ev: anytype) void {
         const w = self.out orelse return;
         // --json: the GUI stream is shared with pool-thread subagent emits
@@ -220,8 +226,12 @@ pub const Agent = struct {
         // land mid-buffer and two writers must never interleave on stdout.
         if (main_mod.json_mode) main_mod.g_gui_mu.lockUncancelable(self.io);
         defer if (main_mod.json_mode) main_mod.g_gui_mu.unlock(self.io);
-        var s: std.json.Stringify = .{ .writer = w };
-        s.write(ev) catch return;
+        if (main_mod.json_mode) {
+            protocol_seq.writeEvent(w, ev) catch return;
+        } else {
+            var s: std.json.Stringify = .{ .writer = w };
+            s.write(ev) catch return;
+        }
         w.writeByte('\n') catch return;
         w.flush() catch return;
     }

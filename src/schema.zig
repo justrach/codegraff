@@ -25,19 +25,9 @@ const schema_protocol_json = @import("schema_protocol.zig").json;
 /// Documentation of the `harness serve` HTTP bridge, embedded verbatim in
 /// `--schema` output. Same request/event contract as the stdio protocol —
 /// one POST = one protocol request, streamed back as NDJSON until that
-/// request's terminal event (turn/error for user turns; the ack for others).
-const schema_serve_json =
-    \\{
-    \\  "transport": "HTTP/1.1 (graff serve, default 127.0.0.1:8787); auth via Authorization: Bearer <token> when --token/HARNESS_SERVE_TOKEN is set (required on non-loopback binds)",
-    \\  "endpoints": [
-    \\    {"method": "GET", "path": "/healthz", "description": "liveness + version, no auth"},
-    \\    {"method": "GET", "path": "/v1/schema", "description": "this schema document"},
-    \\    {"method": "POST", "path": "/v1/sessions", "description": "create a session (a graff --json child); optional JSON body {\"model\",\"subagentProvider\",\"subagentModel\",\"allowCrossProviderSubagents\",\"yolo\",\"system_prompt\",\"append_system_prompt\",\"maxToolCalls\",\"maxModelCalls\",\"dedupeToolCalls\"} overrides serve-level defaults; responds {\"session_id\":\"<16 hex>\"}"},
-    \\    {"method": "POST", "path": "/v1/sessions/{id}", "description": "body is ONE stdio-protocol request object (user / set_system_prompt / set_model / compact / set_mode / set_agent / score / answer); non-answer requests stream application/x-ndjson events until the request's terminal event (turn/error, or the request-specific ack); answer requests return JSON ack while the original user stream continues; one non-answer request in flight per session at a time"},
-    \\    {"method": "DELETE", "path": "/v1/sessions/{id}", "description": "graceful close: waits for any in-flight request, then EOFs the child's stdin"}
-    \\  ]
-    \\}
-;
+/// request's terminal event (turn/error for user turns; the ack for others) —
+/// plus the #330 resumability surface (seq, ?from=N, durable session names).
+const schema_serve_json = @import("schema_serve.zig").json;
 /// Launch flags relevant to SDK clients, embedded verbatim in `--schema`
 /// output so generated clients can surface them as first-class options.
 /// Pinned against learning_privacy.default_mode by a test there: the SDKs are
@@ -386,7 +376,7 @@ fn writeToolEntry(s: *std.json.Stringify, kind: Provider.Kind, name: []const u8,
 /// a per-commit git describe) — bump this only when the schema or JSONL
 /// protocol changes shape, so SDK regeneration stays byte-stable across
 /// commits.
-pub const schema_version = "0.9"; // new `skill` tool (SKILL.md playbooks, skill_docs.zig)
+pub const schema_version = "0.10"; // #330: every --json/serve event carries a monotonic `seq`
 
 /// Emit the machine-readable interface description for `harness --schema`:
 /// providers, models, built-in tools (name/description/parameters), and the
