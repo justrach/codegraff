@@ -396,6 +396,8 @@ flags:
   --allow-cross-provider-subagents
                             consent to worker prompts/code going to another provider
   --yolo                    skip all permission prompts for the session
+  --no-local-tools          embedder mode: hard-disable the built-in bash/file/codedb
+                            tools process-wide (see "Embedder mode" below)
   -p, --print               one-shot print mode (answer on stdout, tool progress on stderr)
   --timing                  show per-tool wall-clock on result lines (✓ (312ms) …)
   --cost                    show running session spend in the prompt ([model · 12k tok · $0.0042])
@@ -670,6 +672,57 @@ Can't spawn a local process (edge runtimes, browsers, other machines)? Run
 HTTP: `@graff-new/sdk/remote` (fetch-only: Workers/Deno/Bun/browsers) and
 Python's `RemoteHarness` (stdlib only). Same method surface, same event stream.
 See [`sdk/README.md`](sdk/README.md).
+
+---
+
+## Embedder mode: run the harness outside the sandbox
+
+If you are embedding graff in a product, the safe shape is to run the agent loop
+on your trusted backend and let it reach an isolated sandbox only through tool
+calls. `--no-local-tools` is what makes that shape enforceable:
+
+```bash
+graff --json --no-local-tools --model gpt-5.5
+
+# same thing, for a process whose argv you don't control:
+GRAFF_NO_LOCAL_TOOLS=1 graff --json
+```
+
+With the gate on, `bash`, `bash_output`, `bash_kill`, `read_file`, `edit_file`,
+`write_file` and `codedb` are hard-disabled for the whole process. It is a gate
+in the binary, not a permission rule the model can talk its way past, and it
+works in two layers because either one alone would be a promise rather than a
+guarantee:
+
+1. those tools are never advertised, so no provider is told they exist;
+2. if a provider hallucinates one anyway, dispatch refuses it with a tool error
+   naming the flag, before anything runs.
+
+Subagents and workflow workers inherit the gate, since they run in the same
+process. `--yolo` does not lift it.
+
+**Where the coding tools come from.** Point graff at your sandbox as an MCP
+server. MCP tools are untouched by the gate, which is the entire point: you
+stand up a thin proxy that maps exec/read/write onto your microVM provider, and
+the model gets those in place of the local ones.
+
+```bash
+graff mcp add sandbox --url https://sandbox-proxy.example.com/mcp
+graff --json --no-local-tools
+```
+
+`webfetch` stays available (plain HTTP from your own host, with no sandbox to
+escape), and so do the orchestration tools: `subagent`, `workflow`, the todo
+list, and `eval`.
+
+**Why it's worth the wiring.** The tenant provider key stays on your backend
+instead of sitting inside the same VM where prompt-injected commands run, so a
+hijacked agent can't read it. Run state lives with your supervisor rather than
+in a disposable machine. And because the sandbox is now something a tool call
+reaches rather than something the harness lives inside, your MCP proxy can
+create the VM lazily, on the first call that actually needs one. Runs that
+answer from model knowledge plus `webfetch` never boot a machine at all: they
+get web-request economics, and no boot-and-provision tax on time to first token.
 
 ---
 
@@ -1200,6 +1253,10 @@ and the GitHub issues for what's in flight:
   (ephemeral container / microVM) so untrusted or destructive steps can't touch
   the host. It's the natural next layer above today's cwd-confinement and
   permission gate, and the safe substrate for hands-off evolutionary runs.
+  [Embedder mode](#embedder-mode-run-the-harness-outside-the-sandbox) is the
+  first half of this today: `--no-local-tools` plus a sandbox MCP server. A
+  first-class sandbox backend (create/exec/read/write/destroy with provider
+  adapters) would remove the proxy you have to write yourself.
 - **Closing the evolution loop end-to-end:** a grounded judge, sync-back of
   fleet trajectories, and automatic promotion of winning agent variants.
 - **Windows support, shell completions + man page, and a config file** for
