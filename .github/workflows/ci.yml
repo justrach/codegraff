@@ -94,6 +94,9 @@ jobs:
       - name: Embedder mode --no-local-tools gate (#330)
         run: python3 scripts/test-no-local-tools.py --graff zig-out/bin/graff
 
+      - name: Embedder mode resumable serve streams (#330)
+        run: python3 scripts/test-serve-resume.py zig-out/bin/graff
+
       - name: Live JSON stream contains no raw stdout lines
         run: python3 scripts/test-json-live.py zig-out/bin/graff
 

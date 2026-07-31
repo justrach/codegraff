@@ -24,14 +24,16 @@ const jobs = @import("jobs.zig");
 const cards = @import("cards.zig");
 const trace = @import("trace.zig");
 const textMessage = @import("messages.zig").textMessage;
+const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
 fn guiEmit(io: Io, ev: anytype) void {
     if (!main_mod.json_mode) return;
     const w = main_mod.g_out orelse return;
     main_mod.g_gui_mu.lockUncancelable(io);
     defer main_mod.g_gui_mu.unlock(io);
-    var s: std.json.Stringify = .{ .writer = w };
-    s.write(ev) catch return;
+    // #330: one shared --json stream, one shared sequence — a pool-thread
+    // subagent emit takes its id under the same lock as the root agent's.
+    protocol_seq.writeEvent(w, ev) catch return;
     w.writeByte('\n') catch return;
     w.flush() catch return;
 }

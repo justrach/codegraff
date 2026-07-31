@@ -19,6 +19,7 @@ const Allocator = std.mem.Allocator;
 const main_mod = @import("main.zig");
 const shapes = @import("shapes.zig");
 const util = @import("util.zig");
+const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
 /// Titles and task labels are free text from the model. Cap them so one absurd
 /// title can never turn a progress line into a megabyte of JSONL.
@@ -65,9 +66,15 @@ pub const TaskEvent = struct {
     status: []const u8,
 };
 
-fn writeLine(w: *Io.Writer, ev: anytype) void {
-    var s: std.json.Stringify = .{ .writer = w };
-    s.write(ev) catch return;
+fn writeLine(w: *Io.Writer, ev: anytype, stamp: bool) void {
+    if (stamp) {
+        // #330: the shared --json stream is one sequence; a workflow event
+        // emitted from a pool thread takes its id from the same counter.
+        protocol_seq.writeEvent(w, ev) catch return;
+    } else {
+        var s: std.json.Stringify = .{ .writer = w };
+        s.write(ev) catch return;
+    }
     w.writeByte('\n') catch return;
 }
 
@@ -75,14 +82,14 @@ fn writeLine(w: *Io.Writer, ev: anytype) void {
 /// throughout: a progress event must never be able to fail a workflow, so every
 /// error path is a silent return.
 fn emit(io: Io, ev: anytype) void {
-    if (g_test_sink) |sink| return writeLine(&sink.writer, ev);
+    if (g_test_sink) |sink| return writeLine(&sink.writer, ev, false);
     if (!main_mod.json_mode) return;
     const w = main_mod.g_out orelse return;
     // The same lock guiEmit/printDelta take: workflow tasks emit from pool
     // threads, and a half-written line would corrupt the SDK's JSONL parse.
     main_mod.g_gui_mu.lockUncancelable(io);
     defer main_mod.g_gui_mu.unlock(io);
-    writeLine(w, ev);
+    writeLine(w, ev, true);
     w.flush() catch return;
 }
 

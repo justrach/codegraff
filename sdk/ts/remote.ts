@@ -7,34 +7,37 @@
 // `harness --json` child over there, and one POST = one protocol request,
 // streamed back as NDJSON until that request's terminal event.
 
-export const HARNESS_VERSION = "0.9";
+export const HARNESS_VERSION = "0.10";
 
 export type ModelName = "MiniMax-M2.5" | "MiniMax-M2.7" | "MiniMax-M3" | "accounts/fireworks/models/deepseek-v4-flash" | "accounts/fireworks/models/deepseek-v4-pro" | "accounts/fireworks/models/glm-5p2" | "accounts/fireworks/models/gpt-oss-120b" | "accounts/fireworks/models/kimi-k2p6" | "accounts/fireworks/models/kimi-k2p7-code" | "accounts/fireworks/models/minimax-m3" | "accounts/fireworks/models/qwen3p7-plus" | "claude-fable-5" | "claude-haiku-4-5" | "claude-opus-4-5" | "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-4.8" | "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-4.6" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-v4-flash" | "deepseek-v4-pro" | "fugu" | "fugu-ultra" | "fugu-ultra-20260615" | "glm-4.5" | "glm-4.7" | "glm-5" | "glm-5.2" | "gpt-5-codex" | "gpt-5.2" | "gpt-5.3-codex-spark" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-pro" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "grok-4.3" | "grok-build" | "k3" | "kimi-for-coding" | "kimi-for-coding-highspeed" | "kimi-k2.6" | "kimi-latest" | "lmstudio" | "mimo-v2-flash" | "mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5-pro-ultraspeed" | "minimax-m3" | "mlx-community/Qwen3.6-27B-OptiQ-4bit" | (string & {});
 export type ToolName = "bash" | "bash_output" | "bash_kill" | "read_file" | "edit_file" | "write_file" | "webfetch" | "skill" | "codedb" | "todo_write" | "todo_read" | "eval" | "ask_user" | "attempt_completion" | "clock_sleep" | "subagent" | "workflow" | "agent_output" | "learn_candidate";
 export type ProviderId = "anthropic" | "codegraff" | "deepseek" | "openai" | "minimax" | "xiaomi" | "kimi" | "moonshot" | "xai" | "zai" | "fugu" | "fireworks" | "mlx" | "lmstudio" | "codex";
 
 /** Events streamed by the bridge (same `--json` contract as the stdio SDK).
+ *  `seq` is a monotonic, gap-free, 1-based per-session id the bridge forwards
+ *  unchanged from the child and persists; reconnect with `?from=seq+1` to pick
+ *  the stream back up exactly where you stopped (#330).
  *  Forward compatibility: a newer (edge) harness may stream event types not
  *  in this union; every loop here only terminates on its request's terminal
  *  event, so unknown events pass through and are safe to ignore. */
 export type Event =
-  | { type: "text"; text: string }
-  | { type: "reasoning"; text: string }
-  | { type: "started"; provider: string; model: string }
-  | { type: "model_call_started"; provider: string; model: string }
-  | { type: "model_call_finished"; provider: string; model: string; ok: boolean; ms: number }
-  | { type: "tool_call"; name: string; input: Record<string, unknown> }
-  | { type: "tool_call_started"; name: string; input: Record<string, unknown> }
-  | { type: "tool_rejected"; name: string; reason: "budget" | "duplicate" | string; input: Record<string, unknown>; message: string }
-  | { type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
-  | { type: "tool_result"; name: string; is_error: boolean; text: string }
-  | { type: "tool_call_finished"; name: string; is_error: boolean; ms: number }
-  | { type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }
-  | { type: "finalizing" }
-  | { type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }
-  | { type: "system_prompt"; ok: boolean; append: boolean; chars: number }
-  | { type: "score"; ok: boolean; prompt_sha: string }
-  | { type: "error"; message: string };
+  | { seq: number; type: "text"; text: string }
+  | { seq: number; type: "reasoning"; text: string }
+  | { seq: number; type: "started"; provider: string; model: string }
+  | { seq: number; type: "model_call_started"; provider: string; model: string }
+  | { seq: number; type: "model_call_finished"; provider: string; model: string; ok: boolean; ms: number }
+  | { seq: number; type: "tool_call"; name: string; input: Record<string, unknown> }
+  | { seq: number; type: "tool_call_started"; name: string; input: Record<string, unknown> }
+  | { seq: number; type: "tool_rejected"; name: string; reason: "budget" | "duplicate" | string; input: Record<string, unknown>; message: string }
+  | { seq: number; type: "ask_user"; call_id: string; question: string; input: Record<string, unknown> }
+  | { seq: number; type: "tool_result"; name: string; is_error: boolean; text: string }
+  | { seq: number; type: "tool_call_finished"; name: string; is_error: boolean; ms: number }
+  | { seq: number; type: "agent_usage"; id: string; ok: boolean; duration_ms: number; tool_calls: number; context_tokens: number; cache_read_tokens: number }
+  | { seq: number; type: "finalizing" }
+  | { seq: number; type: "turn"; text: string; context_tokens: number; cost_usd: number; complete?: boolean; metadata_complete?: boolean }
+  | { seq: number; type: "system_prompt"; ok: boolean; append: boolean; chars: number }
+  | { seq: number; type: "score"; ok: boolean; prompt_sha: string }
+  | { seq: number; type: "error"; message: string };
 
 /** Async (WebCrypto) variant of the trajectory-archive prompt fingerprint:
  *  first 8 bytes of SHA-256, hex (16 chars). */
@@ -63,13 +66,33 @@ export interface RemoteOptions {
   maxModelCalls?: number;
   /** Reject duplicate root tool name+normalized-input calls per turn. */
   dedupeToolCalls?: boolean;
-  /** Attach to an existing session instead of creating one. */
+  /** Attach to an existing LIVE session on this bridge without creating one.
+   *  Skips the create call entirely — use `session` to create-or-resume. */
   sessionId?: string;
+  /** Name a DURABLE session (1-64 chars of [A-Za-z0-9._-]). The bridge runs
+   *  the child as `graff --json --resume <session>` in its workspace, so the
+   *  conversation is autosaved after every turn. Passing the same name to a
+   *  REPLACEMENT bridge picks the run up from the last persisted turn, with
+   *  the event sequence continuing rather than restarting (#330). Omitted:
+   *  the bridge mints a fresh 16-hex name, which is still durable. */
+  session?: string;
+}
+
+/** What the bridge reports when a session is created or resumed. */
+export interface SessionInfo {
+  /** The durable session id — also the graff session name on the server. */
+  session_id: string;
+  /** A session file already existed: this run continues an earlier one. */
+  resumed: boolean;
+  /** Highest seq on the persisted event tape. Reconnect from `last_seq + 1`. */
+  last_seq: number;
 }
 
 export interface ChatOptions {
   prompt: string;
   review?: boolean;
+  /** Replay persisted events with seq >= from before this turn's live ones. */
+  from?: number;
 }
 
 export interface AnswerOptions {
@@ -107,19 +130,37 @@ async function* ndjson(res: Response): AsyncGenerator<Event> {
 const HEX16 = /^[0-9a-f]{16}$/;
 
 /** A session on a remote `harness serve` bridge — the fetch-transport
- *  analogue of the stdio `Harness` class, same method surface. */
+ *  analogue of the stdio `Harness` class, same method surface.
+ *
+ *  Resumability (#330): every event carries a monotonic `seq`, tracked here as
+ *  `lastSeq`. If a stream dies mid-turn, call `reconnect(h.lastSeq + 1)` — the
+ *  bridge kept draining the child into a persisted log the whole time, so you
+ *  get the events you missed and then the live tail. If the whole BRIDGE died,
+ *  point a new `RemoteHarness` at the replacement with the same `session` name
+ *  and the run continues from the last persisted turn. */
 export class RemoteHarness {
   private base: string;
   private token?: string;
   /** Resolves to the session id (creation is lazy-started in the constructor). */
   readonly sessionId: Promise<string>;
+  /** Resolves to the bridge's create/resume report; null when attaching by
+   *  `sessionId` (no create call was made). */
+  readonly info: Promise<SessionInfo | null>;
+  /** Highest `seq` this client has seen. `reconnect(lastSeq + 1)` resumes
+   *  exactly where it stopped; 0 before the first event. */
+  lastSeq = 0;
 
   constructor(opts: RemoteOptions) {
     this.base = opts.url.replace(/\/+$/, "");
     this.token = opts.token;
-    this.sessionId = opts.sessionId
-      ? Promise.resolve(opts.sessionId)
-      : this.create(opts);
+    if (opts.sessionId) {
+      this.sessionId = Promise.resolve(opts.sessionId);
+      this.info = Promise.resolve(null);
+    } else {
+      const created = this.create(opts);
+      this.info = created;
+      this.sessionId = created.then((d) => d.session_id);
+    }
   }
 
   /** Create a session (codegraff parity for `Graff.init`, remote edition). */
@@ -144,8 +185,9 @@ export class RemoteHarness {
     return res;
   }
 
-  private async create(opts: RemoteOptions): Promise<string> {
+  private async create(opts: RemoteOptions): Promise<SessionInfo> {
     const body: Record<string, unknown> = {};
+    if (opts.session) body.session = opts.session;
     if (opts.model) body.model = opts.model;
     if (opts.yolo !== undefined) body.yolo = opts.yolo;
     if (opts.systemPrompt) body.system_prompt = opts.systemPrompt;
@@ -154,27 +196,49 @@ export class RemoteHarness {
     if (opts.maxModelCalls !== undefined) body.maxModelCalls = opts.maxModelCalls;
     if (opts.dedupeToolCalls !== undefined) body.dedupeToolCalls = opts.dedupeToolCalls;
     const res = await this.req("POST", "/v1/sessions", body);
-    const data = (await res.json()) as { session_id: string };
-    return data.session_id;
+    const data = (await res.json()) as SessionInfo;
+    this.lastSeq = data.last_seq ?? 0;
+    return data;
+  }
+
+  /** Track the sequence as events go by, so a reconnect needs no bookkeeping
+   *  from the caller. */
+  private note(ev: Event): Event {
+    if (typeof ev.seq === "number" && ev.seq > this.lastSeq) this.lastSeq = ev.seq;
+    return ev;
   }
 
   /** Send one protocol request; stream its events. */
-  private async *send(payload: Record<string, unknown>): AsyncGenerator<Event> {
+  private async *send(payload: Record<string, unknown>, from?: number): AsyncGenerator<Event> {
     const id = await this.sessionId;
-    const res = await this.req("POST", `/v1/sessions/${id}`, payload);
-    yield* ndjson(res);
+    const q = from === undefined ? "" : `?from=${from}`;
+    const res = await this.req("POST", `/v1/sessions/${id}${q}`, payload);
+    for await (const ev of ndjson(res)) yield this.note(ev);
   }
 
   /** Run one turn; async-iterate events up to and including `turn`/`error`. */
   async *chat(input: string | ChatOptions): AsyncGenerator<Event> {
     const prompt = typeof input === "string" ? input : input.prompt;
     const type = typeof input === "string" || !input.review ? "user" : "review";
+    const from = typeof input === "string" ? undefined : input.from;
     let terminal = false;
-    for await (const ev of this.send({ type, text: prompt })) {
+    for await (const ev of this.send({ type, text: prompt }, from)) {
       yield ev;
       if (ev.type === "turn" || ev.type === "error") { terminal = true; break; }
     }
     if (!terminal) throw new Error("bridge stream ended mid-turn (session process died?)");
+  }
+
+  /** Re-attach to a session after losing the stream: replay persisted events
+   *  with `seq >= from` (default: everything after what this client already
+   *  saw), then follow live until the in-flight request's terminal event.
+   *  Sends nothing to the model, so it is safe to call while a turn is
+   *  running — including from a different process than the one that started
+   *  it. Also the way to read a completed turn you never received. */
+  async *reconnect(from = this.lastSeq + 1): AsyncGenerator<Event> {
+    const id = await this.sessionId;
+    const res = await this.req("GET", `/v1/sessions/${id}/events?from=${from}`);
+    for await (const ev of ndjson(res)) yield this.note(ev);
   }
 
   /** Run a turn and return just the final assistant text. */
