@@ -58,6 +58,11 @@ const shellArgv = jobs.shellArgv;
 const skills = @import("skills.zig");
 const skill_docs = @import("skill_docs.zig");
 const read_file = @import("read_file.zig");
+// #337: edit_file's verified write path, plus the file-tool helpers that moved
+// out with it (this file is at the 600-line ceiling).
+const edit_verify = @import("edit_verify.zig");
+const fsErrorText = edit_verify.fsErrorText;
+const preserveMode = edit_verify.preserveMode;
 const hooks = @import("hooks.zig");
 const telemetry = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
@@ -391,66 +396,10 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         }
         return .{ .text = text };
     }
-    if (std.mem.eql(u8, call.name, "edit_file")) {
-        const path = strField(input, "path") orelse return missingArg(gpa, "path");
-        const old = strField(input, "old_string") orelse return missingArg(gpa, "old_string");
-        const new = strField(input, "new_string") orelse return missingArg(gpa, "new_string");
-        if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, path);
-        const all = tools.json_args.flag(input, "replace_all");
-        if (old.len == 0) return .{ .text = try gpa.dupe(u8, "old_string must not be empty"), .is_error = true };
-
-        // #276 P0-1: resolve under the agent's isolated worktree when set.
-        const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
-        defer if (ctx.agent_cwd != null) gpa.free(resolved);
-
-        const data = Io.Dir.cwd().readFileAlloc(io, resolved, gpa, .limited(1024 * 1024)) catch |err| {
-            if (fsErrorText(gpa, .edit, path, err)) |t| return .{ .text = t, .is_error = true };
-            return err;
-        };
-        defer gpa.free(data);
-        const count = std.mem.count(u8, data, old);
-        if (count == 0) return .{
-            .text = try std.fmt.allocPrint(gpa, "old_string not found in {s} — read_file it and match the existing text exactly", .{path}),
-            .is_error = true,
-        };
-        if (count > 1 and !all) return .{
-            .text = try std.fmt.allocPrint(gpa, "old_string matches {d} places in {s} — include more surrounding context to make it unique, or set replace_all", .{ count, path }),
-            .is_error = true,
-        };
-
-        const replaced = try gpa.alloc(u8, std.mem.replacementSize(u8, data, old, new));
-        defer gpa.free(replaced);
-        _ = std.mem.replace(u8, data, old, new, replaced);
-        if (ctx.snapshots) |snaps| if (!ctx.from_sub) snaps.record(path, data); // pre-edit content for /rewind
-        // #179: capture the file's mode now so the atomic rewrite below can't drop
-        // a 0755 executable bit down to the default 0644.
-        const prev_stat = Io.Dir.cwd().statFile(io, resolved, .{}) catch null;
-        // Premium splice: when the zigrep suite is installed, zigpatch does
-        // the write — an atomic tmp+rename byte-level --all splice (our count
-        // checks above already enforce the uniqueness semantics). Any
-        // failure, including the tool simply not being on PATH, falls back
-        // to the native in-place write below. zigpatch is a separate process
-        // (`.inherit` cwd, #276) so it's handed `resolved` — an absolute path
-        // when isolated — directly, rather than relying on its own cwd.
-        zp: {
-            const run = runCapped(gpa, io, &.{ "zigpatch", resolved, "-p", old, "--all", "--content", new }, 4096, 4096, 0) catch break :zp;
-            defer {
-                gpa.free(run.stdout);
-                gpa.free(run.stderr);
-            }
-            const ok = switch (run.term) {
-                .exited => |code| code == 0,
-                else => false,
-            };
-            if (ok and std.mem.indexOf(u8, run.stdout, "\"ok\":true") != null) {
-                preserveMode(io, resolved, prev_stat); // #179: zigpatch renamed a fresh inode into place
-                return .{ .text = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (zigpatch)", .{ count, path }) };
-            }
-        }
-        try Io.Dir.cwd().writeFile(io, .{ .sub_path = resolved, .data = replaced });
-        preserveMode(io, resolved, prev_stat); // #179: keep the pre-edit mode
-        return .{ .text = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s}", .{ count, path }) };
-    }
+    // #337: the read/splice/write/VERIFY path lives in edit_verify.zig, where
+    // the post-edit check sits ON the success path — a write that did not land
+    // can no longer be reported as `replaced N occurrence(s)`.
+    if (std.mem.eql(u8, call.name, "edit_file")) return edit_verify.execEdit(ctx, input);
     if (std.mem.eql(u8, call.name, "write_file")) {
         const path = strField(input, "path") orelse return missingArg(gpa, "path");
         const content = strField(input, "content") orelse return missingArg(gpa, "content");
@@ -460,6 +409,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         // subagent, so the branch below never runs together with isolation.)
         const resolved: []const u8 = if (ctx.agent_cwd) |base| try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, path }) else path;
         defer if (ctx.agent_cwd != null) gpa.free(resolved);
+        // #337: a write_file racing an edit_file on the same path in the same
+        // assistant turn (agent_tools.zig runs them concurrently) would drop
+        // one of the two. Same stripe as edit_file, so they take turns.
+        const lock = edit_verify.lockPath(io, resolved);
+        defer lock.unlock(io);
         if (ctx.snapshots) |snaps| if (!ctx.from_sub) {
             // capture the prior content (or absence) before overwriting, for /rewind
             const before = Io.Dir.cwd().readFileAlloc(io, resolved, gpa, .limited(4 * 1024 * 1024)) catch null;
@@ -514,81 +468,6 @@ fn codedbCompactRead(gpa: Allocator, io: Io, path: []const u8, start: ?i64, end:
     };
     if (!ok or run.stdout.len == 0) return null;
     return ToolOutput{ .text = try std.fmt.allocPrint(gpa, "{s}\n[compact view — comments/blank lines stripped, line numbers shown; re-read WITHOUT compact before building an edit_file old_string]", .{run.stdout}) };
-}
-
-/// The three native file tools, used to shape a filesystem-error message with
-/// the tool's own name and the right recovery hint (#183).
-const FileOp = enum {
-    read,
-    edit,
-    write,
-    fn tool(self: FileOp) []const u8 {
-        return switch (self) {
-            .read => "read_file",
-            .edit => "edit_file",
-            .write => "write_file",
-        };
-    }
-};
-
-/// Maps an EXPECTED filesystem error from a native file tool to a clear message
-/// naming the tool, the supplied path, and the failure — so the model sees
-/// "read_file: foo.zig does not exist" instead of a bare "error: FileNotFound"
-/// (#183). Returns null for anything outside the usual path/permission set, so
-/// the caller re-throws it onto the generic harness-failure path. Confinement,
-/// symlink, and validation errors are already handled before the fs call and
-/// never reach here. Caller owns the returned slice.
-fn fsErrorText(gpa: Allocator, op: FileOp, path: []const u8, err: anyerror) ?[]u8 {
-    return (switch (err) {
-        // A missing target, or a non-directory used as a path component.
-        error.FileNotFound, error.NotDir => switch (op) {
-            .read => std.fmt.allocPrint(gpa, "read_file: {s} does not exist (paths are relative to the cwd) — check the name, or list the directory with bash `ls`", .{path}),
-            .edit => std.fmt.allocPrint(gpa, "edit_file: {s} does not exist — edit_file only rewrites an existing file; use write_file to create it", .{path}),
-            .write => std.fmt.allocPrint(gpa, "write_file: cannot create {s} — its parent directory does not exist; create it first with bash `mkdir -p`", .{path}),
-        },
-        error.IsDir => std.fmt.allocPrint(gpa, "{s}: {s} is a directory, not a file", .{ op.tool(), path }),
-        error.AccessDenied, error.PermissionDenied => std.fmt.allocPrint(gpa, "{s}: permission denied for {s}", .{ op.tool(), path }),
-        error.NoSpaceLeft => std.fmt.allocPrint(gpa, "write_file: no space left on device writing {s}", .{path}),
-        else => return null,
-    }) catch null;
-}
-
-/// Re-apply a file's saved permission bits after a rewrite. edit_file's atomic
-/// zigpatch splice — and write_file overwriting an existing file — land the new
-/// content on a fresh inode with the default 0644, silently dropping a 0755
-/// executable bit; restore it (#179). `prev` is null for a brand-new file (keep
-/// the default) or when the pre-write stat failed. Best-effort: a chmod failure
-/// never fails the write itself.
-fn preserveMode(io: Io, path: []const u8, prev: ?Io.Dir.Stat) void {
-    const st = prev orelse return;
-    Io.Dir.cwd().setFilePermissions(io, path, st.permissions, .{}) catch {};
-}
-
-test "fsErrorText names the tool, path, and failure (#183)" {
-    const gpa = std.testing.allocator;
-
-    const nf = fsErrorText(gpa, .read, "src/foo.zig", error.FileNotFound).?;
-    defer gpa.free(nf);
-    try std.testing.expect(std.mem.indexOf(u8, nf, "read_file") != null);
-    try std.testing.expect(std.mem.indexOf(u8, nf, "src/foo.zig") != null);
-
-    const ed = fsErrorText(gpa, .edit, "src/bar.zig", error.FileNotFound).?;
-    defer gpa.free(ed);
-    try std.testing.expect(std.mem.indexOf(u8, ed, "edit_file") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ed, "write_file") != null); // points at creation
-
-    const wr = fsErrorText(gpa, .write, "nope/out.txt", error.FileNotFound).?;
-    defer gpa.free(wr);
-    try std.testing.expect(std.mem.indexOf(u8, wr, "write_file") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wr, "parent") != null); // distinguishes a missing parent dir
-
-    const perm = fsErrorText(gpa, .edit, "p", error.AccessDenied).?;
-    defer gpa.free(perm);
-    try std.testing.expect(std.mem.indexOf(u8, perm, "edit_file") != null);
-    try std.testing.expect(std.mem.indexOf(u8, perm, "permission") != null);
-
-    // Errors outside the usual path/permission set fall through to the generic handler.
-    try std.testing.expect(fsErrorText(gpa, .read, "p", error.OutOfMemory) == null);
 }
 
 test "internal learning respects the parent privacy ceiling" {
