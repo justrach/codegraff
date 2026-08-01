@@ -360,13 +360,13 @@ fn companionNativeFallback(bare: []const u8) []const u8 {
 }
 
 pub fn failure(gpa: Allocator, err: anyerror) ToolOutput {
-    // #122: the bare error name is useless advice for an open-file-limit hit —
-    // say what it means and what actually helps.
-    if (err == error.ProcessFdQuotaExceeded) {
-        const text = gpa.dupe(u8, "error: ProcessFdQuotaExceeded — graff hit its open-file limit, usually from many parallel tools/subagents/MCP servers in one turn. Retry the failed calls sequentially (less parallel fan-out); if it recurs, raise the limit (`ulimit -n 4096`) before starting graff.") catch return .{ .is_error = true };
-        return .{ .text = text, .is_error = true };
-    }
-    const text = std.fmt.allocPrint(gpa, "error: {t}", .{err}) catch return .{ .is_error = true };
+    // #122/#253: a bare error name is useless advice for an fd-limit hit — say
+    // what it means and what helps. ulimit cannot fix SYSTEM-wide exhaustion.
+    const text = (switch (err) {
+        error.ProcessFdQuotaExceeded => gpa.dupe(u8, "error: ProcessFdQuotaExceeded — graff hit its open-file limit, usually from many parallel tools/subagents/MCP servers in one turn. Retry the failed calls sequentially (less parallel fan-out); if it recurs, raise the limit (`ulimit -n 4096`) before starting graff."),
+        error.SystemFdQuotaExceeded => gpa.dupe(u8, "error: SystemFdQuotaExceeded — the SYSTEM-wide open-file table is full, so `ulimit` will not help. Wait for other processes to release files (or close some applications), then retry sequentially."),
+        else => std.fmt.allocPrint(gpa, "error: {t}", .{err}),
+    }) catch return .{ .is_error = true };
     return .{ .text = text, .is_error = true };
 }
 
