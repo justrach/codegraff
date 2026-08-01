@@ -30,6 +30,7 @@ pub const ToolCall = struct {
 pub const ExecResult = struct {
     text: []const u8,
     is_error: bool,
+    cancelled: bool = false, // ended by user Esc, not by failing (#266)
     ms: i64 = 0, // wall-clock of the tool exec (external tools only; --timing)
 };
 
@@ -76,6 +77,7 @@ pub const json_args = @import("json_args.zig");
 pub const ToolOutput = struct {
     text: []u8 = &.{}, // gpa-owned
     is_error: bool = false,
+    cancelled: bool = false, // ended by user Esc, not by failing (#266)
     ms: i64 = 0, // set by execTool
 };
 
