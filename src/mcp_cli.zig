@@ -3,6 +3,12 @@
 //! MCP consent prompt. Split out of main.zig (600-line goal). Back-imports main
 //! for mcp_config_path (.mcp.json) and the companion_servers allowlist. main
 //! aliases countMcpServers / persistMcpServer / mcpCommand back.
+//!
+//! Reads go through mcp_config.zig, so `list`, `login` and the consent count
+//! all see the workspace file merged with the user-level
+//! `~/.codegraff/mcp.json` (#345). Writes deliberately do not: `mcp add` and
+//! the `persistMcp*` helpers still target the project .mcp.json only, so
+//! adding a server to one repository never edits every other one.
 
 const std = @import("std");
 const Io = std.Io;
@@ -12,6 +18,7 @@ const Allocator = std.mem.Allocator;
 const root = @import("main.zig");
 const skills = @import("skills.zig");
 const mcp = @import("mcp.zig");
+const mcp_config = @import("mcp_config.zig");
 const mcp_oauth = @import("mcp_oauth.zig");
 const mcp_config_path = root.mcp_config_path;
 const companion_servers = skills.companion_servers;
@@ -31,20 +38,19 @@ fn trustedMcpEntry(name: []const u8, cfg: Value) bool {
     return a0 == .string and std.mem.eql(u8, a0.string, "--mcp");
 }
 
-/// Count the workspace .mcp.json servers that actually need consent at
-/// startup (0 if none/missing; trusted companion entries are exempt — see
-/// trustedMcpEntry). Used to gate auto-spawning untrusted workspace servers.
-pub fn countMcpServers(io: Io, arena: Allocator) usize {
-    const data = Io.Dir.cwd().readFileAlloc(io, mcp_config_path, arena, .limited(1 << 20)) catch return 0;
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return 0;
-    if (v != .object) return 0;
-    const servers = v.object.get("mcpServers") orelse return 0;
-    if (servers != .object) return 0;
+/// Count the servers in an already-merged config that actually need consent at
+/// startup (0 if none; trusted companion entries are exempt — see
+/// trustedMcpEntry). Takes the `Merged` rather than loading it so the caller
+/// keeps the invalid-file flags it needs to report, instead of the load
+/// happening twice with the diagnosis thrown away once. A global entry is no
+/// more trusted than a workspace one: it can run local commands or ship data
+/// off-box just the same, so it is counted and gated identically.
+pub fn countMcpServers(merged: mcp_config.Merged) usize {
     var n: usize = 0;
-    var it = servers.object.iterator();
+    var it = merged.servers.iterator();
     while (it.next()) |entry| {
-        // `smolify` is a reserved core server; workspace entries cannot shadow
-        // its pinned endpoint and therefore need no workspace consent.
+        // `smolify` is a reserved core server; configured entries cannot shadow
+        // its pinned endpoint and therefore need no consent.
         if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
         if (!trustedMcpEntry(entry.key_ptr.*, entry.value_ptr.*)) n += 1;
     }
@@ -138,7 +144,7 @@ pub fn persistMcpUrl(io: Io, arena: Allocator, name: []const u8, url: []const u8
 fn mcpCliUsage(w: *Io.Writer) !void {
     try w.writeAll(
         \\usage:
-        \\  graff mcp                      list servers in .mcp.json
+        \\  graff mcp                      list servers in .mcp.json + ~/.codegraff/mcp.json
         \\  graff mcp add <name> --url <https://...> [--header KEY=VALUE ...]
         \\  graff mcp login <name>        OAuth login for a remote server
         \\  graff mcp add <name> [--env KEY=VALUE ...] -- <command> [args...]
@@ -155,30 +161,20 @@ fn mcpCliUsage(w: *Io.Writer) !void {
     );
 }
 
-pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, args: []const []const u8) !void {
+pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, environ_map: anytype, args: []const []const u8) !void {
     var obuf: [4096]u8 = undefined;
     var out = Io.File.stdout().writer(io, &obuf);
+    // Reads (list/login) see project + global; writes stay project-local.
+    const global_path = mcp_config.globalPath(arena, home, environ_map);
 
     if (args.len == 0 or std.mem.eql(u8, args[0], "list")) {
-        const data = Io.Dir.cwd().readFileAlloc(io, mcp_config_path, arena, .limited(1 << 20)) catch |err| switch (err) {
-            error.FileNotFound => {
-                try out.interface.writeAll("no .mcp.json yet. Add one with `graff mcp add <name> -- <command> [args...]`.\n");
-                try out.interface.flush();
-                return;
-            },
-            else => return err,
-        };
-        const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch {
-            try out.interface.writeAll(".mcp.json is not valid JSON.\n");
-            try out.interface.flush();
-            return;
-        };
-        const servers = if (v == .object) v.object.get("mcpServers") else null;
-        if (servers == null or servers.? != .object or servers.?.object.count() == 0) {
-            try out.interface.writeAll("no MCP servers configured. Add one with `graff mcp add <name> -- <command> [args...]`.\n");
+        const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path);
+        try mcp_config.reportInvalid(merged, &out.interface, mcp_config_path, global_path, "", "");
+        if (merged.servers.count() == 0) {
+            try out.interface.writeAll("no MCP servers configured. Add one with `graff mcp add <name> -- <command> [args...]`,\nor list servers for every project in ~/" ++ mcp_config.global_rel_path ++ ".\n");
         } else {
-            try out.interface.print("{d} MCP server(s) in .mcp.json:\n", .{servers.?.object.count()});
-            var it = servers.?.object.iterator();
+            try out.interface.print("{d} MCP server(s):\n", .{merged.servers.count()});
+            var it = merged.servers.iterator();
             while (it.next()) |entry| {
                 const cfg = entry.value_ptr.*;
                 if (cfg != .object) continue;
@@ -191,6 +187,9 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, ar
                         if (arg == .string) try out.interface.print(" {s}", .{arg.string});
                     };
                 }
+                // Only what the project does not define is tagged: an entry the
+                // workspace overrides is the workspace's, not the user's.
+                if (merged.isGlobalOnly(entry.key_ptr.*)) try out.interface.writeAll("  (global)");
                 try out.interface.writeByte('\n');
             }
         }
@@ -214,14 +213,16 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, ar
         const url = if (std.mem.eql(u8, name, "smolify"))
             mcp.smolify_url
         else url: {
-            const data = Io.Dir.cwd().readFileAlloc(io, mcp_config_path, arena, .limited(1 << 20)) catch
-                std.process.fatal("mcp login: no .mcp.json; add the remote server first", .{});
-            const config = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch
-                std.process.fatal("mcp login: .mcp.json is not valid JSON", .{});
-            if (config != .object) std.process.fatal("mcp login: .mcp.json is not an object", .{});
-            const servers = config.object.get("mcpServers") orelse std.process.fatal("mcp login: server '{s}' is not configured", .{name});
-            if (servers != .object) std.process.fatal("mcp login: mcpServers is not an object", .{});
-            const entry = servers.object.get(name) orelse std.process.fatal("mcp login: server '{s}' is not configured", .{name});
+            // Global servers are loginable too — the merged set is the same one
+            // the session connects from.
+            const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path);
+            // Say which file is broken before claiming the server is missing:
+            // "not configured" for a server that IS configured, in a file that
+            // does not parse, sends the user looking in the wrong place.
+            try mcp_config.reportInvalid(merged, &out.interface, mcp_config_path, global_path, "", "");
+            try out.interface.flush();
+            if (!merged.found) std.process.fatal("mcp login: no MCP config; add the remote server first", .{});
+            const entry = merged.servers.get(name) orelse std.process.fatal("mcp login: server '{s}' is not configured", .{name});
             if (entry != .object) std.process.fatal("mcp login: server '{s}' has invalid config", .{name});
             const remote = entry.object.get("url") orelse std.process.fatal("mcp login: server '{s}' is not a remote URL server", .{name});
             if (remote != .string or !mcp.validRemoteUrl(remote.string)) std.process.fatal("mcp login: server '{s}' has an invalid URL", .{name});

@@ -47,6 +47,11 @@ const serve_create = @import("serve_create.zig");
 // Moved off main.zig, which is at the 600-line cap.
 const scoring_slot_test = @import("scoring_slot_test.zig");
 
+// #345: the global-vs-project MCP config merge. mcp.zig does reference its
+// decls, but the hook makes the coverage explicit rather than contingent on
+// that staying true.
+const mcp_config = @import("mcp_config.zig");
+
 test {
     _ = learn_holdout;
     _ = learn_receipt;
@@ -63,4 +68,5 @@ test {
     _ = serve_events;
     _ = serve_create;
     _ = scoring_slot_test;
+    _ = mcp_config;
 }

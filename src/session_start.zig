@@ -36,6 +36,7 @@ const skills = @import("skills.zig");
 const anim = @import("anim.zig");
 const mcp = @import("mcp.zig");
 const mcp_cli = @import("mcp_cli.zig");
+const mcp_config = @import("mcp_config.zig");
 const jobs = @import("jobs.zig");
 const trace = @import("trace.zig");
 const scoring = @import("scoring.zig");
@@ -347,30 +348,52 @@ pub fn initTelemetry(io: Io, gpa: Allocator, client: *std.http.Client, environ_m
     };
 }
 
-/// MCP servers from .mcp.json. SECURITY: a workspace .mcp.json launches
-/// arbitrary local commands, so opening an untrusted repo could run them.
-/// Auto-connect only with --yolo (trusted) or explicit per-session consent
-/// (prompted here); otherwise starts with an empty (but live) registry so
-/// `/mcp add` still works. Moved out of main() (600-line goal). Returns the
-/// Registry by value — mcp.Registry holds no self-references (its storage
-/// is ArrayList/HashMap-backed), so returning it is safe.
+/// MCP servers from the workspace .mcp.json merged with the user-level
+/// ~/.codegraff/mcp.json (#345). SECURITY: either file launches arbitrary local
+/// commands, so opening an untrusted repo could run them — and a global entry
+/// is no safer, it just follows the user everywhere. Auto-connect only with
+/// --yolo (trusted) or explicit per-session consent (prompted here); otherwise
+/// starts with an empty (but live) registry so `/mcp add` still works. Moved
+/// out of main() (600-line goal). Returns the Registry by value — mcp.Registry
+/// holds no self-references (its storage is ArrayList/HashMap-backed), so
+/// returning it is safe.
 pub fn initRegistryConsent(io: Io, gpa: Allocator, arena: Allocator, out: *Io.Writer, in: *Io.Reader, flags: args.Flags, mcp_config_path: []const u8, home: []const u8, use_color: bool, json_mode: bool, environ_map: anytype) !mcp.Registry {
-    const mcp_count = mcp_cli.countMcpServers(io, arena);
+    const global_path = mcp_config.globalPath(arena, home, environ_map);
+    // --json's stdout is a JSONL stream and a one-shot's is the answer; neither
+    // can carry chatter. With a global config `mcp_count > 0` in every project,
+    // so an unguarded line here would corrupt the head of every --json run.
+    const quiet = json_mode or flags.oneshot_prompt != null;
+    const merged = mcp_config.load(io, arena, Io.Dir.cwd(), mcp_config_path, global_path);
+    if (!quiet) {
+        // Reported here rather than in `Registry.init`, which never runs when
+        // consent is declined — a config that does not parse must be named
+        // either way.
+        try mcp_config.reportInvalid(merged, out, mcp_config_path, global_path, ansi.style.dim, ansi.style.reset);
+        // A config graff does not read is worse than no config: say so once.
+        if (mcp_config.unsupportedConfigPresent(io, arena, home))
+            try out.print("{s}ignoring ~/" ++ mcp_config.unsupported_rel_path ++ ": unsupported path — use ~/" ++ mcp_config.global_rel_path ++ " (global) or {s} (project){s}\n", .{ ansi.style.dim, mcp_config_path, ansi.style.reset });
+    }
+    const mcp_count = mcp_cli.countMcpServers(merged);
     var connect_mcp = flags.yolo_flag or mcp_count == 0;
     if (mcp_count > 0 and !flags.yolo_flag and !json_mode and use_color) {
-        try out.print("{s}⚠ this workspace's .mcp.json defines {d} untrusted MCP server(s). They may run local commands or receive data over the network. Connect them this session? [y/N] {s}", .{ ansi.style.bold, mcp_count, ansi.style.reset });
+        try out.print("{s}⚠ {d} untrusted MCP server(s) are configured for this session (.mcp.json and/or ~/" ++ mcp_config.global_rel_path ++ "). They may run local commands or receive data over the network. Connect them this session? [y/N] {s}", .{ ansi.style.bold, mcp_count, ansi.style.reset });
         try out.flush();
         const ans = in.takeDelimiter('\n') catch null;
         connect_mcp = ans != null and ans.?.len > 0 and (ans.?[0] == 'y' or ans.?[0] == 'Y');
     }
-    return if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, home, environ_map) catch |err| inner: {
+    var registry: mcp.Registry = if (connect_mcp) ((mcp.Registry.init(gpa, io, mcp_config_path, global_path, home, environ_map) catch |err| inner: {
         try out.print("[mcp] init failed: {t} — continuing without MCP\n", .{err});
         if (telemetry.g_telem) |t| t.errorEvent("mcp", @errorName(err));
         break :inner null;
     }) orelse mcp.Registry.emptyWithOAuthHome(gpa, io, home)) else outer: {
-        if (mcp_count > 0) try out.print("{s}skipped {d} workspace MCP server(s) — /mcp trust to connect them now (or re-run with --yolo){s}\n", .{ ansi.style.dim, mcp_count, ansi.style.reset });
+        if (mcp_count > 0 and !quiet) try out.print("{s}skipped {d} MCP server(s) — /mcp trust to connect them now (or re-run with --yolo){s}\n", .{ ansi.style.dim, mcp_count, ansi.style.reset });
         break :outer mcp.Registry.emptyWithOAuthHome(gpa, io, home);
     };
+    // Set on every path, not just `init`'s: `/mcp trust` has to find the global
+    // file precisely when consent was declined and no `init` ever ran. `arena`
+    // is the session arena, so the path outlives the registry.
+    registry.global_config_path = global_path;
+    return registry;
 }
 
 /// Companion auto-activation: if the metered code-intelligence companion

@@ -435,10 +435,12 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
-    // MCP list/add only use workspace config; OAuth login validates HOME itself.
+    // MCP list/login read the workspace config merged with the user-level
+    // ~/.codegraff/mcp.json (hence environ_map, for the GRAFF_MCP_CONFIG
+    // override); add still writes workspace-only. OAuth login validates HOME itself.
     if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "mcp")) {
         const home = keys_cli.homeEnv(init.environ_map) orelse "";
-        try mcp_cli.mcpCommand(io, gpa, arena, home, flags.positionals.items[1..]);
+        try mcp_cli.mcpCommand(io, gpa, arena, home, init.environ_map, flags.positionals.items[1..]);
         return true;
     }
 
