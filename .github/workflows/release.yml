@@ -46,10 +46,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Notes preference: a hand-written docs/releases/<tag>.md wins, then
+          # the tag's CHANGELOG.md section, then GitHub's generated PR list.
           notes=(--generate-notes)
           notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          section="$(awk -v tag="${GITHUB_REF_NAME}" '
+            $1 == "##" && $2 == tag { hit = 1; next }
+            /^## / { hit = 0 }
+            hit { print }
+          ' CHANGELOG.md 2>/dev/null || true)"
           if [ -f "$notes_file" ]; then
             notes=(--notes-file "$notes_file")
+          elif [ -n "$section" ]; then
+            printf '%s\n' "$section" > changelog-notes.md
+            notes=(--notes-file changelog-notes.md)
           fi
           gh release create "$GITHUB_REF_NAME" graff-*.tar.gz SHA256SUMS install.sh \
             --title "$GITHUB_REF_NAME" --draft "${notes[@]}"
