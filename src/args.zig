@@ -50,6 +50,7 @@ pub const Flags = struct {
     subagent_provider_flag: ?[]const u8 = null,
     subagent_model_flag: ?[]const u8 = null,
     allow_cross_provider_subagents_flag: bool = false,
+    no_subagent_tier_flag: bool = false, // --no-subagent-tier: opt out of the default worker tier ladder (#291), keep plain inherit-root
     system_prompt_flag: ?[]const u8 = null,
     append_system_flag: ?[]const u8 = null,
     host_flag: []const u8 = "127.0.0.1", // harness serve
@@ -164,6 +165,8 @@ pub fn parse(init: std.process.Init) !Flags {
                     flags.subagent_model_flag = try arena.dupe(u8, mv);
                 } else if (std.mem.eql(u8, arg, "--allow-cross-provider-subagents")) {
                     flags.allow_cross_provider_subagents_flag = true;
+                } else if (std.mem.eql(u8, arg, "--no-subagent-tier")) {
+                    flags.no_subagent_tier_flag = true;
                 } else if (std.mem.eql(u8, arg, "--system-prompt")) {
                     const sv = it.next() orelse std.process.fatal("--system-prompt needs a value — harness --help", .{});
                     flags.system_prompt_flag = try arena.dupe(u8, sv);

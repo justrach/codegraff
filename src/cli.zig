@@ -90,6 +90,7 @@ pub const usage_text =
     \\  --subagent-model <name>         pin children/workflows/judges on the root provider
     \\  --subagent-provider <id>        route pinned workers through this provider
     \\  --allow-cross-provider-subagents confirm prompts/code may go to the worker provider
+    \\  --no-subagent-tier              opt out of the default worker tier ladder (inherit the root model)
     \\  --resume <name>  resume/autosave <name>.session.json
     \\  --new            start a fresh autosaved session (default)
     \\  --no-resume      ignore --resume and start fresh

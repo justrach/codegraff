@@ -38,6 +38,7 @@ const ServeConfig = struct {
     subagent_provider: ?[]const u8,
     subagent_model: ?[]const u8,
     allow_cross_provider_subagents: bool,
+    no_subagent_tier: bool,
     system_prompt: ?[]const u8,
     append_system_prompt: ?[]const u8,
     max_tool_calls: ?u64,
