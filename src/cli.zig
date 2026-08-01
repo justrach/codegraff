@@ -21,6 +21,14 @@ const harness_version = root.harness_version;
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.0.231
+    \\  • edit_file verifies every edit actually landed on disk; a silent no-op is a loud tool error instead of a false success, and batched same-file edits can no longer race each other
+    \\  • Embedder mode is complete: the hard --no-local-tools gate (MCP-sourced coding tools) plus resumable serve streams with seq ids, ?from=N replay, and durable sessions (schema 0.10)
+    \\
+    \\0.0.229
+    \\  • SKILL.md skills: markdown playbooks in .harness/skills (or .claude/skills) load on demand, cost one catalog line each, and /skills manages them
+    \\  • The bundled skill-creator teaches the full authoring loop, from capturing intent mid-session to forward-testing with fresh subagents
+    \\
     \\0.0.215
     \\  • Local learning can race multiple prompt variants, rank correctness before tool economy, and expose only the winner to a hidden holdout
     \\  • Runs checkpoint safely, keep promotion manual by default, and can bundle an aggregate-only signed grade submission
@@ -42,16 +50,6 @@ pub const changelog_text =
     \\  • A send-failed request no longer re-pools its dead connection, so one network blip can't storm every later compaction, title, and subagent call
     \\  • The "ultracode" codeword is matched only on what you actually typed (not on appended goal/todo notes), and /clear now clears the standing goal and ultracode mode
     \\  • `graff login codex` lands on a branded, dark-mode-aware confirmation page instead of a bare line of text
-    \\
-    \\0.0.200
-    \\  • Codex WS delta bodies are never replayed over SSE — fixes "Unsupported parameter: previous_response_id" after a long idle
-    \\  • The held codex WS now re-anchors preemptively after 4 min idle (GRAFF_CODEX_WS_IDLE_SECS to tune) instead of eating a dead-socket round trip
-    \\  • A server-side previous_response_id rejection now self-heals with one full-input retry
-    \\
-    \\0.0.192
-    \\  • The REPL prompt now shows color-coded reasoning and active mode badges
-    \\  • PTY debugging can script commands, keys, assertions, and terminal dimensions
-    \\  • Interactive prompt redraws and ANSI colors now have a real-PTY CI regression
     \\
 ;
 

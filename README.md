@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Install it on your Mac or Linux machine, sign in with the AI subscription you
+  Install it on your Mac, Linux, or Windows machine, sign in with the AI subscription you
   <em>already have</em>, and hand it real tasks. graff writes and runs code,
   automates the boring stuff, digs through your files, researches the web, and
   runs its own experiments, on its own, until the job is done.<br/>
@@ -17,8 +17,8 @@
 </p>
 
 <p align="center">
-  <img alt="macOS · Linux" src="https://img.shields.io/badge/macOS%20·%20Linux-555">
-  <img alt="One binary, 2.7 MB" src="https://img.shields.io/badge/one%20binary-2.7%20MB-44cc11">
+  <img alt="macOS · Linux · Windows" src="https://img.shields.io/badge/macOS%20·%20Linux%20·%20Windows-555">
+  <img alt="One binary, 3.7 MB" src="https://img.shields.io/badge/one%20binary-3.7%20MB-44cc11">
   <img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-44cc11">
   <img alt="Built in Zig 0.17 dev" src="https://img.shields.io/badge/built%20in-Zig%200.17%20dev-f7a41d?logo=zig&logoColor=white">
 </p>
@@ -102,12 +102,12 @@ context when the conversation gets long.
 Prefer a window over a terminal? Download the latest signed, notarized build, drag it to Applications, and open it. The desktop app is **fully self-contained**: it bundles the `graff` agent, so there's nothing else to install to start coding, and it keeps itself up to date automatically. On first launch it drops two commands on your PATH: `codegraff <path>` (opens that folder in the app, `code`-style) and `graff` itself (the agent CLI, in your terminal), so the one install covers both the window and the command line. The terminal `graff` is symlinked into the app, so it auto-updates along with it. Not on Apple Silicon, or want a standalone CLI? Use the command-line install below.
 
 <p align="center">
-  <a href="https://github.com/justrach/codegraff/releases/latest/download/Codegraff.dmg"><img alt="Download Codegraff for macOS" src="https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
+  <a href="https://github.com/justrach/codegraff/releases/download/v0.0.190/Codegraff.dmg"><img alt="Download Codegraff for macOS" src="https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon-000000?style=for-the-badge&logo=apple&logoColor=white"></a>
   <br/>
   <sub><a href="https://github.com/justrach/codegraff/releases/latest">or browse all releases</a></sub>
 </p>
 
-### Command line: macOS · Linux
+### Command line: macOS · Linux · Windows
 
 Grab the latest prebuilt release binary: macOS builds are Developer ID signed
 and Apple notarized; on any other platform the installer builds from source with
@@ -124,6 +124,12 @@ From a checkout, just run `./install.sh`. The binary lands in `~/bin` by default
 | --------- | ------- |
 | `graff`   | the agent CLI + REPL: the one binary this script installs |
 | `codedb`  | optional code-intelligence companion (structural search/outline/callers). graff auto-detects it and points at the [one-line install](https://github.com/justrach/codedb) if it's missing; everything else works without it |
+| `kuri`    | optional [browser companion](https://github.com/justrach/kuri) backing `webfetch`'s markdown path, web crawling, and the kuri skill. Installed by default alongside graff; opt out with `HARNESS_NO_KURI=1`, never fatal if it fails |
+
+On Windows, grab `graff-x86_64-windows.tar.gz` (or `aarch64`) from the
+[latest release](https://github.com/justrach/codegraff/releases/latest), unpack
+it, and put `graff.exe` on your `PATH`; the shell installer itself is
+Unix-only and points Windows at WSL.
 
 ### Give it a key
 
@@ -473,6 +479,7 @@ other animation names remain available.
 /rewind [n]     list past prompts; /rewind <n> drops prompt n+after & reverts its file edits
 /image <path>   attach an image to your next message (vision models only)
 /paste          attach the clipboard image (macOS); also Ctrl-V (⌘V can't be captured)
+/images         open image URLs from the last response (e.g. issue attachments) in your browser
 /strict         toggle "every message is a tool" mode
 /yolo           toggle bash auto-approval (skip permission prompts)
 /trace          toggle this run's JSONL event trace and show its path
@@ -1219,26 +1226,28 @@ Honest list of what the harness still lacks, roughly in the order it hurts.
 
 **Later:**
 
-2. Windows support (install.sh punts to WSL today).
+2. ~~**Windows support.**~~ **Done, v0.0.167.** Every release ships prebuilt
+   `graff-{x86_64,aarch64}-windows.tar.gz`; install.sh itself is still
+   Unix-only (points Windows at WSL, or unpack the tarball by hand).
 3. Shell completions (zsh/bash) and a man page.
 4. A config file for defaults (`--timing`/`--cost`/model) so flags don't have to
    be retyped.
 5. Esc during *tool execution* (the interrupt currently lands at the next
    stream; a long-running bash call still runs to completion).
-6. Honor `Retry-After` on 429s (the backoff is plain exponential today).
+6. ~~Honor `Retry-After` on 429s.~~ **Done, v0.0.204.** Retry/stall/reconnect
+   handling now matches opencode and codex: `Retry-After` honored, in-stream
+   overload and quota-429s recovered, WS falls back to SSE.
 
-Recently shipped: **v0.1.0** · tagged GitHub release with prebuilt darwin/linux
-binaries · bash output truncates at its 128 KB cap instead of failing the tool
-call (`runCapped`: real exit code, `[truncated]` marker, memory stays flat while
-the child streams gigabytes) · measured performance budgets + the Rust-graff
-bake-off in [architecture.md](architecture.md) · 429/5xx retry with exponential
-backoff (1s·2ⁿ capped at 8s, Esc cancels the wait, `retry` notes in the trace) ·
-`--version` stamped from `git describe` at build time (`-Dversion=X.Y.Z`
-overrides) · Esc coverage from the moment the request is sent, so no more `^[`
-echo while a slow provider connects, and the interrupt lands before the first
-token · bare Esc at the prompt clears the line · one-shot `-p` print mode ·
-persistent approvals (`.harness/settings.json`) · plan mode (`/plan`) · `/clear`
-· bare-`/` command menu · interactive `/resume` picker · context-% statusline.
+Recently shipped (see [CHANGELOG.md](CHANGELOG.md) for the release-by-release
+view): SKILL.md skills with a bundled skill-creator · the local learning loop,
+zero-config and privacy-bounded (`graff learn init`) · `/goal` standing
+objectives with epochs and time budgets, `/loop` folded into the same
+autonomous run · embedder mode (hard `--no-local-tools` gate + resumable
+`serve` streams, schema 0.10) · verified `edit_file` with per-path write
+serialization · provider-robustness parity with opencode/codex (Retry-After,
+in-stream overload, WS→SSE) · kuri browser companion installed by default ·
+`/images` · summarized thinking for Anthropic models · prebuilt Windows
+binaries.
 
 </details>
 
@@ -1246,8 +1255,9 @@ persistent approvals (`.harness/settings.json`) · plan mode (`/plan`) · `/clea
 
 ## Coming soon
 
-Active directions. See the **Status & roadmap** details above for the full list,
-and the GitHub issues for what's in flight:
+Active directions. See [CHANGELOG.md](CHANGELOG.md) for what already landed,
+the **Status & roadmap** details above for the full list, and the GitHub
+issues for what's in flight:
 
 - **Sandboxes.** Run the agent's `bash`/file tools inside an isolated sandbox
   (ephemeral container / microVM) so untrusted or destructive steps can't touch
@@ -1257,10 +1267,11 @@ and the GitHub issues for what's in flight:
   first half of this today: `--no-local-tools` plus a sandbox MCP server. A
   first-class sandbox backend (create/exec/read/write/destroy with provider
   adapters) would remove the proxy you have to write yourself.
-- **Closing the evolution loop end-to-end:** a grounded judge, sync-back of
-  fleet trajectories, and automatic promotion of winning agent variants.
-- **Windows support, shell completions + man page, and a config file** for
-  default flags/model.
+- **Scaling the evolution loop.** The local half shipped in v0.0.219:
+  `graff learn init` runs privacy-bounded background trials and promotes the
+  winning genome into the root prompt. What remains is fleet scale: grounded
+  judging and trajectory sync-back across many installs.
+- **Shell completions + man page, and a config file** for default flags/model.
 
 ---
 
