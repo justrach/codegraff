@@ -277,21 +277,22 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             return true;
         }
         if (std.mem.eql(u8, arg, "trust")) {
-            // Connect workspace .mcp.json servers that were skipped at startup
-            // (consent declined / no --yolo), live, without a restart.
+            // Connect the .mcp.json / ~/.codegraff/mcp.json servers that were
+            // skipped at startup (consent declined / no --yolo), live, without
+            // a restart.
             const n = reg.trustWorkspace(mcp_config_path) catch |err| {
                 try out.print("{s}✗ /mcp trust failed: {t}{s}\n", .{ style.red, err, style.reset });
                 try out.flush();
                 return true;
             };
             if (n == 0) {
-                try out.writeAll("no untrusted workspace MCP server(s) to connect.\n");
+                try out.writeAll("no untrusted MCP server(s) left to connect.\n");
             } else {
                 // Re-render the active catalog; other wire formats remain lazy.
                 root.invalidateRootTools();
                 try root.ensureRootTools(root.provider.kind);
                 root.rebaseContextMeter();
-                try out.print("{s}✓{s} trusted workspace — connected {d} MCP server(s); {d} tool(s) total\n", .{ style.green, style.reset, n, reg.tools.len });
+                try out.print("{s}✓{s} trusted the configured servers — connected {d} MCP server(s); {d} tool(s) total\n", .{ style.green, style.reset, n, reg.tools.len });
             }
             try out.flush();
             return true;
@@ -308,7 +309,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             for (reg.tools) |t| try out.print("    {s}{s}{s}\n", .{ style.dim, t.qualified_name, style.reset });
             try out.writeAll("  add more: /mcp add <name> <command> [args...]\n");
         }
-        if (pending > 0) try out.print("  {s}{d} workspace server(s) not connected — /mcp trust to connect them{s}\n", .{ style.dim, pending, style.reset });
+        if (pending > 0) try out.print("  {s}{d} configured server(s) not connected — /mcp trust to connect them{s}\n", .{ style.dim, pending, style.reset });
         try out.flush();
         return true;
     }

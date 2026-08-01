@@ -1,9 +1,11 @@
 //! Minimal MCP (Model Context Protocol) client over stdio and Streamable HTTP.
 //!
-//! A .mcp.json entry may contain either `command`/`args` (a child process using
-//! newline-delimited JSON-RPC on stdio) or `url` (JSON-RPC POSTs using MCP's
-//! Streamable HTTP transport). Both run the initialize -> initialized ->
-//! tools/list handshake and expose discovered tools to the agent.
+//! A config entry — from the workspace `.mcp.json`, from the user-level
+//! `~/.codegraff/mcp.json`, or from the two merged (mcp_config.zig) — may
+//! contain either `command`/`args` (a child process using newline-delimited
+//! JSON-RPC on stdio) or `url` (JSON-RPC POSTs using MCP's Streamable HTTP
+//! transport). Both run the initialize -> initialized -> tools/list handshake
+//! and expose discovered tools to the agent.
 //!
 //! Concurrency: tool calls arrive from agent pool threads, but transport state
 //! (stdio pipes, HTTP session IDs) is sequential, so every request/response
@@ -14,6 +16,7 @@ const std = @import("std");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
+const mcp_config = @import("mcp_config.zig"); // #345: .mcp.json merged with the user-level ~/.codegraff/mcp.json
 const mcp_http = @import("mcp_http.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
@@ -71,45 +74,56 @@ pub const Registry = struct {
     /// the provider, so the same per-turn handoff refreshes it; false until it
     /// does, so a result explains the drop rather than promising an attachment.
     vision_capable: bool = false,
+    /// Resolved user-level MCP config (`~/.codegraff/mcp.json` or the
+    /// `GRAFF_MCP_CONFIG` override), borrowed from the caller. Null when there
+    /// is no global config. Kept on the registry because `/mcp trust` re-reads
+    /// it mid-session — including on the consent-declined path, where the
+    /// registry came from `empty*` and `init` never ran, so session_start sets
+    /// this field either way.
+    global_config_path: ?[]const u8 = null,
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
     }
 
-    /// Load .mcp.json entries containing either `command`/`args`/`env` or a
-    /// Streamable HTTP `url`, handshake each server, and collect their tools.
-    /// Returns null
-    /// (no error) when the config file is absent — MCP is optional.
-    pub fn init(gpa: Allocator, io: Io, config_path: []const u8, home: []const u8, environ_map: anytype) !?Registry {
-        const text = Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .limited(1 << 20)) catch |err| switch (err) {
-            error.FileNotFound => return null,
-            else => return err,
-        };
-        defer gpa.free(text);
-
+    /// Load the workspace `.mcp.json` merged with the user-level global config
+    /// at `global_path` (see mcp_config.zig; project entries win on a name
+    /// clash), where an entry holds either `command`/`args`/`env` or a
+    /// Streamable HTTP `url`; handshake each server and collect their tools.
+    /// Returns null (no error) when NEITHER file exists — MCP is optional.
+    /// `global_path` is borrowed, not copied: it must outlive the registry,
+    /// which re-reads it on `/mcp trust`.
+    pub fn init(gpa: Allocator, io: Io, config_path: []const u8, global_path: ?[]const u8, home: []const u8, environ_map: anytype) !?Registry {
         var reg: Registry = .{
             .gpa = gpa,
             .io = io,
             .home = home,
             .arena_state = std.heap.ArenaAllocator.init(gpa),
             .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| !std.mem.eql(u8, v, "0") else true,
+            .global_config_path = global_path,
         };
         mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275: GRAFF_MCP_HANDSHAKE_SECS, read on the same pass as the probe flag
 
         errdefer reg.deinit();
         const a = reg.arena();
 
-        const parsed = try std.json.parseFromSliceLeaky(Value, a, text, .{ .allocate = .alloc_always });
-        const servers_obj = (parsed.object.get("mcpServers") orelse return reg).object;
-
+        const merged = mcp_config.load(io, a, Io.Dir.cwd(), config_path, global_path);
+        if (!merged.found) {
+            reg.arena_state.deinit(); // nothing was started; no transports to tear down
+            return null;
+        }
+        // An unparseable file contributes nothing and does not take the other
+        // half down. Naming it is session_start's job, not this one's: it runs
+        // on the consent-declined path too, where `init` is never reached.
         var servers: std.ArrayList(*Server) = .empty;
         var tools: std.ArrayList(Tool) = .empty;
 
-        var it = servers_obj.iterator();
+        var it = merged.servers.iterator();
         while (it.next()) |entry| {
             // The core Smolify name is pinned below and cannot be shadowed by
-            // repository configuration.
+            // repository or user configuration.
             if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
+            if (entry.value_ptr.* != .object) continue;
             const name = try a.dupe(u8, entry.key_ptr.*);
             const cfg = entry.value_ptr.*.object;
             reg.startServer(a, &servers, &tools, name, cfg) catch |err| {
@@ -218,24 +232,19 @@ pub const Registry = struct {
         return added;
     }
 
-    /// Connect any workspace `.mcp.json` servers not already running — the
-    /// in-session equivalent of having started with `--yolo`, so a user who
-    /// declined the startup consent prompt can opt in later without a restart.
-    /// Replays the `init` connect path (so per-server `env` is preserved, which
-    /// `addServer` drops), skipping servers already in the registry by name
-    /// (idempotent: won't double-spawn an auto-activated muonry). Returns the
-    /// number of servers newly connected. Caller must re-render its tool list.
-    /// Run between turns only (no tool calls in flight).
+    /// Connect any configured server not already running — the in-session
+    /// equivalent of having started with `--yolo`, so a user who declined the
+    /// startup consent prompt can opt in later without a restart. Reads the
+    /// same merged project + global set `init` does, so a `~/.codegraff/mcp.json`
+    /// entry is trusted here too. Replays the `init` connect path (so
+    /// per-server `env` is preserved, which `addServer` drops), skipping
+    /// servers already in the registry by name (idempotent: won't double-spawn
+    /// an auto-activated muonry). Returns the number of servers newly
+    /// connected. Caller must re-render its tool list. Run between turns only
+    /// (no tool calls in flight).
     pub fn trustWorkspace(reg: *Registry, config_path: []const u8) !usize {
         const a = reg.arena();
-        const text = Io.Dir.cwd().readFileAlloc(reg.io, config_path, a, .limited(1 << 20)) catch |err| switch (err) {
-            error.FileNotFound => return 0,
-            else => return err,
-        };
-        const parsed = try std.json.parseFromSliceLeaky(Value, a, text, .{ .allocate = .alloc_always });
-        if (parsed != .object) return 0;
-        const servers_v = parsed.object.get("mcpServers") orelse return 0;
-        if (servers_v != .object) return 0;
+        const merged = mcp_config.load(reg.io, a, Io.Dir.cwd(), config_path, reg.global_config_path);
 
         var servers: std.ArrayList(*Server) = .empty;
         try servers.appendSlice(a, reg.servers);
@@ -243,7 +252,7 @@ pub const Registry = struct {
         try tools.appendSlice(a, reg.tools);
         const before = servers.items.len;
 
-        var it = servers_v.object.iterator();
+        var it = merged.servers.iterator();
         while (it.next()) |entry| {
             const name = entry.key_ptr.*;
             if (std.mem.eql(u8, name, "smolify")) continue;
@@ -264,18 +273,15 @@ pub const Registry = struct {
         return servers.items.len - before;
     }
 
-    /// How many workspace `.mcp.json` servers are NOT yet connected — drives
-    /// the `/mcp trust` discoverability hint. Mirrors `trustWorkspace`'s
-    /// skip-by-name logic; best-effort (any read/parse failure → 0).
+    /// How many configured MCP servers are NOT yet connected — drives the
+    /// `/mcp trust` discoverability hint. Mirrors `trustWorkspace`'s
+    /// skip-by-name logic over the same merged (project + global) set;
+    /// best-effort (any read/parse failure contributes nothing).
     pub fn pendingWorkspace(reg: *Registry, config_path: []const u8) usize {
         const a = reg.arena();
-        const text = Io.Dir.cwd().readFileAlloc(reg.io, config_path, a, .limited(1 << 20)) catch return 0;
-        const parsed = std.json.parseFromSliceLeaky(Value, a, text, .{ .allocate = .alloc_always }) catch return 0;
-        if (parsed != .object) return 0;
-        const servers_v = parsed.object.get("mcpServers") orelse return 0;
-        if (servers_v != .object) return 0;
+        const merged = mcp_config.load(reg.io, a, Io.Dir.cwd(), config_path, reg.global_config_path);
         var n: usize = 0;
-        var it = servers_v.object.iterator();
+        var it = merged.servers.iterator();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.key_ptr.*, "smolify")) continue;
             if (entry.value_ptr.* != .object) continue;
