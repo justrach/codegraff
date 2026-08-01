@@ -82,6 +82,7 @@ pub const CappedRun = struct {
     stdout_truncated: bool,
     stderr_truncated: bool,
     timed_out: bool,
+    cancelled: bool = false, // user Esc ended it (the process tree was killed)
 };
 
 /// Supplying an explicit environment replaces (rather than augments) the
@@ -248,6 +249,7 @@ pub fn runCappedWithOptions(gpa: Allocator, io: Io, argv: []const []const u8, st
         .stdout_truncated = saved[0] != null,
         .stderr_truncated = saved[1] != null,
         .timed_out = timed_out,
+        .cancelled = esc_killed,
     };
 }
 

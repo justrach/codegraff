@@ -75,6 +75,22 @@ const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-loc
 /// no-deadline behavior (a human is watching and may want a long build).
 const subagent_bash_deadline_ms: u64 = 120 * 1000;
 
+/// #266: killing a local `ssh` proves nothing about the remote command it was
+/// running — a cancelled or timed-out ssh result carries a caveat saying so.
+fn isSshCommand(cmd: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, cmd, " \t\r\n");
+    const first = it.next() orelse return false;
+    return std.mem.eql(u8, std.fs.path.basename(first), "ssh");
+}
+
+test "isSshCommand: bare and pathed ssh, not scp or substrings" {
+    try std.testing.expect(isSshCommand("ssh host uptime"));
+    try std.testing.expect(isSshCommand("  /usr/bin/ssh -T host"));
+    try std.testing.expect(!isSshCommand("scp file host:"));
+    try std.testing.expect(!isSshCommand("echo ssh"));
+    try std.testing.expect(!isSshCommand(""));
+}
+
 /// Wall-clock ceiling for one `codedb` query (#198). Every allowed subcommand
 /// is a read that normally answers in seconds; a query that has not returned
 /// in a minute is stuck, and before this it stayed stuck forever — the tool
@@ -231,7 +247,12 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                     try std.fmt.allocPrint(gpa, "could not start background job ({t}) — run it in the foreground instead", .{err}),
                 .is_error = true,
             };
-            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.", .{ job.id, job.cmd, job.id }) };
+            return .{ .text = try std.fmt.allocPrint(gpa, "[job {d} started: {s}]\nIt keeps running across turns. Poll new output with bash_output (id {d}, optional wait_ms), stop it with bash_kill.{s}", .{
+                job.id,
+                job.cmd,
+                job.id,
+                if (isSshCommand(cmd)) " Killing the local SSH job cannot prove a detached remote process stopped; verify the remote host." else "",
+            }) };
         }
         const sh = shellArgv(cmd);
         const deadline: u64 = if (ctx.from_sub) subagent_bash_deadline_ms else 0;
@@ -256,13 +277,18 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (run.stdout_truncated) try w.print("\n[stdout truncated at {d} KB]", .{bash_stdout_cap / 1024});
         if (run.stderr.len > 0) try w.print("\n[stderr]\n{s}", .{run.stderr});
         if (run.stderr_truncated) try w.print("\n[stderr truncated at {d} KB]", .{bash_stderr_cap / 1024});
-        if (run.timed_out) {
+        if (run.cancelled) {
+            try w.writeAll("\n[cancelled by user; local process group killed]");
+        } else if (run.timed_out) {
             try w.print("\n[timed out after {d}s and was killed — too long for a subagent. Don't retry as-is: scope it to specific paths or globs instead of scanning the whole directory, or report back what you need run.]", .{subagent_bash_deadline_ms / 1000});
         } else if (exit_code) |code| {
             if (code != 0) try w.print("\n[exit code {d}]", .{code});
         } else try w.writeAll("\n[terminated abnormally]");
+        if ((run.cancelled or run.timed_out) and isSshCommand(cmd)) {
+            try w.writeAll("\n[ssh note: the local SSH client was killed, but a detached or disconnect-resistant remote process may survive; verify it on the remote host]");
+        }
         if (run.stdout.len == 0 and run.stderr.len == 0 and exit_code == 0) try w.writeAll("(no output)");
-        return .{ .text = try aw.toOwnedSlice(), .is_error = exit_code == null or exit_code.? != 0 };
+        return .{ .text = try aw.toOwnedSlice(), .is_error = exit_code == null or exit_code.? != 0, .cancelled = run.cancelled };
     }
     if (std.mem.eql(u8, call.name, "bash_output")) {
         const id = intField(input, "id") orelse return missingArg(gpa, "id");

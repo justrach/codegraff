@@ -182,11 +182,23 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
             // Keep the model-facing history compact. The exact output remains
             // inspectable on disk and the short preview carries its pointer.
             const detail = persistToolResult(self, output.text);
-            results[i] = .{ .text = try toolPreviewText(self.arena, output.text, detail), .is_error = output.is_error, .ms = output.ms };
+            results[i] = .{ .text = try toolPreviewText(self.arena, output.text, detail), .is_error = output.is_error, .cancelled = output.cancelled, .ms = output.ms };
             if (self.eval_cmd != null and toolInvalidatesEval(calls[i])) {
                 self.eval_verified = false;
                 self.eval_repair_pending = false;
             }
+        }
+        // #266: a cancelled parallel batch used to just look "running" and then
+        // failed — one terminal line says what completed, failed, and cancelled.
+        if (ext_idx.items.len > 1 and !self.sub) {
+            var done: usize = 0;
+            var failed: usize = 0;
+            var cancelled: usize = 0;
+            for (ext_idx.items) |i| {
+                const r = results[i];
+                if (r.cancelled) cancelled += 1 else if (r.is_error) failed += 1 else done += 1;
+            }
+            try self.say("  {s}↯ parallel tools finished: {d} completed, {d} failed, {d} cancelled{s}\n", .{ style.dim, done, failed, cancelled, style.reset });
         }
     }
     // Show a compact ✓/✗ + preview for each non-meta call (no-op for subs).
@@ -453,8 +465,8 @@ pub fn sayToolResult(self: *Agent, name: []const u8, r: ExecResult) void {
     preview = std.mem.trim(u8, preview, " \t\r");
     const shown = if (preview.len > 100) preview[0..100] else preview;
     const truncated = shown.len < all.len; // more content (extra lines or >100 chars)
-    const mark = if (r.is_error) "✗" else "✓";
-    const mc = if (r.is_error) style.red else style.green;
+    const mark = if (r.cancelled) "⊘" else if (r.is_error) "✗" else "✓";
+    const mc = if (r.cancelled) style.yellow else if (r.is_error) style.red else style.green;
     var tbuf: [24]u8 = undefined;
     const timing = if (main_mod.show_timing and r.ms > 0)
         (std.fmt.bufPrint(&tbuf, " ({d}ms)", .{r.ms}) catch "")
