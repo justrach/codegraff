@@ -22,10 +22,14 @@ pub fn lazyCatalog(comptime Catalog: type, source: *[]const u8) !void {
     const previous_source = source.*;
     defer source.* = previous_source;
     var catalog: Catalog = .{ .codex_home = "" };
-    catalog.ensure(std.testing.io, std.testing.allocator, std.testing.allocator, "", "", "");
+    catalog.ensureCached(std.testing.io, std.testing.allocator, std.testing.allocator, "", "", "");
     try std.testing.expect(catalog.loaded);
+    try std.testing.expect(!catalog.online_loaded);
+    catalog.ensure(std.testing.io, std.testing.allocator, std.testing.allocator, "", "", "");
+    try std.testing.expect(catalog.online_loaded);
     catalog.invalidate();
     try std.testing.expect(!catalog.loaded);
+    try std.testing.expect(!catalog.online_loaded);
 }
 
 pub fn canonicalVendor(find_model: anytype) !void {
