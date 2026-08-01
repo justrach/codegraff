@@ -160,3 +160,19 @@ test "/bash slash command runs the bash tool and frees its gpa-allocated result"
 test {
     _ = @import("startup_tests.zig");
 }
+
+test "failure (#253): fd-quota errors carry actionable advice, system-wide says ulimit won't help" {
+    const tools = @import("tools.zig");
+    const gpa = std.testing.allocator;
+    const p = tools.failure(gpa, error.ProcessFdQuotaExceeded);
+    defer gpa.free(p.text);
+    try std.testing.expect(std.mem.indexOf(u8, p.text, "ulimit -n 4096") != null);
+    const s = tools.failure(gpa, error.SystemFdQuotaExceeded);
+    defer gpa.free(s.text);
+    try std.testing.expect(std.mem.indexOf(u8, s.text, "SYSTEM-wide") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s.text, "`ulimit` will not help") != null);
+    // The generic path is untouched: unknown errors still print the bare name.
+    const g = tools.failure(gpa, error.AccessDenied);
+    defer gpa.free(g.text);
+    try std.testing.expectEqualStrings("error: AccessDenied", g.text);
+}
