@@ -255,7 +255,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     agent.agent_cwd = if (wt) |w| w.path else null;
 
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
-    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label } });
+    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .id = sub_id });
     // A /loop deadline on the parent reaches the child as guidance on its own
     // task prompt (goal_pacing.childTaskPrompt): same absolute deadline, minus
     // the margin the parent needs to integrate the result. No-op without one.
@@ -265,7 +265,15 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     const report = agent.runTurn();
     const run_ms: i64 = @intCast(@max(0, sub_start.untilNow(ctx.io, .awake).toMilliseconds()));
     const run_ok = if (report) |r| r.len > 0 else |_| false;
-    if (wf_task) guiEmit(ctx.io, .{ .type = "tool_result", .name = "subagent", .is_error = !run_ok });
+    if (wf_task) {
+        // The sa- id (shared with agent_usage) pairs parallel workflow rows;
+        // without it a consumer can only match tool_call/tool_result by order.
+        const sub_report: []const u8 = if (report) |r|
+            (if (r.len > 0) r else "subagent returned no report")
+        else |_|
+            (agent.last_api_error orelse "subagent failed");
+        guiEmit(ctx.io, .{ .type = "tool_result", .name = "subagent", .is_error = !run_ok, .text = util.utf8Prefix(sub_report, 600), .id = sub_id });
+    }
     const used_tools = agent.tools_used.render(arena);
     const usage: AgentUsage = .{
         .duration_ms = @intCast(run_ms),
