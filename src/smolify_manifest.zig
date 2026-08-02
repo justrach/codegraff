@@ -63,6 +63,8 @@ pub fn appendTools(
             "";
         var schema = tool.object.get("inputSchema") orelse Value{ .object = .empty };
         try mcp_protocol.rewriteOneOf(a, &schema);
+        try mcp_protocol.flattenTopLevel(a, &schema); // Anthropic rejects a top-level combinator outright
+
         try out.append(a, .{
             .server_index = server_index,
             .original_name = try a.dupe(u8, name_v.string),
