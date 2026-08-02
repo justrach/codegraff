@@ -304,7 +304,12 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         } else {
             try out.print("{d} MCP server(s), {d} tool(s):\n", .{ reg.servers.len, reg.tools.len });
             for (reg.servers, 0..) |srv, i| {
-                try out.print("  {s}{s}{s}  (mcp {s}, {d} tool(s))\n", .{ style.accent, srv.name, style.reset, srv.protocol_version, reg.toolCount(i) });
+                // #327: if the modern probe ran and this connection landed on
+                // legacy anyway, say why — a silent downgrade is invisible here
+                // otherwise, since a fallback and a genuinely-legacy server
+                // print the identical revision.
+                const probe_note = if (srv.probe_fallback) |reason| reason.note() else "";
+                try out.print("  {s}{s}{s}  (mcp {s}, {d} tool(s)){s}{s}{s}\n", .{ style.accent, srv.name, style.reset, srv.protocol_version, reg.toolCount(i), style.dim, probe_note, style.reset });
             }
             for (reg.tools) |t| try out.print("    {s}{s}{s}\n", .{ style.dim, t.qualified_name, style.reset });
             try out.writeAll("  add more: /mcp add <name> <command> [args...]\n");
