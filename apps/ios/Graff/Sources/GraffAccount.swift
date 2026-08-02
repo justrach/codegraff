@@ -387,9 +387,17 @@ enum AppSessionSync {
 //   * writes for one session id run strictly one at a time, in issue order;
 //   * a payload that has been superseded while it waited its turn is dropped
 //     rather than sent, so an older transcript never reaches the gateway;
-//   * a deleted id is tombstoned, which drops every queued and future save for
-//     it, and the DELETE is chained behind any PUT already in flight so the
-//     row cannot come back.
+//   * a deleted id is tombstoned with the revision of its DELETE, which drops
+//     every write older than that delete, and the DELETE itself is chained
+//     behind any PUT already in flight so the row cannot come back.
+//
+// The tombstone is deliberately scoped to *older* writes. It is not a
+// permanent ban on the id: the DELETE is fire-and-forget (`try?`), so it can
+// fail offline or 5xx, the row survives on the gateway, and the next refresh
+// hands the session straight back to the user. A save issued strictly after
+// the delete is that revived session being used again — refusing it forever
+// would silently discard every later turn for the life of the process, which
+// is worse than the resurrection it was meant to prevent.
 //
 // Server-side gap: without a conditional PUT, a second device racing this one
 // is still last-writer-wins. That needs a gateway revision/If-Match, which does
@@ -428,15 +436,22 @@ actor AppSessionSyncEngine {
     private var chain: [String: Task<Void, Never>] = [:]
     private var chainGeneration: [String: UInt64] = [:]
     private var generationCounter: UInt64 = 0
-    private var tombstones: Set<String> = []
+    // Revision of the newest DELETE seen per id, not a bare set: the tombstone
+    // has to be comparable against later writes, not applied to all of them.
+    private var tombstones: [String: UInt64] = [:]
 
     func save(id: String, revision: UInt64, title: String, model: String,
               sandboxID: String?, transcript: String) {
-        guard !tombstones.contains(id) else { return }
         // Out-of-order arrival at the actor is fine: revisions were stamped in
-        // call order, so an older one simply never becomes the latest.
+        // call order, so an older one simply never becomes the latest. A delete
+        // stamps `latest` too, so this one check also refuses every save older
+        // than the delete — which is all #310 asks for.
         guard revision > (latest[id] ?? 0) else { return }
         latest[id] = revision
+        // Strictly newer than any delete for this id, so the tombstone no
+        // longer applies: this is a live session being written again, not a
+        // stale PUT trying to undo a delete.
+        tombstones[id] = nil
         let write = AppSessionWrite(id: id, title: title, model: model,
                                     sandboxID: sandboxID, transcript: transcript)
         let send = transport
@@ -448,10 +463,12 @@ actor AppSessionSyncEngine {
     }
 
     func delete(id: String, revision: UInt64) {
-        // Tombstone first: queued saves are already obsolete, and any save
-        // issued later (a stale chat view finishing a turn) is refused above.
-        tombstones.insert(id)
-        latest[id] = revision
+        // Tombstone first: every write issued before this delete is now
+        // obsolete, whether it is queued or still on its way to the actor.
+        tombstones[id] = revision
+        // Never downgrade: a save that outranks this delete was issued after it
+        // and keeps its claim on the chain.
+        latest[id] = max(latest[id] ?? 0, revision)
         let write = AppSessionWrite(id: id, title: "", model: "", sandboxID: nil, transcript: nil)
         let send = transport
         link(id) { await send(write) }
@@ -464,7 +481,7 @@ actor AppSessionSyncEngine {
     }
 
     private func isCurrent(_ id: String, _ revision: UInt64) -> Bool {
-        !tombstones.contains(id) && latest[id] == revision
+        revision > (tombstones[id] ?? 0) && latest[id] == revision
     }
 
     // Append to this session's serial chain. Different sessions still overlap;

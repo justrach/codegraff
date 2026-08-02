@@ -53,7 +53,7 @@ struct SessionsListView: View {
                     sessions.remove(atOffsets: offsets)
                     // #310: routed through the sync engine so the DELETE is
                     // ordered against this session's in-flight saves and the id
-                    // is tombstoned — a late PUT can no longer resurrect it.
+                    // is tombstoned — an older PUT can no longer resurrect it.
                     for s in doomed { AppSessionSync.delete(s.id) }
                 }
             }

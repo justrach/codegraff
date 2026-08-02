@@ -233,15 +233,46 @@ struct SyncOrderCheckView: View {
         applied = await recorder.applied()
         check("an older revision never clobbers a newer one", applied == ["newer"])
 
-        // save/delete: the tombstone survives a delayed PUT.
+        // save/delete: the DELETE waits for the PUT it was issued behind.
         (recorder, engine) = harness()
         await put(engine, 1, "turn-1")
         await engine.delete(id: "s1", revision: 2)
-        await put(engine, 3, "late-save")
         await engine.quiesce()
         applied = await recorder.applied()
         check("DELETE is ordered after the in-flight PUT", applied == ["turn-1", "DELETE"])
-        check("a late save never resurrects a deleted session", !applied.contains("late-save"))
+
+        // The tombstone covers writes issued BEFORE the delete, whichever order
+        // they reach the actor in — that is the resurrection #310 is about.
+        (recorder, engine) = harness()
+        await put(engine, 1, "turn-1")
+        await engine.delete(id: "s1", revision: 3)
+        await put(engine, 2, "stale-save")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("a save older than the delete never resurrects the session",
+              !applied.contains("stale-save"))
+
+        // …but it is not a permanent ban on the id. The DELETE is best-effort;
+        // when it fails the row comes back on the next refresh, and using that
+        // session again must still sync instead of being dropped forever.
+        (recorder, engine) = harness()
+        await put(engine, 1, "turn-1")
+        await engine.delete(id: "s1", revision: 2)
+        await put(engine, 3, "revived")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("a save issued after the delete is still written",
+              applied == ["turn-1", "DELETE", "revived"])
+
+        // And the revived session keeps its ordering guarantees afterwards.
+        (recorder, engine) = harness()
+        await engine.delete(id: "s1", revision: 1)
+        await put(engine, 3, "revived-newer")
+        await put(engine, 2, "revived-older")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("a revived session still refuses out-of-order writes",
+              applied == ["DELETE", "revived-newer"])
 
         // Different sessions are independent — serialization is per id.
         (recorder, engine) = harness()
