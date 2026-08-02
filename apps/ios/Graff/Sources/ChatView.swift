@@ -193,7 +193,15 @@ struct ChatView: View {
         case .cancelled: announce("Turn stopped.")
         case .completed, .streaming: announce("Assistant finished responding.")
         }
-        session.status = .idle
+        // #286: the row's status is the turn's actual outcome. A failed turn
+        // used to fall back to .idle and then be relabelled Done by the history
+        // list purely because its sandbox had stopped.
+        switch outcome {
+        case .failed: session.status = .failed
+        case .cancelled: session.status = .ended
+        case .completed: session.status = .done
+        case .streaming: session.status = .idle
+        }
         session.lastActivity = "just now"
         AppSessionSync.save(session)
     }
@@ -213,6 +221,13 @@ struct ChatView: View {
                 : []
             session.messages = AppSessionSync.messages(fromTranscript: full.transcript) + live
             session.needsHydration = false
+            // #286: now that the transcript is here, the row can show the
+            // outcome it actually records instead of a liveness guess. A live
+            // turn owns the status, so never overwrite one mid-flight.
+            if live.isEmpty, !streaming,
+               let outcome = AppSessionSync.outcome(fromTranscript: full.transcript) {
+                session.status = outcome
+            }
         }
     }
 

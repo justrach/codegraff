@@ -273,12 +273,44 @@ struct MessageDTO: Codable {
     let role: String
     let text: String
     let reasoning: String?
+    // #286: how the turn ended, persisted alongside it. Without this a failed
+    // or interrupted turn reloads indistinguishable from a successful one, and
+    // the history list has no outcome to show but sandbox liveness. Absent on
+    // transcripts written before this field existed — absence means "unlabelled",
+    // not "succeeded".
+    var state: String? = nil
+    var failure: String? = nil
 }
 
 enum AppSessionSync {
+    private static func wire(_ state: TurnState) -> (state: String, failure: String?) {
+        switch state {
+        case .streaming: return ("streaming", nil)
+        case .completed: return ("completed", nil)
+        case .cancelled: return ("cancelled", nil)
+        case .failed(let why): return ("failed", why)
+        }
+    }
+
+    // A turn persisted as `streaming` never reached a terminal event — the app
+    // was killed or the transport died mid-turn — so it reloads as interrupted
+    // rather than as a silent success (#286).
+    private static func turnState(_ dto: MessageDTO) -> TurnState {
+        switch dto.state {
+        case "failed": return .failed(dto.failure ?? "Turn failed.")
+        case "cancelled": return .cancelled
+        case "streaming": return .failed(dto.failure ?? "Interrupted before the turn finished.")
+        default: return .completed
+        }
+    }
+
     static func transcriptJSON(_ messages: [ChatMessage]) -> String {
-        let dtos = messages.map { MessageDTO(role: $0.role == .user ? "user" : "assistant",
-                                             text: $0.text, reasoning: $0.reasoning) }
+        let dtos = messages.map { m -> MessageDTO in
+            let w = wire(m.state)
+            return MessageDTO(role: m.role == .user ? "user" : "assistant",
+                              text: m.text, reasoning: m.reasoning,
+                              state: w.state, failure: w.failure)
+        }
         let data = (try? JSONEncoder().encode(dtos)) ?? Data("[]".utf8)
         return String(data: data, encoding: .utf8) ?? "[]"
     }
@@ -287,10 +319,39 @@ enum AppSessionSync {
         guard let data = json.data(using: .utf8),
               let dtos = try? JSONDecoder().decode([MessageDTO].self, from: data) else { return [] }
         return dtos.map { ChatMessage(role: $0.role == "user" ? .user : .assistant,
-                                      text: $0.text, reasoning: $0.reasoning) }
+                                      text: $0.text, reasoning: $0.reasoning,
+                                      state: turnState($0)) }
     }
 
-    // Fire-and-forget: history sync must never block or break the chat.
+    // #286: the outcome the transcript actually records, or nil when it records
+    // none (an unlabelled or empty transcript is not evidence of success). The
+    // caller falls back to a neutral liveness-derived state instead of Done.
+    static func outcome(fromTranscript json: String) -> SessionStatus? {
+        guard let data = json.data(using: .utf8),
+              let dtos = try? JSONDecoder().decode([MessageDTO].self, from: data),
+              let last = dtos.last(where: { $0.role != "user" }),
+              let state = last.state else { return nil }
+        switch state {
+        case "completed": return .done
+        case "failed", "streaming": return .failed
+        case "cancelled": return .ended
+        default: return nil
+        }
+    }
+
+    // #310: every write is stamped with a monotonic revision HERE, on the main
+    // actor, in the order the caller made it. Detaching first and numbering
+    // later would let two saves reach the sync engine in either order, which
+    // is the bug this is guarding against.
+    @MainActor private static var revisionCounter: UInt64 = 0
+    @MainActor private static func nextRevision() -> UInt64 {
+        revisionCounter += 1
+        return revisionCounter
+    }
+
+    // Still fire-and-forget from the caller's point of view — history sync must
+    // never block or break the chat — but no longer unordered (#310).
+    @MainActor
     static func save(_ session: AgentSession) {
         guard Gateway.apiKey != nil else { return }
         let id = session.id.uuidString.lowercased()
@@ -298,9 +359,148 @@ enum AppSessionSync {
         let title = session.title
         let model = session.model
         let sandboxID = session.cube?.sandboxID
-        Task.detached {
-            try? await Gateway.putAppSession(id: id, title: title, model: model,
-                                             sandboxID: sandboxID, transcript: transcript)
+        let revision = nextRevision()
+        Task {
+            await AppSessionSyncEngine.shared.save(id: id, revision: revision, title: title,
+                                                   model: model, sandboxID: sandboxID,
+                                                   transcript: transcript)
         }
+    }
+
+    @MainActor
+    static func delete(_ sessionID: UUID) {
+        guard Gateway.apiKey != nil else { return }
+        let id = sessionID.uuidString.lowercased()
+        let revision = nextRevision()
+        Task { await AppSessionSyncEngine.shared.delete(id: id, revision: revision) }
+    }
+}
+
+// #310: session persistence used to be a bare `Task.detached` per save, with no
+// ordering, no revision and no relationship to the equally detached DELETE. An
+// older PUT could land after a newer one and roll the synced transcript
+// backward, and a delayed PUT could land after a DELETE and resurrect a session
+// the user had removed. The gateway's /v1/app/sessions PUT takes no If-Match or
+// version — there is nothing to make conditional — so the invariant is enforced
+// entirely on this side:
+//
+//   * writes for one session id run strictly one at a time, in issue order;
+//   * a payload that has been superseded while it waited its turn is dropped
+//     rather than sent, so an older transcript never reaches the gateway;
+//   * a deleted id is tombstoned with the revision of its DELETE, which drops
+//     every write older than that delete, and the DELETE itself is chained
+//     behind any PUT already in flight so the row cannot come back.
+//
+// The tombstone is deliberately scoped to *older* writes. It is not a
+// permanent ban on the id: the DELETE is fire-and-forget (`try?`), so it can
+// fail offline or 5xx, the row survives on the gateway, and the next refresh
+// hands the session straight back to the user. A save issued strictly after
+// the delete is that revived session being used again — refusing it forever
+// would silently discard every later turn for the life of the process, which
+// is worse than the resurrection it was meant to prevent.
+//
+// Server-side gap: without a conditional PUT, a second device racing this one
+// is still last-writer-wins. That needs a gateway revision/If-Match, which does
+// not exist yet.
+// One write as it reaches the wire. `transcript == nil` is a delete.
+struct AppSessionWrite: Sendable {
+    let id: String
+    let title: String
+    let model: String
+    let sandboxID: String?
+    let transcript: String?
+}
+
+actor AppSessionSyncEngine {
+    static let shared = AppSessionSyncEngine()
+
+    // The gateway leg, injectable so the ordering invariants can be asserted
+    // against a deterministically delayed transport (--autotest-sync).
+    static let gatewayTransport: @Sendable (AppSessionWrite) async -> Void = { w in
+        if let transcript = w.transcript {
+            try? await Gateway.putAppSession(id: w.id, title: w.title, model: w.model,
+                                             sandboxID: w.sandboxID, transcript: transcript)
+        } else {
+            try? await Gateway.deleteAppSession(w.id)
+        }
+    }
+
+    private let transport: @Sendable (AppSessionWrite) async -> Void
+    init(transport: @escaping @Sendable (AppSessionWrite) async -> Void = AppSessionSyncEngine.gatewayTransport) {
+        self.transport = transport
+    }
+
+    // Newest revision issued per session id; anything older is obsolete.
+    private var latest: [String: UInt64] = [:]
+    // Tail of each session's serial chain, so the next operation can await it.
+    private var chain: [String: Task<Void, Never>] = [:]
+    private var chainGeneration: [String: UInt64] = [:]
+    private var generationCounter: UInt64 = 0
+    // Revision of the newest DELETE seen per id, not a bare set: the tombstone
+    // has to be comparable against later writes, not applied to all of them.
+    private var tombstones: [String: UInt64] = [:]
+
+    func save(id: String, revision: UInt64, title: String, model: String,
+              sandboxID: String?, transcript: String) {
+        // Out-of-order arrival at the actor is fine: revisions were stamped in
+        // call order, so an older one simply never becomes the latest. A delete
+        // stamps `latest` too, so this one check also refuses every save older
+        // than the delete — which is all #310 asks for.
+        guard revision > (latest[id] ?? 0) else { return }
+        latest[id] = revision
+        // Strictly newer than any delete for this id, so the tombstone no
+        // longer applies: this is a live session being written again, not a
+        // stale PUT trying to undo a delete.
+        tombstones[id] = nil
+        let write = AppSessionWrite(id: id, title: title, model: model,
+                                    sandboxID: sandboxID, transcript: transcript)
+        let send = transport
+        link(id) { [self] in
+            // Superseded while queued — sending it would roll the gateway back.
+            guard await isCurrent(id, revision) else { return }
+            await send(write)
+        }
+    }
+
+    func delete(id: String, revision: UInt64) {
+        // Tombstone first: every write issued before this delete is now
+        // obsolete, whether it is queued or still on its way to the actor.
+        tombstones[id] = revision
+        // Never downgrade: a save that outranks this delete was issued after it
+        // and keeps its claim on the chain.
+        latest[id] = max(latest[id] ?? 0, revision)
+        let write = AppSessionWrite(id: id, title: "", model: "", sandboxID: nil, transcript: nil)
+        let send = transport
+        link(id) { await send(write) }
+    }
+
+    // Wait until every queued write has run. Only the in-process harness needs
+    // this; the app never blocks on sync.
+    func quiesce() async {
+        while let task = chain.values.first { await task.value }
+    }
+
+    private func isCurrent(_ id: String, _ revision: UInt64) -> Bool {
+        revision > (tombstones[id] ?? 0) && latest[id] == revision
+    }
+
+    // Append to this session's serial chain. Different sessions still overlap;
+    // only same-id writes are ordered against each other.
+    private func link(_ id: String, _ work: @escaping @Sendable () async -> Void) {
+        let previous = chain[id]
+        generationCounter += 1
+        let generation = generationCounter
+        chainGeneration[id] = generation
+        chain[id] = Task { [self] in
+            await previous?.value
+            await work()
+            release(id, generation)
+        }
+    }
+
+    private func release(_ id: String, _ generation: UInt64) {
+        guard chainGeneration[id] == generation else { return } // a newer write owns the chain
+        chain[id] = nil
+        chainGeneration[id] = nil
     }
 }
