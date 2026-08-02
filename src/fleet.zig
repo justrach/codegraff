@@ -29,7 +29,7 @@ const http = @import("http.zig");
 /// A named, reusable subagent persona: the unit the MAP-Elites archive is
 /// organized around (docs/hyperagents.md §MAP-Elites). Each niche keeps one
 /// elite prompt; builtins ship compiled in, and `.harness/agents/<name>.md`
-/// files (frontmatter: name/description/score, body: the system prompt)
+/// files (frontmatter: name/description/score/isolation/model/tier, body: the system prompt)
 /// override or extend them — that's where an evolution driver promotes
 /// archive winners. Spawn one with subagent/workflow `agent: "<name>"`.
 /// #276 P0-1: per-agent git-worktree isolation. `.shared_cwd` (default) is
@@ -42,12 +42,17 @@ pub const Isolation = enum {
     shared_cwd,
     worktree,
 
-    fn parse(s: []const u8) ?Isolation {
+    pub fn parse(s: []const u8) ?Isolation {
         if (std.mem.eql(u8, s, "worktree")) return .worktree;
         if (std.mem.eql(u8, s, "shared_cwd")) return .shared_cwd;
         return null;
     }
 };
+
+/// #292: the ladder rung vocabulary a persona may pin itself to
+/// (`tier: mid`). Re-exported here so `.harness/agents` readers and the
+/// `subagent` tool schema name the same three rungs.
+pub const Tier = @import("subagent_tier_ladder.zig").Tier;
 
 pub const AgentType = struct {
     name: []const u8,
@@ -57,6 +62,14 @@ pub const AgentType = struct {
     builtin: bool = false,
     learned: bool = false,
     isolation: ?Isolation = null, // persona default (frontmatter `isolation: worktree`); null = no opinion, falls through to shared_cwd
+    // #292 persona model pin. Both null = no opinion; the spawn keeps the
+    // session default (--subagent-model or the #291 ladder). `model` is an
+    // exact name and wins over `tier` when a persona sets both; neither is
+    // validated here — resolution happens per spawn against the live catalog
+    // (subagent_pin.zig) so an unavailable pin degrades to the session
+    // default instead of failing a persona load or a spawn mid-fleet.
+    model: ?[]const u8 = null, // frontmatter `model: gpt-5.6-terra`
+    tier: ?Tier = null, // frontmatter `tier: mid`
 };
 
 /// Preloaded niches: deliberately orthogonal *behavioral* dimensions (what
@@ -136,7 +149,8 @@ pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const Agent
 }
 
 /// Merge `<dir>/*.md` personas into `list`: YAML-ish frontmatter
-/// (name/description/score) + body as the prompt. A file shadows any existing
+/// (name/description/score/isolation/model/tier) + body as the prompt. A
+/// file shadows any existing
 /// type (builtin or earlier tier) of the same name — the elite for a niche is
 /// whatever the highest tier last promoted.
 fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_path: []const u8) void {
@@ -165,6 +179,11 @@ fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_p
                     if (std.mem.eql(u8, key, "description")) at.desc = val;
                     if (std.mem.eql(u8, key, "score")) at.score = std.fmt.parseFloat(f64, val) catch null;
                     if (std.mem.eql(u8, key, "isolation")) at.isolation = Isolation.parse(val); // #276: e.g. an "implementer" persona opting into worktree isolation by default
+                    // #292: a persona's own worker-model pin. An unknown tier
+                    // name parses to null (no opinion) rather than failing the
+                    // load, and an unknown model name is caught per spawn.
+                    if (std.mem.eql(u8, key, "model")) at.model = if (val.len > 0) val else null;
+                    if (std.mem.eql(u8, key, "tier")) at.tier = Tier.parse(val);
                 }
                 const body_start = fm_end + "\n---".len;
                 at.prompt = std.mem.trim(u8, data[@min(body_start + 1, data.len)..], " \t\r\n");
@@ -276,7 +295,11 @@ pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8,
             }
         }
         const path = std.fmt.allocPrint(arena, "{s}/{s}.md", .{ dir, champ.niche }) catch continue;
-        const content = std.fmt.allocPrint(arena, "---\nname: {s}\ndescription: promoted local champion (mean {d:.2} over {d} run(s), sha {s})\nscore: {d:.4}\n---\n{s}\n", .{ champ.niche, champ_mean, champ.n, champ.sha, champ_mean, champ.text }) catch continue;
+        // Promotion ranks GENOMES; the persona's operational frontmatter
+        // (isolation, #292's model/tier) is policy, not something the judge
+        // scored, so carry it across the rewrite instead of dropping it.
+        const policy = @import("subagent_pin.zig").personaPolicyFrontmatter(arena, champ.niche);
+        const content = std.fmt.allocPrint(arena, "---\nname: {s}\ndescription: promoted local champion (mean {d:.2} over {d} run(s), sha {s})\nscore: {d:.4}\n{s}---\n{s}\n", .{ champ.niche, champ_mean, champ.n, champ.sha, champ_mean, policy, champ.text }) catch continue;
         const f = Io.Dir.cwd().createFile(io, path, .{}) catch continue;
         defer f.close(io);
         var wbuf: [4096]u8 = undefined;
