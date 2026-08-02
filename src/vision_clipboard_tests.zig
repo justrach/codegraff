@@ -7,6 +7,7 @@
 //! on whatever the developer last copied.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 
 const clip = @import("vision_clipboard.zig");
@@ -56,6 +57,14 @@ test "stageableExtension: only formats a provider takes as-is" {
 }
 
 test "furlLooksStageable: the plain-text /hello coercion trap is rejected (#350)" {
+    // POSIX-only: every path here is judged by `furlLooksStageable`'s leading
+    // `/` check, which is a statement about AppleScript's `POSIX path of`
+    // output, not about paths in general. On Windows a tmpDir realPath is
+    // `C:\...` and "/hello" is not absolute at all, so both the positive and
+    // the negative cases would be decided by the wrong branch. The whole furl
+    // cascade is macOS-only (osascript), so there is nothing to assert there.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const io = testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -147,6 +156,13 @@ test "planStage: missing → not_found, oversize → too_large carrying the REAL
 }
 
 test "fitToBudget: downscales instead of dropping, and cleans up the steps it rejects" {
+    // POSIX-only: `fitToBudget` writes each downscale step to `tempPath`, which
+    // hardcodes /tmp on purpose (see its doc comment — the path is interpolated
+    // into AppleScript and must need no quoting). There is no /tmp on Windows,
+    // so every step fails to write and the ladder reports "cannot shrink" for a
+    // reason that has nothing to do with the logic under test.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const io = testing.io;
     const gpa = testing.allocator;
 
@@ -181,6 +197,12 @@ test "fitToBudget: downscales instead of dropping, and cleans up the steps it re
 }
 
 test "fitToBudget: a step that is not really a PNG is rejected, never mislabelled" {
+    // Same /tmp dependency as above. This one would *pass* on Windows, but only
+    // because every step fails to write — a green light for the wrong reason is
+    // worse than an honest skip, since it would keep passing if the magic-byte
+    // check were deleted outright.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const io = testing.io;
     const gpa = testing.allocator;
 
