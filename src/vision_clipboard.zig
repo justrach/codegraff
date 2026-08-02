@@ -134,6 +134,13 @@ pub fn sipsIsImage(io: Io, path: []const u8) bool {
 /// validated here — it must exist, be a regular non-empty file, and either
 /// carry an image extension or survive the `sips` probe. `probe` is injected
 /// so the trap can be tested without a pasteboard or a subprocess.
+///
+/// The leading-`/` test is deliberately POSIX-shaped rather than
+/// `std.fs.path.isAbsolute`: the input is always AppleScript's
+/// `POSIX path of …`, so a path that does not start with `/` is coercion
+/// output rather than a file. No comptime OS gate is needed — the only caller
+/// is `grabFurl`, reached solely through `grabClipboardImage`, which already
+/// returns null off macOS.
 pub fn furlLooksStageable(io: Io, path: []const u8, probe: anytype) bool {
     if (path.len == 0 or path[0] != '/') return false;
     const size = regularFileSize(io, path) orelse return false;
