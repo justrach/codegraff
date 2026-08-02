@@ -26,6 +26,7 @@
 //! edited their copy keeps their edits until Codex itself ships a new version.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -285,11 +286,18 @@ test "#352: sync mirrors the tree with LICENSE + scripts, and only re-copies whe
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = edited, .data = "---\nname: imagegen\ndescription: d\n---\nmine\n" });
     try testing.expect(!needsSync(io, arena, src, dest)); // the copy is now NEWER than the source
 
-    // A newer upstream SKILL.md is the one thing that re-copies.
-    const src_md = try std.fmt.allocPrint(arena, "{s}/SKILL.md", .{src});
-    const dest_mtime = skillMtime(io, arena, dest).?;
-    try Io.Dir.cwd().setTimestamps(io, src_md, .{
-        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(dest_mtime + std.time.ns_per_s) } },
-    });
-    try testing.expect(needsSync(io, arena, src, dest));
+    // A newer upstream SKILL.md is the one thing that re-copies. Forcing that
+    // ordering needs an explicit mtime, and `Io.Dir.setTimestamps` is
+    // `@panic("TODO implement dirSetTimestamps windows")` in Zig 0.17's
+    // Threaded io — it aborts the test runner rather than returning an error,
+    // so only this last assertion is POSIX-only. The mirror/addendum/no-recopy
+    // checks above all still run on Windows.
+    if (builtin.os.tag != .windows) {
+        const src_md = try std.fmt.allocPrint(arena, "{s}/SKILL.md", .{src});
+        const dest_mtime = skillMtime(io, arena, dest).?;
+        try Io.Dir.cwd().setTimestamps(io, src_md, .{
+            .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(dest_mtime + std.time.ns_per_s) } },
+        });
+        try testing.expect(needsSync(io, arena, src, dest));
+    }
 }

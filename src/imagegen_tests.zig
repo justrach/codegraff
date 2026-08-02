@@ -2,6 +2,7 @@
 //! ceiling); referenced from its test block so they actually run.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
@@ -271,8 +272,12 @@ test "#352 replay: codex exits 0 with a confident success transcript and NO fres
     }
 
     // 2. A STALE artifact in our own save_root is still not this run's work.
-    FakeCodex.plant = .stale_png;
-    {
+    // Planting one means backdating its mtime, and `Io.Dir.setTimestamps` is
+    // `@panic("TODO implement dirSetTimestamps windows")` in Zig 0.17's
+    // Threaded io — it aborts the runner instead of returning an error, so this
+    // one scenario is POSIX-only. Scenarios 1, 3 and 4 still run on Windows.
+    if (builtin.os.tag != .windows) {
+        FakeCodex.plant = .stale_png;
         const r = try execImagegen(ctx, input.value);
         defer gpa.free(r.text);
         try std.testing.expect(r.is_error);
