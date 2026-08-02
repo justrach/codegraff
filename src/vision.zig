@@ -151,9 +151,11 @@ pub fn stageImagePath(root: *Agent, path: []const u8) StageResult {
     const enc = std.base64.standard.Encoder;
     const b64 = arena.alloc(u8, enc.calcSize(data.len)) catch return .read_error;
     _ = enc.encode(b64, data);
-    // Media type from the file we actually encoded (a downscale step is always
-    // PNG), but labelled with the path the USER named — a temp file's random
-    // name means nothing to them.
+    // Media type from the file we actually encoded, but labelled with the path
+    // the USER named — a temp file's random name means nothing to them. A
+    // downscale step is PNG because `sipsResize` forces `-s format png` AND
+    // `fitToBudget` re-checks the magic bytes; without both, `sips -Z` would
+    // keep the source encoding and we'd send JPEG bytes as `image/png`.
     const media = imageMediaType(fit.path);
     root.pending_image = .{ .media_type = media, .b64 = b64, .label = arena.dupe(u8, path) catch path };
     return .{ .ok = .{ .bytes = fit.bytes, .media_type = media } };

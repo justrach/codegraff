@@ -144,15 +144,39 @@ pub fn furlLooksStageable(io: Io, path: []const u8, probe: anytype) bool {
 
 // ── downscaling ───────────────────────────────────────────────────────────
 
-/// `sips -Z <max_dim> <in> --out <out>`: fit the image inside a square of
-/// `max_dim` points, preserving aspect ratio.
+/// `sips -s format png -Z <max_dim> <in> --out <out>`: fit the image inside a
+/// square of `max_dim` points, preserving aspect ratio, and re-encode it as a
+/// real PNG.
+///
+/// `-s format png` is NOT optional. `sips -Z` alone keeps the SOURCE encoding
+/// whatever the output is called: `sips -Z 2048 photo.jpg --out step.png`
+/// exits 0 and writes JPEG bytes into a `.png`. Every downscale temp is named
+/// `.png` and the stager reads `media_type` off that extension, so without the
+/// explicit format a downscaled JPEG/GIF/WebP ships as `image/png` and the
+/// provider 400s on the mismatch — turning the #349 fix into a new failure for
+/// exactly the photos it was meant to rescue.
 pub fn sipsResize(io: Io, in: []const u8, max_dim: []const u8, out: []const u8) bool {
     if (builtin.os.tag != .macos) return false;
-    return runQuiet(io, &.{ "sips", "-Z", max_dim, in, "--out", out });
+    return runQuiet(io, &.{ "sips", "-s", "format", "png", "-Z", max_dim, in, "--out", out });
 }
 
 /// Injected so `fitToBudget` is testable without macOS or a subprocess.
 pub const Resizer = *const fn (io: Io, in: []const u8, max_dim: []const u8, out: []const u8) bool;
+
+/// The 8 bytes every PNG starts with.
+pub const png_magic = "\x89PNG\r\n\x1a\n";
+
+/// Does `path` actually hold a PNG? The downscale temp is named `.png` and the
+/// media type is read back off that extension, so the bytes have to agree —
+/// the belt to `sipsResize`'s `-s format png` braces, and it holds for any
+/// resizer, not just the one we ship.
+pub fn looksLikePng(io: Io, path: []const u8) bool {
+    const file = Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    defer file.close(io);
+    var head: [png_magic.len]u8 = undefined;
+    const got = file.readPositionalAll(io, &head, 0) catch return false;
+    return got == head.len and std.mem.eql(u8, &head, png_magic);
+}
 
 /// The file that will actually be read and encoded.
 pub const Fit = struct {
@@ -166,13 +190,19 @@ pub const Fit = struct {
 /// dimensions rather than dropping the paste outright. Returns null only when
 /// even the smallest step is still too big (or the resizer is unavailable),
 /// which is what lets the caller report a real `too_large`.
+///
+/// A step is only accepted if it really produced a PNG (see `looksLikePng`).
+/// The PNG re-encode is also far bigger than a JPEG source — a 4 MB phone
+/// photo lands at ~2.8 MB at 2048px, not ~0.5 MB — which is why the ladder
+/// goes all the way down to 1024.
 pub fn fitToBudget(io: Io, gpa: Allocator, path: []const u8, size: u64, budget: u64, resize: Resizer) ?Fit {
     if (size <= budget) return .{ .path = path, .bytes = size, .temp = false };
     for (downscale_steps) |dim| {
         const out = tempPath(io, gpa, "png") orelse return null;
         if (resize(io, path, dim, out)) {
             if (regularFileSize(io, out)) |n| {
-                if (n > 0 and n <= budget) return .{ .path = out, .bytes = n, .temp = true };
+                if (n > 0 and n <= budget and looksLikePng(io, out))
+                    return .{ .path = out, .bytes = n, .temp = true };
             }
         }
         discard(io, gpa, out);
@@ -484,12 +514,13 @@ test "fitToBudget: downscales instead of dropping, and cleans up the steps it re
 
     // A stand-in for sips: the first (largest) step still overshoots, the
     // second lands under budget — so a real paste keeps the most detail that
-    // fits rather than being refused outright.
+    // fits rather than being refused outright. Both steps emit real PNG bytes,
+    // which is the only thing `fitToBudget` will accept.
     const Fake = struct {
         var attempts: usize = 0;
         fn resize(rio: Io, _: []const u8, max_dim: []const u8, out: []const u8) bool {
             attempts += 1;
-            const data = if (std.mem.eql(u8, max_dim, "2048")) "xxxxxxxxxxxxxxxx" else "xxxx";
+            const data = if (std.mem.eql(u8, max_dim, "2048")) png_magic ++ "xxxxxxxx" else png_magic;
             Io.Dir.cwd().writeFile(rio, .{ .sub_path = out, .data = data }) catch return false;
             return true;
         }
@@ -500,7 +531,7 @@ test "fitToBudget: downscales instead of dropping, and cleans up the steps it re
         return error.ExpectedDownscale;
     defer discard(io, gpa, fit.path);
     try testing.expect(fit.temp);
-    try testing.expectEqual(@as(u64, 4), fit.bytes);
+    try testing.expectEqual(@as(u64, png_magic.len), fit.bytes);
     try testing.expectEqual(@as(usize, 2), Fake.attempts);
     // The rejected 2048 step left nothing behind.
     try testing.expect(regularFileSize(io, fit.path) != null);
@@ -509,6 +540,49 @@ test "fitToBudget: downscales instead of dropping, and cleans up the steps it re
     Fake.attempts = 0;
     try testing.expect(fitToBudget(io, gpa, "/nonexistent-source.png", 1_000_000, 2, Fake.resize) == null);
     try testing.expectEqual(downscale_steps.len, Fake.attempts);
+}
+
+test "fitToBudget: a step that is not really a PNG is rejected, never mislabelled" {
+    const io = testing.io;
+    const gpa = testing.allocator;
+
+    // `sips -Z` alone keeps the SOURCE encoding: pointed at a .jpg it exits 0
+    // and writes JPEG bytes into the `.png` temp, which the stager would then
+    // label `image/png` and the provider would 400 on. Well under every
+    // budget, so only the magic-byte check can reject it.
+    const Jpeg = struct {
+        var attempts: usize = 0;
+        fn resize(rio: Io, _: []const u8, _: []const u8, out: []const u8) bool {
+            attempts += 1;
+            Io.Dir.cwd().writeFile(rio, .{ .sub_path = out, .data = "\xff\xd8\xff\xe0 JFIF-ish" }) catch return false;
+            return true;
+        }
+    };
+    Jpeg.attempts = 0;
+
+    try testing.expect(fitToBudget(io, gpa, "/nonexistent-source.jpg", 1_000_000, 1_000, Jpeg.resize) == null);
+    // Every step was tried, and every one of them was cleaned up.
+    try testing.expectEqual(downscale_steps.len, Jpeg.attempts);
+}
+
+test "looksLikePng: magic bytes, not the file name" {
+    const io = testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const root = root_buf[0..root_len];
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "real.png", .data = png_magic ++ "IHDR..." });
+    try tmp.dir.writeFile(io, .{ .sub_path = "liar.png", .data = "\xff\xd8\xff\xe0 actually a jpeg" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "tiny.png", .data = "\x89PNG" });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    try testing.expect(looksLikePng(io, try std.fmt.bufPrint(&path_buf, "{s}/real.png", .{root})));
+    try testing.expect(!looksLikePng(io, try std.fmt.bufPrint(&path_buf, "{s}/liar.png", .{root})));
+    // Shorter than the signature, and a path that is not there at all.
+    try testing.expect(!looksLikePng(io, try std.fmt.bufPrint(&path_buf, "{s}/tiny.png", .{root})));
+    try testing.expect(!looksLikePng(io, try std.fmt.bufPrint(&path_buf, "{s}/gone.png", .{root})));
 }
 
 test "fmtMb: the size in the error line is the size the user sees" {
