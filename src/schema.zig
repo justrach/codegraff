@@ -15,6 +15,12 @@ const pricing = @import("pricing.zig");
 const learn_store = @import("learn_store.zig");
 const skill_docs = @import("skill_docs.zig"); // SKILL.md playbooks: the `skill` tool's name/desc/schema live there
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate (layer 1 lives here, layer 2 in exec.zig)
+const tool_gates = @import("tool_gates.zig"); // #352: the additive twin — optional tools that only exist when startup found their backing capability
+const imagegen = @import("imagegen.zig"); // #352: name/desc/schema as plain strings, like skill_docs, so this catalog needs one entry and no import cycle
+const render = @import("schema_render.zig"); // the comptime provider-tool renderers moved out when #352's optional-tool catalogs doubled the number held here (600-line ceiling)
+const anthropicToolsJson = render.anthropicToolsJson;
+const openaiToolsJson = render.openaiToolsJson;
+const responsesToolsJson = render.responsesToolsJson;
 
 const root = @import("main.zig");
 const provider_mod = @import("provider.zig");
@@ -231,6 +237,14 @@ pub fn isMetaName(name: []const u8) bool {
         std.mem.eql(u8, name, "clock_sleep");
 }
 
+// #352: optional built-ins — advertised only while tool_gates says they are
+// available. They live in `base_specs`' orbit rather than the root-only block
+// because a subagent has to be able to call them: the documented way to make
+// several images is one subagent per image, each calling `imagegen` once.
+const optional_specs = [_]ToolSpec{
+    .{ .name = imagegen.tool_name, .desc = imagegen.tool_desc, .schema = imagegen.tool_schema },
+};
+
 // Comptime-rendered tool lists for subagents (base only, both formats).
 pub const tools_anthropic_sub = anthropicToolsJson(&base_specs);
 pub const tools_openai_sub = openaiToolsJson(&base_specs);
@@ -244,41 +258,36 @@ pub const tools_anthropic_sub_remote = anthropicToolsJson(base_specs_remote);
 pub const tools_openai_sub_remote = openaiToolsJson(base_specs_remote);
 pub const tools_responses_sub_remote = responsesToolsJson(base_specs_remote);
 
-fn anthropicToolsJson(comptime specs: []const ToolSpec) []const u8 {
-    comptime {
-        var out: []const u8 = "[";
-        for (specs, 0..) |t, i| {
-            if (i > 0) out = out ++ ",";
-            out = out ++ "{\"name\":\"" ++ t.name ++ "\",\"description\":\"" ++ t.desc ++
-                "\",\"input_schema\":" ++ t.schema ++ "}";
-        }
-        return out ++ "]";
-    }
-}
+// #352 layer 1, subagent half: the same catalogs WITH the optional tools. A
+// child's catalog is a comptime constant, so every combination is built once
+// at compile time and merely selected at runtime by subToolsJson.
+const base_specs_optional = base_specs ++ optional_specs;
+const base_specs_optional_remote = no_local_tools.remoteSpecs(ToolSpec, &base_specs_optional);
+pub const tools_anthropic_sub_optional = anthropicToolsJson(&base_specs_optional);
+pub const tools_openai_sub_optional = openaiToolsJson(&base_specs_optional);
+pub const tools_responses_sub_optional = responsesToolsJson(&base_specs_optional);
+pub const tools_anthropic_sub_optional_remote = anthropicToolsJson(base_specs_optional_remote);
+pub const tools_openai_sub_optional_remote = openaiToolsJson(base_specs_optional_remote);
+pub const tools_responses_sub_optional_remote = responsesToolsJson(base_specs_optional_remote);
 
-fn openaiToolsJson(comptime specs: []const ToolSpec) []const u8 {
-    comptime {
-        var out: []const u8 = "[";
-        for (specs, 0..) |t, i| {
-            if (i > 0) out = out ++ ",";
-            out = out ++ "{\"type\":\"function\",\"function\":{\"name\":\"" ++ t.name ++
-                "\",\"description\":\"" ++ t.desc ++ "\",\"parameters\":" ++ t.schema ++ "}}";
-        }
-        return out ++ "]";
-    }
-}
-
-fn responsesToolsJson(comptime specs: []const ToolSpec) []const u8 {
-    comptime {
-        var out: []const u8 = "[";
-        for (specs, 0..) |t, i| {
-            if (i > 0) out = out ++ ",";
-            out = out ++ "{\"type\":\"function\",\"name\":\"" ++ t.name ++
-                "\",\"description\":\"" ++ t.desc ++ "\",\"parameters\":" ++ t.schema ++
-                ",\"strict\":false}";
-        }
-        return out ++ "]";
-    }
+/// The catalog a SUBAGENT is served, across both gates: `--no-local-tools`
+/// subtracts, an available optional tool adds. Sole caller is Agent.toolsJson.
+pub fn subToolsJson(kind: Provider.Kind, gated: bool) []const u8 {
+    const optional = tool_gates.anyAvailable();
+    return switch (kind) {
+        .anthropic => if (gated)
+            (if (optional) tools_anthropic_sub_optional_remote else tools_anthropic_sub_remote)
+        else
+            (if (optional) tools_anthropic_sub_optional else tools_anthropic_sub),
+        .openai => if (gated)
+            (if (optional) tools_openai_sub_optional_remote else tools_openai_sub_remote)
+        else
+            (if (optional) tools_openai_sub_optional else tools_openai_sub),
+        .responses => if (gated)
+            (if (optional) tools_responses_sub_optional_remote else tools_responses_sub_remote)
+        else
+            (if (optional) tools_responses_sub_optional else tools_responses_sub),
+    };
 }
 
 /// Render built-in specs + discovered MCP tools into one provider-specific
@@ -304,12 +313,15 @@ pub fn renderRootTools(
 /// #330 layer 1, root half: the gate then drops the host-touching tools from
 /// whichever catalog was chosen, so they are never advertised to a provider.
 /// MCP tools are appended afterwards by renderRootTools and stay untouched.
+/// #352 layer 1, root half: the additive gate then appends each optional tool
+/// whose backing capability startup actually found on this machine.
 pub fn effectiveRootSpecs(arena: Allocator) ![]const ToolSpec {
     const chosen: []const ToolSpec = if (root.g_clock_sleep)
         (if (learn_store.active_agent_loaded) &root_specs else &root_specs_without_learning)
     else
         (if (learn_store.active_agent_loaded) &root_specs_without_clock else &root_specs_without_optional);
-    return no_local_tools.filterRootSpecs(ToolSpec, arena, chosen);
+    const filtered = try no_local_tools.filterRootSpecs(ToolSpec, arena, chosen);
+    return tool_gates.withAvailable(ToolSpec, arena, filtered, &optional_specs);
 }
 
 const Schema = union(enum) { raw: []const u8, value: Value };
@@ -461,7 +473,11 @@ pub fn emitSchema(w: *Io.Writer) !void {
     try s.endArray();
     try s.objectField("tools");
     try s.beginArray();
-    for (root_specs) |t| {
+    // Optional tools (#352) are listed unconditionally even though they are
+    // advertised only when available: this document is the SDK codegen
+    // contract and must stay byte-identical across machines. Each such tool's
+    // description states what it needs in order to exist.
+    for (root_specs ++ optional_specs) |t| {
         try s.beginObject();
         try s.objectField("name");
         try s.write(t.name);
@@ -482,8 +498,10 @@ pub fn emitSchema(w: *Io.Writer) !void {
     try w.writeByte('\n');
     try w.flush();
 }
-test { // #330: the gate's own tests (advertising, dispatch, env) live with it
+test { // #330/#352: each gate's own tests (advertising, dispatch, env) live with it
     _ = no_local_tools;
+    _ = tool_gates;
+    _ = render;
 }
 test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
     try std.testing.expectEqualStrings("OpenAI", providerDisplayName("openai"));

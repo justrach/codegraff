@@ -67,6 +67,7 @@ const hooks = @import("hooks.zig");
 const telemetry = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const no_local_tools = @import("no_local_tools.zig"); // #330: the hard --no-local-tools gate
+const imagegen = @import("imagegen.zig"); // #352: the codex-gated image tool (advertising lives in schema.zig/tool_gates.zig)
 
 /// Wall-clock ceiling for one *subagent* bash command. Subagents run on pool
 /// threads with no TTY, so there is no Esc to kill a runaway command — without
@@ -462,6 +463,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // Loads one SKILL.md body (or lists them). Rescans on every call, so a
     // skill written this session is loadable without a restart.
     if (std.mem.eql(u8, call.name, "skill")) return skill_docs.execSkill(gpa, io, input);
+    // #352: codex-gated. execImagegen answers a call that was never advertised
+    // (an unavailable session) with the same honest error it gives the model.
+    if (std.mem.eql(u8, call.name, imagegen.tool_name)) return imagegen.execImagegen(ctx, input);
     if (std.mem.eql(u8, call.name, "subagent")) return execSubagent(ctx, input);
     if (std.mem.eql(u8, call.name, "workflow")) return execWorkflow(ctx, input);
     if (std.mem.eql(u8, call.name, "agent_output")) {

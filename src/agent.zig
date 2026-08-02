@@ -251,15 +251,16 @@ pub const Agent = struct {
         return schema.providerTakesEffort(self.provider.kind, self.provider.id, self.provider.model);
     }
 
-    /// #330: a child's catalog is a comptime constant, so the gate picks the
-    /// pre-filtered twin rather than rebuilding one per subagent. Root catalogs
-    /// are filtered where they are assembled (schema.effectiveRootSpecs).
+    /// #330/#352: a child's catalog is a comptime constant, so both gates just
+    /// pick the pre-built twin rather than rebuilding one per subagent —
+    /// schema.subToolsJson owns that choice. Root catalogs are filtered where
+    /// they are assembled (schema.effectiveRootSpecs).
     pub fn toolsJson(self: *const Agent) []const u8 {
-        const gated = no_local_tools.enabled;
+        if (self.sub) return schema.subToolsJson(self.provider.kind, no_local_tools.enabled);
         return switch (self.provider.kind) {
-            .anthropic => if (self.sub) (if (gated) schema.tools_anthropic_sub_remote else schema.tools_anthropic_sub) else self.tools_anthropic,
-            .openai => if (self.sub) (if (gated) schema.tools_openai_sub_remote else schema.tools_openai_sub) else self.tools_openai,
-            .responses => if (self.sub) (if (gated) schema.tools_responses_sub_remote else schema.tools_responses_sub) else self.tools_responses,
+            .anthropic => self.tools_anthropic,
+            .openai => self.tools_openai,
+            .responses => self.tools_responses,
         };
     }
 
