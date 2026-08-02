@@ -120,6 +120,42 @@ struct TurnStateCheckView: View {
         if case .some(.turn) = GraffServeClient.decode("{\"type\":\"turn\",\"text\":\"done\"}") { sawTurn = true }
         check("a terminal turn record decodes", sawTurn)
 
+        // #286: sandbox liveness must never be read as a task outcome.
+        let sb = "sandbox-1"
+        check("a stopped/gone sandbox is Ended, not Done",
+              SessionsListView.rowStatus(prior: nil, sandbox: sb, started: []) == .ended)
+        check("a started sandbox is idle",
+              SessionsListView.rowStatus(prior: nil, sandbox: sb, started: [sb]) == .idle)
+        check("a failed sandbox listing is Unknown, not Done",
+              SessionsListView.rowStatus(prior: nil, sandbox: sb, started: nil) == .unknown)
+        check("a failed sandbox listing keeps the prior status",
+              SessionsListView.rowStatus(prior: .working, sandbox: sb, started: nil) == .working)
+        check("a known failure survives a stopped sandbox",
+              SessionsListView.rowStatus(prior: .failed, sandbox: sb, started: []) == .failed)
+        check("no sandbox means no liveness verdict",
+              SessionsListView.rowStatus(prior: nil, sandbox: nil, started: []) == .idle)
+
+        // #286: the outcome round-trips through the synced transcript.
+        let failedTurn = [ChatMessage(role: .user, text: "go"),
+                          ChatMessage(role: .assistant, text: "",
+                                      state: .failed("The network connection was lost."))]
+        let failedJSON = AppSessionSync.transcriptJSON(failedTurn)
+        check("a failed turn reloads as failed",
+              AppSessionSync.messages(fromTranscript: failedJSON).last?.state
+                  == .failed("The network connection was lost."))
+        check("a failed transcript is not a Done session",
+              AppSessionSync.outcome(fromTranscript: failedJSON) == .failed)
+        let okJSON = AppSessionSync.transcriptJSON([ChatMessage(role: .assistant, text: "shipped")])
+        check("a completed transcript is Done",
+              AppSessionSync.outcome(fromTranscript: okJSON) == .done)
+        check("an interrupted turn is not silently successful",
+              AppSessionSync.outcome(fromTranscript:
+                  AppSessionSync.transcriptJSON([ChatMessage(role: .assistant, text: "",
+                                                             state: .streaming)])) == .failed)
+        check("an unlabelled (pre-#286) transcript claims no outcome",
+              AppSessionSync.outcome(fromTranscript:
+                  "[{\"role\":\"assistant\",\"text\":\"Transport error\"}]") == nil)
+
         let failures = lines.filter { $0.hasPrefix("FAIL") }.count
         let summary = failures == 0 ? "TURNSTATE-PASS" : "TURNSTATE-FAIL (\(failures))"
         print(summary)
@@ -198,14 +234,27 @@ struct TodoItem: Identifiable {
     var status: TodoStatus
 }
 
+// #286: sandbox liveness is not a task outcome. `done` means a persisted
+// successful terminal turn and nothing else; a sandbox that merely stopped is
+// `ended` (neutral — the work may or may not have succeeded), a turn that
+// failed or was interrupted is `failed`, and a sandbox whose state could not
+// be fetched is `unknown` rather than silently optimistic.
 enum SessionStatus: String {
-    case working, waiting, idle, done
+    case working, waiting, idle, done, ended, failed, unknown
+
+    // Outcomes read from the session's own transcript. Sandbox liveness must
+    // never overwrite one of these with a guess (#286).
+    var isTranscriptOutcome: Bool { self == .done || self == .failed }
+
     var label: String {
         switch self {
         case .working: return "Working"
         case .waiting: return "Waiting on you"
         case .idle: return "Idle"
         case .done: return "Done"
+        case .ended: return "Ended"
+        case .failed: return "Failed"
+        case .unknown: return "Unknown"
         }
     }
     var symbol: String {
@@ -214,6 +263,9 @@ enum SessionStatus: String {
         case .waiting: return "exclamationmark.circle.fill"
         case .idle: return "pause.circle"
         case .done: return "checkmark.circle.fill"
+        case .ended: return "stop.circle"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .unknown: return "questionmark.circle"
         }
     }
     var tint: Color {
@@ -222,6 +274,9 @@ enum SessionStatus: String {
         case .waiting: return .orange
         case .idle: return .secondary
         case .done: return .green
+        case .ended: return .secondary
+        case .failed: return .red
+        case .unknown: return .secondary
         }
     }
 }

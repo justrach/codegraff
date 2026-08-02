@@ -72,8 +72,20 @@ struct SessionsListView: View {
         guard Gateway.apiKey != nil else { return }
         do {
             let rows = try await Gateway.listAppSessions()
-            let live = (try? await Gateway.sandboxes()) ?? []
-            let started = Set(live.filter { $0.state == "started" }.map(\.id))
+            // #286: a failed sandbox listing is not evidence that anything
+            // finished. Keep it nil so rows fall back to what we already knew,
+            // or to Unknown — never to a manufactured Done.
+            var started: Set<String>? = nil
+            var livenessNote = ""
+            do {
+                started = Set(try await Gateway.sandboxes().filter { $0.state == "started" }.map(\.id))
+            } catch {
+                livenessNote = "Sandbox state unavailable — cube status may be out of date."
+            }
+            // Outcomes already read from a transcript survive a reload; only
+            // liveness-derived guesses are recomputed.
+            let priorStatus = Dictionary(sessions.map { ($0.id, $0.status) },
+                                         uniquingKeysWith: { first, _ in first })
             let localCube = CubeConnection.stored()
             sessions = rows.map { row in
                 var s = AgentSession(title: row.title.isEmpty ? "Session" : row.title,
@@ -83,6 +95,7 @@ struct SessionsListView: View {
                                      todos: [], messages: [])
                 s.id = UUID(uuidString: row.id) ?? UUID()
                 s.needsHydration = true
+                let prior = priorStatus[s.id]
                 if let sb = row.sandbox_id {
                     if let lc = localCube, lc.sandboxID == sb {
                         s.cube = lc
@@ -92,12 +105,13 @@ struct SessionsListView: View {
                         s.cube = CubeConnection(sandboxID: sb, base: "", serveToken: "",
                                                 previewToken: nil, githubLogin: nil)
                     }
-                    s.status = started.contains(sb) ? .idle : .done
                 }
+                s.status = Self.rowStatus(prior: prior, sandbox: row.sandbox_id, started: started)
                 return s
             }
             needsSessionRelogin = false
-            loadNote = sessions.isEmpty ? "No sessions yet — tap + to build something." : ""
+            let emptyNote = sessions.isEmpty ? "No sessions yet — tap + to build something." : ""
+            loadNote = [emptyNote, livenessNote].filter { !$0.isEmpty }.joined(separator: "\n")
         } catch {
             if let gatewayError = error as? GatewayError,
                gatewayError.isInsufficientSessionScope {
@@ -108,6 +122,22 @@ struct SessionsListView: View {
                 loadNote = error.localizedDescription
             }
         }
+    }
+
+    // #286: the whole liveness→status decision, kept pure so the invariant is
+    // checkable in-process (--autotest-turnstate) without a network or a tap.
+    //
+    //   * an outcome already read from the transcript always wins;
+    //   * `started == nil` means the sandbox listing FAILED — that is unknown,
+    //     never Done;
+    //   * a stopped/gone sandbox has only Ended: the gateway exposes no task
+    //     outcome on the sandbox (only a liveness `state`), so success must not
+    //     be inferred from a sandbox that is no longer running.
+    static func rowStatus(prior: SessionStatus?, sandbox: String?, started: Set<String>?) -> SessionStatus {
+        if let prior, prior.isTranscriptOutcome { return prior }
+        guard let sandbox else { return prior ?? .idle }
+        guard let started else { return prior ?? .unknown }
+        return started.contains(sandbox) ? .idle : .ended
     }
 
     private static func relative(_ epoch: Int) -> String {

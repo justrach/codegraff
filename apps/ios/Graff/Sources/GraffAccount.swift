@@ -273,12 +273,44 @@ struct MessageDTO: Codable {
     let role: String
     let text: String
     let reasoning: String?
+    // #286: how the turn ended, persisted alongside it. Without this a failed
+    // or interrupted turn reloads indistinguishable from a successful one, and
+    // the history list has no outcome to show but sandbox liveness. Absent on
+    // transcripts written before this field existed — absence means "unlabelled",
+    // not "succeeded".
+    var state: String? = nil
+    var failure: String? = nil
 }
 
 enum AppSessionSync {
+    private static func wire(_ state: TurnState) -> (state: String, failure: String?) {
+        switch state {
+        case .streaming: return ("streaming", nil)
+        case .completed: return ("completed", nil)
+        case .cancelled: return ("cancelled", nil)
+        case .failed(let why): return ("failed", why)
+        }
+    }
+
+    // A turn persisted as `streaming` never reached a terminal event — the app
+    // was killed or the transport died mid-turn — so it reloads as interrupted
+    // rather than as a silent success (#286).
+    private static func turnState(_ dto: MessageDTO) -> TurnState {
+        switch dto.state {
+        case "failed": return .failed(dto.failure ?? "Turn failed.")
+        case "cancelled": return .cancelled
+        case "streaming": return .failed(dto.failure ?? "Interrupted before the turn finished.")
+        default: return .completed
+        }
+    }
+
     static func transcriptJSON(_ messages: [ChatMessage]) -> String {
-        let dtos = messages.map { MessageDTO(role: $0.role == .user ? "user" : "assistant",
-                                             text: $0.text, reasoning: $0.reasoning) }
+        let dtos = messages.map { m -> MessageDTO in
+            let w = wire(m.state)
+            return MessageDTO(role: m.role == .user ? "user" : "assistant",
+                              text: m.text, reasoning: m.reasoning,
+                              state: w.state, failure: w.failure)
+        }
         let data = (try? JSONEncoder().encode(dtos)) ?? Data("[]".utf8)
         return String(data: data, encoding: .utf8) ?? "[]"
     }
@@ -287,7 +319,24 @@ enum AppSessionSync {
         guard let data = json.data(using: .utf8),
               let dtos = try? JSONDecoder().decode([MessageDTO].self, from: data) else { return [] }
         return dtos.map { ChatMessage(role: $0.role == "user" ? .user : .assistant,
-                                      text: $0.text, reasoning: $0.reasoning) }
+                                      text: $0.text, reasoning: $0.reasoning,
+                                      state: turnState($0)) }
+    }
+
+    // #286: the outcome the transcript actually records, or nil when it records
+    // none (an unlabelled or empty transcript is not evidence of success). The
+    // caller falls back to a neutral liveness-derived state instead of Done.
+    static func outcome(fromTranscript json: String) -> SessionStatus? {
+        guard let data = json.data(using: .utf8),
+              let dtos = try? JSONDecoder().decode([MessageDTO].self, from: data),
+              let last = dtos.last(where: { $0.role != "user" }),
+              let state = last.state else { return nil }
+        switch state {
+        case "completed": return .done
+        case "failed", "streaming": return .failed
+        case "cancelled": return .ended
+        default: return nil
+        }
     }
 
     // Fire-and-forget: history sync must never block or break the chat.
