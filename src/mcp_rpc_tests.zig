@@ -208,3 +208,28 @@ test "probeStdioResilient (#327): retries, then downgrades only with a visible r
     }
     try std.testing.expect(std.mem.indexOf(u8, mcp_rpc.LegacyReason.no_modern_version.note(), modern_protocol) != null);
 }
+
+test "probeStdio (#327): the DEFAULT deadline covers a cold-starting server" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // /bin/sh
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // The reported symptom itself, and the one no amount of labelling fixed:
+    // the deadline has to be survivable by a child that is still booting. A
+    // second concurrent codedb-pro answers its first request in ~1.5s; this
+    // fixture stands in for it at 1.2s. Deliberately NO override of
+    // `stdio_probe_timeout_ms` — the value under test is the shipped default,
+    // which at 600ms classified this server (and so the auto-connected
+    // companion, on every single run) as legacy for the whole session.
+    try std.testing.expect(mcp_rpc.stdio_probe_timeout_ms >= 3_000);
+
+    var spawned = try spawnReplying(a, io,
+        \\read line; sleep 1.2; printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28"]}}'; cat >/dev/null
+    );
+    defer mcp_stdio.stopChild(io, &spawned.child);
+
+    try std.testing.expectEqual(mcp_rpc.StdioProbeOutcome.modern, try mcp_rpc.probeStdio(spawned.server, a, io));
+    try std.testing.expect(spawned.server.probe_fallback == null);
+}

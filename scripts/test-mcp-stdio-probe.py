@@ -2,7 +2,7 @@
 """Offline end-to-end proof for graff's GRAFF_MCP_PROBE-gated stdio
 `server/discover` probe. Two scenarios:
 
-1. Gate off (default): a stdio server never sees anything but the exact
+1. Gate off (GRAFF_MCP_PROBE=0): a stdio server never sees anything but the exact
    pre-migration sequence (initialize first, no server/discover line ever
    written) — proves the default behavior is untouched.
 2. Gate on, against a server that silently drops `server/discover` (the
@@ -166,10 +166,10 @@ def run_graff(graff: Path, fixture: Path, probe: bool) -> subprocess.CompletedPr
                 "GRAFF_NO_TELEMETRY": "1",
             }
         )
-        if probe:
-            env["GRAFF_MCP_PROBE"] = "1"
-        else:
-            env.pop("GRAFF_MCP_PROBE", None)
+        # The probe is ON unless GRAFF_MCP_PROBE=0, so "gate off" has to say
+        # so explicitly — merely unsetting the variable ran scenario 1 with the
+        # probe enabled and asserted nothing it claimed to.
+        env["GRAFF_MCP_PROBE"] = "1" if probe else "0"
         return subprocess.run(
             [str(graff), "--json", "--yolo", "--model", "claude"],
             cwd=workspace,
@@ -178,7 +178,7 @@ def run_graff(graff: Path, fixture: Path, probe: bool) -> subprocess.CompletedPr
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=20,
+            timeout=40,  # room for the 5s probe bound plus a loaded CI box
             check=False,
         )
 

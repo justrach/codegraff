@@ -81,16 +81,13 @@ pub fn applyHandshakeTimeoutEnv(environ_map: anytype) void {
     if (secs > 0) stdio_handshake_timeout_ms = @intCast(@min(secs, 86_400) * 1000);
 }
 
-/// GRAFF_MCP_PROBE_MS raises/lowers `stdio_probe_timeout_ms` (default 600).
-/// The escape hatch for #327: a server that is slow to its FIRST answer gets
-/// classified legacy for the session even though it speaks the modern
-/// protocol. Measured, not hypothetical — a second concurrent codedb-pro
-/// process takes ~1.5s to answer its first request where the first takes 2ms,
-/// which is why the companion lands on legacy exactly when a workspace stdio
-/// server connected before it. The default stays low because a genuinely
-/// legacy server pays the whole bound before falling back; raise it when the
-/// connect line reports a probe-deadline fallback. Milliseconds; ignored if
-/// unparseable or 0; clamped to <=60s.
+/// GRAFF_MCP_PROBE_MS overrides `stdio_probe_timeout_ms` (default 5000, see
+/// there for how that number is derived). Raise it for a server slower to its
+/// first answer than the default allows — the connect line names the
+/// probe-deadline fallback when that happens — or lower it to skip the
+/// startup wait a server that answers `server/discover` with silence rather
+/// than an error costs. Milliseconds; ignored if unparseable or 0; clamped to
+/// <=60s.
 pub fn applyProbeTimeoutEnv(environ_map: anytype) void {
     const v = environ_map.get("GRAFF_MCP_PROBE_MS") orelse return;
     const ms = std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10) catch return;
@@ -235,16 +232,30 @@ fn connectLegacy(server: *Server, a: Allocator, session_alloc: Allocator, bound_
     return handshakeRequest(server, a, bound_io, "{}", "tools/list");
 }
 
-/// A stdio server is a LOCAL process, so a reply is a pipe write away: 3s was
-/// a network-shaped budget and made the spec's SHOULD-probe unaffordable to
-/// run by default. A server that has not answered `server/discover` in this
-/// long is treated as legacy, which is exactly the behavior graff had before
-/// the probe existed - so the cost of guessing wrong is latency, never
-/// function (stdio spec: fall back on "no response within a reasonable
+/// How long the `server/discover` probe waits before calling a stdio server
+/// legacy (stdio spec: fall back on "no response within a reasonable
 /// timeout", never keyed to a specific error code).
-/// A `var` only so a test can widen it off a loaded CI box; production never
-/// writes it.
-pub var stdio_probe_timeout_ms: i64 = 600;
+///
+/// This bound is NOT pipe latency. The probe is the first thing written to a
+/// child graff spawned microseconds ago, so what it has to cover is that
+/// child's COLD START — interpreter boot, module load, index warm-up — under
+/// whatever load the machine already carries. 600ms was sized for the pipe
+/// write and was wrong for the process behind it: a second concurrent
+/// codedb-pro answers its first request in ~1.5s where the first takes 2ms,
+/// and an npx-launched server routinely needs longer, so the most common real
+/// setup (a workspace server plus the auto-connected companion) missed the
+/// deadline on EVERY run and spent the whole session on legacy. That was #327.
+///
+/// The costs are asymmetric, which is what sets the value: missing the
+/// deadline degrades the connection for its entire life, while overshooting
+/// costs a one-time startup wait — and only for a server that answers nothing
+/// at all, since one that replies with a JSON-RPC error (what every SDK-built
+/// legacy server does for an unknown method) is classified the instant that
+/// error lands, however large this is. 5s covers the measured slow starts with
+/// room to spare and stays well under the 15s `stdio_handshake_timeout_ms`
+/// graff already spends on the same child's `initialize`. `GRAFF_MCP_PROBE_MS`
+/// moves it either way.
+pub var stdio_probe_timeout_ms: i64 = 5_000;
 
 fn stdioProbeReadTask(server: *Server, response_alloc: Allocator, id: i64) anyerror!Value {
     const stdio = &server.transport.stdio;
@@ -412,8 +423,8 @@ pub fn probeStdioResilient(server: *Server, a: Allocator, io: Io) !StdioProbeOut
     };
 }
 
-/// Connect a stdio server. Always legacy — the gated `server/discover`
-/// probe (`GRAFF_MCP_PROBE=1`, default off) is orchestrated by mcp.zig's
+/// Connect a stdio server. Always legacy — the `server/discover` probe
+/// (on unless `GRAFF_MCP_PROBE=0`) is orchestrated by mcp.zig's
 /// `startServer` instead of here: only it has the argv/env needed to
 /// respawn a server whose process closes during the probe. This is
 /// byte-identical to graff's pre-migration behavior either way.
