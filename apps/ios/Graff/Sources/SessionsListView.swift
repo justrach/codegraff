@@ -51,10 +51,10 @@ struct SessionsListView: View {
                 .onDelete { offsets in
                     let doomed = offsets.map { sessions[$0] }
                     sessions.remove(atOffsets: offsets)
-                    for s in doomed {
-                        let id = s.id.uuidString.lowercased()
-                        Task.detached { try? await Gateway.deleteAppSession(id) }
-                    }
+                    // #310: routed through the sync engine so the DELETE is
+                    // ordered against this session's in-flight saves and the id
+                    // is tombstoned — a late PUT can no longer resurrect it.
+                    for s in doomed { AppSessionSync.delete(s.id) }
                 }
             }
             .navigationTitle("Sessions")

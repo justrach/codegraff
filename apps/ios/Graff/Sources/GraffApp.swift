@@ -22,6 +22,10 @@ struct GraffApp: App {
                 // Turn-model invariants (#307/#285/#309) checked in memory —
                 // no network, no taps, so it runs anywhere the app launches.
                 TurnStateCheckView()
+            } else if CommandLine.arguments.contains("--autotest-sync") {
+                // Session-sync ordering invariants (#310) against a delayed
+                // in-memory transport — deterministic, no network, no taps.
+                SyncOrderCheckView()
             } else if CommandLine.arguments.contains("--autotest-compose") {
                 // Render the new-session compose sheet standalone for visual QA.
                 NewSessionView { _ in }
@@ -158,6 +162,99 @@ struct TurnStateCheckView: View {
 
         let failures = lines.filter { $0.hasPrefix("FAIL") }.count
         let summary = failures == 0 ? "TURNSTATE-PASS" : "TURNSTATE-FAIL (\(failures))"
+        print(summary)
+        for l in lines { print(l) }
+        return ([summary] + lines).joined(separator: "\n")
+    }
+}
+
+// Launch with `--autotest-sync` to reproduce #310's delayed-response scenarios
+// against an in-memory transport that stalls the FIRST write it receives — the
+// exact "delay the PUT produced after turn 1" setup from the issue — and assert
+// what actually reached the wire. Gates on SYNCORDER-PASS.
+struct SyncOrderCheckView: View {
+    @State private var report = "running…"
+    var body: some View {
+        Text(report)
+            .font(.system(.footnote, design: .monospaced))
+            .padding()
+            .task { report = await Self.run() }
+    }
+
+    // Records every write in the order it reached the transport, holding the
+    // first one open long enough that anything issued after it must queue.
+    private actor Recorder {
+        private var seen = 0
+        private var log: [String] = []
+        func apply(_ write: AppSessionWrite) async {
+            seen += 1
+            if seen == 1 { try? await Task.sleep(nanoseconds: 200_000_000) }
+            log.append(write.transcript ?? "DELETE")
+        }
+        func applied() -> [String] { log }
+    }
+
+    static func run() async -> String {
+        var lines: [String] = []
+        func check(_ name: String, _ ok: Bool) { lines.append((ok ? "ok   " : "FAIL ") + name) }
+
+        func harness() -> (Recorder, AppSessionSyncEngine) {
+            let recorder = Recorder()
+            return (recorder, AppSessionSyncEngine(transport: { await recorder.apply($0) }))
+        }
+        func put(_ engine: AppSessionSyncEngine, _ rev: UInt64, _ body: String) async {
+            await engine.save(id: "s1", revision: rev, title: "t", model: "m",
+                              sandboxID: nil, transcript: body)
+        }
+
+        // save/save: the delayed turn-1 PUT must not be the last word.
+        var (recorder, engine) = harness()
+        await put(engine, 1, "turn-1")
+        await put(engine, 2, "turn-2")
+        await engine.quiesce()
+        var applied = await recorder.applied()
+        check("the newer transcript wins the save/save race", applied.last == "turn-2")
+        check("writes reach the gateway in issue order", applied == ["turn-1", "turn-2"])
+
+        // An obsolete save queued behind a slow one is dropped, not sent.
+        (recorder, engine) = harness()
+        await put(engine, 1, "turn-1")
+        await put(engine, 2, "turn-2")
+        await put(engine, 3, "turn-3")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("a superseded queued save is never sent", applied == ["turn-1", "turn-3"])
+
+        // An out-of-order arrival (older revision, later call) is refused.
+        (recorder, engine) = harness()
+        await put(engine, 5, "newer")
+        await put(engine, 2, "older")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("an older revision never clobbers a newer one", applied == ["newer"])
+
+        // save/delete: the tombstone survives a delayed PUT.
+        (recorder, engine) = harness()
+        await put(engine, 1, "turn-1")
+        await engine.delete(id: "s1", revision: 2)
+        await put(engine, 3, "late-save")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("DELETE is ordered after the in-flight PUT", applied == ["turn-1", "DELETE"])
+        check("a late save never resurrects a deleted session", !applied.contains("late-save"))
+
+        // Different sessions are independent — serialization is per id.
+        (recorder, engine) = harness()
+        await put(engine, 1, "a")
+        await engine.save(id: "s2", revision: 2, title: "t", model: "m",
+                          sandboxID: nil, transcript: "b")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("a second session is not blocked by the first",
+              applied.sorted() == ["a", "b"])
+
+        let failures = lines.filter { $0.hasPrefix("FAIL") }.count
+        let summary = failures == 0 ? "SYNCORDER-PASS" : "SYNCORDER-FAIL (\(failures))"
         print(summary)
         for l in lines { print(l) }
         return ([summary] + lines).joined(separator: "\n")

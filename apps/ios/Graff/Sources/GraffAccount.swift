@@ -339,7 +339,19 @@ enum AppSessionSync {
         }
     }
 
-    // Fire-and-forget: history sync must never block or break the chat.
+    // #310: every write is stamped with a monotonic revision HERE, on the main
+    // actor, in the order the caller made it. Detaching first and numbering
+    // later would let two saves reach the sync engine in either order, which
+    // is the bug this is guarding against.
+    @MainActor private static var revisionCounter: UInt64 = 0
+    @MainActor private static func nextRevision() -> UInt64 {
+        revisionCounter += 1
+        return revisionCounter
+    }
+
+    // Still fire-and-forget from the caller's point of view — history sync must
+    // never block or break the chat — but no longer unordered (#310).
+    @MainActor
     static func save(_ session: AgentSession) {
         guard Gateway.apiKey != nil else { return }
         let id = session.id.uuidString.lowercased()
@@ -347,9 +359,131 @@ enum AppSessionSync {
         let title = session.title
         let model = session.model
         let sandboxID = session.cube?.sandboxID
-        Task.detached {
-            try? await Gateway.putAppSession(id: id, title: title, model: model,
-                                             sandboxID: sandboxID, transcript: transcript)
+        let revision = nextRevision()
+        Task {
+            await AppSessionSyncEngine.shared.save(id: id, revision: revision, title: title,
+                                                   model: model, sandboxID: sandboxID,
+                                                   transcript: transcript)
         }
+    }
+
+    @MainActor
+    static func delete(_ sessionID: UUID) {
+        guard Gateway.apiKey != nil else { return }
+        let id = sessionID.uuidString.lowercased()
+        let revision = nextRevision()
+        Task { await AppSessionSyncEngine.shared.delete(id: id, revision: revision) }
+    }
+}
+
+// #310: session persistence used to be a bare `Task.detached` per save, with no
+// ordering, no revision and no relationship to the equally detached DELETE. An
+// older PUT could land after a newer one and roll the synced transcript
+// backward, and a delayed PUT could land after a DELETE and resurrect a session
+// the user had removed. The gateway's /v1/app/sessions PUT takes no If-Match or
+// version — there is nothing to make conditional — so the invariant is enforced
+// entirely on this side:
+//
+//   * writes for one session id run strictly one at a time, in issue order;
+//   * a payload that has been superseded while it waited its turn is dropped
+//     rather than sent, so an older transcript never reaches the gateway;
+//   * a deleted id is tombstoned, which drops every queued and future save for
+//     it, and the DELETE is chained behind any PUT already in flight so the
+//     row cannot come back.
+//
+// Server-side gap: without a conditional PUT, a second device racing this one
+// is still last-writer-wins. That needs a gateway revision/If-Match, which does
+// not exist yet.
+// One write as it reaches the wire. `transcript == nil` is a delete.
+struct AppSessionWrite: Sendable {
+    let id: String
+    let title: String
+    let model: String
+    let sandboxID: String?
+    let transcript: String?
+}
+
+actor AppSessionSyncEngine {
+    static let shared = AppSessionSyncEngine()
+
+    // The gateway leg, injectable so the ordering invariants can be asserted
+    // against a deterministically delayed transport (--autotest-sync).
+    static let gatewayTransport: @Sendable (AppSessionWrite) async -> Void = { w in
+        if let transcript = w.transcript {
+            try? await Gateway.putAppSession(id: w.id, title: w.title, model: w.model,
+                                             sandboxID: w.sandboxID, transcript: transcript)
+        } else {
+            try? await Gateway.deleteAppSession(w.id)
+        }
+    }
+
+    private let transport: @Sendable (AppSessionWrite) async -> Void
+    init(transport: @escaping @Sendable (AppSessionWrite) async -> Void = AppSessionSyncEngine.gatewayTransport) {
+        self.transport = transport
+    }
+
+    // Newest revision issued per session id; anything older is obsolete.
+    private var latest: [String: UInt64] = [:]
+    // Tail of each session's serial chain, so the next operation can await it.
+    private var chain: [String: Task<Void, Never>] = [:]
+    private var chainGeneration: [String: UInt64] = [:]
+    private var generationCounter: UInt64 = 0
+    private var tombstones: Set<String> = []
+
+    func save(id: String, revision: UInt64, title: String, model: String,
+              sandboxID: String?, transcript: String) {
+        guard !tombstones.contains(id) else { return }
+        // Out-of-order arrival at the actor is fine: revisions were stamped in
+        // call order, so an older one simply never becomes the latest.
+        guard revision > (latest[id] ?? 0) else { return }
+        latest[id] = revision
+        let write = AppSessionWrite(id: id, title: title, model: model,
+                                    sandboxID: sandboxID, transcript: transcript)
+        let send = transport
+        link(id) { [self] in
+            // Superseded while queued — sending it would roll the gateway back.
+            guard await isCurrent(id, revision) else { return }
+            await send(write)
+        }
+    }
+
+    func delete(id: String, revision: UInt64) {
+        // Tombstone first: queued saves are already obsolete, and any save
+        // issued later (a stale chat view finishing a turn) is refused above.
+        tombstones.insert(id)
+        latest[id] = revision
+        let write = AppSessionWrite(id: id, title: "", model: "", sandboxID: nil, transcript: nil)
+        let send = transport
+        link(id) { await send(write) }
+    }
+
+    // Wait until every queued write has run. Only the in-process harness needs
+    // this; the app never blocks on sync.
+    func quiesce() async {
+        while let task = chain.values.first { await task.value }
+    }
+
+    private func isCurrent(_ id: String, _ revision: UInt64) -> Bool {
+        !tombstones.contains(id) && latest[id] == revision
+    }
+
+    // Append to this session's serial chain. Different sessions still overlap;
+    // only same-id writes are ordered against each other.
+    private func link(_ id: String, _ work: @escaping @Sendable () async -> Void) {
+        let previous = chain[id]
+        generationCounter += 1
+        let generation = generationCounter
+        chainGeneration[id] = generation
+        chain[id] = Task { [self] in
+            await previous?.value
+            await work()
+            release(id, generation)
+        }
+    }
+
+    private func release(_ id: String, _ generation: UInt64) {
+        guard chainGeneration[id] == generation else { return } // a newer write owns the chain
+        chain[id] = nil
+        chainGeneration[id] = nil
     }
 }
