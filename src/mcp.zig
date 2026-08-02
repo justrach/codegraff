@@ -446,6 +446,10 @@ pub const Registry = struct {
             const desc = if (t.object.get("description")) |d| (if (d == .string) d.string else "") else if (t.object.get("title")) |ti| (if (ti == .string) ti.string else "") else "";
             var schema = t.object.get("inputSchema") orelse Value{ .object = .empty };
             try rewriteOneOf(a, &schema);
+            // ...then lower any TOP-LEVEL combinator: Anthropic rejects the
+            // whole request over one, so a single server advertising it would
+            // break every turn (codedbpro's `replace`, "path or paths").
+            try mcp_protocol.flattenTopLevel(a, &schema);
             try tools.append(a, .{
                 .server_index = server_index,
                 .original_name = orig,

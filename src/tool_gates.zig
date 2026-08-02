@@ -91,6 +91,10 @@ pub fn withAvailable(comptime Spec: type, arena: Allocator, base: []const Spec, 
     return buf[0..i];
 }
 
+test { // the served catalogs' wire-compatibility guard (an unreferenced module's tests never run)
+    _ = @import("tool_schema_tests.zig");
+}
+
 test "#352: an optional tool is advertised only while its flag is set; other names are unaffected" {
     const saved = imagegen.available;
     defer imagegen.available = saved;
