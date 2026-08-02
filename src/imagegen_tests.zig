@@ -187,10 +187,11 @@ const FakeCodex = struct {
             const dir = try std.fmt.allocPrint(a, "{s}/generated_images/019f-session", .{home});
             try Io.Dir.cwd().createDirPath(io, dir);
             const path = try std.fmt.allocPrint(a, "{s}/exec-call.png", .{dir});
-            const png = "\x89PNG\r\n\x1a\n" ++ ("p" ** 4096);
+            const png = "\x89PNG\r\n\x1a\n" ++ @as([4096]u8, @splat('p'));
+            const junk = "{\"error\": \"no\"}" ++ @as([4096]u8, @splat('x'));
             try Io.Dir.cwd().writeFile(io, .{
                 .sub_path = path,
-                .data = if (plant == .fresh_junk) "{\"error\": \"no\"}" ++ ("x" ** 4096) else png,
+                .data = if (plant == .fresh_junk) junk else png,
             });
             if (plant == .stale_png) {
                 const two_weeks: i128 = 14 * 24 * 60 * 60 * std.time.ns_per_s;
