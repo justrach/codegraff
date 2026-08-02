@@ -60,6 +60,7 @@ pub const Ctx = struct {
 pub fn run(ctx: *Ctx) !void {
     var title_jobs: mainloop_title.Jobs = .{};
     defer title_jobs.deinit(ctx);
+    defer session.flushSaves(); // #273: the turn-path autosaves write in the background — no queued one may outlive this loop, on ANY exit
     // Trajectory spine state: each turn's parent is the previous turn, and a
     // changed prompt fingerprint marks a set_system_prompt mutation edge.
     var prev_turn_id: u64 = 0;
@@ -587,14 +588,13 @@ pub fn run(ctx: *Ctx) !void {
                 },
             }
         }
-        // opencode-style continuous autosave: persist after every turn so a
-        // crash or quit never loses the thread — last.session.json, the same
-        // file /resume reads. Best-effort; a write failure never breaks the loop.
-        session.saveSession(ctx.root, ctx.arena, ctx.root.session_name) catch {};
+        // opencode-style continuous autosave: persist after every turn so a crash or quit never loses the
+        // thread — last.session.json, the same file /resume reads. Best-effort; a write failure never breaks
+        // the loop. #273: unchanged history skips the save whole, and the write itself is queued.
+        session.saveSessionAsync(ctx.root, ctx.arena, ctx.root.session_name) catch {};
 
-        // --worktree checkpoint: commit this turn's edits to the scratch branch
-        // so the work is durable + rewindable across restarts. No-op when not in
-        // a worktree or when --no-autocommit is set.
+        // --worktree checkpoint: commit this turn's edits to the scratch branch so the work is durable
+        // + rewindable across restarts. No-op when not in a worktree or when --no-autocommit is set.
         jobs.worktreeAutoCommit(ctx.gpa, ctx.io, std.fmt.allocPrint(ctx.arena, "wip: {s}", .{title_mod.titleFromPrompt(base_msg)}) catch "wip: graff checkpoint");
     }
 }
