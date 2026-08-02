@@ -4,6 +4,10 @@ const FILE_PATH_PATTERN =
 const PATH_BOUNDARY_PATTERN = /[\s([{"'`]/u;
 const TRAILING_PUNCTUATION_PATTERN = /[.,;!?]+$/u;
 const TRAILING_CLOSERS = new Set([")", "]", "}", ">", "'", '"', "`"]);
+// Paired Markdown emphasis delimiters. Dropped from a link target only when the
+// preceding text actually opened the pair (#197); they are legal URL characters
+// otherwise (`#object.__init__`, `/glob/**`).
+const EMPHASIS_PAIRS = ["**", "__", "~~"] as const;
 const FILE_BASENAME_EXTENSION_PATTERN = /\.[A-Za-z0-9_-]+$/u;
 const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/u;
 const WINDOWS_UNC_PATH_PATTERN = /^\\\\/u;
@@ -96,13 +100,13 @@ function trimLinkCandidate(candidate: string): string {
 }
 
 function markdownClosingDelimiterBefore(text: string, start: number): string | null {
-  const opening = text.slice(0, start).match(/[~*]+$/u)?.[0];
+  const opening = text.slice(0, start).match(/[~*_]+$/u)?.[0];
   if (opening == null) {
     return null;
   }
 
   for (let index = 0; index < opening.length; index += 1) {
-    if (opening[index] === "*") {
+    if (opening[index] === "*" || opening[index] === "_") {
       continue;
     }
     if (opening[index] !== "~" || opening[index + 1] !== "~") {
@@ -114,14 +118,65 @@ function markdownClosingDelimiterBefore(text: string, start: number): string | n
   return [...opening].reverse().join("");
 }
 
+/**
+ * Does the text in front of the URL contain a run that could have *opened* this
+ * emphasis pair? A delimiter run only opens when a non-space follows it, so
+ * `**Note: see ` opens but `2 ** 3 ` does not.
+ */
+function hasEmphasisOpenerBefore(before: string, pair: string): boolean {
+  let index = before.indexOf(pair);
+  while (index >= 0) {
+    const next = before[index + pair.length];
+    if (next != null && !/\s/u.test(next)) {
+      return true;
+    }
+    index = before.indexOf(pair, index + 1);
+  }
+
+  return false;
+}
+
+/**
+ * Defense in depth for #197: a paired Markdown emphasis delimiter (`**`, `__`,
+ * `~~`) is not part of the link target when the surrounding text actually
+ * opened that pair earlier — `**Note: see http://x.test**` reaches this matcher
+ * with the opener too far from the URL for the mirrored pass above to see it.
+ *
+ * The strip stays *conditional* on that opener. `**`, `__` and `~~` are all
+ * legal URL characters, and an unconditional strip truncates real targets
+ * (`…/datamodel.html#object.__init__`, `…/glob/**`, `…/a~~`) — a regression of
+ * bb623af, which is why a lone trailing `*`/`~` was already left alone.
+ */
+function stripEmphasisBoundaries(before: string, value: string): string {
+  let result = value;
+  let stripped = true;
+
+  while (stripped && result.length > 0) {
+    stripped = false;
+    for (const pair of EMPHASIS_PAIRS) {
+      if (!hasEmphasisOpenerBefore(before, pair)) {
+        continue;
+      }
+      if (result.endsWith(pair)) {
+        result = trimLinkCandidate(result.slice(0, -pair.length));
+        stripped = true;
+        break;
+      }
+    }
+  }
+
+  return result;
+}
+
 function trimMarkdownWrappedLinkCandidate(text: string, start: number, candidate: string): string {
   const value = trimLinkCandidate(candidate);
   const closingDelimiter = markdownClosingDelimiterBefore(text, start);
-  if (closingDelimiter == null || !value.endsWith(closingDelimiter)) {
-    return value;
-  }
+  const mirrored =
+    closingDelimiter != null && value.endsWith(closingDelimiter)
+      ? trimLinkCandidate(value.slice(0, -closingDelimiter.length))
+      : value;
 
-  return trimLinkCandidate(value.slice(0, -closingDelimiter.length));
+  return stripEmphasisBoundaries(text.slice(0, start), mirrored);
 }
 
 function safeDecode(value: string): string {
