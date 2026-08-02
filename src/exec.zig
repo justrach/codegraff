@@ -163,7 +163,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // Plan mode backstop: the root gate already denies these with a nicer
     // message; this catches subagents (which skip the gate entirely).
     if (main_mod.plan_mode) {
-        if (std.mem.eql(u8, call.name, "learn_candidate") or std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or mcp.Registry.isMcp(call.name)) return .{
+        if (std.mem.eql(u8, call.name, "learn_candidate") or std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or std.mem.eql(u8, call.name, imagegen.tool_name) or mcp.Registry.isMcp(call.name)) return .{
             .text = try gpa.dupe(u8, "plan mode is on — read-only; describe the change instead of making it"),
             .is_error = true,
         };

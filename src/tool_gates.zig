@@ -172,15 +172,63 @@ test "#352: neither the root nor the SUBAGENT catalog mentions imagegen until it
     try std.testing.expect(root_has);
     for (kinds) |kind| for ([_]bool{ false, true }) |gated| {
         const catalog = schema.subToolsJson(kind, gated);
-        try std.testing.expect(std.mem.indexOf(u8, catalog, "\"imagegen\"") != null);
-        // --no-local-tools still subtracts inside the optional twin: the two
-        // gates compose rather than one cancelling the other.
-        try std.testing.expectEqual(!gated, std.mem.indexOf(u8, catalog, "\"name\":\"bash\"") != null or
-            std.mem.indexOf(u8, catalog, "\"name\": \"bash\"") != null);
+        // #352 + #330: available AND not hard-gated. imagegen spawns a child
+        // and writes a file, so --no-local-tools must remove it even when the
+        // skill gate says yes — the two gates compose, and the subtractive one
+        // always wins.
+        try std.testing.expectEqual(!gated, std.mem.indexOf(u8, catalog, "\"imagegen\"") != null);
+        try std.testing.expectEqual(!gated, std.mem.indexOf(u8, catalog, "\"name\":\"bash\"") != null);
         var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, catalog, .{});
         defer parsed.deinit();
         try std.testing.expect(parsed.value.array.items.len > 1);
     };
     // Subagents still cannot spawn subagents, optional tools or not.
     try std.testing.expect(std.mem.indexOf(u8, schema.subToolsJson(.anthropic, false), "\"name\":\"subagent\"") == null);
+}
+
+test "#352 + #330: an AVAILABLE imagegen is still removed by --no-local-tools, in every catalog and at dispatch" {
+    const schema = @import("schema.zig");
+    const exec = @import("exec.zig");
+    const tools = @import("tools.zig");
+    const no_local_tools = @import("no_local_tools.zig");
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const saved_gate = no_local_tools.enabled;
+    const saved_available = imagegen.available;
+    defer {
+        no_local_tools.enabled = saved_gate;
+        imagegen.available = saved_available;
+    }
+    imagegen.available = true; // the skill IS installed: only #330 may remove it
+
+    no_local_tools.enabled = true;
+    for (try schema.effectiveRootSpecs(arena)) |spec|
+        try std.testing.expect(!std.mem.eql(u8, spec.name, "imagegen"));
+    for ([_]@import("provider.zig").Provider.Kind{ .anthropic, .openai, .responses }) |kind|
+        try std.testing.expect(std.mem.indexOf(u8, schema.subToolsJson(kind, true), "\"imagegen\"") == null);
+
+    // Layer 2: a hallucinated call is refused before anything is spawned.
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"prompt\":\"a red circle\"}", .{});
+    defer parsed.deinit();
+    var client: std.http.Client = undefined;
+    var ctx: tools.ToolCtx = .{
+        .gpa = gpa,
+        .io = std.testing.io,
+        .client = &client,
+        .provider = undefined,
+        .registry = null,
+        .from_sub = false,
+        .approvals = null,
+        .tracer = null,
+    };
+    for ([_]bool{ false, true }) |from_sub| {
+        ctx.from_sub = from_sub;
+        const out = exec.execTool(ctx, .{ .id = "c1", .name = "imagegen", .input = parsed.value });
+        defer gpa.free(out.text);
+        try std.testing.expect(out.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, out.text, "--no-local-tools") != null);
+    }
 }

@@ -35,12 +35,20 @@ pub const Args = struct {
 ///
 /// `--dry-run` is deliberately never assembled: it prints a plan and writes no
 /// file, so it could only ever produce an unverifiable "success".
+/// `--prompt=<v>` / `--out=<v>` rather than two argv slots: those two values are
+/// free-form (a prompt is model-supplied, a path is caller-supplied), and a
+/// leading '-' in the separate form is eaten by argparse as a flag. The `=`
+/// form binds the value to its option no matter what it starts with.
 pub fn buildArgv(arena: Allocator, script: []const u8, a: Args) ![]const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{
-        "python3",  script,    "generate",
-        "--prompt", a.prompt,  "--out",
-        a.out,      "--force", "--model",
+        "python3",
+        script,
+        "generate",
+        try std.fmt.allocPrint(arena, "--prompt={s}", .{a.prompt}),
+        try std.fmt.allocPrint(arena, "--out={s}", .{a.out}),
+        "--force",
+        "--model",
         a.model,
     });
     if (a.size) |v| try argv.appendSlice(arena, &.{ "--size", v });
@@ -75,11 +83,17 @@ test "#352: argv is a generate call with the required flags, optionals only when
 
     const minimal = try buildArgv(arena, "/s/image_gen.py", .{ .prompt = "a red circle", .out = "out.png" });
     const want = [_][]const u8{
-        "python3", "/s/image_gen.py", "generate", "--prompt", "a red circle",
-        "--out",   "out.png",         "--force",  "--model",  default_model,
+        "python3",       "/s/image_gen.py", "generate", "--prompt=a red circle",
+        "--out=out.png", "--force",         "--model",  default_model,
     };
     try testing.expectEqual(want.len, minimal.len);
     for (want, minimal) |w, got| try testing.expectEqualStrings(w, got);
+
+    // A prompt or path starting with '-' must stay bound to its option rather
+    // than being read as a flag.
+    const dashed = try buildArgv(arena, "/s/g.py", .{ .prompt = "--force a wireframe", .out = "-weird.png" });
+    try testing.expectEqualStrings("--prompt=--force a wireframe", dashed[3]);
+    try testing.expectEqualStrings("--out=-weird.png", dashed[4]);
 
     const full = try buildArgv(arena, "/s/image_gen.py", .{
         .prompt = "p",
@@ -90,7 +104,7 @@ test "#352: argv is a generate call with the required flags, optionals only when
         .background = "transparent",
         .output_format = "webp",
     });
-    try testing.expectEqual(@as(usize, 18), full.len);
+    try testing.expectEqual(@as(usize, 16), full.len);
     for ([_][]const u8{ "--size", "1024x1536", "--quality", "high", "--background", "transparent", "--output-format", "webp" }) |needle| {
         var found = false;
         for (full) |arg| {

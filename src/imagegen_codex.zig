@@ -42,16 +42,74 @@ pub const save_root_rel = "generated_images";
 const max_scan_depth: u8 = 4; // real layout is <save_root>/<session>/<call>.png
 
 /// codex exec, non-interactive, with the feature flag forced on so the tool is
-/// offered even when the user's config.toml never enabled it. The model comes
+/// offered even when the user's config.toml never enabled it, and pointed at a
+/// PRIVATE CODEX_HOME for this one run (see `prepareHome`). The model comes
 /// from the user's own codex config — graff does not pick one, because which
 /// models carry the image capabilities is codex's business, not ours.
-pub fn buildArgv(arena: Allocator, prompt: []const u8) ![]const []const u8 {
+///
+/// `env` rather than a shell: CODEX_HOME has to reach the child, and `sh -c`
+/// would put a model-supplied prompt through a quoting layer for no reason.
+pub fn buildArgv(arena: Allocator, private_home: []const u8, prompt: []const u8) ![]const []const u8 {
     return arena.dupe([]const u8, &.{
-        "codex",     "exec",
-        "--sandbox", "workspace-write",
-        "-c",        "features.image_generation=true",
+        "env",
+        try std.fmt.allocPrint(arena, "CODEX_HOME={s}", .{private_home}),
+        "codex",
+        "exec",
+        "--sandbox",
+        "workspace-write",
+        "-c",
+        "features.image_generation=true",
         prompt,
     });
+}
+
+/// Credentials that make a private CODEX_HOME usable. Symlinked rather than
+/// copied so a token never lands as a second plaintext file in a temp dir.
+pub const linked_files = [_][]const u8{ "auth.json", "config.toml" };
+
+/// Build a private CODEX_HOME for ONE run.
+///
+/// Why this exists: `generated_images` is shared state. Scanning the user's
+/// real save_root for "the newest fresh file" is safe with one caller and
+/// unsafe with the N-parallel-subagents pattern this tool documents — a run
+/// that fabricated (wrote nothing, exited 0) would happily adopt a SIBLING's
+/// artifact, pass every freshness and magic check, and hand back an image it
+/// did not generate. That is #352 again, and the checks cannot catch it,
+/// because the file really is fresh and really is an image; it just belongs
+/// to someone else. Two callers could equally be handed the same bytes, and a
+/// human using the Codex app during the run could have their image captured
+/// into a tool result.
+///
+/// So each invocation gets its own CODEX_HOME holding only the credential
+/// files, and therefore its own empty `generated_images`. Our scan cannot see
+/// anyone else's artifacts, and nobody else can see ours.
+///
+/// Accepted caveat: if codex refreshes its token during the run and writes it
+/// by atomic replace, the replacement lands on the private copy and is
+/// discarded with it. The next real run refreshes again — a refresh is
+/// idempotent, and losing one is far cheaper than cross-attributing an image.
+pub fn prepareHome(io: Io, arena: Allocator, private_home: []const u8, real_home: []const u8) !void {
+    try Io.Dir.cwd().createDirPath(io, private_home);
+    for (linked_files) |name| {
+        const target = try std.fmt.allocPrint(arena, "{s}/{s}", .{ real_home, name });
+        _ = Io.Dir.cwd().statFile(io, target, .{}) catch continue; // config.toml is optional
+        const link = try std.fmt.allocPrint(arena, "{s}/{s}", .{ private_home, name });
+        Io.Dir.cwd().symLink(io, target, link, .{}) catch {};
+    }
+}
+
+/// Remove the credential symlinks BEFORE the tree is deleted, so a delete can
+/// never walk into the user's real CODEX_HOME through one of them.
+pub fn unlinkHome(io: Io, arena: Allocator, private_home: []const u8) void {
+    for (linked_files) |name| {
+        const link = std.fmt.allocPrint(arena, "{s}/{s}", .{ private_home, name }) catch continue;
+        Io.Dir.cwd().deleteFile(io, link) catch {};
+    }
+}
+
+/// This run's private save_root.
+pub fn saveRoot(arena: Allocator, private_home: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}/{s}", .{ private_home, save_root_rel });
 }
 
 /// The instruction codex actually receives. It pins the tool, forbids the file
@@ -104,8 +162,14 @@ fn scan(io: Io, arena: Allocator, dir_path: []const u8, since_ns: i128, depth: u
         const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
         switch (entry.kind) {
             .directory => scan(io, arena, path, since_ns, depth + 1, best),
-            .file => {
+            // Some filesystems (and some network mounts) report `.unknown` from
+            // readdir rather than a type; stat decides instead of skipping.
+            .file, .unknown => {
                 const st = Io.Dir.cwd().statFile(io, path, .{}) catch continue;
+                if (st.kind == .directory) {
+                    scan(io, arena, path, since_ns, depth + 1, best);
+                    continue;
+                }
                 if (st.kind != .file) continue;
                 if (st.mtime.nanoseconds < since_ns) continue; // predates this run
                 if (best.*) |cur| {
@@ -154,12 +218,87 @@ test "#352: argv forces the feature flag on and runs codex non-interactively" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const argv = try buildArgv(arena, "PROMPT");
-    const want = [_][]const u8{ "codex", "exec", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "PROMPT" };
+    const argv = try buildArgv(arena, "/tmp/priv", "PROMPT");
+    const want = [_][]const u8{
+        "env",       "CODEX_HOME=/tmp/priv", "codex", "exec",
+        "--sandbox", "workspace-write",      "-c",    "features.image_generation=true",
+        "PROMPT",
+    };
     try testing.expectEqual(want.len, argv.len);
     for (want, argv) |w, got| try testing.expectEqualStrings(w, got);
     // No model is pinned: which models carry the capability is codex's call.
     for (argv) |a| try testing.expect(!std.mem.eql(u8, a, "--model") and !std.mem.eql(u8, a, "-m"));
+    // The prompt is a single argv slot; no shell is involved, so no quoting
+    // layer can reinterpret it.
+    try testing.expectEqualStrings("env", argv[0]);
+    try testing.expectEqualStrings("PROMPT", argv[argv.len - 1]);
+}
+
+test "#352: a private CODEX_HOME links only credentials, so its save_root starts empty and isolated" {
+    const io = testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+
+    // A "real" CODEX_HOME with credentials AND somebody else's artifacts.
+    const real_home = try std.fmt.allocPrint(arena, "{s}/codex", .{base});
+    try Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(arena, "{s}/generated_images/other", .{real_home}));
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{real_home}), .data = "{\"tok\":1}" });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/generated_images/other/exec-theirs.png", .{real_home}), .data = "\x89PNG\r\n\x1a\n" ++ "theirs" });
+
+    const private_home = try std.fmt.allocPrint(arena, "{s}/run-a/home", .{base});
+    try prepareHome(io, arena, private_home, real_home);
+
+    // Credentials reachable through the link...
+    const auth = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(arena, "{s}/auth.json", .{private_home}), arena, .limited(64));
+    try testing.expectEqualStrings("{\"tok\":1}", auth);
+    // ...and no config.toml link, because the source had none.
+    try testing.expect(Io.Dir.cwd().statFile(io, try std.fmt.allocPrint(arena, "{s}/config.toml", .{private_home}), .{}) == error.FileNotFound);
+
+    // The private save_root is empty: a sibling's fresh artifact is invisible.
+    const mine = try saveRoot(arena, private_home);
+    try testing.expect(newestFresh(io, arena, mine, 0) == null);
+    // ...while the real one obviously still has it — proving the isolation is
+    // what hides it, not an empty fixture.
+    try testing.expect(newestFresh(io, arena, try std.fmt.allocPrint(arena, "{s}/generated_images", .{real_home}), 0) != null);
+
+    // Cleanup unlinks credentials first, so deleting the tree cannot reach
+    // through a symlink into the user's real CODEX_HOME.
+    unlinkHome(io, arena, private_home);
+    try Io.Dir.cwd().deleteTree(io, try std.fmt.allocPrint(arena, "{s}/run-a", .{base}));
+    const survived = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(arena, "{s}/auth.json", .{real_home}), arena, .limited(64));
+    try testing.expectEqualStrings("{\"tok\":1}", survived);
+}
+
+test "#352: two concurrent runs cannot see each other's artifacts" {
+    const io = testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+
+    const a_root = try std.fmt.allocPrint(arena, "{s}/a/generated_images/s1", .{base});
+    const b_root = try std.fmt.allocPrint(arena, "{s}/b/generated_images/s1", .{base});
+    try Io.Dir.cwd().createDirPath(io, a_root);
+    try Io.Dir.cwd().createDirPath(io, b_root);
+    // Only run A produced something. Run B fabricated: exit 0, no file.
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/exec-a.png", .{a_root}), .data = "\x89PNG\r\n\x1a\n" ++ "aaaa" });
+
+    const a_save = try std.fmt.allocPrint(arena, "{s}/a/generated_images", .{base});
+    const b_save = try std.fmt.allocPrint(arena, "{s}/b/generated_images", .{base});
+    try testing.expect(newestFresh(io, arena, a_save, 0) != null);
+    // The whole point: B finds nothing even though a fresh, valid, sibling
+    // image exists on the same machine at the same moment.
+    try testing.expect(newestFresh(io, arena, b_save, 0) == null);
 }
 
 test "#352: the controlled prompt carries the user's text and forbids the file handling graff does itself" {

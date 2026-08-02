@@ -50,6 +50,7 @@ const approvals_mod = @import("approvals.zig");
 const confinedPath = approvals_mod.confinedPath;
 const noSymlinkEscape = approvals_mod.noSymlinkEscape;
 const skills = @import("skills.zig");
+const edit_verify = @import("edit_verify.zig"); // same per-path lock stripe write_file/edit_file use
 const skill = @import("imagegen_skill.zig");
 const verify = @import("imagegen_verify.zig");
 const run_mod = @import("imagegen_run.zig");
@@ -81,8 +82,10 @@ pub var script_path: []const u8 = "";
 pub var api_key_present: bool = false;
 /// A `codex` binary is on PATH and $CODEX_HOME/auth.json exists.
 pub var codex_ready: bool = false;
-/// $CODEX_HOME/generated_images — where graff goes looking for the artifact.
-pub var save_root: []const u8 = "";
+/// The user's real $CODEX_HOME. Each run links its credentials into a PRIVATE
+/// CODEX_HOME (imagegen_codex.prepareHome) and scans that instead, so parallel
+/// callers can never see each other's artifacts.
+pub var codex_home: []const u8 = "";
 /// Parent for the private empty cwd each codex run gets.
 pub var scratch_root: []const u8 = "/tmp";
 
@@ -102,7 +105,7 @@ pub fn detect(io: Io, arena: Allocator, env: Env) void {
     available = false;
     script_path = "";
     skill_dir = "";
-    save_root = "";
+    codex_home = "";
     codex_ready = false;
     api_key_present = if (env.openai_api_key) |value| value.len > 0 else false;
     if (env.tmp_dir) |t| if (t.len > 0) {
@@ -123,8 +126,13 @@ pub fn detect(io: Io, arena: Allocator, env: Env) void {
         }
     }
     if (script_path.len == 0) {
-        script_path = engineScript(io, arena, src) orelse return;
-        skill_dir = src;
+        // The script is the FALLBACK engine's, not a precondition for the tool:
+        // a skill whose scripts/ is missing or unreadable still documents the
+        // codex engine, which needs no Python at all. Leaving script_path empty
+        // simply makes `openai_api` unavailable (see the `api_ok` term below).
+        script_path = engineScript(io, arena, src) orelse "";
+        skill_dir = if (script_path.len > 0) src else skill_dir;
+        if (skill_dir.len == 0) skill_dir = src;
     }
     detectCodex(io, arena, env);
     available = true;
@@ -134,11 +142,11 @@ pub fn detect(io: Io, arena: Allocator, env: Env) void {
 /// auth.json only ever produces an interactive login prompt, which in a tool
 /// call is an unkillable hang rather than an error.
 fn detectCodex(io: Io, arena: Allocator, env: Env) void {
-    const codex_home = skill.codexHomeDir(arena, env.codex_home, env.home) orelse return;
-    const auth = std.fmt.allocPrint(arena, "{s}/auth.json", .{codex_home}) catch return;
+    const home = skill.codexHomeDir(arena, env.codex_home, env.home) orelse return;
+    const auth = std.fmt.allocPrint(arena, "{s}/auth.json", .{home}) catch return;
     _ = Io.Dir.cwd().statFile(io, auth, .{}) catch return;
     if (!skills.binOnPath(io, "codex")) return;
-    save_root = std.fmt.allocPrint(arena, "{s}/{s}", .{ codex_home, codex.save_root_rel }) catch return;
+    codex_home = home;
     codex_ready = true;
 }
 
@@ -236,6 +244,17 @@ pub fn execImagegen(ctx: ToolCtx, input: Value) !ToolOutput {
     args.out = resolved;
 
     const before = verify.snapshot(io, resolved);
+    // /rewind parity with write_file: capture what we are about to overwrite
+    // before anything runs, so an imagegen that clobbers a file is undoable.
+    if (ctx.snapshots) |snaps| if (!ctx.from_sub and before.existed) {
+        const prior = Io.Dir.cwd().readFileAlloc(io, resolved, arena, .limited(16 * 1024 * 1024)) catch null;
+        snaps.record(out_rel, prior);
+    };
+    // Same stripe as edit_file/write_file, so an imagegen and an edit_file
+    // landing on one path in the same turn take turns instead of interleaving.
+    const lock = edit_verify.lockPath(io, resolved);
+    defer lock.unlock(io);
+
     // Taken BEFORE the spawn: anything a generator produces must be at least
     // this new, and a file older than this is by definition not from this run.
     const started_ns = Io.Timestamp.now(io, .real).nanoseconds;
@@ -270,12 +289,31 @@ pub fn execImagegen(ctx: ToolCtx, input: Value) !ToolOutput {
     // Resize last, on the already-verified copy, with graff's own hands (#352:
     // leaving the resize to the model is how a stale file became "64x64").
     var note: []const u8 = "";
-    if (resize_to) |size| if (!sips.resize(arena, io, resolved, size)) {
-        note = if (sips.available)
-            " — WARNING: the requested resize failed, so this is the native-size image"
-        else
-            " — note: native size (the codex engine cannot request a size, and sips resizing is macOS-only)";
-    };
+    if (resize_to) |size| {
+        if (sips.resize(arena, io, resolved, size)) {
+            // The receipt below claims a size and a signature; after a resize
+            // those are claims about DIFFERENT bytes, so they get re-checked
+            // rather than inherited from the pre-resize file.
+            const after_resize: ?verify.Snapshot = blk: {
+                const shot = verify.snapshot(io, resolved);
+                break :blk if (shot.existed) shot else null;
+            };
+            const post = verify.evaluate(before, after_resize, started_ns, headBytes(io, resolved, &head_buf), produced);
+            if (post != .ok) return .{
+                .text = try std.fmt.allocPrint(
+                    gpa,
+                    "the image was generated and verified, but resizing it to {d}x{d} left a file that no longer verifies.\nfailed check: {s}\nwhat that means: {s}\npath: {s}\nDo not report this as a generated image.",
+                    .{ size.w, size.h, post.failedCheck(), post.detail(), out_rel },
+                ),
+                .is_error = true,
+            };
+        } else {
+            note = if (sips.available)
+                " — WARNING: the requested resize failed, so this is the native-size image"
+            else
+                " — note: native size (the codex engine cannot request a size, and sips resizing is macOS-only)";
+        }
+    }
     const measured = sips.dims(arena, io, resolved);
     const final = verify.snapshot(io, resolved);
     return .{ .text = try std.fmt.allocPrint(
@@ -298,16 +336,29 @@ const EngineResult = union(enum) { ok: verify.Format, fail: ToolOutput };
 
 /// The codex engine: spawn, then do every piece of artifact handling ourselves.
 fn runCodex(gpa: Allocator, arena: Allocator, io: Io, prompt: []const u8, resolved: []const u8, started_ns: i128) !EngineResult {
-    if (save_root.len == 0) return .{ .fail = try errText(gpa, select.no_skill_text) };
-    // A private empty cwd: --sandbox workspace-write makes the working
-    // directory writable, and an image generation has no business being able
-    // to write into the repo it was called from.
+    if (codex_home.len == 0) return .{ .fail = try errText(gpa, select.no_skill_text) };
+    // One scratch tree per run holding two things: a private empty cwd
+    // (--sandbox workspace-write makes the working directory writable, and an
+    // image generation has no business writing into the repo it was called
+    // from) and a private CODEX_HOME, so this run's generated_images is ours
+    // alone and a parallel sibling's artifact can never be adopted as our own.
     const scratch = makeScratch(io, arena) orelse
         return .{ .fail = try errText(gpa, "could not create a private scratch directory for the codex engine — set TMPDIR to a writable location, or pass engine \"openai_api\". Nothing was generated.") };
-    defer Io.Dir.cwd().deleteTree(io, scratch) catch {};
+    const private_home = try std.fmt.allocPrint(arena, "{s}/home", .{scratch});
+    const child_cwd = try std.fmt.allocPrint(arena, "{s}/cwd", .{scratch});
+    defer {
+        codex.unlinkHome(io, arena, private_home); // before the tree walk, never through a symlink
+        Io.Dir.cwd().deleteTree(io, scratch) catch {};
+    }
+    Io.Dir.cwd().createDirPath(io, child_cwd) catch {};
+    codex.prepareHome(io, arena, private_home, codex_home) catch |err| return .{ .fail = .{
+        .text = try std.fmt.allocPrint(gpa, "could not set up a private CODEX_HOME for this run ({t}) — nothing was generated.", .{err}),
+        .is_error = true,
+    } };
+    const save_root = try codex.saveRoot(arena, private_home);
 
-    const argv = try codex.buildArgv(arena, try codex.buildPrompt(arena, prompt));
-    const out = run_mod.run(arena, io, argv, codex.deadline_ms, scratch) catch |err| switch (err) {
+    const argv = try codex.buildArgv(arena, private_home, try codex.buildPrompt(arena, prompt));
+    const out = run_mod.run(arena, io, argv, codex.deadline_ms, child_cwd) catch |err| switch (err) {
         error.FileNotFound => return .{ .fail = try errText(gpa, "the codex CLI is no longer on PATH, so the preferred imagegen engine cannot run. Reinstall it (bun install -g @openai/codex) or pass engine \"openai_api\". Nothing was generated.") },
         else => return .{ .fail = tools.failure(gpa, err) },
     };
@@ -422,151 +473,8 @@ pub fn defaultOutPath(io: Io, arena: Allocator, base: ?[]const u8, ext: []const 
     return error.PathAlreadyExists;
 }
 
-const testing = std.testing;
-
-test "#352: default out paths stay unique across many rapid calls (the subagent fan-out case)" {
-    const io = testing.io;
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
-
-    var seen: std.StringHashMapUnmanaged(void) = .empty;
-    defer seen.deinit(testing.allocator);
-    for (0..256) |_| {
-        const path = try defaultOutPath(io, arena, base, "png");
-        try testing.expect(std.mem.startsWith(u8, path, "imagegen-"));
-        try testing.expect(confinedPath(path)); // a default path is always writable by the file tools
-        try testing.expect((try seen.fetchPut(testing.allocator, path, {})) == null);
-    }
-    const taken = try defaultOutPath(io, arena, base, "png");
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ base, taken }), .data = "x" });
-    try testing.expect(!std.mem.eql(u8, taken, try defaultOutPath(io, arena, base, "png")));
-}
-
-test "#352: detect gates on the Codex skill, mirrors it, and decides which engines this machine has" {
-    const io = testing.io;
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const saved = .{ available, script_path, skill_dir, api_key_present, codex_ready, save_root };
-    defer {
-        available = saved[0];
-        script_path = saved[1];
-        skill_dir = saved[2];
-        api_key_present = saved[3];
-        codex_ready = saved[4];
-        save_root = saved[5];
-    }
-
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
-    const codex_home = try std.fmt.allocPrint(arena, "{s}/codex", .{base});
-    const home = try std.fmt.allocPrint(arena, "{s}/home", .{base});
-
-    // A CODEX_HOME with no skill in it: the tool does not exist.
-    try Io.Dir.cwd().createDirPath(io, codex_home);
-    detect(io, arena, .{ .codex_home = codex_home, .home = home });
-    try testing.expect(!available);
-    try testing.expectEqualStrings("", script_path);
-    try testing.expect(!api_key_present and !codex_ready);
-
-    // Install the skill where Codex keeps it.
-    const src = try std.fmt.allocPrint(arena, "{s}/{s}", .{ codex_home, skill.codex_rel });
-    try Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(arena, "{s}/scripts", .{src}));
-    for ([_]struct { path: []const u8, data: []const u8 }{
-        .{ .path = "SKILL.md", .data = "---\nname: imagegen\ndescription: d\n---\n\n# Image Generation Skill\nuse image_gen\n" },
-        .{ .path = "LICENSE.txt", .data = "LICENSE BODY" },
-        .{ .path = "scripts/image_gen.py", .data = "print('gen')" },
-    }) |f| try Io.Dir.cwd().writeFile(io, .{
-        .sub_path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ src, f.path }),
-        .data = f.data,
-    });
-
-    detect(io, arena, .{ .codex_home = codex_home, .home = home, .openai_api_key = "sk-test" });
-    try testing.expect(available and api_key_present);
-    // No auth.json in this fake CODEX_HOME, so the codex engine is not offered
-    // however the real CLI happens to be installed on the test machine.
-    try testing.expect(!codex_ready);
-
-    const dest = try std.fmt.allocPrint(arena, "{s}/{s}", .{ home, skill.install_rel });
-    try testing.expectEqualStrings(dest, skill_dir);
-    const license = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(arena, "{s}/LICENSE.txt", .{dest}), arena, .limited(4096));
-    try testing.expectEqualStrings("LICENSE BODY", license);
-    const md = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(arena, "{s}/SKILL.md", .{dest}), arena, .limited(1 << 16));
-    try testing.expect(std.mem.indexOf(u8, md, "<!-- graff addendum -->") != null);
-    try testing.expect(std.mem.indexOf(u8, md, "one subagent per") != null);
-    try testing.expect(std.mem.indexOf(u8, md, "use image_gen") != null); // original body kept
-
-    // An empty key is not a key.
-    detect(io, arena, .{ .codex_home = codex_home, .home = home, .openai_api_key = "" });
-    try testing.expect(available and !api_key_present);
-}
-
-test "#352: with no usable engine the tool refuses up front and spawns nothing" {
-    const gpa = testing.allocator;
-    const saved = .{ available, script_path, api_key_present, codex_ready };
-    defer {
-        available = saved[0];
-        script_path = saved[1];
-        api_key_present = saved[2];
-        codex_ready = saved[3];
-    }
-    // Any spawn at all is a test failure: nothing below should reach one.
-    const S = struct {
-        fn boom(_: Allocator, _: Io, _: []const []const u8, _: u64, _: ?[]const u8) anyerror!run_mod.Outcome {
-            return error.TestUnexpectedSpawn;
-        }
-    };
-    const saved_hook = run_mod.hook;
-    defer run_mod.hook = saved_hook;
-    run_mod.hook = S.boom;
-
-    var parsed = try std.json.parseFromSlice(Value, gpa, "{\"prompt\":\"a red circle\"}", .{});
-    defer parsed.deinit();
-    var client: std.http.Client = undefined;
-    const ctx: ToolCtx = .{
-        .gpa = gpa,
-        .io = testing.io,
-        .client = &client,
-        .provider = undefined,
-        .registry = null,
-        .from_sub = false,
-        .approvals = null,
-        .tracer = null,
-    };
-
-    available = false;
-    const off = try execImagegen(ctx, parsed.value);
-    defer gpa.free(off.text);
-    try testing.expect(off.is_error and std.mem.indexOf(u8, off.text, "CODEX_HOME") != null);
-
-    // Detected, but neither engine usable: the refusal names both requirements.
-    available = true;
-    codex_ready = false;
-    api_key_present = false;
-    script_path = "/nonexistent/image_gen.py";
-    const none = try execImagegen(ctx, parsed.value);
-    defer gpa.free(none.text);
-    try testing.expect(none.is_error);
-    for ([_][]const u8{ "codex login", "OPENAI_API_KEY", "#352", "NOTHING was generated" }) |needle|
-        try testing.expect(std.mem.indexOf(u8, none.text, needle) != null);
-
-    var empty = try std.json.parseFromSlice(Value, gpa, "{}", .{});
-    defer empty.deinit();
-    const no_prompt = try execImagegen(ctx, empty.value);
-    defer gpa.free(no_prompt.text);
-    try testing.expect(no_prompt.is_error and std.mem.indexOf(u8, no_prompt.text, "prompt") != null);
-}
-
 test {
+    _ = @import("imagegen_tests.zig"); // an unreferenced module's tests never run
     _ = skill;
     _ = verify;
     _ = select;
