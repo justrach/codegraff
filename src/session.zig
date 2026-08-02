@@ -8,6 +8,11 @@
 //! loadSession/listSavedSessions/sessionAge/session_ext stay pub —
 //! commands_session.zig, commands_misc.zig, and readline.zig import them
 //! directly as `session.saveSession` etc.
+//!
+//! #273: `saveSession` is still synchronous and still reports its failures;
+//! the interactive TURN path calls `saveSessionAsync`, which skips an unchanged
+//! conversation outright and queues the write (session_writer.zig). This file's
+//! unit tests live in session_tests.zig — the 600-line cap.
 
 const std = @import("std");
 const Io = std.Io;
@@ -18,7 +23,7 @@ const agent_mod = @import("agent.zig");
 const provider_mod = @import("provider.zig");
 const util = @import("util.zig");
 const goal_state = @import("goal_state.zig");
-const session_lock = @import("session_lock.zig"); // the locked write path (#289)
+const session_writer = @import("session_writer.zig"); // #273: the fingerprint + the background write
 const protocol_seq = @import("protocol_seq.zig"); // #330: the --json event sequence survives a resume
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
@@ -126,14 +131,102 @@ pub fn hasMeaningfulState(root: *Agent) bool {
     return false;
 }
 
+/// #273: a digest of every field saveSession persists, EXCEPT `updated_ms`
+/// (a clock reading, not conversation state). Equal to the last successfully
+/// written one means the file on disk is already this exact session, so the
+/// whole save — serialize, lock, write — is skipped.
+fn fingerprint(root: *Agent, name: []const u8) u64 {
+    var f: session_writer.Fingerprint = .init();
+    f.text(name);
+    f.text(root.provider.id);
+    f.text(root.provider.model);
+    f.flag(root.strict);
+    f.flag(root.ultracode_mode);
+    if (root.goal) |g| {
+        f.text(g.objective);
+        f.text(@tagName(g.status));
+        f.num(g.epoch);
+        f.flag(g.standing);
+        f.signed(g.created_ms);
+        f.signed(g.updated_ms);
+    } else f.flag(false);
+    f.num(root.todos.items.len);
+    for (root.todos.items) |t| {
+        f.text(t.content);
+        f.text(t.status);
+        f.num(t.epoch);
+    }
+    f.text(root.session_title orelse sessionTitle(root));
+    // The persisted meter's two inputs. Its third (system prompt + tool schema
+    // size) shifts `context_tokens` and `context_local_tokens` together, and
+    // resume only keeps their difference, so it cannot change what a resume
+    // restores and is deliberately left out.
+    f.num(root.last_context_tokens);
+    f.num(root.context_local_tokens);
+    f.num(protocol_seq.current());
+    f.json(Value{ .array = root.messages });
+    return f.final();
+}
+
 /// Save the conversation (messages + provider id/model + strict flag) to
 /// <name>.session.json in the cwd. The JSON message array is already the
 /// provider-native wire shape, so resume is a verbatim restore.
+///
+/// Synchronous, exactly like the pre-#273 save: the bytes are on disk (and any
+/// failure is reported) by the time this returns. The TURN path uses
+/// saveSessionAsync instead — see that function.
 pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
+    const ticket = queueSave(root, arena, .cwd(), name) catch |err| {
+        flushSaves();
+        return err;
+    };
+    // Unconditional, so /clear, /new, /save and the exit save all drain even
+    // when this session had nothing new of its own to write.
+    flushSaves();
+    // Only THIS save's outcome: a background autosave that failed two turns ago
+    // is not /save's failure, and reporting it as one made /save print "save
+    // failed" (and skip the rename) for a file it had just written correctly.
+    if (session_writer.errorFor(ticket)) |err| return err;
+}
+
+/// #273: the interactive turn path's save. Skips entirely when nothing changed,
+/// serializes here (root.messages is live, unlocked agent state and must not be
+/// read from another thread), and leaves only the disk write in the background.
+///
+/// Callers MUST guarantee a drain before the process can exit — mainloop.run
+/// defers flushSaves(), and every other saver in the harness is the synchronous
+/// saveSession above.
+pub fn saveSessionAsync(root: *Agent, arena: Allocator, name: []const u8) !void {
+    _ = try queueSave(root, arena, .cwd(), name);
+}
+
+/// Wait for any queued save to reach disk. The exit/quit/switch bound on how
+/// long a background write may lag the conversation.
+pub fn flushSaves() void {
+    session_writer.drain();
+}
+
+/// The save itself, against an explicit base directory. Production always
+/// passes the cwd (through saveSessionAsync/saveSession); the parameter exists
+/// so the tests can exercise the real path against a tmp dir.
+pub fn saveSessionTo(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !void {
+    _ = try queueSave(root, arena, dir, name);
+}
+
+/// `saveSessionTo` plus the writer ticket for the save it queued — 0 when
+/// nothing needed writing. A synchronous caller keeps the ticket so it can ask
+/// `session_writer.errorFor` about ITS OWN write and not about someone else's.
+fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64 {
     // #184: delay durable session creation until the conversation has meaningful
     // state — never leave a blank draft as an "Untitled session" on disk. Existing
     // files are untouched (we skip the write, we do not delete).
-    if (!hasMeaningfulState(root)) return;
+    if (!hasMeaningfulState(root)) return 0;
+    // #273: nothing has changed since the last successful write of this session
+    // AND that write is still what the file holds (a second graff, an editor or
+    // an rm all invalidate it — the skip is never taken on trust).
+    const fp = fingerprint(root, name);
+    const rel = try sessionPath(arena, name);
+    if (session_writer.alreadySaved(root.io, dir, rel, fp)) return 0;
     var aw: Io.Writer.Allocating = .init(root.gpa);
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };
@@ -208,9 +301,12 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
     try s.write(@min(protocol_seq.current(), @as(u64, std.math.maxInt(i64))));
     try s.endObject();
 
-    // #289: two graffs in one workspace share this file — writeSession makes the
+    // #289: two graffs in one workspace share this file — the writer makes the
     // parent dirs and takes an exclusive advisory lock, so the loser reports.
-    try session_lock.writeSession(root.io, .cwd(), try sessionPath(arena, name), aw.writer.buffered());
+    // #273: it does that on its own thread, and owns these bytes from here.
+    const path = try root.gpa.dupe(u8, rel);
+    errdefer root.gpa.free(path); // only reachable if toOwnedSlice fails: submit owns both
+    return session_writer.submit(root.gpa, root.io, dir, path, try aw.toOwnedSlice(), fp);
 }
 
 /// Parse the persisted `goal` field into a structured Goal (#223). A bare string
@@ -249,54 +345,6 @@ pub fn appendTodosFromValue(arena: Allocator, todos: *std.ArrayList(agent_mod.To
         const epoch: u64 = if (item.object.get("epoch")) |e| (if (e == .integer and e.integer >= 0) @intCast(e.integer) else 0) else 0;
         try todos.append(arena, .{ .content = content, .status = status, .epoch = epoch });
     }
-}
-
-test "todos round-trip: appendTodosFromValue parses content/status/epoch, skips junk (#318)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const parsed = try std.json.parseFromSliceLeaky(Value, a,
-        \\[{"content":"wire epochs","status":"completed","epoch":2},
-        \\ {"content":"add test","status":"pending","epoch":2},
-        \\ {"status":"orphan, no content"}, 17]
-    , .{});
-    var todos: std.ArrayList(agent_mod.TodoItem) = .empty;
-    try appendTodosFromValue(a, &todos, parsed);
-    try std.testing.expectEqual(@as(usize, 2), todos.items.len);
-    try std.testing.expectEqualStrings("wire epochs", todos.items[0].content);
-    try std.testing.expectEqual(@as(u64, 2), todos.items[1].epoch);
-    // Legacy sessions (no todos field / wrong type): nothing appended.
-    try appendTodosFromValue(a, &todos, .null);
-    try std.testing.expectEqual(@as(usize, 2), todos.items.len);
-}
-
-test "goalFromValue: legacy string -> active; object round-trips; paused stays paused (#223)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    // Legacy bare string -> active, stamped with now_ms (backward compat).
-    const legacy = try std.json.parseFromSliceLeaky(Value, a, "\"ship 0.0.202\"", .{ .allocate = .alloc_always });
-    const g1 = goalFromValue(legacy, 4242).?;
-    try std.testing.expectEqualStrings("ship 0.0.202", g1.objective);
-    try std.testing.expectEqual(agent_mod.GoalStatus.active, g1.status);
-    try std.testing.expectEqual(@as(i64, 4242), g1.created_ms);
-
-    // New object with a paused status round-trips as paused (survives resume).
-    const paused = try std.json.parseFromSliceLeaky(Value, a, "{\"objective\":\"land #223\",\"status\":\"paused\",\"created_ms\":10,\"updated_ms\":20}", .{ .allocate = .alloc_always });
-    const g2 = goalFromValue(paused, 999).?;
-    try std.testing.expectEqualStrings("land #223", g2.objective);
-    try std.testing.expectEqual(agent_mod.GoalStatus.paused, g2.status);
-    try std.testing.expectEqual(@as(i64, 10), g2.created_ms);
-    try std.testing.expectEqual(@as(i64, 20), g2.updated_ms);
-
-    // Empty string -> null (no goal).
-    const empty = try std.json.parseFromSliceLeaky(Value, a, "\"\"", .{ .allocate = .alloc_always });
-    try std.testing.expect(goalFromValue(empty, 1) == null);
-
-    // An unknown status string falls back to active (forward-compat with future variants).
-    const unknown = try std.json.parseFromSliceLeaky(Value, a, "{\"objective\":\"x\",\"status\":\"zzz\"}", .{ .allocate = .alloc_always });
-    try std.testing.expectEqual(agent_mod.GoalStatus.active, goalFromValue(unknown, 1).?.status);
 }
 
 fn contextTokensFromSession(obj: std.json.ObjectMap) u64 {
@@ -339,6 +387,7 @@ fn restoreContextMeter(root: *Agent, saved_context_tokens: u64, saved_local_toke
 /// provider, and replace the live history. The wire format must still match
 /// the restored provider's kind — same provider id guarantees it.
 pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8) !void {
+    flushSaves(); // #273: a session switch never leaves the outgoing one queued
     const path = try sessionPath(arena, name);
     const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(8 * 1024 * 1024)) catch blk: {
         // backward-compat: older builds wrote <name>.session.json in cwd.
@@ -513,42 +562,4 @@ test "event_seq round-trips so a replacement graff continues the sequence (#330)
     try std.testing.expectEqual(@as(u64, 42), protocol_seq.next()); // no id is ever reissued
     protocol_seq.restore(eventSeqFromSession(legacy.object));
     try std.testing.expectEqual(@as(u64, 43), protocol_seq.next());
-}
-
-test "slugifyTitle makes a filesystem-safe slug from an AI title" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    try std.testing.expectEqualStrings("fixing-the-login-bug", slugifyTitle(a, "Fixing the login bug"));
-    try std.testing.expectEqualStrings("add-dark-mode", slugifyTitle(a, "Add dark mode!!"));
-    try std.testing.expectEqualStrings("planning-v2", slugifyTitle(a, "  Planning — v2  ")); // trim + collapse
-    try std.testing.expectEqualStrings("", slugifyTitle(a, "🎉 ✨")); // symbol-only → "" (keeps the session-<ts> name)
-}
-
-test "hasMeaningfulState gates the blank-draft write (#184)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    // Only the fields hasMeaningfulState reads are set; the rest stay untouched.
-    var root: Agent = undefined;
-    root.goal = null;
-    root.todos = .empty;
-    root.tools_used = .{};
-    root.messages = std.json.Array.init(arena);
-
-    // Truly blank: no user turn, no goal, no todos, no tools → not persisted.
-    try std.testing.expect(!hasMeaningfulState(&root));
-
-    // A standing /goal alone is meaningful (goal-only sessions are still saved).
-    root.goal = .{ .objective = "ship the release" };
-    try std.testing.expect(hasMeaningfulState(&root));
-
-    // One user message alone is meaningful.
-    root.goal = null;
-    var obj: std.json.ObjectMap = .empty;
-    try obj.put(arena, "role", .{ .string = "user" });
-    try obj.put(arena, "content", .{ .string = "hi" });
-    try root.messages.append(.{ .object = obj });
-    try std.testing.expect(hasMeaningfulState(&root));
 }
