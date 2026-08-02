@@ -60,15 +60,23 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     const niche = fleet.resolveNiche(obj);
     const isolation = fleet.resolveIsolation(obj);
     const isolation_fallback = fleet.resolveIsolationFallback(obj);
-    if (tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback);
-    const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback);
+    // #292: explicit spawn `model`/`tier` > the persona's frontmatter pin >
+    // the session default (--subagent-model / the #291 ladder). Resolved
+    // provider-locally here so an unavailable pin degrades to the session
+    // default with a trace note instead of failing the spawn.
+    const pinned = subagent_pin.forSpawn(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), obj);
+    if (ctx.tracer) |tr| if (pinned.outcome != .none) tr.note("subagent", pinned.outcome.describe());
+    if (tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, pinned.provider);
+    const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, pinned.provider);
     return run.output;
 }
 
 const subagent_run = @import("subagent_run.zig");
+const subagent_pin = @import("subagent_pin.zig"); // #292 per-persona / per-spawn model pins
 pub const AgentUsage = subagent_run.AgentUsage;
 pub const SubRun = subagent_run.SubRun;
 pub const runSub = subagent_run.runSub;
+const childProvider = subagent_run.childProvider;
 const variantProviderClass = subagent_run.variantProviderClass;
 const shapes = @import("shapes.zig");
 const FailKind = subagent_run.FailKind;
@@ -113,6 +121,12 @@ const AgentJob = struct {
     niche: []u8,
     isolation: Isolation,
     isolation_fallback: bool,
+    /// #292: resolved per-spawn model pin. Stored by value with the same
+    /// lifetime assumption `ctx.provider`/`ctx.subagent_provider` below
+    /// already rely on — a Provider's strings come from the spec table, the
+    /// model catalog and the credential store, none of which are the tool
+    /// call's arena — so unlike label/prompt it needs no gpa copy.
+    pin: ?Provider = null,
     ctx: ToolCtx,
     admitted: bool = false,
     done: bool = false,
@@ -183,7 +197,7 @@ fn admitNext(gpa: Allocator, io: Io) void {
 /// shape in jobs.zig.
 fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
     const t0: Io.Timestamp = .now(io, .awake);
-    const run = runSub(job.ctx, "subagent", job.label, job.prompt, job.sys_override, job.niche, job.isolation, job.isolation_fallback) catch |err| SubRun{
+    const run = runSub(job.ctx, "subagent", job.label, job.prompt, job.sys_override, job.niche, job.isolation, job.isolation_fallback, job.pin) catch |err| SubRun{
         .output = failure(gpa, err),
         .usage = .{ .duration_ms = @intCast(@max(0, t0.untilNow(io, .awake).toMilliseconds())) },
     };
@@ -201,7 +215,7 @@ fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
 /// job and return immediately with its id; the child runs on the pool.
 /// Never blocks on a free concurrency slot — a spawn beyond the cap is
 /// queued, not failed; admitNext drains it once room frees up.
-fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) !ToolOutput {
+fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider) !ToolOutput {
     const gpa = ctx.gpa;
     const label_c = try gpa.dupe(u8, label);
     errdefer gpa.free(label_c);
@@ -221,6 +235,7 @@ fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_o
         .niche = niche_c,
         .isolation = isolation,
         .isolation_fallback = isolation_fallback,
+        .pin = pin,
         .ctx = ctx,
     };
 
@@ -397,14 +412,16 @@ test "agentStatusText: composes with isolation:\"worktree\" — a kept-worktree 
 /// `niche` is the task's MAP-Elites cell, threaded through so runSub's
 /// fleet:propose — and scoreVariants' submit — tag the variant's genome.
 pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) ToolOutput {
-    const run = runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback) catch |err| return failure(ctx.gpa, err);
+    // No #292 pin: a phase's variants must share a model or scoreVariants
+    // would file model effects under the prompt genome (#290).
+    const run = runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback, null) catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 
 /// A second workflow attempt has its own explicit budget kind. It still shares
 /// the same invocation-wide atomic ceiling and concurrency limiter.
 pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) ToolOutput {
-    const run = runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback) catch |err| return failure(ctx.gpa, err);
+    const run = runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback, null) catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 
@@ -414,14 +431,15 @@ pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sy
 /// on a pool thread. Never worktree-isolated: a judge only reads/reasons over
 /// text handed to it, never the filesystem, so there's nothing to isolate.
 pub fn judgeTask(ctx: ToolCtx, prompt: []const u8) ToolOutput {
-    const run = runSub(ctx, "judge_task", "judge", prompt, null, "", .shared_cwd, false) catch |err| return failure(ctx.gpa, err);
+    const run = runSub(ctx, "judge_task", "judge", prompt, null, "", .shared_cwd, false, null) catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 
 /// Build the judge prompt that scores one workflow variant's output against its
 /// task on a 0-100 scale (see scoreVariants). Bounded: the task spec and output
 /// tail are truncated so a fat phase can't blow up the judge's context.
-fn variantJudgePrompt(arena: Allocator, title: []const u8, task: []const u8, output: []const u8) ![]const u8 {
+/// pub only so subagent_tests.zig can reach it (this file is at the cap).
+pub fn variantJudgePrompt(arena: Allocator, title: []const u8, task: []const u8, output: []const u8) ![]const u8 {
     const spec = util.utf8Prefix(task, 1200);
     const work = if (output.len > 2000) output[output.len - 2000 ..] else output;
     return std.fmt.allocPrint(arena,
@@ -552,49 +570,4 @@ pub fn scoreVariants(
         t.scoreEvent(genome, "", s01, run_id, sig_s, prov);
         t.fleetEvent("submit", niche, genome, "", pclass, esh, 0, "");
     }
-}
-
-test "variantJudgePrompt: bounded, names the phase, keeps the score contract" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const big_task = util.repeatBytes("T", 4000);
-    const big_out = util.repeatBytes("O", 5000);
-    const p = try variantJudgePrompt(a, "code-review", &big_task, &big_out);
-
-    // Names the shared phase so the judge has the tournament context.
-    try std.testing.expect(std.mem.indexOf(u8, p, "\"code-review\" phase") != null);
-    // Task is prefix-capped and output tail-capped — neither lands verbatim.
-    try std.testing.expect(std.mem.indexOf(u8, p, &big_task) == null);
-    try std.testing.expect(std.mem.indexOf(u8, p, &big_out) == null);
-    // The `score:` contract parseEvalScore depends on is spelled out…
-    try std.testing.expect(std.mem.indexOf(u8, p, "score: <N>") != null);
-    // …and it round-trips: a judge tail like this parses back to the score.
-    try std.testing.expectEqual(@as(?f64, 87), repl_glue.parseEvalScore("ok\nscore: 87"));
-}
-
-test "classifyFailure: maps the child's api-error detail to a category + retry-safety" {
-    // A stream stall/drop names itself via the error kind — its stale envelope
-    // (if any) must not override the transport verdict.
-    try std.testing.expectEqual(FailKind.transport, classifyFailure(error.StreamStalled, null));
-    try std.testing.expectEqual(FailKind.transport, classifyFailure(error.StreamDropped, "api error (some_error): stale"));
-    // No detail to go on → unknown (and a retry is still allowed to be tried).
-    try std.testing.expectEqual(FailKind.unknown, classifyFailure(error.ApiError, null));
-    // Real provider envelopes (the shapes sayApiError formats into last_api_error).
-    try std.testing.expectEqual(FailKind.quota, classifyFailure(error.ApiError, "api error (rate_limit_error): Number of requests exceeded"));
-    try std.testing.expectEqual(FailKind.quota, classifyFailure(error.ApiError, "api error: You have run out of credits or need a Grok subscription."));
-    try std.testing.expectEqual(FailKind.auth, classifyFailure(error.ApiError, "api error: The API Key appears to be invalid or may have expired."));
-    // invalid_request_error carries "invalid", but a missing-model message is
-    // classified as model-availability because that phrase is checked first.
-    try std.testing.expectEqual(FailKind.model, classifyFailure(error.ApiError, "api error (invalid_request_error): The model `gpt-foo` does not exist or you do not have access to it."));
-    try std.testing.expectEqual(FailKind.invalid, classifyFailure(error.ApiError, "api error (invalid_request_error): This model's maximum context length is 8192 tokens."));
-    try std.testing.expectEqual(FailKind.transport, classifyFailure(error.ApiError, "network error: HttpConnectionClosing (gave up after 6 attempts)"));
-
-    // Retry-safety contract: transient failures may retry, structural ones must not.
-    try std.testing.expect(FailKind.quota.retrySafe());
-    try std.testing.expect(FailKind.transport.retrySafe());
-    try std.testing.expect(!FailKind.model.retrySafe());
-    try std.testing.expect(!FailKind.invalid.retrySafe());
-    try std.testing.expect(!FailKind.auth.retrySafe());
 }

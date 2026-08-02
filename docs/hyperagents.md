@@ -149,10 +149,16 @@ In the harness the answer to "where do we create the MAP-Elites" is:
   evidence / change code / refute claims), not job titles. Finer grids
   encode extra dimensions in the name (`reviewer.terse`, `reviewer.deep`).
 - **Elites = `.harness/agents/<niche>.md`.** One markdown per cell:
-  frontmatter (`name`, `description`, `score`) + body = the elite's system
-  prompt. A file shadows the builtin of the same name — promoting a new
-  elite is just overwriting the file. `/agents` lists the live grid with
-  each cell's fingerprint and score.
+  frontmatter (`name`, `description`, `score`, plus the operational defaults
+  `isolation`, and #292's `model`/`tier`) + body = the elite's system prompt.
+  A file shadows the builtin of the same name — promoting a new elite is just
+  overwriting the file. `/agents` lists the live grid with each cell's
+  fingerprint and score. Only the body is the *genome*: `model`/`tier` are
+  execution policy for the persona (which rung of the provider's ladder its
+  children run on), never mutated or scored, and they apply to `subagent`
+  spawns only — a workflow phase keeps every variant on one model so the
+  judge's ranking stays attributable to the prompt, not to the tier. A
+  promote rewrites the body and preserves those lines.
 - **Selection pressure = the driver.** After scoring a variant
   (`h.score(...)`), the driver compares against the incumbent's frontmatter
   `score`; if the challenger wins its niche, the driver writes the new

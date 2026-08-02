@@ -896,6 +896,41 @@ graff --model gpt-5.6-sol \
   --allow-cross-provider-subagents
 ```
 
+Both of those are session-wide. A **persona** can pin itself in its
+`.harness/agents/<name>.md` frontmatter, and a **single spawn** can override
+either, so one fan-out can put reviewers on a frontier model and mechanical
+workers on the cheap one:
+
+```markdown
+---
+name: implementer
+tier: mid              # a rung of the current provider's ladder — preferred,
+                       # it stays correct when the root model changes
+# model: gpt-5.6-terra # …or pin an exact name instead
+isolation: worktree
+---
+```
+
+```jsonc
+// one subagent call, overriding everything above for that child only
+{"description": "extract imports", "prompt": "…", "agent": "implementer", "tier": "small"}
+```
+
+Precedence, highest first: **`model`/`tier` on the spawn → the persona's
+`model:`/`tier:` frontmatter → `--subagent-model` → the default tier ladder →
+the root model.** Within one level an exact `model` beats a `tier`. Pins are
+provider-local — they pick a different model on the child's *current* provider
+and never move work across a provider boundary, which stays with
+`--subagent-provider` + `--allow-cross-provider-subagents`. A pin that cannot
+be honored (unknown or ambiguous model name, a model this provider does not
+serve, a tier this family has no rung for) is **ignored with a trace note and
+the spawn still runs** on the session default — a fan-out never dies partway
+through because a persona file names a model the catalog has since renamed.
+Workflow phase tasks and pipeline stages deliberately do *not* take pins: the
+fleet judges a phase's variants against each other and files the winner under
+the prompt genome, so a phase with mixed models would attribute model effects
+to the prompt.
+
 The consent matters because worker prompts, selected code, and tool results go
 to Kimi while root calls continue to go to Codex; telemetry/upload settings are
 independent of that model traffic. Omitting the consent flag fails closed. Put

@@ -18,11 +18,47 @@ const std = @import("std");
 
 const pricing = @import("pricing.zig");
 
+/// The ladder's rung vocabulary, shared by #292's persona frontmatter
+/// (`tier: mid`) and the `subagent` tool's `tier` parameter. Spelled the same
+/// way in both places on purpose: a tier survives a root-model change, an
+/// exact `model:` pin does not.
+pub const Tier = enum {
+    frontier,
+    mid,
+    small,
+
+    /// Exact, case-sensitive, closed vocabulary — mirroring
+    /// fleet.Isolation.parse. Anything else is "no opinion" (null), never a
+    /// nearest-rung guess.
+    pub fn parse(s: []const u8) ?Tier {
+        if (std.mem.eql(u8, s, "frontier")) return .frontier;
+        if (std.mem.eql(u8, s, "mid")) return .mid;
+        if (std.mem.eql(u8, s, "small")) return .small;
+        return null;
+    }
+
+    pub fn label(self: Tier) []const u8 {
+        return @tagName(self);
+    }
+};
+
 pub const TierLadder = struct {
     provider: []const u8,
     frontier: []const u8,
     mid: ?[]const u8 = null,
     small: ?[]const u8 = null,
+
+    /// The model this provider serves at `tier`, or null when the family has
+    /// no such rung (deepseek has no `small`). Never falls through to a
+    /// neighbouring rung — an absent rung means "no opinion", which the
+    /// caller turns into the session default rather than a guess.
+    pub fn modelFor(self: TierLadder, tier: Tier) ?[]const u8 {
+        return switch (tier) {
+            .frontier => self.frontier,
+            .mid => self.mid,
+            .small => self.small,
+        };
+    }
 };
 
 pub const ladders = [_]TierLadder{
@@ -64,4 +100,23 @@ test "forProvider: known providers found, others null" {
     try std.testing.expectEqualStrings("gpt-5.6-sol", forProvider("codex").?.frontier);
     try std.testing.expect(forProvider("deepseek").?.small == null);
     try std.testing.expect(forProvider("xai") == null);
+}
+
+test "Tier.parse/modelFor: the rung vocabulary #292 pins against (#291 names)" {
+    try std.testing.expectEqual(Tier.frontier, Tier.parse("frontier").?);
+    try std.testing.expectEqual(Tier.mid, Tier.parse("mid").?);
+    try std.testing.expectEqual(Tier.small, Tier.parse("small").?);
+    // Case-sensitive and closed: anything off-vocabulary is "no opinion", not
+    // a guess — a persona typo must fall through to the session default.
+    try std.testing.expect(Tier.parse("Mid") == null);
+    try std.testing.expect(Tier.parse("cheap") == null);
+    try std.testing.expect(Tier.parse("") == null);
+    try std.testing.expectEqualStrings("small", Tier.small.label());
+
+    const codex = forProvider("codex").?;
+    try std.testing.expectEqualStrings("gpt-5.6-sol", codex.modelFor(.frontier).?);
+    try std.testing.expectEqualStrings("gpt-5.6-terra", codex.modelFor(.mid).?);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", codex.modelFor(.small).?);
+    // A family with no such rung answers null rather than the nearest rung.
+    try std.testing.expect(forProvider("deepseek").?.modelFor(.small) == null);
 }
