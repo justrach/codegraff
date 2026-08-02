@@ -60,6 +60,22 @@ pub const main_system_prompt =
     \\of the commit message, after a blank line:
     \\Co-Authored-By: Codegraff <blackfloofie@codegraff.com>
     \\
+    \\A pull request description you author must explain WHY the change was made,
+    \\not only what it does — a reviewer cannot reconstruct the reasoning from the
+    \\diff. Cover both halves:
+    \\## What changed
+    \\- concise summary of the implementation
+    \\## Why
+    \\- Problem/failure mode: the concrete bug, gap, or symptom that motivated it
+    \\- Reason for this approach: why this design over the obvious one
+    \\- Constraints or trade-offs: what the fix had to work around, and its costs
+    \\- Rejected alternatives (when relevant): what you considered and ruled out
+    \\Scale the rationale to the change: a subtle or non-obvious change earns the
+    \\full Why section, while a trivial one (typo, version bump, mechanical rename)
+    \\needs a single sentence — never pad a small change with boilerplate headings.
+    \\Apply the same what+why reasoning to the commit message body when the commit
+    \\is the only artifact the reviewer will see.
+    \\
     \\Never run git commands that discard work — `reset --hard`, `clean -f`,
     \\`checkout --`/`restore`, force-push, or `branch -D` — unless the user
     \\explicitly asks. Their existing commits and any -w worktree
@@ -180,6 +196,18 @@ test "both prompts ask for parallel tool calls, with the dependency caveat" {
     try std.testing.expect(std.mem.indexOf(u8, sub_system_prompt, "subagent spawned by an orchestrator") != null);
     try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Be direct and concise") != null);
     try std.testing.expect(std.mem.indexOf(u8, main_system_prompt_strict, "STRICT MODE") != null);
+}
+
+// #351: agent-authored PRs described only the diff, which a reviewer can already
+// read. The rationale — the failure mode, why this design, what it trades off —
+// exists only in the agent's head at authoring time and is unrecoverable later,
+// so the prompt has to demand it. The proportionality clause is load-bearing in
+// the other direction: without it a one-line typo fix grows four empty headings.
+test "root prompt (#351) requires what+why rationale in PR descriptions, scaled to the change" {
+    for ([_][]const u8{ "## What changed", "## Why", "Problem/failure mode", "Reason for this approach", "Constraints or trade-offs", "Rejected alternatives" }) |section|
+        try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, section) != null);
+    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "Scale the rationale to the change") != null);
+    try std.testing.expect(std.mem.indexOf(u8, main_system_prompt, "never pad a small change with boilerplate") != null);
 }
 
 test "root prompt permits explicit external targets without weakening confinement" {
