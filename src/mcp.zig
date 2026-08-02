@@ -102,7 +102,7 @@ pub const Registry = struct {
             .stdio_probe = if (environ_map.get("GRAFF_MCP_PROBE")) |v| !std.mem.eql(u8, v, "0") else true,
             .global_config_path = global_path,
         };
-        mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275: GRAFF_MCP_HANDSHAKE_SECS, read on the same pass as the probe flag
+        mcp_rpc.applyHandshakeTimeoutEnv(environ_map); // #275 GRAFF_MCP_HANDSHAKE_SECS + #327 GRAFF_MCP_PROBE_MS, on the same pass as the probe flag
 
         errdefer reg.deinit();
         const a = reg.arena();
@@ -414,9 +414,17 @@ pub const Registry = struct {
             .http => try mcp_rpc.connectHttp(server, a, a),
             .stdio => stdio_listed: {
                 if (!reg.stdio_probe) break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
-                switch (try mcp_rpc.probeStdio(server, a, reg.io)) {
+                // #327: every legacy landing records WHY (and a probe that
+                // could not run is retried before it is allowed to downgrade
+                // anything), so a fallback shows up in the connect line and
+                // `/mcp` instead of being indistinguishable from a server
+                // that genuinely speaks only the legacy protocol.
+                switch (try mcp_rpc.probeStdioResilient(server, a, reg.io)) {
                     .modern => break :stdio_listed try mcp_rpc.finishModernStdio(server, a, a, reg.io),
-                    .legacy => break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io),
+                    .legacy => |reason| {
+                        server.probe_fallback = reason;
+                        break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
+                    },
                     .closed => {
                         // The probe write/read found a dead process (some
                         // legacy SDK servers exit on an unrecognized
@@ -424,6 +432,7 @@ pub const Registry = struct {
                         // straight to legacy on the fresh process, no
                         // second probe against a server that already
                         // proved it can't tolerate one.
+                        server.probe_fallback = .server_exited;
                         mcp_stdio.stopChild(reg.io, &server.transport.stdio.child);
                         server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map);
                         break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);
@@ -456,7 +465,8 @@ pub const Registry = struct {
         }
         try servers.append(a, server);
         registry_owns_server = true;
-        std.debug.print("  [mcp:{s}] connected (mcp {s}) — {d} tool(s)\n", .{ name, server.protocol_version, tools_v.array.items.len });
+        const probe_note = if (server.probe_fallback) |reason| reason.note() else ""; // #327: a downgrade is never silent
+        std.debug.print("  [mcp:{s}] connected (mcp {s}) — {d} tool(s){s}\n", .{ name, server.protocol_version, tools_v.array.items.len, probe_note });
     }
 
     /// One shared window bounds the whole teardown: the loop is sequential, so

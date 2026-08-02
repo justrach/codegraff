@@ -201,7 +201,7 @@ def run(graff: Path) -> None:
         print("gate off: byte-identical legacy connect, no server/discover — OK")
 
         # Scenario 2: gate on, server silently drops server/discover. Must time
-        # out (the probe bound, see mcp_rpc.stdio_probe_timeout) and fall back
+        # out (the probe bound, see mcp_rpc.stdio_probe_timeout_ms) and fall back
         # to the legacy handshake on the same process, completing well inside
         # the outer 20s subprocess timeout (which would fire and fail this
         # script if the probe hung).
@@ -225,7 +225,13 @@ def run(graff: Path) -> None:
             f"[gate on] the server never received server/discover, so the probe did not run:\n{completed.stderr}"
         )
         assert elapsed < 15, f"[gate on] took {elapsed:.1f}s — the probe bound is not working"
-        print(f"gate on: timed-out probe -> legacy fallback in {elapsed:.1f}s — OK")
+        # #327: the downgrade must be legible. A fallback that reads exactly
+        # like a server which only ever spoke legacy is how a whole population
+        # of companions ran degraded without anyone noticing.
+        assert "raise GRAFF_MCP_PROBE_MS" in completed.stderr, (
+            f"[gate on] the timeout fallback was not reported on the connect line:\n{completed.stderr}"
+        )
+        print(f"gate on: timed-out probe -> reported legacy fallback in {elapsed:.1f}s — OK")
 
         # Scenario 3: gate on, server exits on server/discover (the other
         # documented worst case). Must respawn once and connect via legacy
@@ -244,7 +250,10 @@ def run(graff: Path) -> None:
             "connected (mcp 2025-06-18)" in completed.stderr
         ), f"[gate on, exiting] expected a respawn-then-legacy connect:\n{completed.stderr}"
         assert elapsed < 10, f"[gate on, exiting] took {elapsed:.1f}s — respawn should be fast"
-        print(f"gate on, server exits on discover: respawn -> legacy fallback in {elapsed:.1f}s — OK")
+        assert "exited during the probe" in completed.stderr, (
+            f"[gate on, exiting] the respawn fallback was not reported (#327):\n{completed.stderr}"
+        )
+        print(f"gate on, server exits on discover: respawn -> reported legacy fallback in {elapsed:.1f}s — OK")
 
 
 def main() -> int:
