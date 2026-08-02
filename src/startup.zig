@@ -343,8 +343,7 @@ pub fn buildSystemPrompt(
     mcp_tools: []const mcp.Tool,
     codedbpro_licensed: bool,
     learned_policy_env: ?[]const u8,
-    codex_home_env: ?[]const u8,
-    openai_key_env: ?[]const u8,
+    environ: anytype,
 ) ![]const u8 {
     // A learned policy is used unless this session opted out of it.
     const learned: ?learn_store.ActiveAgent = if (system_prompt_flag == null and learn_auto.enabled(learned_policy_env)) learnedRootPolicy(io, arena) else null;
@@ -385,10 +384,11 @@ pub fn buildSystemPrompt(
     }
     // #352: mirror the Codex imagegen skill into ~/.harness/skills BEFORE the
     // scan below, so the copied playbook is in this session's catalog. The same
-    // call decides whether the `imagegen` tool is advertised (tool_gates.zig).
-    imagegen.detect(io, arena, codex_home_env, fleet.g_home, openai_key_env);
+    // call decides whether `imagegen` is advertised (tool_gates.zig) and which
+    // of its two engines this machine can actually run.
+    imagegen.detect(io, arena, .{ .codex_home = environ.get("CODEX_HOME"), .home = fleet.g_home, .openai_api_key = environ.get("OPENAI_API_KEY"), .tmp_dir = environ.get("TMPDIR") });
     if (imagegen.available and !quiet) {
-        try out.print("imagegen: Codex skill found — tool enabled, playbook at {s}\n", .{imagegen.skill_dir});
+        try out.print("imagegen: Codex skill found — tool enabled ({s}), playbook at {s}\n", .{ imagegen.engineSummary(), imagegen.skill_dir });
         try out.flush();
     }
     // Markdown skills (skill_docs.zig): names + trigger descriptions only. The

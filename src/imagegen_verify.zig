@@ -77,6 +77,16 @@ pub const Format = enum {
             .webp => "webp",
         };
     }
+
+    /// What the bytes actually ARE, as opposed to what a path claims. The
+    /// codex engine does not let the caller choose a container, so the honest
+    /// thing to report is whatever the hosted tool produced.
+    pub fn detect(head: []const u8) ?Format {
+        for ([_]Format{ .png, .jpeg, .webp }) |f| {
+            if (f.magicOk(head)) return f;
+        }
+        return null;
+    }
 };
 
 /// What we knew about the output path at one instant. `existed = false` is the
