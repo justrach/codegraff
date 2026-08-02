@@ -351,11 +351,11 @@ pub fn compactResumedSession(root: *agent_mod.Agent) void {
 /// goal); `root` is already stable main()-owned storage.
 pub fn finalizeSession(gpa: Allocator, io: Io, arena: Allocator, out: *Io.Writer, root: *agent_mod.Agent, json_mode: bool) !void {
     if (!json_mode and root.messages.items.len > 0) {
-        session.saveSession(root, arena, root.session_name) catch |err| {
+        if (session.saveSession(root, arena, root.session_name)) |_| {
+            out.print("{s}↩ session saved → {s}{s}{s}\n", .{ ansi.style.dim, root.session_name, ansi.style.reset, session.session_ext }) catch {};
+        } else |err| { // one line, and true: never contradict a failure with "saved" (#273)
             out.print("{s}⚠ session save failed: {t}{s}\n", .{ ansi.style.yellow, err, ansi.style.reset }) catch {};
-            out.flush() catch {};
-        };
-        out.print("{s}↩ session saved → {s}{s}{s}\n", .{ ansi.style.dim, root.session_name, ansi.style.reset, session.session_ext }) catch {};
+        }
         out.flush() catch {};
     } else {
         session.saveSession(root, arena, root.session_name) catch {};

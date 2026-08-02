@@ -176,14 +176,17 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
 /// failure is reported) by the time this returns. The TURN path uses
 /// saveSessionAsync instead — see that function.
 pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
-    saveSessionAsync(root, arena, name) catch |err| {
+    const ticket = queueSave(root, arena, .cwd(), name) catch |err| {
         flushSaves();
         return err;
     };
     // Unconditional, so /clear, /new, /save and the exit save all drain even
     // when this session had nothing new of its own to write.
     flushSaves();
-    if (session_writer.takeError()) |err| return err;
+    // Only THIS save's outcome: a background autosave that failed two turns ago
+    // is not /save's failure, and reporting it as one made /save print "save
+    // failed" (and skip the rename) for a file it had just written correctly.
+    if (session_writer.errorFor(ticket)) |err| return err;
 }
 
 /// #273: the interactive turn path's save. Skips entirely when nothing changed,
@@ -194,7 +197,7 @@ pub fn saveSession(root: *Agent, arena: Allocator, name: []const u8) !void {
 /// defers flushSaves(), and every other saver in the harness is the synchronous
 /// saveSession above.
 pub fn saveSessionAsync(root: *Agent, arena: Allocator, name: []const u8) !void {
-    return saveSessionTo(root, arena, .cwd(), name);
+    _ = try queueSave(root, arena, .cwd(), name);
 }
 
 /// Wait for any queued save to reach disk. The exit/quit/switch bound on how
@@ -207,13 +210,23 @@ pub fn flushSaves() void {
 /// passes the cwd (through saveSessionAsync/saveSession); the parameter exists
 /// so the tests can exercise the real path against a tmp dir.
 pub fn saveSessionTo(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !void {
+    _ = try queueSave(root, arena, dir, name);
+}
+
+/// `saveSessionTo` plus the writer ticket for the save it queued — 0 when
+/// nothing needed writing. A synchronous caller keeps the ticket so it can ask
+/// `session_writer.errorFor` about ITS OWN write and not about someone else's.
+fn queueSave(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const u8) !u64 {
     // #184: delay durable session creation until the conversation has meaningful
     // state — never leave a blank draft as an "Untitled session" on disk. Existing
     // files are untouched (we skip the write, we do not delete).
-    if (!hasMeaningfulState(root)) return;
-    // #273: nothing has changed since the last successful write of this session.
+    if (!hasMeaningfulState(root)) return 0;
+    // #273: nothing has changed since the last successful write of this session
+    // AND that write is still what the file holds (a second graff, an editor or
+    // an rm all invalidate it — the skip is never taken on trust).
     const fp = fingerprint(root, name);
-    if (session_writer.alreadySaved(fp)) return;
+    const rel = try sessionPath(arena, name);
+    if (session_writer.alreadySaved(root.io, dir, rel, fp)) return 0;
     var aw: Io.Writer.Allocating = .init(root.gpa);
     defer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };
@@ -291,9 +304,9 @@ pub fn saveSessionTo(root: *Agent, arena: Allocator, dir: Io.Dir, name: []const 
     // #289: two graffs in one workspace share this file — the writer makes the
     // parent dirs and takes an exclusive advisory lock, so the loser reports.
     // #273: it does that on its own thread, and owns these bytes from here.
-    const path = try root.gpa.dupe(u8, try sessionPath(arena, name));
+    const path = try root.gpa.dupe(u8, rel);
     errdefer root.gpa.free(path); // only reachable if toOwnedSlice fails: submit owns both
-    session_writer.submit(root.gpa, root.io, dir, path, try aw.toOwnedSlice(), fp);
+    return session_writer.submit(root.gpa, root.io, dir, path, try aw.toOwnedSlice(), fp);
 }
 
 /// Parse the persisted `goal` field into a structured Goal (#223). A bare string

@@ -168,16 +168,44 @@ test "an unchanged conversation skips the save entirely (#273)" {
     try std.testing.expect(std.mem.indexOf(u8, first, "first prompt") != null);
     try std.testing.expectEqual(@as(usize, 1), session_writer.stats().writes);
 
-    // Overwrite the file behind the harness's back. A skipped save leaves this
-    // untouched — proof that nothing was serialized OR written, not merely that
-    // the same bytes were rewritten.
-    try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/wf.session.json", .data = "SENTINEL" });
+    // Nothing changed and nothing touched the file: the save is skipped whole.
+    // The write counter is the proof — not that the bytes match (they would
+    // even if we had re-serialized and rewritten them), but that no write
+    // happened at all.
     try session.saveSessionTo(&f.root, arena, tmp.dir, "wf");
     session.flushSaves();
-    const after = try readSaved(tmp.dir, gpa);
-    defer gpa.free(after);
-    try std.testing.expectEqualStrings("SENTINEL", after);
     try std.testing.expectEqual(@as(usize, 1), session_writer.stats().writes);
+}
+
+test "the skip never fires over a session file something else rewrote (#273/#289)" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    session_writer.resetForTest();
+    defer session_writer.resetForTest();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try fixture(gpa, arena, io);
+    defer gpa.destroy(f);
+    try session.saveSessionTo(&f.root, arena, tmp.dir, "wf");
+    session.flushSaves();
+
+    // A second graff resumed on the same name writes its own snapshot over
+    // ours — the advisory lock is only held during the write, so this lands.
+    // Our next save (the exit save, or a /save with nothing new since the last
+    // turn) must NOT skip on "we already wrote this state": the file no longer
+    // holds our conversation, and a skip would silently drop every turn we have.
+    try tmp.dir.writeFile(io, .{ .sub_path = ".graff/sessions/wf.session.json", .data = "{\"messages\":[\"the other graff\"]}" });
+    try session.saveSessionTo(&f.root, arena, tmp.dir, "wf");
+    session.flushSaves();
+    const repaired = try readSaved(tmp.dir, gpa);
+    defer gpa.free(repaired);
+    try std.testing.expect(std.mem.indexOf(u8, repaired, "first prompt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, repaired, "the other graff") == null);
+    try std.testing.expectEqual(@as(usize, 2), session_writer.stats().writes);
 }
 
 test "any change to the conversation produces a save (#273)" {
