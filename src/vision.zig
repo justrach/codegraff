@@ -1,9 +1,11 @@
 //! Image/vision support: the staged-image type + per-provider vision-capability
 //! check, media-type-from-extension, the anthropic/openai/responses image
-//! message builder, and the /image·/paste·Ctrl-V·GUI-attachment stagers +
-//! macOS clipboard grab. Split out of main.zig (600-line goal). Back-imports
-//! main (as main_mod, since the stagers' param is named `root`) for Agent,
-//! Provider, and isImagePath. main aliases the public surface back.
+//! message builder, and the /image·/paste·Ctrl-V·GUI-attachment stagers.
+//! Split out of main.zig (600-line goal). Back-imports main (as main_mod,
+//! since the stagers' param is named `root`) for Agent, Provider, and
+//! isImagePath. main aliases the public surface back. The macOS pasteboard
+//! cascade itself (and the byte budget staged images live under) is one level
+//! down in vision_clipboard.zig and re-exported here.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -18,6 +20,16 @@ const Agent = agent_mod.Agent;
 const Provider = provider_mod.Provider;
 const input_util = @import("input_util.zig");
 const isImagePath = input_util.isImagePath;
+
+/// The macOS pasteboard cascade, temp paths, the sips gate/downscaler and the
+/// raw-byte budget (vision_clipboard.zig, 600-line goal). Re-exported below so
+/// readline/commands_model keep importing only `vision`.
+const clip = @import("vision_clipboard.zig");
+pub const Flavor = clip.Flavor;
+pub const Grab = clip.Grab;
+pub const grabClipboardImage = clip.grabClipboardImage;
+pub const max_staged_image_bytes = clip.max_staged_image_bytes;
+pub const fmtBytes = clip.fmtMb;
 
 pub const PendingImage = struct { media_type: []const u8, b64: []const u8, label: []const u8 };
 
@@ -95,19 +107,102 @@ pub fn imageMessage(arena: Allocator, kind: Provider.Kind, text: []const u8, img
     return .{ .object = msg };
 }
 
-pub const StageResult = enum { ok, no_vision, read_fail };
+/// Why an image did or did not reach the provider.
+///
+/// A tagged union, not an enum, because "too big" is only actionable if the
+/// user is told BY HOW MUCH. The old `.read_fail` collapsed oversize, missing,
+/// permission-denied and OOM into one sentence that guessed ("missing, or
+/// larger than 5MB"), so a 7.3 MB screenshot and a typo'd path produced the
+/// same unhelpful line (#349).
+pub const StageResult = union(enum) {
+    ok: struct { bytes: u64, media_type: []const u8 },
+    no_vision,
+    /// Over the wire budget even after `sips` downscaling. Both numbers are
+    /// carried so the message can print them.
+    too_large: struct { bytes: u64, limit: u64 },
+    /// Nothing at that path, or not a regular file.
+    not_found,
+    /// It was there and the right size, but the read or the encode failed.
+    read_error,
+
+    pub fn isOk(self: StageResult) bool {
+        return std.meta.activeTag(self) == .ok;
+    }
+};
 
 /// Read an image file, base64-encode it, and stage it on the agent for the next
 /// turn (shared by /image, /paste, and Ctrl-V). Refuses on non-vision models.
+///
+/// Stats before reading: the size has to be a number we can report, not
+/// something inferred after the fact from `error.StreamTooLong`. Over-budget
+/// files are downscaled rather than dropped.
 pub fn stageImagePath(root: *Agent, path: []const u8) StageResult {
     if (!visionCapable(root.provider)) return .no_vision;
+    const io = root.io;
+    const fit = switch (clip.planStage(io, root.gpa, path, clip.max_staged_image_bytes, clip.sipsResize)) {
+        .not_found => return .not_found,
+        .too_large => |bytes| return .{ .too_large = .{ .bytes = bytes, .limit = clip.max_staged_image_bytes } },
+        .fits => |f| f,
+    };
+    defer if (fit.temp) clip.discard(io, root.gpa, fit.path);
+
     const arena = root.arena;
-    const data = Io.Dir.cwd().readFileAlloc(root.io, path, arena, .limited(5 * 1024 * 1024)) catch return .read_fail;
+    const data = Io.Dir.cwd().readFileAlloc(io, fit.path, arena, .limited(@intCast(clip.max_staged_image_bytes))) catch return .read_error;
     const enc = std.base64.standard.Encoder;
-    const b64 = arena.alloc(u8, enc.calcSize(data.len)) catch return .read_fail;
+    const b64 = arena.alloc(u8, enc.calcSize(data.len)) catch return .read_error;
     _ = enc.encode(b64, data);
-    root.pending_image = .{ .media_type = imageMediaType(path), .b64 = b64, .label = arena.dupe(u8, path) catch path };
-    return .ok;
+    // Media type from the file we actually encoded, but labelled with the path
+    // the USER named — a temp file's random name means nothing to them. A
+    // downscale step is PNG because `sipsResize` forces `-s format png` AND
+    // `fitToBudget` re-checks the magic bytes; without both, `sips -Z` would
+    // keep the source encoding and we'd send JPEG bytes as `image/png`.
+    const media = imageMediaType(fit.path);
+    root.pending_image = .{ .media_type = media, .b64 = b64, .label = arena.dupe(u8, path) catch path };
+    return .{ .ok = .{ .bytes = fit.bytes, .media_type = media } };
+}
+
+/// One actionable line per staging failure. `what` names the thing that failed
+/// ("the clipboard image", "'shot.png'"); `buf` wants ~192 bytes.
+pub fn stageMessage(buf: []u8, r: StageResult, what: []const u8) []const u8 {
+    var got: [16]u8 = undefined;
+    var cap: [16]u8 = undefined;
+    return switch (r) {
+        .ok => "",
+        .no_vision => no_vision_message,
+        .too_large => |t| std.fmt.bufPrint(
+            buf,
+            "{s} is {s} — over the {s} limit; downscale it or use a smaller crop",
+            .{ what, clip.fmtMb(&got, t.bytes), clip.fmtMb(&cap, t.limit) },
+        ) catch "that image is too large to send",
+        .not_found => std.fmt.bufPrint(buf, "can't find {s}", .{what}) catch "can't find that image",
+        .read_error => std.fmt.bufPrint(buf, "couldn't read {s}", .{what}) catch "couldn't read that image",
+    };
+}
+
+/// One `clipboard_paste` receipt per Ctrl-V / `/paste`, whatever the outcome
+/// (#350). Before this a dropped paste left ZERO evidence behind: a failing
+/// and a succeeding run produced byte-identical `.graff/traces` JSONL. Carries
+/// the decision, the cascade flavor, the byte count and the mime — never the
+/// pixels.
+pub fn tracePaste(root: *Agent, result: []const u8, flavor: []const u8, bytes: u64, mime: []const u8) void {
+    const tracer = root.tracer orelse return;
+    tracer.write(.{
+        .t = tracer.elapsedMs(),
+        .ev = "clipboard_paste",
+        .result = result,
+        .flavor = flavor,
+        .bytes = bytes,
+        .mime = mime,
+    });
+}
+
+/// `tracePaste` for a paste that got as far as staging.
+pub fn tracePasteResult(root: *Agent, flavor: Flavor, r: StageResult) void {
+    switch (r) {
+        .ok => |o| tracePaste(root, "ok", flavor.name(), o.bytes, o.media_type),
+        .too_large => |t| tracePaste(root, "too_large", flavor.name(), t.bytes, ""),
+        else => tracePaste(root, @tagName(r), flavor.name(), 0, ""),
+    }
 }
 
 /// GUI image attachments arrive inline as `@[path]` markers in the prompt text
@@ -130,7 +225,7 @@ pub fn stageGuiImageAttachment(root: *Agent, msg: []const u8) void {
         const rest = msg[open + 2 ..];
         const close = std.mem.indexOfScalar(u8, rest, ']') orelse break;
         const path = rest[0..close];
-        if (isImagePath(path) and stageImagePath(root, path) == .ok) return;
+        if (isImagePath(path) and stageImagePath(root, path).isOk()) return;
         search = open + 2 + close + 1;
     }
 }
@@ -153,8 +248,11 @@ pub const McpImageBlock = struct {
     }
 };
 
-/// The same ceiling `stageImagePath` reads a file under.
-const max_mcp_image_bytes = 5 * 1024 * 1024;
+/// The same ceiling `stageImagePath` reads a file under — the base64 math is
+/// identical whether the pixels came from a tool or from disk, so an MCP
+/// screenshot over the budget is refused here (with a note the model reads)
+/// instead of turning into a provider 400 one call later.
+const max_mcp_image_bytes: usize = @intCast(clip.max_staged_image_bytes);
 
 /// Recognize an MCP image content block. Null for anything else — a text block,
 /// a non-`image/*` mime, base64 we cannot decode, or a payload over the ceiling
@@ -206,13 +304,12 @@ pub fn mcpImageHandoff(reg: anytype, supports_vision: bool, slot: *?PendingImage
     return true;
 }
 
-/// macOS: dump the clipboard image (if any) to a temp PNG via osascript and
-/// return its path; null if the clipboard holds no image (or not macOS).
-/// (A terminal can't receive clipboard image bytes over stdin, so we ask the OS.)
 /// Why a Ctrl-V clipboard paste did or did not produce an image (#258).
 /// Ordered so the cheapest, most-likely-wrong condition is decided first.
+/// (A terminal can't receive clipboard image bytes over stdin, so the actual
+/// pixels are fetched from the OS by `grabClipboardImage`'s flavor cascade.)
 pub const ClipboardPasteSource = union(enum) {
-    image: []const u8,
+    image: Grab,
     no_image,
     no_vision,
     unsupported_platform,
@@ -225,10 +322,10 @@ pub const ClipboardPasteSource = union(enum) {
 /// (and on macOS, a pasteboard read of whatever the user last copied) purely to
 /// produce an error. `grabber` is injected so the ordering is testable without
 /// a real clipboard.
-pub fn clipboardPasteSource(io: Io, supports_vision: bool, is_macos: bool, grabber: anytype) ClipboardPasteSource {
+pub fn clipboardPasteSource(io: Io, gpa: Allocator, supports_vision: bool, is_macos: bool, grabber: anytype) ClipboardPasteSource {
     if (!supports_vision) return .no_vision;
     if (!is_macos) return .unsupported_platform;
-    return .{ .image = grabber(io) orelse return .no_image };
+    return .{ .image = grabber(io, gpa) orelse return .no_image };
 }
 
 /// The user-facing line for every non-image paste outcome, so the caller's
@@ -246,39 +343,6 @@ pub fn pasteMessage(source: ClipboardPasteSource) []const u8 {
 /// previously carried two copies of the same sentence.
 pub const no_vision_message = "this model can't see images — /model to a vision one (claude-*, gpt-5*)";
 
-pub fn grabClipboardImage(io: Io) ?[]const u8 {
-    if (builtin.os.tag != .macos) return null;
-    const path = "/tmp/.harness-clip.png";
-    var child = std.process.spawn(io, .{
-        .argv = &.{
-            "osascript",
-            "-e",
-            "try",
-            "-e",
-            "set thePNG to (the clipboard as «class PNGf»)",
-            "-e",
-            "set fp to open for access POSIX file \"/tmp/.harness-clip.png\" with write permission",
-            "-e",
-            "set eof fp to 0",
-            "-e",
-            "write thePNG to fp",
-            "-e",
-            "close access fp",
-            "-e",
-            "on error",
-            "-e",
-            "error number 1",
-            "-e",
-            "end try",
-        },
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .ignore,
-    }) catch return null;
-    const term = child.wait(io) catch return null;
-    if (term == .exited and term.exited == 0) return path;
-    return null;
-}
 test "imageMediaType from extension" {
     try std.testing.expectEqualStrings("image/png", imageMediaType("shot.png"));
     try std.testing.expectEqualStrings("image/jpeg", imageMediaType("p.jpg"));
@@ -326,9 +390,9 @@ test "clipboardPasteSource: vision is checked before the clipboard is touched (#
     // so the clipboard must not be read at all. `calls` proves that.
     const MockGrabber = struct {
         var calls: usize = 0;
-        var image: ?[]const u8 = "/tmp/test.png";
+        var image: ?Grab = .{ .path = "/tmp/test.png", .flavor = .png, .owned = false };
 
-        fn grab(_: Io) ?[]const u8 {
+        fn grab(_: Io, _: Allocator) ?Grab {
             calls += 1;
             return image;
         }
@@ -340,16 +404,18 @@ test "clipboardPasteSource: vision is checked before the clipboard is touched (#
     }.expect;
 
     MockGrabber.calls = 0;
-    try expectTag(.no_vision, clipboardPasteSource(std.testing.io, false, true, MockGrabber.grab));
-    try expectTag(.no_vision, clipboardPasteSource(std.testing.io, false, false, MockGrabber.grab));
-    try expectTag(.unsupported_platform, clipboardPasteSource(std.testing.io, true, false, MockGrabber.grab));
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    try expectTag(.no_vision, clipboardPasteSource(io, gpa, false, true, MockGrabber.grab));
+    try expectTag(.no_vision, clipboardPasteSource(io, gpa, false, false, MockGrabber.grab));
+    try expectTag(.unsupported_platform, clipboardPasteSource(io, gpa, true, false, MockGrabber.grab));
     try std.testing.expectEqual(@as(usize, 0), MockGrabber.calls);
 
-    try expectTag(.image, clipboardPasteSource(std.testing.io, true, true, MockGrabber.grab));
+    try expectTag(.image, clipboardPasteSource(io, gpa, true, true, MockGrabber.grab));
     try std.testing.expectEqual(@as(usize, 1), MockGrabber.calls);
 
     MockGrabber.image = null;
-    try expectTag(.no_image, clipboardPasteSource(std.testing.io, true, true, MockGrabber.grab));
+    try expectTag(.no_image, clipboardPasteSource(io, gpa, true, true, MockGrabber.grab));
     try std.testing.expectEqual(@as(usize, 2), MockGrabber.calls);
 }
 
@@ -362,6 +428,27 @@ test "pasteMessage: every non-image outcome has a distinct, non-empty line" {
     }
     // The staged-failure path reuses the same sentence rather than duplicating it.
     try std.testing.expectEqualStrings(no_vision_message, pasteMessage(.no_vision));
+}
+
+test "stageMessage: an oversized paste names both real sizes, and each failure reads differently (#349)" {
+    var buf: [256]u8 = undefined;
+    const too_big = stageMessage(&buf, .{ .too_large = .{ .bytes = 7_682_253, .limit = max_staged_image_bytes } }, "the clipboard image");
+    // The whole point: the user is told how big it is and how big it may be,
+    // instead of the old "missing, or larger than 5MB" guess.
+    try std.testing.expectEqualStrings(
+        "the clipboard image is 7.3 MB — over the 3.5 MB limit; downscale it or use a smaller crop",
+        too_big,
+    );
+
+    var b2: [256]u8 = undefined;
+    const missing = stageMessage(&b2, .not_found, "'shot.png'");
+    try std.testing.expect(std.mem.indexOf(u8, missing, "shot.png") != null);
+    try std.testing.expect(!std.mem.eql(u8, missing, too_big));
+
+    var b3: [256]u8 = undefined;
+    const unreadable = stageMessage(&b3, .read_error, "'shot.png'");
+    try std.testing.expect(!std.mem.eql(u8, unreadable, missing));
+    try std.testing.expectEqualStrings(no_vision_message, stageMessage(&b3, .no_vision, "x"));
 }
 
 /// Parse one JSON literal into `a` — the MCP content blocks these tests feed in.

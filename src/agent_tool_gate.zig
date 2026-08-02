@@ -148,6 +148,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     if (main_mod.plan_mode) {
         if (std.mem.eql(u8, call.name, "learn_candidate") or
             std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or
+            std.mem.eql(u8, call.name, "imagegen") or // #352: writes a file and spawns a workspace-write child
             (mcp.Registry.isMcp(call.name) and !companionReadOnly(call.name, call.input))) return .{
             .text = try self.arena.dupe(u8, "plan mode is on — read-only. Fold this change into the plan you present; the user applies it after approving (/plan toggles the mode off)."),
             .is_error = true,

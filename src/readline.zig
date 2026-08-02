@@ -259,20 +259,31 @@ pub fn readLine(
                 redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
             },
             0x16 => { // Ctrl-V: attach a clipboard image (macOS) at the cursor
+                var mbuf: [224]u8 = undefined;
                 var msg: ?[]const u8 = null;
-                switch (vision.clipboardPasteSource(root.io, vision.visionCapable(root.provider), builtin.os.tag == .macos, grabClipboardImage)) {
-                    .image => |p| switch (stageImagePath(root, p)) {
-                        .ok => {
+                switch (vision.clipboardPasteSource(root.io, gpa, vision.visionCapable(root.provider), builtin.os.tag == .macos, grabClipboardImage)) {
+                    .image => |grab| {
+                        defer grab.release(root.io, gpa); // temp export never outlives the paste
+                        const staged = stageImagePath(root, grab.path);
+                        vision.tracePasteResult(root, grab.flavor, staged); // #350: every paste leaves a receipt
+                        if (staged.isOk()) {
                             const marker = "[Image] ";
                             buf.insertSlice(gpa, cur, marker) catch {};
                             cur += marker.len;
                             addMark(gpa, &marks, "[Image]");
                             redraw(out, buf.items, cur, marks.items, &rstate, prompt_col);
-                        },
-                        .no_vision => msg = vision.no_vision_message,
-                        .read_fail => msg = "couldn't read the clipboard image",
+                        } else {
+                            // No `.no_vision` arm here: clipboardPasteSource
+                            // already answers .no_vision above, so on a
+                            // text-only model the clipboard is never read and
+                            // that prong was unreachable (#349).
+                            msg = vision.stageMessage(&mbuf, staged, "the clipboard image");
+                        }
                     },
-                    else => |s| msg = vision.pasteMessage(s),
+                    else => |s| {
+                        vision.tracePaste(root, @tagName(s), "none", 0, "");
+                        msg = vision.pasteMessage(s);
+                    },
                 }
                 if (msg) |m| { // feedback below the input, then redraw the prompt+buffer fresh
                     if (rstate.rows - 1 > rstate.crow) out.print("\x1b[{d}B", .{rstate.rows - 1 - rstate.crow}) catch {};
@@ -441,11 +452,18 @@ pub fn readLine(
                                 // path however long it is.
                                 var staged = false;
                                 var dmsg: ?[]const u8 = null;
-                                if (isImagePath(dropped.?)) switch (stageImagePath(root, dropped.?)) {
-                                    .ok => staged = true,
-                                    .no_vision => dmsg = "this model can't see images — ✓ in /models' vision column shows ones that can; path inlined instead",
-                                    .read_fail => dmsg = "couldn't read that image (missing or >5MB) — path inlined instead",
-                                };
+                                var dbuf: [224]u8 = undefined;
+                                if (isImagePath(dropped.?)) {
+                                    const r = stageImagePath(root, dropped.?);
+                                    if (r.isOk()) {
+                                        staged = true;
+                                    } else if (r == .no_vision) {
+                                        dmsg = "this model can't see images — ✓ in /models' vision column shows ones that can; path inlined instead";
+                                    } else {
+                                        // Real numbers, not "missing or >5MB" (#349).
+                                        dmsg = vision.stageMessage(&dbuf, r, "that image");
+                                    }
+                                }
                                 if (staged) {
                                     const marker = "[Image] ";
                                     buf.insertSlice(gpa, cur, marker) catch {};

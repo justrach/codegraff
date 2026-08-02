@@ -41,6 +41,13 @@ pub const gated_tools = [_][]const u8{
     "edit_file",
     "write_file",
     "codedb",
+    // #352: imagegen looks like a content tool but is a local write-and-spawn
+    // primitive — it starts `codex exec --sandbox workspace-write` or python3
+    // on THIS host and writes a file into the working tree. Being optional
+    // (tool_gates.zig) does not exempt it: an embedder that removed bash and
+    // write_file would otherwise still be handed a way to run a process and
+    // land bytes on disk.
+    "imagegen",
 };
 
 /// A name test only, independent of whether the gate is on, so the comptime
@@ -105,7 +112,8 @@ test "#330: the gated set is exactly the host-touching built-ins; webfetch, meta
     defer enabled = saved;
 
     for (gated_tools) |tool| try std.testing.expect(isLocalTool(tool));
-    try std.testing.expectEqual(@as(usize, 7), gated_tools.len);
+    try std.testing.expectEqual(@as(usize, 8), gated_tools.len);
+    try std.testing.expect(isLocalTool("imagegen")); // #352: optional, but still a local spawn+write
     for ([_][]const u8{ "webfetch", "skill", "subagent", "workflow", "todo_write", "eval", "mcp__sandbox__exec", "mcp__sandbox__bash" }) |tool|
         try std.testing.expect(!isLocalTool(tool));
 
@@ -157,7 +165,15 @@ test "#330: neither catalog advertises a local tool under the gate, and webfetch
     const arena = arena_state.allocator();
 
     const saved = enabled;
-    defer enabled = saved;
+    // #352: imagegen is optional, so the ungated catalog only carries every
+    // gated name while it is available — turn it on for this comparison.
+    const imagegen = @import("imagegen.zig");
+    const saved_imagegen = imagegen.available;
+    defer {
+        enabled = saved;
+        imagegen.available = saved_imagegen;
+    }
+    imagegen.available = true;
 
     // Root catalog (runtime-assembled, and the one MCP tools are appended to).
     enabled = false;
