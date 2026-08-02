@@ -44,6 +44,7 @@ const exec = @import("exec.zig");
 const execTool = exec.execTool;
 
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
+const readline = @import("readline.zig"); // ask_user answers get the same full editor as the main prompt
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
 const tool_results_dir = ".graff/tool-results";
@@ -400,7 +401,16 @@ pub fn askUser(self: *Agent, call: ToolCall) !ExecResult {
     try w.writeAll("   your answer › ");
     try w.flush();
 
-    const raw = (try in.takeDelimiter('\n')) orelse return .{
+    // Route the reply through the same full-line editor as the main prompt:
+    // cursor editing, bracketed paste, the `@` file picker, and Ctrl-V
+    // clipboard images. A bare takeDelimiter here stripped all of that from
+    // ask_user. Answers get a scratch history so they never pollute the main
+    // prompt's up-arrow recall.
+    var answer_history: std.ArrayList([]const u8) = .empty;
+    defer answer_history.deinit(self.arena);
+    var answer_buf: std.ArrayList(u8) = .empty;
+    defer answer_buf.deinit(self.arena);
+    const raw = (try readline.readLine(self, in, w, self.arena, &answer_history, &answer_buf)) orelse return .{
         .text = "user ended input without answering",
         .is_error = true,
     };
