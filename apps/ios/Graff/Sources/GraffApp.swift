@@ -301,6 +301,10 @@ struct AgentSession: Identifiable {
     }
 }
 
+// #316: test/demo fixtures ONLY. These are deliberately realistic, so they
+// must never be shown as account history — the signed-out Sessions list used
+// to open on them and read as retained user data. Their only reachable use is
+// `--autotest`, which drives a real turn through one of them.
 let sampleSessions: [AgentSession] = [
     AgentSession(
         title: "Add cube transport to client",

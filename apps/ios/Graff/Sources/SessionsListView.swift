@@ -1,8 +1,14 @@
 import SwiftUI
 
 struct SessionsListView: View {
-    // Signed in → the account's synced history; signed out → demo scaffolding.
-    @State private var sessions = Gateway.apiKey != nil ? [] : sampleSessions
+    // #316: this list only ever holds the signed-in account's real history.
+    // It used to open on `sampleSessions` when signed out — fabricated rows
+    // with realistic titles, models, progress and timestamps, and nothing
+    // marking them as examples, so a fresh install looked like it had
+    // retained someone's account data. Signed out now means an empty list and
+    // a sign-in call to action; the fixtures stay behind `--autotest`.
+    @State private var sessions: [AgentSession] = []
+    @State private var signedIn = Gateway.apiKey != nil
     @State private var showAccount = false
     @State private var showNewSession = false
     @State private var loadNote = ""
@@ -11,6 +17,16 @@ struct SessionsListView: View {
     var body: some View {
         NavigationStack {
             List {
+                if !signedIn {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("You're not signed in").font(.headline)
+                        Text("Sign in with your codegraff account to see your sessions here. Nothing is shown until then — this list only ever contains your own history.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button("Sign in") { showAccount = true }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .padding(.vertical, 6)
+                }
                 if !loadNote.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(loadNote).font(.footnote).foregroundStyle(.secondary)
@@ -18,6 +34,7 @@ struct SessionsListView: View {
                             Button("Sign in again") {
                                 Gateway.signOut()
                                 sessions = []
+                                signedIn = false
                                 showAccount = true
                             }
                             .buttonStyle(.borderedProminent)
@@ -69,7 +86,15 @@ struct SessionsListView: View {
     // (ChatView offers a resume, which re-keys or respins as needed).
     @MainActor
     private func loadHistory() async {
-        guard Gateway.apiKey != nil else { return }
+        // #316: signed out is an honest empty state, not a fixture gallery.
+        guard Gateway.apiKey != nil else {
+            signedIn = false
+            sessions = []
+            loadNote = ""
+            needsSessionRelogin = false
+            return
+        }
+        signedIn = true
         do {
             let rows = try await Gateway.listAppSessions()
             // #286: a failed sandbox listing is not evidence that anything
