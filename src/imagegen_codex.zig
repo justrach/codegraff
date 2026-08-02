@@ -27,6 +27,7 @@
 //! repo it was called from.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -76,7 +77,8 @@ pub fn buildArgv(arena: Allocator, private_home: []const u8, prompt: []const u8)
 }
 
 /// Credentials that make a private CODEX_HOME usable. Symlinked rather than
-/// copied so a token never lands as a second plaintext file in a temp dir.
+/// copied where the OS allows it, so a token never lands as a second plaintext
+/// file in a temp dir; see `prepareHome` for the copy fallback.
 pub const linked_files = [_][]const u8{ "auth.json", "config.toml" };
 
 /// Build a private CODEX_HOME for ONE run.
@@ -106,12 +108,24 @@ pub fn prepareHome(io: Io, arena: Allocator, private_home: []const u8, real_home
         const target = try std.fmt.allocPrint(arena, "{s}/{s}", .{ real_home, name });
         _ = Io.Dir.cwd().statFile(io, target, .{}) catch continue; // config.toml is optional
         const link = try std.fmt.allocPrint(arena, "{s}/{s}", .{ private_home, name });
-        Io.Dir.cwd().symLink(io, target, link, .{}) catch {};
+        // A symlink is preferred (no second copy of a token on disk), but it is
+        // not always available: Windows only creates one for a process holding
+        // SeCreateSymbolicLinkPrivilege or running in developer mode, and a
+        // FAT/exFAT TMPDIR cannot hold one on any OS. Silently skipping, as
+        // this used to, leaves the private CODEX_HOME with no credentials at
+        // all — codex then runs logged out and the engine looks broken for a
+        // reason nothing reports. Copying is the lesser evil, and it is no more
+        // exposed than the link was: `unlinkHome` removes it and the whole
+        // scratch tree is deleted when the run ends either way.
+        Io.Dir.cwd().symLink(io, target, link, .{}) catch {
+            Io.Dir.cwd().copyFile(target, Io.Dir.cwd(), link, io, .{}) catch {};
+        };
     }
 }
 
-/// Remove the credential symlinks BEFORE the tree is deleted, so a delete can
-/// never walk into the user's real CODEX_HOME through one of them.
+/// Remove the credential links BEFORE the tree is deleted, so a delete can
+/// never walk into the user's real CODEX_HOME through one of them. `deleteFile`
+/// covers the copy fallback too — the copy is a plain file at the same path.
 pub fn unlinkHome(io: Io, arena: Allocator, private_home: []const u8) void {
     for (linked_files) |name| {
         const link = std.fmt.allocPrint(arena, "{s}/{s}", .{ private_home, name }) catch continue;
@@ -363,13 +377,20 @@ test "#352: discovery picks the newest FRESH file, ignores stale ones and dotfil
     for ([_][]const u8{ stale, fresh, fresher, junk }) |p|
         try Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = "\x89PNG\r\n\x1a\n" ++ "payload" });
 
-    // Stale = written two weeks ago; the .DS_Store is fresh but must be skipped.
-    try Io.Dir.cwd().setTimestamps(io, stale, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(now - 14 * day_ns) } } });
-    try Io.Dir.cwd().setTimestamps(io, fresh, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(now - 30 * std.time.ns_per_s) } } });
-    try Io.Dir.cwd().setTimestamps(io, fresher, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(now - 5 * std.time.ns_per_s) } } });
+    // Backdating is the only deterministic way to give three files distinct,
+    // known mtimes, and `Io.Dir.setTimestamps` is literally
+    // `@panic("TODO implement dirSetTimestamps windows")` in Zig 0.17's
+    // Threaded io — so this half of the test aborts the runner on Windows
+    // rather than failing. Everything below it is portable and still runs.
+    if (builtin.os.tag != .windows) {
+        // Stale = written two weeks ago; the .DS_Store is fresh but must be skipped.
+        try Io.Dir.cwd().setTimestamps(io, stale, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(now - 14 * day_ns) } } });
+        try Io.Dir.cwd().setTimestamps(io, fresh, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(now - 30 * std.time.ns_per_s) } } });
+        try Io.Dir.cwd().setTimestamps(io, fresher, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(now - 5 * std.time.ns_per_s) } } });
 
-    const picked = newestFresh(io, arena, root, marker).?;
-    try testing.expect(std.mem.endsWith(u8, picked.path, "exec-newest.png"));
+        const picked = newestFresh(io, arena, root, marker).?;
+        try testing.expect(std.mem.endsWith(u8, picked.path, "exec-newest.png"));
+    }
 
     // A marker AFTER everything on disk finds nothing — the fabrication case,
     // and the state a run that generated nothing leaves behind.
