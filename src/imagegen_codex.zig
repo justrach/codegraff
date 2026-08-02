@@ -49,6 +49,17 @@ const max_scan_depth: u8 = 4; // real layout is <save_root>/<session>/<call>.png
 ///
 /// `env` rather than a shell: CODEX_HOME has to reach the child, and `sh -c`
 /// would put a model-supplied prompt through a quoting layer for no reason.
+///
+/// `--skip-git-repo-check` is required BECAUSE of the isolation above, not in
+/// spite of it. codex refuses to run in a directory it does not consider
+/// trusted ("Not inside a trusted directory and --skip-git-repo-check was not
+/// specified", exit 1), and the cwd we hand it is deliberately an empty
+/// non-git scratch directory graff just created. That check exists to stop
+/// codex writing into a user's real project by accident; here there is no user
+/// project to protect — the whole point of the private cwd is that the child
+/// has nothing of theirs within reach, and `--sandbox workspace-write` confines
+/// its writes to that empty directory. Skipping the check is what lets the
+/// stronger isolation stand; without it the engine simply never runs.
 pub fn buildArgv(arena: Allocator, private_home: []const u8, prompt: []const u8) ![]const []const u8 {
     return arena.dupe([]const u8, &.{
         "env",
@@ -57,6 +68,7 @@ pub fn buildArgv(arena: Allocator, private_home: []const u8, prompt: []const u8)
         "exec",
         "--sandbox",
         "workspace-write",
+        "--skip-git-repo-check",
         "-c",
         "features.image_generation=true",
         prompt,
@@ -220,12 +232,25 @@ test "#352: argv forces the feature flag on and runs codex non-interactively" {
 
     const argv = try buildArgv(arena, "/tmp/priv", "PROMPT");
     const want = [_][]const u8{
-        "env",       "CODEX_HOME=/tmp/priv", "codex", "exec",
-        "--sandbox", "workspace-write",      "-c",    "features.image_generation=true",
-        "PROMPT",
+        "env",                            "CODEX_HOME=/tmp/priv", "codex",                 "exec",
+        "--sandbox",                      "workspace-write",
+        // Without this codex exits 1 in our own empty scratch cwd: "Not inside
+        // a trusted directory and --skip-git-repo-check was not specified".
+             "--skip-git-repo-check", "-c",
+        "features.image_generation=true", "PROMPT",
     };
     try testing.expectEqual(want.len, argv.len);
     for (want, argv) |w, got| try testing.expectEqualStrings(w, got);
+
+    // Named explicitly too, so a reordering refactor cannot quietly drop it.
+    var has_skip = false;
+    for (argv) |a| {
+        if (std.mem.eql(u8, a, "--skip-git-repo-check")) has_skip = true;
+    }
+    try testing.expect(has_skip);
+    // ...and the escape hatch that would ACTUALLY be unsafe is never assembled:
+    // the sandbox is what keeps the child confined to the scratch directory.
+    for (argv) |a| try testing.expect(!std.mem.eql(u8, a, "--dangerously-bypass-approvals-and-sandbox"));
     // No model is pinned: which models carry the capability is codex's call.
     for (argv) |a| try testing.expect(!std.mem.eql(u8, a, "--model") and !std.mem.eql(u8, a, "-m"));
     // The prompt is a single argv slot; no shell is involved, so no quoting
