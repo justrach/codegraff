@@ -408,7 +408,7 @@ flags:
   --timing                  show per-tool wall-clock on result lines (✓ (312ms) …)
   --cost                    show running session spend in the prompt ([model · 12k tok · $0.0042])
   --json                    structured stdio protocol (JSON in, JSONL events out, SDK transport)
-  --max-model-calls N  cap provider calls across root, children, retries, titles, compaction, and judges (default 256)
+  --max-model-calls N  cap provider calls across root, children, retries, titles, compaction, and judges (default 0 = unlimited)
   -h, --help       usage
   -V, --version    version
 ```
