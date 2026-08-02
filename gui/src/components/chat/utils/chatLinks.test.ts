@@ -70,6 +70,34 @@ describe("getChatLinkMatches URL vs Markdown delimiters", () => {
     expect(firstUrl("~~*https://example.com*~~")).toBe("https://example.com");
   });
 
+  // #197 follow-up: the mirrored-delimiter rule only fires when the *same*
+  // delimiters sit immediately before the URL. Markdown that consumed the
+  // opening `**` elsewhere (a stray `**kwargs`/`2**32` earlier in the
+  // paragraph, or a second render pass over a text node) hands this matcher a
+  // candidate with a trailing `**` and nothing in front of it — the target must
+  // still come out clean.
+  test("strips an unpaired trailing ** with no leading delimiter", () => {
+    expect(firstUrl("http://localhost:3003**")).toBe("http://localhost:3003");
+    expect(firstUrl("open http://localhost:3003** now")).toBe("http://localhost:3003");
+  });
+
+  test("strips unpaired trailing __ and ~~", () => {
+    expect(firstUrl("http://localhost:3003__")).toBe("http://localhost:3003");
+    expect(firstUrl("http://localhost:3003~~")).toBe("http://localhost:3003");
+  });
+
+  test("strips underscore emphasis wrapping a bare URL", () => {
+    expect(firstUrl("__http://localhost:3003__")).toBe("http://localhost:3003");
+    expect(firstUrl("_http://localhost:3003_")).toBe("http://localhost:3003");
+    expect(firstUrl("Open __http://localhost:3003__ now")).toBe("http://localhost:3003");
+  });
+
+  test("preserves underscores that are part of the URL", () => {
+    expect(firstUrl("https://example.com/a_b_c")).toBe("https://example.com/a_b_c");
+    expect(firstUrl("https://example.com/a__b/c")).toBe("https://example.com/a__b/c");
+    expect(firstUrl("https://example.com/trailing_")).toBe("https://example.com/trailing_");
+  });
+
   test("never splits a multi-byte trailing character (surrogate-safe)", () => {
     // Trimming only removes ASCII markers, so a URL that legitimately ends in a
     // multi-byte glyph (accents, emoji) is preserved byte-for-byte, never cut

@@ -4,6 +4,9 @@ const FILE_PATH_PATTERN =
 const PATH_BOUNDARY_PATTERN = /[\s([{"'`]/u;
 const TRAILING_PUNCTUATION_PATTERN = /[.,;!?]+$/u;
 const TRAILING_CLOSERS = new Set([")", "]", "}", ">", "'", '"', "`"]);
+// Paired Markdown emphasis delimiters. Never part of a link target, whichever
+// caller feeds getChatLinkMatches (#197).
+const EMPHASIS_PAIRS = ["**", "__", "~~"] as const;
 const FILE_BASENAME_EXTENSION_PATTERN = /\.[A-Za-z0-9_-]+$/u;
 const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/u;
 const WINDOWS_UNC_PATH_PATTERN = /^\\\\/u;
@@ -96,13 +99,13 @@ function trimLinkCandidate(candidate: string): string {
 }
 
 function markdownClosingDelimiterBefore(text: string, start: number): string | null {
-  const opening = text.slice(0, start).match(/[~*]+$/u)?.[0];
+  const opening = text.slice(0, start).match(/[~*_]+$/u)?.[0];
   if (opening == null) {
     return null;
   }
 
   for (let index = 0; index < opening.length; index += 1) {
-    if (opening[index] === "*") {
+    if (opening[index] === "*" || opening[index] === "_") {
       continue;
     }
     if (opening[index] !== "~" || opening[index + 1] !== "~") {
@@ -114,14 +117,45 @@ function markdownClosingDelimiterBefore(text: string, start: number): string | n
   return [...opening].reverse().join("");
 }
 
+/**
+ * Defense in depth for #197: whatever the caller hands us, a linkified URL must
+ * never start or end on a *paired* Markdown emphasis delimiter. Only pairs are
+ * stripped — a lone trailing `*` or `~` is a legitimate URL character
+ * (`?q=*`, `/~`) and is preserved (bb623af); the mirrored-delimiter pass above
+ * is what removes those when the text really did wrap the URL in `*…*`.
+ */
+function stripEmphasisBoundaries(value: string): string {
+  let result = value;
+  let stripped = true;
+
+  while (stripped && result.length > 0) {
+    stripped = false;
+    for (const pair of EMPHASIS_PAIRS) {
+      if (result.endsWith(pair)) {
+        result = trimLinkCandidate(result.slice(0, -pair.length));
+        stripped = true;
+        break;
+      }
+      if (result.startsWith(pair)) {
+        result = result.slice(pair.length);
+        stripped = true;
+        break;
+      }
+    }
+  }
+
+  return result;
+}
+
 function trimMarkdownWrappedLinkCandidate(text: string, start: number, candidate: string): string {
   const value = trimLinkCandidate(candidate);
   const closingDelimiter = markdownClosingDelimiterBefore(text, start);
-  if (closingDelimiter == null || !value.endsWith(closingDelimiter)) {
-    return value;
-  }
+  const mirrored =
+    closingDelimiter != null && value.endsWith(closingDelimiter)
+      ? trimLinkCandidate(value.slice(0, -closingDelimiter.length))
+      : value;
 
-  return trimLinkCandidate(value.slice(0, -closingDelimiter.length));
+  return stripEmphasisBoundaries(mirrored);
 }
 
 function safeDecode(value: string): string {

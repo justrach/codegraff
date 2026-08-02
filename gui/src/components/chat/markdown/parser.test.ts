@@ -117,6 +117,30 @@ describe("parseInline", () => {
 
   test("leaves unmatched markers as literal text", () => {
     expect(parseInline("a * b")).toEqual([{ type: "text", value: "a * b" }]);
+    expect(parseInline("a ** b")).toEqual([{ type: "text", value: "a ** b" }]);
+  });
+
+  // #197: a literal `**` earlier in the paragraph (Python `**kwargs`, an
+  // exponent like `2**32`) used to be paired with the `**` that actually opens
+  // a later bold span, leaving that span's closing `**` glued to the following
+  // text — which the autolinker then swallowed into the link target. A closing
+  // run must bind to the *nearest* still-open run instead.
+  test("binds a closing ** to the nearest opener, not the first one", () => {
+    expect(parseInline("Pass **kwargs to **https://x.dev**")).toEqual([
+      { type: "text", value: "Pass **kwargs to " },
+      { type: "strong", children: [{ type: "text", value: "https://x.dev" }] },
+    ]);
+    expect(parseInline("2**32 at **https://x.dev**")).toEqual([
+      { type: "text", value: "2**32 at " },
+      { type: "strong", children: [{ type: "text", value: "https://x.dev" }] },
+    ]);
+  });
+
+  test("a run followed by a space cannot open emphasis", () => {
+    expect(parseInline("a * b **bold**")).toEqual([
+      { type: "text", value: "a * b " },
+      { type: "strong", children: [{ type: "text", value: "bold" }] },
+    ]);
   });
 });
 

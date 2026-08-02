@@ -426,10 +426,8 @@ interface InlineMatch {
 
 const HARD_BREAK_RE = /(?: {2,}|\\)\n/g;
 const CODE_RE = /(`+)([\s\S]*?)\1/g;
-const STRONG_STAR_RE = /\*\*([\s\S]+?)\*\*/g;
 const STRONG_UNDER_RE = /(?<![A-Za-z0-9])__([\s\S]+?)__(?![A-Za-z0-9])/g;
 const DEL_RE = /~~([\s\S]+?)~~/g;
-const EM_STAR_RE = /\*([\s\S]+?)\*/g;
 const EM_UNDER_RE = /(?<![A-Za-z0-9])_([\s\S]+?)_(?![A-Za-z0-9])/g;
 const LINK_RE = /\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
 // Inline math: \( ... \) and $ ... $. The dollar form is deliberately narrow —
@@ -488,20 +486,16 @@ function nextInlineMatch(text: string, from: number): InlineMatch | null {
     href: m[2].replace(/^<|>$/g, ""),
     children: parseInline(m[1]),
   }));
-  pushCandidate(candidates, STRONG_STAR_RE, text, from, (m) => ({
-    type: "strong",
-    children: parseInline(m[1]),
-  }));
+  const starEmphasis = findStarEmphasis(text, from);
+  if (starEmphasis) {
+    candidates.push(starEmphasis);
+  }
   pushCandidate(candidates, STRONG_UNDER_RE, text, from, (m) => ({
     type: "strong",
     children: parseInline(m[1]),
   }));
   pushCandidate(candidates, DEL_RE, text, from, (m) => ({
     type: "del",
-    children: parseInline(m[1]),
-  }));
-  pushCandidate(candidates, EM_STAR_RE, text, from, (m) => ({
-    type: "em",
     children: parseInline(m[1]),
   }));
   pushCandidate(candidates, EM_UNDER_RE, text, from, (m) => ({
@@ -517,6 +511,69 @@ function nextInlineMatch(text: string, from: number): InlineMatch | null {
   // code, math, break, link, strong, del, em) candidate is kept.
   candidates.sort((a, b) => a.index - b.index);
   return candidates[0];
+}
+
+interface StarRun {
+  start: number;
+  end: number;
+}
+
+function isWhitespaceAt(text: string, index: number): boolean {
+  const char = index < 0 || index >= text.length ? undefined : text[index];
+  return char == null || /\s/u.test(char);
+}
+
+/**
+ * CommonMark-style `*` / `**` emphasis, replacing the old lazy
+ * "two asterisks, anything, two asterisks" regexes.
+ *
+ * A run of asterisks may only *open* when a non-space follows it and may only
+ * *close* when a non-space precedes it, and a closer binds to the **nearest**
+ * still-open run. #197: the lazy regexes paired the first two runs they saw, so
+ * a literal `**` in the prose — Python `**kwargs`, an exponent like `2**32` —
+ * stole the `**` that actually opened a later bold span. The bold URL's closing
+ * `**` was then left glued to the text node (`http://localhost:3003**`), where
+ * it both rendered literally and got swallowed into the autolinked target.
+ */
+function findStarEmphasis(text: string, from: number): InlineMatch | null {
+  const open: StarRun[] = [];
+  let index = from;
+
+  while (index < text.length) {
+    if (text[index] !== "*") {
+      index += 1;
+      continue;
+    }
+
+    let end = index + 1;
+    while (end < text.length && text[end] === "*") {
+      end += 1;
+    }
+
+    const canOpen = !isWhitespaceAt(text, end);
+    const opener = isWhitespaceAt(text, index - 1) ? undefined : open.pop();
+    if (opener != null) {
+      // Openers are consumed from the end of their run, closers from the
+      // start, so leftover asterisks stay literal text on either side.
+      const size = Math.min(opener.end - opener.start, end - index) >= 2 ? 2 : 1;
+      const start = opener.end - size;
+      return {
+        index: start,
+        length: index + size - start,
+        node: {
+          type: size === 2 ? "strong" : "em",
+          children: parseInline(text.slice(opener.end, index)),
+        },
+      };
+    }
+
+    if (canOpen) {
+      open.push({ start: index, end });
+    }
+    index = end;
+  }
+
+  return null;
 }
 
 function pushCandidate(
