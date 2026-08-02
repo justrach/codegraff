@@ -16,6 +16,78 @@ test("autolinks a bare URL in plain text into a clickable control", () => {
   expect(html).toContain("https://react.dev/learn");
 });
 
+// #197 (follow-up report): the originally filed `**http://host**` repro was
+// fixed in the matcher, but the defect survived one level up. A literal `**`
+// earlier in the paragraph shifted the parser's emphasis pairing, so the bold
+// URL's closing `**` never became markup: it stayed inside the text node the
+// autolinker sees, rendered literally instead of as bold, and ended up in the
+// clickable target (`http://localhost:3003**`).
+const SHIFTED_PAIRING = [
+  "Pass **kwargs to the server at **http://localhost:3003**",
+  "The value 2**32 is at **http://localhost:3003**",
+  "**Note:** use x**2 then open **http://localhost:3003**",
+  "- **Web:** 2**10 at **http://localhost:3003**",
+];
+
+function linkTargets(html: string): string[] {
+  const targets: string[] = [];
+  const pattern = /title="([^"]*)"|href="([^"]*)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html)) !== null) {
+    targets.push(match[1] ?? match[2]);
+  }
+  return targets;
+}
+
+test("a stray ** earlier in the line never lands in the link target", () => {
+  for (const text of SHIFTED_PAIRING) {
+    const html = renderToStaticMarkup(<MarkdownRenderer text={text} />);
+    expect(linkTargets(html)).toContain("http://localhost:3003");
+    expect(html).not.toContain("http://localhost:3003**");
+  }
+});
+
+// Streaming re-renders the whole accumulated text on every delta, so every
+// prefix is a state a user can see and click.
+test("no streaming prefix ever produces a delimiter-tailed link target", () => {
+  for (const text of SHIFTED_PAIRING) {
+    for (let length = 1; length <= text.length; length += 1) {
+      const html = renderToStaticMarkup(<MarkdownRenderer text={text.slice(0, length)} />);
+      for (const target of linkTargets(html)) {
+        expect(target).not.toMatch(/(\*\*|__|~~)$/u);
+      }
+    }
+  }
+});
+
+test("keeps a bold span bold when it contains nested emphasis and a URL", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text="**Note: see *this* file at http://localhost:3003**" />,
+  );
+  expect(html).toContain("font-medium");
+  expect(html).toContain("<em>this</em>");
+  expect(linkTargets(html)).toContain("http://localhost:3003");
+  expect(html).not.toContain("**");
+});
+
+// The autolinker only drops a trailing `**` when the text in front of the URL
+// actually opened one; an unpaired `**` that the parser left as literal text is
+// part of the target.
+test("does not truncate a URL whose own tail is a delimiter pair", () => {
+  const url = "https://example.com/glob/**";
+  const html = renderToStaticMarkup(<MarkdownRenderer text={`See ${url} for details.`} />);
+  expect(linkTargets(html)).toContain(url);
+});
+
+test("keeps a bold-wrapped URL bold and its target clean", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text="Server at **http://localhost:3003** now" />,
+  );
+  expect(html).toContain("font-medium");
+  expect(linkTargets(html)).toContain("http://localhost:3003");
+  expect(html).not.toContain("**");
+});
+
 test("renders unsafe markdown link schemes as plain text", () => {
   const html = renderToStaticMarkup(
     <MarkdownRenderer text="[click me](javascript:alert(1)) and [payload](data:text/html,test)" />,

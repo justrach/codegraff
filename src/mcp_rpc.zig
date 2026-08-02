@@ -42,6 +42,11 @@ pub const Server = struct {
     /// Revision the server negotiated (legacy) or `modern_protocol` (modern),
     /// shown in `/mcp` so version skew is visible.
     protocol_version: []const u8 = "?",
+    /// Set when the modern probe ran and the connection landed on the legacy
+    /// protocol anyway: WHY it did. Rendered on the connect line and in
+    /// `/mcp` — a downgrade the user cannot see is the whole of #327. Null
+    /// when no probe ran (probe disabled, HTTP) or when it found modern.
+    probe_fallback: ?LegacyReason = null,
 };
 
 pub fn deinitServer(server: *Server, io: Io, budget: mcp_teardown.Budget) void {
@@ -70,9 +75,23 @@ pub var stdio_handshake_timeout_ms: i64 = 15_000;
 /// ignored if unparseable or 0; clamped to <=1 day. Lives here rather than in
 /// session_run.zig, which is at the 600-line cap.
 pub fn applyHandshakeTimeoutEnv(environ_map: anytype) void {
+    applyProbeTimeoutEnv(environ_map);
     const v = environ_map.get("GRAFF_MCP_HANDSHAKE_SECS") orelse return;
     const secs = std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10) catch return;
     if (secs > 0) stdio_handshake_timeout_ms = @intCast(@min(secs, 86_400) * 1000);
+}
+
+/// GRAFF_MCP_PROBE_MS overrides `stdio_probe_timeout_ms` (default 5000, see
+/// there for how that number is derived). Raise it for a server slower to its
+/// first answer than the default allows — the connect line names the
+/// probe-deadline fallback when that happens — or lower it to skip the
+/// startup wait a server that answers `server/discover` with silence rather
+/// than an error costs. Milliseconds; ignored if unparseable or 0; clamped to
+/// <=60s.
+pub fn applyProbeTimeoutEnv(environ_map: anytype) void {
+    const v = environ_map.get("GRAFF_MCP_PROBE_MS") orelse return;
+    const ms = std.fmt.parseInt(u64, std.mem.trim(u8, v, " \t"), 10) catch return;
+    if (ms > 0) stdio_probe_timeout_ms = @intCast(@min(ms, 60_000));
 }
 
 fn stdioHandshakeTimeoutTask(io: Io) void {
@@ -213,14 +232,30 @@ fn connectLegacy(server: *Server, a: Allocator, session_alloc: Allocator, bound_
     return handshakeRequest(server, a, bound_io, "{}", "tools/list");
 }
 
-/// A stdio server is a LOCAL process, so a reply is a pipe write away: 3s was
-/// a network-shaped budget and made the spec's SHOULD-probe unaffordable to
-/// run by default. A server that has not answered `server/discover` in this
-/// long is treated as legacy, which is exactly the behavior graff had before
-/// the probe existed - so the cost of guessing wrong is latency, never
-/// function (stdio spec: fall back on "no response within a reasonable
+/// How long the `server/discover` probe waits before calling a stdio server
+/// legacy (stdio spec: fall back on "no response within a reasonable
 /// timeout", never keyed to a specific error code).
-const stdio_probe_timeout: Io.Duration = .fromMilliseconds(600);
+///
+/// This bound is NOT pipe latency. The probe is the first thing written to a
+/// child graff spawned microseconds ago, so what it has to cover is that
+/// child's COLD START — interpreter boot, module load, index warm-up — under
+/// whatever load the machine already carries. 600ms was sized for the pipe
+/// write and was wrong for the process behind it: a second concurrent
+/// codedb-pro answers its first request in ~1.5s where the first takes 2ms,
+/// and an npx-launched server routinely needs longer, so the most common real
+/// setup (a workspace server plus the auto-connected companion) missed the
+/// deadline on EVERY run and spent the whole session on legacy. That was #327.
+///
+/// The costs are asymmetric, which is what sets the value: missing the
+/// deadline degrades the connection for its entire life, while overshooting
+/// costs a one-time startup wait — and only for a server that answers nothing
+/// at all, since one that replies with a JSON-RPC error (what every SDK-built
+/// legacy server does for an unknown method) is classified the instant that
+/// error lands, however large this is. 5s covers the measured slow starts with
+/// room to spare and stays well under the 15s `stdio_handshake_timeout_ms`
+/// graff already spends on the same child's `initialize`. `GRAFF_MCP_PROBE_MS`
+/// moves it either way.
+pub var stdio_probe_timeout_ms: i64 = 5_000;
 
 fn stdioProbeReadTask(server: *Server, response_alloc: Allocator, id: i64) anyerror!Value {
     const stdio = &server.transport.stdio;
@@ -232,7 +267,7 @@ fn stdioProbeReadTask(server: *Server, response_alloc: Allocator, id: i64) anyer
 }
 
 fn stdioProbeTimeoutTask(io: Io) void {
-    io.sleep(stdio_probe_timeout, .awake) catch {};
+    io.sleep(.fromMilliseconds(stdio_probe_timeout_ms), .awake) catch {};
 }
 
 const StdioProbeDone = union(enum) {
@@ -240,25 +275,73 @@ const StdioProbeDone = union(enum) {
     timeout,
 };
 
-pub const StdioProbeOutcome = enum { modern, legacy, closed };
+/// Why a probe concluded a stdio server is legacy. Every value is a CLEAN
+/// negotiation outcome — the server answered (or deliberately did not answer)
+/// in a way the spec says to downgrade on — except `probe_unavailable`, which
+/// is graff's own limitation and is labelled as such. A transport or decode
+/// failure is deliberately NOT in this set: it propagates as an error instead
+/// of silently degrading the connection for the rest of the session (#327).
+pub const LegacyReason = enum {
+    /// The server answered `server/discover` with a JSON-RPC error object.
+    rejected,
+    /// It answered, but `result.supportedVersions` does not list
+    /// `modern_protocol` (or is missing/malformed — an answer, just not a
+    /// modern one).
+    no_modern_version,
+    /// No answer inside `stdio_probe_timeout_ms`. The stdio spec's own fallback
+    /// trigger: "no response within a reasonable timeout".
+    timeout,
+    /// graff could not run the bounded probe at all (no concurrency for the
+    /// reader/deadline pair, twice). Says nothing about the server, so it is
+    /// reported distinctly rather than passed off as a negotiated result.
+    probe_unavailable,
+    /// The child exited or closed stdout during the probe; the caller
+    /// respawned it and connected legacy on the fresh process.
+    server_exited,
 
-fn classifyStdioProbe(result: anyerror!Value) StdioProbeOutcome {
+    /// Suffix for the connect line / `/mcp`, empty-safe to concatenate. A
+    /// legacy landing is never invisible: #327 was exactly a fallback nobody
+    /// could see.
+    pub fn note(reason: LegacyReason) []const u8 {
+        return switch (reason) {
+            .rejected => " [legacy: server rejected server/discover]",
+            .no_modern_version => " [legacy: server does not list " ++ modern_protocol ++ "]",
+            .timeout => " [legacy: no server/discover answer before the probe deadline; raise GRAFF_MCP_PROBE_MS]",
+            .probe_unavailable => " [legacy: graff could not run the modern probe]",
+            .server_exited => " [legacy: server exited during the probe, respawned]",
+        };
+    }
+};
+
+pub const StdioProbeOutcome = union(enum) {
+    modern,
+    legacy: LegacyReason,
+    closed,
+};
+
+/// Classify one `server/discover` reply. Errors that are not `McpClosed` are
+/// PROPAGATED, not swallowed into `.legacy`: a broken pipe, a cancelled read
+/// or an I/O failure is a transport problem, and pinning the era to legacy on
+/// one would leave the connection degraded for its whole life with nothing to
+/// see (#327). Only an actual answer downgrades.
+pub fn classifyStdioProbe(result: anyerror!Value) anyerror!StdioProbeOutcome {
     const response = result catch |err| switch (err) {
         error.McpClosed => return .closed,
-        else => return .legacy, // any other error (incl. a malformed line) — never treat as modern
+        else => return err,
     };
+    if (response != .object) return .{ .legacy = .no_modern_version };
     // A recognized modern *error* here (-32020/-32021/-32022) still reads as
     // legacy for stdio specifically: unlike the HTTP probe, graff has no
     // real modern stdio server to validate a "fail loudly" path against
     // (population ~0 today), so the conservative choice is the one that
     // degrades to the handshake graff already knows works.
-    if (response.object.get("error") != null) return .legacy;
-    const supported = mcp_protocol.discoverSupportedVersions(response) catch return .legacy;
+    if (response.object.get("error") != null) return .{ .legacy = .rejected };
+    const supported = mcp_protocol.discoverSupportedVersions(response) catch return .{ .legacy = .no_modern_version };
     for (supported) |v| if (v == .string and std.mem.eql(u8, v.string, modern_protocol)) return .modern;
-    return .legacy;
+    return .{ .legacy = .no_modern_version };
 }
 
-/// Attempt the `server/discover` probe, bounded to `stdio_probe_timeout` so
+/// Attempt the `server/discover` probe, bounded to `stdio_probe_timeout_ms` so
 /// a legacy server that silently ignores an unrecognized pre-`initialize`
 /// method can never hang graff at startup (stdio § Backward Compatibility:
 /// fall back "on any error that is not a recognized modern error, or no
@@ -292,14 +375,25 @@ pub fn probeStdio(server: *Server, a: Allocator, io: Io) !StdioProbeOutcome {
 
     var done_buf: [2]StdioProbeDone = undefined;
     var select: Io.Select(StdioProbeDone) = .init(io, &done_buf);
-    select.concurrent(.replied, stdioProbeReadTask, .{ server, a, id }) catch return .legacy;
+    // #327: failing to SPAWN the probe tasks says nothing about the server's
+    // protocol. These two arms used to `catch return .legacy`, which pinned
+    // the era to legacy for the process lifetime with no way for anyone to
+    // tell — deterministically so for the second stdio server in a session
+    // (the auto-connected companion, i.e. the server most users have).
+    // `error.McpProbeUnavailable` hands the decision back to the caller.
+    select.concurrent(.replied, stdioProbeReadTask, .{ server, a, id }) catch return error.McpProbeUnavailable;
     select.concurrent(.timeout, stdioProbeTimeoutTask, .{io}) catch {
-        const only = select.await() catch return .legacy;
+        // The reader is already running with no deadline behind it. Reap it
+        // (cancel blocks until it has actually stopped) rather than wait on
+        // it unbounded at startup, which is the #275 hang in another form.
         select.cancelDiscard();
-        return classifyStdioProbe(only.replied);
+        return error.McpProbeUnavailable;
     };
 
-    const first = select.await() catch return .legacy;
+    const first = select.await() catch |err| {
+        select.cancelDiscard();
+        return err;
+    };
     switch (first) {
         .replied => |result| {
             select.cancelDiscard();
@@ -307,13 +401,30 @@ pub fn probeStdio(server: *Server, a: Allocator, io: Io) !StdioProbeOutcome {
         },
         .timeout => {
             _ = select.cancel(); // blocks until the read task has actually stopped
-            return .legacy;
+            return .{ .legacy = .timeout };
         },
     }
 }
 
-/// Connect a stdio server. Always legacy — the gated `server/discover`
-/// probe (`GRAFF_MCP_PROBE=1`, default off) is orchestrated by mcp.zig's
+/// `probeStdio` plus the recovery policy for the one failure that is graff's
+/// own and not the server's: a probe that could not be spawned is retried
+/// once, and only then downgraded — visibly, via `.probe_unavailable`, so a
+/// degraded connect is legible in the connect line and `/mcp` instead of
+/// looking exactly like a server that genuinely speaks only the legacy
+/// protocol (#327). Transport errors still propagate: those mean the pipe is
+/// broken, and a legacy handshake over a broken pipe should fail loudly.
+pub fn probeStdioResilient(server: *Server, a: Allocator, io: Io) !StdioProbeOutcome {
+    return probeStdio(server, a, io) catch |err| switch (err) {
+        error.McpProbeUnavailable => probeStdio(server, a, io) catch |retry_err| switch (retry_err) {
+            error.McpProbeUnavailable => .{ .legacy = .probe_unavailable },
+            else => retry_err,
+        },
+        else => err,
+    };
+}
+
+/// Connect a stdio server. Always legacy — the `server/discover` probe
+/// (on unless `GRAFF_MCP_PROBE=0`) is orchestrated by mcp.zig's
 /// `startServer` instead of here: only it has the argv/env needed to
 /// respawn a server whose process closes during the probe. This is
 /// byte-identical to graff's pre-migration behavior either way.
@@ -398,6 +509,10 @@ fn connectHttpAttempt(server: *Server, a: Allocator, session_alloc: Allocator, r
             return connectLegacy(server, a, session_alloc, null); // HTTP: bounded by the client's own timeouts
         },
     }
+}
+
+test { // #327 probe-classification/fallback coverage (this file is at the 600-line cap)
+    _ = @import("mcp_rpc_tests.zig");
 }
 
 // #275: a stdio server that accepts the connection and then never answers must

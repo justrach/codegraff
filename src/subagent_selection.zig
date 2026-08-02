@@ -30,7 +30,12 @@ fn knownProvider(id: []const u8) bool {
     return provider_mod.specFor(id) != null;
 }
 
-fn modelForProvider(provider_id: []const u8, query: []const u8) ?[]const u8 {
+/// Resolve `query` to a catalogued model name served by `provider_id`: exact
+/// match, then alias-equality, then a UNIQUE substring match (ambiguous →
+/// null). Provider-local by construction — this is the one resolver both the
+/// startup pins (--subagent-model, the #291 ladder) and the #292 per-persona /
+/// per-spawn pins go through, so all three agree on what a model name means.
+pub fn modelForProvider(provider_id: []const u8, query: []const u8) ?[]const u8 {
     for (pricing.models()) |model| {
         if (std.mem.eql(u8, model.provider, provider_id) and
             std.mem.eql(u8, model.name, query)) return model.name;

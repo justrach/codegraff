@@ -132,21 +132,27 @@ pub fn childProvider(root: Provider, pinned: ?Provider, allow_cross_provider: bo
 /// Capability tier ("frontier" | "mid" | "small") of the model that ran variant
 /// `i` of a workflow phase — the provider-class axis of the MAP-Elites cell.
 ///
-/// Today every child in a phase resolves through the same session-level
-/// subagent provider, so this returns the same value for every `i`. It is
-/// written per-variant regardless, because this is exactly the seam that
-/// per-persona / per-spawn model pins (#292) extend: with the class hoisted to
-/// a phase-level constant, the first heterogeneous fan-out would keep reporting
-/// the ROOT's class for every variant and quietly file model effects under the
-/// prompt genome. Keeping the lookup per-variant means #292 changes this one
-/// function instead of having to notice a stale constant.
+/// Every child in a WORKFLOW PHASE still resolves through the same
+/// session-level subagent provider, so this returns the same value for every
+/// `i`. #292 landed per-persona / per-spawn model pins on the `subagent` tool
+/// deliberately WITHOUT extending them to workflow phase tasks or pipeline
+/// stages, for the reason #290 exists: scoreVariants ranks the variants of one
+/// phase against each other and files the winner under the prompt fingerprint,
+/// so a phase whose tasks could differ in model would attribute model effects
+/// to the genome. The matched-tournament guard below catches a class-level
+/// difference, but not a rung-only one (see the #291 note), so the safe
+/// position is that phase tasks do not carry pins at all.
+///
+/// The lookup stays per-variant regardless: whenever pins DO reach a phase,
+/// this one function is the seam that has to learn about them, instead of a
+/// phase-level constant silently going stale.
 ///
 /// NOTE (#291): providerClass cannot currently distinguish gpt-5.6-sol from
 /// gpt-5.6-terra/-luna — all three classify as "frontier". Until that is
 /// resolved this axis cannot separate ladder rungs, and the matched-tournament
 /// guard in scoreVariants is correspondingly blind to a rung-only difference.
 pub fn variantProviderClass(ctx: tools.ToolCtx, i: usize) []const u8 {
-    _ = i; // per-variant model pins land in #292
+    _ = i; // #292 pins reach `subagent`, not phase tasks — see above
     return scoring.providerClass(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider).model);
 }
 
@@ -180,7 +186,13 @@ fn agentUsageEvent(sub_id: []const u8, ok: bool, usage: AgentUsage) AgentUsageEv
 
 pub const SubRun = struct { output: ToolOutput, usage: AgentUsage };
 
-pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) !SubRun {
+/// `pin` (#292) is an already-resolved, provider-local per-spawn model
+/// override — subagent_pin.forSpawn's answer for this one call. It replaces
+/// the session-level worker choice for this child only; null keeps it. It is
+/// deliberately a resolved Provider rather than a name: resolution (catalog
+/// lookup, graceful fallback, provider locality) happens once at the call
+/// site, so nothing here can fail a spawn on an unavailable pin.
+pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider) !SubRun {
     const gpa = ctx.gpa;
     if (ctx.run_budget) |budget| if (ctx.depth >= budget.max_depth) return .{
         .output = .{
@@ -192,7 +204,11 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const child_provider = childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
+    // #292: a resolved per-spawn/per-persona pin replaces the session-level
+    // worker choice for this child. Already provider-local (see
+    // subagent_pin), so the cross-provider consent check childProvider
+    // enforces has nothing left to decide.
+    const child_provider = pin orelse childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
 
     var agent: Agent = .{
         .gpa = gpa,

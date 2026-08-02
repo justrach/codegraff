@@ -22,6 +22,10 @@ struct GraffApp: App {
                 // Turn-model invariants (#307/#285/#309) checked in memory —
                 // no network, no taps, so it runs anywhere the app launches.
                 TurnStateCheckView()
+            } else if CommandLine.arguments.contains("--autotest-sync") {
+                // Session-sync ordering invariants (#310) against a delayed
+                // in-memory transport — deterministic, no network, no taps.
+                SyncOrderCheckView()
             } else if CommandLine.arguments.contains("--autotest-compose") {
                 // Render the new-session compose sheet standalone for visual QA.
                 NewSessionView { _ in }
@@ -120,8 +124,168 @@ struct TurnStateCheckView: View {
         if case .some(.turn) = GraffServeClient.decode("{\"type\":\"turn\",\"text\":\"done\"}") { sawTurn = true }
         check("a terminal turn record decodes", sawTurn)
 
+        // #286: sandbox liveness must never be read as a task outcome.
+        let sb = "sandbox-1"
+        check("a stopped/gone sandbox is Ended, not Done",
+              SessionsListView.rowStatus(prior: nil, sandbox: sb, started: []) == .ended)
+        check("a started sandbox is idle",
+              SessionsListView.rowStatus(prior: nil, sandbox: sb, started: [sb]) == .idle)
+        check("a failed sandbox listing is Unknown, not Done",
+              SessionsListView.rowStatus(prior: nil, sandbox: sb, started: nil) == .unknown)
+        check("a failed sandbox listing keeps the prior status",
+              SessionsListView.rowStatus(prior: .working, sandbox: sb, started: nil) == .working)
+        check("a known failure survives a stopped sandbox",
+              SessionsListView.rowStatus(prior: .failed, sandbox: sb, started: []) == .failed)
+        check("no sandbox means no liveness verdict",
+              SessionsListView.rowStatus(prior: nil, sandbox: nil, started: []) == .idle)
+
+        // #286: the outcome round-trips through the synced transcript.
+        let failedTurn = [ChatMessage(role: .user, text: "go"),
+                          ChatMessage(role: .assistant, text: "",
+                                      state: .failed("The network connection was lost."))]
+        let failedJSON = AppSessionSync.transcriptJSON(failedTurn)
+        check("a failed turn reloads as failed",
+              AppSessionSync.messages(fromTranscript: failedJSON).last?.state
+                  == .failed("The network connection was lost."))
+        check("a failed transcript is not a Done session",
+              AppSessionSync.outcome(fromTranscript: failedJSON) == .failed)
+        let okJSON = AppSessionSync.transcriptJSON([ChatMessage(role: .assistant, text: "shipped")])
+        check("a completed transcript is Done",
+              AppSessionSync.outcome(fromTranscript: okJSON) == .done)
+        check("an interrupted turn is not silently successful",
+              AppSessionSync.outcome(fromTranscript:
+                  AppSessionSync.transcriptJSON([ChatMessage(role: .assistant, text: "",
+                                                             state: .streaming)])) == .failed)
+        check("an unlabelled (pre-#286) transcript claims no outcome",
+              AppSessionSync.outcome(fromTranscript:
+                  "[{\"role\":\"assistant\",\"text\":\"Transport error\"}]") == nil)
+
         let failures = lines.filter { $0.hasPrefix("FAIL") }.count
         let summary = failures == 0 ? "TURNSTATE-PASS" : "TURNSTATE-FAIL (\(failures))"
+        print(summary)
+        for l in lines { print(l) }
+        return ([summary] + lines).joined(separator: "\n")
+    }
+}
+
+// Launch with `--autotest-sync` to reproduce #310's delayed-response scenarios
+// against an in-memory transport that stalls the FIRST write it receives — the
+// exact "delay the PUT produced after turn 1" setup from the issue — and assert
+// what actually reached the wire. Gates on SYNCORDER-PASS.
+struct SyncOrderCheckView: View {
+    @State private var report = "running…"
+    var body: some View {
+        Text(report)
+            .font(.system(.footnote, design: .monospaced))
+            .padding()
+            .task { report = await Self.run() }
+    }
+
+    // Records every write in the order it reached the transport, holding the
+    // first one open long enough that anything issued after it must queue.
+    private actor Recorder {
+        private var seen = 0
+        private var log: [String] = []
+        func apply(_ write: AppSessionWrite) async {
+            seen += 1
+            if seen == 1 { try? await Task.sleep(nanoseconds: 200_000_000) }
+            log.append(write.transcript ?? "DELETE")
+        }
+        func applied() -> [String] { log }
+    }
+
+    static func run() async -> String {
+        var lines: [String] = []
+        func check(_ name: String, _ ok: Bool) { lines.append((ok ? "ok   " : "FAIL ") + name) }
+
+        func harness() -> (Recorder, AppSessionSyncEngine) {
+            let recorder = Recorder()
+            return (recorder, AppSessionSyncEngine(transport: { await recorder.apply($0) }))
+        }
+        func put(_ engine: AppSessionSyncEngine, _ rev: UInt64, _ body: String) async {
+            await engine.save(id: "s1", revision: rev, title: "t", model: "m",
+                              sandboxID: nil, transcript: body)
+        }
+
+        // save/save: the delayed turn-1 PUT must not be the last word.
+        var (recorder, engine) = harness()
+        await put(engine, 1, "turn-1")
+        await put(engine, 2, "turn-2")
+        await engine.quiesce()
+        var applied = await recorder.applied()
+        check("the newer transcript wins the save/save race", applied.last == "turn-2")
+        check("writes reach the gateway in issue order", applied == ["turn-1", "turn-2"])
+
+        // An obsolete save queued behind a slow one is dropped, not sent.
+        (recorder, engine) = harness()
+        await put(engine, 1, "turn-1")
+        await put(engine, 2, "turn-2")
+        await put(engine, 3, "turn-3")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("a superseded queued save is never sent", applied == ["turn-1", "turn-3"])
+
+        // An out-of-order arrival (older revision, later call) is refused.
+        (recorder, engine) = harness()
+        await put(engine, 5, "newer")
+        await put(engine, 2, "older")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("an older revision never clobbers a newer one", applied == ["newer"])
+
+        // save/delete: the DELETE waits for the PUT it was issued behind.
+        (recorder, engine) = harness()
+        await put(engine, 1, "turn-1")
+        await engine.delete(id: "s1", revision: 2)
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("DELETE is ordered after the in-flight PUT", applied == ["turn-1", "DELETE"])
+
+        // The tombstone covers writes issued BEFORE the delete, whichever order
+        // they reach the actor in — that is the resurrection #310 is about.
+        (recorder, engine) = harness()
+        await put(engine, 1, "turn-1")
+        await engine.delete(id: "s1", revision: 3)
+        await put(engine, 2, "stale-save")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("a save older than the delete never resurrects the session",
+              !applied.contains("stale-save"))
+
+        // …but it is not a permanent ban on the id. The DELETE is best-effort;
+        // when it fails the row comes back on the next refresh, and using that
+        // session again must still sync instead of being dropped forever.
+        (recorder, engine) = harness()
+        await put(engine, 1, "turn-1")
+        await engine.delete(id: "s1", revision: 2)
+        await put(engine, 3, "revived")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("a save issued after the delete is still written",
+              applied == ["turn-1", "DELETE", "revived"])
+
+        // And the revived session keeps its ordering guarantees afterwards.
+        (recorder, engine) = harness()
+        await engine.delete(id: "s1", revision: 1)
+        await put(engine, 3, "revived-newer")
+        await put(engine, 2, "revived-older")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("a revived session still refuses out-of-order writes",
+              applied == ["DELETE", "revived-newer"])
+
+        // Different sessions are independent — serialization is per id.
+        (recorder, engine) = harness()
+        await put(engine, 1, "a")
+        await engine.save(id: "s2", revision: 2, title: "t", model: "m",
+                          sandboxID: nil, transcript: "b")
+        await engine.quiesce()
+        applied = await recorder.applied()
+        check("a second session is not blocked by the first",
+              applied.sorted() == ["a", "b"])
+
+        let failures = lines.filter { $0.hasPrefix("FAIL") }.count
+        let summary = failures == 0 ? "SYNCORDER-PASS" : "SYNCORDER-FAIL (\(failures))"
         print(summary)
         for l in lines { print(l) }
         return ([summary] + lines).joined(separator: "\n")
@@ -198,14 +362,27 @@ struct TodoItem: Identifiable {
     var status: TodoStatus
 }
 
+// #286: sandbox liveness is not a task outcome. `done` means a persisted
+// successful terminal turn and nothing else; a sandbox that merely stopped is
+// `ended` (neutral — the work may or may not have succeeded), a turn that
+// failed or was interrupted is `failed`, and a sandbox whose state could not
+// be fetched is `unknown` rather than silently optimistic.
 enum SessionStatus: String {
-    case working, waiting, idle, done
+    case working, waiting, idle, done, ended, failed, unknown
+
+    // Outcomes read from the session's own transcript. Sandbox liveness must
+    // never overwrite one of these with a guess (#286).
+    var isTranscriptOutcome: Bool { self == .done || self == .failed }
+
     var label: String {
         switch self {
         case .working: return "Working"
         case .waiting: return "Waiting on you"
         case .idle: return "Idle"
         case .done: return "Done"
+        case .ended: return "Ended"
+        case .failed: return "Failed"
+        case .unknown: return "Unknown"
         }
     }
     var symbol: String {
@@ -214,6 +391,9 @@ enum SessionStatus: String {
         case .waiting: return "exclamationmark.circle.fill"
         case .idle: return "pause.circle"
         case .done: return "checkmark.circle.fill"
+        case .ended: return "stop.circle"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .unknown: return "questionmark.circle"
         }
     }
     var tint: Color {
@@ -222,6 +402,9 @@ enum SessionStatus: String {
         case .waiting: return .orange
         case .idle: return .secondary
         case .done: return .green
+        case .ended: return .secondary
+        case .failed: return .red
+        case .unknown: return .secondary
         }
     }
 }
@@ -246,6 +429,10 @@ struct AgentSession: Identifiable {
     }
 }
 
+// #316: test/demo fixtures ONLY. These are deliberately realistic, so they
+// must never be shown as account history — the signed-out Sessions list used
+// to open on them and read as retained user data. Their only reachable use is
+// `--autotest`, which drives a real turn through one of them.
 let sampleSessions: [AgentSession] = [
     AgentSession(
         title: "Add cube transport to client",

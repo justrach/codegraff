@@ -38,6 +38,11 @@ const repl_parser = @import("repl_parser.zig");
 // Routing + worker selection.
 const router_config = @import("router_config.zig");
 const subagent_selection = @import("subagent_selection.zig");
+// #292 per-persona / per-spawn model pins: the module is reached in
+// production (subagent.zig), but its split-out test files are not.
+const subagent_pin_tests = @import("subagent_pin_tests.zig");
+// Moved off subagent.zig, which is at the 600-line cap.
+const subagent_tests = @import("subagent_tests.zig");
 
 // `graff serve` resumability (#330): serve.zig imports these, but nothing in
 // the production graph references their decls, so Zig never analyses them.
@@ -46,6 +51,9 @@ const serve_create = @import("serve_create.zig");
 
 // Moved off main.zig, which is at the 600-line cap.
 const scoring_slot_test = @import("scoring_slot_test.zig");
+
+// #273: session.zig's own tests, moved off it for the same reason.
+const session_tests = @import("session_tests.zig");
 
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on
@@ -65,8 +73,11 @@ test {
     _ = repl_parser;
     _ = router_config;
     _ = subagent_selection;
+    _ = subagent_pin_tests;
+    _ = subagent_tests;
     _ = serve_events;
     _ = serve_create;
     _ = scoring_slot_test;
+    _ = session_tests;
     _ = mcp_config;
 }

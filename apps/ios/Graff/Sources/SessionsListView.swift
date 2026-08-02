@@ -1,8 +1,14 @@
 import SwiftUI
 
 struct SessionsListView: View {
-    // Signed in → the account's synced history; signed out → demo scaffolding.
-    @State private var sessions = Gateway.apiKey != nil ? [] : sampleSessions
+    // #316: this list only ever holds the signed-in account's real history.
+    // It used to open on `sampleSessions` when signed out — fabricated rows
+    // with realistic titles, models, progress and timestamps, and nothing
+    // marking them as examples, so a fresh install looked like it had
+    // retained someone's account data. Signed out now means an empty list and
+    // a sign-in call to action; the fixtures stay behind `--autotest`.
+    @State private var sessions: [AgentSession] = []
+    @State private var signedIn = Gateway.apiKey != nil
     @State private var showAccount = false
     @State private var showNewSession = false
     @State private var loadNote = ""
@@ -11,6 +17,16 @@ struct SessionsListView: View {
     var body: some View {
         NavigationStack {
             List {
+                if !signedIn {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("You're not signed in").font(.headline)
+                        Text("Sign in with your codegraff account to see your sessions here. Nothing is shown until then — this list only ever contains your own history.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button("Sign in") { showAccount = true }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .padding(.vertical, 6)
+                }
                 if !loadNote.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(loadNote).font(.footnote).foregroundStyle(.secondary)
@@ -18,6 +34,7 @@ struct SessionsListView: View {
                             Button("Sign in again") {
                                 Gateway.signOut()
                                 sessions = []
+                                signedIn = false
                                 showAccount = true
                             }
                             .buttonStyle(.borderedProminent)
@@ -34,10 +51,10 @@ struct SessionsListView: View {
                 .onDelete { offsets in
                     let doomed = offsets.map { sessions[$0] }
                     sessions.remove(atOffsets: offsets)
-                    for s in doomed {
-                        let id = s.id.uuidString.lowercased()
-                        Task.detached { try? await Gateway.deleteAppSession(id) }
-                    }
+                    // #310: routed through the sync engine so the DELETE is
+                    // ordered against this session's in-flight saves and the id
+                    // is tombstoned — an older PUT can no longer resurrect it.
+                    for s in doomed { AppSessionSync.delete(s.id) }
                 }
             }
             .navigationTitle("Sessions")
@@ -69,11 +86,31 @@ struct SessionsListView: View {
     // (ChatView offers a resume, which re-keys or respins as needed).
     @MainActor
     private func loadHistory() async {
-        guard Gateway.apiKey != nil else { return }
+        // #316: signed out is an honest empty state, not a fixture gallery.
+        guard Gateway.apiKey != nil else {
+            signedIn = false
+            sessions = []
+            loadNote = ""
+            needsSessionRelogin = false
+            return
+        }
+        signedIn = true
         do {
             let rows = try await Gateway.listAppSessions()
-            let live = (try? await Gateway.sandboxes()) ?? []
-            let started = Set(live.filter { $0.state == "started" }.map(\.id))
+            // #286: a failed sandbox listing is not evidence that anything
+            // finished. Keep it nil so rows fall back to what we already knew,
+            // or to Unknown — never to a manufactured Done.
+            var started: Set<String>? = nil
+            var livenessNote = ""
+            do {
+                started = Set(try await Gateway.sandboxes().filter { $0.state == "started" }.map(\.id))
+            } catch {
+                livenessNote = "Sandbox state unavailable — cube status may be out of date."
+            }
+            // Outcomes already read from a transcript survive a reload; only
+            // liveness-derived guesses are recomputed.
+            let priorStatus = Dictionary(sessions.map { ($0.id, $0.status) },
+                                         uniquingKeysWith: { first, _ in first })
             let localCube = CubeConnection.stored()
             sessions = rows.map { row in
                 var s = AgentSession(title: row.title.isEmpty ? "Session" : row.title,
@@ -83,6 +120,7 @@ struct SessionsListView: View {
                                      todos: [], messages: [])
                 s.id = UUID(uuidString: row.id) ?? UUID()
                 s.needsHydration = true
+                let prior = priorStatus[s.id]
                 if let sb = row.sandbox_id {
                     if let lc = localCube, lc.sandboxID == sb {
                         s.cube = lc
@@ -92,12 +130,13 @@ struct SessionsListView: View {
                         s.cube = CubeConnection(sandboxID: sb, base: "", serveToken: "",
                                                 previewToken: nil, githubLogin: nil)
                     }
-                    s.status = started.contains(sb) ? .idle : .done
                 }
+                s.status = Self.rowStatus(prior: prior, sandbox: row.sandbox_id, started: started)
                 return s
             }
             needsSessionRelogin = false
-            loadNote = sessions.isEmpty ? "No sessions yet — tap + to build something." : ""
+            let emptyNote = sessions.isEmpty ? "No sessions yet — tap + to build something." : ""
+            loadNote = [emptyNote, livenessNote].filter { !$0.isEmpty }.joined(separator: "\n")
         } catch {
             if let gatewayError = error as? GatewayError,
                gatewayError.isInsufficientSessionScope {
@@ -108,6 +147,22 @@ struct SessionsListView: View {
                 loadNote = error.localizedDescription
             }
         }
+    }
+
+    // #286: the whole liveness→status decision, kept pure so the invariant is
+    // checkable in-process (--autotest-turnstate) without a network or a tap.
+    //
+    //   * an outcome already read from the transcript always wins;
+    //   * `started == nil` means the sandbox listing FAILED — that is unknown,
+    //     never Done;
+    //   * a stopped/gone sandbox has only Ended: the gateway exposes no task
+    //     outcome on the sandbox (only a liveness `state`), so success must not
+    //     be inferred from a sandbox that is no longer running.
+    static func rowStatus(prior: SessionStatus?, sandbox: String?, started: Set<String>?) -> SessionStatus {
+        if let prior, prior.isTranscriptOutcome { return prior }
+        guard let sandbox else { return prior ?? .idle }
+        guard let started else { return prior ?? .unknown }
+        return started.contains(sandbox) ? .idle : .ended
     }
 
     private static func relative(_ epoch: Int) -> String {

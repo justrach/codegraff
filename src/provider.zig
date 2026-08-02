@@ -169,6 +169,35 @@ pub const Provider = struct {
         const proportional: usize = @intCast(p.context / 2);
         return @min(proportional, abs_output_cap_bytes);
     }
+
+    /// #292: the same credential and the same provider, a different model.
+    /// Rebuilds exactly the fields Keys.build derives from the model name
+    /// (wire format, auth style, endpoint, context window) while carrying the
+    /// already-resolved api_key/account/source across, so a per-persona or
+    /// per-spawn worker pin needs no `Keys` at the spawn site — and, by
+    /// construction, cannot change provider. Crossing a provider boundary
+    /// still goes through Keys/subagentProvider and its explicit consent flag.
+    pub fn withModel(base: Provider, model: []const u8) Provider {
+        const spec = specFor(base.id) orelse {
+            var out = base;
+            out.model = model;
+            out.context = contextWindowFor(base.id, model);
+            return out;
+        };
+        const is_codex = std.mem.eql(u8, spec.id, "codex");
+        const is_kimi_anthropic = std.mem.eql(u8, spec.id, "kimi") and pricing.kimiProtocol(model) == .anthropic;
+        return .{
+            .id = spec.id,
+            .kind = if (is_kimi_anthropic) .anthropic else spec.kind,
+            .auth = if (is_kimi_anthropic) .x_api_key else spec.auth,
+            .url = if (is_kimi_anthropic) kimi_anthropic_url else if (is_codex) g_codex_url_override orelse spec.url else spec.url,
+            .api_key = base.api_key,
+            .model = model,
+            .context = contextWindowFor(spec.id, model),
+            .account = base.account,
+            .source = base.source,
+        };
+    }
 };
 
 /// The catalogued provider ids that serve `model`, in spec order, written into
