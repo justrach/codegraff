@@ -142,6 +142,54 @@ describe("parseInline", () => {
       { type: "strong", children: [{ type: "text", value: "bold" }] },
     ]);
   });
+
+  // The nearest-opener rule must not stop the scan at the first pair that
+  // *closes* — that pair is the inner one. Returning it abandons the enclosing
+  // run, so `**…**` degrades back to literal asterisks (the other half of #197).
+  test("keeps the enclosing span when emphasis nests", () => {
+    expect(parseInline("**bold *nested* end**")).toEqual([
+      {
+        type: "strong",
+        children: [
+          { type: "text", value: "bold " },
+          { type: "em", children: [{ type: "text", value: "nested" }] },
+          { type: "text", value: " end" },
+        ],
+      },
+    ]);
+    expect(parseInline("*it **st** it*")).toEqual([
+      {
+        type: "em",
+        children: [
+          { type: "text", value: "it " },
+          { type: "strong", children: [{ type: "text", value: "st" }] },
+          { type: "text", value: " it" },
+        ],
+      },
+    ]);
+  });
+
+  // CommonMark's rule of three: the interior `*` may not steal one asterisk
+  // from the opening `**`, which would leave a literal `**` glued to whatever
+  // follows — the exact precondition for the #197 link-target bug.
+  test("does not let an interior * split a bold span", () => {
+    expect(parseInline("**x*y**")).toEqual([
+      { type: "strong", children: [{ type: "text", value: "x*y" }] },
+    ]);
+  });
+
+  test("bolds a URL nested inside an emphasized sentence", () => {
+    expect(parseInline("**Note: see *this* at http://localhost:3003**")).toEqual([
+      {
+        type: "strong",
+        children: [
+          { type: "text", value: "Note: see " },
+          { type: "em", children: [{ type: "text", value: "this" }] },
+          { type: "text", value: " at http://localhost:3003" },
+        ],
+      },
+    ]);
+  });
 });
 
 describe("dropRedundantCodeHeadings", () => {

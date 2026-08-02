@@ -71,19 +71,35 @@ describe("getChatLinkMatches URL vs Markdown delimiters", () => {
   });
 
   // #197 follow-up: the mirrored-delimiter rule only fires when the *same*
-  // delimiters sit immediately before the URL. Markdown that consumed the
-  // opening `**` elsewhere (a stray `**kwargs`/`2**32` earlier in the
-  // paragraph, or a second render pass over a text node) hands this matcher a
-  // candidate with a trailing `**` and nothing in front of it — the target must
-  // still come out clean.
-  test("strips an unpaired trailing ** with no leading delimiter", () => {
-    expect(firstUrl("http://localhost:3003**")).toBe("http://localhost:3003");
-    expect(firstUrl("open http://localhost:3003** now")).toBe("http://localhost:3003");
+  // delimiters sit immediately before the URL. A bold span whose opener is
+  // further back in the line ("**Note: see <url>**") still has to yield a clean
+  // target, so a trailing pair is dropped when the text in front of the URL
+  // opened it.
+  test("strips a trailing pair opened earlier in the same text", () => {
+    expect(firstUrl("**Note: see http://localhost:3003**")).toBe("http://localhost:3003");
+    expect(firstUrl("__see http://localhost:3003__")).toBe("http://localhost:3003");
+    expect(firstUrl("~~gone: http://localhost:3003~~")).toBe("http://localhost:3003");
   });
 
-  test("strips unpaired trailing __ and ~~", () => {
-    expect(firstUrl("http://localhost:3003__")).toBe("http://localhost:3003");
-    expect(firstUrl("http://localhost:3003~~")).toBe("http://localhost:3003");
+  // ...but only then. `**`, `__` and `~~` are all legal URL characters, and
+  // stripping them unconditionally truncated real targets (regression of
+  // bb623af): Python's docs anchors are the canonical victim.
+  test("preserves a trailing pair that no opener precedes", () => {
+    expect(firstUrl("https://docs.python.org/3/reference/datamodel.html#object.__init__")).toBe(
+      "https://docs.python.org/3/reference/datamodel.html#object.__init__",
+    );
+    expect(firstUrl("see https://docs.python.org/3/library/functions.html#__import__ here")).toBe(
+      "https://docs.python.org/3/library/functions.html#__import__",
+    );
+    expect(firstUrl("https://example.com/x__")).toBe("https://example.com/x__");
+    expect(firstUrl("https://example.com/a~~")).toBe("https://example.com/a~~");
+    expect(firstUrl("https://example.com/glob/**")).toBe("https://example.com/glob/**");
+  });
+
+  test("reports the full span for a URL ending in a legal delimiter pair", () => {
+    const text = "https://docs.python.org/3/reference/datamodel.html#object.__init__";
+    const [match] = getChatLinkMatches(text);
+    expect(match).toMatchObject({ kind: "url", start: 0, end: text.length, value: text });
   });
 
   test("strips underscore emphasis wrapping a bare URL", () => {

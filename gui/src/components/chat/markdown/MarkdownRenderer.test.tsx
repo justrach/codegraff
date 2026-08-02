@@ -60,6 +60,25 @@ test("no streaming prefix ever produces a delimiter-tailed link target", () => {
   }
 });
 
+test("keeps a bold span bold when it contains nested emphasis and a URL", () => {
+  const html = renderToStaticMarkup(
+    <MarkdownRenderer text="**Note: see *this* file at http://localhost:3003**" />,
+  );
+  expect(html).toContain("font-medium");
+  expect(html).toContain("<em>this</em>");
+  expect(linkTargets(html)).toContain("http://localhost:3003");
+  expect(html).not.toContain("**");
+});
+
+// The autolinker only drops a trailing `**` when the text in front of the URL
+// actually opened one; an unpaired `**` that the parser left as literal text is
+// part of the target.
+test("does not truncate a URL whose own tail is a delimiter pair", () => {
+  const url = "https://example.com/glob/**";
+  const html = renderToStaticMarkup(<MarkdownRenderer text={`See ${url} for details.`} />);
+  expect(linkTargets(html)).toContain(url);
+});
+
 test("keeps a bold-wrapped URL bold and its target clean", () => {
   const html = renderToStaticMarkup(
     <MarkdownRenderer text="Server at **http://localhost:3003** now" />,

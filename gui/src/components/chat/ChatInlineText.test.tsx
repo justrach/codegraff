@@ -13,7 +13,7 @@ const WRAPPED = [
   "~~http://localhost:3003~~",
   "Open **http://localhost:3003** now",
   "Open __http://localhost:3003__ now",
-  "http://localhost:3003**",
+  "**Note: open http://localhost:3003**",
 ];
 
 test("never puts Markdown emphasis delimiters in the clickable target", () => {
@@ -23,7 +23,17 @@ test("never puts Markdown emphasis delimiters in the clickable target", () => {
   }
 });
 
+// The strip above is conditional on an opening delimiter earlier in the text:
+// `**`, `__` and `~~` are ordinary URL characters when nothing opened them.
+const UNWRAPPED = [
+  "https://example.com/?q=*",
+  "https://example.com/glob/**",
+  "https://docs.python.org/3/reference/datamodel.html#object.__init__",
+];
+
 test("keeps legitimate trailing URL characters clickable", () => {
-  const html = renderToStaticMarkup(<ChatInlineText text="https://example.com/?q=*" />);
-  expect(html).toContain('title="https://example.com/?q=*"');
+  for (const text of UNWRAPPED) {
+    const html = renderToStaticMarkup(<ChatInlineText text={text} />);
+    expect(html).toContain(`title="${text}"`);
+  }
 });

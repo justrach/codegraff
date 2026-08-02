@@ -514,13 +514,43 @@ function nextInlineMatch(text: string, from: number): InlineMatch | null {
 }
 
 interface StarRun {
-  start: number;
+  /** Index just past the run: emphasis content starts here. */
   end: number;
+  /** Number of asterisks in the run. */
+  length: number;
+  canClose: boolean;
 }
 
 function isWhitespaceAt(text: string, index: number): boolean {
   const char = index < 0 || index >= text.length ? undefined : text[index];
   return char == null || /\s/u.test(char);
+}
+
+/**
+ * CommonMark's "rule of three": when either side of a candidate pair can play
+ * both roles, a match is forbidden if the two run lengths sum to a multiple of
+ * 3 unless both are themselves multiples of 3. Without it the inner `*` of
+ * `**x*y**` would steal one asterisk from the opening `**` and the span would
+ * collapse into `*<em>x</em>y**`.
+ */
+function canPair(openerLength: number, closerLength: number, ambiguous: boolean): boolean {
+  if (!ambiguous) {
+    return true;
+  }
+  if ((openerLength + closerLength) % 3 !== 0) {
+    return true;
+  }
+  return openerLength % 3 === 0 && closerLength % 3 === 0;
+}
+
+function findOpenerIndex(open: StarRun[], closerLength: number, closerCanOpen: boolean): number {
+  for (let index = open.length - 1; index >= 0; index -= 1) {
+    const opener = open[index];
+    if (canPair(opener.length, closerLength, closerCanOpen || opener.canClose)) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 /**
@@ -534,9 +564,17 @@ function isWhitespaceAt(text: string, index: number): boolean {
  * stole the `**` that actually opened a later bold span. The bold URL's closing
  * `**` was then left glued to the text node (`http://localhost:3003**`), where
  * it both rendered literally and got swallowed into the autolinked target.
+ *
+ * The scan does not stop at the first pair that closes. findInline expects the
+ * *earliest-starting* inline node (parseInline emits the text before it, the
+ * node, then recurses over the rest), and the first pair to close is usually
+ * the innermost one: in `**bold *nested* end**` the `*nested*` pair closes
+ * first, yet the node that must be returned is the enclosing `**…**`. Returning
+ * the inner one abandons the outer run and both `**` fall back to literal text.
  */
 function findStarEmphasis(text: string, from: number): InlineMatch | null {
   const open: StarRun[] = [];
+  let best: InlineMatch | null = null;
   let index = from;
 
   while (index < text.length) {
@@ -550,30 +588,39 @@ function findStarEmphasis(text: string, from: number): InlineMatch | null {
       end += 1;
     }
 
+    const length = end - index;
     const canOpen = !isWhitespaceAt(text, end);
-    const opener = isWhitespaceAt(text, index - 1) ? undefined : open.pop();
-    if (opener != null) {
+    const canClose = !isWhitespaceAt(text, index - 1);
+    const openerIndex = canClose ? findOpenerIndex(open, length, canOpen) : -1;
+
+    if (openerIndex >= 0) {
+      const opener = open[openerIndex];
+      // Everything opened after the matched run is nested inside this span and
+      // is re-scanned by the recursive parseInline below, so drop it here.
+      open.length = openerIndex;
+
       // Openers are consumed from the end of their run, closers from the
       // start, so leftover asterisks stay literal text on either side.
-      const size = Math.min(opener.end - opener.start, end - index) >= 2 ? 2 : 1;
+      const size = Math.min(opener.length, length) >= 2 ? 2 : 1;
       const start = opener.end - size;
-      return {
-        index: start,
-        length: index + size - start,
-        node: {
-          type: size === 2 ? "strong" : "em",
-          children: parseInline(text.slice(opener.end, index)),
-        },
-      };
+      if (best == null || start < best.index) {
+        best = {
+          index: start,
+          length: index + size - start,
+          node: {
+            type: size === 2 ? "strong" : "em",
+            children: parseInline(text.slice(opener.end, index)),
+          },
+        };
+      }
+    } else if (canOpen) {
+      open.push({ end, length, canClose });
     }
 
-    if (canOpen) {
-      open.push({ start: index, end });
-    }
     index = end;
   }
 
-  return null;
+  return best;
 }
 
 function pushCandidate(
