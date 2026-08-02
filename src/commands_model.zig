@@ -545,10 +545,13 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return true;
         }
-        switch (stageImagePath(root, path)) {
+        var mbuf: [320]u8 = undefined; // the message, or (first 16 bytes) just the size
+        const staged = stageImagePath(root, path);
+        switch (staged) {
             .no_vision => try out.print("⚠ {s} can't see images — switch to a vision model first, e.g. /model claude-opus-4-8 or /model gpt-5.5\n", .{root.provider.model}),
-            .read_fail => try out.print("can't read '{s}' (missing, or larger than 5MB)\n", .{path}),
-            .ok => try out.print("📎 attached {s} — sent with your next message\n", .{path}),
+            .ok => |o| try out.print("📎 attached {s} ({s}) — sent with your next message\n", .{ path, vision.fmtBytes(mbuf[0..16], o.bytes) }),
+            // Sized, distinct lines instead of "missing, or larger than 5MB" (#349).
+            .too_large, .not_found, .read_error => try out.print("{s}\n", .{vision.stageMessage(&mbuf, staged, path)}),
         }
         try out.flush();
         return true;
@@ -564,15 +567,20 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
             try out.flush();
             return true;
         }
-        const p = grabClipboardImage(root.io) orelse {
+        const grab = grabClipboardImage(root.io, root.gpa) orelse {
+            vision.tracePaste(root, "no_image", "none", 0, ""); // #350
             try out.writeAll("no image on the clipboard — copy an image first (text? just paste it normally)\n");
             try out.flush();
             return true;
         };
-        switch (stageImagePath(root, p)) {
-            .ok => try out.writeAll("📎 clipboard image attached — sent with your next message\n"),
+        defer grab.release(root.io, root.gpa); // temp export never outlives the command
+        var pbuf: [320]u8 = undefined;
+        const pasted = stageImagePath(root, grab.path);
+        vision.tracePasteResult(root, grab.flavor, pasted);
+        switch (pasted) {
+            .ok => |o| try out.print("📎 clipboard image attached ({s}, via {s}) — sent with your next message\n", .{ vision.fmtBytes(pbuf[0..16], o.bytes), grab.flavor.name() }),
             .no_vision => try out.print("⚠ {s} can't see images\n", .{root.provider.model}),
-            .read_fail => try out.writeAll("failed to read the clipboard image\n"),
+            .too_large, .not_found, .read_error => try out.print("{s}\n", .{vision.stageMessage(&pbuf, pasted, "the clipboard image")}),
         }
         try out.flush();
         return true;
