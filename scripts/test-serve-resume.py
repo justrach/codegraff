@@ -309,8 +309,18 @@ def main() -> None:
         session_file = os.path.join(tmp, ".graff", "sessions", f"{SESSION}.session.json")
         saved: dict = {}
         for _ in range(100):
-            with open(session_file, encoding="utf-8") as fh:
-                saved = json.load(fh)
+            # writeSession deliberately writes IN PLACE under an advisory lock
+            # (overwrite from byte 0, then setLength — atomic rename would
+            # break #289's same-inode contention model), so a poll can catch a
+            # torn state: new content + stale tail ("Extra data") or a
+            # half-written doc. That torn window is exactly the race this loop
+            # exists to absorb — retry instead of dying on it (seen on CI).
+            try:
+                with open(session_file, encoding="utf-8") as fh:
+                    saved = json.load(fh)
+            except (json.JSONDecodeError, FileNotFoundError):
+                time.sleep(0.1)
+                continue
             if saved.get("event_seq", 0) >= last_3:
                 break
             time.sleep(0.1)
