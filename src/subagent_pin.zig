@@ -64,8 +64,11 @@ const bench_priors = @import("bench_priors.zig");
 const fleet = @import("fleet.zig");
 const selection = @import("subagent_selection.zig");
 const tier_ladder = @import("subagent_tier_ladder.zig");
+const route_policy = @import("route_policy.zig"); // #372 learned (shape, role) tier policy
 
 pub const Tier = tier_ladder.Tier;
+pub const Cell = route_policy.Cell;
+pub const Source = route_policy.Source;
 
 /// Worker reasoning depth (main.zig's ReasoningEffort) — pinnable per persona
 /// or per spawn since the #292 follow-up; parsed by `parseEffort` below.
@@ -85,6 +88,10 @@ pub const Pin = struct {
     /// same typo discipline as `bad_tier`.
     effort: ?Effort = null,
     bad_effort: bool = false,
+    /// #372 routing trace: the model/tier axis fell through to the persona's
+    /// frontmatter rather than being stated on the call, so the trace can say
+    /// `source=persona` instead of claiming the user typed it.
+    from_persona: bool = false,
 
     pub fn isNone(self: Pin) bool {
         return self.model == null and self.tier == null and !self.bad_tier and self.effort == null and !self.bad_effort;
@@ -138,7 +145,13 @@ pub const EffortOutcome = enum {
 
 /// `provider == null` means the spawn keeps whatever it already had; `effort
 /// == null` likewise (the worker default, not the root's /effort).
-pub const Resolved = struct { provider: ?Provider = null, outcome: Outcome = .none, effort: ?Effort = null, effort_outcome: EffortOutcome = .none };
+///
+/// `source` (#372) names WHICH layer chose the model, for the routing trace:
+/// an exact pin reports explicit-pin/persona, a tier reports learned-policy
+/// when the (shape, role) cell re-seated the rung and ladder when it did not.
+/// A no-opinion Resolved keeps the default, and the caller reports the
+/// session-level decision it fell back to.
+pub const Resolved = struct { provider: ?Provider = null, outcome: Outcome = .none, effort: ?Effort = null, effort_outcome: EffortOutcome = .none, source: Source = .session_default };
 
 fn trimmed(v: std.json.Value) ?[]const u8 {
     if (v != .string) return null;
@@ -193,6 +206,7 @@ pub fn requested(obj: std.json.ObjectMap) Pin {
     if (call.model == null and call.tier == null and !call.bad_tier) {
         call.model = persona.model;
         call.tier = persona.tier;
+        call.from_persona = persona.model != null or persona.tier != null;
     }
     if (call.effort == null and !call.bad_effort) call.effort = persona.effort;
     return call;
@@ -200,9 +214,22 @@ pub fn requested(obj: std.json.ObjectMap) Pin {
 
 /// Resolve `pin` against `base` — the provider the child would otherwise use.
 /// Provider-local: the answer is always `base` with a different model, or no
-/// answer at all.
+/// answer at all. Cell-less: the learned policy has no partition to consult
+/// and the ladder answers alone, exactly as before #372.
 pub fn resolve(base: Provider, pin: Pin) Resolved {
-    if (pin.model) |query| return finish(base, selection.modelForProvider(base.id, query));
+    return resolveIn(base, pin, .{});
+}
+
+/// The same resolution, told WHICH (shape, role) policy cell this spawn
+/// belongs to. The cell is consulted at exactly ONE point — choosing which
+/// model serves an already-requested tier — and only ever to swap in a
+/// candidate that DOMINATES the ladder's own answer on quality-per-dollar.
+/// An explicit `model` returns before it, so a user pin still outranks every
+/// learned preference; the cost ceiling is re-cleared for the swapped model,
+/// so learning can never escalate spend either.
+pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
+    const pin_src: Source = if (pin.from_persona) .persona else .explicit_pin;
+    if (pin.model) |query| return finish(base, selection.modelForProvider(base.id, query), pin_src);
     if (pin.tier) |tier| {
         const ladder = tier_ladder.forProvider(base.id) orelse return .{ .outcome = .no_ladder };
         const rung = ladder.modelFor(tier) orelse return .{ .outcome = .no_rung };
@@ -217,7 +244,15 @@ pub fn resolve(base: Provider, pin: Pin) Resolved {
         // the user chose. Escalation stays possible, but only by naming the
         // model in the call — visible, never implicit.
         if (!rungAffordable(base.model, resolved)) return .{ .outcome = .rung_pricier };
-        return finish(base, resolved);
+        // #372: the learned layer sits HERE, below every explicit pin. It is
+        // handed the CATALOG-resolved ladder answer and may return a measured
+        // improvement on it; a swap that somehow fails the same cost ceiling
+        // is dropped rather than failing the spawn, so the worst case is
+        // today's ladder answer.
+        if (route_policy.learnedRung(base.id, cell, resolved)) |learned| {
+            if (rungAffordable(base.model, learned)) return finish(base, learned, .learned_policy);
+        }
+        return finish(base, resolved, .ladder);
     }
     if (pin.bad_tier) return .{ .outcome = .unknown_tier };
     return .{};
@@ -249,7 +284,8 @@ fn subscriptionRung(tier: Tier, base: Provider) ?Resolved {
         const prov = keys.providerById(sid, resolved) catch continue; // not logged in → not a candidate
         const s = bench_priors.scoreFor(sid, resolved) orelse 0;
         if (best == null or s > best_score) {
-            best = .{ .provider = prov, .outcome = .sub_routed };
+            // source=ladder: it IS a ladder rung, just the subscription's own.
+            best = .{ .provider = prov, .outcome = .sub_routed, .source = .ladder };
             best_score = s;
         }
     }
@@ -266,10 +302,10 @@ pub fn rungAffordable(base_model: []const u8, rung_model: []const u8) bool {
     return rp.in + rp.out <= bp.in + bp.out;
 }
 
-fn finish(base: Provider, name: ?[]const u8) Resolved {
+fn finish(base: Provider, name: ?[]const u8, source: Source) Resolved {
     const resolved = name orelse return .{ .outcome = .unknown_model };
-    if (std.mem.eql(u8, resolved, base.model)) return .{ .outcome = .same };
-    return .{ .provider = base.withModel(resolved), .outcome = .pinned };
+    if (std.mem.eql(u8, resolved, base.model)) return .{ .outcome = .same, .source = source };
+    return .{ .provider = base.withModel(resolved), .outcome = .pinned, .source = source };
 }
 
 /// The whole chain for one spawn: read the pin off the call (or its persona),
@@ -279,11 +315,17 @@ fn finish(base: Provider, name: ?[]const u8) Resolved {
 /// override), else resolve the model axis provider-locally against `base`;
 /// the effort axis rides through verbatim (it needs no catalog).
 pub fn forSpawn(base: Provider, obj: std.json.ObjectMap, sub_ok: bool) Resolved {
+    return forSpawnIn(base, obj, sub_ok, .{});
+}
+
+/// forSpawn with the spawn's #372 policy cell attached — the only difference
+/// is which (shape, role) evidence the tier axis may consult.
+pub fn forSpawnIn(base: Provider, obj: std.json.ObjectMap, sub_ok: bool, cell: Cell) Resolved {
     const pin = requested(obj);
     if (pin.isNone()) return .{};
     var out: Resolved = blk: {
         if (sub_ok and pin.model == null) if (pin.tier) |t| if (subscriptionRung(t, base)) |r| break :blk r;
-        break :blk resolve(base, pin);
+        break :blk resolveIn(base, pin, cell);
     };
     if (pin.effort) |e| {
         out.effort = e;

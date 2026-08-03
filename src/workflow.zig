@@ -37,6 +37,8 @@ const failureAllowsRetry = subagent_run.failureAllowsRetry;
 
 const fleet = @import("fleet.zig");
 const Isolation = fleet.Isolation; // #276 P0-1
+const route_policy = @import("route_policy.zig"); // #372 (shape, role) policy cells
+const route_trace = @import("route_trace.zig"); // #372 per-worker routing trace
 const telemetry = @import("telemetry.zig");
 // #63: stable workflow/phase/task ids + the additive `workflow_progress`
 // JSONL event, so the REPL can map a run from state instead of scraping the
@@ -142,6 +144,7 @@ const StageSpec = struct {
     niche: []const u8,
     isolation: Isolation = .shared_cwd, // #276 P0-1
     isolation_fallback: bool = false,
+    role: []const u8 = "", // #372: this stage's canonical slot, for its route trace
 };
 
 /// Replace every `needle` in `hay` with `repl` (arena-allocated); returns `hay`
@@ -195,6 +198,9 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
     var prev: []const u8 = "";
     for (stages, 1..) |st, stage_no| {
         const prompt = pipelinePrompt(arena, st.prompt, item, prev, stage_no) catch |e| return failure(gpa, e);
+        // #372: say out loud which route this stage worker actually got, and
+        // under which cell — an inherited route was invisible before.
+        route_trace.emitSpawnProvider(ctx.io, ctx.tracer, st.label, subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), .{ .shape = .migration, .role = st.role }, if (st.override != null) .workflow_override else route_trace.sessionSource(ctx.subagent_provider != null), st.override, st.niche);
         // null pin: #292 model pins deliberately do not reach pipeline stages (see subagent_run.variantProviderClass).
         var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, null, null)) |r| r.output else |e| failure(gpa, e);
         if (out.is_error) {
@@ -297,6 +303,7 @@ fn runPipeline(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
         if (pipelineIsolationError(stage_index, sp.isolation)) |msg|
             return .{ .text = try gpa.dupe(u8, msg), .is_error = true };
         sp.isolation_fallback = fleet.resolveIsolationFallback(so);
+        sp.role = route_policy.roleOf(sp.label, sp.niche); // #372
     }
 
     const item_strs = try arena.alloc([]const u8, items.len);
@@ -390,6 +397,10 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
 
     // #63 — one stable id per run; every phase/task event below keys to it.
     const run_id = try wfp.nextRunId(arena);
+    // #372 — which catalog shape the root model actually instantiated, read
+    // off the phase titles it authored rather than taken on trust. The first
+    // component of every worker's policy cell for this run.
+    const shape = route_policy.shapeOfPhases(phases);
 
     // Telemetry: one "workflow" record per run — phase/task/failure counts
     // and wall-clock — emitted however the run ends.
@@ -472,8 +483,14 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // can never abandon running subagents or free their result slots.
         const futures = try arena.alloc(Io.Future(ToolOutput), tasks.len);
         const outputs = try arena.alloc(ToolOutput, tasks.len);
+        // #372 — every phase worker inherits the SESSION route (workflow
+        // tasks take no per-task pins, #290); the trace says so explicitly,
+        // names the rung it landed on, and names the cell its score is filed
+        // under, instead of leaving all three to be inferred.
+        const wp = subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
         for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures, 1..) |label, prompt, override, niche, isolation, isolation_fallback, *fut, task_no| {
             wfp.task(ctx.io, arena, run_id, phase_no, task_no, tasks.len, label, "running"); // #63
+            route_trace.emitSpawnProvider(ctx.io, ctx.tracer, label, wp, .{ .shape = shape, .role = route_policy.roleOf(title, niche) }, if (override != null) .workflow_override else route_trace.sessionSource(ctx.subagent_provider != null), override, niche);
             fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche, isolation, isolation_fallback });
         }
         for (futures, outputs, labels, 1..) |*fut, *out, label, task_no| {
@@ -545,7 +562,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // fleet can rank and promote the winner (docs/hyperagents.md §9.B). The
         // propose half already fired in runSub; this closes the loop runEval left
         // open (it submits niche=""). Gated on the fleet — no judge cost otherwise.
-        scoreVariants(ctx, arena, title, prompts, raws, overrides, niches, outputs);
+        scoreVariants(ctx, arena, title, shape, prompts, raws, overrides, niches, outputs);
 
         tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = tasks.len - phase_failed, .total = tasks.len, .retried = nf };
 
