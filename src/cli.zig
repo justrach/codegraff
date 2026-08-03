@@ -82,6 +82,7 @@ pub const usage_text =
     \\  graff --schema                   print the machine-readable interface (SDK codegen)
     \\  graff serve                      HTTP/NDJSON bridge over the --json protocol
     \\                                   (--host/--port/--token; sessions are --json children)
+    \\  graff acp                        Agent Client Protocol agent on stdio (Zed and other ACP editors)
     \\  graff update [--force|--check]   update graff to the latest GitHub release
     \\  graff title <prompt>            print the AI tab-title for a prompt (test title styles)
     \\

@@ -66,7 +66,7 @@ pub const Flags = struct {
     new_session_flag: bool = false, // start a fresh autosaved session
     positionals: std.ArrayList([]const u8) = .empty,
     /// True when positionals[0] is a known subcommand (login/key/mcp/serve/
-    /// update/title/repl/worktree/sandboxes/cube) — those aren't a one-shot
+    /// update/title/repl/acp/worktree/sandboxes/cube) — those aren't a one-shot
     /// prompt even with no --print/-p flag.
     is_subcommand: bool = false,
     /// The joined positional args as a one-shot prompt (`harness "say hi"`
@@ -200,7 +200,7 @@ pub fn parse(init: std.process.Init) !Flags {
     flags.is_subcommand = flags.positionals.items.len > 0 and
         (std.mem.eql(u8, flags.positionals.items[0], "login") or std.mem.eql(u8, flags.positionals.items[0], "key") or std.mem.eql(u8, flags.positionals.items[0], "mcp") or std.mem.eql(u8, flags.positionals.items[0], "learn") or
             std.mem.eql(u8, flags.positionals.items[0], "serve") or std.mem.eql(u8, flags.positionals.items[0], "update") or std.mem.eql(u8, flags.positionals.items[0], "title") or std.mem.eql(u8, flags.positionals.items[0], "repl") or
-            std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models"));
+            std.mem.eql(u8, flags.positionals.items[0], "worktree") or std.mem.eql(u8, flags.positionals.items[0], "sandboxes") or std.mem.eql(u8, flags.positionals.items[0], "cube") or std.mem.eql(u8, flags.positionals.items[0], "models") or @import("acp.zig").isAcpSubcommand(flags.positionals.items[0])); // `acp` also arms ACP's stdout discipline (json_mode) — see acp.isAcpSubcommand
     if (!flags.is_subcommand and flags.positionals.items.len > 0) {
         flags.oneshot_prompt = try std.mem.join(arena, " ", flags.positionals.items);
     }
