@@ -300,16 +300,21 @@ pub const Keys = struct {
     pub fn providerFor(keys: Keys, model: []const u8) error{MissingKey}!Provider {
         // Prefer a direct provider the user keyed over the codegraff gateway: the
         // gateway proxies almost every model, so a low gateway balance would
-        // otherwise block models the user can serve with their own key. Pass 1
-        // skips the gateway (direct keys win); pass 2 lets it back in as fallback.
-        for ([_]bool{ false, true }) |allow_gateway| {
+        // otherwise block models the user can serve with their own key. Phase 0:
+        // direct providers, exact catalog name. Phase 1 (#377): direct providers,
+        // family-prefixed spelling of their own row — the gateway catalogs
+        // `kimi-k3` while kimi itself serves `k3`; the flat-rate login must win
+        // over the gateway for the same model, so the query is rewritten to the
+        // provider's native spelling. Phase 2: the gateway, exact, as fallback.
+        for ([_]u8{ 0, 1, 2 }) |phase| {
             for (0..specCount()) |i| {
                 const spec = specAt(i).?;
                 const key = keys.get(spec.id) orelse continue;
-                if (std.mem.eql(u8, spec.id, "codegraff") != allow_gateway) continue;
+                if ((phase == 2) != std.mem.eql(u8, spec.id, "codegraff")) continue;
                 for (pricing.models()) |m| {
-                    if (std.mem.eql(u8, m.provider, spec.id) and std.mem.eql(u8, m.name, model))
-                        return keys.build(spec, key, model);
+                    if (!std.mem.eql(u8, m.provider, spec.id)) continue;
+                    if (if (phase == 1) familyAliasEquals(spec.id, m.name, model) else std.mem.eql(u8, m.name, model))
+                        return keys.build(spec, key, m.name);
                 }
             }
         }
@@ -329,6 +334,19 @@ pub const Keys = struct {
         const spec = specFor(fallback_id) orelse return error.MissingKey;
         const key = keys.get(fallback_id) orelse return error.MissingKey;
         return keys.build(spec, key, model);
+    }
+
+    /// #377: `<provider><sep><name>` is the same model as the provider's own
+    /// `<name>` row under a family-prefixed spelling (gateway catalogs do this).
+    /// Alias-normalized so `kimi-k3` == kimi + `k3` regardless of separators.
+    fn familyAliasEquals(provider_id: []const u8, name: []const u8, query: []const u8) bool {
+        var qb: [128]u8 = undefined;
+        var pb: [128]u8 = undefined;
+        var nb: [128]u8 = undefined;
+        const q = pricing.normalizeModelAlias(&qb, query);
+        const p = pricing.normalizeModelAlias(&pb, provider_id);
+        const n = pricing.normalizeModelAlias(&nb, name);
+        return q.len == p.len + n.len and std.mem.startsWith(u8, q, p) and std.mem.endsWith(u8, q, n);
     }
 
     /// The startup default: the first provider (in spec order) with a key,
@@ -412,6 +430,27 @@ test "providerFor (#294): a catalogued model with no keyed provider fails instea
     try std.testing.expect(!pricing.modelInTable("totally-made-up-model"));
     try std.testing.expectEqualStrings("codegraff", (try no_codex.providerFor("totally-made-up-model")).id);
     try std.testing.expectEqualStrings("anthropic", (try no_codex.providerFor("claude-does-not-exist")).id);
+}
+
+test "providerFor (#377): family-prefixed spelling routes to the direct provider, not the gateway" {
+    // kimi's catalog row is `k3`; gateways catalog the same model as `kimi-k3`.
+    // The prefixed spelling must seat the keyed direct provider on its NATIVE
+    // name — before this fix it fell through to the codegraff gateway and a
+    // flat-rate subscription silently became metered/licensed usage.
+    const all = Keys{ .values = @splat("k") };
+    const p = try all.providerFor("kimi-k3");
+    try std.testing.expectEqualStrings("kimi", p.id);
+    try std.testing.expectEqualStrings("k3", p.model);
+    // Exact catalog names keep absolute priority over the family alias.
+    try std.testing.expectEqualStrings("gpt-5.6-sol", (try all.providerFor("gpt-5.6-sol")).model);
+    // Without the kimi credential the prefixed spelling behaves exactly as
+    // before: uncatalogued in the compiled table, so the gateway fallback.
+    var values: [provider_specs.len]?[]const u8 = @splat("k");
+    for (provider_specs, 0..) |spec, i| {
+        if (std.mem.eql(u8, spec.id, "kimi")) values[i] = null;
+    }
+    const no_kimi = Keys{ .values = values };
+    try std.testing.expectEqualStrings("codegraff", (try no_kimi.providerFor("kimi-k3")).id);
 }
 
 test "Keys.providerById: exact id wins, unknown id falls back to model routing" {
