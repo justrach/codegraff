@@ -39,6 +39,10 @@ pub const Hook = struct {
     match: []const u8,
     command: []const u8,
     timeout_ms: u64,
+    /// Optional sanctioned replacement named in the denial the model sees
+    /// (#369): converts a blocked call into a 1-call recovery instead of a
+    /// guess-and-probe spiral.
+    suggest: []const u8 = "",
 
     pub fn matches(self: Hook, tool: []const u8) bool {
         if (std.mem.eql(u8, self.match, "*")) return true;
@@ -75,7 +79,11 @@ fn parseHookList(arena: Allocator, v: ?Value) []const Hook {
             (if (t == .integer and t.integer > 0) @intCast(t.integer) else 10_000)
         else
             10_000;
-        list.append(arena, .{ .match = match, .command = cmd.string, .timeout_ms = timeout }) catch continue;
+        const suggest: []const u8 = if (item.object.get("suggest")) |sg|
+            (if (sg == .string) sg.string else "")
+        else
+            "";
+        list.append(arena, .{ .match = match, .command = cmd.string, .timeout_ms = timeout, .suggest = suggest }) catch continue;
     }
     return list.items;
 }
@@ -96,6 +104,15 @@ pub fn loadHooks(io: Io, arena: Allocator) Hooks {
 }
 
 const HookRun = struct { code: ?u8, stderr: []u8 };
+
+/// Denial text for a blocking pre_tool hook: the hook's stderr (or a stock
+/// phrase), plus its configured `suggest` replacement when present (#369).
+/// Null only on OOM; the caller substitutes an empty error result.
+pub fn denialText(gpa: Allocator, h: Hook, stderr: []const u8) ?[]u8 {
+    const msg: []const u8 = if (stderr.len > 0) stderr else "denied by hook";
+    const sep: []const u8 = if (h.suggest.len > 0) " — use instead: " else "";
+    return std.fmt.allocPrint(gpa, "blocked by pre_tool hook: {s}{s}{s}", .{ msg, sep, h.suggest }) catch null;
+}
 
 /// Run one hook command: /bin/sh -c, event JSON on stdin, stderr captured
 /// (capped), killed at its timeout. Returns the exit code (null on timeout
@@ -174,7 +191,7 @@ test "parseHookList: defaults, malformed entries skipped" {
     const a = arena_state.allocator();
     const v = try std.json.parseFromSliceLeaky(Value, a,
         \\[{"command": "./guard.sh"},
-        \\ {"match": "bash", "command": "lint", "timeout_ms": 500},
+        \\ {"match": "bash", "command": "lint", "timeout_ms": 500, "suggest": "use mcp edit"},
         \\ {"match": "no-command-key"},
         \\ "not-an-object",
         \\ {"command": ""}]
@@ -185,6 +202,23 @@ test "parseHookList: defaults, malformed entries skipped" {
     try std.testing.expectEqual(@as(u64, 10_000), hooks[0].timeout_ms); // default timeout
     try std.testing.expectEqualStrings("bash", hooks[1].match);
     try std.testing.expectEqual(@as(u64, 500), hooks[1].timeout_ms);
+    try std.testing.expectEqualStrings("", hooks[0].suggest); // default: no suggestion
+    try std.testing.expectEqualStrings("use mcp edit", hooks[1].suggest);
+}
+
+test "denialText: stderr, stock phrase, suggest suffix" {
+    const gpa = std.testing.allocator;
+    const plain = Hook{ .match = "*", .command = "", .timeout_ms = 0 };
+    const t1 = denialText(gpa, plain, "nope").?;
+    defer gpa.free(t1);
+    try std.testing.expectEqualStrings("blocked by pre_tool hook: nope", t1);
+    const t2 = denialText(gpa, plain, "").?;
+    defer gpa.free(t2);
+    try std.testing.expectEqualStrings("blocked by pre_tool hook: denied by hook", t2);
+    const sug = Hook{ .match = "*", .command = "", .timeout_ms = 0, .suggest = "mcp__codedbpro__replace" };
+    const t3 = denialText(gpa, sug, "native edit off").?;
+    defer gpa.free(t3);
+    try std.testing.expectEqualStrings("blocked by pre_tool hook: native edit off — use instead: mcp__codedbpro__replace", t3);
 }
 
 const jobs = @import("jobs.zig");

@@ -226,8 +226,7 @@ pub fn hookGate(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
         const res = hooks.runHookCmd(ctx.gpa, ctx.io, h.command, payload, h.timeout_ms);
         defer if (res.stderr.len > 0) ctx.gpa.free(res.stderr);
         if (res.code) |c| if (c == 2) {
-            const msg: []const u8 = if (res.stderr.len > 0) res.stderr else "denied by hook";
-            const text = std.fmt.allocPrint(ctx.gpa, "blocked by pre_tool hook: {s}", .{msg}) catch
+            const text = hooks.denialText(ctx.gpa, h, res.stderr) orelse
                 return .{ .text = &.{}, .is_error = true };
             return .{ .text = text, .is_error = true };
         };
