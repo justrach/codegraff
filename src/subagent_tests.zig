@@ -29,6 +29,15 @@ test "variantJudgePrompt: bounded, names the phase, keeps the score contract" {
     try std.testing.expect(std.mem.indexOf(u8, p, "score: <N>") != null);
     // …and it round-trips: a judge tail like this parses back to the score.
     try std.testing.expectEqual(@as(?f64, 87), repl_glue.parseEvalScore("ok\nscore: 87"));
+    // #367: a prose line is not a score. pytest's summary used to parse as a
+    // leading number — 4/100 for a green suite, and "1 failed" → 1 → the
+    // [0,1] fraction rule → 100/100 on a FAILING suite.
+    try std.testing.expectEqual(@as(?f64, null), repl_glue.parseEvalScore("4 passed in 0.01s"));
+    try std.testing.expectEqual(@as(?f64, null), repl_glue.parseEvalScore("2 failed, 2 passed in 0.02s"));
+    try std.testing.expectEqual(@as(?f64, null), repl_glue.parseEvalScore("1 failed in 0.01s"));
+    // A last line that IS a number still works, as does an explicit fraction.
+    try std.testing.expectEqual(@as(?f64, 85), repl_glue.parseEvalScore("all checks done\n85"));
+    try std.testing.expectEqual(@as(?f64, 90), repl_glue.parseEvalScore("{\"score\": 0.9}"));
 }
 
 test "classifyFailure: maps the child's api-error detail to a category + retry-safety" {

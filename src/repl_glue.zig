@@ -110,9 +110,11 @@ pub fn goalSteeringNote(arena: Allocator, goal: ?agent_mod.Goal) ![]const u8 {
     return std.fmt.allocPrint(arena, "[standing goal: {s} - track this as a live todo_write checklist and work through it (todo_read shows the current one; todo_write REPLACES it - completed items you omit are kept, open items you omit are dropped), marking each item in_progress when you start and completed when done. When the objective is verifiably done, call attempt_completion - that completes the goal and ends this steering.]", .{g.objective});
 }
 
-/// Extract a 0-100 score from an eval command's output: a `score` key (JSON or
-/// key=val) if present, else the last numeric line. Values in [0,1] are read as
-/// fractions and scaled to 0-100.
+/// Extract a 0-100 score from eval output ([0,1] scales up): a `score` key
+/// (JSON or key=val) if present, else a last line that IS a number — whole
+/// line, never a leading prefix (#367: pytest's "4 passed in 0.01s" scored a
+/// green suite 4/100, and "1 failed" → 1 → the fraction rule → a false 100;
+/// prose is not a score — plain runners ride runEval's exit-code fallback).
 pub fn parseEvalScore(out: []const u8) ?f64 {
     if (std.mem.indexOf(u8, out, "score")) |i| {
         var j = i + 5;
@@ -125,8 +127,7 @@ pub fn parseEvalScore(out: []const u8) ?f64 {
     }
     const trimmed = std.mem.trimEnd(u8, out, " \t\r\n");
     const last = if (std.mem.lastIndexOfScalar(u8, trimmed, '\n')) |k| trimmed[k + 1 ..] else trimmed;
-    if (parseLeadingNumber(std.mem.trim(u8, last, " \t\r\n"))) |v| return normalizeScore(v);
-    return null;
+    return normalizeScore(std.fmt.parseFloat(f64, std.mem.trim(u8, last, " \t\r\n")) catch return null);
 }
 
 fn parseLeadingNumber(s: []const u8) ?f64 {
