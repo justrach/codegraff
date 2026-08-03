@@ -150,7 +150,7 @@ const Job = struct {
 /// no longer holds this conversation, including on the exit save.
 const Mark = struct {
     fp: u64,
-    path: []u8,
+    path: []const u8, // borrowed until setMark copies it into mark_path_buf
     inode: Io.File.INode,
     size: u64,
     mtime_ns: i96,
@@ -176,7 +176,10 @@ var busy = false;
 var stopping = false;
 var thread: ?std.Thread = null;
 var mark: ?Mark = null; // the newest state PROVEN to be on disk
-var mark_gpa: Allocator = undefined; // owns mark.path while mark != null
+// Owns mark.path's bytes. Static on purpose (#365): a gpa-owned path made the
+// FINAL mark of every session leak at exit — production retires the worker
+// with drain(), which must not clear skip evidence, so nothing ever freed it.
+var mark_path_buf: [1024]u8 = undefined;
 var tickets: u64 = 0; // the last ticket handed out by submit
 var last_error: ?anyerror = null; // the NEWEST write's failure, if it failed
 var error_ticket: u64 = 0; // and whose failure that is
@@ -232,7 +235,7 @@ pub fn submit(gpa: Allocator, io: Io, dir: Io.Dir, path: []u8, data: []u8, fp: u
         mutex.unlock(io);
         defer gpa.free(path);
         defer gpa.free(data);
-        writeNow(gpa, io, dir, path, data, fp, ticket);
+        writeNow(io, dir, path, data, fp, ticket);
         return ticket;
     }
     defer mutex.unlock(io);
@@ -247,26 +250,25 @@ pub fn submit(gpa: Allocator, io: Io, dir: Io.Dir, path: []u8, data: []u8, fp: u
 }
 
 /// The pre-#273 write, used when threads are unavailable.
-fn writeNow(gpa: Allocator, io: Io, dir: Io.Dir, path: []const u8, data: []const u8, fp: u64, ticket: u64) void {
+fn writeNow(io: Io, dir: Io.Dir, path: []const u8, data: []const u8, fp: u64, ticket: u64) void {
     var failed: ?anyerror = null;
     session_lock.writeSession(io, dir, path, data) catch |err| {
         failed = err;
     };
-    const evidence: ?Mark = if (failed == null) observe(gpa, io, dir, path, fp) else null;
+    const evidence: ?Mark = if (failed == null) observe(io, dir, path, fp) else null;
     mutex.lockUncancelable(io);
     defer mutex.unlock(io);
-    finish(gpa, failed, ticket, evidence);
+    finish(failed, ticket, evidence);
 }
 
 /// What the file looks like immediately after a successful write. Null when
 /// that cannot be observed (the stat fails, or the path cannot be kept): no
 /// evidence means no skip, which costs a redundant write and never a lost one.
-fn observe(gpa: Allocator, io: Io, dir: Io.Dir, path: []const u8, fp: u64) ?Mark {
+fn observe(io: Io, dir: Io.Dir, path: []const u8, fp: u64) ?Mark {
     const st = dir.statFile(io, path, .{}) catch return null;
-    const kept = gpa.dupe(u8, path) catch return null;
     return .{
         .fp = fp,
-        .path = kept,
+        .path = path, // borrowed — setMark copies it under the mutex
         .inode = st.inode,
         .size = st.size,
         .mtime_ns = st.mtime.nanoseconds,
@@ -274,20 +276,24 @@ fn observe(gpa: Allocator, io: Io, dir: Io.Dir, path: []const u8, fp: u64) ?Mark
 }
 
 fn clearMark() void {
-    if (mark) |old| mark_gpa.free(old.path);
     mark = null;
 }
 
-fn setMark(gpa: Allocator, m: Mark) void {
-    clearMark();
-    mark = m;
-    mark_gpa = gpa;
+fn setMark(m: Mark) void {
+    mark = null;
+    // An oversized path keeps no evidence — the next save writes again, which
+    // costs a redundant write and never a lost one (same rule as observe).
+    if (m.path.len > mark_path_buf.len) return;
+    @memcpy(mark_path_buf[0..m.path.len], m.path);
+    var kept = m;
+    kept.path = mark_path_buf[0..m.path.len];
+    mark = kept;
 }
 
 /// Record one write's outcome; the mutex is held. `last_error` always describes
 /// the NEWEST write, so a success wipes an older failure (the disk is current
 /// again) and no save is ever blamed for a failure that predates it.
-fn finish(gpa: Allocator, failed: ?anyerror, ticket: u64, evidence: ?Mark) void {
+fn finish(failed: ?anyerror, ticket: u64, evidence: ?Mark) void {
     clearMark();
     if (failed) |err| {
         last_error = err;
@@ -299,7 +305,7 @@ fn finish(gpa: Allocator, failed: ?anyerror, ticket: u64, evidence: ?Mark) void 
     writes += 1;
     last_error = null;
     error_ticket = 0;
-    if (evidence) |m| setMark(gpa, m);
+    if (evidence) |m| setMark(m);
 }
 
 fn worker(io: Io) void {
@@ -319,14 +325,16 @@ fn worker(io: Io) void {
         session_lock.writeSession(job.io, job.dir, job.path, job.data) catch |err| {
             failed = err;
         };
-        const evidence: ?Mark = if (failed == null) observe(gpa, job.io, job.dir, job.path, job.fp) else null;
-        job.deinit(gpa);
+        const evidence: ?Mark = if (failed == null) observe(job.io, job.dir, job.path, job.fp) else null;
 
         mutex.lockUncancelable(io);
         busy = false;
-        finish(gpa, failed, job.ticket, evidence);
+        finish(failed, job.ticket, evidence);
         idle.broadcast(io);
         mutex.unlock(io);
+        // evidence.path borrowed job.path until setMark copied it under the
+        // mutex above — only now is the job safe to free (#365).
+        job.deinit(gpa);
     }
 }
 
