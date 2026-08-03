@@ -45,6 +45,7 @@ const subagent_pin_tests = @import("subagent_pin_tests.zig");
 const subagent_tests = @import("subagent_tests.zig");
 // Bench score/cost priors → derived tier ladders (.harness/bench.json).
 const bench_priors = @import("bench_priors.zig");
+const bench_priors_tests = @import("bench_priors_tests.zig");
 
 // `graff serve` resumability (#330): serve.zig imports these, but nothing in
 // the production graph references their decls, so Zig never analyses them.
@@ -78,6 +79,7 @@ test {
     _ = subagent_pin_tests;
     _ = subagent_tests;
     _ = bench_priors;
+    _ = bench_priors_tests;
     _ = serve_events;
     _ = serve_create;
     _ = scoring_slot_test;
