@@ -69,7 +69,14 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
         .exited => |c| @intCast(c),
         else => -1,
     };
-    const det = parseEvalScore(run.stdout) orelse parseEvalScore(run.stderr);
+    // #367: a command that prints no parseable score falls back to exit-code
+    // semantics — 0 is a pass, anything else a fail — so pointing --eval at a
+    // plain test runner (`pytest -q`, `zig build test`, `false`) works out of
+    // the box instead of scraping nonsense off its summary line. An explicit
+    // `score: N` line always wins; judges (runJudge) keep parse-only.
+    const parsed = parseEvalScore(run.stdout) orelse parseEvalScore(run.stderr);
+    const exit_derived = parsed == null;
+    const det: ?f64 = parsed orelse if (exit_code == 0) @as(f64, 100) else @as(f64, 0);
 
     // LLM-as-judge (--judge): an independent subagent inspects the actual
     // artifacts against the rubric and returns its own 0-100 score. Both
@@ -209,6 +216,7 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
         } else {
             try w.print("eval #{d}: score {d:.1}/100 (best {d:.1}, target {d}). ", .{ self.eval_iter, s, self.eval_best, self.eval_target });
         }
+        if (exit_derived) try w.writeAll("(Score derived from the command's exit code — its output had no score line; make it print `score: N` for finer grading.) ");
         if (met)
             try w.writeAll("TARGET MET - verifier gate is green; finish only if no workspace-changing tool runs after this eval.")
         else if (improved)
