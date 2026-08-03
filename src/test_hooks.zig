@@ -58,6 +58,10 @@ const scoring_slot_test = @import("scoring_slot_test.zig");
 // #273: session.zig's own tests, moved off it for the same reason.
 const session_tests = @import("session_tests.zig");
 
+// #375: `graff acp` (Zed's Agent Client Protocol over stdio). args.zig calls
+// one predicate from it, which analyses the file but does not run its tests.
+const acp = @import("acp.zig");
+
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on
 // that staying true.
@@ -85,4 +89,5 @@ test {
     _ = scoring_slot_test;
     _ = session_tests;
     _ = mcp_config;
+    _ = acp;
 }

@@ -484,8 +484,8 @@ pub fn main(init: std.process.Init) !void {
     defer session_run.startBackgroundLearning(gpa, arena, io, init.environ_map, &invocation_budget, !flags.no_telemetry_flag);
 
     // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL agent loop — each prompt runs a full root turn (tools + MCP) via
-    // replTurnCb, reusing the root agent's tool set + registry + system prompt. Self-contained — exits after.
-    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, in, out, arena, flags)) return;
+    // replTurnCb. `graff acp` (acp.zig) is the same idea over Zed's stdio Agent Client Protocol. Both self-contained — each exits after.
+    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, in, out, arena, flags) or try @import("acp.zig").runAcpCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, in, out, arena, flags)) return;
     // One-shot print mode: run the single prompt to completion, print the final text to stdout, exit.
     if (flags.oneshot_prompt) |prompt_text| {
         try session_run.runOneshotPrompt(gpa, io, arena, &root, @import("bench_priors.zig").noteKeys(&keys), &tracer, out, prompt_text); // one-shot exits before loop_ctx below — capture keys for sub-first routing here too
