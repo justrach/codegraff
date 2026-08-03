@@ -50,7 +50,23 @@ test "resolveKeys does not load Kimi/xAI OAuth credentials for an explicit unrel
     };
     const env: TestEnv = .{ .home = home };
 
-    const resolved = try resolveKeys(io, gpa, arena, env, "codegraff");
+    const resolved = try resolveKeys(io, gpa, arena, env, "codegraff", null);
     try std.testing.expect(resolved.keys.get("kimi") == null);
     try std.testing.expectEqualStrings("codegraff", resolved.default_provider.id);
+
+    // …and the mirror: an explicit --subagent-provider kimi is exactly as
+    // explicit as --model, so the SAME launch shape (unrelated root provider)
+    // must now load the kimi login — root sol + kimi workers used to fatal
+    // "no key/login for subagent model 'k3' via 'kimi'" despite a valid
+    // on-disk kimi credential, because the selective scope read only the
+    // root model flag.
+    const hinted = try resolveKeys(io, gpa, arena, env, "codegraff", "kimi");
+    try std.testing.expectEqualStrings("kimi-test-token", hinted.keys.get("kimi").?);
+    try std.testing.expectEqualStrings("codegraff", hinted.default_provider.id);
+
+    // Scope units for the same rule (pub-flipped in startup.zig for this).
+    const startup = @import("startup.zig");
+    try std.testing.expect(startup.storedKeyMayAffectSelection("kimi", "gpt-5.6-sol", "kimi"));
+    try std.testing.expect(!startup.storedKeyMayAffectSelection("kimi", "gpt-5.6-sol", null));
+    try std.testing.expect(startup.startupStoredKeyScope("deepseek", true, "kimi").includes(6, "kimi"));
 }

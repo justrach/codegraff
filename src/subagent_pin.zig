@@ -11,6 +11,17 @@
 //!      into AgentType.model/.tier; resolved here.
 //!   2. One `subagent` call may pin `model` / `tier` for that spawn only.
 //!
+//! The same two grains can pin reasoning EFFORT — frontmatter `effort: max`
+//! or an `effort` param on the call (low|medium|high|xhigh|max — the /effort
+//! vocabulary minus `ultra`, which is the ultracode prompt switch, not a
+//! depth a worker should inherit). Effort is an INDEPENDENT AXIS from
+//! model/tier: each falls through spawn → persona → session default on its
+//! own, so an effort-only override keeps the persona's model pin (and vice
+//! versa). Unlike a model pin it needs no catalog resolution — a model that
+//! rejects reasoning_effort already degrades per request (effort_rejected in
+//! agent_request.zig) — so an effort pin is either applied as stated or
+//! reported off-vocabulary, never provider-dependent.
+//!
 //! PRECEDENCE (what the tool schema advertises, implemented by `requested`
 //! and `resolve` below):
 //!
@@ -48,11 +59,17 @@ const std = @import("std");
 
 const provider_mod = @import("provider.zig");
 const Provider = provider_mod.Provider;
+const pricing = @import("pricing.zig");
+const bench_priors = @import("bench_priors.zig");
 const fleet = @import("fleet.zig");
 const selection = @import("subagent_selection.zig");
 const tier_ladder = @import("subagent_tier_ladder.zig");
 
 pub const Tier = tier_ladder.Tier;
+
+/// Worker reasoning depth (main.zig's ReasoningEffort) — pinnable per persona
+/// or per spawn since the #292 follow-up; parsed by `parseEffort` below.
+pub const Effort = @import("main.zig").ReasoningEffort;
 
 /// A requested pin, before it has been checked against any catalog. All
 /// fields at their defaults means "no opinion" — keep the session default.
@@ -64,9 +81,13 @@ pub const Pin = struct {
     /// distinct from "no tier" so a typo is reported rather than silently
     /// falling through to a persona pin the caller was trying to override.
     bad_tier: bool = false,
+    /// Reasoning-effort pin — an axis of its own (see module doc), with the
+    /// same typo discipline as `bad_tier`.
+    effort: ?Effort = null,
+    bad_effort: bool = false,
 
     pub fn isNone(self: Pin) bool {
-        return self.model == null and self.tier == null and !self.bad_tier;
+        return self.model == null and self.tier == null and !self.bad_tier and self.effort == null and !self.bad_effort;
     }
 };
 
@@ -81,6 +102,8 @@ pub const Outcome = enum {
     unknown_tier, // `tier` was not one of frontier/mid/small
     no_ladder, // this provider has no tier ladder
     no_rung, // the ladder has no model at that rung
+    rung_pricier, // the rung would cost more than the child's current model
+    sub_routed, // the rung went to a logged-in flat-rate subscription instead
 
     pub fn describe(self: Outcome) []const u8 {
         return switch (self) {
@@ -91,17 +114,46 @@ pub const Outcome = enum {
             .unknown_tier => "tier pin ignored: expected frontier, mid or small — kept the session default",
             .no_ladder => "tier pin ignored: this provider has no tier ladder — kept the session default",
             .no_rung => "tier pin ignored: this provider's ladder has no model at that rung — kept the session default",
+            .rung_pricier => "tier pin ignored: that rung is pricier than this agent's model — cost never escalates implicitly; pin the model by name to escalate",
+            .sub_routed => "tier routed to a logged-in flat-rate subscription — marginal cost zero outranks metered spend; the login is the user's standing consent for that vendor",
         };
     }
 };
 
-/// `provider == null` means the spawn keeps whatever it already had.
-pub const Resolved = struct { provider: ?Provider = null, outcome: Outcome = .none };
+/// The effort half of Outcome — its own enum because the axes resolve
+/// independently and one spawn may need a note about each.
+pub const EffortOutcome = enum {
+    none,
+    pinned,
+    unknown_effort,
+
+    pub fn describe(self: EffortOutcome) []const u8 {
+        return switch (self) {
+            .none => "",
+            .pinned => "effort pin applied",
+            .unknown_effort => "effort pin ignored: expected low, medium, high, xhigh or max — kept the session default",
+        };
+    }
+};
+
+/// `provider == null` means the spawn keeps whatever it already had; `effort
+/// == null` likewise (the worker default, not the root's /effort).
+pub const Resolved = struct { provider: ?Provider = null, outcome: Outcome = .none, effort: ?Effort = null, effort_outcome: EffortOutcome = .none };
 
 fn trimmed(v: std.json.Value) ?[]const u8 {
     if (v != .string) return null;
     const s = std.mem.trim(u8, v.string, " \t\r\n");
     return if (s.len == 0) null else s;
+}
+
+/// The `effort` pin vocabulary: /effort's levels minus `ultra`, which is the
+/// ultracode prompt switch rather than a reasoning depth a delegated worker
+/// should inherit. Off-vocabulary parses to null — the caller decides whether
+/// that is "no opinion" (a frontmatter load) or a reportable typo (a spawn's
+/// stated override).
+pub fn parseEffort(s: []const u8) ?Effort {
+    const e = std.meta.stringToEnum(Effort, s) orelse return null;
+    return if (e == .ultra) null else e;
 }
 
 /// The persona's own pin, if `name` matches a loaded agent type. An unknown
@@ -110,15 +162,19 @@ fn trimmed(v: std.json.Value) ?[]const u8 {
 pub fn personaPin(name: []const u8) Pin {
     if (name.len == 0) return .{};
     for (fleet.g_agent_types) |t| {
-        if (std.mem.eql(u8, t.name, name)) return .{ .model = t.model, .tier = t.tier };
+        if (std.mem.eql(u8, t.name, name)) return .{ .model = t.model, .tier = t.tier, .effort = t.effort };
     }
     return .{};
 }
 
 /// The pin for one spawn, applying the cross-level half of the precedence
-/// rule: an explicit `model`/`tier` on the call replaces the persona's pin
-/// wholesale (it does not merge with it), and only a call that states neither
-/// falls through to the persona.
+/// rule PER AXIS: an explicit `model`/`tier` on the call replaces the
+/// persona's model pin wholesale (it does not merge with it), an explicit
+/// `effort` replaces the persona's effort, and each axis the call leaves
+/// unstated falls through to the persona on its own — so an effort-only
+/// override keeps the persona's model pin, and vice versa. A stated typo
+/// (`bad_tier`/`bad_effort`) blocks that axis's fallthrough: the caller was
+/// trying to override, and a silent substitution would hide it.
 pub fn requested(obj: std.json.ObjectMap) Pin {
     var call: Pin = .{};
     if (obj.get("model")) |v| call.model = trimmed(v);
@@ -126,9 +182,20 @@ pub fn requested(obj: std.json.ObjectMap) Pin {
         call.tier = Tier.parse(raw);
         call.bad_tier = call.tier == null;
     };
-    if (!call.isNone()) return call;
-    if (obj.get("agent")) |v| if (v == .string) return personaPin(v.string);
-    return .{};
+    if (obj.get("effort")) |v| if (trimmed(v)) |raw| {
+        call.effort = parseEffort(raw);
+        call.bad_effort = call.effort == null;
+    };
+    const persona: Pin = blk: {
+        const v = obj.get("agent") orelse break :blk .{};
+        break :blk if (v == .string) personaPin(v.string) else .{};
+    };
+    if (call.model == null and call.tier == null and !call.bad_tier) {
+        call.model = persona.model;
+        call.tier = persona.tier;
+    }
+    if (call.effort == null and !call.bad_effort) call.effort = persona.effort;
+    return call;
 }
 
 /// Resolve `pin` against `base` — the provider the child would otherwise use.
@@ -143,10 +210,60 @@ pub fn resolve(base: Provider, pin: Pin) Resolved {
         // models refresh` can drop a model the compiled ladder names, and a
         // pin resolving to a model the provider no longer serves must fall
         // back rather than send a request that 404s mid-fleet.
-        return finish(base, selection.modelForProvider(base.id, rung));
+        const resolved = selection.modelForProvider(base.id, rung) orelse return .{ .outcome = .unknown_model };
+        // COST CEILING: a tier rung may DESCEND price, never raise it — on a
+        // multi-vendor catalog (the codegraff gateway serves everything up to
+        // opus-class) an automatic rung must not spend more than the model
+        // the user chose. Escalation stays possible, but only by naming the
+        // model in the call — visible, never implicit.
+        if (!rungAffordable(base.model, resolved)) return .{ .outcome = .rung_pricier };
+        return finish(base, resolved);
     }
     if (pin.bad_tier) return .{ .outcome = .unknown_tier };
     return .{};
+}
+
+/// Flat-rate, device-login subscription providers, in fallback preference
+/// order (bench scores rank them when several are logged in). codegraff's
+/// license is deliberately absent: it fronts the metered multi-vendor
+/// gateway this policy protects the user's wallet FROM.
+const subscription_providers = [_][]const u8{ "codex", "kimi" };
+
+/// SUB-FIRST TIER ROUTING (explicit `tier` asks only — the silent no-tier
+/// default still inherits the user's chosen family): a logged-in flat-rate
+/// subscription is marginal-cost-zero, so its rung outranks ANY metered
+/// model — a deepseek session's tier:"small" goes to luna on the codex sub,
+/// not to a metered gateway row — and the login itself is the user's
+/// standing consent for that vendor. Metered cross-provider routing keeps
+/// the explicit --subagent-provider + --allow-cross-provider-subagents bar.
+/// When several subs serve the rung, the bench sheet's score picks.
+fn subscriptionRung(tier: Tier, base: Provider) ?Resolved {
+    const keys = bench_priors.g_keys orelse return null;
+    var best: ?Resolved = null;
+    var best_score: f64 = -1;
+    for (subscription_providers) |sid| {
+        if (std.mem.eql(u8, sid, base.id)) continue; // the base's own ladder handles it provider-locally
+        const ladder = tier_ladder.forProvider(sid) orelse continue;
+        const rung = ladder.modelFor(tier) orelse continue;
+        const resolved = selection.modelForProvider(sid, rung) orelse continue;
+        const prov = keys.providerById(sid, resolved) catch continue; // not logged in → not a candidate
+        const s = bench_priors.scoreFor(sid, resolved) orelse 0;
+        if (best == null or s > best_score) {
+            best = .{ .provider = prov, .outcome = .sub_routed };
+            best_score = s;
+        }
+    }
+    return best;
+}
+
+/// Summed in+out $/1M. An unpriced BASE has no ceiling to enforce (whole
+/// subscription families like codex carry no per-token price — blocking
+/// there would kill every intra-family rung); a priced base with an unpriced
+/// rung cannot prove the rung is not an escalation, so it blocks.
+pub fn rungAffordable(base_model: []const u8, rung_model: []const u8) bool {
+    const bp = pricing.priceFor(base_model) orelse return true;
+    const rp = pricing.priceFor(rung_model) orelse return false;
+    return rp.in + rp.out <= bp.in + bp.out;
 }
 
 fn finish(base: Provider, name: ?[]const u8) Resolved {
@@ -156,16 +273,28 @@ fn finish(base: Provider, name: ?[]const u8) Resolved {
 }
 
 /// The whole chain for one spawn: read the pin off the call (or its persona),
-/// then resolve it provider-locally against `base`.
-pub fn forSpawn(base: Provider, obj: std.json.ObjectMap) Resolved {
+/// route an explicit tier to a logged-in subscription when one serves it
+/// better (subscriptionRung; `sub_ok` false = the session pinned workers
+/// with --subagent-provider, an explicit human choice no auto-route may
+/// override), else resolve the model axis provider-locally against `base`;
+/// the effort axis rides through verbatim (it needs no catalog).
+pub fn forSpawn(base: Provider, obj: std.json.ObjectMap, sub_ok: bool) Resolved {
     const pin = requested(obj);
     if (pin.isNone()) return .{};
-    return resolve(base, pin);
+    var out: Resolved = blk: {
+        if (sub_ok and pin.model == null) if (pin.tier) |t| if (subscriptionRung(t, base)) |r| break :blk r;
+        break :blk resolve(base, pin);
+    };
+    if (pin.effort) |e| {
+        out.effort = e;
+        out.effort_outcome = .pinned;
+    } else if (pin.bad_effort) out.effort_outcome = .unknown_effort;
+    return out;
 }
 
 /// The live persona's OPERATIONAL frontmatter lines — isolation plus #292's
-/// model/tier — arena-allocated and newline-terminated, or "" when it has
-/// none.
+/// model/tier/effort — arena-allocated and newline-terminated, or "" when it
+/// has none.
 ///
 /// Promotion (fleet.promoteAgents) replaces a niche's genome with a better
 /// scoring one, and rewrites `<niche>.md` from scratch to do it. Without this
@@ -180,7 +309,8 @@ pub fn personaPolicyFrontmatter(arena: std.mem.Allocator, name: []const u8) []co
         const iso = if (t.isolation) |i| std.fmt.allocPrint(arena, "isolation: {s}\n", .{@tagName(i)}) catch "" else "";
         const mdl = if (t.model) |m| std.fmt.allocPrint(arena, "model: {s}\n", .{m}) catch "" else "";
         const rung = if (t.tier) |x| std.fmt.allocPrint(arena, "tier: {s}\n", .{x.label()}) catch "" else "";
-        return std.fmt.allocPrint(arena, "{s}{s}{s}", .{ iso, mdl, rung }) catch "";
+        const eff = if (t.effort) |e| std.fmt.allocPrint(arena, "effort: {s}\n", .{@tagName(e)}) catch "" else "";
+        return std.fmt.allocPrint(arena, "{s}{s}{s}{s}", .{ iso, mdl, rung, eff }) catch "";
     }
     return "";
 }

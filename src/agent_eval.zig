@@ -20,6 +20,9 @@ const telemetry = @import("telemetry.zig");
 const runCapped = @import("jobs.zig").runCapped;
 const judgeTask = @import("subagent.zig").judgeTask;
 const eval_memory = @import("eval_memory.zig");
+const trace = @import("trace.zig");
+const fleet = @import("fleet.zig");
+const main_mod = @import("main.zig");
 
 test {
     _ = @import("agent_eval_tests.zig");
@@ -89,6 +92,10 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
     const met = if (combined) |s| s >= target_f else false;
     self.eval_repair_pending = exit_code != 0 or !met;
     self.eval_verified = !self.eval_repair_pending;
+    // A green eval refunds the RED-continuation budget (see grantRepairTurn):
+    // red→repair→green→red progress cycles keep running; only sustained
+    // failure exhausts it.
+    if (self.eval_verified) self.eval_repair_grants = 0;
     // Resolve the commitment made above: a nonzero exit or an unmet/unparsed
     // target contradicts "this command will meet the target", so it is a
     // misprediction. Meeting the target leaves the commitment unresolved by
@@ -114,13 +121,14 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
                 // rejection, so the submit counter stays in sync with stored
                 // scores. The local eval verdict below still shows the number.
                 if (self.tracer) |tr| tr.note("fleet", "score skipped: eval score outside [0,100]");
-            } else if (telemetry.g_telem) |t| {
+            } else if (trace.g_traj != null or telemetry.g_telem != null) {
+                // Skipped entirely when neither sink exists (also keeps stub
+                // agents in tests from touching provider/systemPrompt).
                 const sys = self.systemPrompt();
                 const genome_fp = promptFingerprint(sys);
                 const esh_fp = promptFingerprint(cmd);
                 const genome: []const u8 = &genome_fp;
                 const esh: []const u8 = &esh_fp;
-                const run_id: []const u8 = &scoring.g_run_id;
                 const pclass = providerClass(self.provider.model);
                 // --niche tags this score's cell. Without it the score lands in the
                 // anonymous "" niche, which pullElites can never match to a builtin —
@@ -130,32 +138,65 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
                 // /score) so signed bytes equal ingested bytes.
                 var niche_buf: [64]u8 = undefined;
                 const niche = scoring.sanitizeMetaField(&niche_buf, utf8Prefix(self.eval_niche, 64));
-                // Genome-send (graff-dgm.md §B): the eval genome is this agent's own
-                // persona, never spawned via runSub, so its prompt_text never reached
-                // the worker. A cell only promotes when harness_scores joins to a
-                // harness_genomes row, so ride the genome text over on a `propose`
-                // (deduped by prompt_sha) before the score — else a winning eval cell
-                // has nothing to serve. Gated on a niche: a "" cell is unpromotable.
-                // Oversized genomes skip the propose (review F6): the server verifies
-                // the fingerprint over the carried text, so a truncated genome would
-                // be dropped there anyway.
-                if (niche.len > 0) {
-                    if (sys.len <= telemetry.Telemetry.max_propose_text)
-                        t.fleetEvent("propose", niche, genome, "", pclass, "", 0, sys)
-                    else if (self.tracer) |tr| tr.note("fleet", "propose skipped: genome > 64KB");
-                }
-                // SCORE SCALE CONTRACT (issue #168 Gap 4): local UX stays
-                // 0-100 (the /100 verdicts below, eval_best, eval_target),
-                // but every score that leaves the client is [0,1] — divide at
-                // the emission boundary; s01 is what gets signed (v2: niche +
-                // provider_class in the envelope) and sent.
+                // SCORE SCALE CONTRACT (issue #168 Gap 4): local UX stays 0-100
+                // (the /100 verdicts below, eval_best, eval_target), but every
+                // score that leaves this function — the local archive row and
+                // the signed envelope alike — is [0,1].
                 const s01 = s / 100.0;
-                const sig = signScore(genome, "", s01, run_id, "", "", esh, niche, pclass);
-                const sig_s: []const u8 = if (scoring.g_score_key != null) &sig else "";
-                var provbuf: [512]u8 = undefined;
-                const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche }) catch "";
-                t.scoreEvent(genome, "", s01, run_id, sig_s, prov);
-                t.fleetEvent("submit", niche, genome, "", pclass, esh, 0, "");
+                // Local DGM capture, deliberately OUTSIDE the telemetry gate:
+                // the same genome + score the fleet events carry also lands in
+                // .graff/trajectories, so `/agents promote` can grow a champion
+                // from eval-driven runs with zero egress. Until this block the
+                // eval loop fed only the backend — a default-local-privacy
+                // session scored work the local promote could never see. The
+                // kind:"eval" row carries the niche tag: promoteAgents reads
+                // niche off non-prompt/non-score records only. Same niche gate
+                // as the backend path — a "" cell is unpromotable either way.
+                if (niche.len > 0) if (trace.g_traj) |traj| {
+                    traj.capturePrompt(genome_fp, sys);
+                    traj.node(.{ .kind = "eval", .prompt_sha = genome, .niche = niche, .eval_set_hash = esh, .provider_class = pclass, .t = traj.elapsedMs() });
+                    traj.node(.{ .kind = "score", .prompt_sha = genome, .score = s01, .niche = niche, .eval_set_hash = esh, .provider_class = pclass, .t = traj.elapsedMs() });
+                };
+                // Auto-learn: evolution is a default part of the harness, not
+                // a command. A target-met NEW BEST is the learning moment —
+                // the work just verified green — so recompute this project's
+                // champions from the archive right now and hot-reload them,
+                // making the very next spawn run the evolved genome with no
+                // restart and no /agents promote. Auto mode never overwrites
+                // a hand-written persona (fleet.promoteAgents); the manual
+                // command remains for --personal tiers and forced overwrites.
+                if (met and niche.len > 0 and main_mod.g_fleet and !self.sub) {
+                    var pout: Io.Writer.Allocating = .init(self.arena);
+                    const n = fleet.promoteAgents(self.io, self.gpa, &pout.writer, fleet.g_home, false, true);
+                    if (n > 0) {
+                        fleet.g_agent_types = fleet.loadAgentTypes(self.io, self.arena, fleet.g_home);
+                        self.say("  auto-promoted {d} champion persona(s) → {s} (live now)\n", .{ n, fleet.agents_dir }) catch {};
+                        if (self.tracer) |tr| tr.note("fleet", "auto-promoted champions after green eval");
+                    }
+                }
+                if (telemetry.g_telem) |t| {
+                    const run_id: []const u8 = &scoring.g_run_id;
+                    // Genome-send (graff-dgm.md §B): the eval genome is this agent's own
+                    // persona, never spawned via runSub, so its prompt_text never reached
+                    // the worker. A cell only promotes when harness_scores joins to a
+                    // harness_genomes row, so ride the genome text over on a `propose`
+                    // (deduped by prompt_sha) before the score — else a winning eval cell
+                    // has nothing to serve. Gated on a niche: a "" cell is unpromotable.
+                    // Oversized genomes skip the propose (review F6): the server verifies
+                    // the fingerprint over the carried text, so a truncated genome would
+                    // be dropped there anyway.
+                    if (niche.len > 0) {
+                        if (sys.len <= telemetry.Telemetry.max_propose_text)
+                            t.fleetEvent("propose", niche, genome, "", pclass, "", 0, sys)
+                        else if (self.tracer) |tr| tr.note("fleet", "propose skipped: genome > 64KB");
+                    }
+                    const sig = signScore(genome, "", s01, run_id, "", "", esh, niche, pclass);
+                    const sig_s: []const u8 = if (scoring.g_score_key != null) &sig else "";
+                    var provbuf: [512]u8 = undefined;
+                    const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche }) catch "";
+                    t.scoreEvent(genome, "", s01, run_id, sig_s, prov);
+                    t.fleetEvent("submit", niche, genome, "", pclass, esh, 0, "");
+                }
             }
         }
     }

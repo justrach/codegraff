@@ -277,7 +277,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.startsWith(u8, line, "/agents promote")) {
         const personal = std.mem.indexOf(u8, line, "--personal") != null or std.mem.indexOf(u8, line, "--global") != null;
         try out.print("{s}promoting local champions{s} → {s} tier (from {s})\n", .{ style.bold, style.reset, if (personal) "personal ~/.harness/agents" else "private ./.harness/agents", trace.trajectories_dir });
-        const n = promoteAgents(root.io, root.gpa, out, fleet.g_home, personal);
+        const n = promoteAgents(root.io, root.gpa, out, fleet.g_home, personal, false);
         if (n > 0) try out.print("{s}✓ promoted {d} niche(s) — they load on next start{s}\n", .{ style.green, n, style.reset });
         try out.flush();
         return true;
@@ -296,6 +296,11 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
                 style.reset,
             });
             if (t.score) |sc| try out.print(" {s}score {d:.2}{s}", .{ style.green, sc, style.reset });
+            // #292: surface a persona's operational pins (else only the .md shows them).
+            if (t.model) |m| try out.print(" {s}model={s}{s}", .{ style.dim, m, style.reset });
+            if (t.tier) |x| try out.print(" {s}tier={s}{s}", .{ style.dim, x.label(), style.reset });
+            if (t.effort) |e| try out.print(" {s}effort={s}{s}", .{ style.dim, @tagName(e), style.reset });
+            if (t.isolation) |i| try out.print(" {s}isolation={s}{s}", .{ style.dim, @tagName(i), style.reset });
             try out.print("  {s}\n", .{t.desc});
         }
         try out.flush();

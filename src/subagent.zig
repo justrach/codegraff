@@ -64,10 +64,13 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     // the session default (--subagent-model / the #291 ladder). Resolved
     // provider-locally here so an unavailable pin degrades to the session
     // default with a trace note instead of failing the spawn.
-    const pinned = subagent_pin.forSpawn(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), obj);
-    if (ctx.tracer) |tr| if (pinned.outcome != .none) tr.note("subagent", pinned.outcome.describe());
-    if (tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, pinned.provider);
-    const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, pinned.provider);
+    const pinned = subagent_pin.forSpawn(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), obj, ctx.subagent_provider == null);
+    if (ctx.tracer) |tr| {
+        if (pinned.outcome != .none) tr.note("subagent", pinned.outcome.describe());
+        if (pinned.effort_outcome != .none) tr.note("subagent", pinned.effort_outcome.describe());
+    }
+    if (tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, pinned.provider, pinned.effort);
+    const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, pinned.provider, pinned.effort);
     return run.output;
 }
 
@@ -127,6 +130,9 @@ const AgentJob = struct {
     /// model catalog and the credential store, none of which are the tool
     /// call's arena — so unlike label/prompt it needs no gpa copy.
     pin: ?Provider = null,
+    /// #292 follow-up: resolved per-spawn/per-persona effort pin — an enum by
+    /// value, no lifetime to manage.
+    effort: ?main_mod.ReasoningEffort = null,
     ctx: ToolCtx,
     admitted: bool = false,
     done: bool = false,
@@ -197,7 +203,7 @@ fn admitNext(gpa: Allocator, io: Io) void {
 /// shape in jobs.zig.
 fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
     const t0: Io.Timestamp = .now(io, .awake);
-    const run = runSub(job.ctx, "subagent", job.label, job.prompt, job.sys_override, job.niche, job.isolation, job.isolation_fallback, job.pin) catch |err| SubRun{
+    const run = runSub(job.ctx, "subagent", job.label, job.prompt, job.sys_override, job.niche, job.isolation, job.isolation_fallback, job.pin, job.effort) catch |err| SubRun{
         .output = failure(gpa, err),
         .usage = .{ .duration_ms = @intCast(@max(0, t0.untilNow(io, .awake).toMilliseconds())) },
     };
@@ -215,7 +221,7 @@ fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
 /// job and return immediately with its id; the child runs on the pool.
 /// Never blocks on a free concurrency slot — a spawn beyond the cap is
 /// queued, not failed; admitNext drains it once room frees up.
-fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider) !ToolOutput {
+fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider, effort: ?main_mod.ReasoningEffort) !ToolOutput {
     const gpa = ctx.gpa;
     const label_c = try gpa.dupe(u8, label);
     errdefer gpa.free(label_c);
@@ -236,6 +242,7 @@ fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_o
         .isolation = isolation,
         .isolation_fallback = isolation_fallback,
         .pin = pin,
+        .effort = effort,
         .ctx = ctx,
     };
 
@@ -412,16 +419,17 @@ test "agentStatusText: composes with isolation:\"worktree\" — a kept-worktree 
 /// `niche` is the task's MAP-Elites cell, threaded through so runSub's
 /// fleet:propose — and scoreVariants' submit — tag the variant's genome.
 pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) ToolOutput {
-    // No #292 pin: a phase's variants must share a model or scoreVariants
-    // would file model effects under the prompt genome (#290).
-    const run = runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback, null) catch |err| return failure(ctx.gpa, err);
+    // No #292 pin (model or effort): a phase's variants must share one
+    // configuration or scoreVariants would file model effects under the
+    // prompt genome (#290).
+    const run = runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback, null, null) catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 
 /// A second workflow attempt has its own explicit budget kind. It still shares
 /// the same invocation-wide atomic ceiling and concurrency limiter.
 pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) ToolOutput {
-    const run = runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback, null) catch |err| return failure(ctx.gpa, err);
+    const run = runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback, null, null) catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 
@@ -431,7 +439,7 @@ pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sy
 /// on a pool thread. Never worktree-isolated: a judge only reads/reasons over
 /// text handed to it, never the filesystem, so there's nothing to isolate.
 pub fn judgeTask(ctx: ToolCtx, prompt: []const u8) ToolOutput {
-    const run = runSub(ctx, "judge_task", "judge", prompt, null, "", .shared_cwd, false, null) catch |err| return failure(ctx.gpa, err);
+    const run = runSub(ctx, "judge_task", "judge", prompt, null, "", .shared_cwd, false, null, null) catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 

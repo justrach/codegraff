@@ -35,6 +35,22 @@ fn surfaceUnstreamedText(self: *Agent, text: []const u8) !void {
 const ssePayload = Agent.ssePayload;
 const sseIndex = Agent.sseIndex;
 
+/// A RED eval used to END the turn with verifier_hard_stop as its final
+/// text — right as a batch boundary, wrong as a turn outcome: the message
+/// orders the MODEL to "start a repair turn", but a -p one-shot has no next
+/// turn, so the run died at score 0 with the artifact never written (and in
+/// the REPL the user had to re-prompt by hand). Grant the repair turn
+/// in-loop instead: append the hard-stop as a user steering message and
+/// keep stepping. Bounded by max_repair_grants — reset on any green eval in
+/// runEval — so a permanently-red eval still terminates; when the budget is
+/// spent the caller falls back to the old end-the-turn behavior.
+fn grantRepairTurn(self: *Agent) !bool {
+    if (self.eval_repair_grants >= eval_control.max_repair_grants) return false;
+    self.eval_repair_grants += 1;
+    try self.messages.append(try messages_mod.textMessage(self.arena, "user", eval_control.verifier_hard_stop));
+    return true;
+}
+
 /// Consume a Codex `response` object: append its output items to history
 /// (verbatim — they're valid Responses input items), surface text, and
 /// collect any function calls. Returns final text when no tools were
@@ -119,7 +135,10 @@ pub fn stepResponses(self: *Agent, response: std.json.ObjectMap) !?[]const u8 {
             const fco = try toolResultMessage(self.arena, .responses, call.id, r.text, r.is_error);
             try self.messages.append(fco);
         }
-        if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) return eval_control.verifier_hard_stop;
+        if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) {
+            if (try grantRepairTurn(self)) return null;
+            return eval_control.verifier_hard_stop;
+        }
         if (self.completed) |result| return result;
         return null;
     }
@@ -177,7 +196,10 @@ pub fn stepAnthropic(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
         try user_msg.put(self.arena, "content", .{ .array = blocks });
         try self.messages.append(.{ .object = user_msg });
 
-        if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) return eval_control.verifier_hard_stop;
+        if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) {
+            if (try grantRepairTurn(self)) return null;
+            return eval_control.verifier_hard_stop;
+        }
         if (self.completed) |result| return result;
         return null; // loop again
     }
@@ -238,7 +260,10 @@ pub fn stepOpenAI(self: *Agent, root: std.json.ObjectMap) !?[]const u8 {
             const tool_msg = try toolResultMessage(self.arena, .openai, call.id, r.text, r.is_error);
             try self.messages.append(tool_msg);
         }
-        if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) return eval_control.verifier_hard_stop;
+        if (eval_control.shouldStopAfterBatch(calls.items, self.eval_repair_pending)) {
+            if (try grantRepairTurn(self)) return null;
+            return eval_control.verifier_hard_stop;
+        }
         if (self.completed) |result| return result;
         return null;
     }
