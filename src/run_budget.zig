@@ -98,6 +98,14 @@ pub const RunBudget = struct {
         return self.model_calls.load(.acquire);
     }
 
+    /// #368: RunBudgetExhausted used to end a -p run with a bare "turn
+    /// failed:" line. The model never gets a concluding call at this point,
+    /// so the HARNESS owns the last line: what ran out, that the work is
+    /// partial and not rolled back, and where the evidence lives.
+    pub fn exhaustedFatal(max_model_calls: u64, run_id: []const u8) noreturn {
+        std.process.fatal("model-call budget exhausted (--max-model-calls {d}) before the task completed. Work done so far is PARTIAL and was NOT rolled back; inspect this run under .graff/traces/{s}.jsonl, then raise --max-model-calls or re-run to continue.", .{ max_model_calls, run_id });
+    }
+
     /// True when at least `calls` more model calls fit under the ceiling.
     /// Advisory (racy against concurrent children) — for skipping OPTIONAL
     /// spending (e.g. a RED repair continuation), never for admission;

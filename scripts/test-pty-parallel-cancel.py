@@ -153,9 +153,20 @@ def main() -> None:
                 session.wait_for_literal("interrupted (esc)", start=cursor)
                 assert_processes_gone(pid_paths)
                 session.send_key("ctrl-d")
-                result = session.read_until_exit(5)
+                # #364: every cancel assertion above already PASSED when CI
+                # failed here — only the exit was slow. Shutdown drains the
+                # session writer, reaps jobs, and joins the fleet worker; on a
+                # loaded ubuntu runner 5s was not enough. Give it headroom and,
+                # when it still fails, dump the transcript so the next
+                # occurrence is diagnosable instead of a bare exit code.
+                result = session.read_until_exit(30)
                 if result.timed_out or result.exit_code != 0:
-                    raise AssertionError(f"REPL exit={result.exit_code} timed_out={result.timed_out}")
+                    raw = session.raw
+                    tail = (raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw))[-2000:]
+                    raise AssertionError(
+                        f"REPL exit={result.exit_code} timed_out={result.timed_out}\n"
+                        f"--- pty transcript tail ---\n{tail}"
+                    )
         finally:
             mock.stop()
     print("ok    parallel Esc reports terminal states and kills command descendants")
