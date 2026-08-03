@@ -140,6 +140,18 @@ pub fn noteKeys(keys: *provider_mod.Keys) *provider_mod.Keys {
     return keys;
 }
 
+/// Startup composition, riding resolveKeys' return: snapshot availability,
+/// then load/derive the sheet — so the #291 worker default (resolved moments
+/// later in main) sees the SAME bench ladders as every later /model
+/// re-derivation (#371). Without this, startup derived workers from the
+/// compiled table while a switch re-derived from the bench one, and the two
+/// disagreed (terra vs the data-blessed gpt-5.5 on codex).
+pub fn noteKeysAtStartup(keys: provider_mod.Keys, io: Io, arena: Allocator, home: ?[]const u8) provider_mod.Keys {
+    const kept = noteAvailability(keys);
+    loadInto(io, arena, home);
+    return kept;
+}
+
 /// Best sheet score for `model` as served by `provider_id`; null when the
 /// sheet has no opinion.
 pub fn scoreFor(provider_id: []const u8, model: []const u8) ?f64 {
