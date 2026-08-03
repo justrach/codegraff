@@ -46,6 +46,12 @@ const sseIndex = Agent.sseIndex;
 /// spent the caller falls back to the old end-the-turn behavior.
 fn grantRepairTurn(self: *Agent) !bool {
     if (self.eval_repair_grants >= eval_control.max_repair_grants) return false;
+    // A repair turn costs at least a repair call plus a concluding call.
+    // Without that headroom in the run budget, granting one just converts
+    // the orderly repair-pending turn end into RunBudgetExhausted mid-repair
+    // (caught by scripts/test-review-mode.py's max_model_calls=2 gate) —
+    // surface the hard stop instead, exactly the pre-grant contract.
+    if (self.run_budget) |b| if (!b.canAfford(2)) return false;
     self.eval_repair_grants += 1;
     try self.messages.append(try messages_mod.textMessage(self.arena, "user", eval_control.verifier_hard_stop));
     return true;

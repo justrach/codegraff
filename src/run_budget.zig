@@ -98,6 +98,15 @@ pub const RunBudget = struct {
         return self.model_calls.load(.acquire);
     }
 
+    /// True when at least `calls` more model calls fit under the ceiling.
+    /// Advisory (racy against concurrent children) — for skipping OPTIONAL
+    /// spending (e.g. a RED repair continuation), never for admission;
+    /// acquire() remains the only authority.
+    pub fn canAfford(self: *const RunBudget, calls: u64) bool {
+        if (self.max_model_calls == 0) return true;
+        return self.model_calls.load(.acquire) + calls <= self.max_model_calls;
+    }
+
     pub fn remaining(self: *const RunBudget) u64 {
         if (self.max_model_calls == 0) return std.math.maxInt(u64); // 0 = unlimited
         return self.max_model_calls -| self.used();
