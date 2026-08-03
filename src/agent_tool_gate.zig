@@ -127,7 +127,25 @@ fn gateSmolifySecrets(arena: std.mem.Allocator, call: ToolCall) !?ExecResult {
 
 /// The permission gate, root side: an unapproved external action prompts the
 /// user. Subagents never prompt; their gate is the executor's allowlist.
+/// #366: the harness's own policy file is not the model's to edit. A worker
+/// was observed writing pre_approved_tools into it after a denial — a write
+/// that takes effect on next load is self-privilege-escalation, cwd-jail or
+/// not. Applies to root AND subagents, before every other gate.
+fn gateHarnessPolicyWrite(self: *Agent, call: ToolCall) !?ExecResult {
+    if (!(std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file"))) return null;
+    const obj = json_args.object(call.input) orelse return null;
+    const pv = obj.get("path") orelse return null;
+    if (pv != .string) return null;
+    const path = std.mem.trim(u8, pv.string, " \t");
+    if (!(std.mem.eql(u8, path, Approvals.settings_path) or std.mem.endsWith(u8, path, "/" ++ Approvals.settings_path))) return null;
+    return .{
+        .text = try self.arena.dupe(u8, "refused: " ++ Approvals.settings_path ++ " is the harness's own policy file (approvals, hooks, pre-approvals) — a model never widens its own permissions. Ask the USER to change config, or proceed without this tool."),
+        .is_error = true,
+    };
+}
+
 pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
+    if (try gateHarnessPolicyWrite(self, call)) |blocked| return blocked; // #366: before the sub branch — children are exactly who must not widen approvals
     if (self.sub) {
         if (std.mem.eql(u8, call.name, "learn_candidate")) return .{
             .text = try self.arena.dupe(u8, "learning is root-only — subagents cannot run mutators, evaluators, or publish grades"),
@@ -253,12 +271,16 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             std.fmt.bufPrint(&line_buf, "call MCP tool {s}", .{call.name}) catch call.name;
     } else return null;
 
+    // #369: a denial that just says "not pre-approved" strands the model —
+    // observed spirals: probing .harness/settings.json, retrying the same
+    // tool, burning the whole call budget. Name what was denied, forbid the
+    // dead ends, and point at a productive next move.
     const in = self.in orelse return .{
-        .text = try self.arena.dupe(u8, "not pre-approved, and no interactive user to ask in one-shot mode — pre-approve it in .harness/settings.json, or run with --yolo"),
+        .text = try std.fmt.allocPrint(self.arena, "tool denied ({s}): not pre-approved, and this unattended run has no user to ask. Do NOT retry it, probe harness config, or try to change approvals — use a different tool you already have, or finish and report the limitation. The USER can pre-approve it in {s} or run with --yolo.", .{ prompt_line, Approvals.settings_path }),
         .is_error = true,
     };
     const w = self.out orelse return .{
-        .text = try self.arena.dupe(u8, "not pre-approved, and no interactive user to ask — pre-approve it in .harness/settings.json, or run with --yolo"),
+        .text = try std.fmt.allocPrint(self.arena, "tool denied ({s}): not pre-approved, and no interactive user to ask. Do NOT retry it or probe harness config — use a different tool you already have, or finish and report the limitation. The USER can pre-approve it in {s} or run with --yolo.", .{ prompt_line, Approvals.settings_path }),
         .is_error = true,
     };
     try w.print("  ⚠ {s}\n  [y]es once · [a]lways allow \"{s}\" (saved to {s}) · [n]o › ", .{ prompt_line, key, Approvals.settings_path });
@@ -307,6 +329,25 @@ test "Smolify arguments containing recognizable secrets fail closed locally" {
     try std.testing.expect(std.mem.indexOf(u8, blocked.text, "blocked locally") != null);
     try std.testing.expect((try gateSmolifySecrets(arena, .{ .id = "2", .name = "mcp__smolify__search_docs", .input = public })) == null);
     try std.testing.expect((try gateSmolifySecrets(arena, .{ .id = "3", .name = "read_file", .input = secret })) == null);
+}
+
+test "gateHarnessPolicyWrite: the model never edits the harness's own policy file (#366)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var agent: Agent = undefined;
+    agent.arena = arena;
+    const settings = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"path\":\".harness/settings.json\",\"content\":\"{}\"}", .{});
+    const nested = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"path\":\"../other/.harness/settings.json\",\"content\":\"{}\"}", .{});
+    const normal = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"path\":\"src/main.zig\",\"content\":\"x\"}", .{});
+    // Both write tools are refused on the policy file, any spelling of it…
+    const direct = (try gateHarnessPolicyWrite(&agent, .{ .id = "1", .name = "write_file", .input = settings })).?;
+    try std.testing.expect(direct.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, direct.text, "policy file") != null);
+    try std.testing.expect((try gateHarnessPolicyWrite(&agent, .{ .id = "2", .name = "edit_file", .input = nested })) != null);
+    // …while ordinary paths and other tools pass through untouched.
+    try std.testing.expect((try gateHarnessPolicyWrite(&agent, .{ .id = "3", .name = "write_file", .input = normal })) == null);
+    try std.testing.expect((try gateHarnessPolicyWrite(&agent, .{ .id = "4", .name = "bash", .input = settings })) == null);
 }
 
 test "private template collector covers subagents and workflow stages" {
