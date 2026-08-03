@@ -635,6 +635,39 @@ the REPL:
 prompt, so the gate denies anything not already allowed. Pre-approve commands
 in `.harness/settings.json` or pass `--yolo`.
 
+### Hooks
+
+Shell hooks in `.harness/settings.json` run at tool-call boundaries — your
+own policy layer next to the built-in gate:
+
+```json
+{
+  "hooks": {
+    "pre_tool":  [{ "match": "write_file|edit_file",
+                    "command": "./scripts/guard.sh",
+                    "suggest": "the mcp edit tool",
+                    "timeout_ms": 5000 }],
+    "post_tool": [{ "match": "write_file", "command": "zig fmt ." }],
+    "turn_end":  [{ "command": "./scripts/notify.sh" }]
+  }
+}
+```
+
+- **`match`** — tool name, `|`-separated list, or `*` (default). **`command`**
+  runs via `/bin/sh -c` with the event JSON on stdin:
+  `{"event","tool","input"}` (post_tool adds `"is_error"`,`"output"`).
+- **`pre_tool`**: exit **2 blocks the call** — the hook's stderr becomes the
+  tool error the model sees. Add **`suggest`** to name the sanctioned
+  replacement; the denial becomes
+  `blocked by pre_tool hook: <stderr> — use instead: <suggest>`, turning a
+  blocked call into a one-call recovery instead of a guess-and-retry spiral.
+  Any other exit code, timeout, or spawn failure allows — a broken hook never
+  bricks the loop.
+- **`post_tool`** runs sequentially after the call (a formatter finishes
+  before the next tool runs); exit codes are ignored. **`turn_end`** fires
+  once per completed turn. Default timeout 10 s (`timeout_ms` to change);
+  stderr is capped at 4 KiB.
+
 ---
 
 ## SDKs: TypeScript & Python
