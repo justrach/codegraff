@@ -52,6 +52,8 @@ const route_policy_tests = @import("route_policy_tests.zig");
 const route_trace = @import("route_trace.zig");
 // #376 phase-uniform learned routing + the rung-stratified fitness fold.
 const route_phase = @import("route_phase.zig");
+const route_check = @import("route_check.zig");
+const pricing_tests = @import("pricing_tests.zig");
 const fitness_strata = @import("fitness_strata.zig");
 
 // `graff serve` resumability (#330): serve.zig imports these, but nothing in
@@ -95,6 +97,8 @@ test {
     _ = route_policy_tests;
     _ = route_trace;
     _ = route_phase;
+    _ = route_check;
+    _ = pricing_tests;
     _ = fitness_strata;
     _ = serve_events;
     _ = serve_create;

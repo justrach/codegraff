@@ -542,9 +542,9 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
         return true;
     }
 
-    // `graff models [refresh]`: print the effective model catalog, or pull
-    // fresh window/price metadata from models.dev into the local cache.
-    if (flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "models")) {
+    // `graff models [refresh]` / `graff route <model>…`: print the catalog or
+    // pull fresh metadata; route dry-runs provider seating on the same caches.
+    if (flags.positionals.items.len > 0 and (std.mem.eql(u8, flags.positionals.items[0], "models") or std.mem.eql(u8, flags.positionals.items[0], "route"))) {
         const home = keys_cli.homeEnv(init.environ_map) orelse std.process.fatal("no HOME/USERPROFILE", .{});
         const codex_home = init.environ_map.get("CODEX_HOME") orelse
             (std.fmt.allocPrint(arena, "{s}/.codex", .{home}) catch "");
@@ -579,7 +579,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
             router_keys.router_source = if (router_keys.router_value != null) .stored else .none;
         }
         router_catalog.loadAll(io, gpa, arena, home, router_keys, refreshing);
-        try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]);
+        if (std.mem.eql(u8, flags.positionals.items[0], "route")) try @import("route_check.zig").command(io, gpa, arena, init.environ_map, flags.positionals.items[1..]) else try models_cache.command(io, gpa, arena, home, flags.positionals.items[1..]);
         return true;
     }
 

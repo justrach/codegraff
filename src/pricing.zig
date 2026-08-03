@@ -432,11 +432,27 @@ pub fn modelAliasEquals(name: []const u8, query: []const u8) bool {
     return std.mem.eql(u8, normalizeModelAlias(&nb, name), normalizeModelAlias(&qb, query));
 }
 
+/// #377: `<provider><sep><name>` is the same model as the provider's own
+/// `<name>` row under a family-prefixed spelling (gateway catalogs do this).
+/// Alias-normalized so `kimi-k3` == kimi + `k3` regardless of separators.
+pub fn familyAliasEquals(provider_id: []const u8, name: []const u8, query: []const u8) bool {
+    var qb: [128]u8 = undefined;
+    var pb: [128]u8 = undefined;
+    var nb: [128]u8 = undefined;
+    const q = normalizeModelAlias(&qb, query);
+    const p = normalizeModelAlias(&pb, provider_id);
+    const n = normalizeModelAlias(&nb, name);
+    return q.len == p.len + n.len and std.mem.startsWith(u8, q, p) and std.mem.endsWith(u8, q, n);
+}
+
 /// `keys` is main.zig's Keys (anytype to keep provider wiring out of this
 /// module) — anything with `get(provider_id) ?[]const u8`.
 pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
     for (models()) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
     for (models()) |m| if (modelAliasEquals(m.name, query)) return m.name;
+    // #377: family-prefixed spelling of a provider's own row (`kimi-k3` → kimi's
+    // `k3`) — resolves even when no gateway catalog supplies the prefixed name.
+    for (models()) |m| if (familyAliasEquals(m.provider, m.name, query)) return m.name;
     var qbuf: [128]u8 = undefined;
     const qnorm = normalizeModelAlias(&qbuf, query);
     var fallback: ?[]const u8 = null;
@@ -561,39 +577,5 @@ test "usdFor: per-million math and negative clamping" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.0), usdFor(p, -42, -1, 0), 1e-9); // clamped
 }
 
-test "CostTally token and call counters saturate" {
-    var tally: CostTally = .{
-        .in_tokens = std.math.maxInt(u64) - 1,
-        .cache_tokens = std.math.maxInt(u64),
-        .out_tokens = std.math.maxInt(u64) - 2,
-        .api_calls = std.math.maxInt(u64),
-        .sub_calls = std.math.maxInt(u64),
-    };
-    tally.add(std.testing.io, "codex", "gpt-5.5", 10, 10, 10);
-    try std.testing.expectEqual(std.math.maxInt(u64), tally.in_tokens);
-    try std.testing.expectEqual(std.math.maxInt(u64), tally.cache_tokens);
-    try std.testing.expectEqual(std.math.maxInt(u64), tally.out_tokens);
-    try std.testing.expectEqual(std.math.maxInt(u64), tally.api_calls);
-    try std.testing.expectEqual(std.math.maxInt(u64), tally.sub_calls);
-}
-
-test "modelInTable: known models present, unknown absent" {
-    try std.testing.expect(modelInTable("gpt-5.5"));
-    try std.testing.expect(modelInTable("claude-opus-4-8"));
-    try std.testing.expect(!modelInTable("not-a-real-model"));
-}
-
-test "priceFor: known model priced, unknown is null" {
-    try std.testing.expect(priceFor("gpt-5.5") != null);
-    try std.testing.expect(priceFor("claude-opus-4-8") != null);
-    try std.testing.expect(priceFor("no-such-model") == null);
-}
-
-test "resolveModelName exact aliases and miss" {
-    const provider_mod = @import("provider.zig");
-    const Keys = provider_mod.Keys;
-    const keys = Keys{ .values = @splat(null) };
-    try std.testing.expect(resolveModelName(keys, "gpt-5.5") != null); // exact name
-    try std.testing.expectEqualStrings("glm-5.2", resolveModelName(keys, "glm5.2").?); // natural alias
-    try std.testing.expect(resolveModelName(keys, "totally-unknown-zzz") == null);
-}
+// CostTally/modelInTable/priceFor/resolveModelName tests live in
+// pricing_tests.zig (this file sits against the 600-line cap).
