@@ -313,7 +313,7 @@ pub const Keys = struct {
                 if ((phase == 2) != std.mem.eql(u8, spec.id, "codegraff")) continue;
                 for (pricing.models()) |m| {
                     if (!std.mem.eql(u8, m.provider, spec.id)) continue;
-                    if (if (phase == 1) familyAliasEquals(spec.id, m.name, model) else std.mem.eql(u8, m.name, model))
+                    if (if (phase == 1) pricing.familyAliasEquals(spec.id, m.name, model) else std.mem.eql(u8, m.name, model))
                         return keys.build(spec, key, m.name);
                 }
             }
@@ -334,19 +334,6 @@ pub const Keys = struct {
         const spec = specFor(fallback_id) orelse return error.MissingKey;
         const key = keys.get(fallback_id) orelse return error.MissingKey;
         return keys.build(spec, key, model);
-    }
-
-    /// #377: `<provider><sep><name>` is the same model as the provider's own
-    /// `<name>` row under a family-prefixed spelling (gateway catalogs do this).
-    /// Alias-normalized so `kimi-k3` == kimi + `k3` regardless of separators.
-    fn familyAliasEquals(provider_id: []const u8, name: []const u8, query: []const u8) bool {
-        var qb: [128]u8 = undefined;
-        var pb: [128]u8 = undefined;
-        var nb: [128]u8 = undefined;
-        const q = pricing.normalizeModelAlias(&qb, query);
-        const p = pricing.normalizeModelAlias(&pb, provider_id);
-        const n = pricing.normalizeModelAlias(&nb, name);
-        return q.len == p.len + n.len and std.mem.startsWith(u8, q, p) and std.mem.endsWith(u8, q, n);
     }
 
     /// The startup default: the first provider (in spec order) with a key,

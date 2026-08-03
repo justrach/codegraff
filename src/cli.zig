@@ -66,6 +66,7 @@ pub const usage_text =
     \\  graff key set <provider> <key>   store a key (macOS Keychain, else 0600 file)
     \\  graff key list                   show which providers have keys
     \\  graff models [refresh]           list the live catalog; refresh Codex + models.dev metadata
+    \\  graff route <model>…             dry-run which provider/billing a model lands on (no API call)
     \\  graff mcp add <name> -- <cmd>     add a stdio MCP server to .mcp.json
     \\  graff mcp add <name> --url <url>  add a Streamable HTTP MCP server
     \\  graff mcp login <name>            OAuth login for a remote MCP server
