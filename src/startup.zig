@@ -306,7 +306,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
             }
         }
     }
-    return .{ .keys = @import("bench_priors.zig").noteAvailability(keys), .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account, .model_catalog = model_catalog, .stored_keys_loaded = stored_keys_loaded };
+    return .{ .keys = @import("bench_priors.zig").noteKeysAtStartup(keys, io, arena, keys_cli.homeEnv(environ_map)), .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account, .model_catalog = model_catalog, .stored_keys_loaded = stored_keys_loaded };
 }
 
 /// Root system-prompt layering, frozen at startup so it stays

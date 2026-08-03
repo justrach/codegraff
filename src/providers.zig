@@ -94,6 +94,14 @@ fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: bool
         }
     }
     root.provider = p;
+    // #371: the #291 worker default resolved once at startup; without this a
+    // /model switch left children on the OLD provider's rung (root on codex,
+    // workers silently still on kimi — a cost and consent surprise) or with
+    // no ladder descent at all. Only the DERIVED default follows the root;
+    // explicit --subagent-* choices stay exactly as the user stated them.
+    if (!root.subagent_provider_explicit) if (@import("bench_priors.zig").g_keys) |k| {
+        root.subagent_provider = @import("subagent_selection.zig").resolveSubagentProvider(k.*, p, null, null, false, false);
+    };
     // Keep the context estimate and first request exact without eagerly
     // materializing formats this session has never used.
     try root.ensureRootTools(p.kind);
@@ -471,6 +479,8 @@ test "applyProviderInner preserves the server meter on an exact model re-selecti
 
     var root: Agent = undefined;
     root.provider = p;
+    root.subagent_provider = null;
+    root.subagent_provider_explicit = true; // this test is about the meter, not #371 re-derivation
     root.arena = a;
     root.registry = null;
     root.messages = std.json.Array.init(a);

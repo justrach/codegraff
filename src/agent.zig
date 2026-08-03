@@ -72,6 +72,7 @@ pub const Agent = struct {
     client: *std.http.Client,
     provider: Provider,
     subagent_provider: ?Provider = null, // optional model pin for every direct child/workflow/judge
+    subagent_provider_explicit: bool = false, // #371: --subagent-*/GRAFF_SUBAGENT_*/--no-subagent-tier freeze it; a DERIVED default re-follows /model (providers.applyProviderInner)
     subagent_cross_provider: bool = false, // user explicitly allowed the pin to cross a provider/data boundary
     messages: std.json.Array,
     // Codex Responses WS delta transport: one WS held ACROSS user turns (codex_chain.zig), sending previous_response_id + only new items. Reset by closeCodexWs.

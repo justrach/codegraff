@@ -187,8 +187,7 @@ pub fn runOneshotPrompt(gpa: Allocator, io: Io, arena: Allocator, root: *agent_m
 /// `approvals` is an out-param: main() declares it (`var approvals: Approvals
 /// = undefined;`) and this fills it in place, so main() can still register
 /// its own `defer` for `approvals.prefixes` right after the call (a `defer`
-/// registered inside this helper would fire at the WRONG time — when this
-/// function returns, not when main() does).
+/// registered here would fire when THIS returns, not when main() does).
 pub fn initApprovalsHooksFleet(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, approvals: *approvals_mod.Approvals, flags: args.Flags, out: *Io.Writer, json_mode: bool) !void {
     approvals.* = .{ .yolo = flags.yolo_flag };
     const persisted_approvals = approvals.loadPersisted(io, gpa, arena);
@@ -246,6 +245,7 @@ pub fn buildRootAgent(
         .client = client,
         .provider = default_provider,
         .subagent_provider = subagent_provider,
+        .subagent_provider_explicit = flags.subagent_provider_flag != null or flags.subagent_model_flag != null or flags.no_subagent_tier_flag or environ_map.get("GRAFF_SUBAGENT_PROVIDER") != null or environ_map.get("GRAFF_SUBAGENT_MODEL") != null, // #371: only a USER-stated worker choice survives /model
         .subagent_cross_provider = flags.allow_cross_provider_subagents_flag,
         .home = keys_cli.homeEnv(environ_map) orelse "",
         .messages = std.json.Array.init(arena),
