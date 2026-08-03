@@ -9,16 +9,36 @@
 //! Derivation, per provider, over the sheet models that RESOLVE on that
 //! provider's live catalog (subagent_selection.modelForProvider — so one
 //! sheet feeds every provider serving any of its models, and an unknown or
-//! renamed model is skipped, never a load failure):
+//! renamed model is skipped, never a load failure). Per-model bests are
+//! folded first, then the losers are DISCARDED before any rung is seated
+//! (#373): a candidate that another candidate matches-or-beats on score for
+//! strictly less money is dominated, and a dominated model is never the
+//! right answer at any budget. Rungs come only from the survivors — the
+//! sheet's Pareto front for that provider:
 //!
-//!   frontier = best score            (capability ceiling)
-//!   small    = best score-per-dollar among the other models (the efficiency
-//!              knee the sheet's power-law tail points at)
-//!   mid      = best score among the rest (nullable)
+//!   frontier = the front's top score  (capability ceiling)
+//!   small    = the front's best score-per-dollar below the frontier (the
+//!              efficiency knee the sheet's power-law tail points at)
+//!   mid      = the best survivor STRICTLY between those two scores, else
+//!              null — a rung the data does not contain is not invented
 //!
-//! A provider needs at least two resolved models to earn a derived ladder.
-//! Scores accept [0,1] or percent (0,100]; a non-positive cost contributes
-//! capability but no efficiency. Loaded by fleet.loadAgentTypes, so the
+//! Seating from the front is what makes the ladder monotone by construction:
+//! score(frontier) >= score(mid) >= score(small), effective cost ordered the
+//! other way, and no rung beaten outright by a rung below it. Before #373
+//! the three rungs were disjoint leftovers (mid = best score of whatever
+//! frontier and small had not already claimed), which on the builtin sheet
+//! seated codex mid = gpt-5.5 (0.54 @ $3.2) ABOVE small = gpt-5.6-luna
+//! (0.67 @ $0.61) — so the #291 worker descent sent every worker to a model
+//! that the rung below it beat on both axes at a fifth of the price.
+//!
+//! A provider needs at least two SURVIVING models to earn a derived ladder:
+//! when one model dominates a provider's whole sheet there is no ladder to
+//! derive (builtin openai: luna outright beats gpt-5.5, gpt-5.4 and terra),
+//! and the compiled table stands rather than a fabricated descent. Scores
+//! accept [0,1] or percent (0,100]; a model the sheet never prices costs
+//! +inf — unpriced capability cannot be shown to be worth its price, so any
+//! priced model matching its score dominates it, while two unpriced models
+//! can never dominate each other. Loaded by fleet.loadAgentTypes, so the
 //! session registry and auto-promote's hot-reload refresh it together.
 //!
 //! PRECEDENCE: project ./.harness/bench.json > personal ~/.harness/bench.json
@@ -186,12 +206,47 @@ fn foldProvider(arena: Allocator, provider_id: []const u8, entries: []const Entr
     return models.items;
 }
 
+/// What a candidate's capability actually costs: the dollar figure implied
+/// by its BEST measured efficiency (score / score-per-dollar). Deliberately
+/// optimistic when a model's top score and top spd come from different
+/// efforts (codex sol: 0.73 max @ $5.5 and 0.61 medium @ $1.86 fold to
+/// ~$2.23) — an understated cost only makes a candidate HARDER to dominate,
+/// and #373 is about never pruning a rung that might still earn its price.
+/// Unpriced (spd < 0: no entry for this model carried a positive cost) is
+/// +inf, so any priced model matching its score dominates it, and two
+/// unpriced models never dominate each other.
+fn effCost(m: Best) f64 {
+    return if (m.spd > 0) m.score / m.spd else std.math.inf(f64);
+}
+
+/// #373: does `a` beat `b` outright — at least `b`'s score for strictly less
+/// money? Then `b` is not a rung, it is a mistake: every task `b` could run,
+/// `a` runs at least as well for less.
+fn dominates(a: Best, b: Best) bool {
+    return a.score >= b.score and effCost(a) < effCost(b);
+}
+
+/// The provider's Pareto front: fold's candidates minus everyone another
+/// candidate beats outright. Exact ties (same score, same effective cost)
+/// both survive — neither is strictly cheaper, so the rule can never eat a
+/// whole tie group and leave the provider with nothing.
+fn paretoFront(arena: Allocator, models: []const Best) []Best {
+    var front: std.ArrayList(Best) = .empty;
+    for (models, 0..) |m, i| {
+        const beaten = for (models, 0..) |o, j| {
+            if (i != j and dominates(o, m)) break true;
+        } else false;
+        if (!beaten) front.append(arena, m) catch return front.items;
+    }
+    return front.items;
+}
+
 fn derive(arena: Allocator, entries: []const Entry) []const tier_ladder.TierLadder {
     var out: std.ArrayList(tier_ladder.TierLadder) = .empty;
     for (provider_mod.provider_specs, 0..) |spec, i| {
         if (g_available) |av| if (!av[i]) continue;
-        const models = foldProvider(arena, spec.id, entries);
-        if (models.len < 2) continue;
+        const models = paretoFront(arena, foldProvider(arena, spec.id, entries));
+        if (models.len < 2) continue; // one model beat the whole sheet: no ladder exists to derive
         var frontier: *const Best = &models[0];
         for (models) |*m| if (m.score > frontier.score) {
             frontier = m;
@@ -202,9 +257,15 @@ fn derive(arena: Allocator, entries: []const Entry) []const tier_ladder.TierLadd
             if (small == null or m.spd > small.?.spd) small = m;
         }
         const sm = small orelse continue; // capability alone cannot rank efficiency
+        // Only a survivor STRICTLY between the two seated rungs earns mid —
+        // which is what makes score(frontier) >= score(mid) >= score(small)
+        // true by construction (#373) instead of by leftover. The bounds
+        // also exclude frontier and sm themselves, so no pointer test is
+        // needed; a two-deep front simply has no mid, and the descent in
+        // subagent_selection steps frontier -> small on its own.
         var mid: ?*const Best = null;
         for (models) |*m| {
-            if (m == frontier or m == sm) continue;
+            if (m.score >= frontier.score or m.score <= sm.score) continue;
             if (mid == null or m.score > mid.?.score) mid = m;
         }
         out.append(arena, .{
@@ -224,7 +285,7 @@ test "bench sheet: score normalization accepts unit and percent, rejects junk" {
     try std.testing.expect(normalScore(101) == null);
 }
 
-test "derive: frontier by score, small by score-per-dollar, mid from the rest" {
+test "derive: rungs come off the Pareto front, never from the leftovers (#373)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -248,9 +309,15 @@ test "derive: frontier by score, small by score-per-dollar, mid from the rest" {
     for (ladders) |l| if (std.mem.eql(u8, l.provider, "openai")) {
         openai = l;
     };
-    try std.testing.expectEqualStrings("gpt-5.6", openai.?.frontier);
+    try std.testing.expectEqualStrings("gpt-5.6", openai.?.frontier); // 0.73, nothing scores higher
     try std.testing.expectEqualStrings("gpt-5.6-luna", openai.?.small.?); // 0.67/0.61 ≈ 1.10 beats terra's 0.39
-    try std.testing.expectEqualStrings("gpt-5.6-terra", openai.?.mid.?);
+    // terra used to take mid as the leftover. It is DOMINATED: luna scores
+    // 0.67 to its 0.35 and costs $0.61 to its $0.90, so terra is never worth
+    // buying and the front is two deep. mid stays null rather than seating a
+    // rung the sheet says is strictly worse than the rung under it (#373).
+    try std.testing.expect(openai.?.mid == null);
+    const front = paretoFront(a, foldProvider(a, "openai", &entries));
+    try std.testing.expectEqual(@as(usize, 2), front.len);
 }
 
 test "builtin sheet: every install derives a codex ladder from the shipped leaderboard" {
@@ -266,11 +333,19 @@ test "builtin sheet: every install derives a codex ladder from the shipped leade
         codex = l;
     };
     // sol tops capability; luna-max tops score-per-dollar (the leaderboard's
-    // "most efficient" config); the data promotes gpt-5.5 over the hand
-    // table's terra for the mid rung (54% vs 35%).
+    // "most efficient" config). mid is EMPTY on this sheet: luna (0.67 @
+    // $0.61) dominates gpt-5.5 (0.54 @ $3.2), gpt-5.4 (0.53 @ $5.2) and
+    // terra (0.35 @ $0.9) — every one of them is beaten on score AND costs
+    // more, so none is a rung. This test used to pin mid = gpt-5.5, which is
+    // exactly the #373 bug: the #291 descent sent every worker of a sol root
+    // to a model luna beat by 13 points at a fifth of the price.
     try std.testing.expectEqualStrings("gpt-5.6-sol", codex.?.frontier);
     try std.testing.expectEqualStrings("gpt-5.6-luna", codex.?.small.?);
-    try std.testing.expectEqualStrings("gpt-5.5", codex.?.mid.?);
+    try std.testing.expect(codex.?.mid == null);
+    // Same sheet, openai: luna is the ONLY survivor (sol/fable/opus resolve
+    // nowhere on it), so the front is one deep and openai earns no derived
+    // ladder at all — subagent_tier_ladder's compiled row stands.
+    for (ladders) |l| try std.testing.expect(!std.mem.eql(u8, l.provider, "openai"));
 }
 
 test "derive: fewer than two resolved models yields no ladder for a provider" {
@@ -297,11 +372,86 @@ test "derive: availability gate — priors describe only logged-in services" {
     const saved = g_available;
     defer g_available = saved;
     var av: [provider_mod.provider_specs.len]bool = @splat(false);
-    for (provider_mod.provider_specs, 0..) |spec, i| av[i] = std.mem.eql(u8, spec.id, "openai");
+    for (provider_mod.provider_specs, 0..) |spec, i| av[i] = std.mem.eql(u8, spec.id, "codex");
     g_available = av;
     // The full builtin sheet, but only one service logged in → exactly one
     // ladder: the sheet never speaks for a provider the user cannot reach.
+    // (codex, not openai: since #373 openai's builtin front collapses to
+    // luna alone, so gating on it would test nothing.)
     const ladders = derive(a, &builtin_entries);
     try std.testing.expectEqual(@as(usize, 1), ladders.len);
-    try std.testing.expectEqualStrings("openai", ladders[0].provider);
+    try std.testing.expectEqualStrings("codex", ladders[0].provider);
+}
+
+test "derive: a real three-rung front keeps its mid — domination prunes, shape does not (#373)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const saved = g_available;
+    defer g_available = saved;
+    g_available = null;
+    // Scores descending, costs descending WITH them: nobody here is beaten
+    // on both axes, so all three survive and each buys something the others
+    // cannot. This is the case the Pareto filter must not over-prune.
+    const entries = [_]Entry{
+        .{ .model = "gpt-5.6", .effort = "max", .score = 80, .cost = 10.0 }, // spd 0.08
+        .{ .model = "gpt-5.6-terra", .effort = "high", .score = 60, .cost = 2.0 }, // spd 0.30
+        .{ .model = "gpt-5.6-luna", .effort = "medium", .score = 30, .cost = 0.5 }, // spd 0.60
+    };
+    var openai: ?tier_ladder.TierLadder = null;
+    for (derive(a, &entries)) |l| if (std.mem.eql(u8, l.provider, "openai")) {
+        openai = l;
+    };
+    try std.testing.expectEqualStrings("gpt-5.6", openai.?.frontier);
+    try std.testing.expectEqualStrings("gpt-5.6-terra", openai.?.mid.?);
+    try std.testing.expectEqualStrings("gpt-5.6-luna", openai.?.small.?);
+    try std.testing.expectEqual(@as(usize, 3), paretoFront(a, foldProvider(a, "openai", &entries)).len);
+}
+
+test "dominates: unpriced capability loses to any priced model that matches it (#373)" {
+    const priced: Best = .{ .name = "priced", .score = 0.5, .spd = 0.25 }; // $2.00
+    const dear: Best = .{ .name = "dear", .score = 0.5, .spd = 0.05 }; // $10.00
+    const unpriced: Best = .{ .name = "unpriced", .score = 0.9 };
+    const unpriced_two: Best = .{ .name = "unpriced-two", .score = 0.4 };
+    try std.testing.expect(std.math.isInf(effCost(unpriced)));
+    try std.testing.expect(dominates(priced, dear)); // same score, a fifth of the money
+    try std.testing.expect(!dominates(dear, priced));
+    // A price nobody measured is not a bargain: any priced model reaching
+    // its score buys the same capability for a knowable sum, so it wins.
+    try std.testing.expect(!dominates(unpriced, priced)); // higher score, but +inf vs $2
+    try std.testing.expect(dominates(priced, unpriced_two));
+    try std.testing.expect(!dominates(unpriced, unpriced_two)); // +inf < +inf is false
+    try std.testing.expect(!dominates(unpriced_two, unpriced));
+}
+
+test "derive: every seated ladder is monotone and no rung is beaten by one below it (#373)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const saved = g_available;
+    defer g_available = saved;
+    g_available = null;
+    // The invariant #373 buys, checked against the shipped sheet for EVERY
+    // provider it derives — not just the codex row the bug was reported on.
+    for (derive(a, &builtin_entries)) |l| {
+        const models = foldProvider(a, l.provider, &builtin_entries);
+        const frontier = candidateNamed(models, l.frontier);
+        const small = candidateNamed(models, l.small.?);
+        try std.testing.expect(frontier.score >= small.score);
+        try std.testing.expect(!dominates(small, frontier));
+        try std.testing.expect(!dominates(frontier, small)); // cheaper rung must still buy something
+        if (l.mid) |mid_name| {
+            const mid = candidateNamed(models, mid_name);
+            try std.testing.expect(frontier.score >= mid.score and mid.score >= small.score);
+            try std.testing.expect(!dominates(mid, frontier) and !dominates(small, mid));
+            try std.testing.expect(!dominates(frontier, mid) and !dominates(mid, small));
+        }
+    }
+}
+
+/// Test-only lookup: the folded candidate a seated rung names. A rung that
+/// is not in its own provider's fold is a derivation bug, not a test skip.
+fn candidateNamed(models: []const Best, name: []const u8) Best {
+    for (models) |m| if (std.mem.eql(u8, m.name, name)) return m;
+    unreachable;
 }
