@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -25,7 +26,12 @@ def load_schema(argv):
             return json.load(f)
     if "--harness" in argv:
         binary = argv[argv.index("--harness") + 1]
-        out = subprocess.run([binary, "--schema"], capture_output=True, text=True, check=True)
+        # Deterministic by construction (#370): dynamic model catalogs cached
+        # under $HOME (~/.codegraff gateway/kimi lists) must never leak into
+        # the committed MODELS list, so the harness runs with a scrubbed HOME.
+        with tempfile.TemporaryDirectory(prefix="sdk-schema-home-") as home:
+            env = {**os.environ, "HOME": home, "USERPROFILE": home}
+            out = subprocess.run([binary, "--schema"], capture_output=True, text=True, check=True, env=env)
         return json.loads(out.stdout)
     if sys.stdin.isatty():
         sys.exit("no schema: pipe `harness --schema` in, or pass --schema FILE / --harness BIN")
