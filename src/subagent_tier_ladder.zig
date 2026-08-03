@@ -68,9 +68,12 @@ pub const ladders = [_]TierLadder{
     .{ .provider = "deepseek", .frontier = "deepseek-v4-pro", .mid = "deepseek-v4-flash" },
 };
 
-/// The ladder row for a provider, if any. A provider absent from `ladders`
-/// has no default tiering — every root on it always inherits.
+/// The ladder row for a provider, if any. A bench-derived ladder (a
+/// .harness/bench.json score/cost sheet — see bench_priors.zig) outranks the
+/// compiled table: measured capability+cost beats a hand-picked default. A
+/// provider absent from both has no default tiering — roots on it inherit.
 pub fn forProvider(provider_id: []const u8) ?TierLadder {
+    for (@import("bench_priors.zig").g_ladders) |l| if (std.mem.eql(u8, l.provider, provider_id)) return l;
     for (ladders) |l| if (std.mem.eql(u8, l.provider, provider_id)) return l;
     return null;
 }

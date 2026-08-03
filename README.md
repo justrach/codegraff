@@ -907,18 +907,24 @@ name: implementer
 tier: mid              # a rung of the current provider's ladder — preferred,
                        # it stays correct when the root model changes
 # model: gpt-5.6-terra # …or pin an exact name instead
+effort: max            # reasoning depth for this worker (low|medium|high|xhigh|max);
+                       # unpinned workers run at medium
 isolation: worktree
 ---
 ```
 
 ```jsonc
 // one subagent call, overriding everything above for that child only
-{"description": "extract imports", "prompt": "…", "agent": "implementer", "tier": "small"}
+{"description": "extract imports", "prompt": "…", "agent": "implementer", "tier": "small", "effort": "low"}
 ```
 
 Precedence, highest first: **`model`/`tier` on the spawn → the persona's
 `model:`/`tier:` frontmatter → `--subagent-model` → the default tier ladder →
-the root model.** Within one level an exact `model` beats a `tier`. Pins are
+the root model.** Within one level an exact `model` beats a `tier`. Reasoning
+**effort** follows the same spawn → persona → default chain (default: medium)
+but is an independent axis — an effort-only override keeps the persona's model
+pin, so `effort: max` on a `model: gpt-5.6-luna` persona is exactly a "Luna
+Max" worker. Pins are
 provider-local — they pick a different model on the child's *current* provider
 and never move work across a provider boundary, which stays with
 `--subagent-provider` + `--allow-cross-provider-subagents`. A pin that cannot

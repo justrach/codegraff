@@ -196,7 +196,7 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
     for (stages, 1..) |st, stage_no| {
         const prompt = pipelinePrompt(arena, st.prompt, item, prev, stage_no) catch |e| return failure(gpa, e);
         // null pin: #292 model pins deliberately do not reach pipeline stages (see subagent_run.variantProviderClass).
-        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, null)) |r| r.output else |e| failure(gpa, e);
+        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, null, null)) |r| r.output else |e| failure(gpa, e);
         if (out.is_error) {
             // Only spend the one retry (#2) when the harness's own
             // classification hasn't already ruled it out (auth, invalid
@@ -204,7 +204,7 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
             // wasting a second attempt.
             if (failureAllowsRetry(out.text)) {
                 gpa.free(out.text);
-                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, null)) |r| r.output else |e| failure(gpa, e);
+                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, null, null)) |r| r.output else |e| failure(gpa, e);
             }
             if (out.is_error) {
                 // #248 — excerpt the stage's own error BEFORE freeing it, so

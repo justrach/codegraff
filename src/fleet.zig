@@ -29,7 +29,7 @@ const http = @import("http.zig");
 /// A named, reusable subagent persona: the unit the MAP-Elites archive is
 /// organized around (docs/hyperagents.md §MAP-Elites). Each niche keeps one
 /// elite prompt; builtins ship compiled in, and `.harness/agents/<name>.md`
-/// files (frontmatter: name/description/score/isolation/model/tier, body: the system prompt)
+/// files (frontmatter: name/description/score/isolation/model/tier/effort, body: the system prompt)
 /// override or extend them — that's where an evolution driver promotes
 /// archive winners. Spawn one with subagent/workflow `agent: "<name>"`.
 /// #276 P0-1: per-agent git-worktree isolation. `.shared_cwd` (default) is
@@ -70,6 +70,7 @@ pub const AgentType = struct {
     // default instead of failing a persona load or a spawn mid-fleet.
     model: ?[]const u8 = null, // frontmatter `model: gpt-5.6-terra`
     tier: ?Tier = null, // frontmatter `tier: mid`
+    effort: ?root.ReasoningEffort = null, // frontmatter `effort: max` — reasoning depth, an axis independent of model/tier (vocabulary: subagent_pin.parseEffort)
 };
 
 /// Preloaded niches: deliberately orthogonal *behavioral* dimensions (what
@@ -118,6 +119,7 @@ pub const agents_dir = ".harness/agents";
 /// previous by niche name, so a project persona beats a personal one beats a
 /// builtin.
 pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const AgentType {
+    @import("bench_priors.zig").loadInto(io, arena, home); // bench score/cost priors ride the same registry load (startup + auto-promote hot-reload)
     var list: std.ArrayList(AgentType) = .empty;
     list.appendSlice(arena, &builtin_agent_types) catch return &builtin_agent_types;
     if (home) |h| {
@@ -149,7 +151,7 @@ pub fn loadAgentTypes(io: Io, arena: Allocator, home: ?[]const u8) []const Agent
 }
 
 /// Merge `<dir>/*.md` personas into `list`: YAML-ish frontmatter
-/// (name/description/score/isolation/model/tier) + body as the prompt. A
+/// (name/description/score/isolation/model/tier/effort) + body as the prompt. A
 /// file shadows any existing
 /// type (builtin or earlier tier) of the same name — the elite for a niche is
 /// whatever the highest tier last promoted.
@@ -184,6 +186,7 @@ fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_p
                     // load, and an unknown model name is caught per spawn.
                     if (std.mem.eql(u8, key, "model")) at.model = if (val.len > 0) val else null;
                     if (std.mem.eql(u8, key, "tier")) at.tier = Tier.parse(val);
+                    if (std.mem.eql(u8, key, "effort")) at.effort = @import("subagent_pin.zig").parseEffort(val); // #292 follow-up: persona effort pin; off-vocabulary (incl. ultra) is "no opinion"
                 }
                 const body_start = fm_end + "\n---".len;
                 at.prompt = std.mem.trim(u8, data[@min(body_start + 1, data.len)..], " \t\r\n");
@@ -210,7 +213,7 @@ fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_p
 /// (personal ~/.harness/agents or private ./.harness/agents) as <niche>.md. No
 /// backend: your own scored runs become your built-in personas. Returns the
 /// number of niches promoted.
-pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8, personal: bool) usize {
+pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8, personal: bool, auto: bool) usize {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -295,6 +298,12 @@ pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8,
             }
         }
         const path = std.fmt.allocPrint(arena, "{s}/{s}.md", .{ dir, champ.niche }) catch continue;
+        // Auto (green-eval) promotion never clobbers a hand-written persona:
+        // only a file promotion itself wrote is fair game. Manual /agents
+        // promote keeps today's overwrite semantics — the user asked for it.
+        if (auto) if (Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch null) |old| {
+            if (std.mem.indexOf(u8, old, "description: promoted local champion") == null) continue;
+        };
         // Promotion ranks GENOMES; the persona's operational frontmatter
         // (isolation, #292's model/tier) is policy, not something the judge
         // scored, so carry it across the rewrite instead of dropping it.
