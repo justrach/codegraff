@@ -56,6 +56,7 @@ const Allocator = std.mem.Allocator;
 const tier_ladder = @import("subagent_tier_ladder.zig");
 const selection = @import("subagent_selection.zig");
 const provider_mod = @import("provider.zig");
+const trace = @import("trace.zig");
 
 pub const bench_path = ".harness/bench.json";
 
@@ -129,6 +130,12 @@ pub fn loadInto(io: Io, arena: Allocator, home: ?[]const u8) void {
         sheet = readSheet(io, arena, p);
     };
     g_entries = if (sheet) |s| s.entries else &builtin_entries;
+    // DGM feedback (#374 follow-on): lived, niche-scored runs from THIS
+    // workspace's archive re-weight the sheet before Pareto seating, so the
+    // front routes on what these models actually did here, not only on a
+    // leaderboard snapshot. Auto-promote's hot-reload re-runs this, so the
+    // front tightens as the session scores work.
+    g_entries = blend(arena, g_entries, trace.readTrajectoryArchive(io, arena, 8 << 20));
     g_ladders = derive(arena, g_entries);
 }
 
@@ -138,7 +145,8 @@ fn readSheet(io: Io, arena: Allocator, path: []const u8) ?Sheet {
 }
 
 /// [0,1] passes; (1,100] reads as percent; anything else is not a score.
-fn normalScore(s: f64) ?f64 {
+// The fns below are pub only for bench_priors_tests.zig (600-cap split).
+pub fn normalScore(s: f64) ?f64 {
     if (!(s >= 0)) return null;
     if (s <= 1) return s;
     if (s <= 100) return s / 100.0;
@@ -185,12 +193,103 @@ pub fn scoreFor(provider_id: []const u8, model: []const u8) ?f64 {
     return best;
 }
 
-const Best = struct { name: []const u8, score: f64 = -1, spd: f64 = -1 };
+fn strField(o: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const v = o.get(key) orelse return null;
+    return if (v == .string) v.string else null;
+}
+
+/// One lived observation from the local trajectory archive: the pooled [0,1]
+/// score seen for a (model, effort) config, joined score→config through
+/// prompt_sha against the archive's recipe rows.
+pub const Obs = struct { model: []const u8, effort: []const u8, sum: f64 = 0, n: u32 = 0 };
+
+/// The DGM→Pareto feedback fold (#374 follow-on): pass 1 maps prompt_sha →
+/// (model, effort) from kind:"recipe" rows, pass 2 joins kind:"score" rows
+/// through that map. HONESTY NOTE: pooled per-config means still mix genome
+/// quality into model quality — #290's confound — so this feeds a DAMPED
+/// prior (blend's pseudo-counts), never a controlled comparison; matched-
+/// genome stratification is the refinement path when archives grow.
+pub fn foldObservations(arena: Allocator, archive: []const u8) []Obs {
+    const Recipe = struct { sha: []const u8, model: []const u8, effort: []const u8 };
+    var recipes: std.ArrayList(Recipe) = .empty;
+    var obs: std.ArrayList(Obs) = .empty;
+    var pass: usize = 0;
+    while (pass < 2) : (pass += 1) {
+        var it = std.mem.splitScalar(u8, archive, '\n');
+        while (it.next()) |ln| {
+            const t = std.mem.trim(u8, ln, " \t\r");
+            if (t.len == 0) continue;
+            const v = std.json.parseFromSliceLeaky(std.json.Value, arena, t, .{}) catch continue;
+            if (v != .object) continue;
+            const o = v.object;
+            const kind = strField(o, "kind") orelse continue;
+            const sha = strField(o, "prompt_sha") orelse continue;
+            if (pass == 0 and std.mem.eql(u8, kind, "recipe")) {
+                const model = strField(o, "model") orelse continue;
+                recipes.append(arena, .{ .sha = sha, .model = model, .effort = strField(o, "effort") orelse "" }) catch return obs.items;
+            } else if (pass == 1 and std.mem.eql(u8, kind, "score")) {
+                const sv = o.get("score") orelse continue;
+                const s: f64 = switch (sv) {
+                    .float => |f| f,
+                    .integer => |x| @floatFromInt(x),
+                    else => continue,
+                };
+                if (!(s >= 0 and s <= 1)) continue; // archive scores are s01 by contract (#168)
+                const joined: ?Recipe = for (recipes.items) |rc| {
+                    if (std.mem.eql(u8, rc.sha, sha)) break rc;
+                } else null;
+                const r = joined orelse continue;
+                const slot: *Obs = for (obs.items) |*x| {
+                    if (std.mem.eql(u8, x.model, r.model) and std.mem.eql(u8, x.effort, r.effort)) break x;
+                } else blk: {
+                    obs.append(arena, .{ .model = r.model, .effort = r.effort }) catch return obs.items;
+                    break :blk &obs.items[obs.items.len - 1];
+                };
+                slot.sum += s;
+                slot.n += 1;
+            }
+        }
+    }
+    return obs.items;
+}
+
+/// The sheet speaks with the weight of this many lived runs: a couple of
+/// real scores nudge the front, a season of them owns it.
+const sheet_weight: f64 = 3;
+
+/// Merge lived observations into the sheet before Pareto seating. A matching
+/// (model[, effort]) entry gets a pseudo-count-blended score and KEEPS its
+/// cost — units stay $/task; blending token prices in would poison the
+/// domination comparisons. An unmatched config joins score-only with cost 0
+/// (+inf effective cost): it may lead the front on capability but never
+/// claims the efficiency rung until someone benches its price.
+pub fn blend(arena: Allocator, sheet: []const Entry, archive: []const u8) []const Entry {
+    const obs = foldObservations(arena, archive);
+    if (obs.len == 0) return sheet;
+    var out: std.ArrayList(Entry) = .empty;
+    out.appendSlice(arena, sheet) catch return sheet;
+    for (obs) |ob| {
+        const mean = ob.sum / @as(f64, @floatFromInt(ob.n));
+        const matched: ?*Entry = for (out.items) |*e| {
+            if (!std.mem.eql(u8, e.model, ob.model)) continue;
+            if (e.effort) |ef| if (!std.mem.eql(u8, ef, ob.effort)) continue;
+            break e;
+        } else null;
+        if (matched) |e| {
+            const prior = normalScore(e.score) orelse continue;
+            const n: f64 = @floatFromInt(ob.n);
+            e.score = (prior * sheet_weight + mean * n) / (sheet_weight + n);
+        } else out.append(arena, .{ .model = ob.model, .effort = if (ob.effort.len == 0) null else ob.effort, .score = mean, .cost = 0 }) catch return out.items;
+    }
+    return out.items;
+}
+
+pub const Best = struct { name: []const u8, score: f64 = -1, spd: f64 = -1 };
 
 /// One provider's per-model bests: the max score over that model's configs
 /// and the max score-per-dollar, folded across every sheet entry that
 /// resolves to it (several efforts of one model collapse into one candidate).
-fn foldProvider(arena: Allocator, provider_id: []const u8, entries: []const Entry) []Best {
+pub fn foldProvider(arena: Allocator, provider_id: []const u8, entries: []const Entry) []Best {
     var models: std.ArrayList(Best) = .empty;
     for (entries) |e| {
         const score = normalScore(e.score) orelse continue;
@@ -215,14 +314,14 @@ fn foldProvider(arena: Allocator, provider_id: []const u8, entries: []const Entr
 /// Unpriced (spd < 0: no entry for this model carried a positive cost) is
 /// +inf, so any priced model matching its score dominates it, and two
 /// unpriced models never dominate each other.
-fn effCost(m: Best) f64 {
+pub fn effCost(m: Best) f64 {
     return if (m.spd > 0) m.score / m.spd else std.math.inf(f64);
 }
 
 /// #373: does `a` beat `b` outright — at least `b`'s score for strictly less
 /// money? Then `b` is not a rung, it is a mistake: every task `b` could run,
 /// `a` runs at least as well for less.
-fn dominates(a: Best, b: Best) bool {
+pub fn dominates(a: Best, b: Best) bool {
     return a.score >= b.score and effCost(a) < effCost(b);
 }
 
@@ -230,7 +329,7 @@ fn dominates(a: Best, b: Best) bool {
 /// candidate beats outright. Exact ties (same score, same effective cost)
 /// both survive — neither is strictly cheaper, so the rule can never eat a
 /// whole tie group and leave the provider with nothing.
-fn paretoFront(arena: Allocator, models: []const Best) []Best {
+pub fn paretoFront(arena: Allocator, models: []const Best) []Best {
     var front: std.ArrayList(Best) = .empty;
     for (models, 0..) |m, i| {
         const beaten = for (models, 0..) |o, j| {
@@ -241,7 +340,7 @@ fn paretoFront(arena: Allocator, models: []const Best) []Best {
     return front.items;
 }
 
-fn derive(arena: Allocator, entries: []const Entry) []const tier_ladder.TierLadder {
+pub fn derive(arena: Allocator, entries: []const Entry) []const tier_ladder.TierLadder {
     var out: std.ArrayList(tier_ladder.TierLadder) = .empty;
     for (provider_mod.provider_specs, 0..) |spec, i| {
         if (g_available) |av| if (!av[i]) continue;
@@ -276,182 +375,4 @@ fn derive(arena: Allocator, entries: []const Entry) []const tier_ladder.TierLadd
         }) catch return out.items;
     }
     return out.items;
-}
-
-test "bench sheet: score normalization accepts unit and percent, rejects junk" {
-    try std.testing.expectEqual(@as(f64, 0.67), normalScore(0.67).?);
-    try std.testing.expectEqual(@as(f64, 0.67), normalScore(67).?);
-    try std.testing.expect(normalScore(-1) == null);
-    try std.testing.expect(normalScore(101) == null);
-}
-
-test "derive: rungs come off the Pareto front, never from the leftovers (#373)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    // Another test (or startup_tests' resolveKeys) may have snapshotted THIS
-    // process's credentials; pin "no opinion" so derivation sees all specs.
-    const saved = g_available;
-    defer g_available = saved;
-    g_available = null;
-    // openai serves gpt-5.6 / gpt-5.6-terra / gpt-5.6-luna in the shipped
-    // table, so this exercises real catalog resolution — including two
-    // configs of one model collapsing into one candidate.
-    const entries = [_]Entry{
-        .{ .model = "gpt-5.6", .effort = "max", .score = 73, .cost = 5.5 },
-        .{ .model = "gpt-5.6", .effort = "medium", .score = 61, .cost = 1.86 },
-        .{ .model = "gpt-5.6-terra", .effort = "medium", .score = 35, .cost = 0.9 },
-        .{ .model = "gpt-5.6-luna", .effort = "max", .score = 0.67, .cost = 0.61 },
-        .{ .model = "not-a-model-anywhere", .score = 99, .cost = 0.01 }, // skipped, never a failure
-    };
-    const ladders = derive(a, &entries);
-    var openai: ?tier_ladder.TierLadder = null;
-    for (ladders) |l| if (std.mem.eql(u8, l.provider, "openai")) {
-        openai = l;
-    };
-    try std.testing.expectEqualStrings("gpt-5.6", openai.?.frontier); // 0.73, nothing scores higher
-    try std.testing.expectEqualStrings("gpt-5.6-luna", openai.?.small.?); // 0.67/0.61 ≈ 1.10 beats terra's 0.39
-    // terra used to take mid as the leftover. It is DOMINATED: luna scores
-    // 0.67 to its 0.35 and costs $0.61 to its $0.90, so terra is never worth
-    // buying and the front is two deep. mid stays null rather than seating a
-    // rung the sheet says is strictly worse than the rung under it (#373).
-    try std.testing.expect(openai.?.mid == null);
-    const front = paretoFront(a, foldProvider(a, "openai", &entries));
-    try std.testing.expectEqual(@as(usize, 2), front.len);
-}
-
-test "builtin sheet: every install derives a codex ladder from the shipped leaderboard" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const saved = g_available;
-    defer g_available = saved;
-    g_available = null;
-    const ladders = derive(a, &builtin_entries);
-    var codex: ?tier_ladder.TierLadder = null;
-    for (ladders) |l| if (std.mem.eql(u8, l.provider, "codex")) {
-        codex = l;
-    };
-    // sol tops capability; luna-max tops score-per-dollar (the leaderboard's
-    // "most efficient" config). mid is EMPTY on this sheet: luna (0.67 @
-    // $0.61) dominates gpt-5.5 (0.54 @ $3.2), gpt-5.4 (0.53 @ $5.2) and
-    // terra (0.35 @ $0.9) — every one of them is beaten on score AND costs
-    // more, so none is a rung. This test used to pin mid = gpt-5.5, which is
-    // exactly the #373 bug: the #291 descent sent every worker of a sol root
-    // to a model luna beat by 13 points at a fifth of the price.
-    try std.testing.expectEqualStrings("gpt-5.6-sol", codex.?.frontier);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", codex.?.small.?);
-    try std.testing.expect(codex.?.mid == null);
-    // Same sheet, openai: luna is the ONLY survivor (sol/fable/opus resolve
-    // nowhere on it), so the front is one deep and openai earns no derived
-    // ladder at all — subagent_tier_ladder's compiled row stands.
-    for (ladders) |l| try std.testing.expect(!std.mem.eql(u8, l.provider, "openai"));
-}
-
-test "derive: fewer than two resolved models yields no ladder for a provider" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const saved = g_available;
-    defer g_available = saved;
-    g_available = null;
-    const entries = [_]Entry{.{ .model = "grok-4.3", .score = 0.5, .cost = 3.0 }};
-    for (derive(a, &entries)) |l| try std.testing.expect(!std.mem.eql(u8, l.provider, "xai"));
-}
-
-test "scoreFor: the sheet ranks a provider's models for subscription routing" {
-    // Luna's best config (max, 67%) outranks terra's (medium, 35%) on codex.
-    try std.testing.expect(scoreFor("codex", "gpt-5.6-luna").? > scoreFor("codex", "gpt-5.6-terra").?);
-    try std.testing.expect(scoreFor("codex", "model-nobody-benched") == null);
-}
-
-test "derive: availability gate — priors describe only logged-in services" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const saved = g_available;
-    defer g_available = saved;
-    var av: [provider_mod.provider_specs.len]bool = @splat(false);
-    for (provider_mod.provider_specs, 0..) |spec, i| av[i] = std.mem.eql(u8, spec.id, "codex");
-    g_available = av;
-    // The full builtin sheet, but only one service logged in → exactly one
-    // ladder: the sheet never speaks for a provider the user cannot reach.
-    // (codex, not openai: since #373 openai's builtin front collapses to
-    // luna alone, so gating on it would test nothing.)
-    const ladders = derive(a, &builtin_entries);
-    try std.testing.expectEqual(@as(usize, 1), ladders.len);
-    try std.testing.expectEqualStrings("codex", ladders[0].provider);
-}
-
-test "derive: a real three-rung front keeps its mid — domination prunes, shape does not (#373)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const saved = g_available;
-    defer g_available = saved;
-    g_available = null;
-    // Scores descending, costs descending WITH them: nobody here is beaten
-    // on both axes, so all three survive and each buys something the others
-    // cannot. This is the case the Pareto filter must not over-prune.
-    const entries = [_]Entry{
-        .{ .model = "gpt-5.6", .effort = "max", .score = 80, .cost = 10.0 }, // spd 0.08
-        .{ .model = "gpt-5.6-terra", .effort = "high", .score = 60, .cost = 2.0 }, // spd 0.30
-        .{ .model = "gpt-5.6-luna", .effort = "medium", .score = 30, .cost = 0.5 }, // spd 0.60
-    };
-    var openai: ?tier_ladder.TierLadder = null;
-    for (derive(a, &entries)) |l| if (std.mem.eql(u8, l.provider, "openai")) {
-        openai = l;
-    };
-    try std.testing.expectEqualStrings("gpt-5.6", openai.?.frontier);
-    try std.testing.expectEqualStrings("gpt-5.6-terra", openai.?.mid.?);
-    try std.testing.expectEqualStrings("gpt-5.6-luna", openai.?.small.?);
-    try std.testing.expectEqual(@as(usize, 3), paretoFront(a, foldProvider(a, "openai", &entries)).len);
-}
-
-test "dominates: unpriced capability loses to any priced model that matches it (#373)" {
-    const priced: Best = .{ .name = "priced", .score = 0.5, .spd = 0.25 }; // $2.00
-    const dear: Best = .{ .name = "dear", .score = 0.5, .spd = 0.05 }; // $10.00
-    const unpriced: Best = .{ .name = "unpriced", .score = 0.9 };
-    const unpriced_two: Best = .{ .name = "unpriced-two", .score = 0.4 };
-    try std.testing.expect(std.math.isInf(effCost(unpriced)));
-    try std.testing.expect(dominates(priced, dear)); // same score, a fifth of the money
-    try std.testing.expect(!dominates(dear, priced));
-    // A price nobody measured is not a bargain: any priced model reaching
-    // its score buys the same capability for a knowable sum, so it wins.
-    try std.testing.expect(!dominates(unpriced, priced)); // higher score, but +inf vs $2
-    try std.testing.expect(dominates(priced, unpriced_two));
-    try std.testing.expect(!dominates(unpriced, unpriced_two)); // +inf < +inf is false
-    try std.testing.expect(!dominates(unpriced_two, unpriced));
-}
-
-test "derive: every seated ladder is monotone and no rung is beaten by one below it (#373)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const saved = g_available;
-    defer g_available = saved;
-    g_available = null;
-    // The invariant #373 buys, checked against the shipped sheet for EVERY
-    // provider it derives — not just the codex row the bug was reported on.
-    for (derive(a, &builtin_entries)) |l| {
-        const models = foldProvider(a, l.provider, &builtin_entries);
-        const frontier = candidateNamed(models, l.frontier);
-        const small = candidateNamed(models, l.small.?);
-        try std.testing.expect(frontier.score >= small.score);
-        try std.testing.expect(!dominates(small, frontier));
-        try std.testing.expect(!dominates(frontier, small)); // cheaper rung must still buy something
-        if (l.mid) |mid_name| {
-            const mid = candidateNamed(models, mid_name);
-            try std.testing.expect(frontier.score >= mid.score and mid.score >= small.score);
-            try std.testing.expect(!dominates(mid, frontier) and !dominates(small, mid));
-            try std.testing.expect(!dominates(frontier, mid) and !dominates(mid, small));
-        }
-    }
-}
-
-/// Test-only lookup: the folded candidate a seated rung names. A rung that
-/// is not in its own provider's fold is a derivation bug, not a test skip.
-fn candidateNamed(models: []const Best, name: []const u8) Best {
-    for (models) |m| if (std.mem.eql(u8, m.name, name)) return m;
-    unreachable;
 }
