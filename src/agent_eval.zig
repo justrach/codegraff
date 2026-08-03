@@ -208,7 +208,10 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
                     const sig = signScore(genome, "", s01, run_id, "", "", esh, niche, pclass);
                     const sig_s: []const u8 = if (scoring.g_score_key != null) &sig else "";
                     var provbuf: [512]u8 = undefined;
-                    const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche }) catch "";
+                    // #376: the 7th component is the routing STRATUM (index 5
+                    // is the phase slot an eval loop never has). Same layout
+                    // as scoreVariants' tuple, so one collector reads both.
+                    const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche, "", route_policy.stratumOf(self.provider.model) }) catch "";
                     t.scoreEvent(genome, "", s01, run_id, sig_s, prov);
                     t.fleetEvent("submit", niche, genome, "", pclass, esh, 0, "");
                 }

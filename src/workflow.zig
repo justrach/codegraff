@@ -38,6 +38,7 @@ const failureAllowsRetry = subagent_run.failureAllowsRetry;
 const fleet = @import("fleet.zig");
 const Isolation = fleet.Isolation; // #276 P0-1
 const route_policy = @import("route_policy.zig"); // #372 (shape, role) policy cells
+const route_phase = @import("route_phase.zig"); // #376 one learned seat per phase
 const route_trace = @import("route_trace.zig"); // #372 per-worker routing trace
 const telemetry = @import("telemetry.zig");
 // #63: stable workflow/phase/task ids + the additive `workflow_progress`
@@ -201,7 +202,7 @@ fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) Tool
         // #372: say out loud which route this stage worker actually got, and
         // under which cell — an inherited route was invisible before.
         route_trace.emitSpawnProvider(ctx.io, ctx.tracer, st.label, subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), .{ .shape = .migration, .role = st.role }, if (st.override != null) .workflow_override else route_trace.sessionSource(ctx.subagent_provider != null), st.override, st.niche);
-        // null pin: #292 model pins deliberately do not reach pipeline stages (see subagent_run.variantProviderClass).
+        // null pin: neither #292's per-spawn pins nor #376's phase seat reach a pipeline stage — a chain is never scored (#296), so it has no cell to learn from.
         var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, null, null)) |r| r.output else |e| failure(gpa, e);
         if (out.is_error) {
             // Only spend the one retry (#2) when the harness's own
@@ -483,15 +484,16 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // can never abandon running subagents or free their result slots.
         const futures = try arena.alloc(Io.Future(ToolOutput), tasks.len);
         const outputs = try arena.alloc(ToolOutput, tasks.len);
-        // #372 — every phase worker inherits the SESSION route (workflow
-        // tasks take no per-task pins, #290); the trace says so explicitly,
-        // names the rung it landed on, and names the cell its score is filed
-        // under, instead of leaving all three to be inferred.
-        const wp = subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
+        // #376 — ONE seat for the whole phase, resolved once here and shared by
+        // every worker below (never per task, which is what #290 forbids). It
+        // is the session route unless the learned (shape, role) policy found a
+        // strictly better-value model for this phase's cell; either way the
+        // #372 trace names the rung, the cell and the layer that decided.
+        const seat = route_phase.forPhase(subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), shape, title, niches, ctx.subagent_provider != null);
         for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures, 1..) |label, prompt, override, niche, isolation, isolation_fallback, *fut, task_no| {
             wfp.task(ctx.io, arena, run_id, phase_no, task_no, tasks.len, label, "running"); // #63
-            route_trace.emitSpawnProvider(ctx.io, ctx.tracer, label, wp, .{ .shape = shape, .role = route_policy.roleOf(title, niche) }, if (override != null) .workflow_override else route_trace.sessionSource(ctx.subagent_provider != null), override, niche);
-            fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche, isolation, isolation_fallback });
+            route_trace.emitSpawnProvider(ctx.io, ctx.tracer, label, seat.provider, seat.cellOf(niche), seat.sourceFor(override != null), override, niche);
+            fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche, isolation, isolation_fallback, seat.pin });
         }
         for (futures, outputs, labels, 1..) |*fut, *out, label, task_no| {
             out.* = fut.await(ctx.io);
@@ -521,7 +523,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             const refut = try arena.alloc(Io.Future(ToolOutput), nf);
             for (refut, 0..) |*rf, k| {
                 const i = fidx[k];
-                rf.* = ctx.io.async(workflowRetryTask, .{ ctx, labels[i], prompts[i], overrides[i], niches[i], isolations[i], isolation_fallbacks[i] });
+                rf.* = ctx.io.async(workflowRetryTask, .{ ctx, labels[i], prompts[i], overrides[i], niches[i], isolations[i], isolation_fallbacks[i], seat.pin });
             }
             for (refut, 0..) |*rf, k| {
                 const retry = rf.await(ctx.io);
@@ -562,7 +564,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // fleet can rank and promote the winner (docs/hyperagents.md §9.B). The
         // propose half already fired in runSub; this closes the loop runEval left
         // open (it submits niche=""). Gated on the fleet — no judge cost otherwise.
-        scoreVariants(ctx, arena, title, shape, prompts, raws, overrides, niches, outputs);
+        scoreVariants(ctx, arena, seat, prompts, raws, overrides, niches, outputs);
 
         tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = tasks.len - phase_failed, .total = tasks.len, .retried = nf };
 

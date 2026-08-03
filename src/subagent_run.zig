@@ -7,7 +7,8 @@ const Allocator = std.mem.Allocator;
 
 const main_mod = @import("main.zig");
 const Agent = @import("agent.zig").Agent;
-const Provider = @import("provider.zig").Provider;
+pub const Provider = @import("provider.zig").Provider;
+const route_policy = @import("route_policy.zig"); // #376 rung stratification
 const util = @import("util.zig");
 const goal_pacing = @import("goal_pacing.zig");
 const tools = @import("tools.zig");
@@ -132,28 +133,37 @@ pub fn childProvider(root: Provider, pinned: ?Provider, allow_cross_provider: bo
 /// Capability tier ("frontier" | "mid" | "small") of the model that ran variant
 /// `i` of a workflow phase — the provider-class axis of the MAP-Elites cell.
 ///
-/// Every child in a WORKFLOW PHASE still resolves through the same
-/// session-level subagent provider, so this returns the same value for every
-/// `i`. #292 landed per-persona / per-spawn model pins on the `subagent` tool
-/// deliberately WITHOUT extending them to workflow phase tasks or pipeline
-/// stages, for the reason #290 exists: scoreVariants ranks the variants of one
-/// phase against each other and files the winner under the prompt fingerprint,
-/// so a phase whose tasks could differ in model would attribute model effects
-/// to the genome. The matched-tournament guard below catches a class-level
-/// difference, but not a rung-only one (see the #291 note), so the safe
-/// position is that phase tasks do not carry pins at all.
+/// `seat` is the PHASE's resolved provider (#376). It used to be derived from
+/// `ctx` here, on the standing assumption that a phase always ran the session
+/// default; route_phase.forPhase may now re-seat a whole phase, so the model
+/// a variant actually ran on has to be passed in or every row this feeds would
+/// name a model that never ran.
 ///
-/// The lookup stays per-variant regardless: whenever pins DO reach a phase,
-/// this one function is the seam that has to learn about them, instead of a
-/// phase-level constant silently going stale.
+/// It is still the same value for every `i`, and that is the #290 property,
+/// not an accident: a phase takes ONE seat for all of its workers, so
+/// scoreVariants keeps ranking prompt variants that shared a configuration.
+/// #292's per-spawn pins likewise still reach `subagent` only, never a phase
+/// task or a pipeline stage. The lookup stays per-variant so that whenever a
+/// finer grain does reach a phase, this pair of functions is the seam that has
+/// to learn about it instead of a phase-level constant going stale.
+pub fn variantProviderClass(seat: Provider, i: usize) []const u8 {
+    _ = i; // phase-uniform by construction — route_phase.forPhase
+    return scoring.providerClass(seat.model);
+}
+
+/// #376 — the routing STRATUM variant `i` was observed in: the resolved model
+/// itself, not its capability bucket.
 ///
-/// NOTE (#291): providerClass cannot currently distinguish gpt-5.6-sol from
-/// gpt-5.6-terra/-luna — all three classify as "frontier". Until that is
-/// resolved this axis cannot separate ladder rungs, and the matched-tournament
-/// guard in scoreVariants is correspondingly blind to a rung-only difference.
-pub fn variantProviderClass(ctx: tools.ToolCtx, i: usize) []const u8 {
-    _ = i; // #292 pins reach `subagent`, not phase tasks — see above
-    return scoring.providerClass(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider).model);
+/// providerClass cannot separate gpt-5.6-sol from -terra/-luna (all three are
+/// "frontier"), so the matched-tournament guard in scoreVariants was blind to
+/// a rung-only difference — the documented #291 gap that made phase routing
+/// unsafe. Keyed on this it is not: a phase whose variants somehow spanned two
+/// models is refused as unscoreable, and every fitness row records the same
+/// value so a cross-run comparison can stratify by it (fitness_strata.zig)
+/// rather than averaging over rungs.
+pub fn variantStratum(seat: Provider, i: usize) []const u8 {
+    _ = i;
+    return route_policy.stratumOf(seat.model);
 }
 
 pub const AgentUsage = struct {

@@ -13,9 +13,8 @@ const Allocator = std.mem.Allocator;
 const ansi = @import("ansi.zig");
 const style = &ansi.style;
 
-const util = @import("util.zig");
-const strFieldObj = util.strFieldObj;
 const learn_store = @import("learn_store.zig");
+const fitness_strata = @import("fitness_strata.zig"); // #376 rung-stratified promotion fold
 
 const root = @import("main.zig");
 const trace = @import("trace.zig");
@@ -212,7 +211,9 @@ fn loadAgentDir(io: Io, arena: Allocator, list: *std.ArrayList(AgentType), dir_p
 /// highest-mean-scoring genome that has captured text into the chosen tier
 /// (personal ~/.harness/agents or private ./.harness/agents) as <niche>.md. No
 /// backend: your own scored runs become your built-in personas. Returns the
-/// number of niches promoted.
+/// number of niches promoted. Since #376 the ranking happens inside one
+/// routing stratum (fitness_strata.zig), so a genome measured on a cheaper
+/// rung is never scored against one measured on a dearer one.
 pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8, personal: bool, auto: bool) usize {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -224,42 +225,14 @@ pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8,
         return 0;
     }
 
-    const Cell = struct { sha: []const u8, text: []const u8, niche: []const u8, sum: f64, n: u32 };
-    var cells: std.ArrayList(Cell) = .empty;
-    const cell = struct {
-        fn at(a: Allocator, list: *std.ArrayList(Cell), sha: []const u8) *Cell {
-            for (list.items) |*c| if (std.mem.eql(u8, c.sha, sha)) return c;
-            list.append(a, .{ .sha = a.dupe(u8, sha) catch sha, .text = "", .niche = "", .sum = 0, .n = 0 }) catch {};
-            return &list.items[list.items.len - 1];
-        }
-    }.at;
-
-    var it = std.mem.splitScalar(u8, data, '\n');
-    while (it.next()) |ln| {
-        const t = std.mem.trim(u8, ln, " \t\r");
-        if (t.len == 0) continue;
-        const v = std.json.parseFromSliceLeaky(Value, arena, t, .{ .allocate = .alloc_always }) catch continue;
-        if (v != .object) continue;
-        const o = v.object;
-        const kind = strFieldObj(o, "kind") orelse continue;
-        const sha = strFieldObj(o, "prompt_sha") orelse "";
-        if (sha.len == 0) continue;
-        if (std.mem.eql(u8, kind, "prompt")) {
-            if (strFieldObj(o, "text")) |txt| cell(arena, &cells, sha).text = arena.dupe(u8, txt) catch "";
-        } else if (std.mem.eql(u8, kind, "score")) {
-            const sv = o.get("score") orelse continue;
-            const val: f64 = switch (sv) {
-                .float => sv.float,
-                .integer => @floatFromInt(sv.integer),
-                else => continue,
-            };
-            const c = cell(arena, &cells, sha);
-            c.sum += val;
-            c.n += 1;
-        } else if (strFieldObj(o, "niche")) |nz| {
-            if (nz.len > 0) cell(arena, &cells, sha).niche = arena.dupe(u8, nz) catch "";
-        }
-    }
+    // #376 — one champion per niche, ranked WITHIN a routing stratum. Phase
+    // workers may now be seated on a learned model (route_phase.zig), so two
+    // genomes in one niche can come from runs on different rungs; pooling them
+    // would credit the model's advantage to the prompt, which is exactly the
+    // attribution #290 protects. fitness_strata.champions does the fold that
+    // used to live here, split by the resolved model each score was measured
+    // on (rows that name none are their own `unknown` stratum, never merged).
+    const champs = fitness_strata.champions(arena, data);
 
     // Resolve + create the target tier dir (createDir is one level).
     const dir = if (personal) blk: {
@@ -275,28 +248,11 @@ pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8,
     };
     Io.Dir.cwd().createDir(io, dir, .default_dir) catch {};
 
-    // For each niche, write the genome with the best mean score (text required).
-    var done: std.ArrayList([]const u8) = .empty;
+    // Write each niche's stratified champion (text and a niche are required,
+    // which champions() has already enforced).
     var promoted: usize = 0;
-    for (cells.items) |*seed| {
-        if (seed.niche.len == 0 or seed.text.len == 0 or seed.n == 0) continue;
-        var already = false;
-        for (done.items) |d| if (std.mem.eql(u8, d, seed.niche)) {
-            already = true;
-            break;
-        };
-        if (already) continue;
-        var champ = seed;
-        var champ_mean = seed.sum / @as(f64, @floatFromInt(seed.n));
-        for (cells.items) |*other| {
-            if (other.text.len == 0 or other.n == 0) continue;
-            if (!std.mem.eql(u8, other.niche, seed.niche)) continue;
-            const m = other.sum / @as(f64, @floatFromInt(other.n));
-            if (m > champ_mean) {
-                champ = other;
-                champ_mean = m;
-            }
-        }
+    for (champs) |champ| {
+        const champ_mean = champ.mean;
         const path = std.fmt.allocPrint(arena, "{s}/{s}.md", .{ dir, champ.niche }) catch continue;
         // Auto (green-eval) promotion never clobbers a hand-written persona:
         // only a file promotion itself wrote is fair game. Manual /agents
@@ -308,15 +264,16 @@ pub fn promoteAgents(io: Io, gpa: Allocator, out: *Io.Writer, home: ?[]const u8,
         // (isolation, #292's model/tier) is policy, not something the judge
         // scored, so carry it across the rewrite instead of dropping it.
         const policy = @import("subagent_pin.zig").personaPolicyFrontmatter(arena, champ.niche);
-        const content = std.fmt.allocPrint(arena, "---\nname: {s}\ndescription: promoted local champion (mean {d:.2} over {d} run(s), sha {s})\nscore: {d:.4}\n{s}---\n{s}\n", .{ champ.niche, champ_mean, champ.n, champ.sha, champ_mean, policy, champ.text }) catch continue;
+        // #376: the stratum is part of what the score MEANS — "best on this
+        // model", not "best in the abstract" — so the persona records it.
+        const content = std.fmt.allocPrint(arena, "---\nname: {s}\ndescription: promoted local champion (mean {d:.2} over {d} run(s) on {s}, sha {s})\nscore: {d:.4}\n{s}---\n{s}\n", .{ champ.niche, champ_mean, champ.n, champ.stratum, champ.sha, champ_mean, policy, champ.text }) catch continue;
         const f = Io.Dir.cwd().createFile(io, path, .{}) catch continue;
         defer f.close(io);
         var wbuf: [4096]u8 = undefined;
         var fw = f.writer(io, &wbuf);
         fw.interface.writeAll(content) catch continue;
         fw.interface.flush() catch {};
-        out.print("  {s}✓{s} {s}{s}{s} → {s} {s}(mean {d:.2}, n={d}){s}\n", .{ style.green, style.reset, style.accent, champ.niche, style.reset, path, style.dim, champ_mean, champ.n, style.reset }) catch {};
-        done.append(arena, champ.niche) catch {};
+        out.print("  {s}✓{s} {s}{s}{s} → {s} {s}(mean {d:.2}, n={d}, on {s}){s}\n", .{ style.green, style.reset, style.accent, champ.niche, style.reset, path, style.dim, champ_mean, champ.n, champ.stratum, style.reset }) catch {};
         promoted += 1;
     }
     if (promoted == 0) out.print("  {s}nothing to promote — need scored, niche-tagged genomes (spawn personas via subagent agent:\"<niche>\", then score them){s}\n", .{ style.dim, style.reset }) catch {};
