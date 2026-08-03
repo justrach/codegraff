@@ -192,7 +192,11 @@ pub const SubRun = struct { output: ToolOutput, usage: AgentUsage };
 /// deliberately a resolved Provider rather than a name: resolution (catalog
 /// lookup, graceful fallback, provider locality) happens once at the call
 /// site, so nothing here can fail a spawn on an unavailable pin.
-pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider) !SubRun {
+///
+/// `effort` is the same story on the reasoning axis (#292 follow-up):
+/// forSpawn's resolved per-spawn/per-persona depth; null keeps the worker
+/// default (medium — a child never inherits the root's /effort implicitly).
+pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider, effort: ?main_mod.ReasoningEffort) !SubRun {
     const gpa = ctx.gpa;
     if (ctx.run_budget) |budget| if (ctx.depth >= budget.max_depth) return .{
         .output = .{
@@ -232,6 +236,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         else
             .child,
         .sys_override = sys_override,
+        .reasoning = effort orelse .medium, // #292 follow-up: effort pin; unpinned workers keep the default depth, not the root's /effort
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);
     if (sys_override) |so| if (telemetry.g_telem) |t| {

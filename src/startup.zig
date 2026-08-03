@@ -62,28 +62,28 @@ fn explicitProvider(model_flag: ?[]const u8) ?[]const u8 {
     return catalog_selection.explicitProvider(model_flag orelse return null);
 }
 
-/// Whether one stored credential can affect an explicit startup selection.
-/// Provider ids need one key; exact catalog model names need only providers
-/// that serve that model. Aliases/fuzzy queries retain the full scan because
-/// key availability participates in their tie-break.
-fn storedKeyMayAffectSelection(provider_id: []const u8, model_flag: ?[]const u8) bool {
+/// Whether one stored credential can affect an explicit startup selection:
+/// provider ids need one key; exact catalog models need only providers that
+/// serve them (aliases/fuzzy retain the full scan); --subagent-provider (worker_hint) is
+/// equally explicit — that provider WILL be used. pub only for startup_tests.zig (at cap).
+pub fn storedKeyMayAffectSelection(provider_id: []const u8, model_flag: ?[]const u8, worker_hint: ?[]const u8) bool {
     const query = model_flag orelse return true;
+    if (worker_hint) |h| if (std.mem.eql(u8, provider_id, h)) return true;
     if (explicitProvider(query)) |id| return std.mem.eql(u8, provider_id, id);
     if (pricing.modelInTable(query)) return pricing.providerModelInTable(provider_id, query);
     return true;
 }
 
 fn hasSelectiveStoredKeyScope(model_flag: ?[]const u8) bool {
-    const query = model_flag orelse return false;
-    return explicitProvider(query) != null or pricing.modelInTable(query);
+    return if (model_flag) |query| explicitProvider(query) != null or pricing.modelInTable(query) else false;
 }
 
-fn startupStoredKeyScope(model_flag: ?[]const u8, selective: bool) keys_cli.StoredKeyScope {
+pub fn startupStoredKeyScope(model_flag: ?[]const u8, selective: bool, worker_hint: ?[]const u8) keys_cli.StoredKeyScope {
     if (!selective) return .all;
-    if (explicitProvider(model_flag)) |id| return .{ .provider = id };
+    if (worker_hint == null) if (explicitProvider(model_flag)) |id| return .{ .provider = id };
     var mask: [provider_mod.provider_specs.len]bool = @splat(false);
     for (provider_mod.provider_specs, 0..) |spec, i|
-        mask[i] = storedKeyMayAffectSelection(spec.id, model_flag);
+        mask[i] = storedKeyMayAffectSelection(spec.id, model_flag, worker_hint);
     return .{ .mask = mask };
 }
 
@@ -94,12 +94,12 @@ test "Codex catalog loads at startup only when selection can observe it" {
     try std.testing.expect(explicitProvider("deepseek-v4-pro") == null);
     try std.testing.expect(explicitProvider(null) == null);
     try std.testing.expect(hasSelectiveStoredKeyScope("deepseek-v4-pro"));
-    try std.testing.expect(storedKeyMayAffectSelection("codegraff", "deepseek-v4-pro"));
-    try std.testing.expect(storedKeyMayAffectSelection("deepseek", "deepseek-v4-pro"));
-    try std.testing.expect(!storedKeyMayAffectSelection("anthropic", "deepseek-v4-pro"));
-    try std.testing.expect(storedKeyMayAffectSelection("anthropic", "opus"));
-    try std.testing.expect(storedKeyMayAffectSelection("openai", null));
-    const exact_scope = startupStoredKeyScope("deepseek-v4-pro", true);
+    try std.testing.expect(storedKeyMayAffectSelection("codegraff", "deepseek-v4-pro", null));
+    try std.testing.expect(storedKeyMayAffectSelection("deepseek", "deepseek-v4-pro", null));
+    try std.testing.expect(!storedKeyMayAffectSelection("anthropic", "deepseek-v4-pro", null));
+    try std.testing.expect(storedKeyMayAffectSelection("anthropic", "opus", null));
+    try std.testing.expect(storedKeyMayAffectSelection("openai", null, null));
+    const exact_scope = startupStoredKeyScope("deepseek-v4-pro", true, null);
     try std.testing.expect(exact_scope.includes(1, "codegraff"));
     try std.testing.expect(exact_scope.includes(2, "deepseek"));
     try std.testing.expect(!exact_scope.includes(0, "anthropic"));
@@ -148,7 +148,7 @@ test "Kimi catalog loads at startup only when selection can observe it" {
 /// former inline credential-loading block verbatim; fatals via
 /// std.process.fatal exactly as that block did (no key found, or a bad
 /// --model value).
-pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, model_flag: ?[]const u8) !ResolvedKeys {
+pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytype, model_flag: ?[]const u8, worker_provider_hint: ?[]const u8) !ResolvedKeys {
     var keys: provider_mod.Keys = .{ .values = undefined };
     for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
         value.* = environ_map.get(spec.env_key);
@@ -198,13 +198,13 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     // scope discipline as the stored-key load a few lines below.
     if (keys_cli.homeEnv(environ_map)) |home| {
         for (provider_mod.provider_specs, &keys.values, &keys.sources) |spec, *value, *source| {
-            if (std.mem.eql(u8, spec.id, "kimi") and value.* == null and storedKeyMayAffectSelection(spec.id, model_flag)) {
+            if (std.mem.eql(u8, spec.id, "kimi") and value.* == null and storedKeyMayAffectSelection(spec.id, model_flag, worker_provider_hint)) {
                 if (oauth.loadKimiOAuth(io, gpa, arena, home, false, null)) |key| {
                     value.* = key;
                     source.* = .login;
                 }
             }
-            if (std.mem.eql(u8, spec.id, "xai") and value.* == null and storedKeyMayAffectSelection(spec.id, model_flag)) {
+            if (std.mem.eql(u8, spec.id, "xai") and value.* == null and storedKeyMayAffectSelection(spec.id, model_flag, worker_provider_hint)) {
                 if (oauth.loadXaiOAuth(io, gpa, arena, home, false, null)) |key| {
                     value.* = key;
                     source.* = .login;
@@ -220,7 +220,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
     var stored_keys_loaded = !selective_stored_keys;
     if (keys_cli.homeEnv(environ_map)) |home| {
         if (selective_stored_keys) {
-            keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, startupStoredKeyScope(model_flag, true));
+            keys_cli.loadMissingStoredKeys(io, gpa, arena, home, &keys, startupStoredKeyScope(model_flag, true, worker_provider_hint));
             // Preserve the old diagnostics/fallback behavior when none of the
             // selective candidates has any credential: only failed launches
             // pay for the exhaustive scan.
@@ -306,7 +306,7 @@ pub fn resolveKeys(io: Io, gpa: Allocator, arena: Allocator, environ_map: anytyp
             }
         }
     }
-    return .{ .keys = keys, .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account, .model_catalog = model_catalog, .stored_keys_loaded = stored_keys_loaded };
+    return .{ .keys = @import("bench_priors.zig").noteAvailability(keys), .default_provider = default_provider, .stale_saved_model = stale_saved_model, .preferred_provider = preferred_provider, .codex_account = codex_account, .model_catalog = model_catalog, .stored_keys_loaded = stored_keys_loaded };
 }
 
 /// Root system-prompt layering, frozen at startup so it stays

@@ -10,6 +10,13 @@ pub const verifier_boundary =
 pub const verifier_hard_stop =
     "VERIFIER RED: the committed plan was dropped. Start a repair turn, make one focused repair, then rerun eval before completion.";
 
+/// How many RED continuations one session may consume before the turn gives
+/// up and surfaces verifier_hard_stop as its final text. Each grant is one
+/// repair attempt plus its eval rerun; any green eval resets the budget
+/// (runEval), so progress loops stay alive while a permanently-red eval
+/// still terminates.
+pub const max_repair_grants: u8 = 5;
+
 pub fn evalCallIndex(calls: []const ToolCall) ?usize {
     for (calls, 0..) |call, index| {
         if (std.mem.eql(u8, call.name, "eval")) return index;

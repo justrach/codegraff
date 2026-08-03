@@ -151,6 +151,7 @@ pub const Agent = struct {
     eval_best: f64 = -1, // best score seen this session (-1 = none yet)
     eval_verified: bool = false, // latest workspace state has a target-meeting verifier result
     eval_repair_pending: bool = false, // a contradiction blocks completion until a fresh green eval
+    eval_repair_grants: u8 = 0, // RED continuations consumed (agent_steps.grantRepairTurn); reset by any green eval, capped by eval_control.max_repair_grants
     strict: bool = false,
     completed: ?[]const u8 = null,
     last_context_tokens: u64 = 0,

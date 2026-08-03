@@ -280,7 +280,7 @@ pub fn main(init: std.process.Init) !void {
     if (try startup.runSubcommand(io, gpa, arena, init, flags)) return;
     // Credential/model resolution (env vars → on-disk logins → `harness key set` store, env always wins; then --model or the last-saved model) lives
     // in startup.zig as resolveKeys() — pure over env/disk/arena, safe to call outside main()'s own stack frame.
-    const resolved_keys = try startup.resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag);
+    const resolved_keys = try startup.resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag, flags.subagent_provider_flag orelse init.environ_map.get("GRAFF_SUBAGENT_PROVIDER"));
     boot.mark(io, "credentials/model");
     var keys = resolved_keys.keys;
     const default_provider = resolved_keys.default_provider;
@@ -485,10 +485,10 @@ pub fn main(init: std.process.Init) !void {
 
     // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL agent loop — each prompt runs a full root turn (tools + MCP) via
     // replTurnCb, reusing the root agent's tool set + registry + system prompt. Self-contained — exits after.
-    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, &keys, &client, in, out, arena, flags)) return;
+    if (try session_run.runReplCommand(gpa, io, init.environ_map, &root, @import("bench_priors.zig").noteKeys(&keys), &client, in, out, arena, flags)) return;
     // One-shot print mode: run the single prompt to completion, print the final text to stdout, exit.
     if (flags.oneshot_prompt) |prompt_text| {
-        try session_run.runOneshotPrompt(gpa, io, arena, &root, &keys, &tracer, out, prompt_text);
+        try session_run.runOneshotPrompt(gpa, io, arena, &root, @import("bench_priors.zig").noteKeys(&keys), &tracer, out, prompt_text); // one-shot exits before loop_ctx below — capture keys for sub-first routing here too
         return;
     }
 
@@ -517,7 +517,7 @@ pub fn main(init: std.process.Init) !void {
         .io = io,
         .arena = arena,
         .root = &root,
-        .keys = &keys,
+        .keys = @import("bench_priors.zig").noteKeys(&keys), // also captured for sub-first worker routing (subagent_pin.subscriptionRung)
         .out = out,
         .in = in,
         .history = &history,

@@ -43,6 +43,8 @@ const subagent_selection = @import("subagent_selection.zig");
 const subagent_pin_tests = @import("subagent_pin_tests.zig");
 // Moved off subagent.zig, which is at the 600-line cap.
 const subagent_tests = @import("subagent_tests.zig");
+// Bench score/cost priors → derived tier ladders (.harness/bench.json).
+const bench_priors = @import("bench_priors.zig");
 
 // `graff serve` resumability (#330): serve.zig imports these, but nothing in
 // the production graph references their decls, so Zig never analyses them.
@@ -75,6 +77,7 @@ test {
     _ = subagent_selection;
     _ = subagent_pin_tests;
     _ = subagent_tests;
+    _ = bench_priors;
     _ = serve_events;
     _ = serve_create;
     _ = scoring_slot_test;
