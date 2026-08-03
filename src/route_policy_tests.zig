@@ -323,18 +323,24 @@ test "#372 round trip: what captureVariant writes is exactly what foldCells lear
     );
 }
 
-test "#372 firewall: a workflow phase task still carries no per-task pin (#290)" {
-    // The trace makes routing VISIBLE; it must not make it VARIABLE inside a
-    // scored phase. workflowTask/workflowRetryTask are the only doors a phase
-    // task goes through, and both hand runSub a null pin AND a null effort —
-    // so scoreVariants keeps ranking prompt genomes that ran on one identical
-    // configuration. Pinned as source text because the property is about the
-    // call site, not about any value a unit test could observe at runtime.
+test "#372/#376 firewall: a phase task takes the PHASE's seat, and still no per-task pin (#290)" {
+    // The trace makes routing VISIBLE; #376 lets the policy make it VARY —
+    // but only per PHASE, never per task inside one. workflowTask and
+    // workflowRetryTask are the only doors a phase task goes through, and
+    // both hand runSub the `seat` their caller resolved once for the whole
+    // phase (route_phase.forPhase), plus a null EFFORT: no axis of a phase
+    // task's configuration is readable off the task itself, so scoreVariants
+    // keeps ranking prompt genomes that ran on one identical configuration.
+    // Pinned as source text because the property is about the call site, not
+    // about any value a unit test could observe at runtime.
     const src = @embedFile("subagent.zig");
     const wf = std.mem.indexOf(u8, src, "pub fn workflowTask(").?;
     const wf_end = std.mem.indexOf(u8, src[wf..], "\n}").?;
-    try std.testing.expect(std.mem.indexOf(u8, src[wf .. wf + wf_end], "isolation_fallback, null, null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src[wf .. wf + wf_end], "isolation_fallback, seat, null)") != null);
     const rt = std.mem.indexOf(u8, src, "pub fn workflowRetryTask(").?;
     const rt_end = std.mem.indexOf(u8, src[rt..], "\n}").?;
-    try std.testing.expect(std.mem.indexOf(u8, src[rt .. rt + rt_end], "isolation_fallback, null, null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src[rt .. rt + rt_end], "isolation_fallback, seat, null)") != null);
+    // `seat` is a parameter of both, never derived from the task's own fields.
+    try std.testing.expect(std.mem.indexOf(u8, src[wf .. wf + wf_end], "isolation_fallback: bool, seat: ?Provider)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src[rt .. rt + rt_end], "isolation_fallback: bool, seat: ?Provider)") != null);
 }

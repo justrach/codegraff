@@ -47,11 +47,11 @@
 //! below every explicit pin (subagent_pin's precedence is untouched: an
 //! explicit `model` bypasses this module entirely, and an explicit `tier`
 //! only chooses WHICH model serves that rung). Workflow PHASE tasks still
-//! take no per-task pins at all, so scoreVariants keeps comparing prompt
-//! variants that ran on one identical configuration; the model axis never
-//! enters a genome's fitness. What #372 adds there is VISIBILITY, not a new
-//! lever: every phase worker now says out loud that its model came from the
-//! session, and under which (shape, role) its score is being filed.
+//! take no PER-TASK pins at all: #376 applies this policy once for a whole
+//! phase (route_phase.zig), so every worker in it runs the SAME model and
+//! scoreVariants keeps ranking prompt variants that ran on one identical
+//! configuration. What varies across RUNS is now recorded instead of being
+//! averaged over — see `stratumOf` below and fitness_strata.zig.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -225,6 +225,32 @@ pub fn tierOf(provider_id: []const u8, model: []const u8) ?Tier {
 /// rather than filing under a rung nobody can compare it against.
 pub fn tierLabelFor(provider_id: []const u8, model: []const u8) []const u8 {
     return if (tierOf(provider_id, model)) |t| t.label() else "";
+}
+
+/// #376 — the fitness STRATUM one scored observation belongs to: the resolved
+/// model the worker actually ran on.
+///
+/// Until now the only routing axis a fitness row carried was
+/// scoring.providerClass, whose needle table buckets gpt-5.6-sol, -terra and
+/// -luna IDENTICALLY as "frontier" (the pinned, deliberate disagreement test
+/// in subagent_selection.zig). A rung-only difference was therefore invisible
+/// to every comparison built on it — which is precisely why #290 had to
+/// forbid phase workers from varying their model at all: nothing downstream
+/// could have told the model's contribution from the prompt's.
+///
+/// Recording the resolved model per row removes that blindness. A cross-run
+/// comparison of two prompt genomes can then be restricted to rows that ran
+/// on the same model (fitness_strata.zig) instead of pooling across rungs,
+/// which is what makes the phase-uniform routing in route_phase.zig safe.
+///
+/// A row that names no model — every fitness row written before #372, and
+/// mainloop /score's, which never recorded one — reads as `unknown`: its own
+/// bucket, ranked only against other unknowns, never silently merged into a
+/// measured one.
+pub const stratum_unknown = "unknown";
+
+pub fn stratumOf(model: []const u8) []const u8 {
+    return if (model.len == 0) stratum_unknown else model;
 }
 
 // ── the learned tier policy ────────────────────────────────────────────────

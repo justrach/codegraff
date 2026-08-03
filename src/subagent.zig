@@ -6,8 +6,7 @@
 //! tools.zig for `ToolCtx`/`ToolOutput`/`failure`; back-imports main (as
 //! `main_mod`) for `Agent` (whose `runTurn`/`systemPrompt` are pub-flipped for
 //! this cross-module call), `parseEvalScore`, `utf8Prefix`, `json_mode`,
-//! `g_out`/`g_gui_mu` (pub-flipped — guiEmit serializes --json stdout with
-//! them), and `g_fleet`.
+//! `g_out`/`g_gui_mu` (guiEmit serializes --json stdout), and `g_fleet`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -87,7 +86,7 @@ pub const AgentUsage = subagent_run.AgentUsage;
 pub const SubRun = subagent_run.SubRun;
 pub const runSub = subagent_run.runSub;
 const childProvider = subagent_run.childProvider;
-const variantProviderClass = subagent_run.variantProviderClass;
+const route_phase = @import("route_phase.zig"); // #376 one learned seat per phase
 const shapes = @import("shapes.zig");
 const route_policy = @import("route_policy.zig"); // #372 (shape, role) policy cells
 const route_trace = @import("route_trace.zig"); // #372 per-worker routing trace
@@ -101,11 +100,10 @@ const classifyFailure = subagent_run.classifyFailure;
 // on `subagent` returns a stable agent id immediately (spawnSubBackground);
 // the child runs on io.concurrent, never io.async — io.async may run inline
 // and block the spawning call forever on a long-lived child, same reason
-// spawnJob avoids it for bash. Completion is polled non-destructively via
-// the new `agent_output` tool (agentOutput), mirroring bash_output's
-// id/wait_ms shape and its 30s wait cap — except a subagent's report is a
-// one-shot value, not a stream, so a completed fetch always replays the
-// FULL result rather than consuming a cursor (design point 4).
+// spawnJob avoids it for bash. Completion is polled non-destructively via the
+// `agent_output` tool (agentOutput), mirroring bash_output's id/wait_ms shape
+// and 30s wait cap — except a subagent's report is a one-shot value, not a
+// stream, so a completed fetch replays the FULL result (design point 4).
 
 /// Concurrency ceiling on background subagents actually RUNNING (i.e. past
 /// admission, inside their own runSub call) at once. Deliberately a counter
@@ -113,18 +111,17 @@ const classifyFailure = subagent_run.classifyFailure;
 /// background job's admission slot would otherwise have to stay held for its
 /// entire — possibly minutes-long — lifetime, while its OWN internal turns
 /// separately acquire per-model-call permits from that very same pool; once
-/// enough jobs queued up, every held outer slot would starve the inner
-/// acquires each job needs to ever finish and release it — a deadlock. Same
-/// admission SHAPE as RunBudget.acquireConcurrency (spin-wait, no failure on
-/// saturation) and the same default value, but an independent resource.
+/// enough jobs queued up, every held outer slot would starve the inner acquires
+/// each job needs to ever finish and release it — a deadlock. Same admission
+/// SHAPE as RunBudget.acquireConcurrency (spin-wait, no failure on saturation)
+/// and the same default value, but an independent resource.
 const max_concurrent_background_agents: u32 = run_budget.default_max_concurrency;
 
 /// One background subagent spawn: the runSub arguments (gpa-owned copies —
 /// the caller's ToolCtx.arena-backed strings do not outlive this tool call's
 /// return, the whole point of fire-and-forget) plus its outcome once done.
 /// `admitted` is false while queued behind max_concurrent_background_agents;
-/// jobs.zig's Job mirrors this shape closely (id/cmd there ~ id/label+prompt
-/// here).
+/// jobs.zig's Job mirrors this shape (id/cmd there ~ id/label+prompt here).
 const AgentJob = struct {
     id: u32,
     label: []u8,
@@ -427,18 +424,19 @@ test "agentStatusText: composes with isolation:\"worktree\" — a kept-worktree 
 /// One task inside a workflow phase; never throws, suitable for io.async.
 /// `niche` is the task's MAP-Elites cell, threaded through so runSub's
 /// fleet:propose — and scoreVariants' submit — tag the variant's genome.
-pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) ToolOutput {
-    // No #292 pin (model or effort): a phase's variants must share one
-    // configuration or scoreVariants would file model effects under the
-    // prompt genome (#290).
-    const run = runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback, null, null) catch |err| return failure(ctx.gpa, err);
+pub fn workflowTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, seat: ?Provider) ToolOutput {
+    // `seat` is the PHASE's one model (route_phase.forPhase, resolved once and
+    // handed to every task alike), never a per-task pin: the variants still
+    // share one configuration (#290). The effort axis stays unpinned.
+    const run = runSub(ctx, "workflow_task", label, prompt, sys_override, niche, isolation, isolation_fallback, seat, null) catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 
 /// A second workflow attempt has its own explicit budget kind. It still shares
 /// the same invocation-wide atomic ceiling and concurrency limiter.
-pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool) ToolOutput {
-    const run = runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback, null, null) catch |err| return failure(ctx.gpa, err);
+pub fn workflowRetryTask(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, seat: ?Provider) ToolOutput {
+    // The SAME phase seat: a retry that changed model would break uniformity.
+    const run = runSub(ctx, "workflow_retry", label, prompt, sys_override, niche, isolation, isolation_fallback, seat, null) catch |err| return failure(ctx.gpa, err);
     return run.output;
 }
 
@@ -485,15 +483,15 @@ pub const max_workflow_tasks = 8;
 /// the fleet, turning every ultracode tournament into a DGM scoring round. Each
 /// surviving variant task is judged 0-100 against its task; the score is signed
 /// and submitted under the task's niche so a MAP-Elites cell accrues real fitness
-/// and the promote pass can crown a winner. Mirrors runEval's submit exactly but
-/// with a NON-EMPTY niche — the gap that previously forced bootstrap seeding.
+/// and the promote pass can crown a winner. Mirrors runEval's submit but with a
+/// NON-EMPTY niche — the gap that previously forced bootstrap seeding.
 /// Best-effort and gated: no judge runs unless ≥2 variants competed and the
-/// fleet (telemetry) is on, so ordinary fan-outs pay nothing.
+/// fleet (telemetry) is on, so ordinary fan-outs pay nothing. `seat` (#376) is
+/// this phase's shape/title/model — the configuration every variant shared.
 pub fn scoreVariants(
     ctx: ToolCtx,
     arena: Allocator,
-    title: []const u8,
-    shape: route_policy.Shape,
+    seat: route_phase.Seat,
     prompts: [][]const u8,
     raws: [][]const u8,
     overrides: []?[]const u8,
@@ -516,13 +514,15 @@ pub fn scoreVariants(
     }
     if (vn < 2) return;
 
-    // A tournament must vary exactly ONE axis: if the variants did not all run on
-    // the same capability tier, the ranking reflects the model as much as the
-    // prompt, and filing it under the prompt fingerprint writes model effects into
-    // the genome archive (#290). Bail before spawning a judge — unscoreable round.
+    // A tournament must vary exactly ONE axis: variants that did not all run on
+    // the same MODEL rank the model as much as the prompt, and filing that under
+    // the prompt fingerprint writes model effects into the genome archive (#290).
+    // #376 tightened the key from the capability class — which cannot tell
+    // gpt-5.6-sol from -luna — to the resolved model, catching a rung-only
+    // difference too. Bail before a judge: unscoreable round.
     for (1..vn) |k| {
-        if (!std.mem.eql(u8, variantProviderClass(ctx, vidx[0]), variantProviderClass(ctx, vidx[k]))) {
-            if (ctx.tracer) |tr| tr.note("fleet", "tournament skipped: variants span provider classes");
+        if (!std.mem.eql(u8, subagent_run.variantStratum(seat.provider, vidx[0]), subagent_run.variantStratum(seat.provider, vidx[k]))) {
+            if (ctx.tracer) |tr| tr.note("fleet", "tournament skipped: variants span routing strata");
             return;
         }
     }
@@ -532,14 +532,14 @@ pub fn scoreVariants(
     const jprompts = arena.alloc([]const u8, vn) catch return;
     for (jprompts, 0..) |*jp, k| {
         const i = vidx[k];
-        jp.* = variantJudgePrompt(arena, title, prompts[i], outputs[i].text) catch return;
+        jp.* = variantJudgePrompt(arena, seat.title, prompts[i], outputs[i].text) catch return;
     }
     const jfuts = arena.alloc(Io.Future(ToolOutput), vn) catch return;
     for (jfuts, jprompts) |*jf, jp| jf.* = ctx.io.async(judgeTask, .{ ctx, jp });
 
     const run_id: []const u8 = &scoring.g_run_id;
     // This phase's MAP-Elites slot (#290/#293); "" off-vocabulary. See telemetrySlot.
-    const slot = scoring.telemetrySlot(shapes.canonicalSlot(title));
+    const slot = scoring.telemetrySlot(shapes.canonicalSlot(seat.title));
     for (jfuts, 0..) |*jf, k| {
         const i = vidx[k];
         const jout = jf.await(ctx.io);
@@ -560,7 +560,7 @@ pub fn scoreVariants(
         // above; every score that leaves the client is [0,1], so divide at
         // the emission boundary — s01 is what gets signed and sent.
         const s01 = s / 100.0;
-        const pclass = variantProviderClass(ctx, i);
+        const pclass = subagent_run.variantProviderClass(seat.provider, i);
         const genome_fp = promptFingerprint(overrides[i].?);
         const esh_fp = promptFingerprint(raws[i]);
         const genome: []const u8 = &genome_fp;
@@ -573,13 +573,15 @@ pub fn scoreVariants(
         const sig = signScore(genome, "", s01, run_id, "", "", esh, niche, pclass);
         const sig_s: []const u8 = if (scoring.g_score_key != null) &sig else "";
         var provbuf: [512]u8 = undefined;
-        // Slot is APPENDED as a 6th component, so a collector indexing 0..4 is
-        // unaffected. Advisory like the rest of `prov` (signScore holds the
-        // authoritative copies); signing it would need a collector-first deploy.
-        const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche, slot }) catch "";
+        // Slot (6th) and #376's routing STRATUM (7th) are APPENDED, so a
+        // collector indexing 0..4 is unaffected; both stay advisory like the
+        // rest of `prov` (signing them needs a collector-first deploy). The
+        // stratum is what lets a cross-run comparison of two genomes stay
+        // inside one rung instead of averaging over the phase's seat.
+        const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche, slot, subagent_run.variantStratum(seat.provider, i) }) catch "";
         // #372: the policy observation — this cell's (shape, role, tier,
         // model) plus the judged score — filed locally, never on the genome.
-        route_trace.captureVariant(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), shape, title, niche, genome, s01);
+        route_trace.captureVariant(seat.provider, seat.shape, seat.title, niche, genome, s01);
         const t = telemetry.g_telem orelse continue;
         // Genome-send (issue #168 Gap 5), mirroring runEval: ride the variant's
         // text over on a propose (deduped by fingerprint server-side) so the
