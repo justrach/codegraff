@@ -135,8 +135,13 @@ pub fn loadInto(io: Io, arena: Allocator, home: ?[]const u8) void {
     // front routes on what these models actually did here, not only on a
     // leaderboard snapshot. Auto-promote's hot-reload re-runs this, so the
     // front tightens as the session scores work.
-    g_entries = blend(arena, g_entries, trace.readTrajectoryArchive(io, arena, 8 << 20));
+    const archive = trace.readTrajectoryArchive(io, arena, 8 << 20);
+    g_entries = blend(arena, g_entries, archive);
     g_ladders = derive(arena, g_entries);
+    // #372: the SAME archive read also folds the (shape, role, tier, model)
+    // policy cells, so the session-wide ladders and the per-cell learned
+    // policy can never disagree about which runs they have seen.
+    @import("route_policy.zig").loadCells(arena, archive);
 }
 
 fn readSheet(io: Io, arena: Allocator, path: []const u8) ?Sheet {
@@ -254,8 +259,10 @@ pub fn foldObservations(arena: Allocator, archive: []const u8) []Obs {
 }
 
 /// The sheet speaks with the weight of this many lived runs: a couple of
-/// real scores nudge the front, a season of them owns it.
-const sheet_weight: f64 = 3;
+/// real scores nudge the front, a season of them owns it. pub since #372 so
+/// the per-cell learned policy damps its evidence with the SAME pseudo-count
+/// discipline rather than inventing a second one.
+pub const sheet_weight: f64 = 3;
 
 /// Merge lived observations into the sheet before Pareto seating. A matching
 /// (model[, effort]) entry gets a pseudo-count-blended score and KEEPS its

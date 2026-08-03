@@ -64,11 +64,18 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     // the session default (--subagent-model / the #291 ladder). Resolved
     // provider-locally here so an unavailable pin degrades to the session
     // default with a trace note instead of failing the spawn.
-    const pinned = subagent_pin.forSpawn(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), obj, ctx.subagent_provider == null);
+    const base = childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
+    // #372: a bare spawn instantiates no catalog shape, so its cell is
+    // (adhoc, <the canonical slot its description or persona niche names>) —
+    // the same closed vocabulary a workflow phase files fitness under, so
+    // both feed one policy instead of two disjoint ones.
+    const cell: route_policy.Cell = .{ .role = route_policy.roleOf(label, niche) };
+    const pinned = subagent_pin.forSpawnIn(base, obj, ctx.subagent_provider == null, cell);
     if (ctx.tracer) |tr| {
         if (pinned.outcome != .none) tr.note("subagent", pinned.outcome.describe());
         if (pinned.effort_outcome != .none) tr.note("subagent", pinned.effort_outcome.describe());
     }
+    route_trace.emitSpawnProvider(ctx.io, ctx.tracer, label, pinned.provider orelse base, cell, if (pinned.provider != null) pinned.source else route_trace.sessionSource(ctx.subagent_provider != null), sys_override, niche);
     if (tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, pinned.provider, pinned.effort);
     const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, pinned.provider, pinned.effort);
     return run.output;
@@ -82,6 +89,8 @@ pub const runSub = subagent_run.runSub;
 const childProvider = subagent_run.childProvider;
 const variantProviderClass = subagent_run.variantProviderClass;
 const shapes = @import("shapes.zig");
+const route_policy = @import("route_policy.zig"); // #372 (shape, role) policy cells
+const route_trace = @import("route_trace.zig"); // #372 per-worker routing trace
 const FailKind = subagent_run.FailKind;
 const classifyFailure = subagent_run.classifyFailure;
 
@@ -484,6 +493,7 @@ pub fn scoreVariants(
     ctx: ToolCtx,
     arena: Allocator,
     title: []const u8,
+    shape: route_policy.Shape,
     prompts: [][]const u8,
     raws: [][]const u8,
     overrides: []?[]const u8,
@@ -491,7 +501,9 @@ pub fn scoreVariants(
     outputs: []ToolOutput,
 ) void {
     if (!main_mod.g_fleet) return;
-    const t = telemetry.g_telem orelse return;
+    // #372: the local (shape, role, tier, model) capture below runs with
+    // telemetry OFF too, so a private session still accrues policy evidence.
+    if (telemetry.g_telem == null and trace.g_traj == null) return;
 
     // Variant tasks that produced a usable result; a tournament needs ≥2.
     var vidx: [max_workflow_tasks]usize = undefined;
@@ -565,6 +577,10 @@ pub fn scoreVariants(
         // unaffected. Advisory like the rest of `prov` (signScore holds the
         // authoritative copies); signing it would need a collector-first deploy.
         const prov = std.fmt.bufPrint(&provbuf, "{s}\t{s}\t{s}\t{s}\t{s}\t{s}", .{ "", "", esh, pclass, niche, slot }) catch "";
+        // #372: the policy observation — this cell's (shape, role, tier,
+        // model) plus the judged score — filed locally, never on the genome.
+        route_trace.captureVariant(childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), shape, title, niche, genome, s01);
+        const t = telemetry.g_telem orelse continue;
         // Genome-send (issue #168 Gap 5), mirroring runEval: ride the variant's
         // text over on a propose (deduped by fingerprint server-side) so the
         // scored cell has a servable genome even when runSub never proposed it.

@@ -23,6 +23,7 @@ const eval_memory = @import("eval_memory.zig");
 const trace = @import("trace.zig");
 const fleet = @import("fleet.zig");
 const main_mod = @import("main.zig");
+const route_policy = @import("route_policy.zig"); // #372 (shape, role, tier) coordinates on the local capture rows
 
 test {
     _ = @import("agent_eval_tests.zig");
@@ -159,10 +160,17 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
                 // kind:"eval" row carries the niche tag: promoteAgents reads
                 // niche off non-prompt/non-score records only. Same niche gate
                 // as the backend path — a "" cell is unpromotable either way.
+                // #372: the same two rows also carry the (shape, role, tier,
+                // model) coordinates the learned tier policy partitions on.
+                // An eval loop instantiates no catalog shape, so its cell is
+                // (adhoc, <the slot --niche names>); the rung is read back off
+                // whatever model this session actually ran.
+                const rrole = route_policy.roleOf("", niche);
+                const rtier = route_policy.tierLabelFor(self.provider.id, self.provider.model);
                 if (niche.len > 0) if (trace.g_traj) |traj| {
                     traj.capturePrompt(genome_fp, sys);
-                    traj.node(.{ .kind = "eval", .prompt_sha = genome, .niche = niche, .eval_set_hash = esh, .provider_class = pclass, .t = traj.elapsedMs() });
-                    traj.node(.{ .kind = "score", .prompt_sha = genome, .score = s01, .niche = niche, .eval_set_hash = esh, .provider_class = pclass, .t = traj.elapsedMs() });
+                    traj.node(.{ .kind = "eval", .prompt_sha = genome, .niche = niche, .eval_set_hash = esh, .provider_class = pclass, .shape = "adhoc", .role = rrole, .tier = rtier, .model = self.provider.model, .t = traj.elapsedMs() });
+                    traj.node(.{ .kind = "score", .prompt_sha = genome, .score = s01, .niche = niche, .eval_set_hash = esh, .provider_class = pclass, .shape = "adhoc", .role = rrole, .tier = rtier, .model = self.provider.model, .t = traj.elapsedMs() });
                 };
                 // Auto-learn: evolution is a default part of the harness, not
                 // a command. A target-met NEW BEST is the learning moment —

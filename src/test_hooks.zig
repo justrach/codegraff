@@ -46,6 +46,10 @@ const subagent_tests = @import("subagent_tests.zig");
 // Bench score/cost priors → derived tier ladders (.harness/bench.json).
 const bench_priors = @import("bench_priors.zig");
 const bench_priors_tests = @import("bench_priors_tests.zig");
+// #372 learned orchestration policy + the per-worker routing trace.
+const route_policy = @import("route_policy.zig");
+const route_policy_tests = @import("route_policy_tests.zig");
+const route_trace = @import("route_trace.zig");
 
 // `graff serve` resumability (#330): serve.zig imports these, but nothing in
 // the production graph references their decls, so Zig never analyses them.
@@ -84,6 +88,9 @@ test {
     _ = subagent_tests;
     _ = bench_priors;
     _ = bench_priors_tests;
+    _ = route_policy;
+    _ = route_policy_tests;
+    _ = route_trace;
     _ = serve_events;
     _ = serve_create;
     _ = scoring_slot_test;

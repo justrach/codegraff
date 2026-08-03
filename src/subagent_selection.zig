@@ -80,8 +80,16 @@ fn defaultLadderModel(root: provider_mod.Provider) ?[]const u8 {
 /// pins already enforce).
 fn defaultLadderProvider(keys: provider_mod.Keys, root: provider_mod.Provider) ?provider_mod.Provider {
     const target = defaultLadderModel(root) orelse return null;
-    return subagentProvider(keys, root, null, target, false) catch null;
+    const resolved = subagentProvider(keys, root, null, target, false) catch return null;
+    g_default_from_ladder = true;
+    return resolved;
 }
+
+/// #372 routing trace: true when the session's worker provider came from the
+/// #291 default ladder descent rather than an explicit --subagent-model, so
+/// an unpinned spawn can honestly report `source=ladder` vs
+/// `source=session-default` instead of conflating the two.
+pub var g_default_from_ladder: bool = false;
 
 pub fn subagentProvider(
     keys: provider_mod.Keys,
