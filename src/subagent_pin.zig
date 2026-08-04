@@ -261,8 +261,9 @@ pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
 /// Flat-rate, device-login subscription providers, in fallback preference
 /// order (bench scores rank them when several are logged in). codegraff's
 /// license is deliberately absent: it fronts the metered multi-vendor
-/// gateway this policy protects the user's wallet FROM.
-const subscription_providers = [_][]const u8{ "codex", "kimi" };
+/// gateway this policy protects the user's wallet FROM. `pub` since #380:
+/// vision_ask.visionSeat searches the same candidates under the same rule.
+pub const subscription_providers = [_][]const u8{ "codex", "kimi" };
 
 /// SUB-FIRST TIER ROUTING (explicit `tier` asks only — the silent no-tier
 /// default still inherits the user's chosen family): a logged-in flat-rate

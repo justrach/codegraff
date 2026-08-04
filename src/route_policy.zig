@@ -103,6 +103,7 @@ pub const Shape = enum {
 pub const Source = enum {
     explicit_pin, // `model`/`tier` on the spawn call itself
     persona, // `.harness/agents/<name>.md` frontmatter pin
+    vision_ask, // #380: the task names an image and the automatic seat was blind
     learned_policy, // a (shape, role) cell re-seated the tier's rung
     workflow_override, // the root model authored this worker's genome
     session_default, // --subagent-model, or the root the child inherits
@@ -113,6 +114,7 @@ pub const Source = enum {
         return switch (self) {
             .explicit_pin => "explicit-pin",
             .persona => "persona",
+            .vision_ask => "vision-ask",
             .learned_policy => "learned-policy",
             .workflow_override => "workflow-override",
             .session_default => "session-default",

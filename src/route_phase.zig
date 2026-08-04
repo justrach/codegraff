@@ -71,6 +71,10 @@ pub const Seat = struct {
     /// the #291 descent, `session-default` for an explicit pin or a plain
     /// inherit. Exactly what #372 reported for these workers.
     base_source: Source = .session_default,
+    /// #380: `pin` was set because a task in this phase names an image and
+    /// the seat could not see one — a capability requirement, not a measured
+    /// preference, so it must not be reported as `learned-policy`.
+    vision: bool = false,
 
     /// The (shape, role) cell one worker files its score under. Identical for
     /// every worker of a routed phase by construction: `uniformRole` only
@@ -84,6 +88,7 @@ pub const Seat = struct {
     /// decision that actually chose their model, and reporting it per worker
     /// is what keeps the trace honest about a phase-level choice.
     pub fn sourceFor(self: Seat, has_override: bool) Source {
+        if (self.vision) return .vision_ask; // #380 — a capability, not a preference
         if (self.pin != null) return .learned_policy;
         return if (has_override) .workflow_override else self.base_source;
     }

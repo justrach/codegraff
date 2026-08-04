@@ -59,29 +59,27 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     const niche = fleet.resolveNiche(obj);
     const isolation = fleet.resolveIsolation(obj);
     const isolation_fallback = fleet.resolveIsolationFallback(obj);
-    // #292: explicit spawn `model`/`tier` > the persona's frontmatter pin >
-    // the session default (--subagent-model / the #291 ladder). Resolved
-    // provider-locally here so an unavailable pin degrades to the session
-    // default with a trace note instead of failing the spawn.
+    // #292: explicit spawn `model`/`tier` > persona frontmatter > the session
+    // default (--subagent-model / the #291 ladder), resolved provider-locally.
     const base = childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
     // #372: a bare spawn instantiates no catalog shape, so its cell is
     // (adhoc, <the canonical slot its description or persona niche names>) —
     // the same closed vocabulary a workflow phase files fitness under, so
     // both feed one policy instead of two disjoint ones.
     const cell: route_policy.Cell = .{ .role = route_policy.roleOf(label, niche) };
-    const pinned = subagent_pin.forSpawnIn(base, obj, ctx.subagent_provider == null, cell);
-    if (ctx.tracer) |tr| {
-        if (pinned.outcome != .none) tr.note("subagent", pinned.outcome.describe());
-        if (pinned.effort_outcome != .none) tr.note("subagent", pinned.effort_outcome.describe());
-    }
-    route_trace.emitSpawnProvider(ctx.io, ctx.tracer, label, pinned.provider orelse base, cell, if (pinned.provider != null) pinned.source else route_trace.sessionSource(ctx.subagent_provider != null), sys_override, niche);
-    if (tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, pinned.provider, pinned.effort);
-    const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, pinned.provider, pinned.effort);
-    return run.output;
+    // #380: that chain, its notes and its #372 route line in one call (this
+    // file is at the cap). A task naming an image is a VISION ASK: a blind
+    // AUTOMATIC seat is re-routed to one that sees, a human's pin is kept but
+    // flagged, and no vision model anywhere refuses the spawn outright.
+    const ask = vision_ask.seat(ctx, base, obj, cell, label, prompt, sys_override, niche);
+    if (ask.blocked) return .{ .text = try vision_ask.blockMessage(ctx.gpa, ask), .is_error = true };
+    if (tools.json_args.flag(input, "run_in_background")) return spawnSubBackground(ctx, label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort, ask);
+    const run = try runSub(ctx, "subagent", label, prompt, sys_override, niche, isolation, isolation_fallback, ask.pin.provider, ask.pin.effort);
+    return vision_ask.flagReport(ctx.gpa, run.output, ask);
 }
 
 const subagent_run = @import("subagent_run.zig");
-const subagent_pin = @import("subagent_pin.zig"); // #292 per-persona / per-spawn model pins
+const vision_ask = @import("vision_ask.zig"); // #380 vision-aware seat (wraps #292's subagent_pin) + the report honesty flag
 pub const AgentUsage = subagent_run.AgentUsage;
 pub const SubRun = subagent_run.SubRun;
 pub const runSub = subagent_run.runSub;
@@ -130,15 +128,16 @@ const AgentJob = struct {
     niche: []u8,
     isolation: Isolation,
     isolation_fallback: bool,
-    /// #292: resolved per-spawn model pin. Stored by value with the same
-    /// lifetime assumption `ctx.provider`/`ctx.subagent_provider` below
-    /// already rely on — a Provider's strings come from the spec table, the
-    /// model catalog and the credential store, none of which are the tool
-    /// call's arena — so unlike label/prompt it needs no gpa copy.
+    /// #292: resolved per-spawn model pin. Needs no gpa copy, unlike
+    /// label/prompt: a Provider's strings come from the spec table, the model
+    /// catalog and the credential store, never from this tool call's arena.
     pin: ?Provider = null,
     /// #292 follow-up: resolved per-spawn/per-persona effort pin — an enum by
     /// value, no lifetime to manage.
     effort: ?main_mod.ReasoningEffort = null,
+    /// #380: the vision decision, rebased onto the gpa-owned prompt, so a
+    /// backgrounded report earns the same honesty flag a foreground one does.
+    ask: vision_ask.Ask = .{},
     ctx: ToolCtx,
     admitted: bool = false,
     done: bool = false,
@@ -214,7 +213,7 @@ fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
         .usage = .{ .duration_ms = @intCast(@max(0, t0.untilNow(io, .awake).toMilliseconds())) },
     };
     g_agent_jobs.mutex.lockUncancelable(io);
-    job.result = run.output.text;
+    job.result = vision_ask.flagText(gpa, run.output.text, job.ask); // #380 honesty flag
     job.is_error = run.output.is_error;
     job.usage = run.usage;
     job.done = true;
@@ -227,7 +226,7 @@ fn agentJobPump(job: *AgentJob, gpa: Allocator, io: Io) void {
 /// job and return immediately with its id; the child runs on the pool.
 /// Never blocks on a free concurrency slot — a spawn beyond the cap is
 /// queued, not failed; admitNext drains it once room frees up.
-fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider, effort: ?main_mod.ReasoningEffort) !ToolOutput {
+fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8, isolation: Isolation, isolation_fallback: bool, pin: ?Provider, effort: ?main_mod.ReasoningEffort, ask: vision_ask.Ask) !ToolOutput {
     const gpa = ctx.gpa;
     const label_c = try gpa.dupe(u8, label);
     errdefer gpa.free(label_c);
@@ -249,6 +248,7 @@ fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_o
         .isolation_fallback = isolation_fallback,
         .pin = pin,
         .effort = effort,
+        .ask = ask.rebased(prompt_c), // the caller's arena dies with this call
         .ctx = ctx,
     };
 
