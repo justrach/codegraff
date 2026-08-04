@@ -296,6 +296,9 @@ from [models.dev](https://models.dev)'s `api.json` (snapshot 2026-06-10).
 | `openai`    | OpenAI chat, bearer         | `OPENAI_API_KEY`     |
 | `minimax`   | Anthropic Messages, bearer  | `MINIMAX_API_KEY`    |
 | `xiaomi` (MiMo) | OpenAI chat, bearer     | `XIAOMI_API_KEY`     |
+| `kilo`      | OpenAI chat, bearer         | `KILO_API_KEY`       |
+| `groq`      | OpenAI chat, bearer         | `GROQ_API_KEY`       |
+| `mistral`   | OpenAI chat, bearer         | `MISTRAL_API_KEY`    |
 | `kimi` | Live catalog-selected: native Kimi chat + bearer, or Anthropic beta Messages + x-api-key when declared | `graff login kimi` or `KIMI_API_KEY` |
 | `xai` (grok) / `zai` (GLM) | OpenAI chat, bearer | `XAI_API_KEY` / `ZAI_API_KEY` (via `graff key set`) |
 | `codex`     | Responses API, ChatGPT login | `${CODEX_HOME:-~/.codex}/auth.json` (no API key) |
