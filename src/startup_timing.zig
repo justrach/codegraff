@@ -6,6 +6,13 @@ const std = @import("std");
 const Io = std.Io;
 const trace = @import("trace.zig");
 
+/// #364's teardown-side mirror of this module: `GRAFF_SHUTDOWN_DEBUG` phase
+/// stamps for the quit path. Re-exported here — rather than imported directly
+/// — because its only arming call site is main.zig, which sits exactly at the
+/// 600-line ceiling and has no room for an import of its own. `arm`/`at`
+/// return their `Io` for the same reason; see shutdown_trace.zig's header.
+pub const shutdown_trace = @import("shutdown_trace.zig");
+
 pub const Tracker = struct {
     const max_phases = 16;
     const Phase = struct { label: []const u8, cumulative_ms: i64, phase_ms: i64 };

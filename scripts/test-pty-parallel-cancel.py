@@ -138,6 +138,11 @@ def main() -> None:
                 "LMSTUDIO_API_KEY": "local-pty-test",
                 "GRAFF_FLEET": "off",
                 "GRAFF_NO_TELEMETRY": "1",
+                # #364: stamp every teardown phase onto the terminal, so the
+                # transcript dumped below names the phase that stalled instead
+                # of ending at the prompt with nothing to go on. No marks at
+                # all means the quit keystroke itself never landed.
+                "GRAFF_SHUTDOWN_DEBUG": "1",
             }
             with PtySession(GRAFF, ["--model", "lmstudio", "--no-telemetry"], cwd=tmp, env=env, timeout=20) as session:
                 session.wait_for_literal("] ›")
@@ -153,12 +158,15 @@ def main() -> None:
                 session.wait_for_literal("interrupted (esc)", start=cursor)
                 assert_processes_gone(pid_paths)
                 session.send_key("ctrl-d")
-                # #364: every cancel assertion above already PASSED when CI
-                # failed here — only the exit was slow. Shutdown drains the
-                # session writer, reaps jobs, and joins the fleet worker; on a
-                # loaded ubuntu runner 5s was not enough. Give it headroom and,
-                # when it still fails, dump the transcript so the next
-                # occurrence is diagnosable instead of a bare exit code.
+                # #364: the exit was never SLOW, it was infinite. This ctrl-d
+                # lands in the sliver between the interrupted turn restoring
+                # the terminal and the next prompt claiming it, so Linux's line
+                # discipline handled it as a canonical-mode VEOF and delivered
+                # it as NUL; readLine had no case for that byte and waited at
+                # the prompt forever (input_util.typeAheadByte now maps it
+                # back). The window stays generous and the transcript is still
+                # dumped: with GRAFF_SHUTDOWN_DEBUG on, a future stall names
+                # its phase rather than leaving a bare exit code.
                 result = session.read_until_exit(30)
                 if result.timed_out or result.exit_code != 0:
                     raw = session.raw

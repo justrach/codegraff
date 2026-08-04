@@ -24,6 +24,7 @@ const provider_mod = @import("provider.zig");
 const util = @import("util.zig");
 const goal_state = @import("goal_state.zig");
 const session_writer = @import("session_writer.zig"); // #273: the fingerprint + the background write
+const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase stamps
 const protocol_seq = @import("protocol_seq.zig"); // #330: the --json event sequence survives a resume
 const Agent = agent_mod.Agent;
 const Keys = provider_mod.Keys;
@@ -204,6 +205,16 @@ pub fn saveSessionAsync(root: *Agent, arena: Allocator, name: []const u8) !void 
 /// long a background write may lag the conversation.
 pub fn flushSaves() void {
     session_writer.drain();
+}
+
+/// The same drain, named for the one caller that is a TEARDOWN step: the defer
+/// mainloop.run registers, and therefore the first thing the quit path does.
+/// Separate from `flushSaves` only so the #364 phase stamp marks that drain and
+/// not the dozen mid-session ones `saveSession` performs (a teardown log that
+/// also fires during the conversation cannot answer "did the loop exit?").
+pub fn flushSavesAtExit() void {
+    shutdown_trace.mark("loop-exit: draining queued autosaves");
+    flushSaves();
 }
 
 /// The save itself, against an explicit base directory. Production always
