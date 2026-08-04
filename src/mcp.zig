@@ -21,6 +21,7 @@ const mcp_http = @import("mcp_http.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_stdio = @import("mcp_stdio.zig");
 const mcp_teardown = @import("mcp_teardown.zig");
+const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase stamps
 const mcp_rpc = @import("mcp_rpc.zig");
 const smolify_manifest = @import("smolify_manifest.zig");
 const vision = @import("vision.zig"); // #249: MCP image results become staged vision blocks
@@ -480,6 +481,7 @@ pub const Registry = struct {
     /// a later defer tear that Io down underneath it (#325). Kept separate from
     /// `deinit` because tests and mid-session callers must never exit.
     pub fn deinitAtExit(reg: *Registry) void {
+        shutdown_trace.mark("mcp-teardown"); // #364
         reg.deinit();
         mcp_teardown.exitIfAbandoned();
     }

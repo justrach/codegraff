@@ -21,6 +21,7 @@ const util = @import("util.zig");
 const utf8Prefix = util.utf8Prefix;
 const unixMs = util.unixMs;
 const http = @import("http.zig");
+const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase stamps
 
 // For the session run id (score/run join key) and the propose-site
 // fingerprint check. No cycle: scoring imports only std + pricing.
@@ -340,6 +341,7 @@ pub const Telemetry = struct {
     /// Final flush at session end: the session summary plus any events not
     /// already shipped by a mid-session batch.
     pub fn flush(self: *Telemetry) void {
+        shutdown_trace.mark("telemetry-flush"); // #364: fires mid-session too, but the LAST one is the exit flush
         self.sendBatch(self.events.items, true);
     }
 

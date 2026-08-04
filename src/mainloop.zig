@@ -60,7 +60,7 @@ pub const Ctx = struct {
 pub fn run(ctx: *Ctx) !void {
     var title_jobs: mainloop_title.Jobs = .{};
     defer title_jobs.deinit(ctx);
-    defer session.flushSaves(); // #273: the turn-path autosaves write in the background — no queued one may outlive this loop, on ANY exit
+    defer session.flushSavesAtExit(); // #273: the turn-path autosaves write in the background — no queued one may outlive this loop, on ANY exit (#364 stamps this teardown phase)
     // Trajectory spine state: each turn's parent is the previous turn, and a
     // changed prompt fingerprint marks a set_system_prompt mutation edge.
     var prev_turn_id: u64 = 0;

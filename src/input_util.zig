@@ -90,6 +90,43 @@ pub fn parseDsrCol(seq: []const u8) ?usize {
     return if (col == 0) null else col;
 }
 
+/// Ctrl-D, the byte `readLine` reads as EOF-on-an-empty-line.
+pub const eof_key: u8 = 0x04;
+
+/// Translate one byte of type-ahead — input that was already queued on the tty
+/// when `readLine` switched it into raw mode, so the LINE DISCIPLINE, not the
+/// editor, decided what those bytes look like (#364).
+///
+/// Linux's n_tty does not deliver a canonical-mode VEOF (Ctrl-D) verbatim: it
+/// substitutes `__DISABLED_CHAR` (NUL) into the read buffer and uses it as an
+/// end-of-line marker. Read back in canonical mode that surfaces as a 0-byte
+/// read (EOF); read back in RAW mode — which is what happens when a Ctrl-D
+/// lands in the sliver between a turn restoring the terminal and the next
+/// prompt claiming it — it surfaces as a literal 0x00. readLine had no case
+/// for that byte, so the keystroke was dropped and the REPL sat at the prompt
+/// forever waiting for a quit that had already been typed. macOS/BSD hand the
+/// 0x04 back unchanged, which is why the pty regression only ever hung on
+/// Linux. Mapping the marker back to the key it stands for makes the race
+/// harmless instead of fatal: whichever side of the mode switch the byte lands
+/// on, Ctrl-D means Ctrl-D.
+///
+/// Scoped to type-ahead deliberately. A NUL typed at a live prompt (Ctrl-@ /
+/// Ctrl-Space) is not an EOF request and keeps its current do-nothing
+/// behavior; only bytes the canonical line discipline already processed are
+/// reinterpreted.
+pub fn typeAheadByte(b: u8) u8 {
+    return if (b == 0) eof_key else b;
+}
+
+test "type-ahead NUL is the line discipline's Ctrl-D, everything else is itself" {
+    try std.testing.expectEqual(eof_key, typeAheadByte(0));
+    try std.testing.expectEqual(eof_key, typeAheadByte(eof_key));
+    try std.testing.expectEqual(@as(u8, 'a'), typeAheadByte('a'));
+    try std.testing.expectEqual(@as(u8, '\r'), typeAheadByte('\r'));
+    try std.testing.expectEqual(@as(u8, 0x03), typeAheadByte(0x03)); // Ctrl-C still cancels the line
+    try std.testing.expectEqual(@as(u8, 0x1b), typeAheadByte(0x1b));
+}
+
 /// Sumi-rust → Codegraff coral → warm-gold stops for the ultracode ember wave.
 const ultracode_rgb = [_]struct { r: u8, g: u8, b: u8 }{
     .{ .r = 168, .g = 99, .b = 67 },
