@@ -79,6 +79,13 @@ const acp = @import("acp.zig");
 // unchanged and still reachable — this is the file that exists for that.
 const agent_eval_control_tests = @import("agent_eval_control_tests.zig");
 
+// #381/#383: the itemized playbook. playbook.zig is reached in production
+// (prompts.zig, subagent_run.zig) and pulls its own tests in, but the glue and
+// reflector modules are only ever reached through a call, so their tests need
+// the hook.
+const playbook_glue = @import("playbook_glue.zig");
+const playbook_reflect = @import("playbook_reflect.zig");
+
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on
 // that staying true.
@@ -117,4 +124,6 @@ test {
     _ = mcp_config;
     _ = acp;
     _ = agent_eval_control_tests;
+    _ = playbook_glue;
+    _ = playbook_reflect;
 }

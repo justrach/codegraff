@@ -11,6 +11,7 @@ pub const Provider = @import("provider.zig").Provider;
 const route_policy = @import("route_policy.zig"); // #376 rung stratification
 const util = @import("util.zig");
 const goal_pacing = @import("goal_pacing.zig");
+const playbook = @import("playbook.zig"); // #381/#383: the constraint + learned block every brief carries
 const tools = @import("tools.zig");
 const ToolCtx = tools.ToolCtx;
 const ToolOutput = tools.ToolOutput;
@@ -290,7 +291,15 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     // A /loop deadline on the parent reaches the child as guidance on its own
     // task prompt (goal_pacing.childTaskPrompt): same absolute deadline, minus
     // the margin the parent needs to integrate the result. No-op without one.
-    const task_prompt = try goal_pacing.childTaskPrompt(arena, prompt, ctx.loop_deadline_ms, util.unixMs(ctx.io));
+    //
+    // #381/#383: playbook.rideBrief then prepends the live constraint +
+    // learned block. THIS is the one injection point for every spawn path
+    // there is — the `subagent` tool (sync and background), workflow phase
+    // tasks, workflow retries, pipeline stages and the judge all funnel
+    // through runSub — and it reads .graff/playbook.jsonl at assembly time,
+    // never a copy held in the parent's conversation, which is exactly why a
+    // compacted (or brand-new) session still carries the user's "no"s.
+    const task_prompt = playbook.rideBrief(ctx.io, arena, try goal_pacing.childTaskPrompt(arena, prompt, ctx.loop_deadline_ms, util.unixMs(ctx.io)));
     try agent.messages.append(try textMessage(arena, "user", task_prompt));
     defer agent.tools_used.deinit(gpa);
     const report = agent.runTurn();
@@ -346,7 +355,11 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     };
     const empty = text.len == 0;
     const report_body = if (empty) "subagent finished without a report" else text;
-    const detail = cards.writeSubagentDetail(ctx.io, arena, sub_id, label, kind, prompt, report_body, !empty, run_ms, used_tools);
+    // task_prompt, not the raw `prompt`: the detail file is the record of what
+    // this worker was ACTUALLY sent, so it has to show the deadline note and
+    // the #381 constraint block too. Reading a report against the raw prompt
+    // is how "the subagent ignored my instruction" becomes unfalsifiable.
+    const detail = cards.writeSubagentDetail(ctx.io, arena, sub_id, label, kind, task_prompt, report_body, !empty, run_ms, used_tools);
     cards.subagentDoneCard(arena, sub_id, sprite, label, !empty, run_ms, used_tools, detail);
 
     var extra: []const u8 = isolation_note;

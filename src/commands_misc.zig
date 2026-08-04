@@ -58,6 +58,7 @@ const listPicker = pickers.listPicker;
 
 const trace = @import("trace.zig");
 const commands_privacy = @import("commands_privacy.zig");
+const playbook_glue = @import("playbook_glue.zig"); // #381 /never: the durable user-constraint ledger
 const learning_privacy = @import("learning_privacy.zig");
 
 fn providerModelCount(provider_id: []const u8) usize {
@@ -135,6 +136,7 @@ fn showModelsHealth(root: *Agent, keys: *Keys, arena: Allocator, out: *Io.Writer
 /// to handleRest() for the unknown-command/help terminal stage.
 pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, out: *Io.Writer) !bool {
     if (try commands_privacy.tryHandle(root, line, out)) return true;
+    if (try playbook_glue.command(root, arena, line, out)) return true; // #381 /never | /constraint
     // #321: doctor.zig shipped with a catalog entry but no dispatch, so /doctor
     // was advertised in /help and the `/` menu while answering "unknown command".
     if (std.mem.eql(u8, line, "/doctor")) {

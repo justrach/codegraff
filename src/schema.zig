@@ -132,6 +132,11 @@ const meta_specs = [_]ToolSpec{
         \\{"type": "object", "properties": {"note": {"type": "string", "description": "What you changed since the last eval"}}}
         ,
     },
+    // #381: the durable-rejection capture surface. Root-only, and APPEND-ONLY
+    // by construction — there is no retire/edit/list operation here at all,
+    // so a model that finds a constraint inconvenient has no mechanism to
+    // widen it; only the user can, with /never rm <id>.
+    .{ .name = "note_constraint", .desc = "Record a standing user constraint in this project's playbook (.graff/playbook.jsonl). Call it the moment the user rejects, forbids or vetoes something, passing ONE short imperative line stating what must not happen (e.g. never add scroll hints or progress dots). The recorded line is injected verbatim into every later subagent, workflow and pipeline brief and into your own system context, in this session and in future ones, so it survives compaction and reaches fresh agents that never saw the rejection. Append-only: this tool cannot edit, retire or list items - only the user can, with /never. Recording the same constraint twice is harmless and does nothing.", .schema = "{\"type\": \"object\", \"properties\": {\"text\": {\"type\": \"string\", \"description\": \"One short imperative line in the user's own terms, stating what must not happen\"}}, \"required\": [\"text\"]}" },
     .{
         .name = "ask_user",
         .desc = "Ask the human a question and wait for their typed reply, which is returned as this tool's result. Use when you need a decision, clarification, or missing information. This routes the human turn through the tool channel — the user is just another tool you can call.",
@@ -192,49 +197,31 @@ pub const root_specs = base_specs ++ meta_specs ++ [_]ToolSpec{ subagent_spec, w
 // The common catalog (clock_sleep off) is static too. Previously every root
 // startup allocated and filled a filtered ToolSpec array before rendering even
 // one provider catalog.
-const root_specs_without_clock = blk: {
-    var out: [root_specs.len - 1]ToolSpec = undefined;
+/// The root catalog minus the named optional entries, built once at compile
+/// time. The length check is the guard: each name must match EXACTLY one
+/// spec, so a rename or a duplicated entry is a compile error rather than a
+/// silently-wrong catalog.
+fn rootSpecsWithout(comptime drop: []const []const u8) [root_specs.len - drop.len]ToolSpec {
+    var out: [root_specs.len - drop.len]ToolSpec = undefined;
     var len: usize = 0;
-    for (root_specs) |tool| {
-        if (std.mem.eql(u8, tool.name, "clock_sleep")) continue;
-        out[len] = tool;
-        len += 1;
-    }
-    if (len != out.len) @compileError("root tool catalog must contain exactly one clock_sleep entry");
-    break :blk out;
-};
-
-const root_specs_without_learning = blk: {
-    var out: [root_specs.len - 1]ToolSpec = undefined;
-    var len: usize = 0;
-    for (root_specs) |tool| {
-        if (std.mem.eql(u8, tool.name, "learn_candidate")) continue;
-        out[len] = tool;
-        len += 1;
-    }
-    if (len != out.len) @compileError("root tool catalog must contain exactly one learn_candidate entry");
-    break :blk out;
-};
-
-const root_specs_without_optional = blk: {
-    var out: [root_specs.len - 2]ToolSpec = undefined;
-    var len: usize = 0;
-    for (root_specs) |tool| {
-        if (std.mem.eql(u8, tool.name, "clock_sleep") or std.mem.eql(u8, tool.name, "learn_candidate")) continue;
+    entry: for (root_specs) |tool| {
+        for (drop) |name| if (std.mem.eql(u8, tool.name, name)) continue :entry;
         out[len] = tool;
         len += 1;
     }
     if (len != out.len) @compileError("root tool catalog optional entries changed");
-    break :blk out;
-};
+    return out;
+}
+
+const root_specs_without_clock = rootSpecsWithout(&.{"clock_sleep"});
+const root_specs_without_learning = rootSpecsWithout(&.{"learn_candidate"});
+const root_specs_without_optional = rootSpecsWithout(&.{ "clock_sleep", "learn_candidate" });
+
+pub const meta_names = [_][]const u8{ "todo_write", "todo_read", "ask_user", "eval", "attempt_completion", "clock_sleep", "note_constraint" };
 
 pub fn isMetaName(name: []const u8) bool {
-    return std.mem.eql(u8, name, "todo_write") or
-        std.mem.eql(u8, name, "todo_read") or
-        std.mem.eql(u8, name, "ask_user") or
-        std.mem.eql(u8, name, "eval") or
-        std.mem.eql(u8, name, "attempt_completion") or
-        std.mem.eql(u8, name, "clock_sleep");
+    for (meta_names) |m| if (std.mem.eql(u8, name, m)) return true;
+    return false;
 }
 
 // #352: optional built-ins — advertised only while tool_gates says they are
@@ -513,16 +500,8 @@ test "providerDisplayName & providerLoginKind: id mapping with sane fallbacks" {
     try std.testing.expectEqualStrings("kimi_device", providerLoginKind("kimi"));
     try std.testing.expectEqualStrings("api_key", providerLoginKind("openai"));
 }
-test "isMetaName: the five orchestrator-handled meta tools" {
-    try std.testing.expect(isMetaName("todo_write"));
-    try std.testing.expect(isMetaName("todo_read"));
-    try std.testing.expect(isMetaName("ask_user"));
-    try std.testing.expect(isMetaName("attempt_completion"));
-    try std.testing.expect(isMetaName("clock_sleep"));
-    try std.testing.expect(!isMetaName("bash"));
-    try std.testing.expect(!isMetaName("subagent"));
-    try std.testing.expect(!isMetaName("codedb"));
-}
+// isMetaName's own coverage, and #381's note_constraint catalog contract,
+// live in tool_schema_tests.zig — this file is at the 600-line ceiling.
 
 test "effectiveRootSpecs: drops clock_sleep from the root tool catalog unless the flag is on (#225)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

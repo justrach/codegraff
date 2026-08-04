@@ -137,6 +137,7 @@ pub const Agent = struct {
     history_rewrites: u32 = 0, // bumped by compact()/emergencyTrim; state pasted into the dead history (e.g. the /loop checklist copy) must be re-carried (#318)
     session_name: []const u8 = "last", // autosave/resume target (<name>.session.json)
     session_title: ?[]const u8 = null, // human-readable title/rename metadata
+    sys_base: []const u8 = "", // #381: the last BASE handed to prompts.setSystemPrompts, WITHOUT the playbook block — what a mid-session constraint re-composes from (playbook_glue.refreshRoot)
     sys_strict: []const u8 = prompts.main_system_prompt_strict,
     sys_ultra: []const u8 = prompts.main_system_prompt ++ prompts.ultracode_system_note, // #326: comptime defaults only — prompts.setSystemPrompts() is the sole production writer
     sys_ultra_strict: []const u8 = prompts.main_system_prompt_strict ++ prompts.ultracode_system_note, // composes onto sys_strict, never replaces it

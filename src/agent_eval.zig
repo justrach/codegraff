@@ -24,6 +24,7 @@ const trace = @import("trace.zig");
 const fleet = @import("fleet.zig");
 const main_mod = @import("main.zig");
 const route_policy = @import("route_policy.zig"); // #372 (shape, role, tier) coordinates on the local capture rows
+const playbook_reflect = @import("playbook_reflect.zig"); // #383 Reflector: one bounded distillation per process, on a target-met eval
 
 test {
     _ = @import("agent_eval_tests.zig");
@@ -113,6 +114,14 @@ pub fn runEval(self: *Agent, note: []const u8) !ExecResult {
         bt.recordMisprediction(eval_turn, commitment_id, .{ .pass = true }, .{ .pass = false, .exit = exit_code }, "target not met");
     self.appendEvalLog(note, det, judge, combined, exit_code, met) catch {};
     eval_memory.record(self, note, combined, exit_code, met);
+    // #383 Reflector: a target-met eval is the moment a run is verifiably
+    // finished, so distil it into candidate playbook bullets — ONCE per
+    // process, one tool-less model call on the worker seat. Gated inside on
+    // trace.g_traj, the same null-sink guard the local DGM capture below
+    // uses, which is what keeps agent_eval_tests' stub Agent (undefined
+    // provider/client, and a second eval that DOES meet its target) out of a
+    // live model call.
+    if (met) playbook_reflect.afterEval(self, note, combined orelse 0, run.stdout);
 
     // Feed the eval-driven score into the fleet (docs/hyperagents.md §9.B):
     // on a NEW BEST, submit the genome (this agent's persona) with its achieved

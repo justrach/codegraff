@@ -260,7 +260,7 @@ pub fn buildRootAgent(
         .tools_openai = "",
         .tools_responses = "",
     };
-    try prompts.setSystemPrompts(&root, sys_normal, arena);
+    try prompts.setRootSystemPrompts(&root, sys_normal, arena); // #381: same funnel + the live .graff/playbook.jsonl constraint block
     // Startup pays for one provider format, not all three. Other formats are
     // rendered on first switch with the same built-in + live MCP inputs.
     try root.ensureRootTools(default_provider.kind);
