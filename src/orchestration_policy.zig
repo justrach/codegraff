@@ -413,6 +413,16 @@ pub fn override(arms: []const ArmObs, key: Key, ladder: Rung, remaining: u64, la
 
 /// Production entry point: the session's folded arms, falling back to the
 /// compiled prior when the local archive has never seen this cell.
+/// The solo advisory for a LEARNED R0: escalation's solo_advice contract,
+/// but naming the real reason — recorded outcomes for this cell traded the
+/// fleet down — instead of scope arithmetic the decision never consulted.
+pub const learned_solo_advice =
+    "workflow declined (escalation R0, learned): recorded outcomes for this task class and " ++
+    "budget band score solo work above a fleet here, so the learned policy traded the " ++
+    "orchestration down. Do it yourself — read the files, make the edits, verify — and " ++
+    "re-invoke the workflow tool only if verification fails, which is the signal that " ++
+    "earns a fleet.";
+
 pub fn learnedRung(key: Key, ladder: Rung, remaining: u64, landing_reserve: u64) ?Rung {
     if (override(g_arms, key, ladder, remaining, landing_reserve)) |r| return r;
     var buf: [8]ArmObs = undefined;

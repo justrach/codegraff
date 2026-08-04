@@ -240,12 +240,9 @@ pub fn ladderRung(o: Observables) Rung {
     if (o.prior_failure and !o.audit and o.prior_failure_count == 1 and
         o.files < fleet_scope_min and o.verifier != .none) return .R0d;
     if ((o.audit or o.prior_failure) and fleet_affordable) return .R3;
-    // An open-ended question is the one case where delegation pays for itself
-    // at width ONE: the scout burns its own context on the search and hands
-    // back a summary, which is the whole benefit. Wider adds cost, not value —
-    // measured, in the study's research run: three sweepers over three small
-    // files scored identically to one, at 4x the calls, on briefs that
-    // measured 1.00 similar to each other.
+    // An open-ended question is the one case where delegation pays at width
+    // ONE: the scout burns its own context and hands back a summary. Wider
+    // adds cost, not value (measured: three sweepers scored equal to one, 4x).
     if (o.shape == .research and !o.audit) return .R1;
     if (o.files >= fleet_scope_min and o.widest >= 2 and fleet_affordable) return .R2;
     return .R0;
@@ -295,13 +292,17 @@ pub fn verdictFor(rung: Rung, o: Observables, phases: []const Value) Verdict {
         .R2, .R3 => {
             if (l.fits(o.remaining, o.plan_estimate)) return .proceed;
             const w = downsizeWidth(phases, o.cap, o.remaining);
-            // Nothing fits, not even one worker per phase, so a fleet here
-            // would be a fan-out that cannot finish. Solo is not a demotion,
-            // it is the only rung with a budget.
+            // Nothing fits, not even one worker per phase: solo is the only rung with a budget.
             if (w == 0) return .{ .solo = solo_advice };
             return .{ .downsize = w };
         },
     }
+}
+
+/// A learned decline names its real reason, not unconsulted scope arithmetic.
+fn learnedVerdict(rung: Rung, o: Observables, phases: []const Value) Verdict {
+    if (rung == .R0) return .{ .solo = orch.learned_solo_advice };
+    return verdictFor(rung, o, phases);
 }
 
 // ── session state: prior failure, explicit choice, exploration ─────────────
@@ -462,7 +463,7 @@ pub fn decide(o: Observables, phases: []const Value, explicit: bool, arms: []con
     }
     const reserve = pb.landingReserve(o.cap);
     if (orch.override(arms, key, ladder, o.remaining, reserve)) |learned| {
-        return .{ .rung = learned, .source = .learned, .verdict = verdictFor(learned, o, phases) };
+        return .{ .rung = learned, .source = .learned, .verdict = learnedVerdict(learned, o, phases) };
     }
     if (ladder == .R0 and shouldExplore(o)) {
         return .{ .rung = .R1, .source = .explore, .verdict = verdictFor(.R1, o, phases) };
@@ -489,14 +490,12 @@ pub fn admit(c: Ctx, phases: []const Value, shape: route_policy.Shape) Decision 
         .budget_band = orch.BudgetBand.of(o.remaining),
         .stratum = route_policy.stratumOf(c.stratum),
     };
-    // The learned lookup is keyed with the REAL stratum; `decide` takes the
-    // arms slice so the pure path can be driven with fixtures.
+    // Keyed with the REAL stratum; arms passed so tests can drive the pure path.
     var d = decide(o, phases, userChoseShape(raw), armsFor(key), key);
-    // Nothing learned for this cell? Fall back to the compiled bootstrap
-    // prior, which is the study's own measurements as n=2 pseudo-rows.
+    // No learned cell: fall back to the compiled bootstrap prior (study rows, n=2).
     if (d.source == .bootstrap and !userChoseShape(raw)) {
         if (orch.learnedRung(key, d.rung, o.remaining, pb.landingReserve(o.cap))) |learned| {
-            d = .{ .rung = learned, .source = .learned, .verdict = verdictFor(learned, o, phases) };
+            d = .{ .rung = learned, .source = .learned, .verdict = learnedVerdict(learned, o, phases) };
         }
     }
     // R0d's advisory carries the observed failure evidence, composed here

@@ -213,6 +213,8 @@ test "decide: a learned cell overrides the hand ladder and says so" {
     // Trading DOWN needs only "not worse", and this is much better.
     try std.testing.expectEqual(Rung.R0, d.rung);
     try std.testing.expectEqual(orch.Source.learned, d.source);
+    // The advisory names the learned policy, not the ladder's scope arithmetic.
+    try std.testing.expect(std.mem.indexOf(u8, d.verdict.solo, "(escalation R0, learned):") != null);
 }
 
 fn armWith(key: orch.Key, arm: Rung, n: u32, score: f64, calls: u32) orch.ArmObs {
