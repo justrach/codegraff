@@ -57,6 +57,7 @@ const wfp = @import("workflow_progress.zig");
 // The ultracode escalation ladder (admission, the edit contract) and the
 // reservation ledger it decides against.
 const escalation = @import("escalation.zig");
+const report_anchors = @import("report_anchors.zig");
 const phase_budget = @import("phase_budget.zig");
 const shapes = @import("shapes.zig");
 const pipeline_mode = @import("workflow_pipeline.zig");
@@ -168,6 +169,7 @@ pub const buildManifest = wfp.buildManifest;
 
 test { // a new module's tests run only when something references it (see main.zig)
     _ = wfp;
+    _ = report_anchors;
 }
 
 /// Dynamic workflows as data: sequential phases, parallel tasks. Each task
@@ -273,6 +275,10 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // §3b: this phase's slot is contracted to MUTATE files, so its briefs
         // carry the changed-path contract and its results face a porcelain probe.
         const contracted = escalation.isContracted(shapes.canonicalSlot(title));
+        // The report contract's mirror image: this phase's slot REPORTS, so
+        // its briefs carry the anchor contract and its results face a
+        // cited-path resolution probe (report_anchors.zig).
+        const report_phase = report_anchors.isReportSlot(shapes.canonicalSlot(title));
         const tasks_val = phase.get("tasks") orelse return .{
             .text = try gpa.dupe(u8, "each phase needs a tasks array"),
             .is_error = true,
@@ -324,7 +330,13 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             // §3b, stolen from codex's patch-biased delegation: a contracted
             // worker is told to MAKE the edits and to end by listing every
             // changed path, so verify and the root review a diff, not a claim.
-            const based = try withContext(arena, run_context, if (contracted) try withContext(arena, escalation.contract_brief_note, raw) else raw);
+            const noted = if (contracted)
+                try withContext(arena, escalation.contract_brief_note, raw)
+            else if (report_phase)
+                try withContext(arena, report_anchors.anchor_brief_note, raw)
+            else
+                raw;
+            const based = try withContext(arena, run_context, noted);
             if (phase_no == 1) {
                 prompt.* = based;
             } else if (std.mem.indexOf(u8, based, "{{prev}}") != null) {
@@ -369,7 +381,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             // §3b — the edit contract, post-await: a contracted phase whose
             // porcelain never moved becomes is_error, which the retry below
             // then picks up. #380's honesty flag composes inside it.
-            out.* = escalation.contractCheck(gpa, ctx.io, ctx.agent_cwd, contracted, tree_before, vision_ask.flagReport(gpa, fut.await(ctx.io), vision_ask.forPrompt(prompt)));
+            out.* = escalation.contractCheck(gpa, ctx.io, ctx.agent_cwd, contracted, tree_before, report_anchors.anchorCheck(gpa, ctx.io, ctx.agent_cwd, report_phase, vision_ask.flagReport(gpa, fut.await(ctx.io), vision_ask.forPrompt(prompt))));
             // #63 — terminal per task, so a UI can settle that row without
             // waiting for the phase (and before the retry pass below reruns it).
             wfp.task(ctx.io, arena, run_id, phase_no, i + 1, tasks.len, label, if (out.is_error) "failed" else "completed");

@@ -56,15 +56,19 @@ pub fn reset() void {
 /// What could catch a second miss on this class of ask. `diff` is the edit
 /// contract's porcelain probe: bugfix/refactor/feature work is contracted to
 /// mutate, so "did the tree move, and do the checks pass on it" is checkable
-/// without a model. review/research/other have no free signal — for those the
-/// R3 judges ARE the external feedback, so a solo revision loop is refused.
-pub const Verifier = enum { none, diff, eval };
+/// without a model. `anchors` is the report contract (report_anchors.zig):
+/// review/research claims cite file paths, and whether those resolve against
+/// the tree is a stat — re-reading the cited code is real external feedback.
+/// `other` has no free signal — there the R3 judges ARE the feedback, so a
+/// solo revision loop is refused.
+pub const Verifier = enum { none, diff, eval, anchors };
 
 pub fn verifierFor(tc: TaskClass, has_eval: bool) Verifier {
     if (has_eval) return .eval;
     return switch (tc) {
         .bugfix, .refactor, .feature => .diff,
-        .review, .research, .other => .none,
+        .review, .research => .anchors,
+        .other => .none,
     };
 }
 
@@ -89,12 +93,13 @@ test "note/evidence: flattened, capped on a UTF-8 boundary, latest wins whole" {
     try std.testing.expect(std.unicode.utf8ValidateSlice(evidence(.feature)));
 }
 
-test "verifierFor: diff-checkable classes gate open, report-only classes stay shut" {
+test "verifierFor: every class with a checkable signal gates open; only `other` stays shut" {
     try std.testing.expectEqual(Verifier.diff, verifierFor(.bugfix, false));
     try std.testing.expectEqual(Verifier.diff, verifierFor(.refactor, false));
     try std.testing.expectEqual(Verifier.diff, verifierFor(.feature, false));
-    try std.testing.expectEqual(Verifier.none, verifierFor(.review, false));
-    try std.testing.expectEqual(Verifier.none, verifierFor(.research, false));
+    // Report classes verify through cited-anchor resolution (report_anchors).
+    try std.testing.expectEqual(Verifier.anchors, verifierFor(.review, false));
+    try std.testing.expectEqual(Verifier.anchors, verifierFor(.research, false));
     try std.testing.expectEqual(Verifier.none, verifierFor(.other, false));
     // A configured eval loop is the strongest verifier and covers any class.
     try std.testing.expectEqual(Verifier.eval, verifierFor(.research, true));
