@@ -326,6 +326,13 @@ fn anyOfCI(hay: []const u8, needles: []const []const u8) bool {
 /// changed no files. Unrecognized asks are `other` rather than a guess: an
 /// uncelled observation is honest, a mis-celled one poisons a policy cell.
 pub fn classOf(raw: []const u8) TaskClass {
+    // Breadth language first: an audit-class ask is REVIEW work whatever
+    // nouns it mentions. "thoroughly audit every file … for bugs" matched
+    // the bare bugfix needle below and filed a fleet-sized audit under the
+    // bugfix learning cell — a mis-celled observation, caught by this
+    // branch's first real-model smoke. "fix the bug the review found" has no
+    // breadth word, so repair asks are untouched.
+    if (isAuditClass(raw)) return .review;
     // "broken" is qualified rather than bare: an ordinary feature spec says
     // "ties broken by ascending order", and the bare word classified the eval
     // study's wordfreq FEATURE task as a bugfix — a mis-celled observation,

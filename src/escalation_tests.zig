@@ -457,6 +457,12 @@ test "shapes.classOf / isAuditClass: the study's five prompts land where the lad
     // The qualified forms still read as defects.
     try std.testing.expectEqual(shapes.TaskClass.bugfix, shapes.classOf("the parser is broken on empty input"));
     try std.testing.expectEqual(shapes.TaskClass.bugfix, shapes.classOf("two broken tests in the suite"));
+    // Breadth language outranks the noun it audits FOR: "for bugs" must not
+    // file an audit fleet's outcome under the bugfix learning cell (the
+    // mis-cell the branch's first real-model smoke caught).
+    try std.testing.expectEqual(shapes.TaskClass.review, shapes.classOf(
+        "thoroughly audit every file in this repo for bugs and robustness problems",
+    ));
     // Audit language is narrow on purpose: a fleet takes an explicit word.
     try std.testing.expect(shapes.isAuditClass("thoroughly audit the auth layer"));
     try std.testing.expect(shapes.isAuditClass("check every file for this pattern"));
