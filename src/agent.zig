@@ -35,6 +35,7 @@ pub const TodoItem = struct {
     content: []const u8,
     status: []const u8,
     epoch: u64 = 0, // the goal epoch that authored this item (#318); 0 = no goal
+    retired: bool = false, // a LATER user ask retired this finished item (#394): kept as the session's archive, invisible to every epoch-scoped query
 };
 
 /// Governed-run status for a standing /goal (#223). Only `.active` steers turns;
