@@ -71,6 +71,11 @@ const session_tests = @import("session_tests.zig");
 // one predicate from it, which analyses the file but does not run its tests.
 const acp = @import("acp.zig");
 
+// #382: moved off agent_tools.zig when the sibling-spawn diversity check
+// needed two lines there and the file was at exactly 600. The tests are
+// unchanged and still reachable — this is the file that exists for that.
+const agent_eval_control_tests = @import("agent_eval_control_tests.zig");
+
 // #345: the global-vs-project MCP config merge. mcp.zig does reference its
 // decls, but the hook makes the coverage explicit rather than contingent on
 // that staying true.
@@ -106,4 +111,5 @@ test {
     _ = session_tests;
     _ = mcp_config;
     _ = acp;
+    _ = agent_eval_control_tests;
 }

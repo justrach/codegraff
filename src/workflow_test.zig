@@ -163,6 +163,32 @@ test "buildManifest reports ok/retried per phase and SKIPPED for a gated phase (
     try std.testing.expect(std.mem.indexOf(u8, block, "phase 2/3 Verify: 0/2") == null);
 }
 
+test "#382: a phase's diversity note rides the manifest, under its own phase line" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // The manifest is where the ROOT reads a run's shape, so it is where a
+    // note addressed to the orchestrator belongs — a phase's own results are
+    // summarised into {{prev}} and go to the next phase's WORKERS instead.
+    const note = "diversity warning: 3 variant briefs are ~62% similar — proceed if intentional.";
+    const tallies = [_]PhaseTally{
+        .{ .phase_no = 1, .total_phases = 2, .title = "variants", .ok = 3, .total = 3, .retried = 0, .diversity = note },
+        .{ .phase_no = 2, .total_phases = 2, .title = "build", .ok = 1, .total = 1, .retried = 0 },
+    };
+    const block = try buildManifest(a, &tallies);
+
+    const phase1 = std.mem.indexOf(u8, block, "phase 1/2 variants: 3/3 ok, 0 retried").?;
+    const warned = std.mem.indexOf(u8, block, note).?;
+    const phase2 = std.mem.indexOf(u8, block, "phase 2/2 build").?;
+    try std.testing.expect(phase1 < warned and warned < phase2);
+
+    // A quiet phase adds nothing at all — no "diversity ok" line to train the
+    // root to skim past.
+    const quiet = [_]PhaseTally{.{ .phase_no = 1, .total_phases = 1, .title = "variants", .ok = 3, .total = 3, .retried = 0 }};
+    try std.testing.expectEqualStrings("## workflow\nphase 1/1 variants: 3/3 ok, 0 retried", try buildManifest(a, &quiet));
+}
+
 test "pipelinePrompt substitutes {{item}}/{{prev}} and appends when omitted (#3)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

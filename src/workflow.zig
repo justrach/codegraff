@@ -40,6 +40,7 @@ const Isolation = fleet.Isolation; // #276 P0-1
 const route_policy = @import("route_policy.zig"); // #372 (shape, role) policy cells
 const route_phase = @import("route_phase.zig"); // #376 one learned seat per phase
 const route_trace = @import("route_trace.zig"); // #372 per-worker routing trace
+const brief_diversity = @import("brief_diversity.zig"); // #382 fleet-brief similarity gate
 const telemetry = @import("telemetry.zig");
 // #63: stable workflow/phase/task ids + the additive `workflow_progress`
 // JSONL event, so the REPL can map a run from state instead of scraping the
@@ -480,6 +481,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             }
         }
 
+        const diversity = brief_diversity.check(arena, ctx.tracer, title, raws, overrides); // #382: every brief in hand, nothing spawned yet
         // Join ALL tasks before any fallible work, so an early error return
         // can never abandon running subagents or free their result slots.
         const futures = try arena.alloc(Io.Future(ToolOutput), tasks.len);
@@ -566,7 +568,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // open (it submits niche=""). Gated on the fleet — no judge cost otherwise.
         scoreVariants(ctx, arena, seat, prompts, raws, overrides, niches, outputs);
 
-        tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = tasks.len - phase_failed, .total = tasks.len, .retried = nf };
+        tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = tasks.len - phase_failed, .total = tasks.len, .retried = nf, .diversity = diversity };
 
         // Divide the {{prev}} budget across THIS phase's own task count so a
         // wide phase's total contribution to the next phase's prompt stays near

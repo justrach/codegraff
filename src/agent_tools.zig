@@ -43,16 +43,13 @@ const ToolOutput = tools_mod.ToolOutput;
 const exec = @import("exec.zig");
 const execTool = exec.execTool;
 
+const brief_diversity = @import("brief_diversity.zig"); // #382: N sibling spawns in one batch are a fleet
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
 const tool_results_dir = ".graff/tool-results";
 pub const tool_preview_chars: usize = 2_000;
 var tool_result_seq: std.atomic.Value(u64) = .init(0);
-
-test {
-    _ = @import("agent_eval_control_tests.zig");
-}
 
 pub fn toolPreviewText(arena: std.mem.Allocator, text: []const u8, path: ?[]const u8) ![]const u8 {
     if (text.len <= tool_preview_chars) return arena.dupe(u8, text);
@@ -188,6 +185,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
                 self.eval_repair_pending = false;
             }
         }
+        brief_diversity.noteSiblingBatch(self.arena, self.tracer, calls, ext_idx.items, results); // #382
         // #266: a cancelled parallel batch used to just look "running" and then
         // failed — one terminal line says what completed, failed, and cancelled.
         if (ext_idx.items.len > 1 and !self.sub) {
