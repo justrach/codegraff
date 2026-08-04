@@ -180,13 +180,14 @@ pub fn variantProviderClass(seat: Provider, i: usize) []const u8 {
 /// #376 — the routing STRATUM variant `i` was observed in: the resolved model
 /// itself, not its capability bucket.
 ///
-/// providerClass cannot separate gpt-5.6-sol from -terra/-luna (all three are
-/// "frontier"), so the matched-tournament guard in scoreVariants was blind to
-/// a rung-only difference — the documented #291 gap that made phase routing
-/// unsafe. Keyed on this it is not: a phase whose variants somehow spanned two
-/// models is refused as unscoreable, and every fitness row records the same
-/// value so a cross-run comparison can stratify by it (fitness_strata.zig)
-/// rather than averaging over rungs.
+/// providerClass once bucketed gpt-5.6-sol/-terra/-luna identically as
+/// "frontier" (the #291 gap, closed since), and a class stays coarser than a
+/// model regardless — "frontier" pools sol with bare gpt-5.6 — so a
+/// matched-tournament guard keyed on it was blind to a rung-only difference,
+/// which made phase routing unsafe. Keyed on this it is not: a phase whose
+/// variants somehow spanned two models is refused as unscoreable, and every
+/// fitness row records the same value so a cross-run comparison can stratify
+/// by it (fitness_strata.zig) rather than averaging over rungs.
 pub fn variantStratum(seat: Provider, i: usize) []const u8 {
     _ = i;
     return route_policy.stratumOf(seat.model);

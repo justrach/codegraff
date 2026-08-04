@@ -44,9 +44,10 @@ const mixed_archive =
 test "#376: a fitness row's stratum is the resolved model, and a missing one is `unknown`" {
     try std.testing.expectEqualStrings("gpt-5.6-luna", policy.stratumOf("gpt-5.6-luna"));
     try std.testing.expectEqualStrings("gpt-5.6-terra", policy.stratumOf("gpt-5.6-terra"));
-    // The two models scoring.providerClass cannot tell apart (both "frontier")
-    // are distinct strata here — that separation is the whole increment.
-    try std.testing.expect(!std.mem.eql(u8, policy.stratumOf("gpt-5.6-sol"), policy.stratumOf("gpt-5.6-luna")));
+    // Two models scoring.providerClass still pools (sol and bare gpt-5.6,
+    // both "frontier") are distinct strata here — that separation is the
+    // whole increment.
+    try std.testing.expect(!std.mem.eql(u8, policy.stratumOf("gpt-5.6-sol"), policy.stratumOf("gpt-5.6")));
     // A row that names no model is its own bucket, never an empty string that
     // would compare equal to another absent one by accident.
     try std.testing.expectEqualStrings("unknown", policy.stratumOf(""));

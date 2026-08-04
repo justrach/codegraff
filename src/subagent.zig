@@ -506,9 +506,10 @@ pub fn scoreVariants(
     // A tournament must vary exactly ONE axis: variants that did not all run on
     // the same MODEL rank the model as much as the prompt, and filing that under
     // the prompt fingerprint writes model effects into the genome archive (#290).
-    // #376 tightened the key from the capability class — which cannot tell
-    // gpt-5.6-sol from -luna — to the resolved model, catching a rung-only
-    // difference too. Bail before a judge: unscoreable round.
+    // #376 tightened the key from the capability class — which pools distinct
+    // models under one label (sol and bare gpt-5.6 are both "frontier") — to
+    // the resolved model, catching a rung-only difference too. Bail before a
+    // judge: unscoreable round.
     for (1..vn) |k| {
         if (!std.mem.eql(u8, subagent_run.variantStratum(seat.provider, vidx[0]), subagent_run.variantStratum(seat.provider, vidx[k]))) {
             if (ctx.tracer) |tr| tr.note("fleet", "tournament skipped: variants span routing strata");
