@@ -10,7 +10,7 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## Unreleased
+## v0.0.237 (2026-08-04)
 
 - Ultracode redesigned around an escalation ladder: the codeword now means
   "escalate to the smallest rung that fits" — solo for 1-2 known files, one
