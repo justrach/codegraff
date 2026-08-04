@@ -32,6 +32,19 @@ const bash_stdout_cap = tools_mod.bash_stdout_cap;
 
 pub var g_shine_phase: usize = 0; // ultracode input-wave animation frame
 
+/// One byte of terminal input for the editor's CONTINUATION reads — the DSR
+/// reply, an escape/CSI tail, a bracketed-paste body. Job-control aware via
+/// tty.promptByte (#396), and null means "stop reading this sequence" for both
+/// EOF and the backgrounded case, which is what every one of those call sites
+/// already did with a read error. The prompt's own idle read stays in
+/// readLine: only it can tell the two apart and must exit on the background.
+pub fn editByte(in: *Io.Reader) ?u8 {
+    return switch (terminal.tty.promptByte(in)) {
+        .byte => |b| b,
+        .eof, .background => null,
+    };
+}
+
 /// Tab-completion candidates for the current input. After `/model ` →
 /// model names (deduped) + provider ids matching the partial; a bare `/word`
 /// → slash commands. Returns the byte offset of the word being completed
