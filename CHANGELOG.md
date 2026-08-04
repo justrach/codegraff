@@ -12,6 +12,18 @@ current is part of cutting a release.
 
 ## Unreleased
 
+- Ultracode redesigned around an escalation ladder: the codeword now means
+  "escalate to the smallest rung that fits" — solo for 1-2 known files, one
+  scout for context-flooding exploration, a fleet only for 3+ independent
+  workstreams or after a failed attempt, full shape + judges only for
+  audit-class asks. An admission gate + budget reservation ledger enforce it;
+  duplicate briefs collapse at spawn; implement phases carry an edit contract
+  (no diff = error + retry); every rung decision writes `kind:"orch"` rows so
+  the ladder itself becomes learnable. Measured on the 5-eval study that
+  motivated it: old ultracode 80 mean at 133 calls; new: 100 mean at 44 calls
+  (1.22x the single-agent baseline), zero budget deaths, and a genuinely large
+  audit task still fans out (R3, 4 workers) then lands from partial evidence.
+
 - Vision-aware worker routing: a subagent task that names an image file
   re-seats automatic workers onto a vision-capable model (`source=vision-ask`
   in the routing trace); a worker report that disclaims image-viewing gets a
