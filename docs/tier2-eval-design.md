@@ -4,6 +4,8 @@ Synthesized 2026-08-05 from five adversarially-verified dimension batches. Every
 
 Suite arithmetic: 14 existing + 19 appendable now = **33 cases**; 1 red-expected spec parked; 3 cases blocked on the `workspace_seed` extension.
 
+> **Status update (landed same day):** the suite now holds **37 cases**. The `workspace_seed` extension shipped in `eval-tier2.py` and the three blocked learned-policy cases are in — each proven red on the pre-extension runner, green after. The citation-free false positive was fixed at the root (`report_anchors.scan` skips `.graff/` inspect links) and the pending spec was promoted to the suite as that fix's regression lock, with the true-positive rejection case still green beside it. The live-mode prerequisite from §8 also shipped: `evaluate()` skips `request_*` asserts under `--provider`.
+
 Validation artifacts: `scratchpad/{surviving.json, blocked.json, append_now.jsonl, pending_specs.jsonl, validate_and_run.py}` (session scratchpad `/private/tmp/claude-501/-Users-rachpradhan-codegraff/9b24db46-d64d-4806-84d5-b498ef748cb3/scratchpad`).
 
 ---
@@ -79,11 +81,11 @@ Global rank in brackets = position in `append_now`.
 
 **[19] orch-explicit-shape-stamps-explicit-source** — #290 write-side firewall: user-named orchestration ('use the workflow tool') stamps `source:"explicit"`, rung R2 — the rows foldArms must later skip; stamping them bootstrap lets user intent vote on policy. The unaffordable cap keeps the case deterministic (row says R2/explicit while the advisory declines). Live: does a real model honor user-named orchestration by actually calling the tool, and does real phrasing still stamp explicit.
 
-## 4. Pending spec (red today — must NOT enter the suite yet)
+## 4. Pending spec (red today — must NOT enter the suite yet) — LANDED: fix shipped, case promoted
 
 **citation-free-report-not-rejected** (verifier-evidence) — Spec for the false-positive axis: an honestly citation-free report-slot reply must pass in one worker call. Today `report_anchors.scan` counts the harness's own appended inspect link (`.graff/subagents/<id>.md`, leading dot trimmed so it never resolves) as a fabricated citation, so every citation-free report is auto-rejected and burns the phase retry. Red profile re-confirmed on the current binary during this synthesis: 2 `agent_usage`, request 2 is the retry carrying the anchor brief note, manifest "1/1 ok, 1 retried". Goes green when the scan excludes the harness-appended suffix (or stops trimming the dot so the real path resolves) — and from then on it is the regression lock for exactly that false positive returning. Land it in `harness_behavior.jsonl` together with the scan fix, or accept a deliberately red tier 2 until the fix ships. Complements `fabricated-report-anchors-reject-and-retry` (false-positive vs true-positive axis).
 
-## 5. Blocked on `workspace_seed` (live here until the extension lands)
+## 5. Blocked on `workspace_seed` — LANDED: extension shipped, all three cases in the suite
 
 All three need pre-launch seeding of `.graff/trajectories/seed.jsonl` because the archive folds ONCE at startup (`bench_priors.loadInto`), before any scripted step runs. Per verifier correction, **treat all three as red-until-extension**: the tradedown case reds loudly today (fleet proceeds R2, eats the script); the other two carry a scripted seed-presence probe (`test -s .graff/trajectories/seed.jsonl`) added by their verifiers precisely so they red loudly instead of passing vacuously — the batch metadata that said `expected_now: green` for them is superseded. Do not append any of them until the runner writes `workspace_seed` files.
 
@@ -122,7 +124,7 @@ Lessons from verifier fixes to *surviving* cases, worth institutionalizing:
 
 ## 7. Harness-extension shortlist (ranked by blocked tests unlocked)
 
-1. **workspace_seed** (also proposed as `seed_files` by intuition-traps — same semantics, merge them; apply in scripted AND `--provider` modes). Unlocks all 3 blocked learned-policy cases, plus honest live-mode traps (injection sentinel NOT quoted in the prompt; real seeded worlds without spending script steps). Sketch — in `execute()`, right after the per-case env merge:
+1. **workspace_seed** — **LANDED** (also proposed as `seed_files` by intuition-traps — same semantics, merged; applies in scripted AND `--provider` modes). Unlocks all 3 blocked learned-policy cases, plus honest live-mode traps (injection sentinel NOT quoted in the prompt; real seeded worlds without spending script steps). Sketch — in `execute()`, right after the per-case env merge:
 ```python
 for rel, content in case.get("workspace_seed", {}).items():
     dest = pathlib.Path(workspace) / rel
@@ -174,7 +176,7 @@ elif kind == "request_count":
 
 The suite replays every case against a real provider (`python3 scripts/eval-tier2.py --provider <p> --model <m> --only <id>`). The scripted asserts were designed with a second life in mind — each case's `live_value` names what real-model judgment it measures.
 
-**Mechanical prerequisite (verified from `eval-tier2.py:103`):** with `--provider` the ScriptedModel never starts, `run.requests` stays empty, and every `request_contains`/`request_lacks` fails "sent no request" — a whole-suite property, not a per-case defect. Before the study, add ~3 lines to `evaluate()` to skip (or report n/a) `request_*` asserts when running live; until then live runs must be scored on event/no_event/events_at_*/final_text asserts plus the transcript.
+**Mechanical prerequisite — SHIPPED:** with `--provider` the ScriptedModel never starts and `run.requests` stays empty, so `evaluate()` now skips `request_*` asserts on live runs (the header says so); live scoring rests on event/no_event/events_at_*/final_text asserts plus the transcript.
 
 What each group measures live:
 
