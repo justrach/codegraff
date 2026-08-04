@@ -23,6 +23,7 @@ const Agent = agent_mod.Agent;
 const style = &@import("ansi.zig").style;
 
 const anim = @import("anim.zig");
+const tick_gate = @import("tick_gate.zig"); // #tui-tick: child ticks wait for a foreground line boundary
 
 const terminal = @import("term.zig");
 const tty = terminal.tty;
@@ -116,6 +117,10 @@ pub fn streamThinking(self: *Agent, chunk: []const u8) void {
         self.thinking_rows = 1; // the header newline already moved us down one line
         self.thinking_col = 0;
         self.thinking_overflow = false;
+        // The block owns every row below this one and collapses them by cursor
+        // math — a child's tick printed inside it would be erased with the
+        // block (or shift the erase onto real output). Hold until it closes.
+        tick_gate.hold();
     }
     self.thinking_text.appendSlice(self.gpa, chunk) catch {};
     if (self.thinking_folded) return; // folded: buffer only, don't draw the live block
@@ -142,6 +147,7 @@ pub fn closeThinkingBlock(self: *Agent) void {
         w.print("{s}\n{s}✓ Thought{s}\n\n", .{ style.reset, style.dim, style.reset }) catch return;
     }
     w.flush() catch return;
+    _ = tick_gate.setLineStart(true); // both branches end at column 0 — held ticks land here (#tui-tick)
 }
 
 /// Ctrl-T: fold/unfold the live "Thinking" block in place (#92/#85). Only
@@ -210,23 +216,18 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     self.md_table.clearRetainingCapacity();
     self.partial_text.clearRetainingCapacity(); // fresh Esc-interrupt capture
 
-    // Esc-interrupt: while the root's request is on a TTY, stdin sits in
-    // raw non-blocking no-echo mode — from *before* the connect, so Esc
-    // pressed during a slow time-to-first-token wait neither echoes ^[
-    // nor leaks into the next prompt. Polled between SSE lines; leftover
-    // bytes are drained before canonical mode returns, so gate prompts
-    // and the line editor see a clean tty.
+    // Esc-interrupt: while the root's request is on a TTY, stdin sits in raw
+    // non-blocking no-echo mode — from *before* the connect, so Esc pressed
+    // during a slow time-to-first-token wait neither echoes ^[ nor leaks into
+    // the next prompt. Polled between SSE lines; leftover bytes are drained
+    // before canonical mode returns, so gate prompts and the line editor see a
+    // clean tty. SGR mouse reporting is deliberately NOT enabled: grabbing the
+    // mouse (\x1b[?1000;1006h) forwards wheel events to us instead of letting
+    // the terminal scroll its own scrollback — native scroll wins, and Ctrl-T
+    // still folds the live Thinking block (escPressed).
     const watch_esc = !self.sub and self.in != null and main_mod.use_color and !main_mod.json_mode;
     var orig_tio: ?tty.RawState = null;
-    if (watch_esc) {
-        orig_tio = rawNonblockStdin();
-        // SGR mouse reporting is intentionally NOT enabled. Grabbing the mouse
-        // (\x1b[?1000;1006h) makes the terminal forward wheel events to us instead
-        // of scrolling its own scrollback, so scrolling up mid-stream got captured
-        // as input. Leaving the mouse to the terminal keeps native scroll — parity
-        // with Claude Code. The live Thinking block still folds via Ctrl-T (see
-        // escPressed); its SGR click-to-fold path stays wired but dormant.
-    }
+    if (watch_esc) orig_tio = rawNonblockStdin();
     defer if (orig_tio) |o| {
         _ = drainSteerStdin(true);
         tty.restore(o);
@@ -302,9 +303,8 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     const status_code = @intFromEnum(response.head.status);
     if (status_code == 429 or status_code >= 500) {
         http.captureRetryAfter(&response); // #retry-after: honor the provider's requested backoff
-        // Drain a snippet of the error body so the retry message can
-        // surface the gateway's diagnostic (e.g. "upstream timeout")
-        // instead of a bare "server error (5xx)".
+        // Drain a snippet of the error body so the retry message surfaces the
+        // gateway's diagnostic instead of a bare "server error (5xx)".
         capture5xxBodyStream(self.gpa, &response);
         if (req.connection) |conn| conn.closing = true;
         return if (status_code == 429) error.RateLimited else error.ServerError;
@@ -423,15 +423,13 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
             main_mod.g_thinking_fold_request = false;
             self.toggleThinkingFold();
         }
-        // Logical stream terminator: once the provider's final event
-        // ([DONE] / response.completed / message_stop) has landed in `full`,
-        // the response is complete — stop instead of waiting for the socket to
-        // close. Some gateways hold the connection open (or reset it) after the
-        // last event, which otherwise trips the 120s idle-stall watchdog or a
-        // spurious retry on an already-complete response (#134/#135).
-        // #133: a finish_reason chunk means the response is complete even if the
-        // provider never sends [DONE] — record it so a subsequent close counts
-        // as a clean end, but keep reading so a trailing usage chunk still lands.
+        // Logical stream terminator: once the provider's final event ([DONE] /
+        // response.completed / message_stop) lands in `full` the response is
+        // complete — stop instead of waiting for a socket some gateways hold
+        // open (or reset), which otherwise trips the 120s idle-stall watchdog or
+        // a spurious retry on an already-complete response (#134/#135). #133: a
+        // finish_reason chunk completes the response even without [DONE] — note
+        // it so a later close is clean, but keep reading for a usage chunk.
         if (self.provider.kind == .openai and openaiComplete(line.writer.buffered())) saw_done = true;
         if (isStreamEnd(self.scratchAlloc(), self.provider.kind, line.writer.buffered())) { // #124: parse tree is a transient bool check
             saw_done = true; // #133: the provider's terminal event landed — a later close is clean
@@ -455,6 +453,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     if (!main_mod.json_mode and self.streamed_text) if (self.out) |w| {
         w.writeAll("\n") catch {};
         w.flush() catch {};
+        _ = tick_gate.setLineStart(true); // answer is off the wire: release held child ticks (#tui-tick)
     };
     return full.toOwnedSlice();
 }
@@ -596,5 +595,6 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     } else {
         w.writeAll(text) catch return;
         w.flush() catch return;
+        if (!self.sub) _ = tick_gate.setLineStart(text[text.len - 1] == '\n'); // #tui-tick
     }
 }
