@@ -82,7 +82,7 @@ test "agentStatusText: running/completed/failed shapes carry the usage summary, 
     try std.testing.expect(std.mem.indexOf(u8, ok, "3 tool call") != null);
     try std.testing.expect(std.mem.indexOf(u8, ok, "final report") != null);
 
-    const failed_text = "subagent sa-014-abcd failed before producing a report: connection reset [transport failure]. retry is likely safe";
+    const failed_text = "subagent sa-014-abcd failed before producing a report: connection reset [transport failure, 3 attempts]. retry is likely safe";
     const failed = try subagent.agentStatusText(gpa, 9, true, true, .{ .duration_ms = 300 }, failed_text);
     defer gpa.free(failed);
     try std.testing.expect(std.mem.indexOf(u8, failed, "failed") != null); // status names the failure — never silent
