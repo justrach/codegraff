@@ -192,3 +192,43 @@ test "the discovery path itself flattens, so nothing reaches a provider unlowere
         }.check);
     }
 }
+
+// The two below live here rather than in schema.zig, which is at the
+// 600-line ceiling.
+
+test "isMetaName: every orchestrator-handled meta tool, and nothing else" {
+    for (schema.meta_names) |name| try std.testing.expect(schema.isMetaName(name));
+    try std.testing.expect(schema.isMetaName("note_constraint")); // #381: inline — it mutates the root's own system prompt
+    try std.testing.expect(!schema.isMetaName("bash"));
+    try std.testing.expect(!schema.isMetaName("subagent"));
+    try std.testing.expect(!schema.isMetaName("codedb"));
+    // Every meta name must be a real root spec: a meta tool nothing advertises
+    // is dead dispatch, and a meta name with no spec is unreachable.
+    for (schema.meta_names) |name| {
+        var found = false;
+        for (schema.root_specs) |t| if (std.mem.eql(u8, t.name, name)) {
+            found = true;
+        };
+        try std.testing.expect(found);
+    }
+}
+
+test "note_constraint (#381): root-only, append-only, and a valid one-property schema" {
+    var found = false;
+    for (schema.root_specs) |t| if (std.mem.eql(u8, t.name, "note_constraint")) {
+        found = true;
+        var parsed = try std.json.parseFromSlice(Value, std.testing.allocator, t.schema, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("text", parsed.value.object.get("required").?.array.items[0].string);
+        try std.testing.expectEqual(@as(usize, 1), parsed.value.object.get("properties").?.object.count());
+        // The append-only contract is ADVERTISED, not merely implemented: a
+        // model that believed it could retire an item would keep trying.
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "Append-only") != null);
+        try std.testing.expect(std.mem.indexOf(u8, t.desc, "survives compaction") != null);
+    };
+    try std.testing.expect(found);
+    // A subagent must never be handed it: a child never saw the rejection, so
+    // anything it recorded would be second-hand at best.
+    try std.testing.expect(std.mem.indexOf(u8, schema.tools_openai_sub, "note_constraint") == null);
+    try std.testing.expect(std.mem.indexOf(u8, schema.tools_anthropic_sub, "note_constraint") == null);
+}

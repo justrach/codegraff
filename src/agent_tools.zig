@@ -44,6 +44,7 @@ const exec = @import("exec.zig");
 const execTool = exec.execTool;
 
 const brief_diversity = @import("brief_diversity.zig"); // #382: N sibling spawns in one batch are a fleet
+const playbook_glue = @import("playbook_glue.zig"); // #381: the note_constraint meta arm
 const util = @import("util.zig"); // #225: unixMs, for the clock_sleep interrupted-elapsed measurement
 const protocol_seq = @import("protocol_seq.zig"); // #330: monotonic `seq` on every --json event
 
@@ -353,6 +354,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         };
         return .{ .text = try clockSleepSuccessText(self.arena, parsed.ms, parsed.clamped), .is_error = false };
     }
+    if (std.mem.eql(u8, call.name, "note_constraint")) return playbook_glue.noteConstraint(self, call.input); // #381: append-only, and it re-composes the root's own prompt
     if (std.mem.eql(u8, call.name, "ask_user")) return self.askUser(call);
     // todo_read
     return .{ .text = self.renderTodos(goal_state.currentEpoch(self.goal)), .is_error = false };

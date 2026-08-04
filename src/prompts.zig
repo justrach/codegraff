@@ -14,6 +14,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const shapes = @import("shapes.zig");
 const Agent = @import("agent.zig").Agent;
+const playbook = @import("playbook.zig"); // #381: the user-constraint block composed onto the ROOT's base prompt
 
 pub const main_system_prompt =
     \\You are a coding agent running in a minimal terminal harness on the
@@ -97,6 +98,8 @@ pub const main_system_prompt =
     \\fix. Match the surrounding file's style and keep diffs minimal: no drive-by
     \\refactors, renames, or reformatting the task did not require.
     \\
+    \\The moment the user rejects, forbids, or vetoes something ("no dots", "not vanilla JS", "stop adding scroll hints"), call note_constraint with one short imperative line recording it, then carry on — recorded constraints are injected into every later subagent, workflow and pipeline brief and survive compaction, so a rejection you leave unrecorded is one your fresh workers will repeat.
+    \\
     \\Write the final message as an update to a teammate who has not seen your
     \\screen. Cite evidence as `path:line` instead of pasting file bodies — never
     \\dump large file contents into an answer — and backtick-wrap commands, paths,
@@ -175,11 +178,30 @@ pub fn ultracodeActive(agent: *const Agent) bool {
 /// sys_normal directly and never recomputed them). `ultra` COMPOSES onto
 /// whichever base is active rather than replacing it, so /strict and
 /// /ultracode stay independent toggles.
+///
+/// #381: the base is also remembered verbatim on `sys_base`, and the live
+/// user-constraint block is composed onto it here — inside the one funnel —
+/// so a persona swap or a `set_system_prompt` can never drop the user's
+/// standing "no"s on the floor. Gated on `playbook.g_root_inject` (armed only
+/// by setRootSystemPrompts below) so this stays a pure string funnel for the
+/// tests and for every non-root agent.
 pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void {
-    agent.sys_normal = base;
-    agent.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ base, strict_note });
-    agent.sys_ultra = try std.fmt.allocPrint(arena, "{s}{s}", .{ base, ultracode_system_note });
+    agent.sys_base = base;
+    const composed = if (playbook.g_root_inject) playbook.composeRoot(agent.io, arena, base) else base;
+    agent.sys_normal = composed;
+    agent.sys_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, strict_note });
+    agent.sys_ultra = try std.fmt.allocPrint(arena, "{s}{s}", .{ composed, ultracode_system_note });
     agent.sys_ultra_strict = try std.fmt.allocPrint(arena, "{s}{s}", .{ agent.sys_strict, ultracode_system_note });
+}
+
+/// The ROOT's entry to the same funnel, called once by session_run when the
+/// root agent is built. Arming here rather than at a global switch keeps the
+/// filesystem read strictly on the one code path that has a real session
+/// behind it — subagents get their briefs' block from playbook.rideBrief, and
+/// a bare `Agent` in a unit test gets neither.
+pub fn setRootSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void {
+    playbook.g_root_inject = true;
+    return setSystemPrompts(agent, base, arena);
 }
 
 pub const sub_system_prompt =
