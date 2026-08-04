@@ -40,6 +40,7 @@ const Isolation = fleet.Isolation; // #276 P0-1
 const route_policy = @import("route_policy.zig"); // #372 (shape, role) policy cells
 const route_phase = @import("route_phase.zig"); // #376 one learned seat per phase
 const route_trace = @import("route_trace.zig"); // #372 per-worker routing trace
+const vision_ask = @import("vision_ask.zig"); // #380 vision-aware seating + report honesty flag
 const telemetry = @import("telemetry.zig");
 // #63: stable workflow/phase/task ids + the additive `workflow_progress`
 // JSONL event, so the REPL can map a run from state instead of scraping the
@@ -489,14 +490,16 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // is the session route unless the learned (shape, role) policy found a
         // strictly better-value model for this phase's cell; either way the
         // #372 trace names the rung, the cell and the layer that decided.
-        const seat = route_phase.forPhase(subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), shape, title, niches, ctx.subagent_provider != null);
+        // #380: …then asked whether any task in it names an image the seat
+        // cannot see. A re-seat stays phase-UNIFORM, so #290 is untouched.
+        const seat = vision_ask.phaseSeat(route_phase.forPhase(subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), shape, title, niches, ctx.subagent_provider != null), prompts, ctx.subagent_provider != null);
         for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures, 1..) |label, prompt, override, niche, isolation, isolation_fallback, *fut, task_no| {
             wfp.task(ctx.io, arena, run_id, phase_no, task_no, tasks.len, label, "running"); // #63
             route_trace.emitSpawnProvider(ctx.io, ctx.tracer, label, seat.provider, seat.cellOf(niche), seat.sourceFor(override != null), override, niche);
             fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche, isolation, isolation_fallback, seat.pin });
         }
-        for (futures, outputs, labels, 1..) |*fut, *out, label, task_no| {
-            out.* = fut.await(ctx.io);
+        for (futures, outputs, labels, prompts, 1..) |*fut, *out, label, prompt, task_no| {
+            out.* = vision_ask.flagReport(gpa, fut.await(ctx.io), vision_ask.forPrompt(prompt)); // #380 honesty flag
             // #63 — terminal per task, so a UI can settle that row without
             // waiting for the phase (and before the retry pass below reruns it).
             wfp.task(ctx.io, arena, run_id, phase_no, task_no, tasks.len, label, if (out.is_error) "failed" else "completed");
@@ -526,8 +529,8 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
                 rf.* = ctx.io.async(workflowRetryTask, .{ ctx, labels[i], prompts[i], overrides[i], niches[i], isolations[i], isolation_fallbacks[i], seat.pin });
             }
             for (refut, 0..) |*rf, k| {
-                const retry = rf.await(ctx.io);
                 const i = fidx[k];
+                const retry = vision_ask.flagReport(gpa, rf.await(ctx.io), vision_ask.forPrompt(prompts[i])); // #380
                 if (!retry.is_error) {
                     gpa.free(outputs[i].text);
                     outputs[i] = retry;
