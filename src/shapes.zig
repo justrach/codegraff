@@ -115,6 +115,9 @@ pub const shape_catalog_note =
     \\  find       one reviewer per dimension (correctness, security, perf, tests), parallel
     \\  verify     one skeptic per finding, told to REFUTE it; gate with when:"FINDING"
     \\  synthesize one task; findings ranked most-severe first
+    \\A-fix repair — the ask is "fix this bug", NOT "review this":
+    \\  find → implement (EDITS files, lists every changed path) → verify (reads
+    \\  the DIFF, when:"PATCH"). Never shape A: reviewers report, they don't fix.
     \\B research/understand — the ask is a question about how something works:
     \\  sweep      researchers each searching a DIFFERENT way (by symbol, by callers,
     \\             by git history, by tests); tell them not to duplicate each other
@@ -140,10 +143,10 @@ pub const shape_catalog_note =
     \\             hue/particle/font pairing is ONE concept, not N. Leave every
     \\             variant unmerged until the user picks.
     \\
-    \\Scale to the ask: "find bugs" is 3 finders + 1 verify; "thoroughly audit" is
-    \\6 finders + 3-vote adversarial verify + synthesize. Use phases only when a
-    \\phase genuinely needs ALL of the previous one; per-item work belongs in
-    \\pipeline.
+    \\Scale to the ask: "fix this bug" is 1 finder + 1 implementer + 1 verify;
+    \\"thoroughly audit" keeps 6 finders + 3-vote adversarial verify + synthesize.
+    \\Use phases only when a phase genuinely needs ALL of the previous one;
+    \\per-item work belongs in pipeline.
     \\
     \\isolation:"worktree" ONLY for tasks that edit files IN PARALLEL within one
     \\phase and whose edits nothing downstream has to read. Every task gets its
@@ -280,20 +283,118 @@ test "shape catalog never tells a dependent chain to isolate into worktrees" {
     try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, "Give file-editing tasks isolation") == null);
 }
 
+// ── what KIND of ask this is ───────────────────────────────────────────────
+// The escalation ladder (escalation.zig) and the learned orchestration policy
+// (orchestration_policy.zig) both partition on the class of the ask. The
+// lexical mapping already existed implicitly — the catalog above tells the
+// model "the ask is review/audit/find bugs" — it was just never exposed as a
+// value anything could key on. `classOf` is that exposure, and nothing more:
+// a closed enum over the same words, so a policy cell means the same thing in
+// two runs a week apart.
+
+pub const TaskClass = enum {
+    bugfix,
+    feature,
+    refactor,
+    review,
+    research,
+    other,
+
+    pub fn label(self: TaskClass) []const u8 {
+        return @tagName(self);
+    }
+
+    pub fn parse(s: []const u8) TaskClass {
+        return std.meta.stringToEnum(TaskClass, s) orelse .other;
+    }
+};
+
+fn anyOfCI(hay: []const u8, needles: []const []const u8) bool {
+    for (needles) |n| if (util.indexOfIgnoreCase(hay, n) != null) return true;
+    return false;
+}
+
+/// The class of a raw user ask. Order is precedence, most specific first:
+/// "fix the bug the review found" is a BUGFIX (there is a defect to repair),
+/// not a review, and mapping it to review is precisely the study's worst
+/// failure — a repair ask that instantiated shape A, spawned reviewers, and
+/// changed no files. Unrecognized asks are `other` rather than a guess: an
+/// uncelled observation is honest, a mis-celled one poisons a policy cell.
+pub fn classOf(raw: []const u8) TaskClass {
+    // "broken" is qualified rather than bare: an ordinary feature spec says
+    // "ties broken by ascending order", and the bare word classified the eval
+    // study's wordfreq FEATURE task as a bugfix — a mis-celled observation,
+    // which is exactly what this function's doc comment forbids.
+    if (anyOfCI(raw, &.{ "fix ", "bug", "is broken", "are broken", "broken test", "broken build", "failing", "fails", "regression", "crash", "repair", "make the tests pass", "doesn't work", "does not work" })) return .bugfix;
+    if (anyOfCI(raw, &.{ "refactor", "rename", "extract ", "restructure", "deduplicate", "dedupe", "move the", "port the", "migrate" })) return .refactor;
+    if (anyOfCI(raw, &.{ "review", "audit", "critique", "find bugs", "security review", "code smell" })) return .review;
+    if (anyOfCI(raw, &.{ "how does", "how do ", "why does", "explain", "investigate", "research", "summarize", "summarise", "summary", "understand", "what is the", "which ", "map the", "trace how", "answering", "these questions", "four questions", "cite the" })) return .research;
+    if (anyOfCI(raw, &.{ "add ", "implement", "build ", "create ", "write ", "support for", "new feature", "feature" })) return .feature;
+    return .other;
+}
+
+/// Audit-CLASS language: the ask itself says it wants breadth, so breadth is
+/// what the user is paying for (the R3 rung). Deliberately narrow — a fleet
+/// is the most expensive thing this harness can do, so it takes an explicit
+/// word, never an inference from a long prompt.
+pub fn isAuditClass(raw: []const u8) bool {
+    return anyOfCI(raw, &.{ "thorough", "exhaustive", "comprehensive", "audit", "every file", "all files", "across the codebase", "across the repo", "systematically", "full sweep", "end-to-end review" });
+}
+
+/// The user's raw ask for THIS turn, captured where the harness already reads
+/// it (applyUltracodeSteering, the one function both the REPL and the -p path
+/// funnel through). The workflow tool runs deep inside a turn with no line
+/// back to what was typed, and both call sites sit at the 600-line cap, so a
+/// capture here costs those files nothing.
+///
+/// A fixed buffer rather than a slice: the callers hand an ARENA-scoped
+/// string, and holding a pointer into a per-turn arena across the turn that
+/// frees it is exactly the class of bug this module should not introduce.
+var g_raw_ask_buf: [1024]u8 = undefined;
+var g_raw_ask_len: usize = 0;
+
+pub fn noteRawAsk(raw: []const u8) void {
+    const n = @min(raw.len, g_raw_ask_buf.len);
+    @memcpy(g_raw_ask_buf[0..n], raw[0..n]);
+    g_raw_ask_len = n;
+}
+
+pub fn rawAsk() []const u8 {
+    return g_raw_ask_buf[0..g_raw_ask_len];
+}
+
 pub const UltracodeMessage = struct {
     text: []const u8,
     explicit: bool,
 };
 
+// The mandate. It used to read "Use the workflow even if you could do the
+// work solo", and a 16-run eval study measured exactly what that buys: on
+// five ordinary coding tasks ultracode scored 80 where the same model solo
+// scored 100, at 3.7x the model calls — including a bugfix run that
+// orchestrated 30 calls, hit the budget ceiling and never edited the file.
+//
+// So the codeword no longer means "fan out". It means "escalate to the
+// smallest rung that fits", and the rungs are stated as CONCRETE
+// substitution gates rather than as judgment (opencode's anti-overuse
+// doctrine: a rule the model can check against the ask, not a virtue it has
+// to feel). Delegation is opt-in policy and stays decline-able even with the
+// codeword present (codex's doctrine) — escalation.admit() enforces the same
+// ladder in the harness, so this text and the gate agree.
 const ultracode_explicit_head =
     \\[harness note: the user invoked the "ultracode" codeword, opting
-    \\this turn into multi-agent orchestration. Fulfill the request with
-    \\the workflow tool.
+    \\this turn into multi-agent orchestration. The workflow tool is
+    \\available for it — available, not mandatory.
     \\Tell code-exploration subagents to go through the repo with the
     \\codedb tool (search / symbol / callers / outline / context) before
     \\reaching for bash grep — it is indexed and structural.
-    \\Use the workflow even if you could do the work solo; skip it only
-    \\if the message needs a purely conversational reply.
+    \\Escalate to the smallest rung that fits: work solo for a task scoped
+    \\to 1-2 known files; spawn ONE scout when exploration would flood your
+    \\own context; spawn a fleet only for 3+ genuinely independent
+    \\workstreams, or after a solo attempt failed verification.
+    \\Substitution gates — a specific file path → Read it; a named symbol →
+    \\Grep it; 2-3 known files → read them yourself, no fleet. A fleet that
+    \\re-derives what one Read would have told you is pure overhead.
 ;
 
 // The explicit-codeword note carries the shape catalog (#293): a one-shot
@@ -305,12 +406,15 @@ const ultracode_explicit_note = ultracode_explicit_head ++ "\n\n" ++ shape_catal
 // on, landing in compaction input every turn. setSystemPrompts() composes
 // it into sys_ultra/sys_ultra_strict once; this note just points at it.
 const ultracode_persistent_note =
-    \\[harness note: ultracode mode is enabled for this session. Use the
-    \\workflow tool for coding tasks — your system prompt already has the
-    \\shape catalog; instantiate one of those shapes rather than freeforming
-    \\a structure. Tell code-exploration subagents to go through the repo
-    \\with the codedb tool (search / symbol / callers / outline / context)
-    \\before reaching for bash grep — it is indexed and structural.]
+    \\[harness note: ultracode mode is enabled for this session. When a task
+    \\is big enough to need the workflow tool — 3+ genuinely independent
+    \\workstreams, or a solo attempt that failed verification — your system
+    \\prompt already has the shape catalog; instantiate one of those shapes
+    \\rather than freeforming a structure. Below that bar, do the work
+    \\yourself: 1-2 known files is solo work. Tell code-exploration
+    \\subagents to go through the repo with the codedb tool (search /
+    \\symbol / callers / outline / context) before reaching for bash grep —
+    \\it is indexed and structural.]
 ;
 
 /// `raw` is what the user actually typed this turn; `msg` is the assembled
@@ -321,6 +425,11 @@ const ultracode_persistent_note =
 /// every turn after /clear bannered as explicit even though the user never
 /// typed the word (#178).
 pub fn applyUltracodeSteering(arena: Allocator, msg: []const u8, raw: []const u8, persistent_enabled: bool) !UltracodeMessage {
+    // Unconditional, and on `raw` for the same reason the codeword scan is:
+    // the escalation gate classifies what the USER asked for, and a harness
+    // note replaying a prior goal is not that (#178). Also runs when the
+    // codeword is absent — the workflow tool is reachable without it.
+    noteRawAsk(raw);
     const explicit = util.indexOfIgnoreCase(raw, "ultracode") != null;
     if (explicit) {
         return .{ .text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ msg, ultracode_explicit_note }), .explicit = true };

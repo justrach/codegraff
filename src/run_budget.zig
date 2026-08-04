@@ -11,6 +11,9 @@
 
 const std = @import("std");
 const Io = std.Io;
+// Only for the mandatory outcome-row flush in exhaustedFatal below — a leaf
+// module over shapes/trace/util, so this adds no cycle to the budget path.
+const orch_rows = @import("orchestration_rows.zig");
 
 pub const default_max_concurrency: u32 = 8;
 pub const default_max_depth: u8 = 1;
@@ -102,7 +105,15 @@ pub const RunBudget = struct {
     /// failed:" line. The model never gets a concluding call at this point,
     /// so the HARNESS owns the last line: what ran out, that the work is
     /// partial and not rolled back, and where the evidence lives.
+    ///
+    /// It also owns the last ROW. An orchestration decision that ends here is
+    /// the single most informative observation the policy can have — the
+    /// escalation ladder bought a rung that could not finish — and before this
+    /// flush it was the one outcome that never got recorded, because the
+    /// process died between the decision and any score. The policy learned
+    /// from every run except exactly the failures it exists to prevent.
     pub fn exhaustedFatal(max_model_calls: u64, run_id: []const u8) noreturn {
+        orch_rows.flushPending(0, max_model_calls, 0, true, "");
         std.process.fatal("model-call budget exhausted (--max-model-calls {d}) before the task completed. Work done so far is PARTIAL and was NOT rolled back; inspect this run under .graff/traces/{s}.jsonl, then raise --max-model-calls or re-run to continue.", .{ max_model_calls, run_id });
     }
 

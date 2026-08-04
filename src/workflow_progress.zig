@@ -175,6 +175,17 @@ pub fn buildAbortText(arena: Allocator, labels: []const []const u8, details: []c
     return aw.writer.buffered();
 }
 
+/// Join two optional manifest notes with a newline, dropping empties. The
+/// tally carries ONE note slot and a phase can now produce two facts worth
+/// reporting (its diversity measurement and its duplicate collapse), so they
+/// are composed here rather than growing the struct — the manifest is prose
+/// for the root, not a schema.
+pub fn joinNotes(arena: Allocator, a: []const u8, b: []const u8) []const u8 {
+    if (a.len == 0) return b;
+    if (b.len == 0) return a;
+    return std.fmt.allocPrint(arena, "{s}\n{s}", .{ a, b }) catch a;
+}
+
 /// Build the trailing "## workflow" manifest block from one tally per phase —
 /// currently the only way the orchestrator learns a phase was skipped, or
 /// that a synthesis stage is about to work from partial (some-tasks-failed)
@@ -211,10 +222,24 @@ test "workflow_progress (#63): a phase transition emits structured state, not ju
     // A phase whose task entries are not objects returns AFTER the phase-start
     // emit and BEFORE any subagent is spawned, so this drives the real
     // execWorkflow call site with no network and no fan-out.
+    //
+    // The escalation gate now sits in front of that loop and would decline a
+    // two-task fan-out for an ask naming no files at all (rung R0, which is
+    // the right answer and has its own tests). Give it an audit-class ask so
+    // it admits and the phase actually starts — this test is about the #63
+    // event, not about the ladder.
+    shapes.noteRawAsk("thoroughly audit every file in this repository for security bugs");
     var ctx: tools.ToolCtx = undefined;
     ctx.gpa = std.testing.allocator;
     ctx.io = std.testing.io;
     ctx.from_sub = false;
+    // The escalation gate reads the shared pool, the tracer and the root's
+    // model before the phase loop runs, so those have to be real nulls here
+    // rather than the `undefined` the rest of this stub relies on.
+    ctx.run_budget = null;
+    ctx.tracer = null;
+    ctx.agent_cwd = null;
+    ctx.provider = .{ .id = "", .kind = .anthropic, .auth = .bearer, .url = "", .api_key = "", .model = "", .context = 0 };
     const input = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"phases\":[{\"title\":\"find security bugs\",\"tasks\":[1,2]}]}", .{});
     const out = try workflow.execWorkflow(ctx, input);
     std.testing.allocator.free(out.text);

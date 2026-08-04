@@ -83,6 +83,14 @@ pub const Agent = struct {
     codex_props_fp: u64 = 0, // request properties the server anchored on (model/effort/fast/tools/instructions)
     codex_ws_used_ms: i64 = 0, // .awake-clock ms of the WS's last successful use; gates the idle preemptive re-anchor (#codex-ws)
     sub: bool,
+    /// This agent is served NO tools at all — the `tools` field is omitted
+    /// from the request rather than sent empty, which every provider accepts.
+    /// Set for the variant judge: its own design comment says it "only
+    /// reads/reasons over text handed to it, never the filesystem", but it was
+    /// handed the full subagent catalog anyway and duly spent ~3 calls per
+    /// score re-reading files it had already been given. With no tools it must
+    /// answer from the excerpt in one call, which is what it was designed for.
+    text_only: bool = false,
     label: []const u8,
     out: ?*Io.Writer,
     in: ?*Io.Reader = null, // stdin, root only — backs the ask_user tool
@@ -366,7 +374,7 @@ pub const Agent = struct {
                 self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
                 self.closeCodexWs();
             }
-            const root = try self.request(self.toolsJson());
+            const root = try self.request(if (self.text_only) null else self.toolsJson());
             const done = switch (self.provider.kind) {
                 .anthropic => try self.stepAnthropic(root),
                 .openai => try self.stepOpenAI(root),

@@ -142,6 +142,10 @@ pub fn loadInto(io: Io, arena: Allocator, home: ?[]const u8) void {
     // policy cells, so the session-wide ladders and the per-cell learned
     // policy can never disagree about which runs they have seen.
     @import("route_policy.zig").loadCells(arena, archive);
+    // …and the (task_class, budget_band, stratum) orchestration arms, hung on
+    // this same pass for the same reason and at no extra I/O: one archive
+    // read, three consumers, one consistent view of history.
+    @import("orchestration_policy.zig").loadArms(arena, archive);
 }
 
 fn readSheet(io: Io, arena: Allocator, path: []const u8) ?Sheet {

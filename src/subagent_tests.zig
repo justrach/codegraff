@@ -64,3 +64,36 @@ test "classifyFailure: maps the child's api-error detail to a category + retry-s
     try std.testing.expect(!FailKind.invalid.retrySafe());
     try std.testing.expect(!FailKind.auth.retrySafe());
 }
+
+// Moved off subagent.zig when the §2c tournament gate needed room there — the
+// tests are unchanged, and this is the file that exists for exactly that.
+
+test "agentStatusText: running/completed/failed shapes carry the usage summary, and a failure is never silent (#276 P0-3)" {
+    const gpa = std.testing.allocator;
+
+    const running = try subagent.agentStatusText(gpa, 7, false, false, .{}, "");
+    defer gpa.free(running);
+    try std.testing.expectEqualStrings("[agent 7: running]", running);
+
+    const ok = try subagent.agentStatusText(gpa, 7, true, false, .{ .duration_ms = 1200, .tool_calls = 3, .context_tokens = 4500, .cache_read_tokens = 100 }, "final report");
+    defer gpa.free(ok);
+    try std.testing.expect(std.mem.indexOf(u8, ok, "completed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ok, "1200ms") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ok, "3 tool call") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ok, "final report") != null);
+
+    const failed_text = "subagent sa-014-abcd failed before producing a report: connection reset [transport failure]. retry is likely safe";
+    const failed = try subagent.agentStatusText(gpa, 9, true, true, .{ .duration_ms = 300 }, failed_text);
+    defer gpa.free(failed);
+    try std.testing.expect(std.mem.indexOf(u8, failed, "failed") != null); // status names the failure — never silent
+    try std.testing.expect(std.mem.indexOf(u8, failed, failed_text) != null); // the child's own diagnostic rides along verbatim
+}
+
+test "agentStatusText: composes with isolation:\"worktree\" — a kept-worktree note in the result survives verbatim (#276 P0-3 design point 5)" {
+    const gpa = std.testing.allocator;
+    const result_with_worktree = "final report text\n\n[worktree kept (has changes) — path: .graff/worktrees/agent-sa-001-aa11, branch: graff/agents/sa-001-aa11]";
+    const out = try subagent.agentStatusText(gpa, 3, true, false, .{ .duration_ms = 500 }, result_with_worktree);
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "[worktree kept (has changes) — path:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "branch: graff/agents/sa-001-aa11") != null);
+}

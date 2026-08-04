@@ -1,11 +1,19 @@
 //! Dynamic workflows as data: sequential phases of parallel subagents (#1/#2/
-//! #4/#5), plus pipeline mode (#3) — items mapped through a chain of stages
-//! with no inter-item barrier. Split out of main.zig (600-line goal).
+//! #4/#5). Split out of main.zig (600-line goal). Pipeline mode (#3) — items
+//! mapped through a chain of stages with no inter-item barrier — moved to
+//! workflow_pipeline.zig for the same reason, and aliased back below.
 //! Sibling-imports tools.zig for `ToolCtx`/`ToolOutput`/`failure` and
 //! subagent.zig for `workflowTask`/`runSub`/`scoreVariants`/
 //! `max_workflow_tasks` (subagent.zig is the lower-level sibling here, so the
 //! shared task-count cap lives there, not here — avoids a circular import).
 //! Back-imports main (as `main_mod`) only for `utf8Prefix`.
+//!
+//! THE ESCALATION GATE. Four thin call sites below implement the ladder in
+//! escalation.zig: `admit` before anything spawns, the per-phase budget
+//! re-check at the loop head, duplicate-brief collapse before the futures
+//! allocate, and the optional-spend gate on the judge tournament. Every rung
+//! decision, and every one of its consequences, is decided there; this file
+//! only obeys.
 
 const std = @import("std");
 const Io = std.Io;
@@ -46,6 +54,17 @@ const telemetry = @import("telemetry.zig");
 // JSONL event, so the REPL can map a run from state instead of scraping the
 // std.debug.print lines below. Also holds the run manifest (see below).
 const wfp = @import("workflow_progress.zig");
+// The ultracode escalation ladder (admission, the edit contract) and the
+// reservation ledger it decides against.
+const escalation = @import("escalation.zig");
+const phase_budget = @import("phase_budget.zig");
+const shapes = @import("shapes.zig");
+const pipeline_mode = @import("workflow_pipeline.zig");
+
+// Pipeline mode moved to workflow_pipeline.zig (600-line cap); aliased back so
+// workflow_test.zig and every other caller still reach it here.
+pub const pipelinePrompt = pipeline_mode.pipelinePrompt;
+pub const pipelineIsolationError = pipeline_mode.pipelineIsolationError;
 
 const max_workflow_phases = 5;
 
@@ -129,36 +148,6 @@ pub fn gateAllows(prev: []const u8, when: []const u8) bool {
     return when.len == 0 or util.indexOfIgnoreCase(prev, when) != null;
 }
 
-// ── Pipeline mode (#3) ──────────────────────────────────────────────────────
-// Phases fan out then synthesize: a barrier between phases, since every
-// next-phase task waits on ALL of the previous phase via {{prev}}. Pipeline
-// instead maps each ITEM through a chain of STAGES with NO barrier — item A can
-// be in stage 3 while item B is still in stage 1, so wall-clock is the slowest
-// single chain, not the sum of slowest-per-stage. Use it for per-item work
-// (transform/verify each file); use phases for fan-out + synthesis.
-const max_pipeline_items = 8;
-const max_pipeline_stages = 5;
-
-const StageSpec = struct {
-    label: []const u8,
-    prompt: []const u8, // raw; may contain {{item}} / {{prev}}
-    override: ?[]const u8,
-    niche: []const u8,
-    isolation: Isolation = .shared_cwd, // #276 P0-1
-    isolation_fallback: bool = false,
-    role: []const u8 = "", // #372: this stage's canonical slot, for its route trace
-};
-
-/// Replace every `needle` in `hay` with `repl` (arena-allocated); returns `hay`
-/// unchanged when the needle is absent.
-fn replacePlaceholder(arena: Allocator, hay: []const u8, needle: []const u8, with: []const u8) ![]const u8 {
-    if (std.mem.indexOf(u8, hay, needle) == null) return hay;
-    const size = std.mem.replacementSize(u8, hay, needle, with);
-    const buf = try arena.alloc(u8, size);
-    _ = std.mem.replace(u8, hay, needle, with, buf);
-    return buf;
-}
-
 /// Prepend the workflow/pipeline-level shared "context" (if any) to a raw
 /// task or stage prompt, BEFORE {{prev}}/{{item}} substitution runs on the
 /// result: context, blank line, raw prompt (U5). Absent/empty context
@@ -167,181 +156,6 @@ fn replacePlaceholder(arena: Allocator, hay: []const u8, needle: []const u8, wit
 pub fn withContext(arena: Allocator, context: []const u8, raw: []const u8) ![]const u8 {
     if (context.len == 0) return raw;
     return std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ context, raw });
-}
-
-/// Resolve a pipeline stage prompt for one item: substitute {{item}}, and from
-/// stage 2 {{prev}} = this item's bounded previous-stage result. Either is
-/// appended when its placeholder is omitted (mirrors phases-mode {{prev}}).
-pub fn pipelinePrompt(arena: Allocator, raw: []const u8, item: []const u8, prev: []const u8, stage_no: usize) ![]const u8 {
-    const cp = if (stage_no > 1) cappedPrevBody(arena, prev, pipeline_prev_cap) else "";
-    var p = raw;
-    if (std.mem.indexOf(u8, p, "{{item}}") != null)
-        p = try replacePlaceholder(arena, p, "{{item}}", item)
-    else
-        p = try std.fmt.allocPrint(arena, "{s}\n\nItem: {s}", .{ p, item });
-    if (std.mem.indexOf(u8, p, "{{prev}}") != null)
-        p = try replacePlaceholder(arena, p, "{{prev}}", cp)
-    else if (stage_no > 1)
-        p = try std.fmt.allocPrint(arena, "{s}\n\nResult from the previous stage:\n\n{s}", .{ p, cp });
-    return p;
-}
-
-/// One item's journey through every stage, run on a pool thread (spawned by
-/// runPipeline). Stages run SEQUENTIALLY here via DIRECT runSub calls — never a
-/// nested io.async, which on a bounded pool could deadlock; different items run
-/// concurrently. A failed stage is retried once (#2); a stage that still fails
-/// ends the chain with a terse marker plus a capped one-line excerpt of its
-/// error (#248), rather than feeding the whole error downstream.
-fn pipelineChain(ctx: ToolCtx, item: []const u8, stages: []const StageSpec) ToolOutput {
-    const gpa = ctx.gpa;
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var prev: []const u8 = "";
-    for (stages, 1..) |st, stage_no| {
-        const prompt = pipelinePrompt(arena, st.prompt, item, prev, stage_no) catch |e| return failure(gpa, e);
-        // #372: say out loud which route this stage worker actually got, and
-        // under which cell — an inherited route was invisible before.
-        route_trace.emitSpawnProvider(ctx.io, ctx.tracer, st.label, subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), .{ .shape = .migration, .role = st.role }, if (st.override != null) .workflow_override else route_trace.sessionSource(ctx.subagent_provider != null), st.override, st.niche);
-        // null pin: neither #292's per-spawn pins nor #376's phase seat reach a pipeline stage — a chain is never scored (#296), so it has no cell to learn from.
-        var out = if (runSub(ctx, "workflow_task", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, null, null)) |r| r.output else |e| failure(gpa, e);
-        if (out.is_error) {
-            // Only spend the one retry (#2) when the harness's own
-            // classification hasn't already ruled it out (auth, invalid
-            // args, an unavailable model) — those stay failed below without
-            // wasting a second attempt.
-            if (failureAllowsRetry(out.text)) {
-                gpa.free(out.text);
-                out = if (runSub(ctx, "workflow_retry", st.label, prompt, st.override, st.niche, st.isolation, st.isolation_fallback, null, null)) |r| r.output else |e| failure(gpa, e);
-            }
-            if (out.is_error) {
-                // #248 — excerpt the stage's own error BEFORE freeing it, so
-                // the item's result says why the chain stopped, not just that
-                // it did.
-                const detail = failExcerpt(arena, out.text);
-                gpa.free(out.text);
-                const msg = if (detail.len > 0)
-                    std.fmt.allocPrint(gpa, "(pipeline stopped at stage {d}/{d} \"{s}\": task failed)\n{s}", .{ stage_no, stages.len, st.label, detail })
-                else
-                    std.fmt.allocPrint(gpa, "(pipeline stopped at stage {d}/{d} \"{s}\": task failed)", .{ stage_no, stages.len, st.label });
-                return .{
-                    .text = msg catch (gpa.dupe(u8, "(pipeline stage failed)") catch ""),
-                    .is_error = true,
-                };
-            }
-        }
-        const duped = arena.dupe(u8, out.text) catch {
-            gpa.free(out.text);
-            return failure(gpa, error.OutOfMemory);
-        };
-        gpa.free(out.text);
-        prev = duped;
-    }
-    return .{ .text = gpa.dupe(u8, prev) catch "" };
-}
-
-/// Comptime-formatted refusal message for a worktree-isolated stage past 0.
-fn stageIsoMsg(comptime n: usize) []const u8 {
-    return std.fmt.comptimePrint("pipeline stage {d} requests worktree isolation, but a pipeline is a dependent chain over one item -- stage {d} must see what earlier stages did, and worktree isolation would silently hide that work. Only stage 0 may isolate with its own worktree. If you wanted real per-item isolation, use phases instead (phases run independently, with no such dependency).", .{ n, n });
-}
-
-/// Pure guard-rail predicate for pipeline-stage isolation: a pipeline chains
-/// dependent stages over one item, so only stage 0 (index 0) may resolve to
-/// worktree isolation -- any later stage in its own worktree cannot see what
-/// the prior stage did, and the run would silently produce nonsense (#295
-/// territory covers the real per-item-worktree redesign; this only refuses
-/// the broken config). Returns the refusal message, or null when allowed.
-pub fn pipelineIsolationError(stage_index: usize, iso: Isolation) ?[]const u8 {
-    if (stage_index == 0 or iso != .worktree) return null;
-    return switch (stage_index) {
-        1 => stageIsoMsg(1),
-        2 => stageIsoMsg(2),
-        3 => stageIsoMsg(3),
-        4 => stageIsoMsg(4),
-        else => "pipeline stage requests worktree isolation, but a pipeline is a dependent chain over one item -- only stage 0 may isolate with its own worktree. If you wanted real per-item isolation, use phases instead (phases run independently).",
-    };
-}
-
-/// Pipeline mode entry (#3): validate {items, stages}, then run one independent
-/// chain per item concurrently (no barrier) and return the labeled final-stage
-/// result for each item.
-fn runPipeline(ctx: ToolCtx, pv: Value, outer_context: []const u8) !ToolOutput {
-    const gpa = ctx.gpa;
-    if (pv != .object) return .{ .text = try gpa.dupe(u8, "pipeline must be an object with items + stages"), .is_error = true };
-    const items_val = pv.object.get("items") orelse return .{ .text = try gpa.dupe(u8, "pipeline needs an items array"), .is_error = true };
-    const stages_val = pv.object.get("stages") orelse return .{ .text = try gpa.dupe(u8, "pipeline needs a stages array"), .is_error = true };
-    if (items_val != .array or stages_val != .array) return .{ .text = try gpa.dupe(u8, "pipeline items and stages must both be arrays"), .is_error = true };
-    const items = items_val.array.items;
-    const stage_vals = stages_val.array.items;
-    if (items.len == 0 or items.len > max_pipeline_items) return .{ .text = try std.fmt.allocPrint(gpa, "pipeline needs 1-{d} items", .{max_pipeline_items}), .is_error = true };
-    if (stage_vals.len == 0 or stage_vals.len > max_pipeline_stages) return .{ .text = try std.fmt.allocPrint(gpa, "pipeline needs 1-{d} stages", .{max_pipeline_stages}), .is_error = true };
-    // Shared context slot: one string prepended to every stage prompt below
-    // (before {{item}}/{{prev}}). Readable in BOTH places the tool schema says
-    // it is - on the pipeline object, or top-level alongside it - because the
-    // dispatch to runPipeline happens before the top-level read, so a pipeline
-    // call silently ignored the documented top-level field.
-    const context_str: []const u8 = if (pv.object.get("context")) |cv| (if (cv == .string) cv.string else outer_context) else outer_context;
-
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    // Parse stages once — shared (read-only) by every item chain.
-    const stages = try arena.alloc(StageSpec, stage_vals.len);
-    for (stage_vals, stages, 0..) |sv, *sp, stage_index| {
-        if (sv != .object) return .{ .text = try gpa.dupe(u8, "each pipeline stage must be an object"), .is_error = true };
-        const so = sv.object;
-        sp.label = if (so.get("description")) |d| (if (d == .string) d.string else "stage") else "stage";
-        const raw = if (so.get("prompt")) |p| (if (p == .string) p.string else "") else "";
-        if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each pipeline stage needs a non-empty \"prompt\""), .is_error = true };
-        sp.prompt = try withContext(arena, context_str, raw);
-        sp.override = fleet.resolveOverride(so);
-        const an = fleet.resolveNiche(so);
-        sp.niche = if (an.len > 0) an else sp.label;
-        sp.isolation = fleet.resolveIsolation(so);
-        // A pipeline is a dependent chain over one item: stage 2+ must see
-        // what earlier stages did, which worktree isolation would silently
-        // hide (#295 territory). Reject rather than run the chain wrong.
-        if (pipelineIsolationError(stage_index, sp.isolation)) |msg|
-            return .{ .text = try gpa.dupe(u8, msg), .is_error = true };
-        sp.isolation_fallback = fleet.resolveIsolationFallback(so);
-        sp.role = route_policy.roleOf(sp.label, sp.niche); // #372
-    }
-
-    const item_strs = try arena.alloc([]const u8, items.len);
-    for (items, item_strs) |iv, *is| {
-        if (iv != .string or iv.string.len == 0) return .{ .text = try gpa.dupe(u8, "pipeline items must be non-empty strings"), .is_error = true };
-        is.* = iv.string;
-    }
-
-    const wf_start = Io.Timestamp.now(ctx.io, .awake);
-    std.debug.print("  [workflow] pipeline: {d} item(s) × {d} stage(s), no barrier\n", .{ items.len, stages.len });
-    // #63 — same fact, as state: phase_index 0 is the run-level event, since a
-    // pipeline has stages rather than phases. Per-stage events would have to be
-    // threaded into pipelineChain (one chain per item, on its own pool thread);
-    // that is left to the follow-up that renders them.
-    const run_id = try wfp.nextRunId(arena);
-    wfp.phase(ctx.io, arena, run_id, 0, stages.len, "pipeline", "started", items.len);
-
-    // Spawn one chain per item — all joined before any fallible work so an early
-    // return can never abandon a running chain.
-    const futures = try arena.alloc(Io.Future(ToolOutput), items.len);
-    const outputs = try arena.alloc(ToolOutput, items.len);
-    for (item_strs, futures) |item, *fut| fut.* = ctx.io.async(pipelineChain, .{ ctx, item, stages });
-    for (futures, outputs) |*fut, *out| out.* = fut.await(ctx.io);
-    defer for (outputs) |out| gpa.free(out.text);
-
-    var failed: usize = 0;
-    for (outputs) |out| if (out.is_error) {
-        failed += 1;
-    };
-    if (telemetry.g_telem) |t| t.workflowEvent(stages.len, items.len * stages.len, failed, @intCast(@max(0, wf_start.untilNow(ctx.io, .awake).toMilliseconds())));
-
-    var aw: Io.Writer.Allocating = .init(arena);
-    for (item_strs, outputs) |item, out| {
-        try aw.writer.print("### {s}{s}\n{s}\n\n", .{ item, if (out.is_error) " (failed)" else "", out.text });
-    }
-    return .{ .text = try gpa.dupe(u8, std.mem.trimEnd(u8, aw.writer.buffered(), "\n")) };
 }
 
 // U2's all-failed abort text, the run manifest and PhaseTally moved to
@@ -373,7 +187,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         .is_error = true,
     };
     const outer_context: []const u8 = if (obj.get("context")) |cv| (if (cv == .string) cv.string else "") else "";
-    if (obj.get("pipeline")) |pv| return runPipeline(ctx, pv, outer_context);
+    if (obj.get("pipeline")) |pv| return pipeline_mode.run(ctx, pv, outer_context);
     const phases_val = obj.get("phases") orelse return .{
         .text = try gpa.dupe(u8, "workflow needs a \"phases\" array (or a \"pipeline\" object)"),
         .is_error = true,
@@ -404,6 +218,27 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
     // component of every worker's policy cell for this run.
     const shape = route_policy.shapeOfPhases(phases);
 
+    // ADMISSION (escalation §1b). One call, on cheap observables, before a
+    // single future is allocated: which rung does this ask actually deserve?
+    // R0 hands back a non-error advisory and the root does the work itself —
+    // which on ordinary tasks is both cheaper and better, measured.
+    const ledger = phase_budget.Ledger.init(phase_budget.capOf(ctx.run_budget));
+    const admission = escalation.admit(escalation.ctxFrom(ctx, arena), phases, shape);
+    switch (admission.verdict) {
+        .solo => |advice| return .{ .text = try gpa.dupe(u8, advice) },
+        else => {},
+    }
+    // §4-P1: a downsized admission caps every phase's width. Wide phases are
+    // redundant finders; the landing phase carries one task and a cap of >=1
+    // never touches it — see escalation.downsizeWidth.
+    const width_cap: usize = switch (admission.verdict) {
+        .downsize => |w| w,
+        else => max_workflow_tasks,
+    };
+    // P2 set this when it stopped early, so the manifest can say so.
+    var truncated = false;
+    var phases_ran: usize = 0;
+
     // Telemetry: one "workflow" record per run — phase/task/failure counts
     // and wall-clock — emitted however the run ends.
     const wf_start = Io.Timestamp.now(ctx.io, .awake);
@@ -419,19 +254,32 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
     var prev_results: []const u8 = "";
     const tallies = try arena.alloc(PhaseTally, phases.len);
     for (phases, 1..) |phase_val, phase_no| {
+        // §4-P2: stop BEFORE a phase whose remaining plan cannot be followed
+        // through on. Returning three finders' evidence and enough calls for
+        // the root to land the fix beats spending the last call on a fourth
+        // finder and dying with the file untouched — which is exactly how the
+        // study's cap-30 bugfix run ended.
+        if (ledger.earlyExit(phase_budget.remainingOf(ctx.run_budget), phase_budget.laterPhasesMin(phases, phase_no - 1))) {
+            truncated = true;
+            break;
+        }
         if (phase_val != .object) return .{ .text = try gpa.dupe(u8, "each phase must be an object"), .is_error = true };
         const phase = phase_val.object;
         const title = if (phase.get("title")) |t| (if (t == .string) t.string else "phase") else "phase";
+        // §3b: this phase's slot is contracted to MUTATE files, so its briefs
+        // carry the changed-path contract and its results face a porcelain probe.
+        const contracted = escalation.isContracted(shapes.canonicalSlot(title));
         const tasks_val = phase.get("tasks") orelse return .{
             .text = try gpa.dupe(u8, "each phase needs a tasks array"),
             .is_error = true,
         };
         if (tasks_val != .array) return .{ .text = try gpa.dupe(u8, "phase tasks must be an array"), .is_error = true };
-        const tasks = tasks_val.array.items;
-        if (tasks.len == 0 or tasks.len > max_workflow_tasks) return .{
+        const authored = tasks_val.array.items;
+        if (authored.len == 0 or authored.len > max_workflow_tasks) return .{
             .text = try std.fmt.allocPrint(gpa, "each phase needs 1-{d} tasks", .{max_workflow_tasks}),
             .is_error = true,
         };
+        const tasks = authored[0..@min(authored.len, @max(width_cap, 1))];
         // #5 — conditional phase: skip when its `when` substring is absent from
         // the previous phase's results (case-insensitive). Phase 1 has no prev so
         // its `when` never gates; a skipped phase leaves {{prev}} untouched, so a
@@ -440,6 +288,7 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             std.debug.print("  [workflow] phase {d}/{d}: {s} — SKIPPED (when \"{s}\" absent)\n", .{ phase_no, phases.len, title, wv.string });
             wfp.phase(ctx.io, arena, run_id, phase_no, phases.len, title, "skipped", tasks.len); // #63
             tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = 0, .total = tasks.len, .retried = 0, .skipped_when = wv.string };
+            phases_ran = phase_no;
             continue;
         };
         std.debug.print("  [workflow] phase {d}/{d}: {s} ({d} task(s))\n", .{ phase_no, phases.len, title, tasks.len });
@@ -468,7 +317,10 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
             const raw = if (task.get("prompt")) |p| (if (p == .string) p.string else "") else "";
             if (raw.len == 0) return .{ .text = try gpa.dupe(u8, "each task needs a non-empty \"prompt\""), .is_error = true };
             rawp.* = raw;
-            const based = try withContext(arena, context_str, raw);
+            // §3b, stolen from codex's patch-biased delegation: a contracted
+            // worker is told to MAKE the edits and to end by listing every
+            // changed path, so verify and the root review a diff, not a claim.
+            const based = try withContext(arena, context_str, if (contracted) try withContext(arena, escalation.contract_brief_note, raw) else raw);
             if (phase_no == 1) {
                 prompt.* = based;
             } else if (std.mem.indexOf(u8, based, "{{prev}}") != null) {
@@ -482,6 +334,14 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         }
 
         const diversity = brief_diversity.check(arena, ctx.tracer, title, raws, overrides); // #382: every brief in hand, nothing spawned yet
+        // §2b — duplicate-brief collapse, here because this is the last moment
+        // every brief is in hand and nothing has spawned. Tasks carrying the
+        // same genome AND the same brief are one worker asked twice; the
+        // duplicate spawns nothing and reads the survivor's result.
+        const dup = brief_diversity.collapse(arena, raws, overrides, escalation.isVariantsPhase(phase_val));
+        // The porcelain snapshot the edit contract compares against, taken
+        // before any worker can touch the tree. "" for an uncontracted phase.
+        const tree_before = escalation.treeSnapshot(arena, gpa, ctx.io, ctx.agent_cwd, contracted);
         // Join ALL tasks before any fallible work, so an early error return
         // can never abandon running subagents or free their result slots.
         const futures = try arena.alloc(Io.Future(ToolOutput), tasks.len);
@@ -494,19 +354,31 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // #380: …then asked whether any task in it names an image the seat
         // cannot see. A re-seat stays phase-UNIFORM, so #290 is untouched.
         const seat = vision_ask.phaseSeat(route_phase.forPhase(subagent_run.childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider), shape, title, niches, ctx.subagent_provider != null), prompts, ctx.subagent_provider != null);
-        for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures, 1..) |label, prompt, override, niche, isolation, isolation_fallback, *fut, task_no| {
-            wfp.task(ctx.io, arena, run_id, phase_no, task_no, tasks.len, label, "running"); // #63
+        for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures, 0..) |label, prompt, override, niche, isolation, isolation_fallback, *fut, i| {
+            if (dup.rep[i] != i) continue; // §2b: a collapsed duplicate spawns nothing
+            wfp.task(ctx.io, arena, run_id, phase_no, i + 1, tasks.len, label, "running"); // #63
             route_trace.emitSpawnProvider(ctx.io, ctx.tracer, label, seat.provider, seat.cellOf(niche), seat.sourceFor(override != null), override, niche);
             fut.* = ctx.io.async(workflowTask, .{ ctx, label, prompt, override, niche, isolation, isolation_fallback, seat.pin });
         }
-        for (futures, outputs, labels, prompts, 1..) |*fut, *out, label, prompt, task_no| {
-            out.* = vision_ask.flagReport(gpa, fut.await(ctx.io), vision_ask.forPrompt(prompt)); // #380 honesty flag
+        for (futures, outputs, labels, prompts, 0..) |*fut, *out, label, prompt, i| {
+            if (dup.rep[i] != i) continue;
+            // §3b — the edit contract, post-await: a contracted phase whose
+            // porcelain never moved becomes is_error, which the retry below
+            // then picks up. #380's honesty flag composes inside it.
+            out.* = escalation.contractCheck(gpa, ctx.io, ctx.agent_cwd, contracted, tree_before, vision_ask.flagReport(gpa, fut.await(ctx.io), vision_ask.forPrompt(prompt)));
             // #63 — terminal per task, so a UI can settle that row without
             // waiting for the phase (and before the retry pass below reruns it).
-            wfp.task(ctx.io, arena, run_id, phase_no, task_no, tasks.len, label, if (out.is_error) "failed" else "completed");
+            wfp.task(ctx.io, arena, run_id, phase_no, i + 1, tasks.len, label, if (out.is_error) "failed" else "completed");
         }
+        // Fan the survivor's result into every slot that collapsed into it, so
+        // the next phase's {{prev}} reads exactly what it would have read. Must
+        // run before the free-defer below, or a collapsed slot would be freed
+        // uninitialized.
+        for (outputs, 0..) |*out, i| if (dup.rep[i] != i) {
+            out.* = .{ .text = gpa.dupe(u8, outputs[dup.rep[i]].text) catch "", .is_error = outputs[dup.rep[i]].is_error };
+        };
         defer for (outputs) |out| gpa.free(out.text);
-        wf_tasks += tasks.len;
+        wf_tasks += dup.survivors.len;
 
         // #2 — Retry transient failures once. A single flaky subagent (an empty
         // report, a dropped stream) shouldn't fail the phase or poison {{prev}}
@@ -517,9 +389,18 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // invalid argument, an unavailable model — see failureAllowsRetry) are
         // excluded here: retrying the whole phase would only double the cost
         // of a broken run for zero chance of success.
+        // §4 — a budget-exhausted failure is GLOBAL, not per-task: the shared
+        // pool is dry, so every other retry in this pass would fail the same
+        // way and each would still be CHARGED for trying. Abort the whole pass
+        // and let P2 end the run with partial evidence instead.
+        var budget_dry = false;
+        for (outputs) |out| if (out.is_error and subagent_run.isBudgetExhausted(out.text)) {
+            budget_dry = true;
+        };
+        if (budget_dry) truncated = true;
         var fidx: [max_workflow_tasks]usize = undefined;
         var nf: usize = 0;
-        for (outputs, 0..) |out, i| if (out.is_error and failureAllowsRetry(out.text)) {
+        for (outputs, 0..) |out, i| if (!budget_dry and out.is_error and failureAllowsRetry(out.text)) {
             fidx[nf] = i;
             nf += 1;
         };
@@ -568,9 +449,15 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         // fleet can rank and promote the winner (docs/hyperagents.md §9.B). The
         // propose half already fired in runSub; this closes the loop runEval left
         // open (it submits niche=""). Gated on the fleet — no judge cost otherwise.
-        scoreVariants(ctx, arena, seat, prompts, raws, overrides, niches, outputs);
+        // §4-P3: and on the budget. A tournament is OPTIONAL spend — one call
+        // per surviving variant post-§2c — so it runs only when it fits ON TOP
+        // of the landing reserve. This is run_budget.canAfford's documented use
+        // case, which until now had zero call sites.
+        if (ledger.fits(phase_budget.remainingOf(ctx.run_budget), @as(u64, @intCast(dup.survivors.len)) * phase_budget.cost_judge))
+            scoreVariants(ctx, arena, seat, prompts, raws, overrides, niches, outputs);
 
-        tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = tasks.len - phase_failed, .total = tasks.len, .retried = nf, .diversity = diversity };
+        tallies[phase_no - 1] = .{ .phase_no = phase_no, .total_phases = phases.len, .title = title, .ok = tasks.len - phase_failed, .total = tasks.len, .retried = nf, .diversity = wfp.joinNotes(arena, diversity, brief_diversity.collapseNote(arena, dup)) };
+        phases_ran = phase_no;
 
         // Divide the {{prev}} budget across THIS phase's own task count so a
         // wide phase's total contribution to the next phase's prompt stays near
@@ -594,7 +481,13 @@ pub fn execWorkflow(ctx: ToolCtx, input: Value) !ToolOutput {
         }
         prev_results = std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
     }
-    const manifest = try buildManifest(arena, tallies);
-    const final_text = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ prev_results, manifest });
+    // Only the phases that actually ran are tallied: P2 can break out of the
+    // loop, leaving the rest of `tallies` uninitialized.
+    const manifest = try buildManifest(arena, tallies[0..phases_ran]);
+    const final_text = try std.fmt.allocPrint(arena, "{s}\n\n{s}{s}", .{
+        prev_results,
+        manifest,
+        if (truncated) "\n" ++ phase_budget.truncated_note else "",
+    });
     return .{ .text = try gpa.dupe(u8, final_text) };
 }

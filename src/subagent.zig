@@ -40,6 +40,8 @@ const cards = @import("cards.zig");
 const trace = @import("trace.zig");
 const messages_mod = @import("messages.zig");
 const textMessage = messages_mod.textMessage;
+const brief_diversity = @import("brief_diversity.zig"); // genomeSha: the distinct-genome tournament gate
+const orch_rows = @import("orchestration_rows.zig"); // #290: a scored tournament is not variant-free
 
 /// Spawn a one-level-deep subagent: fresh arena, fresh history, same shared
 /// http client and provider. Runs entirely on this pool thread; its own tool
@@ -280,7 +282,8 @@ fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, sys_o
 /// completion event" shape (#276 P0-3 design point 3) — running / completed
 /// / failed, plus the usage summary, plus the full result once done.
 /// Factored out of agentOutput so it's unit-testable without a real Io.
-fn agentStatusText(gpa: Allocator, id: u32, done: bool, is_error: bool, usage: AgentUsage, result: []const u8) ![]u8 {
+/// pub only so subagent_tests.zig can reach it (this file is at the cap).
+pub fn agentStatusText(gpa: Allocator, id: u32, done: bool, is_error: bool, usage: AgentUsage, result: []const u8) ![]u8 {
     if (!done) return std.fmt.allocPrint(gpa, "[agent {d}: running]", .{id});
     return std.fmt.allocPrint(
         gpa,
@@ -391,36 +394,6 @@ test "admitOneLocked: admits up to the cap, queues the rest, FIFO order (#276 P0
     try std.testing.expectEqual(@as(u32, max_concurrent_background_agents + 1), next.id);
 }
 
-test "agentStatusText: running/completed/failed shapes carry the usage summary, and a failure is never silent (#276 P0-3)" {
-    const gpa = std.testing.allocator;
-
-    const running = try agentStatusText(gpa, 7, false, false, .{}, "");
-    defer gpa.free(running);
-    try std.testing.expectEqualStrings("[agent 7: running]", running);
-
-    const ok = try agentStatusText(gpa, 7, true, false, .{ .duration_ms = 1200, .tool_calls = 3, .context_tokens = 4500, .cache_read_tokens = 100 }, "final report");
-    defer gpa.free(ok);
-    try std.testing.expect(std.mem.indexOf(u8, ok, "completed") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ok, "1200ms") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ok, "3 tool call") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ok, "final report") != null);
-
-    const failed_text = "subagent sa-014-abcd failed before producing a report: connection reset [transport failure]. retry is likely safe";
-    const failed = try agentStatusText(gpa, 9, true, true, .{ .duration_ms = 300 }, failed_text);
-    defer gpa.free(failed);
-    try std.testing.expect(std.mem.indexOf(u8, failed, "failed") != null); // status names the failure — never silent
-    try std.testing.expect(std.mem.indexOf(u8, failed, failed_text) != null); // the child's own diagnostic rides along verbatim
-}
-
-test "agentStatusText: composes with isolation:\"worktree\" — a kept-worktree note in the result survives verbatim (#276 P0-3 design point 5)" {
-    const gpa = std.testing.allocator;
-    const result_with_worktree = "final report text\n\n[worktree kept (has changes) — path: .graff/worktrees/agent-sa-001-aa11, branch: graff/agents/sa-001-aa11]";
-    const out = try agentStatusText(gpa, 3, true, false, .{ .duration_ms = 500 }, result_with_worktree);
-    defer gpa.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "[worktree kept (has changes) — path:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "branch: graff/agents/sa-001-aa11") != null);
-}
-
 /// One task inside a workflow phase; never throws, suitable for io.async.
 /// `niche` is the task's MAP-Elites cell, threaded through so runSub's
 /// fleet:propose — and scoreVariants' submit — tag the variant's genome.
@@ -503,7 +476,12 @@ pub fn scoreVariants(
     // telemetry OFF too, so a private session still accrues policy evidence.
     if (telemetry.g_telem == null and trace.g_traj == null) return;
 
-    // Variant tasks that produced a usable result; a tournament needs ≥2.
+    // Variant tasks that produced a usable result; a tournament needs ≥2 with
+    // DISTINCT genomes. Counting `override != null` counted PRESENCE, and a
+    // phase where every worker carries the same resolved system_prompt is one
+    // genome run N times — nothing to rank. The study paid for that twice: two
+    // single-genome phases each spawned three judges to score a tournament
+    // that had exactly one entrant, on a run that then died at the cap.
     var vidx: [max_workflow_tasks]usize = undefined;
     var vn: usize = 0;
     for (overrides, outputs, 0..) |o, out, i| {
@@ -513,6 +491,17 @@ pub fn scoreVariants(
         }
     }
     if (vn < 2) return;
+    var distinct = false;
+    for (1..vn) |k| if (brief_diversity.genomeSha(overrides[vidx[k]].?) != brief_diversity.genomeSha(overrides[vidx[0]].?)) {
+        distinct = true;
+    };
+    if (!distinct) {
+        if (ctx.tracer) |tr| tr.note("fleet", "tournament skipped: one genome, no axis to rank");
+        return;
+    }
+    // Any score filed below attributes to the PROMPT, not to the orchestration
+    // rung, so this run's orch_outcome row is no longer variant-free (#290).
+    orch_rows.notePendingVariants();
 
     // A tournament must vary exactly ONE axis: variants that did not all run on
     // the same MODEL rank the model as much as the prompt, and filing that under
