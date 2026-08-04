@@ -92,7 +92,11 @@ pub fn scan(text: []const u8, arena: Allocator, exists: anytype) Check {
         const start = i;
         while (i < text.len and isPathByte(text[i])) : (i += 1) {}
         if (i == start) continue;
-        const tok = std.mem.trim(u8, text[start..i], ".");
+        const raw = text[start..i];
+        // The harness's own inspect links (`.graff/subagents/<id>.md`) ride
+        // every subagent result; they are metadata, never the report's citation.
+        if (std.mem.startsWith(u8, raw, ".graff/")) continue;
+        const tok = std.mem.trim(u8, raw, ".");
         if (tok.len == 0 or tok.len > max_token or !looksLikeSourceFile(tok)) continue;
         if (set.seen(tok)) continue;
         out.cited += 1;
@@ -214,6 +218,28 @@ test "scan: dedupes, resolves against the probe, samples the unresolved" {
     const silent = scan("everything looks fine to me", arena_state.allocator(), probe);
     try std.testing.expect(!silent.allFabricated());
     try std.testing.expectEqual(@as(usize, 0), silent.cited);
+}
+
+test "scan: the harness's own inspect link is not a citation" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const probe = TableProbe{ .known = &.{"stats.py"} };
+    // A citation-free report carrying only the appended inspect link passes
+    // instead of burning the phase retry on a fabricated-anchors rejection.
+    const clean = scan(
+        "no defects found\n[subagent sa-007-abcd · inspect: .graff/subagents/sa-007-abcd.md]",
+        arena_state.allocator(),
+        probe,
+    );
+    try std.testing.expectEqual(@as(usize, 0), clean.cited);
+    try std.testing.expect(!clean.allFabricated());
+    // Nor does the link launder a fabricated report into a partial one.
+    const bad = scan(
+        "ghost.py holds the defect\n[subagent sa-007-abcd · inspect: .graff/subagents/sa-007-abcd.md]",
+        arena_state.allocator(),
+        probe,
+    );
+    try std.testing.expect(bad.allFabricated());
 }
 
 test "the contract texts instruct, and the failure stays retry-safe" {
