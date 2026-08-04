@@ -10,6 +10,105 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## Unreleased
+
+- Vision-aware worker routing: a subagent task that names an image file
+  re-seats automatic workers onto a vision-capable model (`source=vision-ask`
+  in the routing trace); a worker report that disclaims image-viewing gets a
+  `[vision warning]` flag the root cannot mistake for observation (#380).
+- Brief-diversity gate: fanning out 3+ near-identical variant briefs (workflow
+  phases or sibling spawns) draws a calibrated warning — reskins of one
+  template are one concept, not N. New `concept-fleet` shape requires a design
+  thesis and one signature system per variant (#382).
+- Durable user-constraint ledger: `/never <text>` (or the model calling the
+  append-only `note_constraint` tool when you reject something) writes to
+  `.graff/playbook.jsonl`; a `HARD CONSTRAINTS` block derived from the file at
+  brief-assembly time rides every worker brief and the root prompt — surviving
+  compaction and session boundaries by construction (#381).
+- Learned playbook (ACE-style): after a target-met eval, one bounded
+  reflection call mints up to 3 insight bullets with run provenance, curated
+  by deterministic code (dedupe, caps, tombstones — never model rewrites) and
+  injected as an advisory block below user constraints (#383).
+- The long-standing ubuntu pty CI flake was never a shutdown hang: a Ctrl-D
+  arriving in a canonical-mode tty window is delivered by Linux as NUL and was
+  dropped by readline — the REPL then (correctly) waited forever. Type-ahead
+  bytes are now normalized across the mode switch; 15/15 container hangs
+  became 25/25 passes. Teardown phases are stamped under
+  `GRAFF_SHUTDOWN_DEBUG` so any future hang names its phase (#364).
+
+## v0.0.236 (2026-08-04)
+
+- Every spawned worker emits a routing trace — shape, role, tier, resolved
+  model, and *why* (explicit-pin / persona / learned-policy / session-default
+  / ladder) — to the tracer, the local archive, and a new `agent_route` JSON
+  event (#372).
+- Learned tier policy: scored runs teach (shape, role) cells which model to
+  seat; a learned answer must dominate the ladder's (≥ quality, strictly
+  cheaper) and explicit pins always win (#372). Workflow phases take one
+  learned seat before fan-out, and fitness is stratified by resolved model so
+  genome comparisons never mix rungs (#376).
+- Family-prefixed model spellings route to the direct provider: `--model
+  kimi-k3` now bills the flat-rate kimi login instead of silently seating the
+  gateway (#377).
+- `graff route <model>…` dry-runs provider seating + billing in ~2s with zero
+  API calls, through the same resolution a real session uses.
+- `graff acp`: Agent Client Protocol agent mode over stdio JSON-RPC — point
+  Zed's agent panel at the binary (#375, ACP half).
+- Blocking pre_tool hooks can name their sanctioned replacement via a
+  `suggest` field, and hooks got their first README documentation (#369). SDK
+  generation is deterministic by construction — a scrubbed HOME, so local
+  catalog caches can never drift the committed MODELS list (#370).
+- Longer notes: [docs/releases/v0.0.236.md](docs/releases/v0.0.236.md).
+
+## v0.0.235 (2026-08-03)
+
+- Eight defects found by turning the harness on itself, fixed same-day with
+  live verification: honest eval-score parsing with exit-code fallback
+  (#367), budget exhaustion that names what ran out and what state survives
+  (#368), unattended denials that explain themselves (#369 first half), a
+  hard gate on the model editing `.harness/settings.json` (#366), `/model`
+  re-deriving the worker ladder (#371), Pareto-front rung seating so no tier
+  is dominated by a cheaper one (#373), DGM score feedback re-weighting the
+  bench sheet (#374 follow-on), and pty/autosave test reliability (#364/#365).
+- Longer notes: [docs/releases/v0.0.235.md](docs/releases/v0.0.235.md).
+
+## v0.0.234 (2026-08-03)
+
+- The local evolution loop closes: eval scores land in the local trajectory
+  archive, a target-met new best auto-promotes the niche champion and
+  hot-reloads it mid-session, and VERIFIER RED grants a bounded in-loop
+  repair turn instead of scoring an honest run 0.
+- Worker economy: compiled bench priors seat per-provider tier ladders,
+  logged-in flat-rate subscriptions outrank metered models for tier asks, and
+  workers never silently cost more than the model you chose. Personas gain
+  independent `effort` pins ("Luna Max" = `model: gpt-5.6-luna` +
+  `effort: max`) (#291/#292).
+- Codex-parity system prompt upgrade; plan/todo discipline verified against
+  it.
+- Longer notes: [docs/releases/v0.0.234.md](docs/releases/v0.0.234.md).
+
+## v0.0.233 (2026-08-03)
+
+- iOS stops inventing outcomes: per-turn outcome in the transcript, liveness
+  that never fabricates success, ordered per-session sync with revision
+  guards and tombstones (#286, #310, #316).
+- MCP companion only falls back to the legacy protocol on a real refusal, with
+  a cold-start-safe probe timeout (#327). GUI emphasis pairing fixed so `**`
+  can no longer leak into linkified URLs (#197).
+- Incremental autosave (#273) and per-spawn worker model pins (#292) land.
+- Longer notes: [docs/releases/v0.0.233.md](docs/releases/v0.0.233.md).
+
+## v0.0.232 (2026-08-03)
+
+- `imagegen`: image generation the model can't fake — fresh-artifact
+  verification (mtime, magic bytes, size floor) after Codex was caught
+  fabricating success from a stale file; exit 0 with no fresh artifact is a
+  hard error (#352).
+- Clipboard paste failures become honest and usually recoverable; MCP tool
+  schemas with top-level `oneOf`/`allOf`/`anyOf` are lowered instead of
+  rejected wholesale.
+- Longer notes: [docs/releases/v0.0.232.md](docs/releases/v0.0.232.md).
+
 ## v0.0.231 (2026-08-01)
 
 - `edit_file` now verifies every edit actually landed on disk before reporting
