@@ -91,6 +91,11 @@ const playbook_reflect = @import("playbook_reflect.zig");
 // that staying true.
 const mcp_config = @import("mcp_config.zig");
 
+// #364: shutdown-phase timings. Production reaches it from readline.zig,
+// session.zig, mcp.zig, telemetry.zig and startup_timing.zig, so its coverage
+// is contingent on those call sites staying — pinned here instead.
+const shutdown_trace = @import("shutdown_trace.zig");
+
 test {
     _ = learn_holdout;
     _ = learn_receipt;
@@ -126,4 +131,5 @@ test {
     _ = agent_eval_control_tests;
     _ = playbook_glue;
     _ = playbook_reflect;
+    _ = shutdown_trace;
 }

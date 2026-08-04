@@ -13,6 +13,7 @@ const types = @import("behavior_trace_types.zig");
 const session_start = @import("session_start.zig");
 const scoring = @import("scoring.zig");
 const trace = @import("trace.zig");
+const shutdown_trace = @import("shutdown_trace.zig"); // #364: teardown phase stamps
 
 test {
     _ = @import("behavior_trace_tests.zig");
@@ -531,6 +532,7 @@ pub const Boot = struct {
     /// clean return is not a task success verdict; finish() is idempotent and
     /// keeps an earlier error-unwind status terminal.
     pub fn finishAndClose(self: *Boot, tracer: ?*trace.Tracer, status: BehaviorRunStatus) void {
+        shutdown_trace.mark("behavior-finish + upload"); // #364: this phase can make a network call
         self.behavior.finish(status);
         if (tracer) |tr| tr.behavior = null;
         if (self.open.file) |f| f.close(self.io);

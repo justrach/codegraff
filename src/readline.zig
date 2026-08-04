@@ -34,6 +34,7 @@ const input_util = @import("input_util.zig");
 const fillCompletions = input_util.fillCompletions;
 const LineRender = input_util.LineRender;
 const parseDsrCol = input_util.parseDsrCol;
+const typeAheadByte = input_util.typeAheadByte;
 const cleanDroppedPath = input_util.cleanDroppedPath;
 const collectRepoFiles = input_util.collectRepoFiles;
 const isImagePath = input_util.isImagePath;
@@ -50,6 +51,7 @@ const agent_mod = @import("agent.zig");
 const session = @import("session.zig");
 const Agent = agent_mod.Agent;
 const saveSession = session.saveSession;
+const shutdown_trace = @import("shutdown_trace.zig"); // #364: the quit path's first phase stamp
 const rl_history = @import("readline_history.zig");
 const HistoryNav = rl_history.HistoryNav;
 
@@ -85,6 +87,9 @@ pub fn readLine(
     // shifts the whole block together and never strands the prompt. Typed-
     // ahead text bytes that race the reply are replayed into the edit loop
     // below; a typed-ahead escape sequence inside that ~ms window is dropped.
+    // Those replayed bytes went through the tty's CANONICAL line discipline
+    // (they were queued before enterRaw above), so each is normalized by
+    // input_util.typeAheadByte first — see #364.
     var prompt_col: usize = 1; // 1-based column where the buffer renders
     var rstate: LineRender = .{}; // rows used + cursor row of the last redraw
     var pending: std.ArrayList(u8) = .empty;
@@ -108,7 +113,7 @@ pub fn readLine(
                     n = 0;
                     continue;
                 }
-                pending.append(gpa, b) catch {};
+                pending.append(gpa, typeAheadByte(b)) catch {}; // #364: a canonical-mode Ctrl-D reaches us as NUL on Linux
                 if (pending.items.len > 64) break :dsr;
                 continue;
             }
@@ -316,6 +321,7 @@ pub fn readLine(
             },
             0x04 => { // Ctrl-D: EOF on empty line, else forward-delete
                 if (buf.items.len == 0) {
+                    shutdown_trace.mark("readline-eof (ctrl-d)"); // #364: proves the quit key was SEEN, not just sent
                     out.writeAll("\n") catch {};
                     return null;
                 }

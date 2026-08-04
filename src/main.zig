@@ -236,11 +236,11 @@ const cli = @import("cli.zig");
 const args = @import("args.zig");
 // Post-arg-parse setup (resolveKeys, buildSystemPrompt, early subcommand dispatch) lives in startup.zig; everything after credentials/http.Client exist lives in sibling session_start.zig.
 const startup = @import("startup.zig");
-const startup_timing = @import("startup_timing.zig");
+const startup_timing = @import("startup_timing.zig"); // .shutdown_trace re-exports #364's teardown-phase stamps (this file is at the 600-line cap and cannot spare an import line)
 const session_start = @import("session_start.zig");
 const session_run = @import("session_run.zig");
 pub fn main(init: std.process.Init) !void {
-    var boot = startup_timing.Tracker.init(init.io, init.environ_map.get("GRAFF_BOOT_DEBUG") != null);
+    var boot = startup_timing.Tracker.init(startup_timing.shutdown_trace.arm(init.io, init.environ_map), init.environ_map.get("GRAFF_BOOT_DEBUG") != null); // #364: arm() passes io through, so the teardown below stamps phases without a line of its own
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
@@ -253,7 +253,7 @@ pub fn main(init: std.process.Init) !void {
     // reset each request() so a long REPL/--json/serve session's RSS stays flat.
     var scratch_state = std.heap.ArenaAllocator.init(gpa);
     defer scratch_state.deinit();
-    defer hooks.deinitCodedbCache(gpa, io);
+    defer hooks.deinitCodedbCache(gpa, startup_timing.shutdown_trace.at(io, "codedb-cache + arena (last)"));
     g_session_arena = init.arena;
     g_mem_debug = init.environ_map.get("GRAFF_MEM_DEBUG") != null;
     g_no_browser = init.environ_map.get("GRAFF_NO_BROWSER") != null;
@@ -295,7 +295,7 @@ pub fn main(init: std.process.Init) !void {
     var client_warm_fut = io.async(prewarmCaBundleTask, .{ &client, gpa, io, &client_ready });
     boot.mark(io, "CA warm scheduled");
     defer {
-        _ = client_warm_fut.await(io);
+        _ = client_warm_fut.await(startup_timing.shutdown_trace.at(io, "ca-warm-await"));
         http.g_client_ready = null;
     }
     var stdin_buf: [64 * 1024]u8 = undefined;
@@ -458,14 +458,14 @@ pub fn main(init: std.process.Init) !void {
     // earlier fallbacks remain for failures that occur before these defers
     // are registered.
     defer if (!jobs_reaped) {
-        jobsReap(gpa, io);
+        jobsReap(gpa, startup_timing.shutdown_trace.at(io, "jobs-reap"));
         jobs_reaped = true;
     };
     defer if (!agent_jobs_reaped) {
-        agentJobsReap(gpa, io);
+        agentJobsReap(gpa, startup_timing.shutdown_trace.at(io, "agent-jobs-reap"));
         agent_jobs_reaped = true;
     };
-    defer joinElites(io); // reap if the session quits before any turn joins it
+    defer joinElites(startup_timing.shutdown_trace.at(io, "join-elites")); // reap if the session quits before any turn joins it
 
     session_run.saveOrResumeSession(&root, &keys, arena, flags);
     // Load restored configuration before run_started, but defer any model-backed
@@ -481,7 +481,7 @@ pub fn main(init: std.process.Init) !void {
     session_run.compactResumedSession(&root);
 
     // Closing the learning loop: this session counts toward the next trial.
-    defer session_run.startBackgroundLearning(gpa, arena, io, init.environ_map, &invocation_budget, !flags.no_telemetry_flag);
+    defer session_run.startBackgroundLearning(gpa, arena, startup_timing.shutdown_trace.at(io, "background-learning"), init.environ_map, &invocation_budget, !flags.no_telemetry_flag);
 
     // `graff repl`: interactive chat REPL on the zigzag TUI, backed by the REAL agent loop — each prompt runs a full root turn (tools + MCP) via
     // replTurnCb. `graff acp` (acp.zig) is the same idea over Zed's stdio Agent Client Protocol. Both self-contained — each exits after.
@@ -526,7 +526,7 @@ pub fn main(init: std.process.Init) !void {
         .sys_normal = sys_normal,
     };
     try mainloop.run(&loop_ctx);
-    try session_run.finalizeSession(gpa, io, arena, out, &root, json_mode);
+    try session_run.finalizeSession(gpa, startup_timing.shutdown_trace.at(io, "final-save"), arena, out, &root, json_mode);
 }
 // The `graff mcp` CLI (list/add servers in .mcp.json) + the trusted-companion check live in mcp_cli.zig.
 const mcp_cli = @import("mcp_cli.zig");
