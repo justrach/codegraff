@@ -53,6 +53,9 @@ const route_trace = @import("route_trace.zig");
 // #376 phase-uniform learned routing + the rung-stratified fitness fold.
 const route_phase = @import("route_phase.zig");
 const route_check = @import("route_check.zig");
+// #380 vision-aware spawn routing + the report-time capability-honesty flag.
+const vision_ask = @import("vision_ask.zig");
+const vision_ask_tests = @import("vision_ask_tests.zig");
 const pricing_tests = @import("pricing_tests.zig");
 const fitness_strata = @import("fitness_strata.zig");
 
@@ -103,6 +106,8 @@ test {
     _ = route_trace;
     _ = route_phase;
     _ = route_check;
+    _ = vision_ask;
+    _ = vision_ask_tests;
     _ = pricing_tests;
     _ = fitness_strata;
     _ = serve_events;

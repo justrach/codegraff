@@ -256,7 +256,10 @@ test "#376 firewall: the seat is resolved ONCE per phase, outside the task loop"
     // model — so it is pinned as source text, the same way #372 pinned the
     // no-per-task-pin invariant it replaces.
     const src = @embedFile("workflow.zig");
-    const seat_at = std.mem.indexOf(u8, src, "const seat = route_phase.forPhase(").?;
+    // #380 wraps the same one-shot resolution in vision_ask.phaseSeat, which
+    // may swap the phase's model but still yields ONE seat for the whole
+    // phase — the property this test exists to protect.
+    const seat_at = std.mem.indexOf(u8, src, "const seat = vision_ask.phaseSeat(route_phase.forPhase(").?;
     const loop_at = std.mem.indexOf(u8, src, "for (labels, prompts, overrides, niches, isolations, isolation_fallbacks, futures, 1..)").?;
     try std.testing.expect(seat_at < loop_at); // resolved before the fan-out
     // Every spawn in the phase — first attempt and retry alike — receives that
