@@ -149,6 +149,13 @@ pub const PhaseTally = struct {
     total: usize,
     retried: usize,
     skipped_when: ?[]const u8 = null,
+    /// #382 — the fleet-diversity note for this phase, or "" when its briefs
+    /// were varied enough (or too few to judge). Carried on the tally rather
+    /// than printed at the phase, because the manifest is the one part of a
+    /// workflow result the ROOT reliably reads: intermediate phases are
+    /// summarised into {{prev}} for the NEXT phase, and a note meant for the
+    /// orchestrator must not end up in a worker's prompt instead.
+    diversity: []const u8 = "",
 };
 
 /// Build the hard-stop text for a phase where every task failed: the
@@ -181,6 +188,7 @@ pub fn buildManifest(arena: Allocator, tallies: []const PhaseTally) ![]const u8 
         } else {
             try aw.writer.print("phase {d}/{d} {s}: {d}/{d} ok, {d} retried\n", .{ t.phase_no, t.total_phases, t.title, t.ok, t.total, t.retried });
         }
+        if (t.diversity.len > 0) try aw.writer.print("{s}\n", .{t.diversity});
     }
     return std.mem.trimEnd(u8, aw.writer.buffered(), "\n");
 }

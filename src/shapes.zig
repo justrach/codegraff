@@ -128,6 +128,17 @@ pub const shape_catalog_note =
     \\  each item flows independently, so no item waits on any other
     \\E feature — build something new:
     \\  scope → implement → review
+    \\F concept-fleet — N parallel DESIGN variants of one surface (page, deck, view):
+    \\  variants   each brief carries (1) a one-sentence design THESIS naming its
+    \\             compositional idea (editorial parallax / sticky crossfades /
+    \\             kinetic typography / scroll-scrubbed chapters / horizontal rail),
+    \\             (2) exactly ONE signature interaction or motion system — never
+    \\             stack progress bars + particles + cursor effects + dot rails +
+    \\             blobs + line reveals, (3) its OWN route and files (/v1, /v2, …),
+    \\             shared implementation off-limits. Theses must differ in
+    \\             COMPOSITION, not decoration: one template restyled with a new
+    \\             hue/particle/font pairing is ONE concept, not N. Leave every
+    \\             variant unmerged until the user picks.
     \\
     \\Scale to the ask: "find bugs" is 3 finders + 1 verify; "thoroughly audit" is
     \\6 finders + 3-vote adversarial verify + synthesize. Use phases only when a
@@ -215,12 +226,45 @@ test "#296: no canonical slot is reachable only through a pipeline stage" {
     try std.testing.expectEqualStrings("", canonicalSlot("transform each file"));
 }
 
-test "shape catalog covers all five shapes and stays within a sane token budget" {
-    for ([_][]const u8{ "A review/audit", "B research/understand", "C design/solve", "D migration/mechanical", "E feature" }) |shape| {
+test "shape catalog covers all six shapes and stays within a sane token budget" {
+    for ([_][]const u8{ "A review/audit", "B research/understand", "C design/solve", "D migration/mechanical", "E feature", "F concept-fleet" }) |shape| {
         try std.testing.expect(std.mem.indexOf(u8, shape_catalog_note, shape) != null);
     }
-    // It rides on every ultracode turn; keep it from silently ballooning.
-    try std.testing.expect(shape_catalog_note.len < 2048);
+    // Keep it from silently ballooning. Raised from 2048 once, for F (#382):
+    // shape F is the longest entry in the catalog because it is the only one
+    // whose value is in the CONTRACT each brief must carry, not in the phase
+    // names — a two-line "N design variants, parallel" F would be exactly the
+    // instruction the failing run already followed. #326 also changed what
+    // this budget costs: the catalog is composed into sys_ultra once rather
+    // than re-pasted per turn, so it is paid on the cached prefix.
+    try std.testing.expect(shape_catalog_note.len < 3072);
+}
+
+test "#382: shape F carries the contract that separates a concept fleet from a reskin" {
+    const f = std.mem.indexOf(u8, shape_catalog_note, "F concept-fleet").?;
+    const entry = shape_catalog_note[f..std.mem.indexOf(u8, shape_catalog_note, "Scale to the ask").?];
+    // The three things each brief MUST carry. Losing any one of them is how
+    // the production failure happened: ten briefs, one template, decoration
+    // deltas — every one of them "a design variant" by a looser contract.
+    try std.testing.expect(std.mem.indexOf(u8, entry, "one-sentence design THESIS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry, "exactly ONE signature interaction or motion system") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry, "OWN route and files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry, "shared implementation off-limits") != null);
+    // The anti-stacking list is enumerated rather than implied: "one signature
+    // system" alone reads as satisfiable by a page that has all six.
+    for ([_][]const u8{ "progress bars", "particles", "cursor effects", "dot rails", "blobs", "line reveals" }) |decoration| {
+        try std.testing.expect(std.mem.indexOf(u8, entry, decoration) != null);
+    }
+    // The distinction the gate in brief_diversity.zig measures, stated where
+    // the model reads it BEFORE spawning rather than only in the warning after.
+    try std.testing.expect(std.mem.indexOf(u8, entry, "COMPOSITION, not decoration") != null);
+    try std.testing.expect(std.mem.indexOf(u8, entry, "ONE concept, not N") != null);
+    // Variants are a menu, not a merge queue.
+    try std.testing.expect(std.mem.indexOf(u8, entry, "unmerged until the user picks") != null);
+    // F is a phases shape naming a canonical slot, so its round is scoreable
+    // (#296): a shape whose only slot were off-vocabulary could never accrue
+    // fitness, which is the trap `transform` fell into.
+    try std.testing.expectEqualStrings("variants", canonicalSlot("variants   each brief carries"));
 }
 
 test "shape catalog never tells a dependent chain to isolate into worktrees" {
