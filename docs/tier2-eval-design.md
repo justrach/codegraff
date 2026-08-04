@@ -132,7 +132,15 @@ for rel, content in case.get("workspace_seed", {}).items():
     dest.write_text(content, encoding="utf-8")
 ```
 
-2. **expected_exit + stderr_contains** (merges `exit_code_is`, `stderr_contains_and_exit_code`, `exit_code_and_stderr_asserts`, `expected_exit` — some form was proposed by all five dimensions, the strongest convergence signal in the batch). Unlocks the entire exhaustedFatal (#368) path — today any deliberate nonzero exit is auto-failed by the mandatory check, so the fatal path is untestable — plus the `[workflow] phase N/M … SKIPPED (when …)` console lines and CLI-refusal locks. Sketch — new `evaluate()` arm plus a change to the mandatory block in `main()`:
+2. **expected_exit + stderr_contains** — **LANDED** (merges `exit_code_is`, `stderr_contains_and_exit_code`, `exit_code_and_stderr_asserts`, `expected_exit` — some form was proposed by all five dimensions, the strongest convergence signal in the batch). Unlocks the entire exhaustedFatal (#368) path — before it, any deliberate nonzero exit was auto-failed by the mandatory check, so the fatal path was untestable — plus the `[workflow] phase N/M … SKIPPED (when …)` console lines and CLI-refusal locks. Shipped exactly as sketched, and `budget-exhausted-past-the-landing-dies-fatal` came with it (suite 38 → 39), proven red on the pre-extension runner (`unknown assertion 'stderr_contains'` ×4 + `graff exited 1`) and green after.
+
+   Three facts the case had to be built around, all worth keeping:
+
+   - **exhaustedFatal is one-shot only.** `run_budget.exhaustedFatal` is called from exactly one place — `session_run.runOneshotPrompt`'s error switch. In the runner's usual stdin/`--json` shape the same `error.RunBudgetExhausted` lands in `mainloop`'s `else` arm, which emits `{"type":"error","message":"RunBudgetExhausted"}` and exits **0**. So a fatal-path case must put `-p <prompt>` in its `args`; its `prompt` field then only feeds the stdin one-shot ignores.
+   - **The #390 landing reserve does not make root-level exhaustion unreachable.** The reserve buys the run one tools-free final call with the `[budget landing]` note; it cannot stop a model from answering that call with a tool call anyway, and executing that tool demands a call the pool refuses. No subagent/depth>0 structure is needed — a script that keeps calling tools past the cap is enough (`--max-model-calls 2`, exit **1**).
+   - **The exhausted row has no post-mortem surface yet.** With `GRAFF_FLEET=on` and a workflow call, exhaustedFatal's `flushPending(0, max, 0, true, "")` really does file `kind:"orch_outcome" … "score":0,"exhausted":true,"landed":false` (verified by hand against a kept workspace). It is written *as the process dies*, after any scripted bash step could observe it, and `execute()` discards the tempdir — so the case exercises that half without asserting it. It becomes assertable when extension #3 (`trajectory_row`) lands.
+
+   Sketch as shipped — new `evaluate()` arm plus a change to the mandatory block in `main()`:
 ```python
 elif kind == "stderr_contains":
     if spec not in run.stderr:
